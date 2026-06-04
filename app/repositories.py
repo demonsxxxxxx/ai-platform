@@ -1111,6 +1111,8 @@ async def list_memory_records(
     session_id: str | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
+    if not session_id:
+        raise RepositoryConflictError("memory_session_id_required")
     cursor = await conn.execute(
         """
         select id, tenant_id, workspace_id, user_id, agent_id, session_id,

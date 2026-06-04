@@ -44,8 +44,6 @@ def _redact_tool_permission_private_payload(value: Any) -> Any:
 
 
 def permission_response(row: dict[str, Any]) -> dict[str, Any]:
-    request_payload = sanitize_tool_permission_payload(row.get("request_payload_json"))
-    decision_payload = sanitize_tool_permission_payload(row.get("decision_payload_json"))
     run_id = str(row["run_id"])
     request_id = str(row["id"])
     return {
@@ -64,8 +62,6 @@ def permission_response(row: dict[str, Any]) -> dict[str, Any]:
         "status": str(row.get("status") or "pending"),
         "decision": row.get("decision"),
         "reason": sanitize_public_text(row.get("reason")),
-        "request_payload": request_payload,
-        "decision_payload": decision_payload,
         "decision_endpoint": tool_permission_decision_endpoint(run_id, request_id),
         "decision_options": list(TOOL_PERMISSION_DECISION_OPTIONS),
         "created_at": row.get("created_at"),

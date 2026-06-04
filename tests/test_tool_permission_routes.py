@@ -148,7 +148,7 @@ def test_tool_permission_decision_writes_event_and_audit(monkeypatch):
     assert calls[2][1]["action"] == "tool.permission.decision"
 
 
-def test_tool_permission_response_redacts_internal_command_fingerprint(monkeypatch):
+def test_tool_permission_response_hides_internal_request_and_decision_payloads(monkeypatch):
     async def fake_get_tool_permission_request(conn, *, tenant_id, user_id, run_id, request_id):
         return permission_row(
             reason="operator pasted command token=tool-reason-token /var/lib/ai-platform/run-a",
@@ -191,19 +191,11 @@ def test_tool_permission_response_redacts_internal_command_fingerprint(monkeypat
     )
 
     assert response.status_code == 200
-    request_payload = response.json()["permission_request"]["request_payload"]
-    assert request_payload == {
-        "source": "claude_agent_sdk_hook",
-        "tool_name": "Bash",
-        "tool_input_keys": ["command"],
-        "command_length": 39,
-    }
-    decision_payload = response.json()["permission_request"]["decision_payload"]
-    assert decision_payload == {
-        "source": "operator_decision",
-        "tool_name": "Bash",
-    }
     permission_request = response.json()["permission_request"]
+    assert "request_payload" not in permission_request
+    assert "decision_payload" not in permission_request
     assert permission_request["reason"] == ""
     assert "tool-reason-token" not in str(permission_request)
     assert "/var/lib/ai-platform" not in str(permission_request)
+    assert "python write_business_system.py" not in str(permission_request)
+    assert "bash:write-system" not in str(permission_request)

@@ -21,6 +21,7 @@ from app.models import (
 from app.product_events import initial_run_event_specs, intent_event_specs
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text, standard_trace_id
 from app.projection_redaction import (
+    capability_id_from_skill,
     default_skill_id_for_public_agent,
     internal_agent_id_for_request,
     public_agent_id_for_projection,
@@ -233,7 +234,14 @@ def _normalized_query_agent_id(agent_id: str | None) -> str | None:
     return agent_id if isinstance(agent_id, str) and agent_id else None
 
 
-def _normalize_request_selector(agent_id: str, skill_id: str | None) -> tuple[str, str | None]:
+def _normalize_request_selector(
+    agent_id: str,
+    skill_id: str | None,
+    *,
+    allow_raw_skill_agent_id: bool = True,
+) -> tuple[str, str | None]:
+    if not allow_raw_skill_agent_id and capability_id_from_skill(agent_id):
+        return "general-agent", None
     internal_agent_id = internal_agent_id_for_request(agent_id) or agent_id
     return internal_agent_id, skill_id or default_skill_id_for_public_agent(agent_id)
 
@@ -402,7 +410,11 @@ async def chat_stream(
     query_agent_id = _normalized_query_agent_id(agent_id)
     requested_agent_id = request.agent_id or query_agent_id or "general-agent"
     requested_skill_id = request.skill_id if is_ai_admin(principal) else None
-    requested_agent_id, requested_skill_id = _normalize_request_selector(requested_agent_id, requested_skill_id)
+    requested_agent_id, requested_skill_id = _normalize_request_selector(
+        requested_agent_id,
+        requested_skill_id,
+        allow_raw_skill_agent_id=is_ai_admin(principal),
+    )
     explicit_payload = _explicit_intent_payload(requested_agent_id, requested_skill_id)
     resolved_file_ids = _file_ids_from_request(request)
     request_input = request.input if is_ai_admin(principal) else sanitize_user_control_input(request.input)

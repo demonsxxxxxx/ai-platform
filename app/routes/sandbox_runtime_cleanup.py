@@ -4,6 +4,7 @@ from typing import Any
 from app.runtime.sandbox.container_provider import ContainerProvider
 from app.runtime.sandbox.contracts import ContainerLease
 from app import repositories
+from app.db import transaction
 
 
 ProviderFactory = Callable[[str | None], ContainerProvider]
@@ -85,7 +86,7 @@ async def cleanup_expired_sandbox_runtime_leases(
     if not expired_leases:
         return []
 
-    async def release_stopped(stopped_leases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    async def release_stopped_with_conn(release_conn: Any, stopped_leases: list[dict[str, Any]]) -> list[dict[str, Any]]:
         released: list[dict[str, Any]] = []
         grouped: dict[str, list[dict[str, Any]]] = {}
         for lease in stopped_leases:
@@ -93,13 +94,17 @@ async def cleanup_expired_sandbox_runtime_leases(
         for release_tenant_id, tenant_leases in grouped.items():
             released.extend(
                 await repositories.release_stopped_sandbox_leases(
-                    conn,
+                    release_conn,
                     tenant_id=release_tenant_id,
                     reason=reason,
                     lease_ids=[str(lease["id"]) for lease in tenant_leases],
                 )
             )
         return released
+
+    async def release_stopped_committed(stopped_leases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        async with transaction() as release_conn:
+            return await release_stopped_with_conn(release_conn, stopped_leases)
 
     try:
         stopped_leases = await stop_sandbox_leases(
@@ -109,8 +114,8 @@ async def cleanup_expired_sandbox_runtime_leases(
         )
     except SandboxRuntimeCleanupError as exc:
         if exc.stopped_leases:
-            await release_stopped(exc.stopped_leases)
+            await release_stopped_committed(exc.stopped_leases)
         raise
     if not stopped_leases:
         return []
-    return await release_stopped(stopped_leases)
+    return await release_stopped_with_conn(conn, stopped_leases)

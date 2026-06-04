@@ -846,6 +846,52 @@ async def test_chat_stream_ignores_raw_skill_id_for_ordinary_user(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_chat_stream_ignores_raw_skill_like_agent_id_for_ordinary_user(monkeypatch):
+    calls = []
+
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        calls.append(("resolve", agent_id, skill_id))
+        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
+
+    async def fake_create_run(conn, **kwargs):
+        calls.append(("run", kwargs["agent_id"], kwargs["skill_id"]))
+        return "run_general"
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def fake_create_session(conn, **kwargs):
+        return "ses_general"
+
+    async def fake_enqueue_run(payload):
+        calls.append(("queue", payload["agent_id"], payload["skill_id"]))
+        return 1
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
+    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
+    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+
+    response = await chat_stream(
+        ChatStreamRequest(
+            agent_id="baoyu-translate",
+            message="hello",
+        ),
+        principal=principal(),
+    )
+
+    assert response.status == "queued"
+    assert ("resolve", "general-agent", "general-chat") in calls
+    assert ("run", "general-agent", "general-chat") in calls
+    assert ("queue", "general-agent", "general-chat") in calls
+
+
+@pytest.mark.asyncio
 async def test_general_chat_queues_claude_agent_worker_executor(monkeypatch):
     calls = []
 

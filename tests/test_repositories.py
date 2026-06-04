@@ -777,6 +777,31 @@ async def test_create_memory_record_rejects_missing_session_id_before_insert():
 
 
 @pytest.mark.asyncio
+async def test_list_memory_records_rejects_missing_session_id_before_query():
+    class MemoryConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            raise AssertionError("memory list must fail before SQL when session_id is missing")
+
+    conn = MemoryConnection()
+
+    with pytest.raises(RepositoryConflictError, match="memory_session_id_required"):
+        await repositories.list_memory_records(
+            conn,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            agent_id="general-agent",
+            session_id=None,
+        )
+
+    assert conn.calls == []
+
+
+@pytest.mark.asyncio
 async def test_create_memory_record_rejects_missing_agent_id_before_insert():
     class MemoryConnection:
         def __init__(self):
