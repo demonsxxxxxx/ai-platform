@@ -293,47 +293,65 @@ Expected: 211 evidence proves the deployed code and frontend entry satisfy the c
 
 ## 211 Deployment Evidence
 
-Captured on 2026-06-04 after syncing local commit `63ea8ea` plus follow-up
-`AGENTS.md` rule commit `726c62f` to
+Captured on 2026-06-04 after syncing local commit `31a56bb` to
 `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform`.
 
-- Source backup before overwrite: `/tmp/ai-platform-source-backup-20260604225552.tgz`.
-- Image backup before overwrite: `ai-platform:backup-20260604225552`.
-- Direct compose build failed because the committed compose intentionally does
-  not forward package-index build args and the builder could not fetch
-  `setuptools>=40.8.0`; deployed by rebasing from the backup image and copying
-  `pyproject.toml`, `app/`, `skills/`, and `docker-entrypoint.sh`, then running
-  compose with `--no-build`.
+- Source backup before overwrite: `/tmp/ai-platform-source-backup-20260604233325.tgz`.
+- Image backup before overwrite: `ai-platform:backup-20260604233325`.
+- Rebase/no-build fallback was used because the host should not depend on fresh
+  package downloads when Python dependencies have not changed; the deployed
+  image was rebuilt by copying the current `pyproject.toml`, `app/`, `skills/`,
+  and `docker-entrypoint.sh` into the backup base image.
+- Real sandbox mode uses the sandbox overlay, not the default compose file:
+  `docker-compose.yml` plus `docker-compose.sandbox.yml`. The composed runtime
+  sets `SANDBOX_CONTAINER_PROVIDER=docker` and mounts both
+  `/var/run/docker.sock` and `/tmp/ai-platform-sandbox-workspaces` only through
+  the sandbox overlay.
 - Deployed API and worker image identity:
-  `sha256:ddc307fadfdfa6e6b015b12414dce38ce278ff5b4af80ab9c8ed16da61f92cdf`.
+  `sha256:5c37f71c40fedbb145f7ab6c7393dad3e64b079d57aea5e4b135a575c76a4f63`.
 - `ai-platform-api` and `ai-platform-worker` were running from
   `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform`
-  with restart count `0`.
+  with compose config files
+  `docker-compose.yml,docker-compose.sandbox.yml`, status `running`, and restart
+  count `0`.
+- 211 repository check: `python3 -m compileall -q app tools scripts` returned
+  `compileall_ok`. Host-level pytest was not available on 211, so pytest
+  remained a local verification gate.
 - `/api/ai/health` returned HTTP 200 with `{"status":"ok"}`.
-- `http://127.0.0.1:18001/` returned HTTP 200 for the LambChat thin shell.
-- Post-deploy sandbox runtime verifier passed for run
-  `sandbox-smoke-postdeploy-1780585121`; evidence file:
-  `/tmp/ai-platform-sandbox-runtime-evidence-sandbox-smoke-postdeploy-1780585121.json`.
-- Platform user cancel smoke returned `cancel_requested`, removed the scoped
-  runtime container, set DB active sandbox lease count to `0`, and released with
-  reason `cancel_requested`.
-- Platform admin cancel smoke returned `cancel_requested`, removed the scoped
-  runtime container, set DB active sandbox lease count to `0`, and released with
-  reason `admin_cancel_requested`.
-- Admin Runtime projection after the cancel smokes reported `total_active=0`,
-  `container_count=0`, `lease_count=0`, no stale smoke run IDs, and no
-  secret-like strings.
-- Tool permission request and decision endpoints returned HTTP 200; run
-  playback contract `ai-platform.run-playback.v1` projected two
-  `ai-platform.tool-permission-card.v1` cards, ending in `decided`, with no
-  secret-like strings.
-- Context snapshot create/list returned HTTP 200 and redacted secret-like
-  payload fields.
-- Memory record create without `session_id` returned
-  `memory_session_id_required`; create/list/delete with a bound session
-  returned HTTP 200 and redacted secret-like values.
-- Chat auto routing for an SOP question returned a queued run with
-  `selected_capability=knowledge_answer`, no visible raw skill id, and no raw
+- `http://127.0.0.1:18001/` returned HTTP 200. The frontend shell listener was
+  `/usr/local/bin/python3 .../tools/serve_lambchat_thin_shell.py --host 0.0.0.0
+  --port 18001 --root /home/xinlin.jiang/lambchat-poc/frontend-dist-ai-platform
+  --api-base http://127.0.0.1:8020`.
+- Post-overlay sandbox runtime verifier passed for run
+  `sandbox-smoke-postfix-ready-1780587720`; evidence file:
+  `/tmp/ai-platform-sandbox-runtime-evidence-sandbox-smoke-postfix-ready-1780587720.json`.
+  A prior verifier attempt submitted before executor health was ready and failed
+  with `Connection reset by peer`; rerunning after `/health` was ready passed.
+- Platform user cancel smoke run `run-user-1780587901767` returned
+  `cancel_requested`, removed `executor-exec-run-user-1780587901767`, set DB
+  active sandbox lease count to `0`, and released lease
+  `lease-user-1780587901767` with reason `cancel_requested`.
+- Platform admin cancel smoke run `run-admin-1780587915476` returned
+  `cancel_requested`, removed `executor-exec-run-admin-1780587915476`, set DB
+  active sandbox lease count to `0`, and released lease
+  `lease-admin-1780587915476` with reason `admin_cancel_requested`.
+- Admin Runtime default projection after the cancel smokes returned HTTP 200
+  with `total_active=0`, `container_count=0`, `lease_count=0`, and no stale
+  smoke run IDs. `include_lease_history=true` returned the released smoke lease
+  history without the injected `smoke-secret-token`.
+- Tool permission smoke returned HTTP 200 for request, decision, and playback.
+  Request `tpr_4da79fd184f64622b5a0f24b609b81d8` ended in `decided`; playback
+  contract `ai-platform.run-playback.v1` projected tool permission cards and no
+  smoke secret-like values.
+- Context snapshot create/list returned HTTP 200 with one snapshot and no smoke
+  secret-like values in the public response.
+- Memory record create without `session_id` returned HTTP 400
+  `memory_session_id_required`; create/list/delete with a bound session returned
+  HTTP 200 and redacted smoke secret-like values. Bound smoke record:
+  `mem_4f6d011eddd04186b72af667eb3910ec`.
+- Chat auto routing for an SOP knowledge question returned HTTP 200, queued run
+  `run_ce8124377f7c4921969e1ba40e81589e`, `selected_capability=knowledge_answer`,
+  public `agent_id=knowledge-answer`, `skill_id=null`, and no raw
   `ragflow-knowledge-search` string in the public response.
 - 211 frontend source contains handlers for tool permission cards, run events,
   artifact cards, and run playback. `pnpm` was not available on 211, so frontend
