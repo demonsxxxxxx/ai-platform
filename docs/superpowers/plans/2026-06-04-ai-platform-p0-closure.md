@@ -358,6 +358,70 @@ Captured on 2026-06-04 after syncing local commit `31a56bb` to
   verification used deployed HTTP plus source and API projection smoke instead
   of frontend unit tests on that host.
 
+## Post-Review Redaction Fix And Final 211 Evidence
+
+Captured on 2026-06-05 after review feedback commit `b8b2afc` and the
+follow-up context redaction fix recorded here.
+
+- `b8b2afc` fixed the validated P0 review findings: stopped sandbox leases are
+  released in a committed transaction on partial cleanup failure, ordinary tool
+  permission responses hide internal request/decision payloads, unscoped memory
+  list/create fails closed with `memory_session_id_required`, and ordinary chat
+  routing no longer accepts raw skill-like `agent_id` selectors.
+- Local smoke then found a real context projection gap: a free-form
+  `smoke-secret-token` value inside a context snapshot payload was returned in
+  the public response. The fix extends `redact_memory_text()` to redact
+  separator-delimited secret/token-like values while preserving assignment keys
+  and already redacted placeholders.
+- TDD evidence for the redaction fix:
+  `tests/test_context_routes.py::test_create_context_snapshot_redacts_payload_before_persisting`
+  failed before the fix because `smoke-secret-token` remained in the persisted
+  payload, then passed after the fix. `tests/test_context_routes.py` returned
+  `36 passed`; focused affected verification returned `139 passed`. A full
+  local verification after the final boundary fix returned
+  `823 passed, 6 skipped, 2 warnings`.
+- Final 211 backup before deploying the redaction fix:
+  `/tmp/ai-platform-source-backup-20260605003640.tgz`; image backup:
+  `ai-platform:backup-20260605003640`.
+- Final rebase Dockerfile/log:
+  `/tmp/ai-platform-redaction-rebase-20260605003640.Dockerfile` and
+  `/tmp/ai-platform-redaction-rebase-20260605003640.log`.
+- Final deployed API and worker image identity:
+  `sha256:ec240f2dcc0fa9e5f45cf35e852f4eb73aa518d04d8d3f9eaafff821199f37fe`.
+  Both `ai-platform-api` and `ai-platform-worker` ran this image with restart
+  count `0`, compose working dir
+  `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform`,
+  and compose files `docker-compose.yml,docker-compose.sandbox.yml`.
+- Final 211 readiness: `python3 -m compileall -q app tools scripts` returned
+  `compileall_ok`; `/api/ai/health` returned HTTP 200; `http://127.0.0.1:18001/`
+  returned HTTP 200.
+- Final sandbox runtime verifier passed for run
+  `sandbox-smoke-final-1780591097`; evidence file:
+  `/tmp/ai-platform-sandbox-runtime-evidence-sandbox-smoke-final-1780591097.json`.
+- Final platform cancel smoke passed:
+  user run `run-user-1780591168654` returned `cancel_requested`, removed
+  `executor-exec-run-user-1780591168654`, active lease count `0`, release reason
+  `cancel_requested`; admin run `run-admin-1780591168654` returned
+  `cancel_requested`, removed `executor-exec-run-admin-1780591168654`, active
+  lease count `0`, release reason `admin_cancel_requested`.
+- Final Admin Runtime projection after cancel returned HTTP 200 with
+  `total_active=0`, `container_count=0`, `lease_count=0`, and no
+  `smoke-secret-token` leak.
+- Final P0 API smoke passed for run `run_20c31c45ef9f4534849b4616b9c8857a`:
+  tool permission request `tpr_33bf7c580dc9488881166e03b96e201f` requested,
+  fetched, decided, and appeared in run playback without internal
+  `request_payload`/`decision_payload`; context snapshot
+  `ctx_b9bcde8118db42639508c762617511b0` create/list redacted
+  `smoke-secret-token` and the JSON-string value `client-secret-json`; memory
+  create without `session_id` returned HTTP 400 `memory_session_id_required`;
+  bound memory record `mem_d8aa73decdde4f99913463698c642f04`
+  create/list/delete returned HTTP 200 without the smoke secret; auto routing
+  selected `knowledge_answer`, projected public `agent_id=knowledge-answer`, and
+  returned `skill_id=null` without raw `ragflow-knowledge-search` in the chat
+  response.
+- Final residual sandbox container check was empty:
+  `docker ps --filter label=ai-platform.owner=sandbox-runtime` returned no rows.
+
 ## Self-Review
 
 - Spec coverage: Tasks cover PRD source authority, P0 backend contracts, frontend projection closure, sandbox deploy/runtime boundaries, review, local verification, and 211 smoke.

@@ -18,6 +18,14 @@ QUOTED_SECRET_FIELD_PATTERN = re.compile(
 BEARER_TOKEN_PATTERN = re.compile(
     r"(?i)\bbearer\s+(?=[A-Za-z0-9._~+/=-]{8,})(?=[A-Za-z0-9._~+/=-]*[0-9._~+/=-])[A-Za-z0-9._~+/=-]+"
 )
+SECRET_LIKE_TOKEN_VALUE_PATTERN = re.compile(
+    r"(?i)(?<!\[)\b(?=[A-Za-z0-9._-]{8,}\b)"
+    r"(?:[A-Za-z0-9]+[._-])+(?:secret|token|credential|password)(?:[._-][A-Za-z0-9]+)*\b"
+    r"(?![\"']?\s*[:=])(?!\])"
+    r"|(?<!\[)\b(?=[A-Za-z0-9._-]{8,}\b)"
+    r"(?:secret|token|credential|password)(?:[._-][A-Za-z0-9]+)+\b"
+    r"(?![\"']?\s*[:=])(?!\])"
+)
 EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 CAMEL_BOUNDARY_PATTERN = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
@@ -181,6 +189,7 @@ def redact_memory_text(value: object) -> str:
     text = QUOTED_SECRET_FIELD_PATTERN.sub(_redact_quoted_secret_field, text)
     text = SECRET_ASSIGNMENT_PATTERN.sub(_redact_secret_assignment, text)
     text = BEARER_TOKEN_PATTERN.sub("Bearer [redacted-secret]", text)
+    text = SECRET_LIKE_TOKEN_VALUE_PATTERN.sub("[redacted-secret]", text)
     return EMAIL_PATTERN.sub("[redacted-email]", text)
 
 

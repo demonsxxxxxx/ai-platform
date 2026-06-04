@@ -184,7 +184,7 @@ def test_create_context_snapshot_redacts_payload_before_persisting(monkeypatch):
                 "api_key": "sk-context-secret",
                 "runtime_path": "/var/lib/ai-platform/run-a",
                 "nested": {
-                    "note": "safe",
+                    "note": "smoke-secret-token",
                     "summary": "authorization: Bearer context-bearer alice@example.com",
                 },
             },
@@ -195,10 +195,11 @@ def test_create_context_snapshot_redacts_payload_before_persisting(monkeypatch):
     persisted_payload = calls[0][1]["payload_json"]
     persisted_summary = calls[0][1]["redaction_summary_json"]
     assert persisted_payload["window"] == "current"
-    assert persisted_payload["nested"]["note"] == "safe"
+    assert persisted_payload["nested"]["note"] == "[redacted-secret]"
     assert persisted_summary == {"source": "manual"}
     serialized = str(persisted_payload) + str(persisted_summary) + response.text
     assert "sk-context-secret" not in serialized
+    assert "smoke-secret-token" not in serialized
     assert "client-secret-context" not in serialized
     assert "context-bearer" not in serialized
     assert "alice@example.com" not in serialized
