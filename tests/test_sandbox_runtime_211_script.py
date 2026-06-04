@@ -388,7 +388,7 @@ def test_cancel_probe_stops_only_verifier_owned_container():
     container_id = generator.run_cancel_probe(
         run_id="run-a",
         docker_cmd=("docker",),
-        cancel_image="busybox:1.36",
+        cancel_image="ai-platform:local",
         run=fake_run,
     )
 
@@ -416,7 +416,7 @@ def test_cancel_probe_does_not_remove_by_name_when_create_fails():
         generator.run_cancel_probe(
             run_id="run-a",
             docker_cmd=("docker",),
-            cancel_image="busybox:1.36",
+            cancel_image="ai-platform:local",
             run=fake_run,
         )
     except RuntimeError:
@@ -432,12 +432,20 @@ def test_cancel_probe_does_not_remove_by_name_when_create_fails():
             "ai-platform.verifier=sandbox-runtime-211",
             "--label",
             "ai-platform.run_id=run-a",
-            "busybox:1.36",
+            "ai-platform:local",
             "sh",
             "-c",
             "sleep 300",
         )
     ]
+
+
+def test_generator_defaults_use_local_ai_platform_cancel_probe_image():
+    generator = load_generator()
+
+    args = generator.build_parser().parse_args([])
+
+    assert args.cancel_image == "ai-platform:local"
 
 
 def test_callback_public_url_template_uses_actual_bound_port():

@@ -276,7 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-id", default=os.environ.get("AI_PLATFORM_SANDBOX_RUN_ID", f"sandbox-smoke-{uuid.uuid4().hex[:8]}"))
     parser.add_argument("--callback-token", default=os.environ.get("SANDBOX_CALLBACK_TOKEN", "sandbox-smoke-callback-token"))
     parser.add_argument("--docker-cmd", default=os.environ.get("DOCKER_CMD", "docker"))
-    parser.add_argument("--cancel-image", default=os.environ.get("AI_PLATFORM_CANCEL_PROBE_IMAGE", "busybox:1.36"))
+    parser.add_argument("--cancel-image", default=os.environ.get("AI_PLATFORM_CANCEL_PROBE_IMAGE", "ai-platform:local"))
     parser.add_argument("--callback-host", default=os.environ.get("AI_PLATFORM_CALLBACK_HOST", "127.0.0.1"))
     parser.add_argument("--callback-public-url", default=os.environ.get("AI_PLATFORM_CALLBACK_PUBLIC_URL", ""))
     parser.add_argument("--callback-port", type=int, default=int(os.environ.get("AI_PLATFORM_CALLBACK_PORT", "0")))

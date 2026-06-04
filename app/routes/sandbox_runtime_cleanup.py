@@ -3,6 +3,7 @@ from typing import Any
 
 from app.runtime.sandbox.container_provider import ContainerProvider
 from app.runtime.sandbox.contracts import ContainerLease
+from app import repositories
 
 
 ProviderFactory = Callable[[str | None], ContainerProvider]
@@ -69,3 +70,47 @@ async def stop_sandbox_leases(
     if failures:
         raise SandboxRuntimeCleanupError(failures, stopped_leases=stopped_leases)
     return stopped_leases
+
+
+async def cleanup_expired_sandbox_runtime_leases(
+    conn: Any,
+    *,
+    tenant_id: str | None = None,
+    reason: str = "expired",
+    provider_factory: ProviderFactory,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Stop expired runtime containers before releasing their DB lease rows."""
+    expired_leases = await repositories.list_expired_active_sandbox_leases(conn, tenant_id=tenant_id, limit=limit)
+    if not expired_leases:
+        return []
+
+    async def release_stopped(stopped_leases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        released: list[dict[str, Any]] = []
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for lease in stopped_leases:
+            grouped.setdefault(str(lease["tenant_id"]), []).append(lease)
+        for release_tenant_id, tenant_leases in grouped.items():
+            released.extend(
+                await repositories.release_stopped_sandbox_leases(
+                    conn,
+                    tenant_id=release_tenant_id,
+                    reason=reason,
+                    lease_ids=[str(lease["id"]) for lease in tenant_leases],
+                )
+            )
+        return released
+
+    try:
+        stopped_leases = await stop_sandbox_leases(
+            expired_leases,
+            reason=reason,
+            provider_factory=provider_factory,
+        )
+    except SandboxRuntimeCleanupError as exc:
+        if exc.stopped_leases:
+            await release_stopped(exc.stopped_leases)
+        raise
+    if not stopped_leases:
+        return []
+    return await release_stopped(stopped_leases)

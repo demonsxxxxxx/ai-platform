@@ -1684,12 +1684,88 @@ async def release_stopped_sandbox_leases_for_cancel(
     return released_leases
 
 
+def _sandbox_lease_release_message(reason: str) -> str:
+    if reason == "expired":
+        return "已释放过期 Sandbox 租约"
+    if reason in {"cancel_requested", "admin_cancel_requested"}:
+        return "已因取消释放 Sandbox 租约"
+    return "已释放 Sandbox 租约"
+
+
+async def release_stopped_sandbox_leases(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    reason: str,
+    lease_ids: list[str],
+    trace_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Release DB leases only after their runtime stop operation has succeeded."""
+    if not lease_ids:
+        return []
+    cursor = await conn.execute(
+        """
+        update sandbox_leases
+        set status = 'released',
+            released_at = coalesce(released_at, now()),
+            release_reason = %s,
+            updated_at = now()
+        where tenant_id = %s
+          and id = any(%s)
+          and status = 'active'
+        returning *
+        """,
+        (reason, tenant_id, lease_ids),
+    )
+    released_leases = list(await cursor.fetchall())
+    for lease in released_leases:
+        await append_event(
+            conn,
+            tenant_id=tenant_id,
+            run_id=str(lease["run_id"]),
+            trace_id=lease.get("trace_id") or trace_id,
+            event_type="sandbox_lease_released",
+            stage="sandbox",
+            message=_sandbox_lease_release_message(reason),
+            payload={
+                "visible_to_user": True,
+                "lease_id": lease.get("id"),
+                "reason": reason,
+            },
+        )
+    return released_leases
+
+
+async def list_expired_active_sandbox_leases(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Return expired active lease rows so callers can stop runtime providers first."""
+    cursor = await conn.execute(
+        """
+        select *
+        from sandbox_leases
+        where (%s::text is null or tenant_id = %s)
+          and status = 'active'
+          and expires_at is not null
+          and expires_at <= now()
+        order by expires_at asc, created_at asc
+        limit %s
+        """,
+        (tenant_id, tenant_id, limit),
+    )
+    return list(await cursor.fetchall())
+
+
 async def cleanup_expired_sandbox_leases(
     conn: AsyncConnection,
     *,
     tenant_id: str | None = None,
     reason: str = "expired",
 ) -> list[dict[str, Any]]:
+    """Release expired DB-only leases; runtime providers must be stopped first."""
     cursor = await conn.execute(
         """
         update sandbox_leases
@@ -1701,6 +1777,7 @@ async def cleanup_expired_sandbox_leases(
           and status = 'active'
           and expires_at is not null
           and expires_at <= now()
+          and provider not in ('fake', 'docker')
         returning id, tenant_id, run_id, trace_id, release_reason
         """,
         (reason, tenant_id, tenant_id),

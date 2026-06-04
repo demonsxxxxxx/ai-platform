@@ -1257,7 +1257,7 @@ async def test_create_and_renew_sandbox_lease_persists_ttl_contract():
 
 
 @pytest.mark.asyncio
-async def test_cleanup_expired_sandbox_leases_releases_expired_active_leases_and_emits_events(monkeypatch):
+async def test_cleanup_expired_sandbox_leases_releases_expired_non_runtime_leases_and_emits_events(monkeypatch):
     from app.repositories import cleanup_expired_sandbox_leases
 
     calls = []
@@ -1299,6 +1299,7 @@ async def test_cleanup_expired_sandbox_leases_releases_expired_active_leases_and
     assert "status = 'released'" in update_sql
     assert "status = 'active'" in update_sql
     assert "expires_at <= now()" in update_sql
+    assert "provider not in ('fake', 'docker')" in update_sql
     assert update_params == ("expired", "tenant-a", "tenant-a")
     assert calls[1] == (
         "event",
@@ -1365,6 +1366,105 @@ async def test_cleanup_expired_sandbox_leases_global_scope_emits_events_for_each
     assert update_params == ("expired", None, None)
     assert [call[1]["tenant_id"] for call in calls[1:]] == ["tenant-a", "tenant-b"]
     assert [call[1]["payload"]["lease_id"] for call in calls[1:]] == ["lease-a", "lease-b"]
+
+
+@pytest.mark.asyncio
+async def test_list_expired_active_sandbox_leases_preserves_runtime_stop_targets():
+    from app.repositories import list_expired_active_sandbox_leases
+
+    class ExpiredLeaseCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "id": "lease-docker",
+                    "tenant_id": "tenant-a",
+                    "run_id": "run-a",
+                    "provider": "docker",
+                    "status": "active",
+                }
+            ]
+
+    class FakeConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            self.calls.append((normalized, params))
+            return ExpiredLeaseCursor()
+
+    conn = FakeConnection()
+
+    rows = await list_expired_active_sandbox_leases(conn, tenant_id="tenant-a", limit=25)
+
+    assert [row["id"] for row in rows] == ["lease-docker"]
+    select_sql, select_params = conn.calls[0]
+    assert select_sql.startswith("select * from sandbox_leases")
+    assert "status = 'active'" in select_sql
+    assert "expires_at <= now()" in select_sql
+    assert "provider not in" not in select_sql
+    assert select_params == ("tenant-a", "tenant-a", 25)
+
+
+@pytest.mark.asyncio
+async def test_release_stopped_sandbox_leases_releases_by_stopped_ids_and_emits_expired_events(monkeypatch):
+    from app import repositories
+
+    calls = []
+
+    class LeaseCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "id": "lease-a",
+                    "tenant_id": "tenant-a",
+                    "run_id": "run-a",
+                    "trace_id": "trace-a",
+                }
+            ]
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append((normalized, params))
+            if normalized.startswith("update sandbox_leases"):
+                return LeaseCursor()
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-a"
+
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+
+    released = await repositories.release_stopped_sandbox_leases(
+        FakeConnection(),
+        tenant_id="tenant-a",
+        reason="expired",
+        lease_ids=["lease-a"],
+    )
+
+    assert [lease["id"] for lease in released] == ["lease-a"]
+    update_sql, update_params = calls[0]
+    assert "id = any(%s)" in update_sql
+    assert "run_id = %s" not in update_sql
+    assert update_params == ("expired", "tenant-a", ["lease-a"])
+    assert calls[1] == (
+        "event",
+        {
+            "tenant_id": "tenant-a",
+            "run_id": "run-a",
+            "trace_id": "trace-a",
+            "event_type": "sandbox_lease_released",
+            "stage": "sandbox",
+            "message": "已释放过期 Sandbox 租约",
+            "payload": {
+                "visible_to_user": True,
+                "lease_id": "lease-a",
+                "reason": "expired",
+            },
+        },
+    )
 
 
 @pytest.mark.asyncio

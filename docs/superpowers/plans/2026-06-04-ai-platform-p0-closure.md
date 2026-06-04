@@ -291,6 +291,55 @@ Then run platform-level user/admin cancel smoke against the deployed API and con
 
 Expected: 211 evidence proves the deployed code and frontend entry satisfy the current P0 slice.
 
+## 211 Deployment Evidence
+
+Captured on 2026-06-04 after syncing local commit `63ea8ea` plus follow-up
+`AGENTS.md` rule commit `726c62f` to
+`/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform`.
+
+- Source backup before overwrite: `/tmp/ai-platform-source-backup-20260604225552.tgz`.
+- Image backup before overwrite: `ai-platform:backup-20260604225552`.
+- Direct compose build failed because the committed compose intentionally does
+  not forward package-index build args and the builder could not fetch
+  `setuptools>=40.8.0`; deployed by rebasing from the backup image and copying
+  `pyproject.toml`, `app/`, `skills/`, and `docker-entrypoint.sh`, then running
+  compose with `--no-build`.
+- Deployed API and worker image identity:
+  `sha256:ddc307fadfdfa6e6b015b12414dce38ce278ff5b4af80ab9c8ed16da61f92cdf`.
+- `ai-platform-api` and `ai-platform-worker` were running from
+  `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform`
+  with restart count `0`.
+- `/api/ai/health` returned HTTP 200 with `{"status":"ok"}`.
+- `http://127.0.0.1:18001/` returned HTTP 200 for the LambChat thin shell.
+- Post-deploy sandbox runtime verifier passed for run
+  `sandbox-smoke-postdeploy-1780585121`; evidence file:
+  `/tmp/ai-platform-sandbox-runtime-evidence-sandbox-smoke-postdeploy-1780585121.json`.
+- Platform user cancel smoke returned `cancel_requested`, removed the scoped
+  runtime container, set DB active sandbox lease count to `0`, and released with
+  reason `cancel_requested`.
+- Platform admin cancel smoke returned `cancel_requested`, removed the scoped
+  runtime container, set DB active sandbox lease count to `0`, and released with
+  reason `admin_cancel_requested`.
+- Admin Runtime projection after the cancel smokes reported `total_active=0`,
+  `container_count=0`, `lease_count=0`, no stale smoke run IDs, and no
+  secret-like strings.
+- Tool permission request and decision endpoints returned HTTP 200; run
+  playback contract `ai-platform.run-playback.v1` projected two
+  `ai-platform.tool-permission-card.v1` cards, ending in `decided`, with no
+  secret-like strings.
+- Context snapshot create/list returned HTTP 200 and redacted secret-like
+  payload fields.
+- Memory record create without `session_id` returned
+  `memory_session_id_required`; create/list/delete with a bound session
+  returned HTTP 200 and redacted secret-like values.
+- Chat auto routing for an SOP question returned a queued run with
+  `selected_capability=knowledge_answer`, no visible raw skill id, and no raw
+  `ragflow-knowledge-search` string in the public response.
+- 211 frontend source contains handlers for tool permission cards, run events,
+  artifact cards, and run playback. `pnpm` was not available on 211, so frontend
+  verification used deployed HTTP plus source and API projection smoke instead
+  of frontend unit tests on that host.
+
 ## Self-Review
 
 - Spec coverage: Tasks cover PRD source authority, P0 backend contracts, frontend projection closure, sandbox deploy/runtime boundaries, review, local verification, and 211 smoke.

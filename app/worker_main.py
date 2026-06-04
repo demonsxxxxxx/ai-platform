@@ -7,6 +7,8 @@ from app import queue
 from app import repositories
 from app.db import transaction
 from app.executors.registry import AdapterRegistry
+from app.runtime.sandbox.container_provider import create_container_provider
+from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
 from app.settings import get_settings
 from app.worker import WorkerOutcome, process_run_payload
 
@@ -23,6 +25,7 @@ async def _heartbeat_until_done(message_id: str, worker_id: str, interval_second
 
 async def cleanup_expired_sandbox_leases() -> None:
     async with transaction() as conn:
+        await cleanup_expired_sandbox_runtime_leases(conn, provider_factory=create_container_provider)
         await repositories.cleanup_expired_sandbox_leases(conn)
 
 

@@ -89,6 +89,19 @@ def test_compose_build_does_not_forward_secret_capable_package_index_args():
     assert "PIP_TRUSTED_HOST" not in compose_text
 
 
+def test_agents_lock_211_runtime_verification_and_rebase_deploy_rules():
+    agents_text = read(AGENTS)
+    generator_text = read(ROOT / "scripts/generate_sandbox_runtime_evidence_211.py")
+
+    assert "python3" in agents_text
+    assert '--docker-cmd "sudo -n docker"' in agents_text
+    assert "--cancel-image ai-platform:local" in agents_text
+    assert "rebasing from the current/backup image" in agents_text
+    assert "compose with `--no-build`" in agents_text
+    assert '"ai-platform:local"' in generator_text
+    assert "busybox" not in generator_text
+
+
 def test_gitignore_excludes_real_env_variants_but_not_templates():
     gitignore_lines = set(read(GITIGNORE).splitlines())
     required_patterns = {
