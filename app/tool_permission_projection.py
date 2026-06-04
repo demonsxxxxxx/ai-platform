@@ -13,10 +13,12 @@ TOOL_PERMISSION_PRIVATE_PAYLOAD_KEYS = {
         "raw_command",
         "command_text",
         "command_sha256",
+        "decision_payload",
         "input_sha256",
         "fingerprint",
         "command_fingerprint",
         "input_fingerprint",
+        "request_payload",
     }
 }
 

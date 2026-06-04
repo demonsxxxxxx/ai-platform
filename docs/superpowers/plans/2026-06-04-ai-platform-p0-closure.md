@@ -422,6 +422,38 @@ follow-up context redaction fix recorded here.
 - Final residual sandbox container check was empty:
   `docker ps --filter label=ai-platform.owner=sandbox-runtime` returned no rows.
 
+## Follow-Up Review Feedback Fix Evidence
+
+Captured on 2026-06-05 after inherited read-only reviewer feedback against the
+post-`37e37b3` working tree. The delegation tool in this environment does not
+expose explicit `model` or `reasoning_effort` fields, so this follow-up is
+recorded as an inherited-configuration review and not claimed as an explicit
+`gpt-5.5` + `xhigh` gate.
+
+- Validated feedback fixed in this follow-up:
+  malformed `tool_permission_*` playback fallback now strips internal
+  `request_payload` and `decision_payload`; free-form redaction preserves safe
+  public terms such as `token-budget`, `auth-token-status`,
+  `password-reset-flow`, and `credential-helper`; punctuated and trailing
+  separator secret-like values such as `smoke-secret-token.` and
+  `smoke-secret-token-` are redacted.
+- TDD evidence: the new punctuation regression in
+  `tests/test_control_plane_contracts.py::test_public_payload_sanitizer_redacts_secret_like_executor_values`
+  failed before the guard fix, then passed after the implementation changed to
+  classify the complete delimiter token before preserving safe public text.
+- Focused local verification returned `58 passed` for
+  `tests/test_event_playback_routes.py`, `tests/test_tool_permission_routes.py`,
+  `tests/test_control_plane_contracts.py`, and `tests/test_context_routes.py`.
+- Full local verification returned `824 passed, 6 skipped, 2 warnings`.
+  `python -m compileall -q app tools scripts` and `git diff --check` both
+  returned exit code `0`; `git diff --check` only emitted CRLF normalization
+  warnings.
+- Local source hashes before 211 follow-up deployment:
+  `app/memory_redaction.py`
+  `00C7ECCD4514333884B1B2536C66B23F8612DA40134C21A6CC79DF90F3688358`;
+  `app/tool_permission_projection.py`
+  `F47535CE38B42C25667C5DA154C6B9CE10633FEC636CF31B27E9C8A9715BDA2B`.
+
 ## Self-Review
 
 - Spec coverage: Tasks cover PRD source authority, P0 backend contracts, frontend projection closure, sandbox deploy/runtime boundaries, review, local verification, and 211 smoke.

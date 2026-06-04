@@ -82,6 +82,21 @@ SAFE_COMPACT_PUBLIC_KEYS = {
     "tokenizer",
 }
 SAFE_TOKEN_FOLLOWERS = {"budget", "budgets", "count", "counts", "status", "total", "usage"}
+SAFE_SECRET_VALUE_FOLLOWERS = {
+    "budget",
+    "budgets",
+    "count",
+    "counts",
+    "flow",
+    "flows",
+    "helper",
+    "helpers",
+    "reset",
+    "resets",
+    "status",
+    "total",
+    "usage",
+}
 SENSITIVE_AUTH_TOKENS = {"bearer", "header", "key", "token", "value"}
 
 
@@ -114,6 +129,16 @@ def _is_sensitive_tokenized_key(tokens: list[str]) -> bool | None:
         or _has_adjacent_tokens(tokens, "bearer", "token")
     ):
         return True
+    sensitive_token_indexes = [
+        index
+        for index, token in enumerate(tokens)
+        if token in {"token", "secret", "credential", "password"}
+    ]
+    if sensitive_token_indexes and all(
+        index + 1 < len(tokens) and tokens[index + 1] in SAFE_SECRET_VALUE_FOLLOWERS
+        for index in sensitive_token_indexes
+    ):
+        return False
     if "authorization" in tokens:
         return tokens == ["authorization"] or bool(SENSITIVE_AUTH_TOKENS.intersection(tokens))
     if "auth" in tokens:
@@ -184,12 +209,48 @@ def _redact_quoted_secret_field(match: re.Match[str]) -> str:
     return f"{match.group(1)}{match.group(2)}{match.group(1)}:{match.group(3)}[redacted-secret]{match.group(3)}"
 
 
+def _is_safe_secret_like_value(value: str) -> bool:
+    segments = [item.lower() for item in re.split(r"[._-]+", value) if item]
+    sensitive_indexes = [
+        index
+        for index, segment in enumerate(segments)
+        if segment in {"secret", "token", "credential", "password"}
+    ]
+    if not sensitive_indexes:
+        return False
+    return all(
+        index + 1 < len(segments) and segments[index + 1] in SAFE_SECRET_VALUE_FOLLOWERS
+        for index in sensitive_indexes
+    )
+
+
+def _full_secret_like_token_at(text: str, start: int) -> str:
+    end = start
+    while end < len(text) and (text[end].isalnum() or text[end] in "._-"):
+        end += 1
+    return text[start:end]
+
+
+def _redact_secret_like_token_value(match: re.Match[str]) -> str:
+    value = match.group(0)
+    if (
+        match.end() + 1 < len(match.string)
+        and match.string[match.end()] in "._-"
+        and match.string[match.end() + 1].isalnum()
+        and _is_safe_secret_like_value(_full_secret_like_token_at(match.string, match.start()))
+    ):
+        return value
+    if _is_safe_secret_like_value(value):
+        return value
+    return "[redacted-secret]"
+
+
 def redact_memory_text(value: object) -> str:
     text = "" if value is None else str(value)
     text = QUOTED_SECRET_FIELD_PATTERN.sub(_redact_quoted_secret_field, text)
     text = SECRET_ASSIGNMENT_PATTERN.sub(_redact_secret_assignment, text)
     text = BEARER_TOKEN_PATTERN.sub("Bearer [redacted-secret]", text)
-    text = SECRET_LIKE_TOKEN_VALUE_PATTERN.sub("[redacted-secret]", text)
+    text = SECRET_LIKE_TOKEN_VALUE_PATTERN.sub(_redact_secret_like_token_value, text)
     return EMAIL_PATTERN.sub("[redacted-email]", text)
 
 

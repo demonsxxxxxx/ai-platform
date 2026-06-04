@@ -410,6 +410,48 @@ def test_run_playback_projects_tool_permission_card_for_ordinary_user(monkeypatc
     assert "fingerprint" not in public_dump
 
 
+def test_run_events_redacts_malformed_tool_permission_internal_payloads(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "schema_version": "ai-platform.run.v1",
+            "executor_schema_version": "ai-platform.executor-result.v1",
+        }
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id, after_sequence=None, limit=None):
+        return [
+            event_row(
+                event_id="evt-malformed-tool-permission",
+                sequence=12,
+                event_type="tool_permission_requested",
+                stage="tool_policy",
+                payload={
+                    "visible_to_user": True,
+                    "tool_id": "bash",
+                    "tool_call_id": "call-a",
+                    "request_payload": {"query": "SOP", "token": "smoke-secret-token"},
+                    "decision_payload": {"token": "smoke-secret-token"},
+                    "reason": "legacy payload without request id",
+                },
+                message="工具调用需要权限决策",
+            )
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-a/events", headers=headers())
+
+    assert response.status_code == 200
+    public_dump = response.text
+    assert "request_payload" not in public_dump
+    assert "decision_payload" not in public_dump
+    assert "smoke-secret-token" not in public_dump
+
+
 def test_run_events_projects_tool_permission_decision_card_for_ordinary_user(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         return {

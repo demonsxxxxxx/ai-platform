@@ -214,6 +214,7 @@ def test_public_payload_sanitizer_redacts_secret_like_executor_values():
             "nested": {
                 "note": "{\"client_secret\":\"client-json\"} token=nested-token",
                 "headers": {"Authorization": "Bearer nested-bearer-token"},
+                "punctuation": "prefix smoke-secret-token. suffix smoke-secret-token-",
                 "safe": "done",
             },
         }
@@ -236,6 +237,7 @@ def test_public_payload_sanitizer_redacts_secret_like_executor_values():
         "nested": {
             "note": "{\"client_secret\":\"[redacted-secret]\"} token=[redacted-secret]",
             "headers": {},
+            "punctuation": "prefix [redacted-secret]. suffix [redacted-secret]-",
             "safe": "done",
         },
         "authstatus": "approved",
@@ -296,6 +298,7 @@ def test_public_payload_sanitizer_redacts_secret_like_executor_values():
     assert "slack-usage-secret" not in serialized
     assert "slack-access-secret" not in serialized
     assert "nested-bearer-token" not in serialized
+    assert "smoke-secret-token" not in serialized
 
 
 def test_public_payload_sanitizer_preserves_safe_token_like_text():
@@ -303,6 +306,8 @@ def test_public_payload_sanitizer_preserves_safe_token_like_text():
         {
             "message": (
                 "token_counts: 123 token_budget: 100 "
+                "token-budget: 100 auth-token-status: approved "
+                "password-reset-flow ready credential-helper available "
                 "authorization_status: approved client_secretary: Jane "
                 "Bearer workspace team"
             ),
@@ -317,7 +322,7 @@ def test_public_payload_sanitizer_preserves_safe_token_like_text():
             "oauth_authorization_status": "approved",
             "tokenizer": "cl100k_base",
             "nested": {
-                "summary": "refresh token_counts: 456",
+                "summary": "refresh token_counts: 456 token-budget stable",
                 "status": "authorization_status=approved",
             },
         }
@@ -326,6 +331,8 @@ def test_public_payload_sanitizer_preserves_safe_token_like_text():
     assert payload == {
             "message": (
                 "token_counts: 123 token_budget: 100 "
+                "token-budget: 100 auth-token-status: approved "
+                "password-reset-flow ready credential-helper available "
                 "authorization_status: approved client_secretary: Jane "
                 "Bearer workspace team"
             ),
@@ -340,7 +347,7 @@ def test_public_payload_sanitizer_preserves_safe_token_like_text():
             "oauth_authorization_status": "approved",
             "tokenizer": "cl100k_base",
             "nested": {
-                "summary": "refresh token_counts: 456",
+                "summary": "refresh token_counts: 456 token-budget stable",
                 "status": "authorization_status=approved",
         },
     }
