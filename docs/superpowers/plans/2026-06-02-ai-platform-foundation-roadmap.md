@@ -6,7 +6,7 @@
 
 本路线图只服务于 `docs/superpowers/specs/2026-05-29-ai-platform-final-product-prd.md`。
 
-后续 ai-platform 计划只允许引用当前 PRD、当前路线图、真实代码和当次 211 运行证据。任何非当前主链路重新进入范围，必须先更新 PRD 和本路线图。
+后续 ai-platform 计划只允许引用当前 PRD、当前路线图、仓库 guardrails（`docs/agent-rules/ai-platform-guardrails.md`）、真实代码和当次 211 运行证据。任何非当前主链路重新进入范围，必须先更新 PRD、本路线图和 guardrails。
 
 本路线图不保存非当前主链路、短期执行证据或临时服务说明。
 
@@ -14,9 +14,12 @@
 
 ## 当前主链路
 
+- 本地代码：当前 `ai-platform` 仓库根目录
 - 前端入口：`http://10.56.0.211:18001/`
 - 前端方向：企业 Agent 前端作为当前用户入口，所有事实源请求落到 `ai-platform` API。
 - 后端 API：`ai-platform-api:8020`
+- 211 后端代码：`/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform`
+- 211 部署编排：`/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform`
 - 平台容器：`ai-platform-api`、`ai-platform-worker`
 - 平台依赖：`ai-platform-redis`、`ai-platform-postgres`、`ai-platform-minio`
 
@@ -46,6 +49,7 @@
 - `run_context_snapshots`、`memory_records`、`memory_policies` schema。
 - Context Snapshot API。
 - Memory Record API。
+- Memory record create 必须绑定 session；缺失 session 的写入默认拒绝。
 - Admin policy set API。
 - ContextBuilder 接入 run、chat、copy-run、resume、replay 与 worker-side refresh。
 - 普通用户 soft delete 与 Admin same-tenant soft delete。
@@ -80,6 +84,7 @@
 - Claude SDK unsafe Bash pre-tool permission hook。
 - write-capable business tools 接入同一 gate。
 - allow_once 消费/expiry 与 allow_for_run fingerprint 语义。
+- permission decision lookup 必须匹配 exact tool_call_id 或稳定 request fingerprint，不能只取同 run/tool/action 的最新决策。
 
 后续硬化：
 
@@ -131,6 +136,7 @@
 - expired DB lease cleanup。
 - Docker provider resource limit contract。
 - provider orphan cleanup safety。
+- run cancel / Admin cancel 先停止匹配 scope 标签的 live sandbox container，stop 成功后再 release DB lease；stop 失败时 DB lease 保持 active 以便重试，且不信任用户可控 lease payload 决定 stop 目标。
 
 后续硬化：
 
@@ -154,6 +160,7 @@
 - 不得新增与当前发布入口并行的本地前端入口。
 - `/api/*` 请求落到 `ai-platform-api:8020`。
 - 普通用户投影不暴露 raw skill、storage key、runtime path、request payload、decision payload 或 sandbox `work_dir`。
+- 普通用户投影中 `agent_id` 也不得作为 raw skill id 旁路。
 - 企业 Agent 前端纳入正式发布编排。
 
 ## 后续顺序

@@ -172,6 +172,7 @@ def submit_executor_task(
         "run_id": run_id,
         "prompt": "ai-platform sandbox runtime 211 smoke",
         "callback_url": callback_url,
+        "callback_token_id": f"callback-{_safe_run_id(run_id)}",
         "callback_token": callback_token,
         "callback_base_url": callback_url.rsplit("/", 1)[0],
         "sdk_session_id": None,

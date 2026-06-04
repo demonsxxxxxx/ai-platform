@@ -20,7 +20,13 @@ from app.models import (
 )
 from app.product_events import initial_run_event_specs, intent_event_specs
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text, standard_trace_id
-from app.projection_redaction import redact_raw_skill_references, sanitize_user_control_input
+from app.projection_redaction import (
+    default_skill_id_for_public_agent,
+    internal_agent_id_for_request,
+    public_agent_id_for_projection,
+    redact_raw_skill_references,
+    sanitize_user_control_input,
+)
 from app.queue import enqueue_run, get_queue_insight
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.settings import get_settings
@@ -215,12 +221,21 @@ async def _file_summaries_for_intent(conn, request: ChatStreamRequest, principal
 def _intent_response(payload: dict[str, object], principal: AuthPrincipal) -> IntentDecisionResponse:
     response_payload = dict(payload)
     if not is_ai_admin(principal):
+        response_payload["agent_id"] = public_agent_id_for_projection(
+            response_payload.get("agent_id"),
+            response_payload.get("skill_id"),
+        )
         response_payload["skill_id"] = None
     return IntentDecisionResponse.model_validate(response_payload)
 
 
 def _normalized_query_agent_id(agent_id: str | None) -> str | None:
     return agent_id if isinstance(agent_id, str) and agent_id else None
+
+
+def _normalize_request_selector(agent_id: str, skill_id: str | None) -> tuple[str, str | None]:
+    internal_agent_id = internal_agent_id_for_request(agent_id) or agent_id
+    return internal_agent_id, skill_id or default_skill_id_for_public_agent(agent_id)
 
 
 def _explicit_intent_payload(agent_id: str, skill_id: str | None) -> dict[str, object] | None:
@@ -276,10 +291,11 @@ def _explicit_intent_payload(agent_id: str, skill_id: str | None) -> dict[str, o
 
 
 def _session_response(row: dict[str, object]) -> ChatSessionResponse:
+    raw_agent_id = str(row["agent_id"])
     return ChatSessionResponse(
         session_id=str(row["id"]),
         workspace_id=str(row["workspace_id"]),
-        agent_id=str(row["agent_id"]),
+        agent_id=public_agent_id_for_projection(raw_agent_id) or raw_agent_id,
         title=str(row.get("title") or ""),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
@@ -327,12 +343,13 @@ async def create_chat_session(
     async with transaction() as conn:
         await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
         await repositories.ensure_user(conn, tenant_id=principal.tenant_id, user_id=principal.user_id, display_name=principal.display_name)
+        resolved_agent_id = internal_agent_id_for_request(request.agent_id) or request.agent_id
         session_id = await repositories.create_session(
             conn,
             tenant_id=principal.tenant_id,
             workspace_id=request.workspace_id,
             user_id=principal.user_id,
-            agent_id=request.agent_id,
+            agent_id=resolved_agent_id,
             title=request.title or request.agent_id,
         )
         rows = await repositories.list_authorized_sessions(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
@@ -385,6 +402,7 @@ async def chat_stream(
     query_agent_id = _normalized_query_agent_id(agent_id)
     requested_agent_id = request.agent_id or query_agent_id or "general-agent"
     requested_skill_id = request.skill_id if is_ai_admin(principal) else None
+    requested_agent_id, requested_skill_id = _normalize_request_selector(requested_agent_id, requested_skill_id)
     explicit_payload = _explicit_intent_payload(requested_agent_id, requested_skill_id)
     resolved_file_ids = _file_ids_from_request(request)
     request_input = request.input if is_ai_admin(principal) else sanitize_user_control_input(request.input)

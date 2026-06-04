@@ -13,8 +13,10 @@ TOOL_PERMISSION_PRIVATE_PAYLOAD_KEYS = {
         "raw_command",
         "command_text",
         "command_sha256",
+        "input_sha256",
         "fingerprint",
         "command_fingerprint",
+        "input_fingerprint",
     }
 }
 
@@ -61,7 +63,7 @@ def permission_response(row: dict[str, Any]) -> dict[str, Any]:
         "write_capable": bool(row.get("write_capable")),
         "status": str(row.get("status") or "pending"),
         "decision": row.get("decision"),
-        "reason": str(row.get("reason") or ""),
+        "reason": sanitize_public_text(row.get("reason")),
         "request_payload": request_payload,
         "decision_payload": decision_payload,
         "decision_endpoint": tool_permission_decision_endpoint(run_id, request_id),

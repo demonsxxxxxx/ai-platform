@@ -5,6 +5,9 @@ from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
 from app.models import AdminRunDetailResponse, AdminRunListResponse, RunControlResponse
 from app.queue import get_queue_insight, get_run_queue_position, remove_queued_run
+from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, stop_sandbox_leases
+from app.runtime.sandbox.container_provider import create_container_provider
+from app.control_plane_contracts import sanitize_public_text
 from app.validation import assert_safe_id
 
 router = APIRouter()
@@ -14,6 +17,8 @@ QUEUE_VISIBLE_STATUSES = {"queued", "running"}
 
 async def attach_live_queue_context(run: dict, *, tenant_id: str, queue_insight: dict | None = None) -> dict:
     enriched = dict(run)
+    enriched["error_code"] = sanitize_public_text(enriched.get("error_code")) or None
+    enriched["error_message"] = sanitize_public_text(enriched.get("error_message"))
     status = enriched.get("status")
     if status not in QUEUE_VISIBLE_STATUSES:
         return enriched
@@ -80,6 +85,36 @@ async def admin_run_cancel(
         )
     if result is None:
         raise HTTPException(status_code=404, detail="active_run_not_found")
+    try:
+        stopped_sandbox_leases = await stop_sandbox_leases(
+            result.get("active_sandbox_leases"),
+            reason="admin_cancel_requested",
+            provider_factory=create_container_provider,
+        )
+    except SandboxRuntimeCleanupError as exc:
+        if exc.stopped_leases:
+            async with transaction() as conn:
+                await repositories.release_stopped_sandbox_leases_for_cancel(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    run_id=str(result["run_id"]),
+                    reason="admin_cancel_requested",
+                    lease_ids=[str(lease["id"]) for lease in exc.stopped_leases],
+                    trace_id=result.get("trace_id"),
+                    requested_by_role="admin",
+                )
+        raise HTTPException(status_code=502, detail="sandbox_runtime_cleanup_failed") from exc
+    if stopped_sandbox_leases:
+        async with transaction() as conn:
+            await repositories.release_stopped_sandbox_leases_for_cancel(
+                conn,
+                tenant_id=principal.tenant_id,
+                run_id=str(result["run_id"]),
+                reason="admin_cancel_requested",
+                lease_ids=[str(lease["id"]) for lease in stopped_sandbox_leases],
+                trace_id=result.get("trace_id"),
+                requested_by_role="admin",
+            )
     if result["status"] == "cancelled":
         await remove_queued_run(tenant_id=principal.tenant_id, run_id=run_id)
     return RunControlResponse(run_id=result["run_id"], status=result["status"])

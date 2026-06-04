@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import time as _time
 from dataclasses import dataclass
 from typing import Any
@@ -6,7 +8,12 @@ from typing import Any
 from pydantic import ValidationError
 
 from app import repositories
-from app.control_plane_contracts import artifact_lineage_contract, artifact_manifest_contract, standard_trace_id
+from app.control_plane_contracts import (
+    CONTEXT_SNAPSHOT_SCHEMA_VERSION,
+    artifact_lineage_contract,
+    artifact_manifest_contract,
+    standard_trace_id,
+)
 from app.context_builder import record_initial_context_snapshot
 from app.db import transaction
 from app.executors.base import ExecutorResult, RunPayload
@@ -39,6 +46,24 @@ class WorkerRunCancelled(asyncio.CancelledError):
 
 def parse_queue_payload(raw: dict[str, Any]) -> QueueRunPayload:
     return QueueRunPayload.model_validate(raw)
+
+
+def _mcp_tool_request_payload(payload: QueueRunPayload) -> dict[str, str]:
+    serialized = json.dumps(payload.input, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return {"input_sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest()}
+
+
+def _mcp_tool_call_id(payload: QueueRunPayload, request_payload: dict[str, str]) -> str:
+    raw = "|".join(
+        [
+            payload.tenant_id,
+            payload.user_id,
+            payload.run_id,
+            payload.skill_id,
+            request_payload.get("input_sha256", ""),
+        ]
+    )
+    return f"mcp_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:24]}"
 
 
 def _strip_local_output_paths(message: str) -> str:
@@ -462,26 +487,134 @@ def _dependency_ids_from_manifest(item: dict[str, Any]) -> list[str]:
     return [str(value) for value in raw]
 
 
+RUN_IDENTITY_FIELDS = ("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "agent_id", "skill_id")
+
+
+def _payload_identity(payload: QueueRunPayload) -> dict[str, str]:
+    return {
+        "tenant_id": payload.tenant_id,
+        "workspace_id": payload.workspace_id,
+        "user_id": payload.user_id,
+        "session_id": payload.session_id,
+        "run_id": payload.run_id,
+        "agent_id": payload.agent_id,
+        "skill_id": payload.skill_id,
+    }
+
+
+def _locked_run_identity(payload: QueueRunPayload, locked_run: object) -> dict[str, str]:
+    if not isinstance(locked_run, dict):
+        return _payload_identity(payload)
+    identity: dict[str, str] = {}
+    for field in RUN_IDENTITY_FIELDS:
+        value = locked_run.get("id") if field == "run_id" else locked_run.get(field)
+        identity[field] = str(value) if value else ""
+    return identity
+
+
+def _identity_mismatch_fields(payload: QueueRunPayload, identity: dict[str, str]) -> list[str]:
+    payload_identity = _payload_identity(payload)
+    return [field for field in RUN_IDENTITY_FIELDS if str(payload_identity[field]) != str(identity[field])]
+
+
+def _payload_with_locked_run_input(payload: QueueRunPayload, locked_run: object) -> QueueRunPayload:
+    if not isinstance(locked_run, dict):
+        return payload
+    input_json = locked_run.get("input_json")
+    if not isinstance(input_json, dict):
+        return payload
+
+    updates: dict[str, Any] = {}
+    run_input = input_json.get("input")
+    if isinstance(run_input, dict):
+        updates["input"] = run_input
+    file_ids = input_json.get("file_ids")
+    if isinstance(file_ids, list):
+        updates["file_ids"] = [str(item) for item in file_ids if isinstance(item, str) and item]
+    executor_type = input_json.get("executor_type")
+    if isinstance(executor_type, str) and executor_type:
+        updates["executor_type"] = executor_type
+    skill_version = input_json.get("skill_version")
+    if isinstance(skill_version, str) and skill_version:
+        updates["skill_version"] = skill_version
+    release_decision = input_json.get("release_decision")
+    if isinstance(release_decision, dict):
+        updates["release_decision"] = release_decision
+
+    if not updates:
+        return payload
+    return payload.model_copy(update=updates)
+
+
 def _has_context_snapshot(payload: QueueRunPayload) -> bool:
     return bool(payload.context_snapshot_id and payload.context_snapshot)
 
 
-async def _ensure_worker_context_snapshot(conn, payload: QueueRunPayload, *, trace_id: str) -> dict[str, Any]:
-    if _has_context_snapshot(payload):
-        return {
-            "context_snapshot_id": payload.context_snapshot_id or "",
-            "context_snapshot": payload.context_snapshot,
+def _included_count(row: dict[str, Any], field: str, payload: dict[str, Any], payload_field: str) -> int:
+    raw = row.get(field)
+    if isinstance(raw, list):
+        return len(raw)
+    try:
+        return int(payload.get(payload_field) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _context_snapshot_ref_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    payload = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
+    context_ref: dict[str, Any] = {
+        "schema_version": str(row.get("schema_version") or payload.get("schema_version") or CONTEXT_SNAPSHOT_SCHEMA_VERSION),
+        "context_snapshot_id": str(row["id"]),
+        "source": str(payload.get("source") or "queued"),
+        "message_count": _included_count(row, "included_message_ids", payload, "message_count"),
+        "file_count": _included_count(row, "included_file_ids", payload, "file_count"),
+        "memory_record_count": _included_count(row, "included_memory_record_ids", payload, "memory_record_count"),
+    }
+    memory_policy = payload.get("memory_policy")
+    if isinstance(memory_policy, dict):
+        context_ref["memory_policy"] = {
+            "source": str(memory_policy.get("source") or "default"),
+            "memory_enabled": bool(memory_policy.get("memory_enabled", True)),
+            "long_term_memory_enabled": False,
+            "retention_days": int(memory_policy.get("retention_days") or 90),
         }
+    return context_ref
+
+
+async def _ensure_worker_context_snapshot(
+    conn,
+    payload: QueueRunPayload,
+    *,
+    trace_id: str,
+    run_identity: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    identity = run_identity or _payload_identity(payload)
+    if _has_context_snapshot(payload):
+        scoped_snapshot = await repositories.get_context_snapshot_for_worker(
+            conn,
+            tenant_id=identity["tenant_id"],
+            workspace_id=identity["workspace_id"],
+            user_id=identity["user_id"],
+            session_id=identity["session_id"],
+            run_id=identity["run_id"],
+            context_snapshot_id=str(payload.context_snapshot_id),
+        )
+        if scoped_snapshot is not None:
+            context_ref = _context_snapshot_ref_from_row(scoped_snapshot)
+            return {
+                "context_snapshot_id": str(context_ref["context_snapshot_id"]),
+                "context_snapshot": context_ref,
+            }
     context_ref = await record_initial_context_snapshot(
         conn,
-        tenant_id=payload.tenant_id,
-        workspace_id=payload.workspace_id,
-        user_id=payload.user_id,
-        session_id=payload.session_id,
-        run_id=payload.run_id,
+        tenant_id=identity["tenant_id"],
+        workspace_id=identity["workspace_id"],
+        user_id=identity["user_id"],
+        session_id=identity["session_id"],
+        run_id=identity["run_id"],
         trace_id=trace_id,
-        agent_id=payload.agent_id,
-        skill_id=payload.skill_id,
+        agent_id=identity["agent_id"],
+        skill_id=identity["skill_id"],
         input_payload=payload.input,
         message_ids=[],
         file_ids=payload.file_ids,
@@ -512,6 +645,7 @@ async def process_run_payload(
 
     adapter_registry = registry if registry is not None else AdapterRegistry()
     adapter = None
+    run_identity = _payload_identity(payload)
 
     async with transaction() as conn:
         locked = await repositories.mark_run_running(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
@@ -524,6 +658,26 @@ async def process_run_payload(
                     "stale_queue_payload",
                     "Run no longer exists for leased queue payload",
                 )
+            if str(existing_run.get("status") or "") == "queued":
+                error_code = "queue_payload_identity_mismatch"
+                error_message = "Queued run identity is invalid"
+                await repositories.fail_run(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                    error_code=error_code,
+                    error_message=error_message,
+                )
+                await repositories.append_event(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                    event_type="error",
+                    stage="worker",
+                    message=error_message,
+                    payload={"visible_to_user": False, "severity": "error", "reason": "scope_guard_rejected_lock"},
+                )
+                return WorkerOutcome("failed", payload.run_id, error_code, error_message)
             await repositories.append_event(
                 conn,
                 tenant_id=payload.tenant_id,
@@ -533,44 +687,71 @@ async def process_run_payload(
                 message="Run is not queued; skipping duplicate or stale payload",
             )
             return WorkerOutcome("skipped", payload.run_id)
+        run_identity = _locked_run_identity(payload, locked)
+        mismatch_fields = _identity_mismatch_fields(payload, run_identity)
+        if mismatch_fields:
+            error_code = "queue_payload_identity_mismatch"
+            error_message = "Queue payload identity does not match run record"
+            await repositories.fail_run(
+                conn,
+                tenant_id=run_identity["tenant_id"],
+                run_id=run_identity["run_id"],
+                error_code=error_code,
+                error_message=error_message,
+            )
+            await repositories.append_event(
+                conn,
+                tenant_id=run_identity["tenant_id"],
+                run_id=run_identity["run_id"],
+                event_type="error",
+                stage="worker",
+                message=error_message,
+                payload={
+                    "visible_to_user": False,
+                    "severity": "error",
+                    "mismatch_fields": mismatch_fields,
+                },
+            )
+            return WorkerOutcome("failed", run_identity["run_id"], error_code, error_message)
+        payload = _payload_with_locked_run_input(payload, locked)
         await append_user_event(
             conn,
-            tenant_id=payload.tenant_id,
-            run_id=payload.run_id,
+            tenant_id=run_identity["tenant_id"],
+            run_id=run_identity["run_id"],
             event_type="worker_started",
             stage="worker",
             message="Run started",
             payload=_worker_runtime_evidence(worker_id=worker_id, executor_type=payload.executor_type),
         )
-        if await repositories.is_cancel_requested(conn, tenant_id=payload.tenant_id, run_id=payload.run_id):
+        if await repositories.is_cancel_requested(conn, tenant_id=run_identity["tenant_id"], run_id=run_identity["run_id"]):
             await repositories.cancel_run(
                 conn,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
+                tenant_id=run_identity["tenant_id"],
+                run_id=run_identity["run_id"],
                 result_json={"message": "任务已取消"},
             )
             await append_user_event(
                 conn,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
+                tenant_id=run_identity["tenant_id"],
+                run_id=run_identity["run_id"],
                 event_type="run_cancelled",
                 stage="control",
                 message="任务已取消",
                 payload={"severity": "warning"},
             )
-            return WorkerOutcome("cancelled", payload.run_id)
+            return WorkerOutcome("cancelled", run_identity["run_id"])
         if payload.executor_type == "runtime211":
             await repositories.fail_run(
                 conn,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
+                tenant_id=run_identity["tenant_id"],
+                run_id=run_identity["run_id"],
                 error_code="legacy_runtime211_direct_executor_disabled",
                 error_message="Direct runtime211 queue execution is disabled; use Claude worker legacy fallback only.",
             )
             await repositories.append_event(
                 conn,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
+                tenant_id=run_identity["tenant_id"],
+                run_id=run_identity["run_id"],
                 event_type="legacy_runtime211_direct_executor_denied",
                 stage="policy",
                 message="Direct runtime211 queue execution is disabled; use Claude worker legacy fallback only.",
@@ -582,12 +763,14 @@ async def process_run_payload(
             )
             return WorkerOutcome(
                 "failed",
-                payload.run_id,
+                run_identity["run_id"],
                 "legacy_runtime211_direct_executor_disabled",
                 "Direct runtime211 queue execution is disabled; use Claude worker legacy fallback only.",
             )
         if payload.executor_type == "ragflow":
             try:
+                tool_request_payload = _mcp_tool_request_payload(payload)
+                tool_call_id = _mcp_tool_call_id(payload, tool_request_payload)
                 tool = await repositories.ensure_mcp_tool_active(
                     conn,
                     tenant_id=payload.tenant_id,
@@ -601,6 +784,8 @@ async def process_run_payload(
                         user_id=payload.user_id,
                         run_id=payload.run_id,
                         tool_id=payload.skill_id,
+                        tool_call_id=tool_call_id,
+                        request_payload_json=tool_request_payload,
                     )
                     tool_gate = evaluate_tool_policy(tool=tool, permission_decision=permission_decision)
                 if not tool_gate.allowed:
@@ -799,16 +984,16 @@ async def process_run_payload(
                 payload={"executor_type": payload.executor_type},
             )
             return WorkerOutcome("failed", payload.run_id, "unknown_executor_type", str(exc))
-        context_ref = await _ensure_worker_context_snapshot(conn, payload, trace_id=trace_id)
+        context_ref = await _ensure_worker_context_snapshot(conn, payload, trace_id=trace_id, run_identity=run_identity)
 
     run_payload = RunPayload(
-        tenant_id=payload.tenant_id,
-        workspace_id=payload.workspace_id,
-        user_id=payload.user_id,
-        session_id=payload.session_id,
-        run_id=payload.run_id,
-        agent_id=payload.agent_id,
-        skill_id=payload.skill_id,
+        tenant_id=run_identity["tenant_id"],
+        workspace_id=run_identity["workspace_id"],
+        user_id=run_identity["user_id"],
+        session_id=run_identity["session_id"],
+        run_id=run_identity["run_id"],
+        agent_id=run_identity["agent_id"],
+        skill_id=run_identity["skill_id"],
         file_ids=payload.file_ids,
         input=payload.input,
         trace_id=trace_id,

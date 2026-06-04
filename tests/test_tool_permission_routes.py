@@ -151,6 +151,7 @@ def test_tool_permission_decision_writes_event_and_audit(monkeypatch):
 def test_tool_permission_response_redacts_internal_command_fingerprint(monkeypatch):
     async def fake_get_tool_permission_request(conn, *, tenant_id, user_id, run_id, request_id):
         return permission_row(
+            reason="operator pasted command token=tool-reason-token /var/lib/ai-platform/run-a",
             request_payload_json={
                 "source": "claude_agent_sdk_hook",
                 "tool_name": "Bash",
@@ -160,8 +161,10 @@ def test_tool_permission_response_redacts_internal_command_fingerprint(monkeypat
                 "raw_command": "python write_business_system.py --id 123",
                 "command_text": "python write_business_system.py --id 123",
                 "command_sha256": "a" * 64,
+                "input_sha256": "c" * 64,
                 "fingerprint": "bash:write-system",
                 "command_fingerprint": "bash:write-system",
+                "input_fingerprint": "mcp:input",
             },
             decision_payload_json={
                 "source": "operator_decision",
@@ -170,8 +173,10 @@ def test_tool_permission_response_redacts_internal_command_fingerprint(monkeypat
                 "raw_command": "python write_business_system.py --id 123",
                 "command_text": "python write_business_system.py --id 123",
                 "command_sha256": "b" * 64,
+                "input_sha256": "d" * 64,
                 "fingerprint": "bash:write-system",
                 "command_fingerprint": "bash:write-system",
+                "input_fingerprint": "mcp:input",
             }
         )
 
@@ -198,3 +203,7 @@ def test_tool_permission_response_redacts_internal_command_fingerprint(monkeypat
         "source": "operator_decision",
         "tool_name": "Bash",
     }
+    permission_request = response.json()["permission_request"]
+    assert permission_request["reason"] == ""
+    assert "tool-reason-token" not in str(permission_request)
+    assert "/var/lib/ai-platform" not in str(permission_request)

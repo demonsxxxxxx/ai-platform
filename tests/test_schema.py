@@ -111,6 +111,18 @@ def test_schema_declares_p0_memory_tool_event_and_sandbox_contracts():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 
     assert "create table if not exists memory_records" in schema
+    assert "agent_id text not null references agents(id)" in schema
+    assert "session_id text not null" in schema
+    assert "ses_memory_legacy_" in schema
+    assert "update memory_records" in schema
+    assert "raise exception 'memory_records_agent_id_null'" in schema
+    assert "raise exception 'memory_records_session_id_null'" in schema
+    assert "raise exception 'memory_records_session_not_found'" in schema
+    assert "raise exception 'memory_records_session_scope_mismatch'" in schema
+    assert "alter table memory_records alter column agent_id set not null" in schema
+    assert "alter table memory_records alter column session_id set not null" in schema
+    assert "fk_memory_records_session" in schema
+    assert "fk_memory_records_session_scope" in schema
     assert "create index if not exists idx_memory_records_scope" in schema
     assert "create table if not exists memory_policies" in schema
     assert "long_term_memory_enabled boolean not null default false" in schema
@@ -131,6 +143,39 @@ def test_schema_declares_p0_memory_tool_event_and_sandbox_contracts():
     assert "create table if not exists sandbox_leases" in schema
     assert "heartbeat_at timestamptz" in schema
     assert "expires_at timestamptz" in schema
+
+
+def test_schema_declares_runs_session_scope_guard():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "create unique index if not exists idx_sessions_run_scope" in schema
+    assert "raise exception 'runs_session_not_found'" in schema
+    assert "raise exception 'runs_session_scope_mismatch'" in schema
+    assert "sessions.user_id is distinct from runs.user_id" in schema
+    assert "fk_runs_session_scope" in schema
+    assert "foreign key (tenant_id, workspace_id, user_id, session_id, agent_id)" in schema
+    assert "references sessions(tenant_id, workspace_id, user_id, id, agent_id)" in schema
+
+
+def test_schema_declares_context_snapshot_run_scope_guard():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "create unique index if not exists idx_runs_context_scope" in schema
+    assert "raise exception 'run_context_snapshots_run_not_found'" in schema
+    assert "raise exception 'run_context_snapshots_run_scope_mismatch'" in schema
+    assert "runs.user_id is distinct from run_context_snapshots.user_id" in schema
+    assert "fk_run_context_snapshots_run_scope" in schema
+    assert "foreign key (tenant_id, workspace_id, user_id, session_id, run_id)" in schema
+    assert "references runs(tenant_id, workspace_id, user_id, session_id, id)" in schema
+
+
+def test_schema_scope_guards_use_null_safe_identity_comparisons():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "sessions.user_id <> runs.user_id" not in schema
+    assert "sessions.user_id <> memory_records.user_id" not in schema
+    assert "runs.user_id <> run_context_snapshots.user_id" not in schema
+    assert "is distinct from" in schema
 
 
 def test_schema_adds_trace_column_before_trace_index_for_existing_databases():

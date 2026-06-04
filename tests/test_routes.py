@@ -16,9 +16,12 @@ from app.routes.runs import (
     create_run,
     get_run,
     get_run_events,
+    get_run_playback,
     get_run_steps,
     multi_agent_snapshot_from_steps,
     progress_for_status,
+    resolve_run_selector,
+    run_playback_summary,
     run_event_response,
 )
 from app.skills.registry import BuiltinSkill
@@ -364,6 +367,75 @@ def test_run_event_response_redacts_runtime_private_error_code_for_ordinary_user
     assert "/var/lib/ai-platform" not in str(event)
 
 
+def test_run_event_response_redacts_secret_like_error_code_for_admin():
+    event = run_event_response(
+        "run-a",
+        {
+            "id": "evt-a",
+            "trace_id": "trace_run_a",
+            "schema_version": "ai-platform.event-envelope.v1",
+            "event_type": "error",
+            "stage": "worker",
+            "message": "failed",
+            "severity": "error",
+            "visible_to_user": True,
+            "error_code": "executor_failure token=admin-code-token",
+            "latency_ms": None,
+            "input_token_count": 0,
+            "output_token_count": 0,
+            "total_token_count": 0,
+            "estimated_cost_minor": 0,
+            "payload_json": {},
+            "created_at": None,
+        },
+        principal=principal(roles=["admin"]),
+    )
+
+    assert event["error_code"] == "executor_failure token=[redacted-secret]"
+    assert "admin-code-token" not in str(event)
+
+
+def test_run_playback_summary_redacts_secret_like_error_code_for_admin():
+    summary = run_playback_summary(
+        {
+            "id": "run-a",
+            "session_id": "ses-a",
+            **RUN_SCHEMA_FIELDS,
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "status": "failed",
+            "error_code": "executor_failure token=playback-code-token",
+            "error_message": "failed token=playback-message-token",
+        },
+        principal=principal(roles=["admin"]),
+    )
+
+    assert summary["error_code"] == "executor_failure token=[redacted-secret]"
+    assert summary["error_message"] == "failed token=[redacted-secret]"
+    assert "playback-code-token" not in str(summary)
+    assert "playback-message-token" not in str(summary)
+
+
+def test_run_playback_summary_projects_public_agent_id_for_ordinary_user():
+    summary = run_playback_summary(
+        {
+            "id": "run-a",
+            "session_id": "ses-a",
+            **RUN_SCHEMA_FIELDS,
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "status": "running",
+            "error_code": None,
+            "error_message": None,
+        },
+        principal=principal(),
+    )
+
+    assert summary["agent_id"] == "document-review"
+    assert summary["capability_id"] == "document_review"
+    assert "qa-word-review" not in str(summary)
+
+
 def test_run_event_response_sanitizes_runtime_envelope_for_ordinary_user():
     event = run_event_response(
         "run-a",
@@ -567,6 +639,25 @@ def test_artifact_card_redacts_legacy_manifest_worker_paths():
     assert card["manifest"]["source_file_id"] == "file-a"
     assert "storage_key" not in str(card)
     assert "/tmp/" not in str(card)
+
+
+def test_artifact_card_redacts_secret_like_admin_label():
+    card = artifact_card(
+        {
+            "id": "art-a",
+            "artifact_type": "reviewed_docx",
+            "label": "批注 Word token=artifact-label-token",
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "size_bytes": 10,
+            "manifest_version": "ai-platform.artifact-manifest.v1",
+            "manifest_json": {},
+            "created_at": None,
+        },
+        principal=principal(roles=["admin"]),
+    )
+
+    assert card["label"] == "批注 Word token=[redacted-secret]"
+    assert "artifact-label-token" not in str(card)
 
 
 @pytest.mark.asyncio
@@ -1009,6 +1100,7 @@ async def test_get_run_redacts_raw_skill_references_for_ordinary_user(monkeypatc
 
     response = await get_run("run-a", principal=principal())
 
+    assert response.agent_id == "document-review"
     assert response.skill_id is None
     assert "skill_id" not in response.model_dump(exclude_none=True)
     assert response.capability_id == "document_review"
@@ -1033,6 +1125,7 @@ async def test_get_run_redacts_raw_skill_references_for_ordinary_user(monkeypatc
     assert "worker_boundary" not in str(response.result)
     assert "delegate_used" not in str(response.result)
     public_dump = str(response.model_dump())
+    assert "qa-word-review" not in public_dump
     assert ".claude/skills" not in public_dump
     assert "run_translation.py" not in public_dump
     assert "Command executed" not in public_dump
@@ -1173,6 +1266,106 @@ async def test_get_run_keeps_raw_skill_references_for_admin(monkeypatch):
     assert response.input["input"]["skill_ids"] == ["qa-file-reviewer"]
     assert response.result["used_skills"] == ["qa-file-reviewer"]
     assert response.steps[0]["skill_ids"] == ["qa-file-reviewer"]
+
+
+@pytest.mark.asyncio
+async def test_get_run_redacts_secret_and_runtime_payload_for_admin(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "ses-a",
+            **RUN_SCHEMA_FIELDS,
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "status": "failed",
+            "input_json": {
+                "input": {"message": "审核", "api_key": "sk-admin-input"},
+                "workerPath": "/var/lib/ai-platform/run-a/worker.py",
+                "skill_ids": ["qa-file-reviewer"],
+            },
+            "result_json": {
+                "message": "failed client_secret=admin-result-secret",
+                "runtime_private_payload": {"cwd": "/var/lib/ai-platform/run-a"},
+                "used_skills": ["qa-file-reviewer"],
+            },
+            "error_code": "executor_failure token=admin-code-token",
+            "error_message": "failed token=admin-error-token /var/lib/ai-platform/run-a/out.log",
+        }
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-a",
+                "run_id": run_id,
+                "step_key": "review",
+                "step_kind": "agent",
+                "status": "failed",
+                "title": "Review",
+                "role": "reviewer",
+                "sequence": 1,
+                "payload_json": {
+                    "skill_ids": ["qa-file-reviewer"],
+                    "runtime_private_payload": {"cwd": "/var/lib/ai-platform/run-a"},
+                    "note": "client_secret=admin-step-secret",
+                },
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "evt-a",
+                **EVENT_SCHEMA_FIELDS,
+                "sequence": 1,
+                "trace_id": "trace-a",
+                "event_type": "error",
+                "stage": "worker",
+                "message": "failed token=admin-event-token",
+                "severity": "error",
+                "visible_to_user": True,
+                "error_code": "executor_failure",
+                "latency_ms": None,
+                "input_token_count": 0,
+                "output_token_count": 0,
+                "total_token_count": 0,
+                "estimated_cost_minor": 0,
+                "payload_json": {
+                    "runtime_private_payload": {"cwd": "/var/lib/ai-platform/run-a"},
+                    "summary": "client_secret=admin-event-secret",
+                },
+                "created_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+
+    response = await get_run("run-a", principal=principal(roles=["admin"]))
+
+    assert response.skill_id == "qa-file-reviewer"
+    assert response.input["skill_ids"] == ["qa-file-reviewer"]
+    assert response.result["used_skills"] == ["qa-file-reviewer"]
+    assert response.steps[0]["skill_ids"] == ["qa-file-reviewer"]
+    serialized = response.model_dump_json()
+    assert "sk-admin-input" not in serialized
+    assert "admin-result-secret" not in serialized
+    assert "admin-code-token" not in serialized
+    assert "admin-error-token" not in serialized
+    assert "admin-event-token" not in serialized
+    assert "admin-event-secret" not in serialized
+    assert "admin-step-secret" not in serialized
+    assert "/var/lib/ai-platform" not in serialized
+    assert "runtime_private_payload" not in serialized
 
 
 @pytest.mark.asyncio
@@ -2190,6 +2383,19 @@ def test_create_run_request_user_id_is_optional_legacy_field():
     )
 
     assert request.user_id is None
+
+
+def test_resolve_run_selector_accepts_public_agent_ids_for_public_capabilities():
+    agent_id, skill_id = resolve_run_selector(
+        CreateRunRequest(
+            workspace_id="default",
+            agent_id="document-review",
+            capability_id="document_review",
+        ),
+        principal=principal(),
+    )
+
+    assert (agent_id, skill_id) == ("qa-word-review", "qa-file-reviewer")
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-DEPLOY_ENV="${AI_PLATFORM_DEPLOY_ENV:-/home/xinlin.jiang/ai-platform-phaseb/deploy/ai-platform/.env}"
+DEPLOY_ENV="${AI_PLATFORM_DEPLOY_ENV:-/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/.env}"
 HOST="${AI_PLATFORM_HOST:-0.0.0.0}"
 PORT="${AI_PLATFORM_PORT:-8020}"
 PYTHON_BIN="${AI_PLATFORM_PYTHON:-${PROJECT_DIR}/.venv/bin/python}"

@@ -17,11 +17,13 @@ from pathlib import Path
 from typing import Any
 from urllib import error, request
 
+from app.validation import assert_safe_id
+
 
 DEFAULT_FRONTEND_URL = "http://127.0.0.1:18001"
 DEFAULT_API_URL = "http://127.0.0.1:8020"
 DEFAULT_FRONTEND_DIST = "/home/xinlin.jiang/lambchat-poc/frontend-dist-ai-platform"
-DEFAULT_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/deploy/ai-platform/.env"
+DEFAULT_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/.env"
 DEFAULT_POSTGRES_CONTAINER = "ai-platform-postgres"
 DEFAULT_POSTGRES_USER = "ai_platform"
 DEFAULT_POSTGRES_DB = "ai_platform"
@@ -452,6 +454,7 @@ def check_upload_attachment_chat(
     run_id = chat_payload.get("run_id") if isinstance(chat_payload, dict) else None
     run_evidence: dict[str, Any] = {}
     if run_id:
+        run_id = assert_safe_id(str(run_id), "run_id")
         for _ in range(45):
             rows = psql_rows(
                 container,
@@ -563,6 +566,7 @@ def check_word_review_attachment_chat(
     run_id = chat_payload.get("run_id") if isinstance(chat_payload, dict) else None
     run_evidence: dict[str, Any] = {}
     if run_id:
+        run_id = assert_safe_id(str(run_id), "run_id")
         for _ in range(90):
             rows = psql_rows(
                 container,

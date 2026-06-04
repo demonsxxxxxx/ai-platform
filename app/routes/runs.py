@@ -23,9 +23,17 @@ from app.control_plane_contracts import (
     sanitize_public_text,
     standard_trace_id,
 )
-from app.projection_redaction import capability_id_from_skill, redact_raw_skill_references, sanitize_user_control_input
+from app.projection_redaction import (
+    capability_id_from_skill,
+    internal_agent_id_for_request,
+    public_agent_id_for_projection,
+    redact_raw_skill_references,
+    sanitize_user_control_input,
+)
 from app.queue import enqueue_run, get_queue_insight, get_run_queue_position, remove_queued_run
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
+from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, stop_sandbox_leases
+from app.runtime.sandbox.container_provider import create_container_provider
 from app.settings import get_settings
 from app.skills.pinning import (
     SkillVersionMaterializationError,
@@ -153,7 +161,7 @@ def artifact_card(row: dict[str, object], principal: AuthPrincipal | None = None
         manifest = redact_raw_skill_references(manifest)
         label = public_text_or_fallback(row.get("label"), artifact_type)
     else:
-        label = str(row.get("label") or artifact_type)
+        label = public_text_or_fallback(row.get("label"), artifact_type)
     return {
         "id": artifact_id,
         "artifact_id": artifact_id,
@@ -255,12 +263,10 @@ def run_event_response(run_id: str, row: dict[str, object], principal: AuthPrinc
     event_type = public_event_type(raw_event_type, principal)
     stage = public_event_stage(row.get("stage"), principal)
     visible_to_user = bool(row.get("visible_to_user", payload.get("visible_to_user", True)))
-    message = str(row.get("message") or "")
+    message = sanitize_public_text(row.get("message"))
+    sanitized_error_code = sanitize_public_text(row.get("error_code"))
+    error_code = sanitized_error_code or (None if not row.get("error_code") else "run_failed")
     if principal is not None and not is_ai_admin(principal):
-        message = sanitize_public_text(message)
-    error_code = row.get("error_code")
-    if principal is not None and not is_ai_admin(principal):
-        sanitized_error_code = sanitize_public_text(error_code)
         error_code = sanitized_error_code or ("run_failed" if error_code else None)
     return {
         "id": str(row["id"]),
@@ -294,19 +300,22 @@ def run_event_response(run_id: str, row: dict[str, object], principal: AuthPrinc
 
 
 def run_step_response(row: dict[str, object], principal: AuthPrincipal | None = None) -> dict[str, object]:
-    payload = row.get("payload_json") or {}
+    raw_payload = row.get("payload_json") or {}
+    if not isinstance(raw_payload, dict):
+        raw_payload = {}
+    payload = sanitize_public_payload(raw_payload)
     if not isinstance(payload, dict):
         payload = {}
     if principal is not None and not is_ai_admin(principal):
-        payload = sanitize_user_control_input(payload)
+        payload = sanitize_user_control_input(raw_payload)
     show_runtime_controls = principal is None or is_ai_admin(principal)
-    skill_ids = payload.get("skill_ids")
-    mcp_tool_ids = payload.get("mcp_tool_ids")
-    resource_limits = payload.get("resource_limits")
-    sandbox_mode = payload.get("sandbox_mode")
-    browser_enabled = payload.get("browser_enabled")
-    title = str(row.get("title") or "")
-    role = row.get("role")
+    skill_ids = raw_payload.get("skill_ids")
+    mcp_tool_ids = raw_payload.get("mcp_tool_ids")
+    resource_limits = raw_payload.get("resource_limits")
+    sandbox_mode = raw_payload.get("sandbox_mode")
+    browser_enabled = raw_payload.get("browser_enabled")
+    title = sanitize_public_text(row.get("title"))
+    role = sanitize_public_text(row.get("role")) if row.get("role") is not None else None
     if principal is not None and not is_ai_admin(principal):
         title = public_text_or_fallback(title, row.get("step_key")) or "step"
         if role is not None:
@@ -360,13 +369,14 @@ def multi_agent_snapshot_from_steps(
 
 def run_playback_summary(run: dict[str, object], principal: AuthPrincipal) -> dict[str, object]:
     raw_skill_id = str(run["skill_id"])
+    raw_agent_id = str(run["agent_id"])
     show_raw_skill = is_ai_admin(principal)
     return {
         "run_id": str(run["id"]),
         "session_id": str(run["session_id"]),
-        "agent_id": str(run["agent_id"]),
+        "agent_id": raw_agent_id if show_raw_skill else public_agent_id_for_projection(raw_agent_id, raw_skill_id),
         "skill_id": raw_skill_id if show_raw_skill else None,
-        "capability_id": capability_id_from_skill(raw_skill_id, run["agent_id"]),
+        "capability_id": capability_id_from_skill(raw_skill_id, raw_agent_id),
         "trace_id": str(run.get("trace_id") or standard_trace_id(str(run["id"]))),
         "contract_version": run_contract_version(run),
         "executor_schema_version": executor_result_schema_version(run) if show_raw_skill else None,
@@ -374,8 +384,12 @@ def run_playback_summary(run: dict[str, object], principal: AuthPrincipal) -> di
         "progress": progress_for_status(str(run["status"])),
         "cancel_requested_at": run.get("cancel_requested_at"),
         "cancel_requested_by": run.get("cancel_requested_by"),
-        "error_code": run.get("error_code") if show_raw_skill else ("run_failed" if run.get("error_code") else None),
-        "error_message": run.get("error_message") if show_raw_skill else sanitize_public_text(run.get("error_message")),
+        "error_code": (
+            sanitize_public_text(run.get("error_code"))
+            if show_raw_skill
+            else ("run_failed" if run.get("error_code") else None)
+        ),
+        "error_message": sanitize_public_text(run.get("error_message")),
     }
 
 
@@ -575,16 +589,17 @@ async def seed_copied_run_steps(conn, *, tenant_id: str, run_id: str, copied_inp
 
 
 def resolve_run_selector(request: CreateRunRequest, principal: AuthPrincipal) -> tuple[str, str]:
+    requested_agent_id = internal_agent_id_for_request(request.agent_id) or request.agent_id
     if request.skill_id and not is_ai_admin(principal):
         raise HTTPException(status_code=403, detail="raw_skill_selector_forbidden")
     if request.skill_id:
-        return request.agent_id, request.skill_id
+        return requested_agent_id, request.skill_id
 
-    capability_id = request.capability_id or capability_id_from_skill(None, request.agent_id)
+    capability_id = request.capability_id or capability_id_from_skill(None, requested_agent_id)
     capability = get_capability(str(capability_id)) if capability_id else None
     if capability is None:
         raise HTTPException(status_code=400, detail="capability_required")
-    if request.agent_id and request.agent_id != capability.agent_id:
+    if requested_agent_id and requested_agent_id != capability.agent_id:
         raise HTTPException(status_code=409, detail="agent_capability_mismatch")
     return capability.agent_id, capability.skill_id
 
@@ -909,6 +924,34 @@ async def cancel_run(
         )
     if result is None:
         raise HTTPException(status_code=404, detail="active_run_not_found")
+    try:
+        stopped_sandbox_leases = await stop_sandbox_leases(
+            result.get("active_sandbox_leases"),
+            reason="cancel_requested",
+            provider_factory=create_container_provider,
+        )
+    except SandboxRuntimeCleanupError as exc:
+        if exc.stopped_leases:
+            async with transaction() as conn:
+                await repositories.release_stopped_sandbox_leases_for_cancel(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    run_id=str(result["run_id"]),
+                    reason="cancel_requested",
+                    lease_ids=[str(lease["id"]) for lease in exc.stopped_leases],
+                    trace_id=result.get("trace_id"),
+                )
+        raise HTTPException(status_code=502, detail="sandbox_runtime_cleanup_failed") from exc
+    if stopped_sandbox_leases:
+        async with transaction() as conn:
+            await repositories.release_stopped_sandbox_leases_for_cancel(
+                conn,
+                tenant_id=principal.tenant_id,
+                run_id=str(result["run_id"]),
+                reason="cancel_requested",
+                lease_ids=[str(lease["id"]) for lease in stopped_sandbox_leases],
+                trace_id=result.get("trace_id"),
+            )
     if result["status"] == "cancelled":
         await remove_queued_run(tenant_id=principal.tenant_id, run_id=run_id)
     return RunControlResponse(run_id=result["run_id"], status=result["status"])
@@ -944,26 +987,34 @@ async def get_run(
     result = run["result_json"] if isinstance(run["result_json"], dict) else {}
     result_payload = dict(result)
     raw_skill_id = str(run["skill_id"])
+    raw_agent_id = str(run["agent_id"])
     show_raw_skill = is_ai_admin(principal)
     multi_agent_snapshot = multi_agent_snapshot_from_steps(run_id, steps, principal=principal)
     if multi_agent_snapshot is not None:
         result_payload["multi_agent"] = multi_agent_snapshot
     input_payload = run["input_json"] if isinstance(run["input_json"], dict) else {}
-    if not show_raw_skill:
+    if show_raw_skill:
+        input_payload = sanitize_public_payload(input_payload)
+        result_payload = sanitize_public_payload(result_payload)
+    else:
         input_payload = sanitize_public_payload(redact_raw_skill_references(input_payload))
         result_payload = sanitize_public_payload(redact_raw_skill_references(result_payload))
-        if not isinstance(input_payload, dict):
-            input_payload = {}
-        if not isinstance(result_payload, dict):
-            result_payload = {}
-    error_code = run["error_code"] if show_raw_skill else ("run_failed" if run.get("error_code") else None)
-    error_message = run["error_message"] if show_raw_skill else sanitize_public_text(run.get("error_message"))
+    if not isinstance(input_payload, dict):
+        input_payload = {}
+    if not isinstance(result_payload, dict):
+        result_payload = {}
+    error_code = (
+        sanitize_public_text(run.get("error_code"))
+        if show_raw_skill
+        else ("run_failed" if run.get("error_code") else None)
+    )
+    error_message = sanitize_public_text(run.get("error_message"))
     return RunResponse(
         run_id=run["id"],
         session_id=run["session_id"],
-        agent_id=run["agent_id"],
+        agent_id=raw_agent_id if show_raw_skill else public_agent_id_for_projection(raw_agent_id, raw_skill_id),
         skill_id=raw_skill_id if show_raw_skill else None,
-        capability_id=capability_id_from_skill(raw_skill_id, run["agent_id"]),
+        capability_id=capability_id_from_skill(raw_skill_id, raw_agent_id),
         trace_id=str(run.get("trace_id") or standard_trace_id(str(run["id"]))),
         contract_version=contract_version,
         executor_schema_version=executor_schema_version if show_raw_skill else None,

@@ -227,6 +227,60 @@ def test_admin_runtime_containers_includes_sandbox_leases(monkeypatch):
     assert body["sandbox_leases"][0]["status"] == "active"
 
 
+def test_admin_runtime_containers_lists_only_active_sandbox_leases(monkeypatch):
+    class FakeProvider:
+        async def list_runtime_containers(self, filters):
+            assert filters == {"tenant_id": "default"}
+            return []
+
+    @asynccontextmanager
+    async def lease_transaction():
+        yield object()
+
+    async def fake_cleanup_expired_sandbox_leases(conn, *, tenant_id=None, reason="expired"):
+        assert tenant_id == "default"
+        assert reason == "expired"
+        return []
+
+    async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
+        assert tenant_id == "default"
+        assert status == "active"
+        return [
+            {
+                "id": "lease-active",
+                "tenant_id": "default",
+                "workspace_id": "default",
+                "user_id": "user-a",
+                "session_id": "session-a",
+                "run_id": "run-a",
+                "trace_id": "trace-a",
+                "sandbox_mode": "ephemeral",
+                "provider": "fake",
+                "status": "active",
+                "browser_enabled": False,
+                "resource_limits_json": {},
+                "user_visible_payload_json": {"workspace": "/workspace"},
+                "lease_payload_json": {"container_id": "exec-run-a"},
+                "release_reason": "",
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", lease_transaction)
+    monkeypatch.setattr(
+        "app.routes.admin_runtime.repositories.cleanup_expired_sandbox_leases",
+        fake_cleanup_expired_sandbox_leases,
+    )
+    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/admin/runtime/containers", headers=admin_headers())
+
+    assert response.status_code == 200
+    assert [lease["lease_id"] for lease in response.json()["sandbox_leases"]] == ["lease-active"]
+
+
 def test_admin_runtime_containers_filters_foreign_tenant_sandbox_leases(monkeypatch):
     class FakeProvider:
         async def list_runtime_containers(self, filters):
@@ -333,7 +387,7 @@ def test_admin_runtime_containers_cleans_expired_leases_before_listing(monkeypat
     assert calls == [
         ("containers", {"tenant_id": "default"}),
         ("cleanup", "default", "expired"),
-        ("list", "default", None, 100),
+        ("list", "default", "active", 100),
     ]
 
 
@@ -379,7 +433,7 @@ def test_admin_runtime_containers_cleans_provider_orphans_before_listing(monkeyp
         ("provider_cleanup", {"tenant_id": "default"}, "admin_runtime"),
         ("containers", {"tenant_id": "default"}),
         ("db_cleanup", "default", "expired"),
-        ("list", "default", None, 100),
+        ("list", "default", "active", 100),
     ]
 
 

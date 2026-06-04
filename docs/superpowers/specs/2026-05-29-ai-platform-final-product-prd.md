@@ -8,7 +8,7 @@
 
 - 本 PRD。
 - 当前路线图：`docs/superpowers/plans/2026-06-02-ai-platform-foundation-roadmap.md`。
-- 仓库 guardrails。
+- 仓库 guardrails：`docs/agent-rules/ai-platform-guardrails.md`。
 - 当前真实代码。
 - 当次 211 运行证据。
 
@@ -34,8 +34,9 @@
 
 当前事实源：
 
-- 本地代码：`webUI/services/ai-platform`
+- 本地代码：当前 `ai-platform` 仓库根目录
 - 211 代码：`/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform`
+- 211 部署编排：`/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform`
 - 后端 API：`ai-platform-api` 暴露 `8020`
 - 前端入口：`http://10.56.0.211:18001/`
 
@@ -183,6 +184,7 @@ Enterprise User
 - 规则路由和 LLM router 都只输出结构化 intent。
 - confirmation card 来源于真实 planning / dry-run。
 - routing、confirmation、decision 都写入 run event。
+- 普通用户公开投影不得通过 `skill_id`、`agent_id` 或 metadata 泄漏 raw Skill id。
 
 禁止：
 
@@ -288,6 +290,8 @@ Enterprise User
 - Docker provider 资源限制覆盖 memory、CPU、pids、disk。
 - network/egress policy 真实可证，不能用破坏 callback/health probe 的全网络关闭冒充。
 - orphan container cleanup job、container stop/remove smoke、Admin Runtime 投影可验证。
+- run cancel / Admin cancel 必须释放 DB lease 并停止匹配 tenant/workspace/user/session/run/sandbox 标签的 live sandbox container。
+- sandbox stop/remove 目标只能由平台 lease scope 派生，不能信任用户可控 `lease_payload` 中的 container name、path 或 labels。
 - 每 tenant/user runtime 配额可用。
 
 禁止：
@@ -330,6 +334,7 @@ Enterprise User
 门禁：
 
 - ContextBuilder 覆盖 run、chat、copy-run、resume、replay 与 worker-side refresh。
+- Memory record 写入必须绑定明确 session；跨 session 或缺失 session 的长期记忆写入默认 fail-closed。
 - Memory UI、tenant/user opt-out、retention cleanup、configurable redaction policy 可用。
 - 普通用户 public projection 和 Admin operational projection 都不返回 secret-like payload 或 executor private payload。
 - 跨 session 长期记忆默认 fail-closed，除非 policy 和审批链完整。

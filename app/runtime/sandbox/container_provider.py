@@ -161,6 +161,18 @@ def _container_status_from_labels(container: Any) -> ContainerStatus | None:
     )
 
 
+def _status_matches_lease(status: ContainerStatus, lease: ContainerLease) -> bool:
+    return (
+        status.tenant_id == lease.tenant_id
+        and status.workspace_id == lease.workspace_id
+        and status.user_id == lease.user_id
+        and status.session_id == lease.session_id
+        and status.run_id == lease.run_id
+        and status.sandbox_mode == lease.sandbox_mode
+        and status.browser_enabled == lease.browser_enabled
+    )
+
+
 def _positive_int_limit(resource_limits: dict[str, Any], key: str) -> int | None:
     value = resource_limits.get(key)
     if value is None:
@@ -201,6 +213,19 @@ def _docker_resource_kwargs(resource_limits: dict[str, Any]) -> dict[str, Any]:
 
 def _is_permission_denied(message: str) -> bool:
     return "permission denied" in message.lower()
+
+
+def _is_not_found_error(exc: BaseException) -> bool:
+    if isinstance(exc, KeyError):
+        return True
+    if docker is not None:
+        not_found_error = getattr(getattr(docker, "errors", None), "NotFound", None)
+        if not_found_error is not None and isinstance(exc, not_found_error):
+            return True
+    message = str(exc).lower()
+    return ("not found" in message or "no such container" in message) and (
+        "container" in message or "docker" in message or "404" in message
+    )
 
 
 def default_executor_health_probe(executor_url: str, timeout_seconds: int) -> bool:
@@ -309,7 +334,9 @@ class DockerContainerProvider:
         except Exception:
             return None
         status = _container_status_from_labels(container)
-        if status is None or status.run_id != lease.run_id:
+        if status is None:
+            return None
+        if not _status_matches_lease(status, lease):
             return None
         executor_url = await self._wait_for_executor_url(container, timeout_seconds)
         return ContainerLease(
@@ -414,13 +441,16 @@ class DockerContainerProvider:
         self._leases.pop(lease.container_id, None)
         try:
             container = self._get_client().containers.get(lease.container_name)
+            status = _container_status_from_labels(container)
+            if status is None or not _status_matches_lease(status, lease):
+                return StopResult(container_id=lease.container_id, status="not_found", message=reason)
             if hasattr(container, "stop"):
                 container.stop()
             if hasattr(container, "remove"):
                 container.remove(force=True)
-        except KeyError:
-            return StopResult(container_id=lease.container_id, status="not_found", message=reason)
         except Exception as exc:
+            if _is_not_found_error(exc):
+                return StopResult(container_id=lease.container_id, status="not_found", message=reason)
             return StopResult(container_id=lease.container_id, status="failed", message="Container stop failed")
         return StopResult(container_id=lease.container_id, status="stopped", message=reason)
 

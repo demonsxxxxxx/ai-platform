@@ -740,6 +740,8 @@ class ClaudeAgentWorkerAdapter:
                     run_id=payload.run_id,
                     tool_id=tool_id,
                     action=action,
+                    tool_call_id=tool_call_id,
+                    request_payload_json=request_payload,
                 )
                 if tool_id == "claude-sdk:Bash" and permission_decision is not None:
                     decision = str(permission_decision.get("decision") or "")

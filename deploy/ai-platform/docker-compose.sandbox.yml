@@ -1,0 +1,14 @@
+services:
+  api:
+    environment:
+      SANDBOX_CONTAINER_PROVIDER: docker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}:${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}
+
+  worker:
+    environment:
+      SANDBOX_CONTAINER_PROVIDER: docker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}:${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}

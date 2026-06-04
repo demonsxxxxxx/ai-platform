@@ -202,6 +202,47 @@ async def test_create_chat_session_uses_platform_principal(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_chat_session_maps_public_agent_id_before_persisting(monkeypatch):
+    calls = []
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        return None
+
+    async def fake_ensure_user(conn, *, tenant_id, user_id, display_name=None):
+        return None
+
+    async def fake_create_session(conn, **kwargs):
+        calls.append(("session", kwargs["agent_id"]))
+        return "ses_public_review"
+
+    async def fake_list_authorized_sessions(conn, *, tenant_id, user_id):
+        return [
+            {
+                "id": "ses_public_review",
+                "workspace_id": "default",
+                "agent_id": "qa-word-review",
+                "title": "Review",
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
+    monkeypatch.setattr("app.routes.chat.repositories.list_authorized_sessions", fake_list_authorized_sessions)
+
+    response = await create_chat_session(
+        ChatSessionRequest(agent_id="document-review", title="Review"),
+        principal=principal(),
+    )
+
+    assert calls == [("session", "qa-word-review")]
+    assert response.agent_id == "document-review"
+
+
+@pytest.mark.asyncio
 async def test_list_messages_rejects_cross_user_session(monkeypatch):
     async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
         return None
@@ -1141,13 +1182,16 @@ async def test_lambchat_translate_agent_defaults_to_translate_skill(monkeypatch)
                 }
             ],
         ),
-        agent_id="baoyu-translate",
+        agent_id="document-translation",
         principal=principal(),
     )
 
     assert response.run_id == "run_translate"
     assert ("resolve", "baoyu-translate", "baoyu-translate") in calls
     assert ("queue", "baoyu-translate", "baoyu-translate", ["file_translate"]) in calls
+    assert response.intent_decision is not None
+    assert response.intent_decision.selected_capability == "document_translation"
+    assert "baoyu-translate" not in response.intent_decision.model_dump_json()
 
 
 @pytest.mark.asyncio

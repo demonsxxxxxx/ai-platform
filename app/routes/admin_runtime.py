@@ -44,7 +44,7 @@ async def admin_runtime_containers(
     active_containers = [container for container in containers if container.status == "running"]
     async with transaction() as conn:
         await repositories.cleanup_expired_sandbox_leases(conn, tenant_id=principal.tenant_id)
-        leases = await repositories.list_sandbox_leases(conn, tenant_id=principal.tenant_id)
+        leases = await repositories.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status="active")
     visible_leases = [lease for lease in leases if lease.get("tenant_id") == principal.tenant_id]
 
     return {

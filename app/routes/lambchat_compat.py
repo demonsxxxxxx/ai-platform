@@ -11,7 +11,7 @@ from app.models import LoginRequest
 from app import repositories
 from app.routes.auth import _login_principal
 from app.routes.files import upload_file as upload_platform_file
-from app.projection_redaction import capability_id_from_skill, redact_raw_skill_references
+from app.projection_redaction import capability_id_from_skill, public_agent_id_for_projection, redact_raw_skill_references
 from app.control_plane_contracts import EVENT_ENVELOPE_SCHEMA_VERSION, sanitize_public_text, standard_trace_id
 from app.routes.runs import artifact_card, event_visible_to_principal, run_event_response
 from app.settings import get_settings
@@ -30,11 +30,12 @@ def _sse(event: str, data: dict[str, Any], event_id: str | None = None) -> str:
 
 
 def _session_payload(row: dict[str, Any]) -> dict[str, Any]:
+    agent_id = public_agent_id_for_projection(row.get("agent_id"))
     return {
         "id": row["id"],
-        "agent_id": row["agent_id"],
+        "agent_id": agent_id,
         "name": row.get("title") or "新会话",
-        "metadata": {"agent_id": row["agent_id"], "workspace_id": row["workspace_id"]},
+        "metadata": {"agent_id": agent_id, "workspace_id": row["workspace_id"]},
         "is_active": row.get("status", "active") == "active",
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
@@ -372,7 +373,7 @@ async def agents(principal: AuthPrincipal = Depends(require_principal)) -> dict[
         rows = await repositories.list_lambchat_agents(conn, tenant_id=principal.tenant_id)
     items = [
         {
-            "id": row["id"],
+            "id": public_agent_id_for_projection(row.get("id"), row.get("default_skill_id")),
             "name": row["name"],
             "description": row.get("description") or "",
             "version": "platform-managed",
@@ -447,7 +448,9 @@ async def session_runs(
             "id": row["id"],
             "run_id": row["id"],
             "trace_id": row.get("trace_id") or standard_trace_id(str(row["id"])),
-            "agent_id": row["agent_id"],
+            "agent_id": row["agent_id"]
+            if is_ai_admin(principal)
+            else public_agent_id_for_projection(row.get("agent_id"), row.get("skill_id")),
             "capability_id": capability_id_from_skill(row["skill_id"], row["agent_id"]),
             "status": _platform_status(str(row["status"])),
             "error": _public_error_text(row, principal),

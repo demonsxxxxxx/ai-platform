@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.repositories import RepositoryNotFoundError
+from app.routes.context import _memory_delete_response, _memory_policy_response, _memory_response
 from app.settings import Settings
 
 
@@ -27,6 +28,49 @@ def admin_headers():
     data["X-AI-User-ID"] = "admin-a"
     data["X-AI-User-Name"] = "Admin A"
     return data
+
+
+def test_memory_public_projections_map_internal_agent_ids():
+    row = {
+        "id": "mem-a",
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "agent_id": "qa-word-review",
+        "session_id": "session-a",
+        "record_type": "session_summary",
+        "content": "safe",
+        "metadata_json": {},
+        "status": "active",
+        "expires_at": None,
+        "deleted_at": None,
+        "created_at": None,
+        "updated_at": None,
+    }
+    policy = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "agent_id": "qa-word-review",
+        "memory_enabled": True,
+        "long_term_memory_enabled": False,
+        "retention_days": 90,
+        "source": "default",
+        "reason": "",
+        "updated_by": "",
+        "updated_at": None,
+    }
+
+    memory = _memory_response(row)
+    deleted = _memory_delete_response(row)
+    policy_payload = _memory_policy_response(policy)
+
+    assert memory["agent_id"] == "document-review"
+    assert deleted["agent_id"] == "document-review"
+    assert policy_payload["agent_id"] == "document-review"
+    assert "qa-word-review" not in str(memory)
+    assert "qa-word-review" not in str(deleted)
+    assert "qa-word-review" not in str(policy_payload)
 
 
 def test_create_context_snapshot_records_snapshot_and_event(monkeypatch):
@@ -89,7 +133,137 @@ def test_create_context_snapshot_records_snapshot_and_event(monkeypatch):
     assert calls[1][1]["event_type"] == "context_snapshot_created"
 
 
-def test_create_memory_record_is_scoped_to_current_principal(monkeypatch):
+def test_create_context_snapshot_redacts_payload_before_persisting(monkeypatch):
+    calls = []
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {"id": run_id, "workspace_id": "workspace-a", "session_id": "session-a", "trace_id": "trace-a"}
+
+    async def fake_create_context_snapshot(conn, **kwargs):
+        calls.append(("snapshot", kwargs))
+        return {
+            "id": "ctx-redacted",
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "session_id": kwargs["session_id"],
+            "run_id": kwargs["run_id"],
+            "trace_id": kwargs["trace_id"],
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_kind": kwargs["context_kind"],
+            "included_message_ids": kwargs["included_message_ids"],
+            "included_file_ids": kwargs["included_file_ids"],
+            "included_artifact_ids": kwargs["included_artifact_ids"],
+            "included_memory_record_ids": kwargs["included_memory_record_ids"],
+            "redaction_summary_json": kwargs["redaction_summary_json"],
+            "payload_json": kwargs["payload_json"],
+        }
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-redacted"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fake_create_context_snapshot)
+    monkeypatch.setattr("app.routes.context.repositories.append_event", fake_append_event)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runs/run-a/context/snapshots",
+        headers=headers(),
+        json={
+            "context_kind": "executor",
+            "redaction_summary": {
+                "source": "manual",
+                "client_secret": "client-secret-context",
+            },
+            "payload": {
+                "window": "current",
+                "api_key": "sk-context-secret",
+                "runtime_path": "/var/lib/ai-platform/run-a",
+                "nested": {
+                    "note": "safe",
+                    "summary": "authorization: Bearer context-bearer alice@example.com",
+                },
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    persisted_payload = calls[0][1]["payload_json"]
+    persisted_summary = calls[0][1]["redaction_summary_json"]
+    assert persisted_payload["window"] == "current"
+    assert persisted_payload["nested"]["note"] == "safe"
+    assert persisted_summary == {"source": "manual"}
+    serialized = str(persisted_payload) + str(persisted_summary) + response.text
+    assert "sk-context-secret" not in serialized
+    assert "client-secret-context" not in serialized
+    assert "context-bearer" not in serialized
+    assert "alice@example.com" not in serialized
+    assert "/var/lib/ai-platform/run-a" not in serialized
+
+
+def test_list_context_snapshots_redacts_legacy_dirty_payload_and_summary(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {"id": run_id, "workspace_id": "workspace-a", "session_id": "session-a", "trace_id": "trace-a"}
+
+    async def fake_list_context_snapshots(conn, *, tenant_id, user_id, run_id):
+        return [
+            {
+                "id": "ctx-dirty",
+                "tenant_id": tenant_id,
+                "workspace_id": "workspace-a",
+                "user_id": user_id,
+                "session_id": "session-a",
+                "run_id": run_id,
+                "trace_id": "trace-a",
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "context_kind": "executor",
+                "included_message_ids": [],
+                "included_file_ids": [],
+                "included_artifact_ids": [],
+                "included_memory_record_ids": [],
+                "redaction_summary_json": {
+                    "source": "legacy",
+                    "client_secret": "client-secret-legacy",
+                    "note": "authorization: Bearer legacy-bearer",
+                },
+                "payload_json": {
+                    "window": "legacy",
+                    "api_key": "sk-legacy-context",
+                    "runtime_path": "/var/lib/ai-platform/run-a",
+                    "nested": {"email": "alice@example.com", "safe": "kept"},
+                },
+                "created_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.context.repositories.list_context_snapshots", fake_list_context_snapshots)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-a/context/snapshots", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()["context_snapshots"][0]
+    assert body["payload"] == {"window": "legacy", "nested": {"email": "[redacted-email]", "safe": "kept"}}
+    assert body["redaction_summary"] == {
+        "source": "legacy",
+        "note": "authorization=[redacted-secret]",
+    }
+    serialized = response.text
+    assert "client-secret-legacy" not in serialized
+    assert "legacy-bearer" not in serialized
+    assert "sk-legacy-context" not in serialized
+    assert "/var/lib/ai-platform/run-a" not in serialized
+    assert "alice@example.com" not in serialized
+
+
+def test_create_memory_record_requires_session_id_before_writing(monkeypatch):
     calls = []
 
     async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
@@ -99,19 +273,7 @@ def test_create_memory_record_is_scoped_to_current_principal(monkeypatch):
         calls.append(("user", kwargs))
 
     async def fake_create_memory_record(conn, **kwargs):
-        calls.append(("memory", kwargs))
-        return {
-            "id": "mem-a",
-            "tenant_id": kwargs["tenant_id"],
-            "workspace_id": kwargs["workspace_id"],
-            "user_id": kwargs["user_id"],
-            "agent_id": kwargs["agent_id"],
-            "session_id": kwargs["session_id"],
-            "record_type": kwargs["record_type"],
-            "content": kwargs["content"],
-            "metadata_json": kwargs["metadata_json"],
-            "status": "active",
-        }
+        raise AssertionError("session-scoped memory must not be written without session_id")
 
     async def fake_get_effective_memory_policy(conn, **kwargs):
         calls.append(("policy", kwargs))
@@ -149,13 +311,9 @@ def test_create_memory_record_is_scoped_to_current_principal(monkeypatch):
         },
     )
 
-    assert response.status_code == 200
-    body = response.json()["memory_record"]
-    assert body["memory_record_id"] == "mem-a"
-    assert body["tenant_id"] == "tenant-a"
-    assert body["user_id"] == "user-a"
-    assert calls[0] == ("workspace", "tenant-a", "workspace-a")
-    assert calls[2][0] == "policy"
+    assert response.status_code == 400
+    assert response.json()["detail"] == "memory_session_id_required"
+    assert calls == []
 
 
 def test_create_memory_record_response_redacts_legacy_secret_like_content_and_metadata(monkeypatch):
@@ -164,6 +322,9 @@ def test_create_memory_record_response_redacts_legacy_secret_like_content_and_me
 
     async def fake_ensure_user(conn, **kwargs):
         return None
+
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id, "workspace_id": "workspace-a", "agent_id": "general-agent"}
 
     async def fake_get_effective_memory_policy(conn, **kwargs):
         return {
@@ -218,6 +379,7 @@ def test_create_memory_record_response_redacts_legacy_secret_like_content_and_me
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
     monkeypatch.setattr("app.routes.context.repositories.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
     monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
     monkeypatch.setattr("app.routes.context.repositories.create_memory_record", fake_create_memory_record)
     client = TestClient(create_app())
@@ -228,6 +390,7 @@ def test_create_memory_record_response_redacts_legacy_secret_like_content_and_me
         json={
             "workspace_id": "workspace-a",
             "agent_id": "general-agent",
+            "session_id": "session-a",
             "record_type": "session_summary",
             "content": "stored value is returned by fake repository",
             "metadata": {"source": "test"},
@@ -270,6 +433,10 @@ def test_create_memory_record_applies_effective_policy_retention_days(monkeypatc
     async def fake_ensure_user(conn, **kwargs):
         calls.append(("user", kwargs))
 
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        calls.append(("session", tenant_id, user_id, session_id))
+        return {"id": session_id, "workspace_id": "workspace-a", "agent_id": "general-agent"}
+
     async def fake_get_effective_memory_policy(conn, **kwargs):
         calls.append(("policy", kwargs))
         return {
@@ -307,6 +474,7 @@ def test_create_memory_record_applies_effective_policy_retention_days(monkeypatc
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
     monkeypatch.setattr("app.routes.context.repositories.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
     monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
     monkeypatch.setattr("app.routes.context.repositories.create_memory_record", fake_create_memory_record)
     client = TestClient(create_app(), raise_server_exceptions=False)
@@ -317,6 +485,7 @@ def test_create_memory_record_applies_effective_policy_retention_days(monkeypatc
         json={
             "workspace_id": "workspace-a",
             "agent_id": "general-agent",
+            "session_id": "session-a",
             "record_type": "session_summary",
             "content": "Retain this for policy duration.",
             "metadata": {"source": "test"},
@@ -327,8 +496,9 @@ def test_create_memory_record_applies_effective_policy_retention_days(monkeypatc
     body = response.json()["memory_record"]
     assert body["memory_record_id"] == "mem-retention"
     assert body["expires_at"] == "2026-07-02T12:00:00Z"
-    assert calls[2][0] == "policy"
-    assert calls[3][0] == "memory"
+    assert any(call[0] == "session" for call in calls)
+    assert any(call[0] == "policy" for call in calls)
+    assert any(call[0] == "memory" for call in calls)
 
 
 def test_create_memory_record_denies_write_when_memory_policy_disabled_and_audits(monkeypatch):

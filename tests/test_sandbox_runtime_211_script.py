@@ -369,6 +369,7 @@ def test_submit_executor_task_marks_executed_after_http_success():
     assert request.get_method() == "POST"
     body = json.loads(request.data.decode("utf-8"))
     assert body["run_id"] == "run-a"
+    assert body["callback_token_id"] == "callback-run-a"
     assert body["callback_url"] == "http://callback.test/callback"
     assert body["callback_token"] == "secret-token"
     assert body["config"]["resource_limits"]["max_seconds"] == 60

@@ -35,7 +35,9 @@ class Settings(BaseSettings):
     run_event_stream_max_heartbeats: int = Field(default=3600)
     default_tenant_id: str = Field(default="default")
     default_workspace_id: str = Field(default="default")
-    cors_allow_origins: str = Field(default="http://localhost:9527,http://127.0.0.1:9527,http://10.56.0.211:8080")
+    cors_allow_origins: str = Field(
+        default="http://localhost:9527,http://127.0.0.1:9527,http://10.56.0.211:8080,http://10.56.0.211:18001"
+    )
     trusted_principal_secret: str = Field(default="")
     frontend_poc_auth_enabled: bool = Field(default=False)
     existing_auth_base_url: str = Field(default="http://10.56.0.25:7263")

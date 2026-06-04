@@ -8,6 +8,7 @@ from app.control_plane_contracts import sanitize_public_payload, standard_trace_
 from app.db import transaction
 from app.memory_redaction import redact_memory_metadata, redact_memory_text
 from app.models import ContextSnapshotRequest, MemoryPolicyRequest, MemoryRecordRequest
+from app.projection_redaction import public_agent_id_for_projection
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.validation import assert_safe_id
 
@@ -35,6 +36,11 @@ def _snapshot_response(row: dict[str, Any]) -> dict[str, Any]:
     payload = sanitize_public_payload(row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {})
     if not isinstance(payload, dict):
         payload = {}
+    redaction_summary = sanitize_public_payload(
+        row.get("redaction_summary_json") if isinstance(row.get("redaction_summary_json"), dict) else {}
+    )
+    if not isinstance(redaction_summary, dict):
+        redaction_summary = {}
     return {
         "context_snapshot_id": str(row["id"]),
         "schema_version": str(row.get("schema_version") or "ai-platform.context-snapshot.v1"),
@@ -49,7 +55,7 @@ def _snapshot_response(row: dict[str, Any]) -> dict[str, Any]:
         "included_file_ids": list(row.get("included_file_ids") or []),
         "included_artifact_ids": list(row.get("included_artifact_ids") or []),
         "included_memory_record_ids": list(row.get("included_memory_record_ids") or []),
-        "redaction_summary": row.get("redaction_summary_json") if isinstance(row.get("redaction_summary_json"), dict) else {},
+        "redaction_summary": redaction_summary,
         "payload": payload,
         "created_at": row.get("created_at"),
     }
@@ -65,7 +71,7 @@ def _memory_response(row: dict[str, Any]) -> dict[str, Any]:
         "tenant_id": str(row["tenant_id"]),
         "workspace_id": str(row["workspace_id"]),
         "user_id": str(row["user_id"]),
-        "agent_id": row.get("agent_id"),
+        "agent_id": public_agent_id_for_projection(row.get("agent_id")),
         "session_id": row.get("session_id"),
         "record_type": str(row["record_type"]),
         "content": redact_memory_text(row.get("content")),
@@ -83,7 +89,7 @@ def _memory_delete_response(row: dict[str, Any]) -> dict[str, Any]:
         "tenant_id": str(row["tenant_id"]),
         "workspace_id": str(row["workspace_id"]),
         "user_id": str(row["user_id"]),
-        "agent_id": row.get("agent_id"),
+        "agent_id": public_agent_id_for_projection(row.get("agent_id")),
         "session_id": row.get("session_id"),
         "record_type": str(row["record_type"]),
         "status": str(row.get("status") or "deleted"),
@@ -98,7 +104,7 @@ def _memory_operator_response(row: dict[str, Any]) -> dict[str, Any]:
         "tenant_id": str(row["tenant_id"]),
         "workspace_id": str(row["workspace_id"]),
         "user_id": str(row["user_id"]),
-        "agent_id": row.get("agent_id"),
+        "agent_id": public_agent_id_for_projection(row.get("agent_id")),
         "session_id": row.get("session_id"),
         "record_type": str(row["record_type"]),
         "status": str(row.get("status") or "active"),
@@ -114,7 +120,7 @@ def _memory_policy_response(policy: dict[str, Any]) -> dict[str, Any]:
         "tenant_id": str(policy["tenant_id"]),
         "workspace_id": str(policy["workspace_id"]),
         "user_id": str(policy["user_id"]),
-        "agent_id": policy.get("agent_id"),
+        "agent_id": public_agent_id_for_projection(policy.get("agent_id")),
         "memory_enabled": bool(policy.get("memory_enabled", True)),
         "long_term_memory_enabled": False,
         "retention_days": int(policy.get("retention_days") or 90),
@@ -167,6 +173,12 @@ async def create_run_context_snapshot(
         if run is None:
             raise HTTPException(status_code=404, detail="run_not_found")
         trace_id = str(run.get("trace_id") or standard_trace_id(run_id))
+        redaction_summary = sanitize_public_payload(request.redaction_summary)
+        if not isinstance(redaction_summary, dict):
+            redaction_summary = {}
+        payload = sanitize_public_payload(request.payload)
+        if not isinstance(payload, dict):
+            payload = {}
         snapshot = await repositories.create_context_snapshot(
             conn,
             tenant_id=principal.tenant_id,
@@ -180,8 +192,8 @@ async def create_run_context_snapshot(
             included_file_ids=request.included_file_ids,
             included_artifact_ids=request.included_artifact_ids,
             included_memory_record_ids=request.included_memory_record_ids,
-            redaction_summary_json=request.redaction_summary,
-            payload_json=request.payload,
+            redaction_summary_json=redaction_summary,
+            payload_json=payload,
         )
         await repositories.append_event(
             conn,
@@ -232,6 +244,8 @@ async def create_memory_record(
     request: MemoryRecordRequest,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
+    if not request.session_id:
+        raise HTTPException(status_code=400, detail="memory_session_id_required")
     denied_by_policy = False
     try:
         async with transaction() as conn:
@@ -278,19 +292,6 @@ async def create_memory_record(
                 denied_by_policy = True
             if denied_by_policy:
                 record = None
-            elif request.session_id:
-                record = await repositories.create_memory_record(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    workspace_id=request.workspace_id,
-                    user_id=principal.user_id,
-                    agent_id=effective_agent_id,
-                    session_id=request.session_id,
-                    record_type=request.record_type,
-                    content=request.content,
-                    metadata_json=request.metadata,
-                    retention_days=int(policy.get("retention_days") or 90),
-                )
             else:
                 record = await repositories.create_memory_record(
                     conn,

@@ -5,6 +5,7 @@ import pytest
 from app import repositories
 from app.repositories import (
     RepositoryConflictError,
+    RepositoryNotFoundError,
     append_audit_log,
     append_event,
     cancel_run,
@@ -19,6 +20,7 @@ from app.repositories import (
     delete_memory_record,
     fail_run,
     get_admin_run_detail,
+    get_context_snapshot_for_worker,
     get_latest_tool_permission_decision,
     get_run_identity,
     list_run_events,
@@ -145,6 +147,63 @@ async def test_create_run_persists_g2_contract_fields():
 
 
 @pytest.mark.asyncio
+async def test_create_run_rejects_session_scope_mismatch_before_insert_returns():
+    class EmptyCursor:
+        async def fetchone(self):
+            return None
+
+    class RunConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return EmptyCursor()
+
+    conn = RunConnection()
+
+    with pytest.raises(RepositoryNotFoundError, match="session_not_found"):
+        await create_run(
+            conn,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            session_id="session-cross-scope",
+            user_id="user-a",
+            agent_id="general-agent",
+            skill_id="general-chat",
+            input_json={},
+        )
+
+    sql, params = conn.calls[0]
+    assert "insert into runs" in sql
+    assert "from sessions" in sql
+    assert "sessions.tenant_id = %s" in sql
+    assert "sessions.workspace_id = %s" in sql
+    assert "sessions.user_id = %s" in sql
+    assert "sessions.id = %s" in sql
+    assert "sessions.agent_id = %s" in sql
+    assert "returning id" in sql
+    assert "session-cross-scope" in params
+
+
+@pytest.mark.asyncio
+async def test_mark_run_running_requires_run_session_scope_to_match():
+    conn = RecordingConnection()
+
+    await repositories.mark_run_running(conn, tenant_id="tenant-a", run_id="run-a")
+
+    sql, params = conn.calls[0]
+    assert "update runs" in sql
+    assert "from sessions" in sql
+    assert "sessions.id = runs.session_id" in sql
+    assert "sessions.tenant_id = runs.tenant_id" in sql
+    assert "sessions.workspace_id = runs.workspace_id" in sql
+    assert "sessions.user_id = runs.user_id" in sql
+    assert "sessions.agent_id = runs.agent_id" in sql
+    assert params == ("tenant-a", "run-a")
+
+
+@pytest.mark.asyncio
 async def test_append_event_persists_standard_envelope_columns():
     conn = RecordingConnection()
 
@@ -242,6 +301,141 @@ async def test_create_context_snapshot_persists_scope_and_context_contract():
     assert "ai-platform.context-snapshot.v1" in params
     assert any("\"msg-a\"" in str(item) for item in params)
     assert any("\"mem-a\"" in str(item) for item in params)
+
+
+@pytest.mark.asyncio
+async def test_create_context_snapshot_sanitizes_payload_and_summary_before_insert():
+    conn = RecordingConnection()
+
+    snapshot = await create_context_snapshot(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        trace_id="trace-a",
+        context_kind="executor",
+        included_message_ids=[],
+        included_file_ids=[],
+        included_artifact_ids=[],
+        included_memory_record_ids=[],
+        redaction_summary_json={
+            "source": "internal",
+            "client_secret": "client-secret-context",
+            "note": "authorization: Bearer context-bearer",
+        },
+        payload_json={
+            "window": "current",
+            "api_key": "sk-context-secret",
+            "runtime_path": "/var/lib/ai-platform/run-a",
+            "nested": {"email": "alice@example.com", "safe": "kept"},
+        },
+    )
+
+    _sql, params = conn.calls[0]
+    inserted_summary = json.loads(params[-2])
+    inserted_payload = json.loads(params[-1])
+    assert inserted_summary == {"source": "internal", "note": "authorization=[redacted-secret]"}
+    assert inserted_payload == {
+        "window": "current",
+        "nested": {"email": "[redacted-email]", "safe": "kept"},
+    }
+    assert snapshot["redaction_summary_json"] == inserted_summary
+    assert snapshot["payload_json"] == inserted_payload
+    serialized = json.dumps(snapshot, ensure_ascii=False) + str(params)
+    assert "client-secret-context" not in serialized
+    assert "context-bearer" not in serialized
+    assert "sk-context-secret" not in serialized
+    assert "/var/lib/ai-platform" not in serialized
+    assert "alice@example.com" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_create_context_snapshot_rejects_run_scope_mismatch_before_insert_returns():
+    class EmptyCursor:
+        async def fetchone(self):
+            return None
+
+    class SnapshotConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return EmptyCursor()
+
+    conn = SnapshotConnection()
+
+    with pytest.raises(RepositoryNotFoundError, match="run_not_found"):
+        await create_context_snapshot(
+            conn,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-cross-scope",
+            trace_id="trace-a",
+            context_kind="executor",
+            included_message_ids=[],
+            included_file_ids=[],
+            included_artifact_ids=[],
+            included_memory_record_ids=[],
+            redaction_summary_json={},
+            payload_json={},
+        )
+
+    sql, params = conn.calls[0]
+    assert "insert into run_context_snapshots" in sql
+    assert "from runs" in sql
+    assert "join sessions" in sql
+    assert "runs.tenant_id = %s" in sql
+    assert "runs.workspace_id = %s" in sql
+    assert "runs.user_id = %s" in sql
+    assert "runs.session_id = %s" in sql
+    assert "runs.id = %s" in sql
+    assert "sessions.id = runs.session_id" in sql
+    assert "returning id" in sql
+    assert "run-cross-scope" in params
+
+
+@pytest.mark.asyncio
+async def test_get_context_snapshot_for_worker_scopes_by_full_run_identity():
+    class SnapshotCursor:
+        async def fetchone(self):
+            return {"id": "ctx-a", "payload_json": {"source": "db"}}
+
+    class SnapshotConnection:
+        def __init__(self):
+            self.sql = ""
+            self.params = None
+
+        async def execute(self, sql, params):
+            self.sql = " ".join(sql.split())
+            self.params = params
+            return SnapshotCursor()
+
+    conn = SnapshotConnection()
+
+    row = await get_context_snapshot_for_worker(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        context_snapshot_id="ctx-a",
+    )
+
+    assert row == {"id": "ctx-a", "payload_json": {"source": "db"}}
+    assert "from run_context_snapshots" in conn.sql
+    assert "tenant_id = %s" in conn.sql
+    assert "workspace_id = %s" in conn.sql
+    assert "user_id = %s" in conn.sql
+    assert "session_id = %s" in conn.sql
+    assert "run_id = %s" in conn.sql
+    assert "id = %s" in conn.sql
+    assert conn.params == ("tenant-a", "workspace-a", "user-a", "session-a", "run-a", "ctx-a")
 
 
 @pytest.mark.asyncio
@@ -452,7 +646,7 @@ async def test_create_memory_record_sets_expires_at_from_retention_days():
     assert "insert into memory_records" in sql
     assert "expires_at" in sql
     assert "now() + (%s * interval '1 day')" in sql
-    assert params[-1] == 30
+    assert params[9] == 30
     assert row["expires_at"] == "2026-07-03T12:00:00Z"
     assert row["status"] == "active"
 
@@ -552,6 +746,101 @@ async def test_create_memory_record_redacts_secret_like_content_and_metadata_bef
     assert inserted_metadata["client_secret"] == "[redacted-secret]"
     assert inserted_metadata["openai_api_key"] == "[redacted-secret]"
     assert inserted_metadata["id_token"] == "[redacted-secret]"
+
+
+@pytest.mark.asyncio
+async def test_create_memory_record_rejects_missing_session_id_before_insert():
+    class MemoryConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            raise AssertionError("memory write must fail before SQL when session_id is missing")
+
+    conn = MemoryConnection()
+
+    with pytest.raises(RepositoryConflictError, match="memory_session_id_required"):
+        await repositories.create_memory_record(
+            conn,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            agent_id="general-agent",
+            session_id=None,
+            record_type="session_summary",
+            content="unsafe cross-session memory",
+            metadata_json={},
+        )
+
+    assert conn.calls == []
+
+
+@pytest.mark.asyncio
+async def test_create_memory_record_rejects_missing_agent_id_before_insert():
+    class MemoryConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            raise AssertionError("memory write must fail before SQL when agent_id is missing")
+
+    conn = MemoryConnection()
+
+    with pytest.raises(RepositoryConflictError, match="memory_agent_id_required"):
+        await repositories.create_memory_record(
+            conn,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            agent_id=None,
+            session_id="session-a",
+            record_type="session_summary",
+            content="unsafe cross-agent memory",
+            metadata_json={},
+        )
+
+    assert conn.calls == []
+
+
+@pytest.mark.asyncio
+async def test_create_memory_record_rejects_session_scope_mismatch_before_insert_returns():
+    class EmptyCursor:
+        async def fetchone(self):
+            return None
+
+    class MemoryConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return EmptyCursor()
+
+    conn = MemoryConnection()
+
+    with pytest.raises(RepositoryNotFoundError, match="session_not_found"):
+        await repositories.create_memory_record(
+            conn,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            agent_id="general-agent",
+            session_id="session-cross-scope",
+            record_type="session_summary",
+            content="unsafe cross-session memory",
+            metadata_json={},
+        )
+
+    sql, params = conn.calls[0]
+    assert "from sessions" in sql
+    assert "sessions.tenant_id = %s" in sql
+    assert "sessions.workspace_id = %s" in sql
+    assert "sessions.user_id = %s" in sql
+    assert "sessions.id = %s" in sql
+    assert "sessions.agent_id = %s" in sql
+    assert "session-cross-scope" in params
 
 
 @pytest.mark.asyncio
@@ -854,7 +1143,7 @@ async def test_create_tool_permission_request_persists_pending_snapshot():
 async def test_get_latest_tool_permission_decision_scopes_by_run_user_and_tool():
     conn = RecordingConnection()
 
-    await get_latest_tool_permission_decision(
+    row = await get_latest_tool_permission_decision(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
@@ -863,12 +1152,40 @@ async def test_get_latest_tool_permission_decision_scopes_by_run_user_and_tool()
         action="execute",
     )
 
+    assert row is None
+    assert conn.calls == []
+
+
+@pytest.mark.asyncio
+async def test_get_latest_tool_permission_decision_can_filter_exact_tool_call_or_fingerprint():
+    conn = RecordingConnection()
+
+    await get_latest_tool_permission_decision(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        run_id="run-a",
+        tool_id="claude-sdk:Bash",
+        action="execute",
+        tool_call_id="tool-current",
+        request_payload_json={"command_sha256": "a" * 64},
+    )
+
     sql, params = conn.calls[0]
-    assert "run_tool_permission_requests" in sql
-    assert "status = 'decided'" in sql
-    assert "(expires_at is null or expires_at > now())" in sql
-    assert "order by decided_at desc" in sql
-    assert params == ("tenant-a", "user-a", "run-a", "ragflow-knowledge-search", "execute")
+    assert "decision in ('allow_once', 'deny')" in sql
+    assert "tool_call_id = %s" in sql
+    assert "decision = 'allow_for_run'" in sql
+    assert "request_payload_json ->> %s = %s" in sql
+    assert params == (
+        "tenant-a",
+        "user-a",
+        "run-a",
+        "claude-sdk:Bash",
+        "execute",
+        "tool-current",
+        "command_sha256",
+        "a" * 64,
+    )
 
 
 @pytest.mark.asyncio
@@ -2129,6 +2446,245 @@ async def test_admin_run_detail_projects_g2_trace_event_artifact_and_audit_contr
     ]
     assert detail["audit"][0]["schema_version"] == "ai-platform.audit-event.v1"
     assert detail["audit"][0]["trace_id"] == "trace_run_a"
+
+
+@pytest.mark.asyncio
+async def test_admin_run_detail_sanitizes_secret_and_runtime_payloads(monkeypatch):
+    async def fake_get_run(conn, *, tenant_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "ses-a",
+            "user_id": "user-a",
+            "workspace_id": "default",
+            "status": "failed",
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "created_at": None,
+            "queued_at": None,
+            "started_at": None,
+            "finished_at": None,
+            "cancel_requested_at": None,
+            "cancel_requested_by": None,
+            "input_json": {
+                "input": {"message": "审核", "api_key": "sk-admin-input"},
+                "workerPath": "/var/lib/ai-platform/run-a/worker.py",
+                "skill_ids": ["qa-file-reviewer"],
+            },
+            "result_json": {
+                "message": "failed client_secret=admin-result-secret",
+                "runtime_private_payload": {"cwd": "/var/lib/ai-platform/run-a"},
+                "used_skills": ["qa-file-reviewer"],
+            },
+            "error_code": "executor_failure token=admin-detail-code-token",
+            "error_message": "failed token=admin-error-token /var/lib/ai-platform/run-a/out.log",
+            "trace_id": "trace_run_a",
+            "schema_version": "ai-platform.run.v1",
+            "executor_schema_version": "ai-platform.executor-result.v1",
+        }
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id, **kwargs):
+        return [
+            {
+                "id": "evt-a",
+                "trace_id": "trace_run_a",
+                "schema_version": "ai-platform.event-envelope.v1",
+                "sequence": 1,
+                "event_type": "error",
+                "stage": "worker",
+                "message": "failed token=admin-event-token",
+                "severity": "error",
+                "visible_to_user": True,
+                "error_code": "executor_failure",
+                "latency_ms": None,
+                "input_token_count": 0,
+                "output_token_count": 0,
+                "total_token_count": 0,
+                "estimated_cost_minor": 0,
+                "payload_json": {
+                    "runtime_private_payload": {"cwd": "/var/lib/ai-platform/run-a"},
+                    "summary": "client_secret=admin-event-secret",
+                },
+                "created_at": None,
+            }
+        ]
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-a",
+                "run_id": run_id,
+                "step_key": "review",
+                "step_kind": "agent",
+                "status": "failed",
+                "title": "Review token=admin-title-token",
+                "role": "reviewer client_secret=admin-role-secret",
+                "sequence": 1,
+                "payload_json": {
+                    "skill_ids": ["qa-file-reviewer"],
+                    "runtime_private_payload": {"cwd": "/var/lib/ai-platform/run-a"},
+                    "note": "client_secret=admin-step-secret",
+                },
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+
+    async def fake_empty_list(*args, **kwargs):
+        return []
+
+    class AuditCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "id": "aud-a",
+                    "trace_id": "trace_run_a",
+                    "schema_version": "ai-platform.audit-event.v1",
+                    "user_id": "admin-a",
+                    "action": "admin_run_viewed",
+                    "target_type": "run",
+                    "target_id": "run-a",
+                    "payload_json": {
+                        "run_id": "run-a",
+                        "client_secret": "admin-audit-secret",
+                        "runtime_private_payload": {"cwd": "/var/lib/ai-platform/run-a"},
+                    },
+                    "created_at": None,
+                }
+            ]
+
+    class AuditConnection:
+        async def execute(self, sql, params):
+            return AuditCursor()
+
+    monkeypatch.setattr(repositories, "get_run", fake_get_run)
+    monkeypatch.setattr(repositories, "list_run_events", fake_list_run_events)
+    monkeypatch.setattr(repositories, "list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr(repositories, "list_run_artifacts", fake_empty_list)
+    monkeypatch.setattr(repositories, "list_run_skill_snapshots", fake_empty_list)
+
+    detail = await get_admin_run_detail(AuditConnection(), tenant_id="tenant-a", run_id="run-a")
+
+    assert detail["run"]["input"]["skill_ids"] == ["qa-file-reviewer"]
+    assert detail["run"]["result"]["used_skills"] == ["qa-file-reviewer"]
+    assert detail["steps"][0]["payload"]["skill_ids"] == ["qa-file-reviewer"]
+    serialized = json.dumps(detail, ensure_ascii=False, default=str)
+    assert "sk-admin-input" not in serialized
+    assert "admin-result-secret" not in serialized
+    assert "admin-detail-code-token" not in serialized
+    assert "admin-error-token" not in serialized
+    assert "admin-event-token" not in serialized
+    assert "admin-event-secret" not in serialized
+    assert "admin-title-token" not in serialized
+    assert "admin-role-secret" not in serialized
+    assert "admin-step-secret" not in serialized
+    assert "admin-audit-secret" not in serialized
+    assert "/var/lib/ai-platform" not in serialized
+    assert "runtime_private_payload" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_admin_run_detail_sanitizes_dirty_skill_snapshot_source_and_usage(monkeypatch):
+    async def fake_get_run(conn, *, tenant_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "ses-a",
+            "user_id": "user-a",
+            "workspace_id": "default",
+            "status": "succeeded",
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "created_at": None,
+            "input_json": {},
+            "result_json": {},
+            "error_code": None,
+            "error_message": None,
+            "trace_id": "trace_run_a",
+            "schema_version": "ai-platform.run.v1",
+            "executor_schema_version": "ai-platform.executor-result.v1",
+        }
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id, **kwargs):
+        return [
+            {
+                "id": "evt-skill-a",
+                "trace_id": "trace_run_a",
+                "schema_version": "ai-platform.event-envelope.v1",
+                "sequence": 1,
+                "event_type": "skill_used",
+                "stage": "skills",
+                "message": "hidden",
+                "severity": "info",
+                "visible_to_user": False,
+                "error_code": None,
+                "latency_ms": None,
+                "input_token_count": 0,
+                "output_token_count": 0,
+                "total_token_count": 0,
+                "estimated_cost_minor": 0,
+                "payload_json": {
+                    "skill_id": "qa-file-reviewer",
+                    "source": "claude_agent_sdk_hook token=skill-event-token",
+                    "tool_use_id": "tool-use-a token=skill-tool-token",
+                },
+                "created_at": None,
+            }
+        ]
+
+    async def fake_list_run_skill_snapshots(conn, *, tenant_id, run_id):
+        return [
+            {
+                "skill_id": "qa-file-reviewer",
+                "skill_version": "hash-a",
+                "content_hash": "hash-a",
+                "source": {
+                    "kind": "builtin",
+                    "client_secret": "skill-source-secret",
+                    "local_path": "/var/lib/ai-platform/skills/qa-file-reviewer",
+                    "nested": {"safe": "kept", "token": "nested-token"},
+                },
+                "dependency_ids": ["minimax-docx"],
+                "allowed": True,
+                "staged": True,
+                "used": True,
+                "usage": {"used_skills_source": "claude_agent_sdk_hook token=skill-persisted-token"},
+                "created_at": None,
+            }
+        ]
+
+    async def fake_empty_list(*args, **kwargs):
+        return []
+
+    class EmptyAuditConnection:
+        async def execute(self, sql, params):
+            class Cursor:
+                async def fetchall(self):
+                    return []
+
+            return Cursor()
+
+    monkeypatch.setattr(repositories, "get_run", fake_get_run)
+    monkeypatch.setattr(repositories, "list_run_events", fake_list_run_events)
+    monkeypatch.setattr(repositories, "list_run_steps", fake_empty_list)
+    monkeypatch.setattr(repositories, "list_run_artifacts", fake_empty_list)
+    monkeypatch.setattr(repositories, "list_run_skill_snapshots", fake_list_run_skill_snapshots)
+
+    detail = await get_admin_run_detail(EmptyAuditConnection(), tenant_id="tenant-a", run_id="run-a")
+
+    snapshot = detail["skill_snapshots"][0]
+    assert snapshot["skill_id"] == "qa-file-reviewer"
+    assert snapshot["source"] == {"kind": "builtin", "nested": {"safe": "kept"}}
+    assert snapshot["usage"]["used_skills_source"] == "claude_agent_sdk_hook token=[redacted-secret]"
+    assert snapshot["usage"]["event_source"] == "claude_agent_sdk_hook token=[redacted-secret]"
+    assert snapshot["usage"]["tool_use_ids"] == ["tool-use-a token=[redacted-secret]"]
+    serialized = json.dumps(detail, ensure_ascii=False, default=str)
+    assert "skill-source-secret" not in serialized
+    assert "nested-token" not in serialized
+    assert "skill-persisted-token" not in serialized
+    assert "skill-event-token" not in serialized
+    assert "skill-tool-token" not in serialized
+    assert "/var/lib/ai-platform" not in serialized
 
 
 @pytest.mark.asyncio

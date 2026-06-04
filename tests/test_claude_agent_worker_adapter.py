@@ -2054,15 +2054,16 @@ async def test_claude_worker_sdk_permission_hook_creates_request_event_and_audit
     )
 
     assert result.error == "tool_permission_required"
-    assert ("decision_lookup", {
-        "tenant_id": "default",
-        "user_id": "user-a",
-        "run_id": "run_1",
-        "tool_id": "claude-sdk:Bash",
-        "action": "execute",
-    }) in calls
-    request_call = next(item[1] for item in calls if item[0] == "request")
     command = "python write_business_system.py --id 123"
+    lookup_call = next(item[1] for item in calls if item[0] == "decision_lookup")
+    assert lookup_call["tenant_id"] == "default"
+    assert lookup_call["user_id"] == "user-a"
+    assert lookup_call["run_id"] == "run_1"
+    assert lookup_call["tool_id"] == "claude-sdk:Bash"
+    assert lookup_call["action"] == "execute"
+    assert lookup_call["tool_call_id"] == "tool-write"
+    assert lookup_call["request_payload_json"]["command_sha256"] == hashlib.sha256(command.encode("utf-8")).hexdigest()
+    request_call = next(item[1] for item in calls if item[0] == "request")
     assert request_call["tool_id"] == "claude-sdk:Bash"
     assert request_call["tool_call_id"] == "tool-write"
     assert request_call["risk_level"] == "high"
@@ -2448,6 +2449,8 @@ async def test_claude_worker_sdk_permission_hook_allows_run_decision_for_same_ba
 
     async def get_latest_tool_permission_decision(conn, **kwargs):
         calls.append(("decision_lookup", kwargs))
+        if kwargs.get("request_payload_json", {}).get("command_sha256") != command_hash:
+            return None
         return {
             "id": "tpr-run",
             "decision": "allow_for_run",

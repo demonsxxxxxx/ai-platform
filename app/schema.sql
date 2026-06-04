@@ -171,6 +171,50 @@ alter table runs add column if not exists total_token_count integer not null def
 alter table runs add column if not exists estimated_cost_minor integer not null default 0;
 
 create index if not exists idx_runs_trace_id on runs(trace_id);
+create unique index if not exists idx_runs_context_scope
+  on runs(tenant_id, workspace_id, user_id, session_id, id);
+create unique index if not exists idx_sessions_run_scope
+  on sessions(tenant_id, workspace_id, user_id, id, agent_id);
+
+do $$
+begin
+  if exists (
+    select 1
+    from runs
+    left join sessions on sessions.id = runs.session_id
+    where sessions.id is null
+    limit 1
+  ) then
+    raise exception 'runs_session_not_found';
+  end if;
+  if exists (
+    select 1
+    from runs
+    join sessions on sessions.id = runs.session_id
+    where sessions.tenant_id is distinct from runs.tenant_id
+       or sessions.workspace_id is distinct from runs.workspace_id
+       or sessions.user_id is distinct from runs.user_id
+       or sessions.agent_id is distinct from runs.agent_id
+    limit 1
+  ) then
+    raise exception 'runs_session_scope_mismatch';
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'fk_runs_session_scope'
+      and conrelid = 'runs'::regclass
+  ) then
+    alter table runs
+      add constraint fk_runs_session_scope
+      foreign key (tenant_id, workspace_id, user_id, session_id, agent_id)
+      references sessions(tenant_id, workspace_id, user_id, id, agent_id);
+  end if;
+end $$;
 
 create table if not exists run_steps (
   id text primary key,
@@ -231,8 +275,8 @@ create table if not exists memory_records (
   tenant_id text not null references tenants(id),
   workspace_id text not null references workspaces(id),
   user_id text not null references users(id),
-  agent_id text references agents(id),
-  session_id text,
+  agent_id text not null references agents(id),
+  session_id text not null,
   record_type text not null,
   content text not null,
   metadata_json jsonb not null default '{}'::jsonb,
@@ -242,6 +286,109 @@ create table if not exists memory_records (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+do $$
+begin
+  update memory_records
+  set agent_id = 'general-agent',
+      updated_at = now()
+  where agent_id is null;
+
+  insert into sessions(id, tenant_id, workspace_id, user_id, agent_id, title, status)
+  select distinct
+    'ses_memory_legacy_' || substr(md5(tenant_id || ':' || workspace_id || ':' || user_id || ':' || agent_id), 1, 24),
+    tenant_id,
+    workspace_id,
+    user_id,
+    agent_id,
+    'Legacy memory records',
+    'active'
+  from memory_records
+  where session_id is null
+  on conflict (id) do nothing;
+
+  update memory_records
+  set session_id = 'ses_memory_legacy_' || substr(md5(tenant_id || ':' || workspace_id || ':' || user_id || ':' || agent_id), 1, 24),
+      updated_at = now()
+  where session_id is null;
+
+  insert into sessions(id, tenant_id, workspace_id, user_id, agent_id, title, status)
+  select distinct
+    memory_records.session_id,
+    memory_records.tenant_id,
+    memory_records.workspace_id,
+    memory_records.user_id,
+    memory_records.agent_id,
+    'Legacy memory records',
+    'active'
+  from memory_records
+  left join sessions on sessions.id = memory_records.session_id
+  where sessions.id is null
+  on conflict (id) do nothing;
+end $$;
+
+do $$
+begin
+  if exists (select 1 from memory_records where agent_id is null limit 1) then
+    raise exception 'memory_records_agent_id_null';
+  end if;
+  if exists (select 1 from memory_records where session_id is null limit 1) then
+    raise exception 'memory_records_session_id_null';
+  end if;
+end $$;
+
+alter table memory_records alter column agent_id set not null;
+alter table memory_records alter column session_id set not null;
+
+do $$
+begin
+  if exists (
+    select 1
+    from memory_records
+    left join sessions on sessions.id = memory_records.session_id
+    where sessions.id is null
+    limit 1
+  ) then
+    raise exception 'memory_records_session_not_found';
+  end if;
+  if exists (
+    select 1
+    from memory_records
+    join sessions on sessions.id = memory_records.session_id
+    where sessions.tenant_id is distinct from memory_records.tenant_id
+       or sessions.workspace_id is distinct from memory_records.workspace_id
+       or sessions.user_id is distinct from memory_records.user_id
+       or sessions.agent_id is distinct from memory_records.agent_id
+    limit 1
+  ) then
+    raise exception 'memory_records_session_scope_mismatch';
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'fk_memory_records_session'
+      and conrelid = 'memory_records'::regclass
+  ) then
+    alter table memory_records
+      add constraint fk_memory_records_session
+      foreign key (session_id) references sessions(id);
+  end if;
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'fk_memory_records_session_scope'
+      and conrelid = 'memory_records'::regclass
+  ) then
+    alter table memory_records
+      add constraint fk_memory_records_session_scope
+      foreign key (tenant_id, workspace_id, user_id, session_id, agent_id)
+      references sessions(tenant_id, workspace_id, user_id, id, agent_id);
+  end if;
+end $$;
 
 create index if not exists idx_memory_records_scope
   on memory_records(tenant_id, workspace_id, user_id, agent_id, session_id, created_at desc);
@@ -304,6 +451,46 @@ create table if not exists run_context_snapshots (
 
 create index if not exists idx_run_context_snapshots_run
   on run_context_snapshots(tenant_id, run_id, created_at desc);
+
+do $$
+begin
+  if exists (
+    select 1
+    from run_context_snapshots
+    left join runs on runs.id = run_context_snapshots.run_id
+    where runs.id is null
+    limit 1
+  ) then
+    raise exception 'run_context_snapshots_run_not_found';
+  end if;
+  if exists (
+    select 1
+    from run_context_snapshots
+    join runs on runs.id = run_context_snapshots.run_id
+    where runs.tenant_id is distinct from run_context_snapshots.tenant_id
+       or runs.workspace_id is distinct from run_context_snapshots.workspace_id
+       or runs.user_id is distinct from run_context_snapshots.user_id
+       or runs.session_id is distinct from run_context_snapshots.session_id
+    limit 1
+  ) then
+    raise exception 'run_context_snapshots_run_scope_mismatch';
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'fk_run_context_snapshots_run_scope'
+      and conrelid = 'run_context_snapshots'::regclass
+  ) then
+    alter table run_context_snapshots
+      add constraint fk_run_context_snapshots_run_scope
+      foreign key (tenant_id, workspace_id, user_id, session_id, run_id)
+      references runs(tenant_id, workspace_id, user_id, session_id, id);
+  end if;
+end $$;
 
 create table if not exists run_events (
   id text primary key,

@@ -112,6 +112,9 @@ class FakeDockerContainers:
     def create(self, **kwargs) -> FakeDockerContainer:
         if self._client.create_error is not None:
             raise self._client.create_error
+        existing = self._client.containers_by_name.get(kwargs["name"])
+        if existing is not None and not existing.removed:
+            raise RuntimeError(f"Conflict. The container name {kwargs['name']} is already in use.")
         container = FakeDockerContainer(
             start_error=self._client.start_error,
             stop_error=self._client.stop_error,
@@ -370,6 +373,43 @@ async def test_docker_provider_creates_container_with_workspace_labels_and_env()
 
 
 @pytest.mark.asyncio
+async def test_docker_provider_does_not_reuse_same_run_container_with_mismatched_scope_labels():
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    fake = FakeDockerClient()
+    mismatched = FakeDockerContainer(
+        image="ai-platform-executor:dev",
+        name="executor-exec-run-a",
+        detach=True,
+        labels={
+            "ai-platform.owner": "sandbox-runtime",
+            "ai-platform.tenant_id": "tenant-b",
+            "ai-platform.workspace_id": "workspace-b",
+            "ai-platform.user_id": "user-b",
+            "ai-platform.session_id": "session-b",
+            "ai-platform.run_id": "run-a",
+            "ai-platform.sandbox_mode": "persistent",
+            "ai-platform.browser_enabled": "true",
+        },
+        volumes={},
+        environment={},
+        ports={},
+    )
+    mismatched.status = "running"
+    fake.containers_by_name[mismatched.name] = mismatched
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+
+    with pytest.raises(ContainerStartFailedError):
+        await provider.create_or_reuse(request(), workspace())
+
+    assert len(fake.created) == 0
+    assert mismatched.removed is False
+
+
+@pytest.mark.asyncio
 async def test_docker_provider_maps_resource_limits_to_docker_create_kwargs_without_disabling_executor_network():
     from app.runtime.sandbox.container_provider import DockerContainerProvider
 
@@ -502,6 +542,46 @@ async def test_docker_provider_stop_reaches_container_without_cached_lease():
 
 
 @pytest.mark.asyncio
+async def test_docker_provider_stop_refuses_container_without_matching_sandbox_labels():
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+    from app.runtime.sandbox.contracts import ContainerLease
+
+    fake = FakeDockerClient()
+    api_container = FakeDockerContainer(
+        image="ai-platform:local",
+        name="ai-platform-api",
+        detach=True,
+        labels={"com.docker.compose.service": "api"},
+        volumes={},
+        environment={},
+        ports={},
+    )
+    api_container.status = "running"
+    fake.containers_by_name[api_container.name] = api_container
+    provider = DockerContainerProvider(docker_client_factory=lambda: fake)
+    lease = ContainerLease(
+        container_id="exec-run-a",
+        container_name="ai-platform-api",
+        provider="docker",
+        executor_url="http://sandbox-runtime.invalid",
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        sandbox_mode="ephemeral",
+        browser_enabled=False,
+        workspace_host_path="",
+    )
+
+    result = await provider.stop(lease, reason="cancelled")
+
+    assert result.status == "not_found"
+    assert api_container.stopped is False
+    assert api_container.removed is False
+
+
+@pytest.mark.asyncio
 async def test_docker_provider_reuses_existing_docker_container_after_restart():
     from app.runtime.sandbox.container_provider import DockerContainerProvider
 
@@ -569,6 +649,25 @@ async def test_docker_provider_cleanup_removes_container_when_stop_fails():
 
     container = fake.containers_by_name["executor-exec-run-a"]
     assert container.removed is True
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_stop_maps_sdk_not_found_to_not_found():
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    class NotFoundContainers(FakeDockerContainers):
+        def get(self, name: str) -> FakeDockerContainer:
+            raise RuntimeError("404 Client Error for http://docker/containers/executor-exec-run-a/json: Not Found")
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(docker_client_factory=lambda: fake, health_probe=lambda executor_url, timeout_seconds: True)
+    lease = await provider.create_or_reuse(request(), workspace())
+    fake.containers = NotFoundContainers(fake)
+
+    result = await provider.stop(lease, reason="cancel_requested")
+
+    assert result.status == "not_found"
+    assert result.container_id == "exec-run-a"
 
 
 @pytest.mark.asyncio

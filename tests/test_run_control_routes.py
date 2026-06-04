@@ -25,6 +25,73 @@ def headers():
     }
 
 
+def admin_headers():
+    values = headers()
+    values["x-ai-user-id"] = "admin-a"
+    values["x-ai-user-name"] = "Admin A"
+    values["x-ai-roles"] = "admin"
+    return values
+
+
+def sandbox_lease_row(
+    *,
+    run_id: str = "run_active",
+    lease_id: str | None = None,
+    user_id: str = "user-a",
+    provider: str = "fake",
+    lease_payload_json: dict[str, object] | None = None,
+) -> dict[str, object]:
+    payload = lease_payload_json or {
+        "container_id": f"exec-{run_id}",
+        "container_name": f"executor-exec-{run_id}",
+        "executor_url": "http://executor.test",
+        "workspace_host_path": f"C:/runtime/{run_id}/workspace",
+        "workspace_container_path": "/workspace",
+    }
+    return {
+        "id": lease_id or f"lease-{run_id}",
+        "tenant_id": "default",
+        "workspace_id": "workspace-a",
+        "user_id": user_id,
+        "session_id": "session-a",
+        "run_id": run_id,
+        "trace_id": f"trace-{run_id}",
+        "sandbox_mode": "ephemeral",
+        "provider": provider,
+        "status": "active",
+        "browser_enabled": False,
+        "lease_payload_json": payload,
+    }
+
+
+class RecordingSandboxProvider:
+    def __init__(self, calls):
+        self.calls = calls
+
+    async def stop(self, lease, *, reason):
+        self.calls.append(("stop", lease, reason))
+        return type("StopResult", (), {"container_id": lease.container_id, "status": "stopped", "message": reason})()
+
+
+class FailingSandboxProvider:
+    async def stop(self, lease, *, reason):
+        return type(
+            "StopResult",
+            (),
+            {"container_id": lease.container_id, "status": "failed", "message": "Container stop failed"},
+        )()
+
+
+class ProviderByName:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def __call__(self, provider_name=None):
+        if provider_name == "docker":
+            return FailingSandboxProvider()
+        return RecordingSandboxProvider(self.calls)
+
+
 class EmptyBuiltinRegistry:
     def __init__(self, root):
         self.root = root
@@ -702,6 +769,229 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
     assert response.json()["status"] == "cancel_requested"
 
 
+def test_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeypatch):
+    calls = []
+    release_calls = []
+
+    async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
+        return {
+            "run_id": run_id,
+            "status": "cancel_requested",
+            "active_sandbox_leases": [sandbox_lease_row(run_id=run_id, user_id=user_id)],
+        }
+
+    async def fake_release_stopped_sandbox_leases_for_cancel(
+        conn,
+        *,
+        tenant_id,
+        run_id,
+        reason,
+        lease_ids,
+        trace_id=None,
+        requested_by_role=None,
+    ):
+        release_calls.append(
+            {
+                "tenant_id": tenant_id,
+                "run_id": run_id,
+                "reason": reason,
+                "lease_ids": lease_ids,
+                "trace_id": trace_id,
+                "requested_by_role": requested_by_role,
+            }
+        )
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        fake_release_stopped_sandbox_leases_for_cancel,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.runs.create_container_provider", lambda provider_name=None: RecordingSandboxProvider(calls), raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run_active/cancel", headers=headers())
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": "run_active", "session_id": None, "status": "cancel_requested"}
+    assert len(calls) == 1
+    _, lease, reason = calls[0]
+    assert lease.container_id == "exec-run_active"
+    assert lease.container_name == "executor-exec-run_active"
+    assert lease.tenant_id == "default"
+    assert lease.user_id == "user-a"
+    assert reason == "cancel_requested"
+    assert release_calls == [
+        {
+            "tenant_id": "default",
+            "run_id": "run_active",
+            "reason": "cancel_requested",
+            "lease_ids": ["lease-run_active"],
+            "trace_id": None,
+            "requested_by_role": None,
+        }
+    ]
+
+
+def test_cancel_run_ignores_user_controlled_sandbox_container_payload(monkeypatch):
+    calls = []
+
+    async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
+        return {
+            "run_id": run_id,
+            "status": "cancel_requested",
+            "active_sandbox_leases": [
+                sandbox_lease_row(
+                    run_id=run_id,
+                    user_id=user_id,
+                    lease_payload_json={
+                        "container_id": "api",
+                        "container_name": "ai-platform-api",
+                        "executor_url": "http://attacker.invalid",
+                        "workspace_host_path": "/host",
+                        "workspace_container_path": "/workspace",
+                        "labels": {"ai-platform.owner": "not-sandbox-runtime"},
+                    },
+                )
+            ],
+        }
+
+    async def fake_release_stopped_sandbox_leases_for_cancel(conn, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        fake_release_stopped_sandbox_leases_for_cancel,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.runs.create_container_provider", lambda provider_name=None: RecordingSandboxProvider(calls), raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run_active/cancel", headers=headers())
+
+    assert response.status_code == 200
+    _, lease, _ = calls[0]
+    assert lease.container_id == "exec-run_active"
+    assert lease.container_name == "executor-exec-run_active"
+    assert lease.executor_url == "http://sandbox-runtime.invalid"
+    assert lease.workspace_host_path == ""
+    assert lease.labels == {}
+
+
+def test_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
+    release_calls = []
+
+    async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
+        return {
+            "run_id": run_id,
+            "status": "cancel_requested",
+            "active_sandbox_leases": [sandbox_lease_row(run_id=run_id, user_id=user_id, lease_payload_json={})],
+        }
+
+    async def fake_release_stopped_sandbox_leases_for_cancel(conn, **kwargs):
+        release_calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        fake_release_stopped_sandbox_leases_for_cancel,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.runs.create_container_provider", lambda provider_name=None: FailingSandboxProvider(), raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run_active/cancel", headers=headers())
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "sandbox_runtime_cleanup_failed"
+    assert release_calls == []
+
+
+def test_cancel_run_surfaces_unsupported_sandbox_provider_without_db_release(monkeypatch):
+    release_calls = []
+
+    async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
+        return {
+            "run_id": run_id,
+            "status": "cancel_requested",
+            "active_sandbox_leases": [sandbox_lease_row(run_id=run_id, user_id=user_id, provider="podman")],
+        }
+
+    async def fake_release_stopped_sandbox_leases_for_cancel(conn, **kwargs):
+        release_calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        fake_release_stopped_sandbox_leases_for_cancel,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.runs.create_container_provider", lambda provider_name=None: RecordingSandboxProvider([]), raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run_active/cancel", headers=headers())
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "sandbox_runtime_cleanup_failed"
+    assert release_calls == []
+
+
+def test_cancel_run_releases_successfully_stopped_leases_before_reporting_mixed_cleanup_failure(monkeypatch):
+    calls = []
+    release_calls = []
+
+    async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
+        return {
+            "run_id": run_id,
+            "status": "cancel_requested",
+            "active_sandbox_leases": [
+                sandbox_lease_row(run_id=run_id, lease_id="lease-stopped", user_id=user_id),
+                sandbox_lease_row(run_id=run_id, lease_id="lease-failed", user_id=user_id, provider="docker"),
+            ],
+        }
+
+    async def fake_release_stopped_sandbox_leases_for_cancel(conn, **kwargs):
+        release_calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        fake_release_stopped_sandbox_leases_for_cancel,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.runs.create_container_provider", ProviderByName(calls), raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run_active/cancel", headers=headers())
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "sandbox_runtime_cleanup_failed"
+    assert release_calls == [
+        {
+            "tenant_id": "default",
+            "run_id": "run_active",
+            "reason": "cancel_requested",
+            "lease_ids": ["lease-stopped"],
+            "trace_id": None,
+        }
+    ]
+
+
 def test_cancel_queued_run_removes_queued_payload(monkeypatch):
     calls = []
 
@@ -725,6 +1015,156 @@ def test_cancel_queued_run_removes_queued_payload(monkeypatch):
     assert calls == [("remove", "default", "run_queued")]
 
 
+def test_admin_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeypatch):
+    calls = []
+    release_calls = []
+
+    async def fake_request_admin_run_cancel(conn, *, tenant_id, admin_user_id, run_id):
+        return {
+            "run_id": run_id,
+            "status": "cancel_requested",
+            "active_sandbox_leases": [sandbox_lease_row(run_id=run_id, user_id="target-user")],
+        }
+
+    async def fake_release_stopped_sandbox_leases_for_cancel(
+        conn,
+        *,
+        tenant_id,
+        run_id,
+        reason,
+        lease_ids,
+        trace_id=None,
+        requested_by_role=None,
+    ):
+        release_calls.append(
+            {
+                "tenant_id": tenant_id,
+                "run_id": run_id,
+                "reason": reason,
+                "lease_ids": lease_ids,
+                "trace_id": trace_id,
+                "requested_by_role": requested_by_role,
+            }
+        )
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_runs.repositories.request_admin_run_cancel", fake_request_admin_run_cancel)
+    monkeypatch.setattr(
+        "app.routes.admin_runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        fake_release_stopped_sandbox_leases_for_cancel,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.admin_runs.create_container_provider",
+        lambda provider_name=None: RecordingSandboxProvider(calls),
+        raising=False,
+    )
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/admin/runs/run_active/cancel", headers=admin_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": "run_active", "session_id": None, "status": "cancel_requested"}
+    assert len(calls) == 1
+    _, lease, reason = calls[0]
+    assert lease.container_id == "exec-run_active"
+    assert lease.user_id == "target-user"
+    assert reason == "admin_cancel_requested"
+    assert release_calls == [
+        {
+            "tenant_id": "default",
+            "run_id": "run_active",
+            "reason": "admin_cancel_requested",
+            "lease_ids": ["lease-run_active"],
+            "trace_id": None,
+            "requested_by_role": "admin",
+        }
+    ]
+
+
+def test_admin_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
+    release_calls = []
+
+    async def fake_request_admin_run_cancel(conn, *, tenant_id, admin_user_id, run_id):
+        return {
+            "run_id": run_id,
+            "status": "cancel_requested",
+            "active_sandbox_leases": [sandbox_lease_row(run_id=run_id, user_id="target-user", lease_payload_json={})],
+        }
+
+    async def fake_release_stopped_sandbox_leases_for_cancel(conn, **kwargs):
+        release_calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_runs.repositories.request_admin_run_cancel", fake_request_admin_run_cancel)
+    monkeypatch.setattr(
+        "app.routes.admin_runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        fake_release_stopped_sandbox_leases_for_cancel,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.admin_runs.create_container_provider",
+        lambda provider_name=None: FailingSandboxProvider(),
+        raising=False,
+    )
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/admin/runs/run_active/cancel", headers=admin_headers())
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "sandbox_runtime_cleanup_failed"
+    assert release_calls == []
+
+
+def test_admin_cancel_run_releases_successfully_stopped_leases_before_reporting_mixed_cleanup_failure(monkeypatch):
+    calls = []
+    release_calls = []
+
+    async def fake_request_admin_run_cancel(conn, *, tenant_id, admin_user_id, run_id):
+        return {
+            "run_id": run_id,
+            "status": "cancel_requested",
+            "active_sandbox_leases": [
+                sandbox_lease_row(run_id=run_id, lease_id="lease-admin-stopped", user_id="target-user"),
+                sandbox_lease_row(run_id=run_id, lease_id="lease-admin-unsupported", user_id="target-user", provider="podman"),
+            ],
+        }
+
+    async def fake_release_stopped_sandbox_leases_for_cancel(conn, **kwargs):
+        release_calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_runs.repositories.request_admin_run_cancel", fake_request_admin_run_cancel)
+    monkeypatch.setattr(
+        "app.routes.admin_runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        fake_release_stopped_sandbox_leases_for_cancel,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.admin_runs.create_container_provider", ProviderByName(calls), raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/admin/runs/run_active/cancel", headers=admin_headers())
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "sandbox_runtime_cleanup_failed"
+    assert release_calls == [
+        {
+            "tenant_id": "default",
+            "run_id": "run_active",
+            "reason": "admin_cancel_requested",
+            "lease_ids": ["lease-admin-stopped"],
+            "trace_id": None,
+            "requested_by_role": "admin",
+        }
+    ]
+
+
 @pytest.mark.asyncio
 async def test_request_run_cancel_closes_pending_steps_when_owner_cancels_queued_run(monkeypatch):
     from app import repositories
@@ -746,7 +1186,7 @@ async def test_request_run_cancel_closes_pending_steps_when_owner_cancels_queued
                 return FakeCursor()
             if normalized.startswith("update run_steps"):
                 return FakeCursor()
-            if normalized.startswith("update sandbox_leases"):
+            if normalized.startswith("select * from sandbox_leases"):
                 return FakeCursor()
             raise AssertionError(f"unexpected sql: {normalized}")
 
@@ -771,7 +1211,7 @@ async def test_request_run_cancel_closes_pending_steps_when_owner_cancels_queued
 
 
 @pytest.mark.asyncio
-async def test_request_run_cancel_releases_active_sandbox_leases(monkeypatch):
+async def test_request_run_cancel_defers_active_sandbox_lease_release_until_cleanup_success(monkeypatch):
     from app import repositories
 
     calls = []
@@ -790,8 +1230,10 @@ async def test_request_run_cancel_releases_active_sandbox_leases(monkeypatch):
             calls.append((normalized, params))
             if normalized.startswith("update runs"):
                 return RunCursor()
-            if normalized.startswith("update sandbox_leases"):
+            if normalized.startswith("select * from sandbox_leases"):
                 return LeaseCursor()
+            if normalized.startswith("update sandbox_leases"):
+                raise AssertionError("cancel request must not release sandbox leases before runtime cleanup")
             raise AssertionError(f"unexpected sql: {normalized}")
 
     async def fake_append_event(conn, **kwargs):
@@ -807,11 +1249,113 @@ async def test_request_run_cancel_releases_active_sandbox_leases(monkeypatch):
         run_id="run_active",
     )
 
-    assert result == {"run_id": "run_active", "status": "cancel_requested"}
+    assert result == {
+        "run_id": "run_active",
+        "status": "cancel_requested",
+        "trace_id": "trace_run_active",
+        "active_sandbox_leases": [{"id": "lease-a", "trace_id": "trace_lease_a"}],
+    }
+    lease_reads = [call for call in calls if isinstance(call[0], str) and call[0].startswith("select * from sandbox_leases")]
+    assert len(lease_reads) == 1
+    assert "status = 'active'" in lease_reads[0][0]
+    assert lease_reads[0][1] == ("default", "run_active")
+    assert not any(item[0] == "event" and item[1]["event_type"] == "sandbox_lease_released" for item in calls)
+
+
+@pytest.mark.asyncio
+async def test_request_run_cancel_allows_cancelled_run_with_active_sandbox_lease_for_cleanup_retry(monkeypatch):
+    from app import repositories
+
+    calls = []
+
+    class RunCursor:
+        async def fetchone(self):
+            return {"id": "run_queued", "status": "cancelled", "trace_id": "trace_run_queued"}
+
+    class LeaseCursor:
+        async def fetchall(self):
+            return [{"id": "lease-queued", "trace_id": "trace_lease_queued"}]
+
+    class EmptyCursor:
+        async def fetchall(self):
+            return []
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append((normalized, params))
+            if normalized.startswith("update runs"):
+                assert "status = 'cancelled'" in normalized
+                assert "exists ( select 1 from sandbox_leases" in normalized
+                assert "sandbox_leases.status = 'active'" in normalized
+                return RunCursor()
+            if normalized.startswith("update run_steps"):
+                return EmptyCursor()
+            if normalized.startswith("select * from sandbox_leases"):
+                return LeaseCursor()
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-a"
+
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+
+    result = await repositories.request_run_cancel(
+        FakeConnection(),
+        tenant_id="default",
+        user_id="user-a",
+        run_id="run_queued",
+    )
+
+    assert result == {
+        "run_id": "run_queued",
+        "status": "cancelled",
+        "trace_id": "trace_run_queued",
+        "active_sandbox_leases": [{"id": "lease-queued", "trace_id": "trace_lease_queued"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_release_stopped_sandbox_leases_for_cancel_releases_only_stopped_lease_ids_and_emits_events(monkeypatch):
+    from app import repositories
+
+    calls = []
+
+    class LeaseCursor:
+        async def fetchall(self):
+            return [{"id": "lease-a", "trace_id": "trace_lease_a"}]
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append((normalized, params))
+            if normalized.startswith("update sandbox_leases"):
+                assert "id = any(%s)" in normalized
+                assert params == ("cancel_requested", "default", "run_active", ["lease-a"])
+                return LeaseCursor()
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-a"
+
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+
+    released = await repositories.release_stopped_sandbox_leases_for_cancel(
+        FakeConnection(),
+        tenant_id="default",
+        run_id="run_active",
+        reason="cancel_requested",
+        lease_ids=["lease-a"],
+        trace_id="trace_run_active",
+    )
+
+    assert released == [{"id": "lease-a", "trace_id": "trace_lease_a"}]
     lease_updates = [call for call in calls if isinstance(call[0], str) and call[0].startswith("update sandbox_leases")]
     assert len(lease_updates) == 1
     assert "status = 'active'" in lease_updates[0][0]
-    assert lease_updates[0][1] == ("cancel_requested", "default", "run_active")
+    assert lease_updates[0][1] == ("cancel_requested", "default", "run_active", ["lease-a"])
     release_event = next(item for item in calls if item[0] == "event" and item[1]["event_type"] == "sandbox_lease_released")
     assert release_event[1]["trace_id"] == "trace_lease_a"
     assert release_event[1]["payload"] == {
@@ -999,7 +1543,7 @@ async def test_request_admin_run_cancel_does_not_filter_target_user_and_audits(m
                 assert "and user_id =" not in normalized
                 assert params == ("admin-a", "default", "run_active")
                 return FakeCursor()
-            if normalized.startswith("update sandbox_leases"):
+            if normalized.startswith("select * from sandbox_leases"):
                 return FakeCursor()
             raise AssertionError(f"unexpected sql: {normalized}")
 
@@ -1079,7 +1623,7 @@ async def test_request_admin_run_cancel_closes_pending_steps_when_queued_cancell
                 return FakeCursor()
             if normalized.startswith("update run_steps"):
                 return FakeCursor()
-            if normalized.startswith("update sandbox_leases"):
+            if normalized.startswith("select * from sandbox_leases"):
                 return FakeCursor()
             raise AssertionError(f"unexpected sql: {normalized}")
 
@@ -1109,7 +1653,7 @@ async def test_request_admin_run_cancel_closes_pending_steps_when_queued_cancell
 
 
 @pytest.mark.asyncio
-async def test_request_admin_run_cancel_releases_active_sandbox_leases(monkeypatch):
+async def test_request_admin_run_cancel_defers_active_sandbox_lease_release_until_cleanup_success(monkeypatch):
     from app import repositories
 
     calls = []
@@ -1128,8 +1672,10 @@ async def test_request_admin_run_cancel_releases_active_sandbox_leases(monkeypat
             calls.append((normalized, params))
             if normalized.startswith("update runs"):
                 return RunCursor()
-            if normalized.startswith("update sandbox_leases"):
+            if normalized.startswith("select * from sandbox_leases"):
                 return LeaseCursor()
+            if normalized.startswith("update sandbox_leases"):
+                raise AssertionError("admin cancel request must not release sandbox leases before runtime cleanup")
             raise AssertionError(f"unexpected sql: {normalized}")
 
     async def fake_append_event(conn, **kwargs):
@@ -1150,10 +1696,116 @@ async def test_request_admin_run_cancel_releases_active_sandbox_leases(monkeypat
         run_id="run_active",
     )
 
-    assert result == {"run_id": "run_active", "status": "cancel_requested"}
+    assert result == {
+        "run_id": "run_active",
+        "status": "cancel_requested",
+        "trace_id": "trace_run_active",
+        "active_sandbox_leases": [{"id": "lease-admin", "trace_id": None}],
+    }
+    lease_reads = [call for call in calls if isinstance(call[0], str) and call[0].startswith("select * from sandbox_leases")]
+    assert len(lease_reads) == 1
+    assert lease_reads[0][1] == ("default", "run_active")
+    assert not any(item[0] == "event" and item[1]["event_type"] == "sandbox_lease_released" for item in calls)
+
+
+@pytest.mark.asyncio
+async def test_request_admin_run_cancel_allows_cancelled_run_with_active_sandbox_lease_for_cleanup_retry(monkeypatch):
+    from app import repositories
+
+    calls = []
+
+    class RunCursor:
+        async def fetchone(self):
+            return {"id": "run_queued", "status": "cancelled", "user_id": "target-user", "trace_id": "trace_run_queued"}
+
+    class LeaseCursor:
+        async def fetchall(self):
+            return [{"id": "lease-admin-queued", "trace_id": None}]
+
+    class EmptyCursor:
+        async def fetchall(self):
+            return []
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append((normalized, params))
+            if normalized.startswith("update runs"):
+                assert "status = 'cancelled'" in normalized
+                assert "exists ( select 1 from sandbox_leases" in normalized
+                assert "sandbox_leases.status = 'active'" in normalized
+                assert "and user_id =" not in normalized
+                return RunCursor()
+            if normalized.startswith("update run_steps"):
+                return EmptyCursor()
+            if normalized.startswith("select * from sandbox_leases"):
+                return LeaseCursor()
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-a"
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "aud-a"
+
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+
+    result = await repositories.request_admin_run_cancel(
+        FakeConnection(),
+        tenant_id="default",
+        admin_user_id="admin-a",
+        run_id="run_queued",
+    )
+
+    assert result == {
+        "run_id": "run_queued",
+        "status": "cancelled",
+        "trace_id": "trace_run_queued",
+        "active_sandbox_leases": [{"id": "lease-admin-queued", "trace_id": None}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_release_stopped_sandbox_leases_for_admin_cancel_emits_admin_role(monkeypatch):
+    from app import repositories
+
+    calls = []
+
+    class LeaseCursor:
+        async def fetchall(self):
+            return [{"id": "lease-admin", "trace_id": None}]
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append((normalized, params))
+            if normalized.startswith("update sandbox_leases"):
+                return LeaseCursor()
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-a"
+
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+
+    released = await repositories.release_stopped_sandbox_leases_for_cancel(
+        FakeConnection(),
+        tenant_id="default",
+        run_id="run_active",
+        reason="admin_cancel_requested",
+        lease_ids=["lease-admin"],
+        trace_id="trace_run_active",
+        requested_by_role="admin",
+    )
+
+    assert released == [{"id": "lease-admin", "trace_id": None}]
     lease_updates = [call for call in calls if isinstance(call[0], str) and call[0].startswith("update sandbox_leases")]
     assert len(lease_updates) == 1
-    assert lease_updates[0][1] == ("admin_cancel_requested", "default", "run_active")
+    assert lease_updates[0][1] == ("admin_cancel_requested", "default", "run_active", ["lease-admin"])
     release_event = next(item for item in calls if item[0] == "event" and item[1]["event_type"] == "sandbox_lease_released")
     assert release_event[1]["trace_id"] == "trace_run_active"
     assert release_event[1]["payload"] == {

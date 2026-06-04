@@ -12,6 +12,8 @@ from app.control_plane_contracts import (
     EXECUTOR_RESULT_SCHEMA_VERSION,
     RUN_CONTRACT_VERSION,
     artifact_manifest_contract,
+    sanitize_public_payload,
+    sanitize_public_text,
     standard_error_code,
     standard_trace_id,
 )
@@ -540,7 +542,7 @@ async def create_run(
 ) -> str:
     resolved_run_id = run_id or new_id("run")
     trace_id = standard_trace_id(resolved_run_id)
-    await conn.execute(
+    cursor = await conn.execute(
         """
         insert into runs(
           id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id,
@@ -548,7 +550,14 @@ async def create_run(
           status, input_json, queued_at,
           input_token_count, output_token_count, total_token_count, estimated_cost_minor
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, 'queued', %s::jsonb, now(), 0, 0, 0, 0)
+        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, 'queued', %s::jsonb, now(), 0, 0, 0, 0
+        from sessions
+        where sessions.tenant_id = %s
+          and sessions.workspace_id = %s
+          and sessions.user_id = %s
+          and sessions.id = %s
+          and sessions.agent_id = %s
+        returning id
         """,
         (
             resolved_run_id,
@@ -564,8 +573,16 @@ async def create_run(
             dumps_json(principal_roles or []),
             auth_source,
             dumps_json(input_json),
+            tenant_id,
+            workspace_id,
+            user_id,
+            session_id,
+            agent_id,
         ),
     )
+    row = await cursor.fetchone()
+    if row is None:
+        raise RepositoryNotFoundError("session_not_found")
     return resolved_run_id
 
 
@@ -753,20 +770,46 @@ async def create_context_snapshot(
     payload_json: dict[str, Any],
 ) -> dict[str, Any]:
     snapshot_id = new_id("ctx")
-    await conn.execute(
+    redaction_summary_json = sanitize_public_payload(redaction_summary_json)
+    if not isinstance(redaction_summary_json, dict):
+        redaction_summary_json = {}
+    payload_json = sanitize_public_payload(payload_json)
+    if not isinstance(payload_json, dict):
+        payload_json = {}
+    cursor = await conn.execute(
         """
+        with scoped_run as (
+          select runs.id
+          from runs
+          join sessions on sessions.id = runs.session_id
+            and sessions.tenant_id = runs.tenant_id
+            and sessions.workspace_id = runs.workspace_id
+            and sessions.user_id = runs.user_id
+            and sessions.agent_id = runs.agent_id
+          where runs.tenant_id = %s
+            and runs.workspace_id = %s
+            and runs.user_id = %s
+            and runs.session_id = %s
+            and runs.id = %s
+        )
         insert into run_context_snapshots(
           id, tenant_id, workspace_id, user_id, session_id, run_id, trace_id,
           schema_version, context_kind, included_message_ids, included_file_ids,
           included_artifact_ids, included_memory_record_ids, redaction_summary_json, payload_json
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb)
+        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb
+        from scoped_run
         returning id, tenant_id, workspace_id, user_id, session_id, run_id, trace_id,
                   schema_version, context_kind, included_message_ids, included_file_ids,
                   included_artifact_ids, included_memory_record_ids, redaction_summary_json,
                   payload_json, created_at
         """,
         (
+            tenant_id,
+            workspace_id,
+            user_id,
+            session_id,
+            run_id,
             snapshot_id,
             tenant_id,
             workspace_id,
@@ -784,6 +827,9 @@ async def create_context_snapshot(
             dumps_json(payload_json),
         ),
     )
+    row = await cursor.fetchone()
+    if row is None:
+        raise RepositoryNotFoundError("run_not_found")
     return {
         "id": snapshot_id,
         "tenant_id": tenant_id,
@@ -845,6 +891,37 @@ async def list_context_snapshots(conn: AsyncConnection, *, tenant_id: str, user_
         (tenant_id, user_id, run_id),
     )
     return list(await cursor.fetchall())
+
+
+async def get_context_snapshot_for_worker(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+    run_id: str,
+    context_snapshot_id: str,
+) -> dict[str, Any] | None:
+    """Load a context snapshot only when it matches the full worker run identity."""
+    cursor = await conn.execute(
+        """
+        select id, tenant_id, workspace_id, user_id, session_id, run_id, trace_id,
+               schema_version, context_kind, included_message_ids, included_file_ids,
+               included_artifact_ids, included_memory_record_ids, redaction_summary_json,
+               payload_json, created_at
+        from run_context_snapshots
+        where tenant_id = %s
+          and workspace_id = %s
+          and user_id = %s
+          and session_id = %s
+          and run_id = %s
+          and id = %s
+        """,
+        (tenant_id, workspace_id, user_id, session_id, run_id, context_snapshot_id),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
 
 
 def _default_memory_policy(*, tenant_id: str, workspace_id: str, user_id: str, agent_id: str | None) -> dict[str, Any]:
@@ -973,6 +1050,10 @@ async def create_memory_record(
     metadata_json: dict[str, Any],
     retention_days: int = 90,
 ) -> dict[str, Any]:
+    if not session_id:
+        raise RepositoryConflictError("memory_session_id_required")
+    if not agent_id:
+        raise RepositoryConflictError("memory_agent_id_required")
     retention_days = int(retention_days)
     if retention_days <= 0:
         raise RepositoryConflictError("memory_retention_days_invalid")
@@ -985,7 +1066,13 @@ async def create_memory_record(
           id, tenant_id, workspace_id, user_id, agent_id, session_id,
           record_type, content, metadata_json, expires_at
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, now() + (%s * interval '1 day'))
+        select %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, now() + (%s * interval '1 day')
+        from sessions
+        where sessions.tenant_id = %s
+          and sessions.workspace_id = %s
+          and sessions.user_id = %s
+          and sessions.id = %s
+          and sessions.agent_id = %s
         returning id, tenant_id, workspace_id, user_id, agent_id, session_id,
                   record_type, content, metadata_json, status, expires_at,
                   deleted_at, created_at, updated_at
@@ -1001,9 +1088,16 @@ async def create_memory_record(
             redacted_content,
             dumps_json(redacted_metadata),
             retention_days,
+            tenant_id,
+            workspace_id,
+            user_id,
+            session_id,
+            agent_id,
         ),
     )
     row = await cursor.fetchone()
+    if row is None:
+        raise RepositoryNotFoundError("session_not_found")
     return dict(row)
 
 
@@ -1288,9 +1382,26 @@ async def get_latest_tool_permission_decision(
     run_id: str,
     tool_id: str,
     action: str = "execute",
+    tool_call_id: str | None = None,
+    request_payload_json: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
+    exact_clauses: list[str] = []
+    params: list[Any] = [tenant_id, user_id, run_id, tool_id, action]
+    if tool_call_id:
+        exact_clauses.append("(decision in ('allow_once', 'deny') and tool_call_id = %s)")
+        params.append(tool_call_id)
+    request_payload = request_payload_json if isinstance(request_payload_json, dict) else {}
+    for fingerprint_key in ("command_sha256", "input_sha256"):
+        fingerprint_value = request_payload.get(fingerprint_key)
+        if isinstance(fingerprint_value, str) and fingerprint_value:
+            exact_clauses.append("(decision = 'allow_for_run' and request_payload_json ->> %s = %s)")
+            params.extend([fingerprint_key, fingerprint_value])
+            break
+    if not exact_clauses:
+        return None
+    exact_filter = f"and ({' or '.join(exact_clauses)})" if exact_clauses else ""
     cursor = await conn.execute(
-        """
+        f"""
         select *
         from run_tool_permission_requests
         where tenant_id = %s
@@ -1300,10 +1411,11 @@ async def get_latest_tool_permission_decision(
           and action = %s
           and status = 'decided'
           and (expires_at is null or expires_at > now())
+          {exact_filter}
         order by decided_at desc, updated_at desc, created_at desc
         limit 1
         """,
-        (tenant_id, user_id, run_id, tool_id, action),
+        tuple(params),
     )
     return await cursor.fetchone()
 
@@ -1494,11 +1606,82 @@ async def release_active_sandbox_leases_for_run(
         where tenant_id = %s
           and run_id = %s
           and status = 'active'
-        returning id, tenant_id, run_id, trace_id, release_reason
+        returning *
         """,
         (reason, tenant_id, run_id),
     )
     return list(await cursor.fetchall())
+
+
+async def list_active_sandbox_leases_for_run(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+) -> list[dict[str, Any]]:
+    """Return only active sandbox lease rows for runtime cleanup."""
+    cursor = await conn.execute(
+        """
+        select *
+        from sandbox_leases
+        where tenant_id = %s
+          and run_id = %s
+          and status = 'active'
+        order by created_at asc
+        """,
+        (tenant_id, run_id),
+    )
+    return list(await cursor.fetchall())
+
+
+async def release_stopped_sandbox_leases_for_cancel(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    reason: str,
+    lease_ids: list[str],
+    trace_id: str | None = None,
+    requested_by_role: str | None = None,
+) -> list[dict[str, Any]]:
+    """Release leases after their runtime containers have been stopped."""
+    if not lease_ids:
+        return []
+    cursor = await conn.execute(
+        """
+        update sandbox_leases
+        set status = 'released',
+            released_at = coalesce(released_at, now()),
+            release_reason = %s,
+            updated_at = now()
+        where tenant_id = %s
+          and run_id = %s
+          and id = any(%s)
+          and status = 'active'
+        returning *
+        """,
+        (reason, tenant_id, run_id, lease_ids),
+    )
+    released_leases = list(await cursor.fetchall())
+    for lease in released_leases:
+        payload: dict[str, Any] = {
+            "visible_to_user": True,
+            "lease_id": lease.get("id"),
+            "reason": reason,
+        }
+        if requested_by_role:
+            payload["requested_by_role"] = requested_by_role
+        await append_event(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            trace_id=lease.get("trace_id") or trace_id,
+            event_type="sandbox_lease_released",
+            stage="sandbox",
+            message="已因取消释放 Sandbox 租约",
+            payload=payload,
+        )
+    return released_leases
 
 
 async def cleanup_expired_sandbox_leases(
@@ -1654,13 +1837,15 @@ async def list_run_skill_snapshots(conn: AsyncConnection, *, tenant_id: str, run
     rows = list(await cursor.fetchall())
     snapshots = []
     for row in rows:
-        source = row.get("source_json") if isinstance(row.get("source_json"), dict) else {}
+        source = sanitize_public_payload(row.get("source_json") if isinstance(row.get("source_json"), dict) else {})
+        if not isinstance(source, dict):
+            source = {}
         dependency_ids = row.get("dependency_ids") if isinstance(row.get("dependency_ids"), list) else []
         used_skills_source = str(row.get("used_skills_source") or "").strip()
         inferred_used = bool(row.get("inferred_used"))
         usage: dict[str, Any] = {}
         if used_skills_source:
-            usage["used_skills_source"] = used_skills_source
+            usage["used_skills_source"] = sanitize_public_text(used_skills_source)
         if inferred_used:
             usage["inferred_used"] = True
             usage["inferred_used_skills"] = [str(row["skill_id"])]
@@ -1677,10 +1862,40 @@ async def list_run_skill_snapshots(conn: AsyncConnection, *, tenant_id: str, run
         }
         if usage:
             snapshot["usage"] = usage
-        snapshots.append(
-            snapshot
-        )
+        snapshots.append(snapshot)
     return snapshots
+
+
+def _sanitize_skill_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    source = sanitize_public_payload(snapshot.get("source") if isinstance(snapshot.get("source"), dict) else {})
+    if not isinstance(source, dict):
+        source = {}
+    usage = snapshot.get("usage") if isinstance(snapshot.get("usage"), dict) else {}
+    sanitized_usage: dict[str, Any] = {}
+    for key, value in usage.items():
+        if isinstance(value, str):
+            sanitized_text = sanitize_public_text(value)
+            if sanitized_text:
+                sanitized_usage[key] = sanitized_text
+        elif isinstance(value, list):
+            cleaned = [sanitize_public_text(item) for item in value]
+            sanitized_usage[key] = [item for item in cleaned if item]
+        elif isinstance(value, (int, bool)):
+            sanitized_usage[key] = value
+    sanitized = {
+        "skill_id": str(snapshot.get("skill_id") or ""),
+        "skill_version": str(snapshot.get("skill_version") or ""),
+        "content_hash": str(snapshot.get("content_hash") or ""),
+        "source": source,
+        "dependency_ids": [str(item) for item in snapshot.get("dependency_ids") or []],
+        "allowed": bool(snapshot.get("allowed")),
+        "staged": bool(snapshot.get("staged")),
+        "used": bool(snapshot.get("used")),
+        "created_at": snapshot.get("created_at"),
+    }
+    if sanitized_usage:
+        sanitized["usage"] = sanitized_usage
+    return sanitized
 
 
 def _skill_usage_from_events(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -1704,10 +1919,10 @@ def _skill_usage_from_events(events: list[dict[str, Any]]) -> dict[str, dict[str
             },
         )
         usage["event_count"] += 1
-        event_source = str(payload.get("source") or "").strip()
+        event_source = sanitize_public_text(payload.get("source")).strip()
         if event_source and not usage["event_source"]:
             usage["event_source"] = event_source
-        tool_use_id = str(payload.get("tool_use_id") or "").strip()
+        tool_use_id = sanitize_public_text(payload.get("tool_use_id")).strip()
         if tool_use_id and tool_use_id not in usage["tool_use_ids"]:
             usage["tool_use_ids"].append(tool_use_id)
     for usage in usage_by_skill.values():
@@ -2232,6 +2447,7 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
         await list_run_skill_snapshots(conn, tenant_id=tenant_id, run_id=run_id),
         events,
     )
+    skill_snapshots = [_sanitize_skill_snapshot(snapshot) for snapshot in skill_snapshots]
     cursor = await conn.execute(
         """
         select id, user_id, action, target_type, target_id, trace_id, schema_version, payload_json, created_at
@@ -2246,6 +2462,12 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
         (tenant_id, run_id, run_id),
     )
     audit_rows = list(await cursor.fetchall())
+    run_input = sanitize_public_payload(run["input_json"] if isinstance(run.get("input_json"), dict) else {})
+    if not isinstance(run_input, dict):
+        run_input = {}
+    run_result = sanitize_public_payload(run["result_json"] if isinstance(run.get("result_json"), dict) else {})
+    if not isinstance(run_result, dict):
+        run_result = {}
     return {
         "run": {
             "run_id": run["id"],
@@ -2261,10 +2483,10 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
             "finished_at": run.get("finished_at"),
             "cancel_requested_at": run.get("cancel_requested_at"),
             "cancel_requested_by": run.get("cancel_requested_by"),
-            "input": run["input_json"],
-            "result": run["result_json"],
-            "error_code": run.get("error_code"),
-            "error_message": run.get("error_message"),
+            "input": run_input,
+            "result": run_result,
+            "error_code": sanitize_public_text(run.get("error_code")) or None,
+            "error_message": sanitize_public_text(run.get("error_message")),
             "trace_id": run.get("trace_id") or standard_trace_id(str(run["id"])),
             "contract_version": run_contract_version,
             "executor_schema_version": executor_schema_version,
@@ -2282,10 +2504,10 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
                 "trace_id": item.get("trace_id") or standard_trace_id(str(run["id"])),
                 "type": item["event_type"],
                 "stage": item["stage"],
-                "message": item["message"],
+                "message": sanitize_public_text(item.get("message")),
                 "severity": item.get("severity") or "info",
                 "visible_to_user": bool(item.get("visible_to_user", True)),
-                "error_code": item.get("error_code"),
+                "error_code": sanitize_public_text(item.get("error_code")) or None,
                 "latency_ms": item.get("latency_ms"),
                 "token_counts": {
                     "input": int(item.get("input_token_count") or 0),
@@ -2293,7 +2515,14 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
                     "total": int(item.get("total_token_count") or 0),
                 },
                 "cost": {"estimated_cost_minor": int(item.get("estimated_cost_minor") or 0)},
-                "payload": item["payload_json"],
+                "payload": (
+                    sanitized_payload
+                    if isinstance(
+                        sanitized_payload := sanitize_public_payload(item.get("payload_json") if isinstance(item.get("payload_json"), dict) else {}),
+                        dict,
+                    )
+                    else {}
+                ),
                 "created_at": item["created_at"],
             }
             for item in events
@@ -2305,10 +2534,17 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
                 "step_key": item["step_key"],
                 "step_kind": item["step_kind"],
                 "status": item["status"],
-                "title": item["title"],
-                "role": item["role"],
+                "title": sanitize_public_text(item.get("title")),
+                "role": sanitize_public_text(item.get("role")) if item.get("role") is not None else None,
                 "sequence": item["sequence"],
-                "payload": item["payload_json"],
+                "payload": (
+                    sanitized_payload
+                    if isinstance(
+                        sanitized_payload := sanitize_public_payload(item.get("payload_json") if isinstance(item.get("payload_json"), dict) else {}),
+                        dict,
+                    )
+                    else {}
+                ),
                 "started_at": item["started_at"],
                 "finished_at": item["finished_at"],
                 "created_at": item["created_at"],
@@ -2321,7 +2557,7 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
                 "artifact_id": item["id"],
                 "trace_id": item.get("trace_id") or standard_trace_id(str(run["id"])),
                 "artifact_type": item["artifact_type"],
-                "label": item["label"],
+                "label": sanitize_public_text(item.get("label")) or str(item["artifact_type"]),
                 "content_type": item["content_type"],
                 "size_bytes": item["size_bytes"],
                 "manifest": artifact_manifest_contract(
@@ -2353,7 +2589,14 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
                 "action": item["action"],
                 "target_type": item["target_type"],
                 "target_id": item["target_id"],
-                "payload": item["payload_json"],
+                "payload": (
+                    sanitized_payload
+                    if isinstance(
+                        sanitized_payload := sanitize_public_payload(item.get("payload_json") if isinstance(item.get("payload_json"), dict) else {}),
+                        dict,
+                    )
+                    else {}
+                ),
                 "created_at": item["created_at"],
             }
             for item in audit_rows
@@ -2373,7 +2616,19 @@ async def request_run_cancel(conn: AsyncConnection, *, tenant_id: str, user_id: 
         where tenant_id = %s
           and id = %s
           and user_id = %s
-          and status in ('queued', 'running')
+          and (
+            status in ('queued', 'running')
+            or (
+              status = 'cancelled'
+              and exists (
+                select 1
+                from sandbox_leases
+                where sandbox_leases.tenant_id = runs.tenant_id
+                  and sandbox_leases.run_id = runs.id
+                  and sandbox_leases.status = 'active'
+              )
+            )
+          )
         returning id, status, trace_id
         """,
         (user_id, tenant_id, run_id, user_id),
@@ -2383,11 +2638,10 @@ async def request_run_cancel(conn: AsyncConnection, *, tenant_id: str, user_id: 
         return None
     if row["status"] == "cancelled":
         await _cancel_open_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
-    released_leases = await release_active_sandbox_leases_for_run(
+    active_sandbox_leases = await list_active_sandbox_leases_for_run(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
-        reason="cancel_requested",
     )
     await append_event(
         conn,
@@ -2399,21 +2653,6 @@ async def request_run_cancel(conn: AsyncConnection, *, tenant_id: str, user_id: 
         message="已请求取消",
         payload={"visible_to_user": True, "severity": "warning", "requested_by": user_id},
     )
-    for lease in released_leases:
-        await append_event(
-            conn,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            trace_id=lease.get("trace_id") or row.get("trace_id"),
-            event_type="sandbox_lease_released",
-            stage="sandbox",
-            message="已因取消释放 Sandbox 租约",
-            payload={
-                "visible_to_user": True,
-                "lease_id": lease.get("id"),
-                "reason": "cancel_requested",
-            },
-        )
     if row["status"] == "cancelled":
         await append_event(
             conn,
@@ -2426,7 +2665,11 @@ async def request_run_cancel(conn: AsyncConnection, *, tenant_id: str, user_id: 
             payload={"visible_to_user": True, "severity": "warning"},
         )
     status = "cancelled" if row["status"] == "cancelled" else "cancel_requested"
-    return {"run_id": row["id"], "status": status}
+    result = {"run_id": row["id"], "status": status}
+    if active_sandbox_leases:
+        result["trace_id"] = row.get("trace_id")
+        result["active_sandbox_leases"] = active_sandbox_leases
+    return result
 
 
 async def request_admin_run_cancel(
@@ -2446,7 +2689,19 @@ async def request_admin_run_cancel(
           finished_at = case when status = 'queued' then now() else finished_at end
         where tenant_id = %s
           and id = %s
-          and status in ('queued', 'running')
+          and (
+            status in ('queued', 'running')
+            or (
+              status = 'cancelled'
+              and exists (
+                select 1
+                from sandbox_leases
+                where sandbox_leases.tenant_id = runs.tenant_id
+                  and sandbox_leases.run_id = runs.id
+                  and sandbox_leases.status = 'active'
+              )
+            )
+          )
         returning id, status, user_id, trace_id
         """,
         (admin_user_id, tenant_id, run_id),
@@ -2457,11 +2712,10 @@ async def request_admin_run_cancel(
     result_status = "cancelled" if row["status"] == "cancelled" else "cancel_requested"
     if result_status == "cancelled":
         await _cancel_open_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
-    released_leases = await release_active_sandbox_leases_for_run(
+    active_sandbox_leases = await list_active_sandbox_leases_for_run(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
-        reason="admin_cancel_requested",
     )
     await append_event(
         conn,
@@ -2479,22 +2733,6 @@ async def request_admin_run_cancel(
             "target_user_id": row.get("user_id"),
         },
     )
-    for lease in released_leases:
-        await append_event(
-            conn,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            trace_id=lease.get("trace_id") or row.get("trace_id"),
-            event_type="sandbox_lease_released",
-            stage="sandbox",
-            message="已因取消释放 Sandbox 租约",
-            payload={
-                "visible_to_user": True,
-                "lease_id": lease.get("id"),
-                "reason": "admin_cancel_requested",
-                "requested_by_role": "admin",
-            },
-        )
     if row["status"] == "cancelled":
         await append_event(
             conn,
@@ -2520,7 +2758,11 @@ async def request_admin_run_cancel(
             "result_status": result_status,
         },
     )
-    return {"run_id": row["id"], "status": result_status}
+    result = {"run_id": row["id"], "status": result_status}
+    if active_sandbox_leases:
+        result["trace_id"] = row.get("trace_id")
+        result["active_sandbox_leases"] = active_sandbox_leases
+    return result
 
 
 async def is_cancel_requested(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> bool:
@@ -2809,17 +3051,28 @@ async def get_run_file(
     return await cursor.fetchone()
 
 
-async def mark_run_running(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> bool:
+async def mark_run_running(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> dict[str, Any] | None:
     cursor = await conn.execute(
         """
         update runs
         set status = 'running', started_at = coalesce(started_at, now())
-        where tenant_id = %s and id = %s and status = 'queued'
-        returning id
+        from sessions
+        where runs.tenant_id = %s
+          and runs.id = %s
+          and runs.status = 'queued'
+          and sessions.id = runs.session_id
+          and sessions.tenant_id = runs.tenant_id
+          and sessions.workspace_id = runs.workspace_id
+          and sessions.user_id = runs.user_id
+          and sessions.agent_id = runs.agent_id
+        returning runs.id, runs.tenant_id, runs.workspace_id, runs.user_id,
+                  runs.session_id, runs.agent_id, runs.skill_id, runs.trace_id,
+                  runs.input_json
         """,
         (tenant_id, run_id),
     )
-    return await cursor.fetchone() is not None
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
 
 
 async def complete_run(

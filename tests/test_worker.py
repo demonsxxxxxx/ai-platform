@@ -1,4 +1,6 @@
 from contextlib import asynccontextmanager
+import hashlib
+import json
 
 import pytest
 
@@ -47,6 +49,38 @@ def default_cancel_not_requested(monkeypatch):
         return False
 
     monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested, raising=False)
+
+    async def get_context_snapshot_for_worker(conn, **kwargs):
+        return {
+            "id": kwargs["context_snapshot_id"],
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "session_id": kwargs["session_id"],
+            "run_id": kwargs["run_id"],
+            "trace_id": "trace_run_a",
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_kind": "executor",
+            "included_message_ids": [],
+            "included_file_ids": ["file-a"],
+            "included_artifact_ids": [],
+            "included_memory_record_ids": [],
+            "redaction_summary_json": {},
+            "payload_json": {
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "source": "test",
+                "message_count": 0,
+                "file_count": 1,
+                "memory_record_count": 0,
+            },
+            "created_at": None,
+        }
+
+    monkeypatch.setattr(
+        "app.worker.repositories.get_context_snapshot_for_worker",
+        get_context_snapshot_for_worker,
+        raising=False,
+    )
 
 
 @pytest.mark.asyncio
@@ -381,6 +415,394 @@ async def test_worker_refreshes_missing_context_snapshot_before_executor(monkeyp
     assert captured["payload"].context_snapshot_id == "ctx_worker_refresh"
     assert captured["payload"].context_snapshot["source"] == "worker_refresh"
     assert ("complete", "run-a") in calls
+
+
+@pytest.mark.asyncio
+async def test_worker_uses_scoped_db_context_snapshot_instead_of_queue_copy(monkeypatch):
+    captured = {}
+
+    class CaptureAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            captured["payload"] = payload
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="capture-adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="capture/1",
+                capabilities={},
+                result={"message": "done"},
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        return "evt-a"
+
+    async def get_context_snapshot_for_worker(conn, **kwargs):
+        assert kwargs == {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "context_snapshot_id": "ctx-existing",
+        }
+        return {
+            "id": "ctx-existing",
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "trace_id": "trace_run_a",
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_kind": "executor",
+            "included_message_ids": [],
+            "included_file_ids": ["file-a"],
+            "included_artifact_ids": [],
+            "included_memory_record_ids": [],
+            "redaction_summary_json": {},
+            "payload_json": {
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "source": "db_scoped",
+                "message_count": 0,
+                "file_count": 1,
+                "memory_record_count": 0,
+            },
+            "created_at": None,
+        }
+
+    async def fail_record_context(*args, **kwargs):
+        raise AssertionError("verified queue snapshots must be reconstructed from DB scope")
+
+    async def complete_run(conn, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr("app.worker.record_initial_context_snapshot", fail_record_context)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    outcome = await process_run_payload(
+        base_payload(
+            executor_type="claude-agent-worker",
+            context_snapshot={"source": "tampered_queue_copy"},
+        ),
+        AdapterRegistry({"claude-agent-worker": CaptureAdapter()}),
+    )
+
+    assert outcome.status == "succeeded"
+    assert captured["payload"].context_snapshot_id == "ctx-existing"
+    assert captured["payload"].context_snapshot["source"] == "db_scoped"
+    assert "tampered_queue_copy" not in json.dumps(captured["payload"].context_snapshot, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_worker_refreshes_unscoped_context_snapshot_before_executor(monkeypatch):
+    calls = []
+    captured = {}
+
+    class CaptureAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            captured["payload"] = payload
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="capture-adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="capture/1",
+                capabilities={},
+                result={"message": "done"},
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"]))
+        return "evt-a"
+
+    async def get_context_snapshot_for_worker(conn, **kwargs):
+        calls.append(("lookup", kwargs["context_snapshot_id"]))
+        return None
+
+    async def record_context(conn, **kwargs):
+        calls.append(("context", kwargs["source"]))
+        return {
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_snapshot_id": "ctx_worker_refresh",
+            "source": kwargs["source"],
+            "message_count": 0,
+            "file_count": 1,
+            "memory_record_count": 0,
+        }
+
+    async def complete_run(conn, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr("app.worker.record_initial_context_snapshot", record_context)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    outcome = await process_run_payload(
+        base_payload(
+            executor_type="claude-agent-worker",
+            context_snapshot_id="ctx-cross-tenant",
+            context_snapshot={"source": "cross_tenant_queue_copy"},
+        ),
+        AdapterRegistry({"claude-agent-worker": CaptureAdapter()}),
+    )
+
+    assert outcome.status == "succeeded"
+    assert ("lookup", "ctx-cross-tenant") in calls
+    assert ("context", "worker_refresh") in calls
+    assert captured["payload"].context_snapshot_id == "ctx_worker_refresh"
+    assert captured["payload"].context_snapshot["source"] == "worker_refresh"
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_queue_payload_identity_mismatch_before_context_or_executor(monkeypatch):
+    calls = []
+
+    class ForbiddenAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            raise AssertionError("identity-mismatched queue payload must not reach executor")
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return {
+            "id": run_id,
+            "tenant_id": tenant_id,
+            "workspace_id": "workspace-db",
+            "user_id": "user-db",
+            "session_id": "session-db",
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+        }
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs.get("payload") or {}))
+        return "evt-a"
+
+    async def fail_run(conn, **kwargs):
+        calls.append(("fail", kwargs["error_code"], kwargs["error_message"]))
+
+    async def fail_record_context(*args, **kwargs):
+        raise AssertionError("identity-mismatched queue payload must not refresh context snapshot")
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.record_initial_context_snapshot", fail_record_context)
+
+    outcome = await process_run_payload(
+        base_payload(
+            executor_type="claude-agent-worker",
+            workspace_id="workspace-queue",
+            user_id="user-queue",
+            session_id="session-queue",
+        ),
+        AdapterRegistry({"claude-agent-worker": ForbiddenAdapter()}),
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "queue_payload_identity_mismatch"
+    assert ("fail", "queue_payload_identity_mismatch", "Queue payload identity does not match run record") in calls
+    assert any(item[0] == "event" and item[1] == "error" for item in calls)
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_missing_db_identity_fields_before_context_or_executor(monkeypatch):
+    calls = []
+
+    class ForbiddenAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            raise AssertionError("DB identity with missing user_id must not reach executor")
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return {
+            "id": run_id,
+            "tenant_id": tenant_id,
+            "workspace_id": "workspace-a",
+            "user_id": None,
+            "session_id": "session-a",
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+        }
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs.get("payload") or {}))
+        return "evt-a"
+
+    async def fail_run(conn, **kwargs):
+        calls.append(("fail", kwargs["error_code"]))
+
+    async def fail_record_context(*args, **kwargs):
+        raise AssertionError("missing DB identity must not refresh context snapshot")
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.record_initial_context_snapshot", fail_record_context)
+
+    outcome = await process_run_payload(
+        base_payload(executor_type="claude-agent-worker"),
+        AdapterRegistry({"claude-agent-worker": ForbiddenAdapter()}),
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "queue_payload_identity_mismatch"
+    assert ("fail", "queue_payload_identity_mismatch") in calls
+    assert any("user_id" in item[2].get("mismatch_fields", []) for item in calls if item[0] == "event")
+
+
+@pytest.mark.asyncio
+async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(monkeypatch):
+    calls = []
+
+    class ForbiddenAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            raise AssertionError("scope-invalid queued run must not reach executor")
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        calls.append(("lock", tenant_id, run_id))
+        return None
+
+    async def get_run(conn, *, tenant_id, run_id):
+        calls.append(("get_run", tenant_id, run_id))
+        return {
+            "id": run_id,
+            "tenant_id": tenant_id,
+            "workspace_id": "workspace-a",
+            "user_id": None,
+            "session_id": "session-a",
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "status": "queued",
+        }
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs.get("payload") or {}))
+        return "evt-a"
+
+    async def fail_run(conn, **kwargs):
+        calls.append(("fail", kwargs["error_code"], kwargs["error_message"]))
+
+    async def fail_record_context(*args, **kwargs):
+        raise AssertionError("scope-invalid queued run must not refresh context snapshot")
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.record_initial_context_snapshot", fail_record_context)
+
+    outcome = await process_run_payload(
+        base_payload(executor_type="claude-agent-worker"),
+        AdapterRegistry({"claude-agent-worker": ForbiddenAdapter()}),
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "queue_payload_identity_mismatch"
+    assert ("fail", "queue_payload_identity_mismatch", "Queued run identity is invalid") in calls
+    assert any(item[0] == "event" and item[1] == "error" for item in calls)
+
+
+@pytest.mark.asyncio
+async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered(monkeypatch):
+    captured = {}
+    calls = []
+    version = "hash-qa-file-reviewer"
+
+    class CaptureAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            captured["payload"] = payload
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="capture-adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="capture/1",
+                capabilities={},
+                result={"message": "done"},
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return {
+            "id": run_id,
+            "tenant_id": tenant_id,
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "trace_id": "trace_run_a",
+            "input_json": {
+                "input": {"mode": "db", "message": "authoritative"},
+                "file_ids": ["file-db"],
+                "executor_type": "claude-agent-worker",
+                "skill_version": version,
+                "release_decision": release_decision(version),
+            },
+        }
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs.get("payload") or {}))
+        return "evt-a"
+
+    async def get_context_snapshot_for_worker(conn, **kwargs):
+        return None
+
+    async def record_context(conn, **kwargs):
+        calls.append(("context", kwargs["input_payload"], kwargs["file_ids"]))
+        return {
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_snapshot_id": "ctx_worker_refresh",
+            "source": kwargs["source"],
+            "message_count": 0,
+            "file_count": len(kwargs["file_ids"]),
+            "memory_record_count": 0,
+        }
+
+    async def complete_run(conn, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr("app.worker.record_initial_context_snapshot", record_context)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    outcome = await process_run_payload(
+        base_payload(
+            executor_type="fake",
+            input={"mode": "queue-tampered"},
+            file_ids=["file-queue"],
+            context_snapshot_id="ctx-cross-scope",
+            context_snapshot={"source": "queue-tampered"},
+        ),
+        AdapterRegistry({"claude-agent-worker": CaptureAdapter()}),
+    )
+
+    assert outcome.status == "succeeded"
+    assert ("context", {"mode": "db", "message": "authoritative"}, ["file-db"]) in calls
+    assert captured["payload"].input == {"mode": "db", "message": "authoritative"}
+    assert captured["payload"].file_ids == ["file-db"]
+    assert captured["payload"].skill_version == version
+    assert captured["payload"].release_decision == release_decision(version)
 
 
 @pytest.mark.asyncio
@@ -2331,6 +2753,9 @@ async def test_worker_blocks_high_risk_mcp_tool_without_permission_decision(monk
 @pytest.mark.asyncio
 async def test_worker_allows_high_risk_mcp_tool_with_permission_decision(monkeypatch):
     calls = []
+    expected_input_sha256 = hashlib.sha256(
+        json.dumps({"mode": "file"}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
     class RagflowAdapter:
         async def submit_run(self, payload, event_sink=None):
@@ -2356,6 +2781,9 @@ async def test_worker_allows_high_risk_mcp_tool_with_permission_decision(monkeyp
 
     async def get_latest_tool_permission_decision(conn, **kwargs):
         calls.append(("decision_lookup", kwargs["tool_id"]))
+        assert kwargs["tool_call_id"].startswith("mcp_")
+        if kwargs.get("request_payload_json", {}).get("input_sha256") != expected_input_sha256:
+            return None
         return {"id": "tpr_allow", "decision": "allow_for_run"}
 
     async def append_event(conn, **kwargs):

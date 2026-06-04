@@ -1,16 +1,26 @@
 import hashlib
 import hmac
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
 
 from app.runtime.sandbox.container_provider import FakeContainerProvider
-from app.runtime.sandbox.contracts import SandboxRuntimeRequest
+from app.runtime.sandbox.contracts import SandboxRuntimeRequest, StopResult
 from app.runtime.sandbox.runtime import SandboxRuntime
 
 
 def derived_callback_token(secret: str, token_id: str = "cbt_run-a") -> str:
     return hmac.new(secret.encode("utf-8"), token_id.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def noop_lease(*args):
+    return None
+
+
+@asynccontextmanager
+async def fake_transaction():
+    yield object()
 
 
 def request(**overrides) -> SandboxRuntimeRequest:
@@ -40,6 +50,7 @@ def request(**overrides) -> SandboxRuntimeRequest:
 @pytest.mark.asyncio
 async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_executor(tmp_path, monkeypatch):
     sent = []
+    lease_calls = []
 
     class StubSettings:
         sandbox_callback_base_url = "http://platform.test"
@@ -57,6 +68,8 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
         provider=FakeContainerProvider(executor_url="http://executor.test"),
         execute_task=execute,
         callback_token_resolver=lambda token_id: "secret-token" if token_id == "cbt_run-a" else "",
+        record_lease=lambda lease, request, workspace: lease_calls.append(("record", lease, request, workspace)),
+        release_lease=lambda lease, reason: lease_calls.append(("release", lease, reason)),
     )
 
     result = await runtime.submit(request(), event_sink=events.append)
@@ -100,6 +113,175 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
         "input_files": ["file-a"],
     }
     assert [event.type for event in events] == ["runtime_container_started"]
+    assert lease_calls[0][0] == "record"
+    assert lease_calls[0][1].container_id == "exec-run-a"
+    assert lease_calls[0][2].run_id == "run-a"
+    assert lease_calls[1][0] == "release"
+    assert lease_calls[1][2] == "dispatch_completed"
+
+
+@pytest.mark.asyncio
+async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, monkeypatch):
+    calls = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    async def execute(executor_url, task_request):
+        return {"status": "accepted", "session_id": task_request.session_id, "run_id": task_request.run_id}
+
+    async def create_sandbox_lease(conn, **kwargs):
+        calls.append(("create", kwargs["run_id"]))
+        return {"id": "lease-created-a"}
+
+    async def release_sandbox_lease(conn, **kwargs):
+        calls.append(("release_one", kwargs["lease_id"], kwargs["reason"]))
+        return {"id": kwargs["lease_id"], "status": "released"}
+
+    async def release_active_sandbox_leases_for_run(*args, **kwargs):
+        raise AssertionError("runtime must not release every active lease for the run")
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
+    monkeypatch.setattr("app.runtime.sandbox.runtime.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.runtime.sandbox.runtime.repositories.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr(
+        "app.runtime.sandbox.runtime.repositories.release_active_sandbox_leases_for_run",
+        release_active_sandbox_leases_for_run,
+    )
+
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=FakeContainerProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda token_id: "secret-token",
+    )
+
+    await runtime.submit(request(sandbox_mode="ephemeral"))
+
+    assert calls == [("create", "run-a"), ("release_one", "lease-created-a", "dispatch_completed")]
+
+
+@pytest.mark.asyncio
+async def test_runtime_does_not_release_db_lease_when_completion_stop_fails(tmp_path):
+    calls = []
+
+    class StopFailedProvider(FakeContainerProvider):
+        async def stop(self, lease, *, reason: str):
+            calls.append(("stop", reason))
+            return StopResult(container_id=lease.container_id, status="failed", message="stop failed")
+
+    async def execute(executor_url, task_request):
+        return {"status": "accepted", "session_id": task_request.session_id, "run_id": task_request.run_id}
+
+    async def record_lease(lease, request, workspace):
+        calls.append(("record", lease.run_id))
+        return {"id": "lease-created-a"}
+
+    async def release_lease(lease, reason, lease_record_id=None):
+        calls.append(("release", reason, lease_record_id))
+
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=StopFailedProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda token_id: "secret-token",
+        record_lease=record_lease,
+        release_lease=release_lease,
+    )
+
+    with pytest.raises(RuntimeError, match="sandbox_runtime_cleanup_failed"):
+        await runtime.submit(request(sandbox_mode="ephemeral"))
+
+    assert calls == [("record", "run-a"), ("stop", "dispatch_completed")]
+
+
+@pytest.mark.asyncio
+async def test_runtime_does_not_release_db_lease_when_dispatch_failure_stop_fails(tmp_path):
+    calls = []
+
+    class StopFailedProvider(FakeContainerProvider):
+        async def stop(self, lease, *, reason: str):
+            calls.append(("stop", reason))
+            return StopResult(container_id=lease.container_id, status="failed", message="stop failed")
+
+    async def fail_execute(executor_url, task_request):
+        raise RuntimeError("executor unavailable")
+
+    async def record_lease(lease, request, workspace):
+        calls.append(("record", lease.run_id))
+        return {"id": "lease-created-a"}
+
+    async def release_lease(lease, reason, lease_record_id=None):
+        calls.append(("release", reason, lease_record_id))
+
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=StopFailedProvider(executor_url="http://executor.test"),
+        execute_task=fail_execute,
+        callback_token_resolver=lambda token_id: "secret-token",
+        record_lease=record_lease,
+        release_lease=release_lease,
+    )
+
+    with pytest.raises(RuntimeError, match="sandbox_runtime_cleanup_failed"):
+        await runtime.submit(request(sandbox_mode="ephemeral"))
+
+    assert calls == [("record", "run-a"), ("stop", "dispatch_failed")]
+
+
+@pytest.mark.asyncio
+async def test_runtime_stops_live_container_when_lease_recording_fails(tmp_path):
+    provider = FakeContainerProvider(executor_url="http://executor.test")
+
+    async def execute(executor_url, task_request):
+        raise AssertionError("executor must not run when lease recording fails")
+
+    async def fail_record_lease(lease, request, workspace):
+        raise RuntimeError("db unavailable")
+
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=provider,
+        execute_task=execute,
+        callback_token_resolver=lambda token_id: "secret-token",
+        record_lease=fail_record_lease,
+    )
+
+    with pytest.raises(RuntimeError, match="db unavailable"):
+        await runtime.submit(request(sandbox_mode="persistent"))
+
+    assert await provider.list_runtime_containers({}) == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_surfaces_cleanup_failure_when_lease_recording_stop_fails(tmp_path):
+    calls = []
+
+    class StopFailedProvider(FakeContainerProvider):
+        async def stop(self, lease, *, reason: str):
+            calls.append(("stop", reason))
+            return StopResult(container_id=lease.container_id, status="failed", message="stop failed")
+
+    async def execute(executor_url, task_request):
+        raise AssertionError("executor must not run when lease recording fails")
+
+    async def fail_record_lease(lease, request, workspace):
+        raise RuntimeError("db unavailable")
+
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=StopFailedProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda token_id: "secret-token",
+        record_lease=fail_record_lease,
+    )
+
+    with pytest.raises(RuntimeError, match="sandbox_runtime_cleanup_failed"):
+        await runtime.submit(request(sandbox_mode="persistent"))
+
+    assert calls == [("stop", "lease_record_failed")]
 
 
 @pytest.mark.asyncio
@@ -120,6 +302,8 @@ async def test_runtime_default_callback_token_is_hmac_scoped_to_token_id(tmp_pat
         workspace_root=tmp_path,
         provider=FakeContainerProvider(executor_url="http://executor.test"),
         execute_task=execute,
+        record_lease=noop_lease,
+        release_lease=noop_lease,
     )
 
     await runtime.submit(request(callback_token_id="cbt_run-a"))
@@ -141,6 +325,8 @@ async def test_runtime_stops_ephemeral_container_after_dispatch_failure(tmp_path
         provider=provider,
         execute_task=fail_execute,
         callback_token_resolver=lambda token_id: "secret-token",
+        record_lease=noop_lease,
+        release_lease=noop_lease,
     )
 
     with pytest.raises(RuntimeError, match="executor unavailable"):
@@ -161,6 +347,8 @@ async def test_runtime_keeps_persistent_container_after_dispatch_failure(tmp_pat
         provider=provider,
         execute_task=fail_execute,
         callback_token_resolver=lambda token_id: "secret-token",
+        record_lease=noop_lease,
+        release_lease=noop_lease,
     )
 
     with pytest.raises(RuntimeError, match="executor unavailable"):

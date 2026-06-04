@@ -102,6 +102,44 @@ def test_admin_run_list_returns_tenant_scoped_summaries(monkeypatch):
     assert calls == [("default", "user-a", "queued", 25)]
 
 
+def test_admin_run_list_sanitizes_secret_like_error_fields(monkeypatch):
+    async def fake_list_admin_runs(conn, *, tenant_id, user_id=None, status=None, limit=50):
+        return [
+            {
+                "run_id": "run_a",
+                "session_id": "ses_a",
+                "user_id": "user-a",
+                "workspace_id": "default",
+                "status": "failed",
+                "agent_id": "qa-word-review",
+                "skill_id": "qa-file-reviewer",
+                "created_at": None,
+                "queued_at": None,
+                "started_at": None,
+                "finished_at": None,
+                "cancel_requested_at": None,
+                "cancel_requested_by": None,
+                "error_code": "executor_failure token=admin-list-code-token",
+                "error_message": "failed token=admin-list-message-token /var/lib/ai-platform/run-a/out.log",
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_runs.repositories.list_admin_runs", fake_list_admin_runs, raising=False)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/admin/runs", headers=headers())
+
+    assert response.status_code == 200
+    run = response.json()["runs"][0]
+    assert run["error_code"] == "executor_failure token=[redacted-secret]"
+    assert run["error_message"] == ""
+    assert "admin-list-code-token" not in str(run)
+    assert "admin-list-message-token" not in str(run)
+    assert "/var/lib/ai-platform" not in str(run)
+
+
 def test_admin_run_cancel_requires_admin(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     client = TestClient(create_app())
