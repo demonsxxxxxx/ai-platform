@@ -453,6 +453,66 @@ recorded as an inherited-configuration review and not claimed as an explicit
   `00C7ECCD4514333884B1B2536C66B23F8612DA40134C21A6CC79DF90F3688358`;
   `app/tool_permission_projection.py`
   `F47535CE38B42C25667C5DA154C6B9CE10633FEC636CF31B27E9C8A9715BDA2B`.
+- Follow-up code commit: `c6e0162ffcfb6213905dd1b4da8525c6fc734a20`
+  (`Fix P0 review feedback follow-up`).
+
+### Follow-Up 211 Deployment Evidence
+
+Captured on 2026-06-05 after syncing the `c6e0162` code files to
+`/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform`. The 211 source
+directory does not expose a git `HEAD`, so final runtime binding uses the local
+code commit, the image label, and host/container source hashes.
+
+- Source backup before follow-up overwrite:
+  `/tmp/ai-platform-source-backup-20260605010720.tgz`; image backup:
+  `ai-platform:backup-20260605010720`.
+- Follow-up rebase image log:
+  `/tmp/ai-platform-followup-rebase-20260605011002.log`. The first rebase
+  attempt copied `docker-entrypoint.sh` with mode `664` and failed to start
+  with `/app/docker-entrypoint.sh: permission denied`; the final rebase set
+  `ENTRYPOINT_MODE=775`.
+- Final follow-up deployed API and worker image identity:
+  `sha256:78b66e6cb1bb625e304740e1bbad7b4c61bb68e50fbf91442a18d713d887b3f3`.
+  Both `ai-platform-api` and `ai-platform-worker` ran this image with restart
+  count `0`, compose files `docker-compose.yml,docker-compose.sandbox.yml`,
+  and image label
+  `ai-platform.source_commit=c6e0162ffcfb6213905dd1b4da8525c6fc734a20`.
+- 211 source hashes matched the container hashes:
+  `app/memory_redaction.py`
+  `00c7eccd4514333884b1b2536c66b23f8612da40134c21a6cc79df90f3688358`;
+  `app/tool_permission_projection.py`
+  `f47535ce38b42c25667c5da154c6b9ce10633fec636cf31b27e9c8a9715bda2b`.
+- Follow-up readiness: `python3 -m compileall -q app tools scripts` returned
+  `compileall_ok`; `/api/ai/health` returned HTTP 200 with `{"status":"ok"}`;
+  `http://127.0.0.1:18001/` returned HTTP 200.
+- Follow-up sandbox runtime verifier passed for run
+  `sandbox-smoke-followup-1780593060`; evidence file:
+  `/tmp/ai-platform-sandbox-runtime-evidence-sandbox-smoke-followup-1780593060.json`.
+- Follow-up P0 API smoke passed for run
+  `run_7f519633263f4208a19bf85415677593`, session
+  `ses_b8b7ff245d2c43d28b1e36e71176e025`: automatic routing selected public
+  `agent_id=knowledge-answer` with `skill_id=null`; tool permission request
+  `tpr_65a913e5ff5a4335a1b08d15ad04cdac` requested/decided/playback without
+  `request_payload` or `decision_payload`; malformed event
+  `evt_fd909b7282674801a714c245ea63454c` without `permission_request_id` was
+  hidden from public events/playback; context and memory responses redacted
+  `smoke-secret-token.`, `smoke-secret-token-`, `client-secret-context`,
+  `sk-context-secret`, `sk-memory-secret`, and email/bearer values while
+  preserving safe public terms `token-budget`, `auth-token-status`,
+  `password-reset-flow`, and `credential-helper`; memory create without
+  `session_id` returned HTTP 400 `memory_session_id_required`.
+- Follow-up platform cancel smoke passed: user run
+  `run_73621a7e21024d06be6acfa6075b68cf` released lease
+  `lease_20b8dd77b94e49ff9a0d60cffa9ac126` with active count `0` and reason
+  `cancel_requested`; admin run `run_7421ac9a85d14cb6930164149754e962`
+  released lease `lease_16d489ced19f49cb97db130d201c683a` with active count
+  `0` and reason `admin_cancel_requested`. Both corresponding Docker
+  containers were removed.
+- Follow-up Admin Runtime projection returned HTTP 200 with `total_active=0`,
+  `ephemeral_containers=0`, `persistent_containers=0`, `containers=[]`,
+  `sandbox_leases=[]`, released lease history redacted as
+  `"[redacted-secret]."`, and no `smoke-secret-token` leak. Final residual
+  sandbox container check was empty.
 
 ## Self-Review
 
