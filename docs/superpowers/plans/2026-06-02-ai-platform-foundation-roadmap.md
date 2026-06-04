@@ -1,0 +1,173 @@
+# ai-platform Foundation Roadmap
+
+日期：2026-06-02
+
+## 文档权威
+
+本路线图只服务于 `docs/superpowers/specs/2026-05-29-ai-platform-final-product-prd.md`。
+
+后续 ai-platform 计划只允许引用当前 PRD、当前路线图、真实代码和当次 211 运行证据。任何非当前主链路重新进入范围，必须先更新 PRD 和本路线图。
+
+本路线图不保存非当前主链路、短期执行证据或临时服务说明。
+
+本路线图不维护已退出范围对象的名称清单。后续执行只按本文“当前主链路”和 P0 交付门槛推进；未列入当前主链路的入口、服务、端口、页面或候选方案，不作为计划依据。
+
+## 当前主链路
+
+- 前端入口：`http://10.56.0.211:18001/`
+- 前端方向：企业 Agent 前端作为当前用户入口，所有事实源请求落到 `ai-platform` API。
+- 后端 API：`ai-platform-api:8020`
+- 平台容器：`ai-platform-api`、`ai-platform-worker`
+- 平台依赖：`ai-platform-redis`、`ai-platform-postgres`、`ai-platform-minio`
+
+## 当前决策
+
+真实 Long Task / Multi-Agent Runtime 是最终目标，但不作为当前基础切片的第一落点。
+
+当前优先四个基础 P0：
+
+1. Memory / Context。
+2. MCP / Tool Permission。
+3. Event / Playback Contract。
+4. Sandbox Lease / Workspace。
+
+原因：没有可复现 context、工具权限、事件回放和 sandbox lease，长任务与多 Agent 缺少审计、恢复和权限边界。
+
+## P0.1 Memory / Context
+
+目标：
+
+- 每次 run 保存 executor context 边界。
+- memory record 受 tenant/workspace/user/session/agent 约束。
+- 跨 session 长期记忆默认不开放。
+
+交付门槛：
+
+- `run_context_snapshots`、`memory_records`、`memory_policies` schema。
+- Context Snapshot API。
+- Memory Record API。
+- Admin policy set API。
+- ContextBuilder 接入 run、chat、copy-run、resume、replay 与 worker-side refresh。
+- 普通用户 soft delete 与 Admin same-tenant soft delete。
+- retention cleanup。
+- secret-like redaction pipeline。
+- 普通用户 public projection 与 Admin operational projection 不返回 private payload。
+
+后续硬化：
+
+- Memory UI。
+- tenant/user opt-out UI。
+- 后台调度化 cleanup。
+- configurable redaction policy。
+- 更广业务 payload 覆盖审计。
+
+## P0.2 MCP / Tool Permission
+
+目标：
+
+- 工具调用先经过平台 request/decision 合同。
+- 写工具无确认不得执行。
+- request、decision、audit 和 run event 可追溯。
+
+交付门槛：
+
+- `run_tool_permission_requests` schema。
+- Tool permission request API。
+- Tool permission decision API。
+- request / decision run events。
+- decision audit log。
+- RAGFlow read-only registry gate。
+- Claude SDK unsafe Bash pre-tool permission hook。
+- write-capable business tools 接入同一 gate。
+- allow_once 消费/expiry 与 allow_for_run fingerprint 语义。
+
+后续硬化：
+
+- tool schema validation。
+- read-only/write risk policy。
+- 真正 pause/resume 或 retry 语义。
+- 普通用户确认卡和 Admin policy 闭环。
+
+## P0.3 Event / Playback Contract
+
+目标：
+
+- run event 支持按序 replay。
+- SSE reconnect 不重复 final message。
+- 普通用户和 Admin 使用同一 event store 的不同 projection。
+
+交付门槛：
+
+- `run_events.sequence` schema。
+- `list_run_events(after_sequence, limit)`。
+- `GET /runs/{run_id}/events?after_sequence=&limit=`。
+- `GET /runs/{run_id}/events/stream?after_sequence=` 首包 replay。
+- `GET /runs/{run_id}/playback?after_sequence=&limit=` 返回 `ai-platform.run-playback.v1`。
+- artifact card 只暴露 allowlist lineage。
+- checkpoint/subagent 事件进入标准事件集合、runtime validator 和 stage map。
+- 前端消费 playback 公开投影，不读取 executor private payload。
+
+后续硬化：
+
+- playback 产品化。
+- Artifact/Office preview。
+- 更广事件消费。
+- 文件任务浏览器 UI 验收。
+
+## P0.4 Sandbox Lease / Workspace
+
+目标：
+
+- sandbox workspace 和 container lifecycle 可租约、可续租、可释放、可审计。
+- fake provider 不等于生产安全可用。
+- Admin 能看到 stale/orphan/released lease。
+
+交付门槛：
+
+- `sandbox_leases` schema。
+- run 级 sandbox lease create/renew/release API。
+- Admin Runtime lease projection。
+- run cancel / Admin cancel 释放 active sandbox lease。
+- expired DB lease cleanup。
+- Docker provider resource limit contract。
+- provider orphan cleanup safety。
+
+后续硬化：
+
+- network/egress policy enforcement。
+- 真实 orphan container cleanup job。
+- 真实 container stop/remove smoke。
+- 生产 Docker provider 在独立受控节点验证。
+
+## Agent Frontend V1
+
+目标：
+
+- 企业 Agent 前端继续服务当前 `ai-platform` API。
+- 登录只保留公司账号入口。
+- 用户可见 chat stream、run event、artifact card、tool permission card、run drawer/playback。
+- artifact download/preview 走平台鉴权和 allowlist。
+- 文件任务完成浏览器 UI 验收。
+
+交付门槛：
+
+- 不得新增与当前发布入口并行的本地前端入口。
+- `/api/*` 请求落到 `ai-platform-api:8020`。
+- 普通用户投影不暴露 raw skill、storage key、runtime path、request payload、decision payload 或 sandbox `work_dir`。
+- 企业 Agent 前端纳入正式发布编排。
+
+## 后续顺序
+
+1. Foundation hardening + Agent Frontend V1。
+2. Long Task / Multi-Agent Runtime。
+3. Observability / Quality。
+
+## 禁止项
+
+- 不得新增与当前主链路并行的本地前端入口。
+- 不让任何非 `ai-platform` 后端或外部项目成为平台事实源。
+- 不因为 memory 表存在就默认开放跨用户或跨 session 记忆。
+- 不因为 sandbox lease API 存在就默认允许生产高风险 Docker 任务。
+- 不允许未授权写工具产生外部副作用。
+- 不在 PRD 或路线图中保留非当前主链路、临时服务或短期执行证据。
+- 不在 PRD 或路线图中维护已退出范围对象的名称清单。

@@ -1,0 +1,1164 @@
+from contextlib import asynccontextmanager
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.main import create_app
+
+
+def auth_settings():
+    return type("S", (), {"trusted_principal_secret": "test-secret", "frontend_poc_auth_enabled": False})()
+
+
+@asynccontextmanager
+async def fake_transaction():
+    yield object()
+
+
+def headers():
+    return {
+        "x-ai-user-id": "user-a",
+        "x-ai-user-name": "User A",
+        "x-ai-tenant-id": "default",
+        "x-ai-roles": "user",
+        "x-ai-gateway-secret": "test-secret",
+    }
+
+
+class EmptyBuiltinRegistry:
+    def __init__(self, root):
+        self.root = root
+
+    def list_builtin_skills(self):
+        return []
+
+
+async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+    assert tenant_id == "default"
+    return {
+        "agent_id": agent_id,
+        "skill_id": skill_id,
+        "executor_type": "claude-agent-worker",
+        "skill_version": "2.0.0",
+    }
+
+
+def test_sse_heartbeat_event_shape():
+    from app.routes.runs import sse
+
+    text = sse("heartbeat", {"run_id": "run_a", "status": "running"}, event_id="run_a:heartbeat:1")
+
+    assert "event: heartbeat" in text
+    assert '"status": "running"' in text
+
+
+def test_copy_run_creates_new_queued_run(monkeypatch):
+    calls = []
+
+    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+        calls.append((tenant_id, user_id, run_id))
+        return {
+            "session_id": "ses_new",
+            "run_id": "run_new",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "workspace_id": "default",
+            "file_ids": [],
+            "input": {
+                "message": "hello",
+                "execution_mode": "multi_agent",
+                "multi_agent_steps": [
+                    {"step_key": "code", "role": "coding", "title": "实现代码"},
+                    {
+                        "step_key": "verify",
+                        "role": "test",
+                        "title": "验证结果",
+                        "depends_on": ["code"],
+                        "sandbox_mode": "ephemeral",
+                        "browser_enabled": True,
+                        "resource_limits": {"max_tool_calls": 3},
+                    },
+                ],
+                "resume": {
+                    "copied_from_run_id": "run_old",
+                    "completed_step_outputs": {"code": "code output"},
+                },
+            },
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-old",
+            "release_policy_version": "hash-old",
+            "release_decision": {
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "policy_active": False,
+                "selected_version": "hash-old",
+                "selected_track": "manifest_pin",
+            },
+        }
+
+    async def fake_enqueue_run(payload):
+        calls.append(("queue", payload))
+        return 1
+
+    async def fake_get_queue_insight(tenant_id):
+        assert tenant_id == "default"
+        return {
+            "tenant_id": tenant_id,
+            "queued": 3,
+            "running": 1,
+            "worker_capacity": 1,
+            "reason": "worker_capacity_full",
+        }
+
+    async def fake_upsert_run_step(conn, **kwargs):
+        calls.append(("step", kwargs))
+        return f"step-{kwargs['step_key']}"
+
+    async def fake_update_run_input_skill_version(conn, **kwargs):
+        calls.append(("skill_version", kwargs))
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+
+    async def fake_record_context(conn, **kwargs):
+        calls.append(("context", kwargs))
+        return {
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_snapshot_id": "ctx_copy_route",
+            "source": kwargs["source"],
+            "message_count": len(kwargs.get("message_ids") or []),
+            "file_count": len(kwargs.get("file_ids") or []),
+            "memory_record_count": 0,
+        }
+
+    async def fake_get_effective_skill_version_for_policy(conn, *, skill_id, version):
+        assert skill_id == "general-chat"
+        assert version == "hash-old"
+        return {
+            "skill_id": skill_id,
+            "version": version,
+            "content_hash": version,
+            "description": "General chat",
+            "source": {
+                "kind": "uploaded",
+                "storage_key": "tenants/default/skills/general-chat/versions/hash-old/package.zip",
+                "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+            },
+            "dependency_ids": [],
+            "status": "active",
+            "created_by": "dev-admin",
+            "created_at": None,
+        }
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.BuiltinSkillRegistry", EmptyBuiltinRegistry)
+    monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_effective_skill_version_for_policy",
+        fake_get_effective_skill_version_for_policy,
+    )
+    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.routes.runs.repositories.upsert_run_step", fake_upsert_run_step)
+    monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_context)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.runs.get_queue_insight", fake_get_queue_insight)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run_old/copy", headers=headers())
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == "run_new"
+    assert response.json()["queue_position"] == 1
+    assert response.json()["queue_insight"] == {
+        "tenant_id": "default",
+        "queued": 3,
+        "running": 1,
+        "worker_capacity": 1,
+        "reason": "worker_capacity_full",
+    }
+    queued_payload = calls[-1][1]
+    assert queued_payload["run_id"] == "run_new"
+    assert queued_payload["skill_version"] == "hash-old"
+    assert queued_payload["skill_manifests"][0]["source"]["kind"] == "uploaded"
+    assert queued_payload["context_snapshot_id"] == "ctx_copy_route"
+    assert queued_payload["context_snapshot"]["source"] == "copy_run"
+    assert queued_payload["input"]["resume"]["completed_step_outputs"] == {"code": "code output"}
+    context_calls = [item[1] for item in calls if item[0] == "context"]
+    assert context_calls[0]["source"] == "copy_run"
+    assert context_calls[0]["tenant_id"] == "default"
+    assert context_calls[0]["workspace_id"] == "default"
+    assert context_calls[0]["user_id"] == "user-a"
+    assert context_calls[0]["session_id"] == "ses_new"
+    assert context_calls[0]["run_id"] == "run_new"
+    assert context_calls[0]["agent_id"] == "general-agent"
+    assert context_calls[0]["skill_id"] == "general-chat"
+    assert context_calls[0]["input_payload"] == queued_payload["input"]
+    assert context_calls[0]["message_ids"] == []
+    assert context_calls[0]["file_ids"] == []
+    skill_version_calls = [item[1] for item in calls if item[0] == "skill_version"]
+    assert skill_version_calls[0]["skill_version"] == "hash-old"
+    step_calls = [item[1] for item in calls if item[0] == "step"]
+    assert [(item["step_key"], item["status"]) for item in step_calls] == [
+        ("code", "pending"),
+        ("verify", "pending"),
+    ]
+    assert step_calls[0]["payload_json"]["checkpoint_reuse_pending"] is True
+    assert "checkpoint_reused" not in step_calls[0]["payload_json"]
+    assert "output" not in step_calls[0]["payload_json"]
+    assert step_calls[1]["payload_json"]["depends_on"] == ["code"]
+    assert step_calls[1]["payload_json"]["sandbox_mode"] == "ephemeral"
+    assert step_calls[1]["payload_json"]["browser_enabled"] is True
+    assert step_calls[1]["payload_json"]["resource_limits"] == {"max_tool_calls": 3}
+
+
+def test_copy_run_plan_previews_reused_and_rerun_steps(monkeypatch):
+    calls = {}
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "ses-old",
+            "workspace_id": "default",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "input_json": {
+                "input": {
+                    "message": "build feature",
+                    "execution_mode": "multi_agent",
+                    "multi_agent_steps": [
+                        {"step_key": "code", "role": "coding", "title": "实现代码"},
+                        {"step_key": "verify", "role": "test", "title": "验证结果", "depends_on": ["code"]},
+                    ],
+                }
+            },
+        }
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "step_key": "code",
+                "role": "coding",
+                "title": "实现代码",
+                "status": "succeeded",
+                "payload_json": {"output": "code output"},
+            },
+            {
+                "step_key": "verify",
+                "role": "test",
+                "title": "验证结果",
+                "status": "failed",
+                "payload_json": {"error": "tests failed"},
+            },
+        ]
+
+    async def fake_get_queue_insight(tenant_id):
+        calls["queue_insight_tenant_id"] = tenant_id
+        return {
+            "tenant_id": tenant_id,
+            "depths": {
+                "tenant_queued": 2,
+                "tenant_processing": 1,
+            },
+            "workers": {"active": 1},
+        }
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.routes.runs.get_queue_insight", fake_get_queue_insight)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run_old/copy/plan", headers=headers())
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["requires_confirmation"] is True
+    assert data["confirmation_card"]["title"] == "确认恢复执行"
+    assert data["confirmation_card"]["summary"] == "将复制为新任务，复用 1 个已完成步骤，重跑 1 个未完成步骤。"
+    assert data["confirmation_card"]["steps"] == [
+        {
+            "step_key": "code",
+            "role": "已完成 · 将复用",
+            "title": "实现代码",
+            "depends_on": [],
+        },
+        {
+            "step_key": "verify",
+            "role": "失败 · 将重跑",
+            "title": "验证结果",
+            "depends_on": ["code"],
+        },
+    ]
+    assert data["queue_insight"]["tenant_id"] == "default"
+    assert data["queue_insight"]["depths"]["tenant_queued"] == 2
+    assert data["queue_insight"]["workers"]["active"] == 1
+    assert calls["queue_insight_tenant_id"] == "default"
+    assert data["confirmation_card"]["skills"] == [{"capability_id": "general_chat", "label": "通用聊天"}]
+    assert "resource_limits" not in data["confirmation_card"]
+    assert "skill_id" not in str(data["confirmation_card"])
+
+
+def test_copy_run_plan_redacts_runtime_private_step_titles_for_ordinary_user(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "ses-old",
+            "workspace_id": "default",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "input_json": {"input": {"message": "build feature"}},
+        }
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "step_key": "review",
+                "role": "runtime211 worker /var/lib/ai-platform/run-a",
+                "title": "failed in /home/xinlin.jiang/qa-review-queue-runtime/out.log",
+                "status": "failed",
+                "payload_json": {"error": "failed in /var/lib/ai-platform/private.log"},
+            }
+        ]
+
+    async def fake_get_queue_insight(tenant_id):
+        return {"tenant_id": tenant_id}
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.routes.runs.get_queue_insight", fake_get_queue_insight)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run_old/copy/plan", headers=headers())
+
+    assert response.status_code == 200
+    card = response.json()["confirmation_card"]
+    assert card["steps"][0]["title"] == "review"
+    assert "runtime211" not in str(card)
+    assert "/home/xinlin.jiang/qa-review-queue-runtime" not in str(card)
+    assert "/var/lib/ai-platform" not in str(card)
+
+
+@pytest.mark.asyncio
+async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monkeypatch):
+    from app import repositories
+
+    class RecordingConnection:
+        def __init__(self):
+            self.executed = []
+
+        async def execute(self, sql, params):
+            self.executed.append((" ".join(sql.split()), params))
+            class Cursor:
+                async def fetchone(self):
+                    return None
+
+                async def fetchall(self):
+                    return []
+
+            return Cursor()
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "workspace_id": "default",
+            "session_id": "ses_old",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "input_json": {
+                "skillIds": ["qa-file-reviewer"],
+                "allowedSkills": ["qa-file-reviewer"],
+                "workerPath": "/home/xinlin.jiang/qa-review-queue-runtime/worker.py",
+                "executorPayload": {"cwd": "/var/lib/ai-platform/run_old"},
+                "input": {
+                    "message": "build feature",
+                    "executor_type": "embedded-poco-kernel",
+                    "skill_ids": ["qa-file-reviewer"],
+                    "skillIds": ["qa-file-reviewer"],
+                    "execution_mode": "multi_agent",
+                    "multi_agent_steps": [
+                        {
+                            "step_key": "code",
+                            "stepKey": "code",
+                            "role": "coding",
+                            "skill_ids": ["qa-file-reviewer"],
+                            "skillIds": ["qa-file-reviewer"],
+                            "executor_type": "embedded-poco-kernel",
+                            "workerPath": "/var/lib/ai-platform/run_old",
+                        },
+                        {"step_key": "verify", "role": "test", "depends_on": ["code"]},
+                    ],
+                },
+                "executor_type": "embedded-poco-kernel",
+            },
+        }
+
+    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        assert (tenant_id, agent_id, skill_id) == ("default", "general-agent", "general-chat")
+        return {"executor_type": "claude-agent-worker", "skill_version": "2.0.0"}
+
+    monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+
+    conn = RecordingConnection()
+    copied = await repositories.copy_run_as_new_task(
+        conn,
+        tenant_id="default",
+        user_id="user-a",
+        run_id="run_old",
+    )
+
+    assert copied["input"]["execution_mode"] == "multi_agent"
+    assert copied["input"]["multi_agent_steps"][1]["step_key"] == "verify"
+    assert copied["input"]["copied_from_run_id"] == "run_old"
+    assert copied["executor_type"] == "claude-agent-worker"
+    assert copied["skill_version"] == "2.0.0"
+    assert copied["release_policy_version"] == ""
+    assert "executor_type" not in copied["input"]
+    assert "skill_ids" not in copied["input"]
+    assert "skillIds" not in copied["input"]
+    assert "executor_type" not in copied["input"]["multi_agent_steps"][0]
+    assert "skill_ids" not in copied["input"]["multi_agent_steps"][0]
+    assert "skillIds" not in copied["input"]["multi_agent_steps"][0]
+    assert "workerPath" not in copied["input"]["multi_agent_steps"][0]
+    persisted_json = next(params[10] for sql, params in conn.executed if sql.startswith("insert into runs"))
+    assert "skillIds" not in persisted_json
+    assert "allowedSkills" not in persisted_json
+    assert "workerPath" not in persisted_json
+    assert "executorPayload" not in persisted_json
+    assert "/home/xinlin.jiang/qa-review-queue-runtime" not in persisted_json
+    assert "/var/lib/ai-platform" not in persisted_json
+
+
+@pytest.mark.asyncio
+async def test_copy_run_as_new_task_uses_rollout_selected_previous_version(monkeypatch):
+    from app import repositories
+    import json
+
+    class RecordingConnection:
+        def __init__(self):
+            self.executed = []
+
+        async def execute(self, sql, params):
+            self.executed.append((" ".join(sql.split()), params))
+
+            class Cursor:
+                async def fetchone(self):
+                    return None
+
+                async def fetchall(self):
+                    return []
+
+            return Cursor()
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "workspace_id": "default",
+            "session_id": "ses_old",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "input_json": {"input": {"message": "retry"}, "executor_type": "embedded-poco-kernel"},
+        }
+
+    async def fake_resolve_rollout_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        assert (tenant_id, agent_id, skill_id) == ("default", "general-agent", "general-chat")
+        return {
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-new",
+            "release_policy_version": "hash-new",
+            "release_policy_previous_version": "hash-old",
+            "release_policy_rollout_percent": 0,
+        }
+
+    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_rollout_agent_skill)
+    conn = RecordingConnection()
+
+    copied = await repositories.copy_run_as_new_task(
+        conn,
+        tenant_id="default",
+        user_id="user-a",
+        run_id="run_old",
+    )
+
+    assert copied["skill_version"] == "hash-old"
+    assert copied["release_policy_version"] == "hash-old"
+    assert copied["release_decision"]["selected_version"] == "hash-old"
+    assert copied["release_decision"]["selected_track"] == "previous"
+    persisted_json = next(params[10] for sql, params in conn.executed if sql.startswith("insert into runs"))
+    assert json.loads(persisted_json)["skill_version"] == "hash-old"
+    assert json.loads(persisted_json)["release_decision"]["selected_track"] == "previous"
+
+
+@pytest.mark.asyncio
+async def test_copy_run_as_new_task_persists_g2_trace_and_contract_columns(monkeypatch):
+    from app import repositories
+
+    class RecordingConnection:
+        def __init__(self):
+            self.executed = []
+
+        async def execute(self, sql, params):
+            self.executed.append((" ".join(sql.split()), params))
+
+            class Cursor:
+                async def fetchone(self):
+                    return None
+
+                async def fetchall(self):
+                    return []
+
+            return Cursor()
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "workspace_id": "default",
+            "session_id": "ses_old",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "input_json": {"input": {"message": "retry"}, "executor_type": "embedded-poco-kernel"},
+        }
+
+    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    conn = RecordingConnection()
+
+    copied = await repositories.copy_run_as_new_task(
+        conn,
+        tenant_id="default",
+        user_id="user-a",
+        run_id="run_old",
+    )
+
+    run_inserts = [item for item in conn.executed if "insert into runs" in item[0]]
+    assert len(run_inserts) == 1
+    sql, params = run_inserts[0]
+    assert "trace_id" in sql
+    assert "schema_version" in sql
+    assert "executor_schema_version" in sql
+    assert copied["run_id"] in params
+    assert any(str(item).startswith("trace_") for item in params)
+    assert "ai-platform.run.v1" in params
+    assert "ai-platform.executor-result.v1" in params
+
+
+@pytest.mark.asyncio
+async def test_copy_run_as_new_task_adds_session_message_anchor_for_history(monkeypatch):
+    from app import repositories
+    import json
+
+    class RecordingConnection:
+        def __init__(self):
+            self.executed = []
+
+        async def execute(self, sql, params):
+            self.executed.append((" ".join(sql.split()), params))
+
+            class Cursor:
+                async def fetchone(self):
+                    return None
+
+                async def fetchall(self):
+                    return []
+
+            return Cursor()
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "workspace_id": "default",
+            "session_id": "ses_old",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "input_json": {
+                "input": {
+                    "message": "build feature",
+                    "execution_mode": "multi_agent",
+                    "multi_agent_steps": [
+                        {"step_key": "code", "role": "coding"},
+                        {"step_key": "verify", "role": "test", "depends_on": ["code"]},
+                    ],
+                },
+                "executor_type": "embedded-poco-kernel",
+            },
+        }
+
+    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    conn = RecordingConnection()
+
+    copied = await repositories.copy_run_as_new_task(
+        conn,
+        tenant_id="default",
+        user_id="user-a",
+        run_id="run_old",
+    )
+
+    message_inserts = [item for item in conn.executed if "insert into messages" in item[0]]
+    assert len(message_inserts) == 1
+    _, params = message_inserts[0]
+    assert params[2] == "ses_old"
+    assert params[3] == copied["run_id"]
+    assert params[4] == "assistant"
+    assert "复制为新任务" in params[5]
+    metadata = json.loads(params[6])
+    assert metadata["type"] == "copy_run_anchor"
+    assert metadata["copied_from_run_id"] == "run_old"
+
+
+@pytest.mark.asyncio
+async def test_copy_run_as_new_task_adds_completed_step_outputs_to_resume(monkeypatch):
+    from app import repositories
+
+    class FakeCursor:
+        def __init__(self, rows=None):
+            self.rows = rows or []
+
+        async def fetchone(self):
+            return None
+
+        async def fetchall(self):
+            return self.rows
+
+    class StepConnection:
+        async def execute(self, sql, params):
+            normalized_sql = " ".join(sql.split())
+            if "from run_steps" in normalized_sql:
+                return FakeCursor(
+                    [
+                        {
+                            "step_key": "code",
+                            "payload_json": {
+                                "output": "code output",
+                                "metadata": {"runner": "claude_agent_sdk"},
+                            },
+                        },
+                        {
+                            "step_key": "docs",
+                            "payload_json": {"output": "docs output"},
+                        },
+                    ]
+                )
+            return FakeCursor()
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "workspace_id": "default",
+            "session_id": "ses_old",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "input_json": {
+                "input": {
+                    "message": "build feature",
+                    "execution_mode": "multi_agent",
+                    "multi_agent_steps": [
+                        {"step_key": "code", "role": "coding"},
+                        {"step_key": "docs", "role": "doc"},
+                        {"step_key": "verify", "role": "test", "depends_on": ["code", "docs"]},
+                    ],
+                },
+                "executor_type": "embedded-poco-kernel",
+            },
+        }
+
+    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+
+    copied = await repositories.copy_run_as_new_task(
+        StepConnection(),
+        tenant_id="default",
+        user_id="user-a",
+        run_id="run_old",
+    )
+
+    assert copied["input"]["resume"] == {
+        "copied_from_run_id": "run_old",
+        "completed_step_outputs": {
+            "code": "code output",
+            "docs": "docs output",
+        },
+    }
+
+
+def test_cancel_run_records_platform_cancel_request(monkeypatch):
+    async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
+        return {"run_id": run_id, "status": "cancel_requested"}
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run_active/cancel", headers=headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancel_requested"
+
+
+def test_cancel_queued_run_removes_queued_payload(monkeypatch):
+    calls = []
+
+    async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
+        return {"run_id": run_id, "status": "cancelled"}
+
+    async def fake_remove_queued_run(*, tenant_id, run_id):
+        calls.append(("remove", tenant_id, run_id))
+        return 1
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr("app.routes.runs.remove_queued_run", fake_remove_queued_run, raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run_queued/cancel", headers=headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancelled"
+    assert calls == [("remove", "default", "run_queued")]
+
+
+@pytest.mark.asyncio
+async def test_request_run_cancel_closes_pending_steps_when_owner_cancels_queued_run(monkeypatch):
+    from app import repositories
+
+    calls = []
+
+    class FakeCursor:
+        async def fetchone(self):
+            return {"id": "run_queued", "status": "cancelled"}
+
+        async def fetchall(self):
+            return []
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append((normalized, params))
+            if normalized.startswith("update runs"):
+                return FakeCursor()
+            if normalized.startswith("update run_steps"):
+                return FakeCursor()
+            if normalized.startswith("update sandbox_leases"):
+                return FakeCursor()
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-a"
+
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+
+    result = await repositories.request_run_cancel(
+        FakeConnection(),
+        tenant_id="default",
+        user_id="user-a",
+        run_id="run_queued",
+    )
+
+    assert result == {"run_id": "run_queued", "status": "cancelled"}
+    step_updates = [call for call in calls if isinstance(call[0], str) and call[0].startswith("update run_steps")]
+    assert len(step_updates) == 1
+    assert "status in ('pending', 'running')" in step_updates[0][0]
+    assert step_updates[0][1] == ("default", "run_queued")
+
+
+@pytest.mark.asyncio
+async def test_request_run_cancel_releases_active_sandbox_leases(monkeypatch):
+    from app import repositories
+
+    calls = []
+
+    class RunCursor:
+        async def fetchone(self):
+            return {"id": "run_active", "status": "running", "trace_id": "trace_run_active"}
+
+    class LeaseCursor:
+        async def fetchall(self):
+            return [{"id": "lease-a", "trace_id": "trace_lease_a"}]
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append((normalized, params))
+            if normalized.startswith("update runs"):
+                return RunCursor()
+            if normalized.startswith("update sandbox_leases"):
+                return LeaseCursor()
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-a"
+
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+
+    result = await repositories.request_run_cancel(
+        FakeConnection(),
+        tenant_id="default",
+        user_id="user-a",
+        run_id="run_active",
+    )
+
+    assert result == {"run_id": "run_active", "status": "cancel_requested"}
+    lease_updates = [call for call in calls if isinstance(call[0], str) and call[0].startswith("update sandbox_leases")]
+    assert len(lease_updates) == 1
+    assert "status = 'active'" in lease_updates[0][0]
+    assert lease_updates[0][1] == ("cancel_requested", "default", "run_active")
+    release_event = next(item for item in calls if item[0] == "event" and item[1]["event_type"] == "sandbox_lease_released")
+    assert release_event[1]["trace_id"] == "trace_lease_a"
+    assert release_event[1]["payload"] == {
+        "visible_to_user": True,
+        "lease_id": "lease-a",
+        "reason": "cancel_requested",
+    }
+
+
+def test_cancel_running_run_does_not_remove_queued_payload(monkeypatch):
+    async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
+        return {"run_id": run_id, "status": "cancel_requested"}
+
+    async def fake_remove_queued_run(*, tenant_id, run_id):
+        raise AssertionError("running cancellation must not mutate queued list")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr("app.routes.runs.remove_queued_run", fake_remove_queued_run, raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run_active/cancel", headers=headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancel_requested"
+
+
+@pytest.mark.asyncio
+async def test_list_admin_runs_is_tenant_scoped_and_parameterized():
+    from app import repositories
+
+    class FakeCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "run_id": "run_a",
+                    "session_id": "ses_a",
+                    "user_id": "user-a",
+                    "workspace_id": "default",
+                    "status": "running",
+                    "agent_id": "general-agent",
+                    "skill_id": "general-chat",
+                    "created_at": None,
+                    "queued_at": None,
+                    "started_at": None,
+                    "finished_at": None,
+                    "cancel_requested_at": "2026-05-27T01:02:03Z",
+                    "cancel_requested_by": "admin-a",
+                    "error_code": None,
+                    "error_message": None,
+                }
+            ]
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            assert "where tenant_id = %s" in normalized
+            assert "or user_id = %s)" in normalized
+            assert "or status = %s)" in normalized
+            assert "%s::text is null" in normalized
+            assert params == ("default", "user-a", "user-a", "running", "running", 25)
+            return FakeCursor()
+
+    rows = await repositories.list_admin_runs(
+        FakeConnection(),
+        tenant_id="default",
+        user_id="user-a",
+        status="running",
+        limit=25,
+    )
+
+    assert rows[0]["run_id"] == "run_a"
+    assert rows[0]["user_id"] == "user-a"
+    assert rows[0]["cancel_requested_at"] == "2026-05-27T01:02:03Z"
+    assert rows[0]["cancel_requested_by"] == "admin-a"
+
+
+@pytest.mark.asyncio
+async def test_admin_run_detail_includes_multi_agent_steps(monkeypatch):
+    from app import repositories
+
+    async def fake_get_run(conn, *, tenant_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "ses-a",
+            "schema_version": "ai-platform.run.v1",
+            "executor_schema_version": "ai-platform.executor-result.v1",
+            "user_id": "user-a",
+            "workspace_id": "default",
+            "status": "failed",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "created_at": None,
+            "queued_at": None,
+            "started_at": None,
+            "finished_at": None,
+            "cancel_requested_at": "2026-05-27T01:02:03Z",
+            "cancel_requested_by": "admin-a",
+            "input_json": {},
+            "result_json": {},
+            "error_code": None,
+            "error_message": "verify failed",
+        }
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id):
+        return []
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-verify",
+                "run_id": run_id,
+                "step_key": "verify",
+                "step_kind": "agent",
+                "status": "failed",
+                "title": "验证结果",
+                "role": "verify",
+                "sequence": 2,
+                "payload_json": {"error": "测试未通过"},
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+
+    class FakeAuditCursor:
+        async def fetchall(self):
+            return []
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            return FakeAuditCursor()
+
+    monkeypatch.setattr("app.repositories.get_run", fake_get_run)
+    monkeypatch.setattr("app.repositories.list_run_events", fake_list_run_events)
+    monkeypatch.setattr("app.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.repositories.list_run_steps", fake_list_run_steps)
+
+    detail = await repositories.get_admin_run_detail(FakeConnection(), tenant_id="default", run_id="run-a")
+
+    assert detail["run"]["cancel_requested_at"] == "2026-05-27T01:02:03Z"
+    assert detail["run"]["cancel_requested_by"] == "admin-a"
+    assert detail["steps"] == [
+        {
+            "step_id": "step-verify",
+            "run_id": "run-a",
+            "step_key": "verify",
+            "step_kind": "agent",
+            "status": "failed",
+            "title": "验证结果",
+            "role": "verify",
+            "sequence": 2,
+            "payload": {"error": "测试未通过"},
+            "started_at": None,
+            "finished_at": None,
+            "created_at": None,
+            "updated_at": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_request_admin_run_cancel_does_not_filter_target_user_and_audits(monkeypatch):
+    from app import repositories
+
+    calls = []
+
+    class FakeCursor:
+        async def fetchone(self):
+            return {"id": "run_active", "status": "running", "user_id": "target-user", "trace_id": "trace_run_active"}
+
+        async def fetchall(self):
+            return []
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append((normalized, params))
+            if normalized.startswith("update runs"):
+                assert "and user_id =" not in normalized
+                assert params == ("admin-a", "default", "run_active")
+                return FakeCursor()
+            if normalized.startswith("update sandbox_leases"):
+                return FakeCursor()
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-a"
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "aud-a"
+
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+
+    result = await repositories.request_admin_run_cancel(
+        FakeConnection(),
+        tenant_id="default",
+        admin_user_id="admin-a",
+        run_id="run_active",
+    )
+
+    assert result == {"run_id": "run_active", "status": "cancel_requested"}
+    assert (
+        "event",
+        {
+            "tenant_id": "default",
+            "run_id": "run_active",
+            "event_type": "cancel_requested",
+            "stage": "control",
+            "message": "管理员已请求取消",
+            "trace_id": "trace_run_active",
+            "payload": {
+                "visible_to_user": True,
+                "severity": "warning",
+                "requested_by": "admin-a",
+                "requested_by_role": "admin",
+                "target_user_id": "target-user",
+            },
+        },
+    ) in calls
+    assert (
+        "audit",
+        {
+            "tenant_id": "default",
+            "user_id": "admin-a",
+            "action": "admin.run.cancel",
+            "target_type": "run",
+            "target_id": "run_active",
+            "trace_id": "trace_run_active",
+            "payload_json": {
+                "run_id": "run_active",
+                "target_user_id": "target-user",
+                "result_status": "cancel_requested",
+            },
+        },
+    ) in calls
+
+
+@pytest.mark.asyncio
+async def test_request_admin_run_cancel_closes_pending_steps_when_queued_cancelled(monkeypatch):
+    from app import repositories
+
+    calls = []
+
+    class FakeCursor:
+        async def fetchone(self):
+            return {"id": "run_queued", "status": "cancelled", "user_id": "target-user", "trace_id": "trace_run_queued"}
+
+        async def fetchall(self):
+            return []
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append((normalized, params))
+            if normalized.startswith("update runs"):
+                return FakeCursor()
+            if normalized.startswith("update run_steps"):
+                return FakeCursor()
+            if normalized.startswith("update sandbox_leases"):
+                return FakeCursor()
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-a"
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "aud-a"
+
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+
+    result = await repositories.request_admin_run_cancel(
+        FakeConnection(),
+        tenant_id="default",
+        admin_user_id="admin-a",
+        run_id="run_queued",
+    )
+
+    assert result == {"run_id": "run_queued", "status": "cancelled"}
+    step_updates = [call for call in calls if isinstance(call[0], str) and call[0].startswith("update run_steps")]
+    assert len(step_updates) == 1
+    assert "status in ('pending', 'running')" in step_updates[0][0]
+    assert step_updates[0][1] == ("default", "run_queued")
+
+
+@pytest.mark.asyncio
+async def test_request_admin_run_cancel_releases_active_sandbox_leases(monkeypatch):
+    from app import repositories
+
+    calls = []
+
+    class RunCursor:
+        async def fetchone(self):
+            return {"id": "run_active", "status": "running", "user_id": "target-user", "trace_id": "trace_run_active"}
+
+    class LeaseCursor:
+        async def fetchall(self):
+            return [{"id": "lease-admin", "trace_id": None}]
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append((normalized, params))
+            if normalized.startswith("update runs"):
+                return RunCursor()
+            if normalized.startswith("update sandbox_leases"):
+                return LeaseCursor()
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-a"
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "aud-a"
+
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+
+    result = await repositories.request_admin_run_cancel(
+        FakeConnection(),
+        tenant_id="default",
+        admin_user_id="admin-a",
+        run_id="run_active",
+    )
+
+    assert result == {"run_id": "run_active", "status": "cancel_requested"}
+    lease_updates = [call for call in calls if isinstance(call[0], str) and call[0].startswith("update sandbox_leases")]
+    assert len(lease_updates) == 1
+    assert lease_updates[0][1] == ("admin_cancel_requested", "default", "run_active")
+    release_event = next(item for item in calls if item[0] == "event" and item[1]["event_type"] == "sandbox_lease_released")
+    assert release_event[1]["trace_id"] == "trace_run_active"
+    assert release_event[1]["payload"] == {
+        "visible_to_user": True,
+        "lease_id": "lease-admin",
+        "reason": "admin_cancel_requested",
+        "requested_by_role": "admin",
+    }

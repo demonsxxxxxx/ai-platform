@@ -1,0 +1,477 @@
+from __future__ import annotations
+
+import asyncio
+import time
+from typing import Any, Callable, Protocol
+
+import httpx
+
+try:
+    import docker  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - exercised through docker = None path
+    docker = None
+
+from app.runtime.sandbox.contracts import ContainerLease, ContainerStatus, SandboxRuntimeRequest, StopResult, WorkspaceLease
+from app.settings import get_settings
+
+
+class SandboxRuntimeError(RuntimeError):
+    def __init__(self, error_code: str, message: str) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+
+
+class DockerUnavailableError(SandboxRuntimeError):
+    def __init__(self, message: str = "Docker SDK is unavailable") -> None:
+        super().__init__("docker_unavailable", message)
+
+
+class DockerPermissionDeniedError(SandboxRuntimeError):
+    def __init__(self, message: str = "Docker permission denied") -> None:
+        super().__init__("docker_permission_denied", message)
+
+
+class ContainerStartFailedError(SandboxRuntimeError):
+    def __init__(self, message: str = "Container start failed") -> None:
+        super().__init__("container_start_failed", message)
+
+
+class ExecutorHealthTimeoutError(SandboxRuntimeError):
+    def __init__(self, message: str = "Executor health timeout") -> None:
+        super().__init__("executor_health_timeout", message)
+
+
+class ContainerProvider(Protocol):
+    async def create_or_reuse(
+        self,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> ContainerLease: ...
+
+    async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult: ...
+
+    async def list_runtime_containers(self, filters: dict[str, str]) -> list[ContainerStatus]: ...
+
+    async def cleanup_orphan_containers(self, filters: dict[str, str], *, reason: str) -> list[StopResult]: ...
+
+
+def _matches_filters(status: ContainerStatus, filters: dict[str, str]) -> bool:
+    for key, expected in filters.items():
+        actual = getattr(status, key, None)
+        if actual is None:
+            detail_value = status.detail.get(key)
+            if detail_value is None or str(detail_value) != str(expected):
+                return False
+            continue
+        if str(actual) != str(expected):
+            return False
+    return True
+
+
+def _executor_url() -> str:
+    host = get_settings().sandbox_executor_published_host
+    return f"http://{host}:18000"
+
+
+def _published_executor_url_from_container(container: Any) -> str | None:
+    ports = getattr(container, "attrs", {}).get("NetworkSettings", {}).get("Ports", {})
+    bindings = ports.get("18000/tcp") or []
+    if bindings:
+        host_port = bindings[0].get("HostPort")
+        if host_port:
+            host = get_settings().sandbox_executor_published_host
+            return f"http://{host}:{host_port}"
+    return None
+
+
+def _lease_from_request(
+    provider: str,
+    request: SandboxRuntimeRequest,
+    workspace: WorkspaceLease,
+    *,
+    executor_url: str,
+) -> ContainerLease:
+    container_id = f"exec-{request.run_id}"
+    return ContainerLease(
+        container_id=container_id,
+        container_name=f"executor-{container_id}",
+        provider=provider,
+        executor_url=executor_url,
+        tenant_id=request.tenant_id,
+        workspace_id=request.workspace_id,
+        user_id=request.user_id,
+        session_id=request.session_id,
+        run_id=request.run_id,
+        sandbox_mode=request.sandbox_mode,
+        browser_enabled=request.browser_enabled,
+        workspace_host_path=workspace.workspace_host_path,
+        workspace_container_path=workspace.workspace_container_path,
+        labels={"ai-platform.run_id": request.run_id},
+    )
+
+
+def _status_from_lease(lease: ContainerLease, *, status: str) -> ContainerStatus:
+    return ContainerStatus(
+        container_id=lease.container_id,
+        container_name=lease.container_name,
+        provider=lease.provider,
+        status=status,
+        tenant_id=lease.tenant_id,
+        workspace_id=lease.workspace_id,
+        user_id=lease.user_id,
+        session_id=lease.session_id,
+        run_id=lease.run_id,
+        sandbox_mode=lease.sandbox_mode,
+        browser_enabled=lease.browser_enabled,
+        executor_url=lease.executor_url,
+        detail={"labels": lease.platform_labels()},
+    )
+
+
+def _container_labels(container: Any) -> dict[str, str]:
+    labels = getattr(container, "labels", None)
+    if labels is None:
+        labels = getattr(container, "attrs", {}).get("Config", {}).get("Labels", {})
+    return {str(key): str(value) for key, value in (labels or {}).items()}
+
+
+def _container_status_from_labels(container: Any) -> ContainerStatus | None:
+    labels = _container_labels(container)
+    if labels.get("ai-platform.owner") != "sandbox-runtime":
+        return None
+    run_id = labels.get("ai-platform.run_id")
+    sandbox_mode = labels.get("ai-platform.sandbox_mode")
+    if sandbox_mode not in {"ephemeral", "persistent"}:
+        sandbox_mode = None
+    container_id = f"exec-{run_id}" if run_id else getattr(container, "id", getattr(container, "name", ""))
+    return ContainerStatus(
+        container_id=container_id,
+        container_name=getattr(container, "name", ""),
+        provider="docker",
+        status=getattr(container, "status", "unknown"),
+        tenant_id=labels.get("ai-platform.tenant_id"),
+        workspace_id=labels.get("ai-platform.workspace_id"),
+        user_id=labels.get("ai-platform.user_id"),
+        session_id=labels.get("ai-platform.session_id"),
+        run_id=run_id,
+        sandbox_mode=sandbox_mode,
+        browser_enabled=labels.get("ai-platform.browser_enabled", "false").lower() == "true",
+        executor_url=_published_executor_url_from_container(container),
+        detail={"labels": labels},
+    )
+
+
+def _positive_int_limit(resource_limits: dict[str, Any], key: str) -> int | None:
+    value = resource_limits.get(key)
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ContainerStartFailedError() from exc
+    if parsed <= 0:
+        raise ContainerStartFailedError()
+    return parsed
+
+
+def _docker_resource_kwargs(resource_limits: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(resource_limits, dict):
+        return {}
+    kwargs: dict[str, Any] = {}
+    memory_mb = _positive_int_limit(resource_limits, "memory_mb")
+    if memory_mb is not None:
+        kwargs["mem_limit"] = f"{memory_mb}m"
+    cpu_count = resource_limits.get("cpu_count")
+    if cpu_count is not None:
+        try:
+            parsed_cpu = float(cpu_count)
+        except (TypeError, ValueError) as exc:
+            raise ContainerStartFailedError() from exc
+        if parsed_cpu <= 0:
+            raise ContainerStartFailedError()
+        kwargs["nano_cpus"] = int(parsed_cpu * 1_000_000_000)
+    pids_limit = _positive_int_limit(resource_limits, "pids_limit")
+    if pids_limit is not None:
+        kwargs["pids_limit"] = pids_limit
+    disk_mb = _positive_int_limit(resource_limits, "disk_mb")
+    if disk_mb is not None:
+        kwargs["storage_opt"] = {"size": f"{disk_mb}m"}
+    return kwargs
+
+
+def _is_permission_denied(message: str) -> bool:
+    return "permission denied" in message.lower()
+
+
+def default_executor_health_probe(executor_url: str, timeout_seconds: int) -> bool:
+    deadline = time.monotonic() + max(timeout_seconds, 1)
+    health_url = f"{executor_url.rstrip('/')}/health"
+    while time.monotonic() <= deadline:
+        try:
+            with httpx.Client(timeout=1.0) as client:
+                response = client.get(health_url)
+                response.raise_for_status()
+            return True
+        except Exception:
+            time.sleep(0.25)
+    return False
+
+
+def _stop_and_remove_container(container: Any) -> None:
+    if hasattr(container, "stop"):
+        try:
+            container.stop()
+        except Exception:
+            pass
+    if hasattr(container, "remove"):
+        try:
+            container.remove(force=True)
+        except Exception:
+            pass
+
+
+class FakeContainerProvider:
+    def __init__(self, executor_url: str = "http://fake-sandbox-executor.invalid") -> None:
+        self._executor_url = executor_url
+        self._leases: dict[str, ContainerLease] = {}
+
+    async def create_or_reuse(
+        self,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> ContainerLease:
+        container_id = f"exec-{request.run_id}"
+        existing = self._leases.get(container_id)
+        if existing is not None:
+            return existing
+        lease = _lease_from_request("fake", request, workspace, executor_url=self._executor_url)
+        self._leases[lease.container_id] = lease
+        return lease
+
+    async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult:
+        removed = self._leases.pop(lease.container_id, None)
+        if removed is None:
+            return StopResult(container_id=lease.container_id, status="not_found", message=reason)
+        return StopResult(container_id=lease.container_id, status="stopped", message=reason)
+
+    async def list_runtime_containers(self, filters: dict[str, str]) -> list[ContainerStatus]:
+        statuses = [_status_from_lease(lease, status="running") for lease in self._leases.values()]
+        return [status for status in statuses if _matches_filters(status, filters)]
+
+    async def cleanup_orphan_containers(self, filters: dict[str, str], *, reason: str) -> list[StopResult]:
+        return []
+
+
+class DockerContainerProvider:
+    def __init__(
+        self,
+        *,
+        docker_client_factory: Callable[[], Any] | None = None,
+        health_probe: Callable[[str, int], bool] | None = None,
+    ) -> None:
+        self._leases: dict[str, ContainerLease] = {}
+        self._docker_client_factory = docker_client_factory
+        self._health_probe = health_probe or default_executor_health_probe
+        self._client: Any | None = None
+
+    def assert_available(self) -> None:
+        if self._docker_client_factory is None and docker is None:
+            raise DockerUnavailableError("Docker SDK for Python is not installed")
+
+    def _get_client(self) -> Any:
+        if self._client is not None:
+            return self._client
+        self.assert_available()
+        if self._docker_client_factory is not None:
+            self._client = self._docker_client_factory()
+            return self._client
+        self._client = docker.from_env()
+        return self._client
+
+    async def _wait_for_executor_url(self, container: Any, timeout_seconds: int) -> str:
+        deadline = time.monotonic() + max(timeout_seconds, 1)
+        while time.monotonic() <= deadline:
+            if hasattr(container, "reload"):
+                container.reload()
+            executor_url = _published_executor_url_from_container(container)
+            if getattr(container, "status", None) == "running" and executor_url:
+                return executor_url
+            await asyncio.sleep(0.25)
+        raise ExecutorHealthTimeoutError()
+
+    async def _reuse_existing_container(
+        self,
+        lease: ContainerLease,
+        timeout_seconds: int,
+    ) -> ContainerLease | None:
+        try:
+            container = self._get_client().containers.get(lease.container_name)
+        except Exception:
+            return None
+        status = _container_status_from_labels(container)
+        if status is None or status.run_id != lease.run_id:
+            return None
+        executor_url = await self._wait_for_executor_url(container, timeout_seconds)
+        return ContainerLease(
+            container_id=lease.container_id,
+            container_name=lease.container_name,
+            provider="docker",
+            executor_url=executor_url,
+            tenant_id=lease.tenant_id,
+            workspace_id=lease.workspace_id,
+            user_id=lease.user_id,
+            session_id=lease.session_id,
+            run_id=lease.run_id,
+            sandbox_mode=lease.sandbox_mode,
+            browser_enabled=lease.browser_enabled,
+            workspace_host_path=lease.workspace_host_path,
+            workspace_container_path=lease.workspace_container_path,
+            labels=lease.labels,
+        )
+
+    async def create_or_reuse(
+        self,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+    ) -> ContainerLease:
+        settings = get_settings()
+        client = self._get_client()
+        container_id = f"exec-{request.run_id}"
+        try:
+            client.ping()
+        except Exception as exc:  # pragma: no cover - branch shape varies by docker SDK/runtime
+            message = str(exc)
+            if _is_permission_denied(message):
+                raise DockerPermissionDeniedError() from exc
+            raise DockerUnavailableError("Docker daemon is unavailable") from exc
+        existing = self._leases.get(container_id)
+        if existing is not None:
+            return existing
+
+        bootstrap_lease = _lease_from_request("docker", request, workspace, executor_url=_executor_url())
+        recovered = await self._reuse_existing_container(
+            bootstrap_lease,
+            settings.sandbox_container_start_timeout_seconds,
+        )
+        if recovered is not None:
+            self._leases[recovered.container_id] = recovered
+            return recovered
+        try:
+            container = client.containers.create(
+                image=settings.sandbox_executor_image,
+                name=bootstrap_lease.container_name,
+                detach=True,
+                labels=bootstrap_lease.platform_labels(),
+                volumes={
+                    workspace.workspace_host_path: {
+                        "bind": workspace.workspace_container_path,
+                        "mode": "rw",
+                    }
+                },
+                environment={
+                    "APP_MODULE": "app.runtime.sandbox.executor_app:create_executor_app",
+                    "APP_PORT": "18000",
+                    "AI_PLATFORM_SESSION_ID": request.session_id,
+                    "AI_PLATFORM_RUN_ID": request.run_id,
+                    "AI_PLATFORM_CALLBACK_BASE_URL": settings.sandbox_callback_base_url,
+                },
+                ports={"18000/tcp": None},
+                **_docker_resource_kwargs(request.resource_limits),
+            )
+            if hasattr(container, "start"):
+                container.start()
+        except Exception as exc:
+            message = str(exc)
+            if _is_permission_denied(message):
+                raise DockerPermissionDeniedError() from exc
+            if "container" in locals():
+                _stop_and_remove_container(container)
+            raise ContainerStartFailedError() from exc
+
+        try:
+            executor_url = await self._wait_for_executor_url(container, settings.sandbox_container_start_timeout_seconds)
+        except ExecutorHealthTimeoutError:
+            _stop_and_remove_container(container)
+            raise
+        try:
+            healthy = await asyncio.to_thread(
+                self._health_probe,
+                executor_url,
+                settings.sandbox_executor_health_timeout_seconds,
+            )
+        except Exception as exc:
+            _stop_and_remove_container(container)
+            raise ExecutorHealthTimeoutError() from exc
+        if not healthy:
+            _stop_and_remove_container(container)
+            raise ExecutorHealthTimeoutError()
+
+        lease = _lease_from_request("docker", request, workspace, executor_url=executor_url)
+        self._leases[lease.container_id] = lease
+        return lease
+
+    async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult:
+        self._leases.pop(lease.container_id, None)
+        try:
+            container = self._get_client().containers.get(lease.container_name)
+            if hasattr(container, "stop"):
+                container.stop()
+            if hasattr(container, "remove"):
+                container.remove(force=True)
+        except KeyError:
+            return StopResult(container_id=lease.container_id, status="not_found", message=reason)
+        except Exception as exc:
+            return StopResult(container_id=lease.container_id, status="failed", message="Container stop failed")
+        return StopResult(container_id=lease.container_id, status="stopped", message=reason)
+
+    async def list_runtime_containers(self, filters: dict[str, str]) -> list[ContainerStatus]:
+        containers = self._get_client().containers.list(all=True, filters={"label": ["ai-platform.owner=sandbox-runtime"]})
+        statuses = []
+        for container in containers:
+            status = _container_status_from_labels(container)
+            if status is not None:
+                statuses.append(status)
+        return [status for status in statuses if _matches_filters(status, filters)]
+
+    async def cleanup_orphan_containers(self, filters: dict[str, str], *, reason: str) -> list[StopResult]:
+        containers = self._get_client().containers.list(all=True, filters={"label": ["ai-platform.owner=sandbox-runtime"]})
+        results: list[StopResult] = []
+        for container in containers:
+            status = _container_status_from_labels(container)
+            if status is None or not _matches_filters(status, filters):
+                continue
+            if status.status == "running":
+                continue
+            if status.status not in {"exited", "dead", "removing", "removed"}:
+                continue
+            try:
+                if hasattr(container, "remove"):
+                    container.remove(force=True)
+            except Exception:
+                results.append(StopResult(container_id=status.container_id, status="failed", message="Container cleanup failed"))
+                continue
+            results.append(StopResult(container_id=status.container_id, status="stopped", message=reason))
+        return results
+
+
+_PROVIDER_CACHE: dict[str, ContainerProvider] = {}
+
+
+def reset_container_provider_cache() -> None:
+    _PROVIDER_CACHE.clear()
+
+
+def create_container_provider(provider_name: str | None = None) -> ContainerProvider:
+    selected = provider_name or get_settings().sandbox_container_provider
+    cached = _PROVIDER_CACHE.get(selected)
+    if cached is not None:
+        return cached
+    if selected == "fake":
+        provider = FakeContainerProvider()
+        _PROVIDER_CACHE[selected] = provider
+        return provider
+    if selected == "docker":
+        provider = DockerContainerProvider()
+        _PROVIDER_CACHE[selected] = provider
+        return provider
+    raise ValueError(f"Unknown sandbox container provider: {selected}")

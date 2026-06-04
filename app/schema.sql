@@ -1,0 +1,539 @@
+create table if not exists tenants (
+  id text primary key,
+  name text not null,
+  status text not null default 'active',
+  created_at timestamptz not null default now()
+);
+
+create table if not exists workspaces (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  name text not null,
+  status text not null default 'active',
+  created_at timestamptz not null default now()
+);
+
+create table if not exists users (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  display_name text not null,
+  email text,
+  external_id text,
+  status text not null default 'active',
+  created_at timestamptz not null default now()
+);
+
+create table if not exists skills (
+  id text primary key,
+  name text not null,
+  version text not null,
+  description text not null default '',
+  input_modes jsonb not null default '[]'::jsonb,
+  output_modes jsonb not null default '[]'::jsonb,
+  executor_type text not null,
+  config_json jsonb not null default '{}'::jsonb,
+  status text not null default 'active',
+  created_at timestamptz not null default now()
+);
+
+create table if not exists skill_versions (
+  id text primary key,
+  skill_id text not null references skills(id),
+  version text not null,
+  content_hash text not null default '',
+  description text not null default '',
+  source_json jsonb not null default '{}'::jsonb,
+  dependency_ids jsonb not null default '[]'::jsonb,
+  status text not null default 'active',
+  created_by text,
+  created_at timestamptz not null default now(),
+  unique(skill_id, version)
+);
+
+create index if not exists idx_skill_versions_skill_created on skill_versions(skill_id, created_at desc);
+
+create table if not exists skill_release_policies (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  skill_id text not null references skills(id),
+  channel text not null default 'stable',
+  current_version text not null,
+  previous_version text,
+  rollout_percent integer not null default 100,
+  status text not null default 'active',
+  promoted_by text,
+  promoted_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique(tenant_id, skill_id, channel),
+  foreign key (skill_id, current_version) references skill_versions(skill_id, version),
+  check (rollout_percent >= 0 and rollout_percent <= 100)
+);
+
+create index if not exists idx_skill_release_policies_skill on skill_release_policies(skill_id, channel, status);
+
+create table if not exists tenant_workbench_skills (
+  tenant_id text not null references tenants(id),
+  skill_id text not null references skills(id),
+  status text not null default 'active',
+  visible_to_user boolean not null default true,
+  created_at timestamptz not null default now(),
+  primary key (tenant_id, skill_id)
+);
+
+create table if not exists mcp_tools (
+  id text primary key,
+  server_id text not null,
+  name text not null,
+  description text not null default '',
+  transport_type text not null default 'http',
+  endpoint text not null default '',
+  auth_mode text not null default 'none',
+  allowed_tools jsonb not null default '[]'::jsonb,
+  status text not null default 'disabled',
+  write_capable boolean not null default false,
+  risk_level text not null default 'low',
+  visible_to_user boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists agents (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  name text not null,
+  agent_type text not null,
+  description text not null default '',
+  default_skill_id text references skills(id),
+  status text not null default 'active',
+  created_at timestamptz not null default now()
+);
+
+create table if not exists sessions (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  workspace_id text not null references workspaces(id),
+  user_id text references users(id),
+  agent_id text not null references agents(id),
+  title text not null default '',
+  status text not null default 'active',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists runs (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  workspace_id text not null references workspaces(id),
+  session_id text not null references sessions(id),
+  user_id text references users(id),
+  agent_id text not null references agents(id),
+  skill_id text not null references skills(id),
+  trace_id text not null default '',
+  schema_version text not null default 'ai-platform.run.v1',
+  executor_schema_version text not null default 'ai-platform.executor-result.v1',
+  principal_roles jsonb not null default '[]'::jsonb,
+  auth_source text,
+  status text not null,
+  input_json jsonb not null default '{}'::jsonb,
+  result_json jsonb not null default '{}'::jsonb,
+  error_code text,
+  error_message text,
+  latency_ms integer,
+  input_token_count integer not null default 0,
+  output_token_count integer not null default 0,
+  total_token_count integer not null default 0,
+  estimated_cost_minor integer not null default 0,
+  queued_at timestamptz,
+  started_at timestamptz,
+  finished_at timestamptz,
+  created_at timestamptz not null default now(),
+  copied_from_run_id text references runs(id),
+  cancel_requested_at timestamptz,
+  cancel_requested_by text
+);
+
+create index if not exists idx_runs_tenant_created on runs(tenant_id, created_at desc);
+create index if not exists idx_runs_session_created on runs(session_id, created_at desc);
+create index if not exists idx_runs_status on runs(status);
+
+alter table runs add column if not exists trace_id text not null default '';
+alter table runs add column if not exists schema_version text not null default 'ai-platform.run.v1';
+alter table runs add column if not exists executor_schema_version text not null default 'ai-platform.executor-result.v1';
+alter table runs add column if not exists principal_roles jsonb not null default '[]'::jsonb;
+alter table runs add column if not exists auth_source text;
+alter table runs add column if not exists copied_from_run_id text references runs(id);
+alter table runs add column if not exists cancel_requested_at timestamptz;
+alter table runs add column if not exists cancel_requested_by text;
+alter table runs add column if not exists latency_ms integer;
+alter table runs add column if not exists input_token_count integer not null default 0;
+alter table runs add column if not exists output_token_count integer not null default 0;
+alter table runs add column if not exists total_token_count integer not null default 0;
+alter table runs add column if not exists estimated_cost_minor integer not null default 0;
+
+create index if not exists idx_runs_trace_id on runs(trace_id);
+
+create table if not exists run_steps (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  run_id text not null references runs(id),
+  step_key text not null,
+  step_kind text not null,
+  status text not null,
+  title text not null default '',
+  role text,
+  sequence integer not null default 0,
+  payload_json jsonb not null default '{}'::jsonb,
+  started_at timestamptz,
+  finished_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique(tenant_id, run_id, step_key)
+);
+
+create index if not exists idx_run_steps_run_sequence on run_steps(run_id, sequence, created_at);
+
+create table if not exists run_skill_snapshots (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  run_id text not null references runs(id),
+  skill_id text not null references skills(id),
+  skill_version text not null,
+  content_hash text not null default '',
+  source_json jsonb not null default '{}'::jsonb,
+  dependency_ids jsonb not null default '[]'::jsonb,
+  allowed boolean not null default false,
+  staged boolean not null default false,
+  used boolean not null default false,
+  used_skills_source text not null default '',
+  inferred_used boolean not null default false,
+  created_at timestamptz not null default now(),
+  unique(tenant_id, run_id, skill_id)
+);
+
+alter table run_skill_snapshots add column if not exists used_skills_source text not null default '';
+alter table run_skill_snapshots add column if not exists inferred_used boolean not null default false;
+
+create index if not exists idx_run_skill_snapshots_run on run_skill_snapshots(tenant_id, run_id);
+
+create table if not exists messages (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  session_id text not null references sessions(id),
+  run_id text references runs(id),
+  role text not null,
+  content text not null,
+  metadata_json jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists memory_records (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  workspace_id text not null references workspaces(id),
+  user_id text not null references users(id),
+  agent_id text references agents(id),
+  session_id text,
+  record_type text not null,
+  content text not null,
+  metadata_json jsonb not null default '{}'::jsonb,
+  status text not null default 'active',
+  expires_at timestamptz,
+  deleted_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_memory_records_scope
+  on memory_records(tenant_id, workspace_id, user_id, agent_id, session_id, created_at desc);
+
+create table if not exists memory_policies (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  workspace_id text not null references workspaces(id),
+  user_id text not null references users(id),
+  agent_id text,
+  memory_enabled boolean not null default true,
+  long_term_memory_enabled boolean not null default false,
+  retention_days integer not null default 90,
+  reason text not null default '',
+  updated_by text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint chk_memory_policies_long_term_disabled check (long_term_memory_enabled = false),
+  check (retention_days >= 1 and retention_days <= 3650)
+);
+
+update memory_policies
+set long_term_memory_enabled = false
+where long_term_memory_enabled = true;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'chk_memory_policies_long_term_disabled'
+      and conrelid = 'memory_policies'::regclass
+  ) then
+    alter table memory_policies
+      add constraint chk_memory_policies_long_term_disabled check (long_term_memory_enabled = false);
+  end if;
+end $$;
+
+create index if not exists idx_memory_policies_scope
+  on memory_policies(tenant_id, workspace_id, user_id, agent_id, updated_at desc);
+
+create table if not exists run_context_snapshots (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  workspace_id text not null references workspaces(id),
+  user_id text not null references users(id),
+  session_id text not null references sessions(id),
+  run_id text not null references runs(id),
+  trace_id text not null default '',
+  schema_version text not null default 'ai-platform.context-snapshot.v1',
+  context_kind text not null default 'executor',
+  included_message_ids jsonb not null default '[]'::jsonb,
+  included_file_ids jsonb not null default '[]'::jsonb,
+  included_artifact_ids jsonb not null default '[]'::jsonb,
+  included_memory_record_ids jsonb not null default '[]'::jsonb,
+  redaction_summary_json jsonb not null default '{}'::jsonb,
+  payload_json jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_run_context_snapshots_run
+  on run_context_snapshots(tenant_id, run_id, created_at desc);
+
+create table if not exists run_events (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  run_id text not null references runs(id),
+  trace_id text not null default '',
+  schema_version text not null default 'ai-platform.event-envelope.v1',
+  sequence bigint not null default 0,
+  event_type text not null,
+  stage text not null,
+  message text not null default '',
+  severity text not null default 'info',
+  visible_to_user boolean not null default true,
+  error_code text,
+  latency_ms integer,
+  input_token_count integer not null default 0,
+  output_token_count integer not null default 0,
+  total_token_count integer not null default 0,
+  estimated_cost_minor integer not null default 0,
+  payload_json jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_run_events_run_created on run_events(run_id, created_at);
+
+alter table run_events add column if not exists trace_id text not null default '';
+alter table run_events add column if not exists schema_version text not null default 'ai-platform.event-envelope.v1';
+alter table run_events add column if not exists sequence bigint not null default 0;
+alter table run_events add column if not exists severity text not null default 'info';
+alter table run_events add column if not exists visible_to_user boolean not null default true;
+alter table run_events add column if not exists error_code text;
+alter table run_events add column if not exists latency_ms integer;
+alter table run_events add column if not exists input_token_count integer not null default 0;
+alter table run_events add column if not exists output_token_count integer not null default 0;
+alter table run_events add column if not exists total_token_count integer not null default 0;
+alter table run_events add column if not exists estimated_cost_minor integer not null default 0;
+
+create index if not exists idx_run_events_run_sequence on run_events(tenant_id, run_id, sequence);
+
+create table if not exists run_tool_permission_requests (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  workspace_id text not null references workspaces(id),
+  user_id text not null references users(id),
+  session_id text not null references sessions(id),
+  run_id text not null references runs(id),
+  trace_id text not null default '',
+  tool_id text not null,
+  tool_call_id text not null,
+  action text not null default 'execute',
+  risk_level text not null default 'low',
+  write_capable boolean not null default false,
+  status text not null default 'pending',
+  decision text,
+  reason text not null default '',
+  request_payload_json jsonb not null default '{}'::jsonb,
+  decision_payload_json jsonb not null default '{}'::jsonb,
+  expires_at timestamptz,
+  decided_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique(tenant_id, run_id, tool_call_id)
+);
+
+create index if not exists idx_run_tool_permission_requests_run
+  on run_tool_permission_requests(tenant_id, run_id, created_at desc);
+
+create table if not exists sandbox_leases (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  workspace_id text not null references workspaces(id),
+  user_id text not null references users(id),
+  session_id text not null references sessions(id),
+  run_id text not null references runs(id),
+  trace_id text not null default '',
+  sandbox_mode text not null,
+  provider text not null default 'fake',
+  status text not null default 'active',
+  browser_enabled boolean not null default false,
+  resource_limits_json jsonb not null default '{}'::jsonb,
+  user_visible_payload_json jsonb not null default '{}'::jsonb,
+  lease_payload_json jsonb not null default '{}'::jsonb,
+  heartbeat_at timestamptz,
+  expires_at timestamptz,
+  released_at timestamptz,
+  release_reason text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_sandbox_leases_run
+  on sandbox_leases(tenant_id, run_id, created_at desc);
+create index if not exists idx_sandbox_leases_status
+  on sandbox_leases(tenant_id, status, expires_at);
+
+create table if not exists files (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  workspace_id text not null references workspaces(id),
+  user_id text not null references users(id),
+  session_id text,
+  run_id text references runs(id),
+  original_name text not null,
+  content_type text not null,
+  size_bytes bigint not null,
+  storage_key text not null unique,
+  sha256 text not null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists artifacts (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  run_id text not null references runs(id),
+  trace_id text not null default '',
+  artifact_type text not null,
+  label text not null,
+  content_type text not null,
+  storage_key text not null unique,
+  size_bytes bigint not null,
+  manifest_version text not null default 'ai-platform.artifact-manifest.v1',
+  manifest_json jsonb not null default '{}'::jsonb,
+  retention_policy text not null default 'standard_90d',
+  expires_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+alter table artifacts add column if not exists trace_id text not null default '';
+alter table artifacts add column if not exists manifest_version text not null default 'ai-platform.artifact-manifest.v1';
+alter table artifacts add column if not exists retention_policy text not null default 'standard_90d';
+alter table artifacts add column if not exists expires_at timestamptz;
+
+create table if not exists audit_logs (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  user_id text,
+  action text not null,
+  target_type text not null,
+  target_id text not null,
+  trace_id text,
+  schema_version text not null default 'ai-platform.audit-event.v1',
+  payload_json jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+alter table audit_logs add column if not exists trace_id text;
+alter table audit_logs add column if not exists schema_version text not null default 'ai-platform.audit-event.v1';
+
+insert into tenants(id, name)
+values ('default', 'Default Tenant')
+on conflict (id) do nothing;
+
+insert into workspaces(id, tenant_id, name)
+values ('default', 'default', 'Default Workspace')
+on conflict (id) do nothing;
+
+insert into skills(id, name, version, description, input_modes, output_modes, executor_type)
+values
+  ('qa-file-reviewer', 'QA Word Review', '0.1.0', 'Review Word documents and return commented Word artifacts.', '["docx"]'::jsonb, '["reviewed_docx", "findings_json"]'::jsonb, 'claude-agent-worker'),
+  ('minimax-docx', 'Minimax DOCX', '0.1.0', 'Internal Word document composition dependency used by first-party document Skills.', '["docx"]'::jsonb, '["docx"]'::jsonb, 'claude-agent-worker'),
+  ('baoyu-translate', 'Baoyu Translate', '0.1.0', 'Translate Word documents and return translated Word artifacts.', '["docx"]'::jsonb, '["translated_docx"]'::jsonb, 'claude-agent-worker'),
+  ('general-chat', 'General Chat Agent', '0.1.0', 'General chat agent executed by Claude Agent worker.', '["chat"]'::jsonb, '["answer"]'::jsonb, 'claude-agent-worker'),
+  ('ragflow-knowledge-search', 'RAGFlow Knowledge Search', '0.1.0', 'Query company knowledge base with scoped citations.', '["chat"]'::jsonb, '["answer", "citations"]'::jsonb, 'ragflow')
+on conflict (id) do update set
+  name = excluded.name,
+  version = excluded.version,
+  description = excluded.description,
+  input_modes = excluded.input_modes,
+  output_modes = excluded.output_modes,
+  executor_type = excluded.executor_type,
+  status = excluded.status;
+
+insert into skill_versions(id, skill_id, version, content_hash, description, source_json, dependency_ids, status, created_by)
+values
+  ('skv_seed_general_chat_0_1_0', 'general-chat', '0.1.0', '0.1.0', 'Schema-seeded baseline for General Chat Agent.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema'),
+  ('skv_seed_qa_file_reviewer_0_1_0', 'qa-file-reviewer', '0.1.0', '0.1.0', 'Schema-seeded baseline for QA Word Review.', '{"kind":"schema-seed"}'::jsonb, '["minimax-docx"]'::jsonb, 'active', 'schema'),
+  ('skv_seed_minimax_docx_0_1_0', 'minimax-docx', '0.1.0', '0.1.0', 'Schema-seeded baseline for internal DOCX composition dependency.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema'),
+  ('skv_seed_baoyu_translate_0_1_0', 'baoyu-translate', '0.1.0', '0.1.0', 'Schema-seeded baseline for Baoyu Translate.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema'),
+  ('skv_seed_ragflow_knowledge_search_0_1_0', 'ragflow-knowledge-search', '0.1.0', '0.1.0', 'Schema-seeded baseline for RAGFlow Knowledge Search.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema')
+on conflict (skill_id, version) do nothing;
+
+insert into tenant_workbench_skills(tenant_id, skill_id, status, visible_to_user)
+values
+  ('default', 'general-chat', 'active', true),
+  ('default', 'qa-file-reviewer', 'active', true),
+  ('default', 'baoyu-translate', 'active', true),
+  ('default', 'ragflow-knowledge-search', 'active', true)
+on conflict (tenant_id, skill_id) do nothing;
+
+insert into mcp_tools(id, server_id, name, description, transport_type, endpoint, auth_mode, allowed_tools, status, write_capable, risk_level, visible_to_user)
+values
+  (
+    'ragflow-knowledge-search',
+    'ragflow',
+    'RAGFlow 知识库检索',
+    'Read-only company knowledge search tool. User registration of arbitrary MCP servers is disabled.',
+    'http',
+    '',
+    'platform-managed',
+    '["ragflow_search"]'::jsonb,
+    'active',
+    false,
+    'low',
+    true
+  )
+on conflict (id) do update set
+  server_id = excluded.server_id,
+  name = excluded.name,
+  description = excluded.description,
+  transport_type = excluded.transport_type,
+  endpoint = excluded.endpoint,
+  auth_mode = excluded.auth_mode,
+  allowed_tools = excluded.allowed_tools,
+  status = excluded.status,
+  write_capable = excluded.write_capable,
+  risk_level = excluded.risk_level,
+  visible_to_user = excluded.visible_to_user;
+
+insert into agents(id, tenant_id, name, agent_type, description, default_skill_id, status)
+values
+  ('translate', 'default', '文档翻译', 'file', 'Legacy alias for baoyu-translate. Hidden from LambChat mode selection.', 'baoyu-translate', 'inactive'),
+  ('document-review', 'default', '文档审核', 'file', 'Legacy alias for qa-word-review. Hidden from LambChat mode selection.', 'qa-file-reviewer', 'inactive'),
+  ('general-agent', 'default', '通用聊天 Agent', 'chat', 'General company chat agent backed by ai-platform sessions and Claude Agent SDK worker.', 'general-chat', 'active'),
+  ('qa-word-review', 'default', '文档审核', 'file', 'Upload Word documents and generate reviewed Word artifacts.', 'qa-file-reviewer', 'active'),
+  ('baoyu-translate', 'default', '文档翻译', 'file', 'Upload Word documents and generate translated Word artifacts.', 'baoyu-translate', 'active'),
+  ('sop-assistant', 'default', 'SOP 助手', 'chat', 'Answer SOP questions with RAGFlow citations.', 'ragflow-knowledge-search', 'active')
+on conflict (id) do update set
+  tenant_id = excluded.tenant_id,
+  name = excluded.name,
+  agent_type = excluded.agent_type,
+  description = excluded.description,
+  default_skill_id = excluded.default_skill_id,
+  status = excluded.status;

@@ -1,0 +1,710 @@
+#!/usr/bin/env python3
+"""Aggregate verification for the ai-platform + LambChat POC on 211.
+
+The script is intentionally evidence-oriented. It does not claim completion when
+the real company-login audit gate is missing.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+from urllib import error, request
+
+
+DEFAULT_FRONTEND_URL = "http://127.0.0.1:18001"
+DEFAULT_API_URL = "http://127.0.0.1:8020"
+DEFAULT_FRONTEND_DIST = "/home/xinlin.jiang/lambchat-poc/frontend-dist-ai-platform"
+DEFAULT_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/deploy/ai-platform/.env"
+DEFAULT_POSTGRES_CONTAINER = "ai-platform-postgres"
+DEFAULT_POSTGRES_USER = "ai_platform"
+DEFAULT_POSTGRES_DB = "ai_platform"
+REQUIRED_UI_PERMISSIONS = {"agent:use", "artifact:download", "agent:admin", "model:admin", "settings:manage", "admin:status"}
+
+
+@dataclass(frozen=True)
+class Gate:
+    name: str
+    ok: bool
+    evidence: dict[str, Any]
+
+
+def http_get(url: str, timeout: float = 15.0) -> tuple[int, bytes]:
+    req = request.Request(url, headers={"Accept": "application/json,text/html,*/*"}, method="GET")
+    try:
+        with request.urlopen(req, timeout=timeout) as response:
+            return response.status, response.read()
+    except error.HTTPError as exc:
+        return exc.code, exc.read()
+
+
+def http_get_with_headers(url: str, headers: dict[str, str], timeout: float = 15.0) -> tuple[int, bytes]:
+    req = request.Request(url, headers={"Accept": "*/*", **headers}, method="GET")
+    try:
+        with request.urlopen(req, timeout=timeout) as response:
+            return response.status, response.read()
+    except error.HTTPError as exc:
+        return exc.code, exc.read()
+
+
+def http_json(url: str) -> tuple[int, Any]:
+    status, body = http_get(url)
+    try:
+        return status, json.loads(body.decode("utf-8"))
+    except Exception:
+        return status, body.decode("utf-8", errors="replace")[:300]
+
+
+def http_json_post(url: str, payload: dict[str, Any] | None = None, timeout: float = 15.0) -> tuple[int, Any]:
+    data = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
+    req = request.Request(
+        url,
+        data=data,
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=timeout) as response:
+            status, body = response.status, response.read()
+    except error.HTTPError as exc:
+        status, body = exc.code, exc.read()
+    except Exception as exc:
+        return 0, {"error": str(exc)}
+    try:
+        return status, json.loads(body.decode("utf-8"))
+    except Exception:
+        return status, body.decode("utf-8", errors="replace")[:300]
+
+
+def http_json_post_with_headers(
+    url: str,
+    payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = 15.0,
+) -> tuple[int, Any]:
+    data = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
+    req = request.Request(
+        url,
+        data=data,
+        headers={"Accept": "application/json", "Content-Type": "application/json", **(headers or {})},
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=timeout) as response:
+            status, body = response.status, response.read()
+    except error.HTTPError as exc:
+        status, body = exc.code, exc.read()
+    except Exception as exc:
+        return 0, {"error": str(exc)}
+    try:
+        return status, json.loads(body.decode("utf-8"))
+    except Exception:
+        return status, body.decode("utf-8", errors="replace")[:300]
+
+
+def http_multipart_file_post(
+    url: str,
+    *,
+    field_name: str,
+    filename: str,
+    content: bytes,
+    content_type: str,
+    headers: dict[str, str] | None = None,
+    timeout: float = 30.0,
+) -> tuple[int, Any]:
+    boundary = "----ai-platform-poc-gate-boundary"
+    body = b"".join(
+        [
+            f"--{boundary}\r\n".encode("utf-8"),
+            f'Content-Disposition: form-data; name="{field_name}"; filename="{filename}"\r\n'.encode("utf-8"),
+            f"Content-Type: {content_type}\r\n\r\n".encode("utf-8"),
+            content,
+            f"\r\n--{boundary}--\r\n".encode("utf-8"),
+        ]
+    )
+    req = request.Request(
+        url,
+        data=body,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            **(headers or {}),
+        },
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=timeout) as response:
+            status, raw_body = response.status, response.read()
+    except error.HTTPError as exc:
+        status, raw_body = exc.code, exc.read()
+    except Exception as exc:
+        return 0, {"error": str(exc)}
+    try:
+        return status, json.loads(raw_body.decode("utf-8"))
+    except Exception:
+        return status, raw_body.decode("utf-8", errors="replace")[:300]
+
+
+def read_env(path: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    env_path = Path(path)
+    if not env_path.exists():
+        return values
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#") or "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
+
+
+def text_files(root: Path) -> list[Path]:
+    suffixes = {".html", ".js", ".mjs", ".css", ".json", ".webmanifest"}
+    return [path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in suffixes]
+
+
+def psql_rows(container: str, db_user: str, db_name: str, sql: str) -> list[dict[str, Any]]:
+    command = [
+        "sudo",
+        "-n",
+        "docker",
+        "exec",
+        container,
+        "psql",
+        "-U",
+        db_user,
+        "-d",
+        db_name,
+        "-t",
+        "-A",
+        "-c",
+        sql,
+    ]
+    completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=30)
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "psql query failed")
+    rows: list[dict[str, Any]] = []
+    for line in completed.stdout.splitlines():
+        raw = line.strip()
+        if raw:
+            rows.append(json.loads(raw))
+    return rows
+
+
+def principal_headers(user_id: str, display_name: str = "") -> dict[str, str]:
+    return {
+        "X-AI-User-ID": user_id,
+        "X-AI-User-Name": display_name or user_id,
+        "X-AI-Tenant-ID": "default",
+        "X-AI-Roles": "user",
+        "X-AI-Permissions": "agent:use,chat:read,chat:write,session:read,session:write,artifact:download,file:upload,file:upload:document",
+    }
+
+
+def check_frontend(frontend_url: str) -> Gate:
+    status, body = http_get(f"{frontend_url.rstrip('/')}/")
+    text = body.decode("utf-8", errors="replace")
+    ok = status == 200 and "<html" in text.lower() and "assets/" in text
+    return Gate("lambchat_frontend", ok, {"url": frontend_url, "status": status, "bytes": len(body)})
+
+
+def check_frontend_origin_api(frontend_url: str) -> Gate:
+    api_url = f"{frontend_url.rstrip('/')}/api/ai/health"
+    status, payload = http_json(api_url)
+    ok = status == 200 and isinstance(payload, dict) and payload.get("status") == "ok"
+    return Gate("lambchat_frontend_origin_api", ok, {"url": api_url, "status": status, "payload": payload})
+
+
+def check_frontend_dist_api_boundary(frontend_dist: str) -> Gate:
+    root = Path(frontend_dist)
+    if not root.exists():
+        return Gate(
+            "lambchat_frontend_dist_api_boundary",
+            False,
+            {"path": frontend_dist, "exists": False, "api_reference_count": 0, "forbidden_reference_count": 0},
+        )
+    api_reference_count = 0
+    forbidden: list[str] = []
+    forbidden_pattern = re.compile(r"https?://(?:127\.0\.0\.1|localhost|10\.\d+\.\d+\.\d+|[^\"'`\s/]+):18080/[^\"'`\s]*api", re.IGNORECASE)
+    for path in text_files(root):
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if "/api/" in text:
+            api_reference_count += text.count("/api/")
+        if forbidden_pattern.search(text):
+            forbidden.append(str(path.relative_to(root)))
+    ok = api_reference_count > 0 and not forbidden
+    return Gate(
+        "lambchat_frontend_dist_api_boundary",
+        ok,
+        {
+            "path": frontend_dist,
+            "exists": True,
+            "api_reference_count": api_reference_count,
+            "forbidden_reference_count": len(forbidden),
+            "forbidden_files": forbidden[:10],
+        },
+    )
+
+
+def check_api_compat(api_url: str) -> Gate:
+    paths = [
+        "/api/ai/health",
+        "/api/auth/oauth/providers",
+        "/api/auth/permissions",
+        "/api/agent/models/available",
+        "/api/settings/",
+        "/api/projects",
+        "/api/notifications/active",
+        "/api/upload/config",
+        "/api/tools",
+        "/api/version",
+    ]
+    statuses: dict[str, int] = {}
+    payloads: dict[str, Any] = {}
+    for path in paths:
+        status, payload = http_json(f"{api_url.rstrip('/')}{path}")
+        statuses[path] = status
+        payloads[path] = payload
+    oauth = payloads.get("/api/auth/oauth/providers") if isinstance(payloads.get("/api/auth/oauth/providers"), dict) else {}
+    model = payloads.get("/api/agent/models/available") if isinstance(payloads.get("/api/agent/models/available"), dict) else {}
+    permissions_payload = payloads.get("/api/auth/permissions") if isinstance(payloads.get("/api/auth/permissions"), dict) else {}
+    permission_values = {
+        str(item.get("value"))
+        for item in permissions_payload.get("all_permissions", [])
+        if isinstance(item, dict) and item.get("value")
+    }
+    missing_permissions = sorted(REQUIRED_UI_PERMISSIONS - permission_values)
+    ok = (
+        all(status == 200 for status in statuses.values())
+        and oauth.get("registration_enabled") is False
+        and model.get("default_model_id") == "deepseek-v4-flash"
+        and not missing_permissions
+    )
+    return Gate(
+        "lambchat_api_compat",
+        ok,
+        {
+            "statuses": statuses,
+            "registration_enabled": oauth.get("registration_enabled"),
+            "default_model_id": model.get("default_model_id"),
+            "missing_permissions": missing_permissions,
+        },
+    )
+
+
+def check_runtime_config(env_path: str) -> Gate:
+    values = read_env(env_path)
+    skills = {item.strip() for item in values.get("CLAUDE_AGENT_SDK_SKILLS", "").split(",") if item.strip()}
+    ok = (
+        values.get("CLAUDE_AGENT_SDK_ENABLED", "").lower() == "true"
+        and values.get("CLAUDE_AGENT_MODEL") == "deepseek-v4-flash"
+        and values.get("OPENAI_MODEL") == "deepseek-v4-flash"
+        and values.get("ANTHROPIC_MODEL") == "deepseek-v4-flash"
+        and {"general-chat", "qa-file-reviewer", "baoyu-translate"}.issubset(skills)
+    )
+    return Gate(
+        "runtime_config",
+        ok,
+        {
+            "env_path": env_path,
+            "claude_agent_sdk_enabled": values.get("CLAUDE_AGENT_SDK_ENABLED"),
+            "claude_agent_model": values.get("CLAUDE_AGENT_MODEL"),
+            "openai_model": values.get("OPENAI_MODEL"),
+            "anthropic_model": values.get("ANTHROPIC_MODEL"),
+            "skills_present": sorted(skills.intersection({"general-chat", "qa-file-reviewer", "baoyu-translate"})),
+        },
+    )
+
+
+def check_company_auth_bridge(existing_auth_base_url: str) -> Gate:
+    login_url = f"{existing_auth_base_url.rstrip('/')}/api/Login/"
+    status, payload = http_json_post(
+        login_url,
+        {"username": "__ai_platform_invalid_probe__", "password": "__invalid__"},
+    )
+    payload_status = payload.get("status") if isinstance(payload, dict) else None
+    ok = status == 200 and payload_status == "unsuccessfully!"
+    return Gate(
+        "company_auth_bridge",
+        ok,
+        {
+            "login_url": login_url,
+            "login_probe_status": status,
+            "login_probe_payload_status": payload_status,
+        },
+    )
+
+
+def latest_successful_run(container: str, db_user: str, db_name: str, *, agent_id: str, skill_id: str) -> dict[str, Any] | None:
+    sql = f"""
+select json_build_object(
+  'run_id', r.id,
+  'agent_id', r.agent_id,
+  'skill_id', r.skill_id,
+  'status', r.status,
+  'user_id', r.user_id,
+  'artifact_id', a.id,
+  'artifact_label', a.label,
+  'artifact_size_bytes', a.size_bytes,
+  'artifact_storage_key', a.storage_key
+)::text
+from runs r
+left join artifacts a on a.run_id = r.id
+where r.agent_id = '{agent_id}'
+  and r.skill_id = '{skill_id}'
+  and r.status = 'succeeded'
+order by r.created_at desc
+limit 1;
+"""
+    rows = psql_rows(container, db_user, db_name, sql)
+    return rows[0] if rows else None
+
+
+def check_db_evidence(container: str, db_user: str, db_name: str) -> list[Gate]:
+    specs = [
+        ("general_chat_run", "general-agent", "general-chat", False),
+        ("review_artifact", "qa-word-review", "qa-file-reviewer", True),
+        ("translate_artifact", "baoyu-translate", "baoyu-translate", True),
+    ]
+    gates: list[Gate] = []
+    for name, agent_id, skill_id, require_artifact in specs:
+        row = latest_successful_run(container, db_user, db_name, agent_id=agent_id, skill_id=skill_id)
+        storage_key = str((row or {}).get("artifact_storage_key") or "")
+        ok = bool(row) and (not require_artifact or (row.get("artifact_id") and int(row.get("artifact_size_bytes") or 0) > 0 and storage_key.startswith("tenants/")))
+        gates.append(Gate(name, ok, row or {"agent_id": agent_id, "skill_id": skill_id, "found": False}))
+    return gates
+
+
+def check_artifact_download_isolation(api_url: str, artifact_rows: list[dict[str, Any]]) -> Gate:
+    denied_statuses = {401, 403, 404}
+    results: list[dict[str, Any]] = []
+    for row in artifact_rows:
+        artifact_id = str(row.get("artifact_id") or "")
+        owner_id = str(row.get("user_id") or "")
+        if not artifact_id or not owner_id:
+            continue
+        url = f"{api_url.rstrip('/')}/api/ai/artifacts/{artifact_id}/download"
+        owner_status, owner_body = http_get_with_headers(url, principal_headers(owner_id, "Artifact Owner"))
+        cross_user_id = f"{owner_id}-cross-check"
+        cross_status, _ = http_get_with_headers(url, principal_headers(cross_user_id, "Artifact Cross Check"))
+        results.append(
+            {
+                "artifact_id": artifact_id,
+                "owner_user": owner_id,
+                "owner_status": owner_status,
+                "owner_bytes": len(owner_body),
+                "cross_user_status": cross_status,
+            }
+        )
+    ok = bool(results) and all(item["owner_status"] == 200 and item["owner_bytes"] > 0 and item["cross_user_status"] in denied_statuses for item in results)
+    return Gate("artifact_download_isolation", ok, {"checked_artifacts": len(results), "results": results})
+
+
+def check_upload_attachment_chat(
+    api_url: str,
+    container: str,
+    db_user: str,
+    db_name: str,
+) -> Gate:
+    headers = principal_headers("upload-gate-user-a", "Upload Gate User")
+    check_status, check_payload = http_json_post_with_headers(
+        f"{api_url.rstrip('/')}/api/upload/check",
+        {"hash": "upload-gate", "size": 18, "name": "upload-gate.txt"},
+        headers=headers,
+    )
+    upload_status, upload_payload = http_multipart_file_post(
+        f"{api_url.rstrip('/')}/api/upload/file?folder=uploads",
+        field_name="file",
+        filename="upload-gate.txt",
+        content=b"hello upload smoke",
+        content_type="text/plain",
+        headers=headers,
+    )
+    file_id = upload_payload.get("key") if isinstance(upload_payload, dict) else None
+    chat_payload: dict[str, Any] | None = None
+    chat_status = 0
+    if file_id:
+        chat_status, chat_payload = http_json_post_with_headers(
+            f"{api_url.rstrip('/')}/api/chat/stream?agent_id=general-agent",
+            {
+                "message": "请确认你能看到上传文件",
+                "workspace_id": "default",
+                "attachments": [
+                    {
+                        "key": file_id,
+                        "name": "upload-gate.txt",
+                        "type": "uploads",
+                        "mimeType": "text/plain",
+                        "size": 18,
+                    }
+                ],
+            },
+            headers=headers,
+            timeout=30,
+        )
+    run_id = chat_payload.get("run_id") if isinstance(chat_payload, dict) else None
+    run_evidence: dict[str, Any] = {}
+    if run_id:
+        for _ in range(45):
+            rows = psql_rows(
+                container,
+                db_user,
+                db_name,
+                f"""
+select json_build_object(
+  'run_id', r.id,
+  'status', r.status,
+  'file_ids', r.input_json->'file_ids',
+  'error_code', r.error_code,
+  'error_message', r.error_message,
+  'executor_type', r.result_json->'executor'->>'executor_type',
+  'worker_events', coalesce(
+    json_agg(e.payload_json order by e.created_at)
+      filter (where e.stage = 'worker' and e.message = 'Run started'),
+    '[]'::json
+  )
+)::text
+from runs r
+left join run_events e on e.tenant_id = r.tenant_id and e.run_id = r.id
+where r.id = '{run_id}'
+group by r.id;
+""",
+            )
+            run_evidence = rows[0] if rows else {}
+            if run_evidence.get("status") in {"succeeded", "failed"}:
+                break
+            time.sleep(1)
+    ok = (
+        check_status == 200
+        and isinstance(check_payload, dict)
+        and check_payload.get("exists") is False
+        and upload_status == 200
+        and isinstance(upload_payload, dict)
+        and str(upload_payload.get("key") or "").startswith("file_")
+        and chat_status == 200
+        and run_evidence.get("status") == "succeeded"
+        and file_id in (run_evidence.get("file_ids") or [])
+    )
+    return Gate(
+        "upload_attachment_chat",
+        ok,
+        {
+            "upload_check_status": check_status,
+            "upload_check_payload": check_payload,
+            "upload_status": upload_status,
+            "upload_payload": upload_payload,
+            "chat_status": chat_status,
+            "chat_payload": chat_payload,
+            "run": run_evidence,
+        },
+    )
+
+
+def sample_docx_bytes() -> tuple[str, bytes] | None:
+    candidates = [
+        Path("/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/.venv/lib/python3.12/site-packages/docx/templates/default.docx"),
+        Path("/home/xinlin.jiang/ai-platform-phaseb/tmp-smoke-translate.docx"),
+        Path("/home/xinlin.jiang/ai-platform-phaseb/review-artifact-download-20260523.docx"),
+    ]
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate.name, candidate.read_bytes()
+    return None
+
+
+def check_word_review_attachment_chat(
+    api_url: str,
+    container: str,
+    db_user: str,
+    db_name: str,
+) -> Gate:
+    sample = sample_docx_bytes()
+    if sample is None:
+        return Gate("word_review_attachment_chat", False, {"sample_docx_found": False})
+    filename, content = sample
+    headers = principal_headers("upload-review-gate-user", "Upload Review Gate User")
+    upload_status, upload_payload = http_multipart_file_post(
+        f"{api_url.rstrip('/')}/api/upload/file?folder=uploads",
+        field_name="file",
+        filename=filename,
+        content=content,
+        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers=headers,
+    )
+    file_id = upload_payload.get("key") if isinstance(upload_payload, dict) else None
+    chat_payload: dict[str, Any] | None = None
+    chat_status = 0
+    if file_id:
+        chat_status, chat_payload = http_json_post_with_headers(
+            f"{api_url.rstrip('/')}/api/chat/stream?agent_id=general-agent",
+            {
+                "message": "审核一下这个文档",
+                "workspace_id": "default",
+                "attachments": [
+                    {
+                        "key": file_id,
+                        "name": filename,
+                        "type": "uploads",
+                        "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        "size": len(content),
+                    }
+                ],
+            },
+            headers=headers,
+            timeout=30,
+        )
+    run_id = chat_payload.get("run_id") if isinstance(chat_payload, dict) else None
+    run_evidence: dict[str, Any] = {}
+    if run_id:
+        for _ in range(90):
+            rows = psql_rows(
+                container,
+                db_user,
+                db_name,
+                f"""
+select json_build_object(
+  'run_id', r.id,
+  'agent_id', r.agent_id,
+  'skill_id', r.skill_id,
+  'status', r.status,
+  'file_ids', r.input_json->'file_ids',
+  'error_message', r.error_message,
+  'artifact_count', count(a.id),
+  'artifact_types', coalesce(json_agg(a.artifact_type) filter (where a.id is not null), '[]'::json)
+)::text
+from runs r
+left join artifacts a on a.run_id = r.id and a.tenant_id = r.tenant_id
+where r.id = '{run_id}'
+group by r.id;
+""",
+            )
+            run_evidence = rows[0] if rows else {}
+            if run_evidence.get("status") in {"succeeded", "failed"}:
+                break
+            time.sleep(1)
+    artifact_types = run_evidence.get("artifact_types") or []
+    ok = (
+        upload_status == 200
+        and isinstance(upload_payload, dict)
+        and str(upload_payload.get("key") or "").startswith("file_")
+        and chat_status == 200
+        and run_evidence.get("status") == "succeeded"
+        and run_evidence.get("agent_id") == "qa-word-review"
+        and run_evidence.get("skill_id") == "qa-file-reviewer"
+        and file_id in (run_evidence.get("file_ids") or [])
+        and "reviewed_docx" in artifact_types
+    )
+    return Gate(
+        "word_review_attachment_chat",
+        ok,
+        {
+            "sample_docx_found": True,
+            "sample_docx_name": filename,
+            "upload_status": upload_status,
+            "upload_payload": upload_payload,
+            "chat_status": chat_status,
+            "chat_payload": chat_payload,
+            "run": run_evidence,
+        },
+    )
+
+
+def check_auth_audit(container: str, db_user: str, db_name: str, allow_missing: bool) -> Gate:
+    sql = """
+select json_build_object(
+  'count', count(*),
+  'ordinary_user_count', count(*) filter (where coalesce((payload_json->>'is_admin')::boolean, false) = false),
+  'admin_user_count', count(*) filter (where coalesce((payload_json->>'is_admin')::boolean, false) = true),
+  'latest_user_id', (array_agg(user_id order by created_at desc))[1],
+  'latest_payload', (array_agg(payload_json order by created_at desc))[1]
+)::text
+from audit_logs
+where action = 'auth.login'
+  and payload_json->>'source' = 'company-login'
+  and payload_json ? 'work_id'
+  and payload_json ? 'permissions'
+  and payload_json ? 'is_admin';
+"""
+    rows = psql_rows(container, db_user, db_name, sql)
+    evidence = rows[0] if rows else {"count": 0}
+    raw_sql = """
+select json_build_object(
+  'all_auth_login_count', count(*),
+  'latest_any_user_id', (array_agg(user_id order by created_at desc))[1],
+  'latest_any_payload', (array_agg(payload_json order by created_at desc))[1]
+)::text
+from audit_logs
+where action = 'auth.login';
+"""
+    raw_rows = psql_rows(container, db_user, db_name, raw_sql)
+    if raw_rows:
+        evidence.update(raw_rows[0])
+    count = int(evidence.get("count") or 0)
+    ordinary_user_count = int(evidence.get("ordinary_user_count") or 0)
+    admin_user_count = int(evidence.get("admin_user_count") or 0)
+    payload = evidence.get("latest_payload") if isinstance(evidence.get("latest_payload"), dict) else {}
+    ok = (
+        count > 0
+        and ordinary_user_count > 0
+        and admin_user_count > 0
+        and payload.get("source") == "company-login"
+        and bool(payload.get("work_id"))
+    )
+    missing_requirements = []
+    if ordinary_user_count <= 0:
+        missing_requirements.append("ordinary_company_login_audit")
+    if admin_user_count <= 0:
+        missing_requirements.append("admin_company_login_audit")
+    if missing_requirements:
+        evidence["missing_requirements"] = missing_requirements
+    if allow_missing and not ok:
+        evidence["allowed_missing_for_partial_gate"] = True
+        ok = True
+    return Gate("company_login_audit", ok, evidence)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Verify aggregate ai-platform POC gates.")
+    parser.add_argument("--frontend-url", default=DEFAULT_FRONTEND_URL)
+    parser.add_argument("--api-url", default=DEFAULT_API_URL)
+    parser.add_argument("--frontend-dist", default=DEFAULT_FRONTEND_DIST)
+    parser.add_argument("--env-path", default=DEFAULT_DEPLOY_ENV)
+    parser.add_argument("--postgres-container", default=DEFAULT_POSTGRES_CONTAINER)
+    parser.add_argument("--postgres-user", default=DEFAULT_POSTGRES_USER)
+    parser.add_argument("--postgres-db", default=DEFAULT_POSTGRES_DB)
+    parser.add_argument("--allow-missing-auth-audit", action="store_true")
+    args = parser.parse_args()
+
+    db_gates = check_db_evidence(args.postgres_container, args.postgres_user, args.postgres_db)
+    env_values = read_env(args.env_path)
+    artifact_rows = [gate.evidence for gate in db_gates if gate.name in {"review_artifact", "translate_artifact"} and gate.ok]
+    gates = [
+        check_frontend(args.frontend_url),
+        check_frontend_dist_api_boundary(args.frontend_dist),
+        check_frontend_origin_api(args.frontend_url),
+        check_api_compat(args.api_url),
+        check_runtime_config(args.env_path),
+        check_company_auth_bridge(env_values.get("EXISTING_AUTH_BASE_URL", "")),
+        *db_gates,
+        check_artifact_download_isolation(args.api_url, artifact_rows),
+        check_upload_attachment_chat(args.api_url, args.postgres_container, args.postgres_user, args.postgres_db),
+        check_word_review_attachment_chat(args.api_url, args.postgres_container, args.postgres_user, args.postgres_db),
+        check_auth_audit(args.postgres_container, args.postgres_user, args.postgres_db, args.allow_missing_auth_audit),
+    ]
+    result = {
+        "ok": all(gate.ok for gate in gates),
+        "gates": [{"name": gate.name, "ok": gate.ok, "evidence": gate.evidence} for gate in gates],
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result["ok"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
