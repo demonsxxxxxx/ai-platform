@@ -15,6 +15,7 @@ This file applies to the current `ai-platform` repository root.
 - On the 211 host, invoke repository Python checks with `python3`; bare `python` is Python 2.7 there and will misreport modern type annotations as syntax errors.
 - On the 211 host, verifier scripts that need Docker must use `--docker-cmd "sudo -n docker"` because the login user cannot access `/var/run/docker.sock` directly.
 - For 211 sandbox verifier cancel probes, prefer an already-local image such as `ai-platform:local` via `--cancel-image ai-platform:local`; do not depend on pulling `busybox` from Docker Hub during smoke checks.
+- The committed 211 compose file intentionally does not forward package-index variables as Docker build args. If a full compose build fails on package download and dependencies have not changed, rebuild `ai-platform:local` by rebasing from the current/backup image and copying only `pyproject.toml`, `app/`, `skills/`, and `docker-entrypoint.sh`, then run compose with `--no-build`.
 - When local pytest needs temporary files, use a workspace-local temp directory instead of the default Windows temp path if the default path has permission errors.
 - If pytest fails because a stale child under `.pytest-tmp/` is unreadable or cannot be removed, pass a fresh non-existing child path under `.pytest-tmp/`, such as `--basetemp .pytest-tmp\run-verify-211-<timestamp>`, and report the reason.
 - Always pass `--basetemp .pytest-tmp` to every local pytest invocation; never rely on the
