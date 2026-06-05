@@ -42,14 +42,15 @@ This file applies to the current `ai-platform` repository root.
 
 ## Multi-Agent Delegation
 
-- Prefer explicit per-agent `model` and `reasoning_effort` settings whenever the available delegation tool supports those fields.
-- If the available delegation tool does not expose per-agent `model` or `reasoning_effort` fields, but its tool contract says sub-agents inherit the current model, inherited configuration may be treated as equivalent only when the main session has been explicitly confirmed to be running the required model and reasoning level.
-- Before using inherited configuration for a required review gate, report:
-  - the delegation tool does not expose per-agent model or reasoning fields;
-  - the tool contract says sub-agents inherit the current model;
-  - the current main session model and reasoning level confirmation being relied on;
-  - sub-agents cannot self-attest their model or reasoning level from inside their task context.
-- If the main session model or reasoning level cannot be confirmed, do not claim that a model-specific or reasoning-specific multi-agent review gate is complete. In that case, sub-agents may still be used for read-only exploration or bounded sidecar checks, but the limitation must be reported.
+- Do not require per-agent `model` or `reasoning_effort` fields for `spawn_agent`.
+- When the delegation tool exposes per-agent `model` or `reasoning_effort`
+  fields, set them deliberately according to task complexity.
+- When the delegation tool does not expose those fields, use the tool's default
+  or inherited configuration and state that model-specific settings were not
+  externally asserted.
+- Do not claim that a model-specific or reasoning-specific review gate is
+  complete unless the model and reasoning level are directly configurable or
+  otherwise explicitly confirmed.
 - Do not delegate write, deployment, remote runtime, or long-running operational tasks unless the delegation path is confirmed to inherit the same filesystem, network, approval, and permission posture as the main session. Keep those tasks in the main session when inheritance cannot be proven.
 
 ## Large Feature Workflow
