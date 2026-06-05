@@ -567,7 +567,7 @@ async def admin_list_memory_policies(
 Run:
 
 ```powershell
-python -m pytest tests/test_context_routes.py::test_user_set_memory_policy_updates_own_policy_and_writes_redacted_audit tests/test_context_routes.py::test_user_set_memory_policy_rejects_long_term_enable tests/test_context_routes.py::test_user_set_memory_policy_returns_404_for_missing_or_foreign_agent tests/test_context_routes.py::test_admin_list_memory_policies_returns_same_tenant_public_projection tests/test_context_routes.py::test_admin_list_memory_policies_rejects_non_memory_admin tests/test_context_routes.py::test_admin_list_memory_policies_rejects_unsafe_query_ids_with_422 -q --basetemp .pytest-tmp\run-p1-memory-green-routes
+python -m pytest tests/test_context_routes.py::test_update_memory_policy_allows_user_self_opt_out_and_audits tests/test_context_routes.py::test_update_memory_policy_rejects_long_term_enable_for_user tests/test_context_routes.py::test_update_memory_policy_rejects_unsafe_body_ids_with_422 tests/test_context_routes.py::test_update_memory_policy_returns_404_for_missing_or_foreign_workspace tests/test_context_routes.py::test_update_memory_policy_returns_404_for_missing_or_foreign_agent tests/test_context_routes.py::test_get_memory_policy_maps_public_agent_id_before_lookup tests/test_context_routes.py::test_get_memory_policy_returns_404_for_missing_or_foreign_workspace tests/test_context_routes.py::test_admin_list_memory_policies_returns_same_tenant_public_projection tests/test_context_routes.py::test_admin_list_memory_policies_rejects_non_memory_admin tests/test_context_routes.py::test_admin_list_memory_policies_rejects_unsafe_query_ids_with_422 tests/test_context_routes.py::test_admin_list_memory_policies_returns_404_for_missing_or_foreign_workspace -q --basetemp .pytest-tmp\run-p1-memory-green-routes
 ```
 
 Expected: PASS.
@@ -612,12 +612,14 @@ Update `app/schema.sql` after `idx_memory_policies_scope`:
 ```sql
 create index if not exists idx_memory_policies_workspace_updated
   on memory_policies(tenant_id, workspace_id, updated_at desc, created_at desc);
+create index if not exists idx_memory_policies_workspace_user_updated
+  on memory_policies(tenant_id, workspace_id, user_id, updated_at desc, created_at desc);
 create index if not exists idx_memory_policies_workspace_agent_updated
   on memory_policies(tenant_id, workspace_id, agent_id, updated_at desc, created_at desc);
 ```
 
 Update `tests/test_schema.py` so the Memory / Context schema test asserts both
-index names and column lists.
+user/agent inventory index names and column lists.
 
 - [x] **Step 4: Run compile and full test suite**
 

@@ -426,6 +426,7 @@ async def get_memory_policy(
     internal_agent_id = internal_agent_id_for_request(agent_id) if agent_id else None
     try:
         async with transaction() as conn:
+            await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=workspace_id)
             if internal_agent_id:
                 target_agent = await repositories.get_agent(
                     conn,

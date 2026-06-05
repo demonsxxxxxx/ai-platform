@@ -1581,6 +1581,32 @@ def test_admin_list_memory_policies_rejects_unsafe_query_ids_with_422(monkeypatc
     assert bad_agent.json()["detail"] == "agent_id contains unsupported characters"
 
 
+def test_admin_list_memory_policies_returns_404_for_missing_or_foreign_workspace(monkeypatch):
+    calls = []
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        calls.append(("workspace", tenant_id, workspace_id))
+        raise RepositoryNotFoundError("workspace_not_found")
+
+    async def fail_list_admin_memory_policies(conn, **kwargs):
+        raise AssertionError("missing or foreign workspace must not reach policy inventory")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.list_admin_memory_policies", fail_list_admin_memory_policies, raising=False)
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/ai/admin/memory/policies?workspace_id=foreign-workspace",
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "workspace_not_found"
+    assert calls == [("workspace", "tenant-a", "foreign-workspace")]
+
+
 def test_admin_list_memory_policies_returns_404_for_missing_or_foreign_agent(monkeypatch):
     calls = []
 
@@ -1612,45 +1638,6 @@ def test_admin_list_memory_policies_returns_404_for_missing_or_foreign_agent(mon
         ("workspace", "tenant-a", "workspace-a"),
         ("agent", "tenant-a", "qa-word-review"),
     ]
-
-
-def test_get_memory_policy_maps_public_agent_id_before_reading(monkeypatch):
-    calls = []
-
-    async def fake_get_agent(conn, *, tenant_id, agent_id):
-        calls.append(("agent", tenant_id, agent_id))
-        return {"id": agent_id, "tenant_id": tenant_id, "status": "active"}
-
-    async def fake_get_effective_memory_policy(conn, **kwargs):
-        calls.append(("policy", kwargs))
-        return {
-            "tenant_id": kwargs["tenant_id"],
-            "workspace_id": kwargs["workspace_id"],
-            "user_id": kwargs["user_id"],
-            "agent_id": kwargs["agent_id"],
-            "memory_enabled": False,
-            "long_term_memory_enabled": False,
-            "retention_days": 30,
-            "source": "stored",
-            "reason": "user opt-out",
-            "updated_by": "user-a",
-            "updated_at": "2026-06-05T00:00:00Z",
-        }
-
-    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_agent", fake_get_agent, raising=False)
-    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    client = TestClient(create_app())
-
-    response = client.get("/api/ai/memory/policy?workspace_id=workspace-a&agent_id=document-review", headers=headers())
-
-    assert response.status_code == 200
-    body = response.json()["memory_policy"]
-    assert body["agent_id"] == "document-review"
-    assert ("agent", "tenant-a", "qa-word-review") in calls
-    assert calls[1][1]["agent_id"] == "qa-word-review"
-    assert "qa-word-review" not in response.text
 
 
 def test_update_memory_policy_allows_user_self_opt_out_and_audits(monkeypatch):
@@ -1750,6 +1737,79 @@ def test_update_memory_policy_rejects_long_term_enable_for_user(monkeypatch):
     assert response.json()["detail"] == "long_term_memory_not_available"
 
 
+def test_update_memory_policy_rejects_unsafe_body_ids_with_422(monkeypatch):
+    async def fail_ensure_workspace(conn, **kwargs):
+        raise AssertionError("unsafe body ids must fail before workspace validation")
+
+    async def fail_set_memory_policy(conn, **kwargs):
+        raise AssertionError("unsafe body ids must fail before repository write")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fail_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.set_memory_policy", fail_set_memory_policy, raising=False)
+    client = TestClient(create_app())
+
+    bad_workspace = client.put(
+        "/api/ai/memory/policy",
+        headers=headers(),
+        json={
+            "workspace_id": "../bad",
+            "memory_enabled": False,
+            "long_term_memory_enabled": False,
+            "retention_days": 30,
+            "reason": "unsafe workspace",
+        },
+    )
+    bad_agent = client.put(
+        "/api/ai/memory/policy",
+        headers=headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "agent_id": "../bad",
+            "memory_enabled": False,
+            "long_term_memory_enabled": False,
+            "retention_days": 30,
+            "reason": "unsafe agent",
+        },
+    )
+
+    assert bad_workspace.status_code == 422
+    assert bad_agent.status_code == 422
+
+
+def test_update_memory_policy_returns_404_for_missing_or_foreign_workspace(monkeypatch):
+    calls = []
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        calls.append(("workspace", tenant_id, workspace_id))
+        raise RepositoryNotFoundError("workspace_not_found")
+
+    async def fail_set_memory_policy(conn, **kwargs):
+        raise AssertionError("missing or foreign workspace must not write user memory policy")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.set_memory_policy", fail_set_memory_policy, raising=False)
+    client = TestClient(create_app())
+
+    response = client.put(
+        "/api/ai/memory/policy",
+        headers=headers(),
+        json={
+            "workspace_id": "foreign-workspace",
+            "memory_enabled": False,
+            "long_term_memory_enabled": False,
+            "retention_days": 30,
+            "reason": "workspace scoped opt-out",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "workspace_not_found"
+    assert calls == [("workspace", "tenant-a", "foreign-workspace")]
+
+
 def test_update_memory_policy_returns_404_for_missing_or_foreign_agent(monkeypatch):
     calls = []
 
@@ -1798,6 +1858,9 @@ def test_update_memory_policy_returns_404_for_missing_or_foreign_agent(monkeypat
 def test_get_memory_policy_maps_public_agent_id_before_lookup(monkeypatch):
     calls = []
 
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        calls.append(("workspace", tenant_id, workspace_id))
+
     async def fake_get_agent(conn, *, tenant_id, agent_id):
         calls.append(("agent", tenant_id, agent_id))
         return {"id": agent_id, "tenant_id": tenant_id, "status": "active"}
@@ -1820,6 +1883,7 @@ def test_get_memory_policy_maps_public_agent_id_before_lookup(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
     monkeypatch.setattr("app.routes.context.repositories.get_agent", fake_get_agent, raising=False)
     monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
     client = TestClient(create_app())
@@ -1833,6 +1897,7 @@ def test_get_memory_policy_maps_public_agent_id_before_lookup(monkeypatch):
     body = response.json()["memory_policy"]
     assert body["agent_id"] == "document-review"
     assert calls == [
+        ("workspace", "tenant-a", "workspace-a"),
         ("agent", "tenant-a", "qa-word-review"),
         (
             "policy",
@@ -1845,6 +1910,29 @@ def test_get_memory_policy_maps_public_agent_id_before_lookup(monkeypatch):
         )
     ]
     assert "qa-word-review" not in response.text
+
+
+def test_get_memory_policy_returns_404_for_missing_or_foreign_workspace(monkeypatch):
+    calls = []
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        calls.append(("workspace", tenant_id, workspace_id))
+        raise RepositoryNotFoundError("workspace_not_found")
+
+    async def fail_get_effective_memory_policy(conn, **kwargs):
+        raise AssertionError("missing or foreign workspace must not read memory policy")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fail_get_effective_memory_policy)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/memory/policy?workspace_id=foreign-workspace", headers=headers())
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "workspace_not_found"
+    assert calls == [("workspace", "tenant-a", "foreign-workspace")]
 
 
 def test_get_memory_policy_rejects_unsafe_query_ids_with_422(monkeypatch):

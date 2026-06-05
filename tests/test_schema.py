@@ -136,6 +136,8 @@ def test_schema_declares_p0_memory_tool_event_and_sandbox_contracts():
     assert "create index if not exists idx_memory_policies_scope" in schema
     assert "create index if not exists idx_memory_policies_workspace_updated" in schema
     assert "on memory_policies(tenant_id, workspace_id, updated_at desc, created_at desc)" in schema
+    assert "create index if not exists idx_memory_policies_workspace_user_updated" in schema
+    assert "on memory_policies(tenant_id, workspace_id, user_id, updated_at desc, created_at desc)" in schema
     assert "create index if not exists idx_memory_policies_workspace_agent_updated" in schema
     assert "on memory_policies(tenant_id, workspace_id, agent_id, updated_at desc, created_at desc)" in schema
     assert "create table if not exists run_context_snapshots" in schema
