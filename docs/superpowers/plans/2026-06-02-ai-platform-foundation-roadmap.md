@@ -169,6 +169,15 @@
 2. Long Task / Multi-Agent Runtime。
 3. Observability / Quality。
 
+### P1 Admin Runtime Overview Snapshot
+
+Status: in progress on `codex/p1-admin-runtime-overview`.
+
+The first P1 operational slice adds an admin-only overview contract for queue,
+run status, sandbox lease/container state, and basic observability aggregates.
+It is intentionally smaller than the full Observability / Quality dashboard and
+does not start Long Task / Multi-Agent Runtime.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。

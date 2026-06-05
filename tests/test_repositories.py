@@ -2839,3 +2839,159 @@ async def test_complete_run_persists_g2_observability_columns_from_result_json()
     assert 13 in params
     assert 24 in params
     assert 17 in params
+
+
+@pytest.mark.asyncio
+async def test_get_admin_runtime_run_summary_counts_statuses_and_redacts_failures():
+    class SummaryCursor:
+        def __init__(self, row=None, rows=None):
+            self.row = row
+            self.rows = rows or []
+
+        async def fetchone(self):
+            return self.row
+
+        async def fetchall(self):
+            return self.rows
+
+    class SummaryConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            compact = " ".join(sql.lower().split())
+            self.calls.append((compact, params))
+            if "group by status" in compact:
+                return SummaryCursor(
+                    rows=[
+                        {"status": "queued", "count": 2},
+                        {"status": "running", "count": 1},
+                        {"status": "failed", "count": 1},
+                    ]
+                )
+            if "from runs" in compact and "error_code" in compact:
+                return SummaryCursor(
+                    rows=[
+                        {
+                            "id": "run-failed",
+                            "user_id": "user-a",
+                            "agent_id": "qa-word-review",
+                            "skill_id": "qa-file-reviewer",
+                            "error_code": "executor_failure token=run-code-token",
+                            "error_message": "failed token=run-message-token /var/lib/ai-platform/x",
+                            "created_at": None,
+                        }
+                    ]
+                )
+            raise AssertionError(compact)
+
+    summary = await repositories.get_admin_runtime_run_summary(
+        SummaryConnection(),
+        tenant_id="tenant-a",
+        limit=5,
+    )
+
+    assert summary["total"] == 4
+    assert summary["active"] == 3
+    assert summary["terminal"] == 1
+    assert summary["by_status"] == {"queued": 2, "running": 1, "failed": 1}
+    assert "skill_id" not in summary["recent_failures"][0]
+    assert summary["recent_failures"][0]["error_code"] == "executor_failure token=[redacted-secret]"
+    assert summary["recent_failures"][0]["error_message"] == ""
+    serialized = json.dumps(summary, ensure_ascii=False, default=str)
+    assert "qa-file-reviewer" not in serialized
+    assert "run-code-token" not in serialized
+    assert "run-message-token" not in serialized
+    assert "/var/lib/ai-platform" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_get_admin_runtime_observability_summary_coerces_nulls_to_defaults():
+    class SummaryCursor:
+        def __init__(self, row):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class SummaryConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            assert "tenant_id = %s" in sql
+            assert all(param == "tenant-a" for param in params)
+            return SummaryCursor(
+                {
+                    "event_count": None,
+                    "artifact_count": None,
+                    "error_count": None,
+                    "error_types": None,
+                    "avg_latency_ms": None,
+                    "max_latency_ms": None,
+                    "input_token_count": None,
+                    "output_token_count": None,
+                    "total_token_count": None,
+                    "estimated_cost_minor": None,
+                }
+            )
+
+    summary = await repositories.get_admin_runtime_observability_summary(
+        SummaryConnection(),
+        tenant_id="tenant-a",
+    )
+
+    assert summary == {
+        "event_count": 0,
+        "artifact_count": 0,
+        "error_count": 0,
+        "error_types": {},
+        "latency_ms": {"avg": None, "max": None},
+        "token_counts": {"input": 0, "output": 0, "total": 0},
+        "estimated_cost_minor": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_admin_runtime_observability_summary_uses_run_totals_for_terminal_token_cost():
+    class SummaryCursor:
+        def __init__(self, row):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class SummaryConnection:
+        async def execute(self, sql, params):
+            compact = " ".join(sql.lower().split())
+            assert all(param == "tenant-a" for param in params)
+            assert "+ event_summary.event_input_token_count" not in compact
+            assert "+ event_summary.event_output_token_count" not in compact
+            assert "+ event_summary.event_total_token_count" not in compact
+            assert "+ event_summary.event_estimated_cost_minor" not in compact
+            return SummaryCursor(
+                {
+                    "event_count": 2,
+                    "artifact_count": 1,
+                    "error_count": 2,
+                    "error_types": {"executor_failure": 2},
+                    "avg_latency_ms": 250,
+                    "max_latency_ms": 300,
+                    "input_token_count": 10,
+                    "output_token_count": 20,
+                    "total_token_count": 30,
+                    "estimated_cost_minor": 7,
+                }
+            )
+
+    summary = await repositories.get_admin_runtime_observability_summary(
+        SummaryConnection(),
+        tenant_id="tenant-a",
+    )
+
+    assert summary["event_count"] == 2
+    assert summary["error_count"] == 2
+    assert summary["latency_ms"] == {"avg": 250, "max": 300}
+    assert summary["token_counts"] == {"input": 10, "output": 20, "total": 30}
+    assert summary["estimated_cost_minor"] == 7
