@@ -12,6 +12,7 @@ def test_schema_declares_platform_fact_tables():
         "skills",
         "tenant_workbench_skills",
         "mcp_tools",
+        "tool_policies",
         "sessions",
         "messages",
         "memory_records",
@@ -52,6 +53,8 @@ def test_schema_enables_read_only_ragflow_mcp_tool_poc():
     assert "'[\"ragflow_search\"]'::jsonb" in mcp_tool_seed
     assert "'active',\n    false,\n    'low'" in mcp_tool_seed
     assert "'disabled',\n    false,\n    'low'" not in mcp_tool_seed
+    assert "insert into tool_policies" in mcp_tool_seed
+    assert "('default', 'ragflow-knowledge-search', 'active', false, 'low', true" in mcp_tool_seed
 
 
 def test_schema_seeds_internal_skill_dependencies_without_workbench_entry():
@@ -145,6 +148,10 @@ def test_schema_declares_p0_memory_tool_event_and_sandbox_contracts():
     assert "included_memory_record_ids jsonb not null default '[]'::jsonb" in schema
     assert "create index if not exists idx_run_events_run_sequence" in schema
     assert "create table if not exists run_tool_permission_requests" in schema
+    assert "create table if not exists tool_policies" in schema
+    assert "primary key (tenant_id, tool_id)" in schema
+    assert "references mcp_tools(id)" in schema
+    assert "create index if not exists idx_tool_policies_tool" in schema
     assert "unique(tenant_id, run_id, tool_call_id)" in schema
     assert "create table if not exists sandbox_leases" in schema
     assert "heartbeat_at timestamptz" in schema

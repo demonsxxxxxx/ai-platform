@@ -249,5 +249,7 @@ async def test_workbench_capability_status_follows_disabled_mcp_tool():
     sql, params = conn.executed[-1]
     assert "when skills.executor_type = 'ragflow'" in sql
     assert "coalesce(mcp_tools.status, 'disabled') <> 'active'" in sql
+    assert "coalesce(tool_policies.status, 'disabled') <> 'active'" in sql
+    assert "coalesce(tool_policies.visible_to_user, false) = false" in sql
     assert "then 'disabled'" in sql
     assert params == ("default",)

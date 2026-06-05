@@ -97,6 +97,22 @@ create table if not exists mcp_tools (
   created_at timestamptz not null default now()
 );
 
+create table if not exists tool_policies (
+  tenant_id text not null references tenants(id),
+  tool_id text not null references mcp_tools(id),
+  status text not null default 'disabled',
+  write_capable boolean not null default false,
+  risk_level text not null default 'low',
+  visible_to_user boolean not null default true,
+  reason text not null default '',
+  updated_by text references users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (tenant_id, tool_id)
+);
+
+create index if not exists idx_tool_policies_tool on tool_policies(tool_id, tenant_id);
+
 create table if not exists agents (
   id text primary key,
   tenant_id text not null references tenants(id),
@@ -714,6 +730,11 @@ on conflict (id) do update set
   write_capable = excluded.write_capable,
   risk_level = excluded.risk_level,
   visible_to_user = excluded.visible_to_user;
+
+insert into tool_policies(tenant_id, tool_id, status, write_capable, risk_level, visible_to_user, reason)
+values
+  ('default', 'ragflow-knowledge-search', 'active', false, 'low', true, 'Schema-seeded read-only RAGFlow tool policy for the default tenant.')
+on conflict (tenant_id, tool_id) do nothing;
 
 insert into agents(id, tenant_id, name, agent_type, description, default_skill_id, status)
 values

@@ -224,6 +224,17 @@ class ToolPermissionDecisionRequest(BaseModel):
     decision: Literal["allow_once", "deny", "allow_for_run"]
     reason: str = Field(default="", max_length=2000)
     decision_payload: dict[str, Any] = Field(default_factory=dict)
+    expires_in_seconds: int = Field(default=900, ge=30, le=86400)
+
+
+class AdminToolPolicyUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["active", "disabled"] = "disabled"
+    risk_level: Literal["low", "medium", "high"] = "low"
+    write_capable: bool = False
+    visible_to_user: bool = True
+    reason: str = Field(default="", max_length=2000)
 
 
 class SandboxLeaseRequest(BaseModel):

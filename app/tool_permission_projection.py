@@ -68,6 +68,7 @@ def permission_response(row: dict[str, Any]) -> dict[str, Any]:
         "decision_options": list(TOOL_PERMISSION_DECISION_OPTIONS),
         "created_at": row.get("created_at"),
         "decided_at": row.get("decided_at"),
+        "expires_at": row.get("expires_at"),
     }
 
 
@@ -100,7 +101,7 @@ def tool_permission_card_from_payload(
     status = _public_text(sanitized.get("status"))
     if not status:
         status = "decided" if event_type == "tool_permission_decided" or decision else "pending"
-    return {
+    card = {
         "schema_version": TOOL_PERMISSION_CARD_SCHEMA_VERSION,
         "permission_request_id": request_id,
         "run_id": str(run_id),
@@ -115,6 +116,13 @@ def tool_permission_card_from_payload(
         "decision_endpoint": tool_permission_decision_endpoint(run_id, request_id),
         "decision_options": list(TOOL_PERMISSION_DECISION_OPTIONS),
     }
+    if sanitized.get("created_at") is not None:
+        card["created_at"] = sanitized.get("created_at")
+    if sanitized.get("decided_at") is not None:
+        card["decided_at"] = sanitized.get("decided_at")
+    if sanitized.get("expires_at") is not None:
+        card["expires_at"] = sanitized.get("expires_at")
+    return card
 
 
 def tool_permission_decision_endpoint(run_id: str, request_id: str) -> str:

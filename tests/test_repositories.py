@@ -662,6 +662,308 @@ async def test_list_admin_memory_policies_scopes_filters_clamps_and_closes_long_
 
 
 @pytest.mark.asyncio
+async def test_ensure_mcp_tool_active_applies_tenant_tool_policy_fail_closed():
+    class ToolCursor:
+        async def fetchone(self):
+            return {
+                "id": "ragflow-knowledge-search",
+                "server_id": "ragflow",
+                "registry_status": "active",
+                "policy_status": "disabled",
+                "registry_write_capable": False,
+                "policy_write_capable": False,
+                "registry_risk_level": "low",
+                "policy_risk_level": "low",
+                "registry_visible_to_user": True,
+                "policy_visible_to_user": True,
+            }
+
+    class ToolConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return ToolCursor()
+
+    conn = ToolConnection()
+
+    with pytest.raises(RepositoryConflictError, match="mcp_tool_disabled"):
+        await repositories.ensure_mcp_tool_active(
+            conn,
+            tenant_id="tenant-a",
+            tool_id="ragflow-knowledge-search",
+        )
+
+    sql, params = conn.calls[0]
+    assert "left join tool_policies" in sql
+    assert "tool_policies.tenant_id = %s" in sql
+    assert params == ("tenant-a", "ragflow-knowledge-search")
+
+
+@pytest.mark.asyncio
+async def test_ensure_mcp_tool_active_requires_tenant_tool_policy_row():
+    class ToolCursor:
+        async def fetchone(self):
+            return {
+                "id": "ragflow-knowledge-search",
+                "server_id": "ragflow",
+                "registry_status": "active",
+                "policy_status": None,
+                "registry_write_capable": False,
+                "policy_write_capable": None,
+                "registry_risk_level": "low",
+                "policy_risk_level": None,
+                "registry_visible_to_user": True,
+                "policy_visible_to_user": None,
+            }
+
+    class ToolConnection:
+        async def execute(self, sql, params):
+            return ToolCursor()
+
+    with pytest.raises(RepositoryConflictError, match="mcp_tool_disabled"):
+        await repositories.ensure_mcp_tool_active(
+            ToolConnection(),
+            tenant_id="tenant-a",
+            tool_id="ragflow-knowledge-search",
+        )
+
+
+@pytest.mark.asyncio
+async def test_ensure_mcp_tool_active_cannot_lower_registry_write_or_risk():
+    class ToolCursor:
+        async def fetchone(self):
+            return {
+                "id": "dangerous-writer",
+                "server_id": "business",
+                "registry_status": "active",
+                "policy_status": "active",
+                "registry_write_capable": True,
+                "policy_write_capable": False,
+                "registry_risk_level": "high",
+                "policy_risk_level": "low",
+                "registry_visible_to_user": True,
+                "policy_visible_to_user": True,
+            }
+
+    class ToolConnection:
+        async def execute(self, sql, params):
+            return ToolCursor()
+
+    row = await repositories.ensure_mcp_tool_active(
+        ToolConnection(),
+        tenant_id="tenant-a",
+        tool_id="dangerous-writer",
+    )
+
+    assert row["id"] == "dangerous-writer"
+    assert row["status"] == "active"
+    assert row["write_capable"] is True
+    assert row["risk_level"] == "high"
+    assert row["visible_to_user"] is True
+
+
+@pytest.mark.asyncio
+async def test_list_admin_tool_policies_returns_missing_tenant_policy_as_disabled_inventory():
+    class ToolPolicyCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "tenant_id": "tenant-a",
+                    "tool_id": "ragflow-knowledge-search",
+                    "server_id": "ragflow",
+                    "name": "RAGFlow",
+                    "description": "Read-only search",
+                    "registry_status": "active",
+                    "policy_status": None,
+                    "registry_write_capable": False,
+                    "policy_write_capable": None,
+                    "registry_risk_level": "low",
+                    "policy_risk_level": None,
+                    "registry_visible_to_user": True,
+                    "policy_visible_to_user": None,
+                    "reason": None,
+                    "updated_by": None,
+                    "updated_at": None,
+                    "endpoint": "https://internal.example",
+                    "auth_mode": "api-key",
+                }
+            ]
+
+    class ToolPolicyConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return ToolPolicyCursor()
+
+    conn = ToolPolicyConnection()
+
+    rows = await repositories.list_admin_tool_policies(
+        conn,
+        tenant_id="tenant-a",
+        include_disabled=True,
+        limit=999,
+    )
+
+    sql, params = conn.calls[0]
+    assert "from mcp_tools" in sql
+    assert "left join tool_policies" in sql
+    assert "tool_policies.tenant_id = %s" in sql
+    assert params == ("tenant-a", True, 500)
+    assert "endpoint" not in rows[0]
+    assert "auth_mode" not in rows[0]
+    assert rows == [
+        {
+            "tenant_id": "tenant-a",
+            "tool_id": "ragflow-knowledge-search",
+            "id": "ragflow-knowledge-search",
+            "server_id": "ragflow",
+            "name": "RAGFlow",
+            "description": "Read-only search",
+            "registry_status": "active",
+            "policy_status": "disabled",
+            "effective_status": "disabled",
+            "status": "disabled",
+            "registry_write_capable": False,
+            "policy_write_capable": False,
+            "write_capable": False,
+            "registry_risk_level": "low",
+            "policy_risk_level": "low",
+            "risk_level": "low",
+            "registry_visible_to_user": True,
+            "policy_visible_to_user": False,
+            "visible_to_user": False,
+            "source": "registry",
+            "reason": "",
+            "updated_by": None,
+            "updated_at": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_admin_tool_policies_filters_hidden_when_disabled_excluded():
+    class ToolPolicyCursor:
+        async def fetchall(self):
+            return []
+
+    class ToolPolicyConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return ToolPolicyCursor()
+
+    conn = ToolPolicyConnection()
+
+    rows = await repositories.list_admin_tool_policies(
+        conn,
+        tenant_id="tenant-a",
+        include_disabled=False,
+        limit=50,
+    )
+
+    assert rows == []
+    sql, params = conn.calls[0]
+    assert "coalesce(mcp_tools.visible_to_user, false) = true" in sql
+    assert "tool_policies.status = 'active'" in sql
+    assert "tool_policies.visible_to_user = true" in sql
+    assert params == ("tenant-a", False, 50)
+
+
+@pytest.mark.asyncio
+async def test_upsert_admin_tool_policy_writes_tenant_policy_and_returns_effective_row():
+    class ToolPolicyCursor:
+        async def fetchone(self):
+            return {
+                "tenant_id": "tenant-a",
+                "tool_id": "ragflow-knowledge-search",
+                "server_id": "ragflow",
+                "name": "RAGFlow",
+                "description": "Read-only search",
+                "registry_status": "active",
+                "policy_status": "active",
+                "registry_write_capable": False,
+                "policy_write_capable": True,
+                "registry_risk_level": "low",
+                "policy_risk_level": "high",
+                "registry_visible_to_user": True,
+                "policy_visible_to_user": True,
+                "reason": "controlled write",
+                "updated_by": "tool-admin",
+                "updated_at": "2026-06-05T00:00:00Z",
+            }
+
+    class ToolPolicyConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return ToolPolicyCursor()
+
+    conn = ToolPolicyConnection()
+
+    row = await repositories.upsert_admin_tool_policy(
+        conn,
+        tenant_id="tenant-a",
+        tool_id="ragflow-knowledge-search",
+        status="active",
+        risk_level="high",
+        write_capable=True,
+        visible_to_user=True,
+        reason="controlled write",
+        updated_by="tool-admin",
+    )
+
+    sql, params = conn.calls[0]
+    assert "insert into tool_policies" in sql
+    assert "on conflict (tenant_id, tool_id) do update" in sql
+    assert params == (
+        "tenant-a",
+        "active",
+        True,
+        "high",
+        True,
+        "controlled write",
+        "tool-admin",
+        "ragflow-knowledge-search",
+    )
+    assert row["source"] == "tenant"
+    assert row["effective_status"] == "active"
+    assert row["write_capable"] is True
+    assert row["risk_level"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_upsert_admin_tool_policy_raises_for_missing_tool():
+    class MissingCursor:
+        async def fetchone(self):
+            return None
+
+    class MissingConnection:
+        async def execute(self, sql, params):
+            return MissingCursor()
+
+    with pytest.raises(RepositoryNotFoundError, match="mcp_tool_not_found"):
+        await repositories.upsert_admin_tool_policy(
+            MissingConnection(),
+            tenant_id="tenant-a",
+            tool_id="missing-tool",
+            status="disabled",
+            risk_level="low",
+            write_capable=False,
+            visible_to_user=False,
+            reason="missing",
+            updated_by="tool-admin",
+        )
+
+
+@pytest.mark.asyncio
 async def test_create_memory_record_sets_expires_at_from_retention_days():
     class MemoryCursor:
         async def fetchone(self):
@@ -1225,6 +1527,39 @@ async def test_create_tool_permission_request_persists_pending_snapshot():
     assert "ragflow-knowledge-search" in params
     assert "call-a" in params
     assert False in params
+
+
+@pytest.mark.asyncio
+async def test_decide_tool_permission_request_sets_decision_expiry():
+    conn = RecordingConnection()
+
+    row = await repositories.decide_tool_permission_request(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        run_id="run-a",
+        request_id="tpr-a",
+        decision="allow_once",
+        reason="approved once",
+        decision_payload_json={"source": "card"},
+        expires_in_seconds=900,
+    )
+
+    sql, params = conn.calls[0]
+    assert row["id"] == "step-a"
+    assert "update run_tool_permission_requests" in sql
+    assert "expires_at = now() + (%s * interval '1 second')" in sql
+    assert "decision_payload_json = %s::jsonb" in sql
+    assert params == (
+        "allow_once",
+        "approved once",
+        '{"source": "card"}',
+        900,
+        "tenant-a",
+        "user-a",
+        "run-a",
+        "tpr-a",
+    )
 
 
 @pytest.mark.asyncio

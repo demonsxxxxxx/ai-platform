@@ -106,6 +106,7 @@ def test_tool_permission_decision_writes_event_and_audit(monkeypatch):
             reason=kwargs["reason"],
             risk_level="high",
             write_capable=True,
+            expires_at="2026-06-05T12:15:00Z",
         )
 
     async def fake_append_event(conn, **kwargs):
@@ -132,6 +133,8 @@ def test_tool_permission_decision_writes_event_and_audit(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["permission_request"]["decision"] == "allow_once"
+    assert response.json()["permission_request"]["expires_at"] == "2026-06-05T12:15:00Z"
+    assert calls[0][1]["expires_in_seconds"] == 900
     assert calls[1][1]["event_type"] == "tool_permission_decided"
     assert calls[1][1]["payload"] == {
         "visible_to_user": True,
@@ -144,6 +147,7 @@ def test_tool_permission_decision_writes_event_and_audit(monkeypatch):
         "decision": "allow_once",
         "reason": "read-only query",
         "status": "decided",
+        "expires_at": "2026-06-05T12:15:00Z",
     }
     assert calls[2][1]["action"] == "tool.permission.decision"
 
