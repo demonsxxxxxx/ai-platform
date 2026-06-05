@@ -336,15 +336,15 @@ autonomous subagent dispatch, high-risk tool execution, or new sandbox behavior.
 
 ### P2 Resume Run Request
 
-Status: write-side P2 resume lifecycle control is the current implementation
-slice and requires final commit plus 211 smoke evidence before it is treated as
-complete. This adds owner-scoped `POST /api/ai/runs/{run_id}/resume` for
-non-active source runs with reusable checkpoint output. It creates a copied
-queued run through the existing copy-run/context/queue path, records
-`resume_requested`, `run_resume_created`, and `run.resume` audit evidence,
-seeds resume-created steps with `seeded_from = resume_run`, and updates
-run-control readiness so the resume action points to the explicit `/resume`
-endpoint instead of generic copy.
+Status: write-side P2 resume lifecycle control merged on `main` at
+`2ce4af6a333dcdefe2fe848e3abd235e66e28ce8`, deployed to 211, and smoked.
+This adds owner-scoped `POST /api/ai/runs/{run_id}/resume` for non-active
+source runs with reusable checkpoint output. It creates a copied queued run
+through the existing copy-run/context/queue path, records `resume_requested`,
+`run_resume_created`, and `run.resume` audit evidence, seeds resume-created
+steps with `seeded_from = resume_run`, and updates run-control readiness so the
+resume action points to the explicit `/resume` endpoint instead of generic
+copy.
 
 Focused local coverage verifies readiness href alignment, owner-scoped resume
 creation, reusable checkpoint-output gating, active source rejection,
@@ -353,6 +353,26 @@ events/audit, context snapshot `source = resume_run`, queue payload context
 `source = resume_run`, and existing copy/retry controls. This does not start
 automatic retry policy scheduling, autonomous subagent dispatch, high-risk tool
 execution, or new sandbox behavior.
+
+Local verification recorded `python -m compileall -q app tools scripts`,
+focused `tests/test_run_control_routes.py tests/test_source_authority_docs.py`
+with `74 passed`, and full pytest with `916 passed, 6 skipped, 2 warnings`.
+Inherited-configuration review found no Critical, Important, or Minor issues.
+
+The 211 deployment uses image
+`sha256:29e34949c39e770b0b45f5cd4195f4a81ae39456a698b0647fd2e9be7c7c30c4`
+for both `ai-platform-api` and `ai-platform-worker`, with
+`ai-platform.source-revision=2ce4af6a333dcdefe2fe848e3abd235e66e28ce8` and
+`ai-platform.source_note=p2-resume-run-request`. The 211 smoke verified API
+health, OpenAPI route exposure, owner resume success, repeated active resume
+`409 resume_already_active`, active source `409 active_run`, no-checkpoint
+source `409 no_checkpoint_outputs`, other-user `404 run_not_found`, readiness
+href `/resume`, resume events/audit, context snapshot `source = resume_run`,
+queue payload context `source = resume_run`, checkpoint reuse step seeding,
+code hash parity with local files, worker restart, and DB/Redis smoke data
+cleanup. Runtime-only Docker rebasing hit Docker `max depth exceeded`, so the
+deployment flattened the current healthy API container with `docker export` /
+`docker import` before rebuilding the runtime-only image.
 
 ## 禁止项
 
