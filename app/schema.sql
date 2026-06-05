@@ -429,6 +429,10 @@ end $$;
 
 create index if not exists idx_memory_policies_scope
   on memory_policies(tenant_id, workspace_id, user_id, agent_id, updated_at desc);
+create index if not exists idx_memory_policies_workspace_updated
+  on memory_policies(tenant_id, workspace_id, updated_at desc, created_at desc);
+create index if not exists idx_memory_policies_workspace_agent_updated
+  on memory_policies(tenant_id, workspace_id, agent_id, updated_at desc, created_at desc);
 
 create table if not exists run_context_snapshots (
   id text primary key,

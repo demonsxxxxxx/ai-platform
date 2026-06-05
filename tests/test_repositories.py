@@ -599,6 +599,69 @@ async def test_set_memory_policy_rejects_long_term_enable_at_repository_boundary
 
 
 @pytest.mark.asyncio
+async def test_list_admin_memory_policies_scopes_filters_clamps_and_closes_long_term():
+    class PolicyCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "id": "mempol-user-a",
+                    "tenant_id": "tenant-a",
+                    "workspace_id": "workspace-a",
+                    "user_id": "user-a",
+                    "agent_id": "general-agent",
+                    "memory_enabled": False,
+                    "long_term_memory_enabled": True,
+                    "retention_days": 30,
+                    "reason": "user opt-out",
+                    "updated_by": "user-a",
+                    "updated_at": "2026-06-05T00:00:00Z",
+                }
+            ]
+
+    class PolicyConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return PolicyCursor()
+
+    conn = PolicyConnection()
+
+    rows = await repositories.list_admin_memory_policies(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        agent_id="general-agent",
+        limit=999,
+    )
+
+    sql, params = conn.calls[0]
+    assert "from memory_policies" in sql
+    assert "tenant_id = %s" in sql
+    assert "workspace_id = %s" in sql
+    assert "(%s::text is null or user_id = %s)" in sql
+    assert "(%s::text is null or agent_id = %s)" in sql
+    assert params == ("tenant-a", "workspace-a", "user-a", "user-a", "general-agent", "general-agent", 500)
+    assert rows == [
+        {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "agent_id": "general-agent",
+            "memory_enabled": False,
+            "long_term_memory_enabled": False,
+            "retention_days": 30,
+            "source": "stored",
+            "reason": "user opt-out",
+            "updated_by": "user-a",
+            "updated_at": "2026-06-05T00:00:00Z",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_create_memory_record_sets_expires_at_from_retention_days():
     class MemoryCursor:
         async def fetchone(self):

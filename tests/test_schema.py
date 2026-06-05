@@ -134,6 +134,10 @@ def test_schema_declares_p0_memory_tool_event_and_sandbox_contracts():
     assert "add constraint chk_memory_policies_long_term_disabled" in schema
     assert "conrelid = 'memory_policies'::regclass" in schema
     assert "create index if not exists idx_memory_policies_scope" in schema
+    assert "create index if not exists idx_memory_policies_workspace_updated" in schema
+    assert "on memory_policies(tenant_id, workspace_id, updated_at desc, created_at desc)" in schema
+    assert "create index if not exists idx_memory_policies_workspace_agent_updated" in schema
+    assert "on memory_policies(tenant_id, workspace_id, agent_id, updated_at desc, created_at desc)" in schema
     assert "create table if not exists run_context_snapshots" in schema
     assert "schema_version text not null default 'ai-platform.context-snapshot.v1'" in schema
     assert "included_memory_record_ids jsonb not null default '[]'::jsonb" in schema
