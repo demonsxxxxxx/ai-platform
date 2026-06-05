@@ -43,6 +43,21 @@ def test_worker_is_default_required_service_in_compose():
     assert "profiles:" not in worker_section
 
 
+def test_worker_compose_forwards_memory_retention_cleanup_settings():
+    compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
+    worker_section = compose_text.split("\n  worker:", 1)[1].split("\nvolumes:", 1)[0]
+    env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+
+    expected_settings = {
+        "MEMORY_RETENTION_WORKER_CLEANUP_ENABLED": "true",
+        "MEMORY_RETENTION_WORKER_CLEANUP_INTERVAL_SECONDS": "300",
+        "MEMORY_RETENTION_WORKER_CLEANUP_LIMIT": "200",
+    }
+    for name, default in expected_settings.items():
+        assert f"{name}={default}" in env_example_text
+        assert f"{name}: ${{{name}:-{default}}}" in worker_section
+
+
 def test_run_api_with_deploy_env_derives_database_and_s3_settings():
     script = Path("tools/run_api_with_deploy_env.sh")
 
