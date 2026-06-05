@@ -585,6 +585,63 @@ This does not start an autonomous scheduler, child run handoff, queue enqueue,
 subagent worker process, sandbox/tool privilege expansion, frontend entry, or
 DB migration.
 
+### P2 Multi-Agent Controlled Child Run Handoff
+
+Status: deployed on 211 as the controlled child-run bridge after the dispatch
+ledger and lease cleanup via PR #12 and main commit
+`ea33e7e4016565f166f6462de5a610f67bdcbf65`. This adds the admin-only
+`POST /api/ai/runs/{run_id}/multi-agent/dispatch/claims/{dispatch_id}/handoff`
+contract for turning one active claimed dispatch step into one queued child run.
+
+The slice keeps claim and handoff separate. The handoff requires an active
+parent run, a matching `dispatch_state = claimed` step with an unexpired lease,
+and rejects duplicate or inactive claims before enqueue. The child run keeps the
+parent owner, session, workspace, agent, and skill identity instead of using the
+admin caller identity. Server code rebuilds `resume` and
+`multi_agent_dispatch` from validated step rows, strips user-controlled values,
+updates the parent step to `dispatch_state = handed_off`, writes hidden parent
+and visible child events, and records `run.multi_agent.dispatch.handoff` audit
+evidence.
+
+Local verification recorded RED route tests (`4 failed`) and RED repository
+tests (`3 failed`) before implementation, final route handoff tests with
+`4 passed`, repository handoff tests with `3 passed`, focused route/repository
+source-authority coverage with `177 passed`, `python -m compileall -q app tools
+scripts` exit 0, `git diff --check` exit 0, and full pytest with `949 passed,
+6 skipped, 2 warnings`. Inherited-configuration review found no Critical or
+Important issues; one Minor documentation progress issue was fixed before PR.
+The review tool did not expose explicit model or reasoning-effort fields, so
+this remains recorded as inherited-configuration review rather than an explicit
+model gate.
+
+The 211 deployment uses image
+`sha256:22d253246e9e09eff7e58589a823224b90429e88624336211afe62e8c53c864d`
+for both `ai-platform-api` and `ai-platform-worker`, with
+`ai-platform.source-revision=ea33e7e4016565f166f6462de5a610f67bdcbf65`,
+`ai-platform.source-branch=main`, and
+`ai-platform.source_note=p2-multi-agent-child-handoff`. Remote compile passed
+with `python3 -m compileall -q app tools scripts`, and API/worker were
+recreated with compose using the existing 211 runtime `.env` path without
+printing or copying secret values.
+
+The 211 smoke verified `/api/ai/health`, OpenAPI exposure via `/openapi.json`,
+ordinary-user handoff `403 admin_required`, admin claim `200` with
+`ai-platform.multi-agent-dispatch-claim.v1`, admin handoff `200` with
+`ai-platform.multi-agent-dispatch-handoff.v1`, child run `queued` with
+`copied_from_run_id` pointing to the parent, parent owner/session preservation,
+parent step `dispatch_state = handed_off` with matching child run id, context
+and queue source `multi_agent_dispatch_handoff`, server-owned dispatch metadata,
+stripping of forged user `resume` and `multi_agent_dispatch`, dependency resume
+materialization from the succeeded `plan` step, `run.multi_agent.dispatch.handoff`
+audit persistence, Redis queued-payload cleanup, typed Redis scan with zero
+smoke tenant matches, DB cleanup with zero remaining smoke rows, API/worker
+label parity, API health, and worker recovery after the smoke window.
+
+This does not start an autonomous scheduler, polling subagent dispatcher, new
+worker process, sandbox/tool privilege expansion, frontend entry, or DB
+migration. It only establishes a bounded admin-controlled handoff primitive
+needed before broader resume/cancel/retry and multi-agent orchestration.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。

@@ -49,7 +49,7 @@ queue payloads, Pydantic response models, pytest.
 - [x] Run inherited-configuration multi-agent review; validate and fix only
   feedback grounded in PRD, roadmap, guardrails, code, and tests.
 - [x] Run compile, full pytest, and `git diff --check`.
-- [ ] Open PR, merge after review, deploy to 211, smoke the handoff contract,
+- [x] Open PR, merge after review, deploy to 211, smoke the handoff contract,
   then append final roadmap evidence.
 
 ## Focused Commands
@@ -84,6 +84,25 @@ git diff --check
   Boole inherited-configuration review found no Critical or Important issues.
   One Minor documentation progress issue was fixed by marking completed plan
   tasks while leaving PR/deploy/211 evidence unchecked.
+- PR/merge:
+  PR #12 was merged to `main` with rebase as
+  `ea33e7e4016565f166f6462de5a610f67bdcbf65`.
+- 211 deployment:
+  API and worker were recreated from image
+  `sha256:22d253246e9e09eff7e58589a823224b90429e88624336211afe62e8c53c864d`
+  with `ai-platform.source-revision=ea33e7e4016565f166f6462de5a610f67bdcbf65`
+  and `ai-platform.source_note=p2-multi-agent-child-handoff`.
+- 211 smoke:
+  `/api/ai/health` returned OK, `/openapi.json` exposed the handoff route,
+  ordinary-user handoff returned `403 admin_required`, admin claim and handoff
+  returned `200` with the expected contract versions, the child run was queued
+  under the parent owner/session with `copied_from_run_id`, parent step payload
+  was marked `dispatch_state = handed_off`, context and queue source were
+  `multi_agent_dispatch_handoff`, forged user `resume` and
+  `multi_agent_dispatch` were stripped, dependency resume data was materialized,
+  audit action `run.multi_agent.dispatch.handoff` was present, Redis queued
+  payload cleanup removed the smoke child payload, DB smoke cleanup left zero
+  rows, and API/worker stayed on the same revision after worker restart.
 
 ## 211 Smoke Expectations
 
