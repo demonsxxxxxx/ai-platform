@@ -74,6 +74,122 @@ def test_artifact_download_isolation_gate_rejects_cross_user_access(monkeypatch)
     assert gate.evidence["results"][0]["cross_user_status"] == 200
 
 
+def test_artifact_preview_isolation_gate_accepts_owner_preview_and_denies_cross_user(monkeypatch):
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    def fake_http_get_with_headers_and_response_headers(
+        url: str,
+        headers: dict[str, str],
+        timeout: float = 15.0,
+    ):
+        calls.append((url, headers))
+        if headers["X-AI-User-ID"] == "artifact-owner":
+            return (
+                200,
+                b"preview-bytes",
+                {
+                    "Cache-Control": "no-store",
+                    "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "X-Content-Type-Options": "nosniff",
+                    "Content-Disposition": "inline; filename=review.docx",
+                },
+            )
+        return 404, b"", {}
+
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "http_get_with_headers_and_response_headers",
+        fake_http_get_with_headers_and_response_headers,
+    )
+
+    gate = verify_poc_gate.check_artifact_preview_isolation(
+        "http://api.local",
+        [
+            {
+                "artifact_id": "art_1",
+                "user_id": "artifact-owner",
+                "artifact_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            }
+        ],
+    )
+
+    assert gate.name == "artifact_preview_isolation"
+    assert gate.ok is True
+    assert gate.evidence["checked_artifacts"] == 1
+    assert gate.evidence["results"][0]["owner_status"] == 200
+    assert gate.evidence["results"][0]["cross_user_status"] == 404
+    assert calls[0][0] == "http://api.local/api/ai/artifacts/art_1/preview"
+
+
+def test_artifact_preview_isolation_gate_rejects_missing_security_headers(monkeypatch):
+    def fake_http_get_with_headers_and_response_headers(
+        url: str,
+        headers: dict[str, str],
+        timeout: float = 15.0,
+    ):
+        return 200, b"preview-bytes", {"Cache-Control": "public"}
+
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "http_get_with_headers_and_response_headers",
+        fake_http_get_with_headers_and_response_headers,
+    )
+
+    gate = verify_poc_gate.check_artifact_preview_isolation(
+        "http://api.local",
+        [
+            {
+                "artifact_id": "art_1",
+                "user_id": "artifact-owner",
+                "artifact_content_type": "application/pdf",
+            }
+        ],
+    )
+
+    assert gate.ok is False
+    assert gate.evidence["results"][0]["owner_cache_control"] == "public"
+
+
+def test_artifact_preview_isolation_gate_rejects_unallowlisted_response_content_type(monkeypatch):
+    def fake_http_get_with_headers_and_response_headers(
+        url: str,
+        headers: dict[str, str],
+        timeout: float = 15.0,
+    ):
+        if headers["X-AI-User-ID"] == "artifact-owner":
+            return (
+                200,
+                b"preview-bytes",
+                {
+                    "Cache-Control": "no-store",
+                    "Content-Type": "text/html",
+                    "X-Content-Type-Options": "nosniff",
+                    "Content-Disposition": "inline; filename=review.docx",
+                },
+            )
+        return 404, b"", {}
+
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "http_get_with_headers_and_response_headers",
+        fake_http_get_with_headers_and_response_headers,
+    )
+
+    gate = verify_poc_gate.check_artifact_preview_isolation(
+        "http://api.local",
+        [
+            {
+                "artifact_id": "art_1",
+                "user_id": "artifact-owner",
+                "artifact_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            }
+        ],
+    )
+
+    assert gate.ok is False
+    assert gate.evidence["results"][0]["owner_content_type"] == "text/html"
+
+
 def test_frontend_dist_api_boundary_accepts_relative_api(tmp_path):
     (tmp_path / "index.html").write_text(
         '<script type="module" src="/assets/app.js"></script>',
@@ -181,12 +297,34 @@ def test_word_review_attachment_chat_routes_to_qa_runner(monkeypatch):
                 "file_ids": ["file_review_gate_1"],
                 "error_message": None,
                 "artifact_count": 1,
-                "artifact_types": ["reviewed_docx"],
+                "artifacts": [
+                    {
+                        "artifact_id": "artifact_review_1",
+                        "artifact_type": "reviewed_docx",
+                        "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    }
+                ],
             }
         ]
 
+    def fake_playback(url: str, headers: dict[str, str], timeout: float = 15.0):
+        calls["playback_url"] = url
+        calls["playback_headers"] = headers
+        return 200, {
+            "contract_version": "ai-platform.run-playback.v1",
+            "artifacts": [
+                {
+                    "artifact_id": "artifact_review_1",
+                    "artifact_type": "reviewed_docx",
+                    "download_url": "/api/ai/artifacts/artifact_review_1/download",
+                    "preview_url": "/api/ai/artifacts/artifact_review_1/preview",
+                }
+            ],
+        }
+
     monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", fake_upload)
     monkeypatch.setattr(verify_poc_gate, "http_json_post_with_headers", fake_chat)
+    monkeypatch.setattr(verify_poc_gate, "http_json_get_with_headers", fake_playback)
     monkeypatch.setattr(verify_poc_gate, "psql_rows", fake_psql_rows)
 
     gate = verify_poc_gate.check_word_review_attachment_chat("http://api.local", "postgres", "user", "db")
@@ -200,7 +338,250 @@ def test_word_review_attachment_chat_routes_to_qa_runner(monkeypatch):
     assert chat_payload["attachments"][0]["key"] == "file_review_gate_1"
     assert gate.evidence["run"]["agent_id"] == "qa-word-review"
     assert gate.evidence["run"]["skill_id"] == "qa-file-reviewer"
-    assert "reviewed_docx" in gate.evidence["run"]["artifact_types"]
+    assert gate.evidence["run"]["artifacts"][0]["artifact_type"] == "reviewed_docx"
+    assert calls["playback_url"] == "http://api.local/api/ai/runs/run_review_gate_1/playback"
+    assert gate.evidence["playback"]["preview_url_count"] == 1
+    assert gate.evidence["playback"]["matched_preview_artifact_count"] == 1
+    assert gate.evidence["playback"]["private_payload_leaked"] is False
+
+
+def test_word_review_attachment_chat_rejects_playback_without_preview_projection(monkeypatch):
+    monkeypatch.setattr(verify_poc_gate, "sample_docx_bytes", lambda: ("review.docx", b"docx-bytes"))
+    monkeypatch.setattr(verify_poc_gate.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", lambda *args, **kwargs: (200, {"key": "file_review_gate_1"}))
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "http_json_post_with_headers",
+        lambda *args, **kwargs: (200, {"run_id": "run_review_gate_1"}),
+    )
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "psql_rows",
+        lambda *args, **kwargs: [
+            {
+                "run_id": "run_review_gate_1",
+                "agent_id": "qa-word-review",
+                "skill_id": "qa-file-reviewer",
+                "status": "succeeded",
+                "file_ids": ["file_review_gate_1"],
+                "error_message": None,
+                "artifact_count": 1,
+                "artifacts": [
+                    {
+                        "artifact_id": "artifact_review_1",
+                        "artifact_type": "reviewed_docx",
+                        "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    }
+                ],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "http_json_get_with_headers",
+        lambda *args, **kwargs: (
+            200,
+            {
+                "contract_version": "ai-platform.run-playback.v1",
+                "artifacts": [
+                    {
+                        "artifact_id": "artifact_review_1",
+                        "artifact_type": "reviewed_docx",
+                        "download_url": "/api/ai/artifacts/artifact_review_1/download",
+                        "preview_url": None,
+                    }
+                ],
+            },
+        ),
+    )
+
+    gate = verify_poc_gate.check_word_review_attachment_chat("http://api.local", "postgres", "user", "db")
+
+    assert gate.ok is False
+    assert gate.evidence["playback"]["preview_url_count"] == 0
+
+
+def test_word_review_attachment_chat_rejects_preview_on_unrelated_artifact(monkeypatch):
+    monkeypatch.setattr(verify_poc_gate, "sample_docx_bytes", lambda: ("review.docx", b"docx-bytes"))
+    monkeypatch.setattr(verify_poc_gate.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", lambda *args, **kwargs: (200, {"key": "file_review_gate_1"}))
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "http_json_post_with_headers",
+        lambda *args, **kwargs: (200, {"run_id": "run_review_gate_1"}),
+    )
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "psql_rows",
+        lambda *args, **kwargs: [
+            {
+                "run_id": "run_review_gate_1",
+                "agent_id": "qa-word-review",
+                "skill_id": "qa-file-reviewer",
+                "status": "succeeded",
+                "file_ids": ["file_review_gate_1"],
+                "error_message": None,
+                "artifact_count": 2,
+                "artifacts": [
+                    {
+                        "artifact_id": "artifact_review_1",
+                        "artifact_type": "reviewed_docx",
+                        "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    },
+                    {
+                        "artifact_id": "artifact_other_1",
+                        "artifact_type": "summary_pdf",
+                        "content_type": "application/pdf",
+                    },
+                ],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "http_json_get_with_headers",
+        lambda *args, **kwargs: (
+            200,
+            {
+                "contract_version": "ai-platform.run-playback.v1",
+                "artifacts": [
+                    {
+                        "artifact_id": "artifact_review_1",
+                        "artifact_type": "reviewed_docx",
+                        "download_url": "/api/ai/artifacts/artifact_review_1/download",
+                        "preview_url": None,
+                    },
+                    {
+                        "artifact_id": "artifact_other_1",
+                        "artifact_type": "summary_pdf",
+                        "download_url": "/api/ai/artifacts/artifact_other_1/download",
+                        "preview_url": "/api/ai/artifacts/artifact_other_1/preview",
+                    },
+                ],
+            },
+        ),
+    )
+
+    gate = verify_poc_gate.check_word_review_attachment_chat("http://api.local", "postgres", "user", "db")
+
+    assert gate.ok is False
+    assert gate.evidence["playback"]["preview_url_count"] == 1
+    assert gate.evidence["playback"]["matched_preview_artifact_count"] == 0
+
+
+def test_word_review_attachment_chat_rejects_playback_private_payload_leak(monkeypatch):
+    monkeypatch.setattr(verify_poc_gate, "sample_docx_bytes", lambda: ("review.docx", b"docx-bytes"))
+    monkeypatch.setattr(verify_poc_gate.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", lambda *args, **kwargs: (200, {"key": "file_review_gate_1"}))
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "http_json_post_with_headers",
+        lambda *args, **kwargs: (200, {"run_id": "run_review_gate_1"}),
+    )
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "psql_rows",
+        lambda *args, **kwargs: [
+            {
+                "run_id": "run_review_gate_1",
+                "agent_id": "qa-word-review",
+                "skill_id": "qa-file-reviewer",
+                "status": "succeeded",
+                "file_ids": ["file_review_gate_1"],
+                "error_message": None,
+                "artifact_count": 1,
+                "artifacts": [
+                    {
+                        "artifact_id": "artifact_review_1",
+                        "artifact_type": "reviewed_docx",
+                        "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    }
+                ],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "http_json_get_with_headers",
+        lambda *args, **kwargs: (
+            200,
+            {
+                "contract_version": "ai-platform.run-playback.v1",
+                "artifacts": [
+                    {
+                        "artifact_id": "artifact_review_1",
+                        "artifact_type": "reviewed_docx",
+                        "download_url": "/api/ai/artifacts/artifact_review_1/download",
+                        "preview_url": "/api/ai/artifacts/artifact_review_1/preview",
+                        "storage_key": "tenants/default/private/review.docx",
+                    }
+                ],
+            },
+        ),
+    )
+
+    gate = verify_poc_gate.check_word_review_attachment_chat("http://api.local", "postgres", "user", "db")
+
+    assert gate.ok is False
+    assert gate.evidence["playback"]["private_payload_leaked"] is True
+
+
+def test_word_review_attachment_chat_rejects_runtime_private_payload_key_leak(monkeypatch):
+    monkeypatch.setattr(verify_poc_gate, "sample_docx_bytes", lambda: ("review.docx", b"docx-bytes"))
+    monkeypatch.setattr(verify_poc_gate.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", lambda *args, **kwargs: (200, {"key": "file_review_gate_1"}))
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "http_json_post_with_headers",
+        lambda *args, **kwargs: (200, {"run_id": "run_review_gate_1"}),
+    )
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "psql_rows",
+        lambda *args, **kwargs: [
+            {
+                "run_id": "run_review_gate_1",
+                "agent_id": "qa-word-review",
+                "skill_id": "qa-file-reviewer",
+                "status": "succeeded",
+                "file_ids": ["file_review_gate_1"],
+                "error_message": None,
+                "artifact_count": 1,
+                "artifacts": [
+                    {
+                        "artifact_id": "artifact_review_1",
+                        "artifact_type": "reviewed_docx",
+                        "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    }
+                ],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "http_json_get_with_headers",
+        lambda *args, **kwargs: (
+            200,
+            {
+                "contract_version": "ai-platform.run-playback.v1",
+                "artifacts": [
+                    {
+                        "artifact_id": "artifact_review_1",
+                        "artifact_type": "reviewed_docx",
+                        "download_url": "/api/ai/artifacts/artifact_review_1/download",
+                        "preview_url": "/api/ai/artifacts/artifact_review_1/preview",
+                        "runtime_private_payload": {"adapter": "hidden"},
+                    }
+                ],
+            },
+        ),
+    )
+
+    gate = verify_poc_gate.check_word_review_attachment_chat("http://api.local", "postgres", "user", "db")
+
+    assert gate.ok is False
+    assert gate.evidence["playback"]["private_payload_leaked"] is True
+
 
 
 def test_upload_attachment_chat_reports_worker_runtime_evidence(monkeypatch):

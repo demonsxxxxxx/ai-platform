@@ -28,6 +28,14 @@ DEFAULT_POSTGRES_CONTAINER = "ai-platform-postgres"
 DEFAULT_POSTGRES_USER = "ai_platform"
 DEFAULT_POSTGRES_DB = "ai_platform"
 REQUIRED_UI_PERMISSIONS = {"agent:use", "artifact:download", "agent:admin", "model:admin", "settings:manage", "admin:status"}
+PREVIEW_ALLOWED_CONTENT_TYPES = frozenset(
+    {
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -47,12 +55,33 @@ def http_get(url: str, timeout: float = 15.0) -> tuple[int, bytes]:
 
 
 def http_get_with_headers(url: str, headers: dict[str, str], timeout: float = 15.0) -> tuple[int, bytes]:
+    status, body, _ = http_get_with_headers_and_response_headers(url, headers, timeout=timeout)
+    return status, body
+
+
+def http_get_with_headers_and_response_headers(
+    url: str,
+    headers: dict[str, str],
+    timeout: float = 15.0,
+) -> tuple[int, bytes, dict[str, str]]:
     req = request.Request(url, headers={"Accept": "*/*", **headers}, method="GET")
     try:
         with request.urlopen(req, timeout=timeout) as response:
-            return response.status, response.read()
+            return response.status, response.read(), dict(response.headers.items())
     except error.HTTPError as exc:
-        return exc.code, exc.read()
+        return exc.code, exc.read(), dict(exc.headers.items())
+
+
+def http_json_get_with_headers(
+    url: str,
+    headers: dict[str, str],
+    timeout: float = 15.0,
+) -> tuple[int, Any]:
+    status, body = http_get_with_headers(url, headers, timeout=timeout)
+    try:
+        return status, json.loads(body.decode("utf-8"))
+    except Exception:
+        return status, body.decode("utf-8", errors="replace")[:300]
 
 
 def http_json(url: str) -> tuple[int, Any]:
@@ -355,6 +384,7 @@ select json_build_object(
   'artifact_id', a.id,
   'artifact_label', a.label,
   'artifact_size_bytes', a.size_bytes,
+  'artifact_content_type', a.content_type,
   'artifact_storage_key', a.storage_key
 )::text
 from runs r
@@ -407,6 +437,101 @@ def check_artifact_download_isolation(api_url: str, artifact_rows: list[dict[str
         )
     ok = bool(results) and all(item["owner_status"] == 200 and item["owner_bytes"] > 0 and item["cross_user_status"] in denied_statuses for item in results)
     return Gate("artifact_download_isolation", ok, {"checked_artifacts": len(results), "results": results})
+
+
+def _header_value(headers: dict[str, str], name: str) -> str:
+    expected = name.lower()
+    for key, value in headers.items():
+        if key.lower() == expected:
+            return value
+    return ""
+
+
+def _normalized_content_type(value: object) -> str:
+    return str(value or "").split(";", 1)[0].strip().lower()
+
+
+def check_artifact_preview_isolation(api_url: str, artifact_rows: list[dict[str, Any]]) -> Gate:
+    denied_statuses = {401, 403, 404}
+    results: list[dict[str, Any]] = []
+    for row in artifact_rows:
+        artifact_id = str(row.get("artifact_id") or "")
+        owner_id = str(row.get("user_id") or "")
+        content_type = _normalized_content_type(row.get("artifact_content_type"))
+        if not artifact_id or not owner_id or content_type not in PREVIEW_ALLOWED_CONTENT_TYPES:
+            continue
+        url = f"{api_url.rstrip('/')}/api/ai/artifacts/{artifact_id}/preview"
+        owner_status, owner_body, owner_headers = http_get_with_headers_and_response_headers(
+            url,
+            principal_headers(owner_id, "Artifact Owner"),
+        )
+        cross_user_id = f"{owner_id}-cross-check"
+        cross_status, _, _ = http_get_with_headers_and_response_headers(
+            url,
+            principal_headers(cross_user_id, "Artifact Cross Check"),
+        )
+        cache_control = _header_value(owner_headers, "Cache-Control")
+        owner_content_type = _normalized_content_type(_header_value(owner_headers, "Content-Type"))
+        content_disposition = _header_value(owner_headers, "Content-Disposition")
+        x_content_type_options = _header_value(owner_headers, "X-Content-Type-Options")
+        results.append(
+            {
+                "artifact_id": artifact_id,
+                "owner_user": owner_id,
+                "content_type": content_type,
+                "owner_status": owner_status,
+                "owner_bytes": len(owner_body),
+                "owner_cache_control": cache_control,
+                "owner_content_type": owner_content_type,
+                "owner_content_disposition": content_disposition,
+                "owner_x_content_type_options": x_content_type_options,
+                "cross_user_status": cross_status,
+            }
+        )
+    ok = bool(results) and all(
+        item["owner_status"] == 200
+        and item["owner_bytes"] > 0
+        and "no-store" in str(item["owner_cache_control"]).lower()
+        and item["owner_content_type"] == item["content_type"]
+        and str(item["owner_content_disposition"]).lower().startswith("inline")
+        and str(item["owner_x_content_type_options"]).lower() == "nosniff"
+        and item["cross_user_status"] in denied_statuses
+        for item in results
+    )
+    return Gate("artifact_preview_isolation", ok, {"checked_artifacts": len(results), "results": results})
+
+
+def _artifact_rows_from_run_evidence(run_evidence: dict[str, Any]) -> list[dict[str, str]]:
+    artifacts = run_evidence.get("artifacts")
+    if isinstance(artifacts, list):
+        return [
+            {
+                "artifact_id": str(item.get("artifact_id") or ""),
+                "artifact_type": str(item.get("artifact_type") or ""),
+                "content_type": _normalized_content_type(item.get("content_type")),
+            }
+            for item in artifacts
+            if isinstance(item, dict)
+        ]
+    artifact_ids = run_evidence.get("artifact_ids") if isinstance(run_evidence.get("artifact_ids"), list) else []
+    artifact_types = run_evidence.get("artifact_types") if isinstance(run_evidence.get("artifact_types"), list) else []
+    artifact_content_types = (
+        run_evidence.get("artifact_content_types")
+        if isinstance(run_evidence.get("artifact_content_types"), list)
+        else []
+    )
+    rows: list[dict[str, str]] = []
+    for index, artifact_id in enumerate(artifact_ids):
+        rows.append(
+            {
+                "artifact_id": str(artifact_id or ""),
+                "artifact_type": str(artifact_types[index] if index < len(artifact_types) else ""),
+                "content_type": _normalized_content_type(
+                    artifact_content_types[index] if index < len(artifact_content_types) else ""
+                ),
+            }
+        )
+    return rows
 
 
 def check_upload_attachment_chat(
@@ -581,7 +706,17 @@ select json_build_object(
   'file_ids', r.input_json->'file_ids',
   'error_message', r.error_message,
   'artifact_count', count(a.id),
-  'artifact_types', coalesce(json_agg(a.artifact_type) filter (where a.id is not null), '[]'::json)
+  'artifacts', coalesce(
+    json_agg(
+      json_build_object(
+        'artifact_id', a.id,
+        'artifact_type', a.artifact_type,
+        'content_type', a.content_type
+      )
+      order by a.created_at, a.id
+    ) filter (where a.id is not null),
+    '[]'::json
+  )
 )::text
 from runs r
 left join artifacts a on a.run_id = r.id and a.tenant_id = r.tenant_id
@@ -593,7 +728,72 @@ group by r.id;
             if run_evidence.get("status") in {"succeeded", "failed"}:
                 break
             time.sleep(1)
-    artifact_types = run_evidence.get("artifact_types") or []
+    run_artifacts = _artifact_rows_from_run_evidence(run_evidence)
+    reviewed_docx_artifacts = [
+        item
+        for item in run_artifacts
+        if item["artifact_type"] == "reviewed_docx" and item["content_type"] in PREVIEW_ALLOWED_CONTENT_TYPES
+    ]
+    reviewed_docx_artifact_ids = {item["artifact_id"] for item in reviewed_docx_artifacts if item["artifact_id"]}
+    playback_status = 0
+    playback_payload: Any = {}
+    if run_id:
+        playback_status, playback_payload = http_json_get_with_headers(
+            f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/playback",
+            headers=headers,
+            timeout=30,
+        )
+    playback_artifacts = playback_payload.get("artifacts") if isinstance(playback_payload, dict) else []
+    if not isinstance(playback_artifacts, list):
+        playback_artifacts = []
+    playback_text = json.dumps(playback_payload, ensure_ascii=False, default=str).lower()
+    playback_private_payload_leaked = any(
+        marker in playback_text
+        for marker in (
+            "storage_key",
+            "tenants/default",
+            "/tmp/",
+            "/home/xinlin.jiang",
+            "/var/lib/ai-platform",
+            "private_payload",
+            "runtime_private_payload",
+            "runtimeprivatepayload",
+            "executor_payload",
+            "executorpayload",
+        )
+    )
+    playback_preview_url_count = sum(
+        1
+        for artifact in playback_artifacts
+        if isinstance(artifact, dict) and isinstance(artifact.get("preview_url"), str) and artifact["preview_url"]
+    )
+    playback_download_url_count = sum(
+        1
+        for artifact in playback_artifacts
+        if isinstance(artifact, dict) and isinstance(artifact.get("download_url"), str) and artifact["download_url"]
+    )
+    matched_preview_artifact_count = 0
+    matched_download_artifact_count = 0
+    for artifact in playback_artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        artifact_id = str(artifact.get("artifact_id") or "")
+        if artifact_id not in reviewed_docx_artifact_ids:
+            continue
+        if artifact.get("download_url") == f"/api/ai/artifacts/{artifact_id}/download":
+            matched_download_artifact_count += 1
+        if artifact.get("preview_url") == f"/api/ai/artifacts/{artifact_id}/preview":
+            matched_preview_artifact_count += 1
+    playback_ok = (
+        playback_status == 200
+        and isinstance(playback_payload, dict)
+        and playback_payload.get("contract_version") == "ai-platform.run-playback.v1"
+        and bool(playback_artifacts)
+        and bool(reviewed_docx_artifact_ids)
+        and matched_download_artifact_count == len(reviewed_docx_artifact_ids)
+        and matched_preview_artifact_count == len(reviewed_docx_artifact_ids)
+        and not playback_private_payload_leaked
+    )
     ok = (
         upload_status == 200
         and isinstance(upload_payload, dict)
@@ -603,7 +803,8 @@ group by r.id;
         and run_evidence.get("agent_id") == "qa-word-review"
         and run_evidence.get("skill_id") == "qa-file-reviewer"
         and file_id in (run_evidence.get("file_ids") or [])
-        and "reviewed_docx" in artifact_types
+        and bool(reviewed_docx_artifact_ids)
+        and playback_ok
     )
     return Gate(
         "word_review_attachment_chat",
@@ -616,6 +817,16 @@ group by r.id;
             "chat_status": chat_status,
             "chat_payload": chat_payload,
             "run": run_evidence,
+            "playback": {
+                "status": playback_status,
+                "contract_version": playback_payload.get("contract_version") if isinstance(playback_payload, dict) else None,
+                "artifact_count": len(playback_artifacts),
+                "download_url_count": playback_download_url_count,
+                "preview_url_count": playback_preview_url_count,
+                "matched_download_artifact_count": matched_download_artifact_count,
+                "matched_preview_artifact_count": matched_preview_artifact_count,
+                "private_payload_leaked": playback_private_payload_leaked,
+            },
         },
     )
 
@@ -698,6 +909,7 @@ def main() -> int:
         check_company_auth_bridge(env_values.get("EXISTING_AUTH_BASE_URL", "")),
         *db_gates,
         check_artifact_download_isolation(args.api_url, artifact_rows),
+        check_artifact_preview_isolation(args.api_url, artifact_rows),
         check_upload_attachment_chat(args.api_url, args.postgres_container, args.postgres_user, args.postgres_db),
         check_word_review_attachment_chat(args.api_url, args.postgres_container, args.postgres_user, args.postgres_db),
         check_auth_audit(args.postgres_container, args.postgres_user, args.postgres_db, args.allow_missing_auth_audit),
