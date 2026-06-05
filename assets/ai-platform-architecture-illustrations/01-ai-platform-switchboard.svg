@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">ai-platform architecture illustration</title>
+  <desc id="desc">A sparse hand-drawn style architecture illustration showing ai-platform as the central governed switchboard.</desc>
+  <defs>
+    <style>
+      .ink { fill: none; stroke: #111; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; }
+      .thin { fill: none; stroke: #111; stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round; }
+      .orange { fill: none; stroke: #f28c28; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; }
+      .red { fill: none; stroke: #e13b2d; stroke-width: 4.5; stroke-linecap: round; stroke-linejoin: round; }
+      .blue { fill: none; stroke: #2878c8; stroke-width: 4.5; stroke-linecap: round; stroke-linejoin: round; }
+      .label { font-family: "KaiTi", "STKaiti", "Microsoft YaHei", sans-serif; font-size: 34px; fill: #111; letter-spacing: 1px; }
+      .small { font-size: 28px; }
+      .redText { fill: #e13b2d; }
+      .blueText { fill: #2878c8; }
+      .xiaohei { fill: #111; stroke: #111; stroke-width: 4; }
+      .eye { fill: #fff; stroke: none; }
+      .paper { fill: #fff; stroke: #111; stroke-width: 4; stroke-linejoin: round; }
+      .wash { fill: #fff; }
+    </style>
+    <marker id="arrowOrange" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="12" markerHeight="12" orient="auto-start-reverse">
+      <path d="M2,2 L10,6 L2,10" fill="none" stroke="#f28c28" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <rect class="wash" x="0" y="0" width="1600" height="900"/>
+
+  <!-- left input -->
+  <path class="thin" d="M132 326c-20-26-16-66 16-84 34-20 77-3 92 30 12 26 3 62-22 80-28 20-65 17-86-26z"/>
+  <path class="thin" d="M178 358c-4 38-8 75-12 112"/>
+  <path class="thin" d="M146 412c30 2 61 4 92 4"/>
+  <path class="thin" d="M160 470c-18 27-37 53-55 79"/>
+  <path class="thin" d="M187 470c19 29 39 57 61 84"/>
+  <path class="thin" d="M250 247c38-23 84-18 107 8 21 25 19 61-9 82-25 20-65 19-96 7l-42 23 17-44c-18-23-10-56 23-76z"/>
+  <text class="label small" x="132" y="620">企业入口</text>
+
+  <path class="paper" d="M326 464l94-16 22 110-94 17z"/>
+  <path class="thin" d="M343 490l59-10M350 520l64-10M357 550l42-7"/>
+
+  <!-- main orange flow -->
+  <path class="orange" d="M435 506C518 500 568 470 623 448" marker-end="url(#arrowOrange)"/>
+  <path class="orange" d="M973 449c83 11 141 39 200 77" marker-end="url(#arrowOrange)"/>
+
+  <!-- central strange control desk -->
+  <path class="ink" d="M628 291c74-58 258-50 335 14 43 36 54 237 20 285-54 76-305 82-372 4-42-49-25-268 17-303z"/>
+  <path class="thin" d="M664 368c74 18 206 16 279-3"/>
+  <path class="thin" d="M662 570c92 32 217 28 294-7"/>
+  <text class="label" x="668" y="260">ai-platform 控制面</text>
+
+  <!-- drawers / valves -->
+  <path class="thin" d="M656 411c46-15 96-12 131 4l-8 65c-39 13-78 14-119 1z"/>
+  <path class="thin" d="M819 410c42-12 88-11 127 4l-12 64c-38 14-76 14-113 0z"/>
+  <path class="thin" d="M653 503c43-12 86-10 125 4l-9 50c-35 12-75 11-112-2z"/>
+  <path class="thin" d="M817 504c42-13 88-12 128 3l-10 51c-40 12-79 12-118-1z"/>
+  <text class="label small" x="682" y="458">记忆</text>
+  <text class="label small" x="846" y="458">权限</text>
+  <text class="label small" x="682" y="546">事件</text>
+  <text class="label small" x="847" y="546">沙箱</text>
+
+  <!-- xiaohei inside machine -->
+  <path class="xiaohei" d="M762 326c28-20 84-17 104 7 18 22 15 74-5 92-24 22-85 19-106-7-18-22-15-75 7-92z"/>
+  <circle class="eye" cx="798" cy="367" r="8"/>
+  <circle class="eye" cx="839" cy="366" r="8"/>
+  <path class="thin" d="M789 427c-8 23-14 44-16 67"/>
+  <path class="thin" d="M842 428c12 24 20 46 24 68"/>
+  <path class="thin" d="M746 378c-44 11-77 29-98 52"/>
+  <path class="thin" d="M873 381c34 6 61 22 83 49"/>
+  <path class="red" d="M906 382c18-19 32-42 44-68"/>
+  <circle class="red" cx="958" cy="296" r="20"/>
+
+  <!-- warning tag -->
+  <path class="red" d="M977 288l180 5 19 49-25 45-178-5-20-49z"/>
+  <text class="label small redText" x="989" y="351">写工具先确认</text>
+
+  <!-- right executor sockets -->
+  <path class="thin" d="M1206 415c56-21 140-18 183 8 36 22 37 82 5 104-48 34-151 28-190-8-26-25-25-81 2-104z"/>
+  <path class="thin" d="M1232 446c16-17 48-19 67-5M1316 442c22-13 50-9 63 8M1232 493c40 22 106 22 146 1"/>
+  <text class="label small" x="1233" y="588">执行器插槽</text>
+  <path class="thin" d="M1214 377c20-21 61-27 91-12"/>
+  <path class="thin" d="M1324 367c37-12 74-7 91 16"/>
+
+  <!-- artifact and audit shelf -->
+  <path class="paper" d="M1288 655l113-15 10 82-113 14z"/>
+  <path class="thin" d="M1308 679l70-9M1313 705l48-6"/>
+  <path class="thin" d="M1432 645c37 2 66 21 65 46-2 25-30 43-68 41-38-2-65-22-63-47 2-25 29-42 66-40z"/>
+  <path class="thin" d="M1400 686l60 2M1404 710l49 2"/>
+  <text class="label small" x="1265" y="782">artifact + 审计</text>
+
+  <!-- blue note -->
+  <path class="blue" d="M604 214c-21-35-4-70 45-80 50-10 112 8 129 41"/>
+  <text class="label small blueText" x="612" y="181">事实源在这里</text>
+
+  <!-- small ground scribbles -->
+  <path class="thin" d="M94 730c76 11 169 8 242-5"/>
+  <path class="thin" d="M594 676c128 20 304 18 424-5"/>
+  <path class="thin" d="M1196 812c112 18 236 14 321-7"/>
+</svg>
