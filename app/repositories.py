@@ -21,6 +21,7 @@ from app.memory_redaction import redact_memory_metadata, redact_memory_text
 from app.projection_redaction import sanitize_user_control_input
 from app.skills.dependencies import is_workbench_skill_public
 from app.skills.release_policy import resolve_rollout_skill_decision
+from app.tool_policy import max_risk
 
 
 DEFAULT_RUN_EXECUTOR_TYPES = {"claude-agent-worker", "ragflow"}
@@ -54,6 +55,58 @@ def _coerce_int(value: Any) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return bool(value)
+
+
+def _effective_status(registry_status: str, policy_status: str) -> str:
+    return "active" if registry_status == "active" and policy_status == "active" else "disabled"
+
+
+def _tool_policy_projection(row: dict[str, Any], *, tenant_id: str) -> dict[str, Any]:
+    has_tenant_policy = row.get("policy_status") is not None
+    policy_source = "tenant" if has_tenant_policy else "registry"
+    registry_status = str(row.get("registry_status") or row.get("status") or "disabled")
+    policy_status = str(row.get("policy_status") or "disabled")
+    registry_write_capable = _coerce_bool(row.get("registry_write_capable"), _coerce_bool(row.get("write_capable")))
+    policy_write_capable = _coerce_bool(row.get("policy_write_capable"), False)
+    registry_risk_level = str(row.get("registry_risk_level") or row.get("risk_level") or "low")
+    policy_risk_level = str(row.get("policy_risk_level") or "low")
+    registry_visible_to_user = _coerce_bool(row.get("registry_visible_to_user"), _coerce_bool(row.get("visible_to_user"), True))
+    policy_visible_to_user = _coerce_bool(row.get("policy_visible_to_user"), False)
+    effective_visible_to_user = registry_visible_to_user and policy_visible_to_user
+    effective_policy_status = _effective_status(registry_status, policy_status)
+    if not effective_visible_to_user:
+        effective_policy_status = "disabled"
+    return {
+        "tenant_id": tenant_id,
+        "tool_id": str(row.get("tool_id") or row.get("id") or ""),
+        "id": str(row.get("tool_id") or row.get("id") or ""),
+        "server_id": str(row.get("server_id") or ""),
+        "name": str(row.get("name") or ""),
+        "description": str(row.get("description") or ""),
+        "registry_status": registry_status,
+        "policy_status": policy_status,
+        "effective_status": effective_policy_status,
+        "status": effective_policy_status,
+        "registry_write_capable": registry_write_capable,
+        "policy_write_capable": policy_write_capable,
+        "write_capable": registry_write_capable or policy_write_capable,
+        "registry_risk_level": registry_risk_level,
+        "policy_risk_level": policy_risk_level,
+        "risk_level": max_risk(registry_risk_level, policy_risk_level),
+        "registry_visible_to_user": registry_visible_to_user,
+        "policy_visible_to_user": policy_visible_to_user,
+        "visible_to_user": effective_visible_to_user,
+        "source": policy_source,
+        "reason": str(row.get("reason") or ""),
+        "updated_by": row.get("updated_by"),
+        "updated_at": row.get("updated_at"),
+    }
 
 
 def _event_severity(payload: dict[str, Any] | None, severity: str | None = None) -> str:
@@ -130,6 +183,15 @@ async def resolve_agent_skill(
           skill_release_policies.rollout_percent as release_policy_rollout_percent,
           skills.executor_type,
           mcp_tools.status as mcp_tool_status,
+          mcp_tools.status as registry_status,
+          tool_policies.status as policy_status,
+          mcp_tools.write_capable as registry_write_capable,
+          tool_policies.write_capable as policy_write_capable,
+          mcp_tools.risk_level as registry_risk_level,
+          tool_policies.risk_level as policy_risk_level,
+          mcp_tools.visible_to_user as registry_visible_to_user,
+          tool_policies.visible_to_user as policy_visible_to_user,
+          mcp_tools.server_id as server_id,
           skills.input_modes
         from agents
         join skills on skills.id = %s
@@ -142,6 +204,9 @@ async def resolve_agent_skill(
          and skill_release_policies.channel = 'stable'
          and skill_release_policies.status = 'active'
         left join mcp_tools on mcp_tools.id = skills.id
+        left join tool_policies
+          on tool_policies.tenant_id = agents.tenant_id
+         and tool_policies.tool_id = mcp_tools.id
         where agents.tenant_id = %s and agents.id = %s
         """,
         (skill_id, tenant_id, agent_id),
@@ -155,8 +220,10 @@ async def resolve_agent_skill(
         raise RepositoryConflictError("skill_inactive")
     if row["executor_type"] not in DEFAULT_RUN_EXECUTOR_TYPES:
         raise RepositoryConflictError("executor_type_not_allowed")
-    if row["executor_type"] == "ragflow" and row.get("mcp_tool_status") != "active":
-        raise RepositoryConflictError("mcp_tool_disabled")
+    if row["executor_type"] == "ragflow":
+        tool_policy = _tool_policy_projection({**dict(row), "tool_id": row["skill_id"]}, tenant_id=tenant_id)
+        if tool_policy["effective_status"] != "active" or not tool_policy["visible_to_user"]:
+            raise RepositoryConflictError("mcp_tool_disabled")
     if row["default_skill_id"] != skill_id:
         raise RepositoryConflictError("agent_skill_mismatch")
     return row
@@ -165,18 +232,34 @@ async def resolve_agent_skill(
 async def ensure_mcp_tool_active(conn: AsyncConnection, *, tenant_id: str, tool_id: str) -> dict[str, Any]:
     cursor = await conn.execute(
         """
-        select id, server_id, status, write_capable, risk_level
+        select
+          mcp_tools.id,
+          mcp_tools.server_id,
+          mcp_tools.name,
+          mcp_tools.description,
+          mcp_tools.status as registry_status,
+          tool_policies.status as policy_status,
+          mcp_tools.write_capable as registry_write_capable,
+          tool_policies.write_capable as policy_write_capable,
+          mcp_tools.risk_level as registry_risk_level,
+          tool_policies.risk_level as policy_risk_level,
+          mcp_tools.visible_to_user as registry_visible_to_user,
+          tool_policies.visible_to_user as policy_visible_to_user
         from mcp_tools
-        where id = %s
+        left join tool_policies
+          on tool_policies.tenant_id = %s
+         and tool_policies.tool_id = mcp_tools.id
+        where mcp_tools.id = %s
         """,
-        (tool_id,),
+        (tenant_id, tool_id),
     )
     row = await cursor.fetchone()
     if row is None:
         raise RepositoryNotFoundError("mcp_tool_not_found")
-    if row["status"] != "active":
+    policy = _tool_policy_projection(dict(row), tenant_id=tenant_id)
+    if policy["effective_status"] != "active" or not policy["visible_to_user"]:
         raise RepositoryConflictError("mcp_tool_disabled")
-    return row
+    return policy
 
 
 async def list_agent_app_projections(conn: AsyncConnection, *, tenant_id: str) -> list[dict[str, Any]]:
@@ -342,25 +425,159 @@ async def list_workbench_mcp_tools(conn: AsyncConnection, *, tenant_id: str, inc
     cursor = await conn.execute(
         """
         select
-          id as tool_id,
-          server_id,
-          name,
-          description,
-          status,
-          write_capable,
-          risk_level,
-          visible_to_user as allowed_for_user
+          mcp_tools.id as tool_id,
+          mcp_tools.server_id,
+          mcp_tools.name,
+          mcp_tools.description,
+          mcp_tools.status as registry_status,
+          tool_policies.status as policy_status,
+          mcp_tools.write_capable as registry_write_capable,
+          tool_policies.write_capable as policy_write_capable,
+          mcp_tools.risk_level as registry_risk_level,
+          tool_policies.risk_level as policy_risk_level,
+          mcp_tools.visible_to_user as registry_visible_to_user,
+          tool_policies.visible_to_user as policy_visible_to_user
         from mcp_tools
-        where visible_to_user = true
-          and (%s or status = 'active')
-        order by case id
+        left join tool_policies
+          on tool_policies.tenant_id = %s
+         and tool_policies.tool_id = mcp_tools.id
+        where mcp_tools.visible_to_user = true
+          and tool_policies.visible_to_user = true
+          and (%s or (mcp_tools.status = 'active' and tool_policies.status = 'active'))
+        order by case mcp_tools.id
           when 'ragflow-knowledge-search' then 1
           else 99
-        end, id asc
+        end, mcp_tools.id asc
         """,
-        (include_disabled,),
+        (tenant_id, include_disabled),
     )
-    return list(await cursor.fetchall())
+    return [
+        {
+            **policy,
+            "allowed_for_user": bool(policy["visible_to_user"]),
+        }
+        for policy in (_tool_policy_projection(dict(row), tenant_id=tenant_id) for row in await cursor.fetchall())
+    ]
+
+
+async def list_admin_tool_policies(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    include_disabled: bool = True,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Return tenant-scoped admin tool policy projections without private connection fields."""
+    limit = max(min(int(limit), 500), 1)
+    cursor = await conn.execute(
+        """
+        select
+          mcp_tools.id as tool_id,
+          mcp_tools.server_id,
+          mcp_tools.name,
+          mcp_tools.description,
+          mcp_tools.status as registry_status,
+          tool_policies.status as policy_status,
+          mcp_tools.write_capable as registry_write_capable,
+          tool_policies.write_capable as policy_write_capable,
+          mcp_tools.risk_level as registry_risk_level,
+          tool_policies.risk_level as policy_risk_level,
+          mcp_tools.visible_to_user as registry_visible_to_user,
+          tool_policies.visible_to_user as policy_visible_to_user,
+          tool_policies.reason,
+          tool_policies.updated_by,
+          tool_policies.updated_at
+        from mcp_tools
+        left join tool_policies
+          on tool_policies.tenant_id = %s
+         and tool_policies.tool_id = mcp_tools.id
+        where (
+          %s
+          or (
+            mcp_tools.status = 'active'
+            and tool_policies.status = 'active'
+            and coalesce(mcp_tools.visible_to_user, false) = true
+            and tool_policies.visible_to_user = true
+          )
+        )
+        order by case mcp_tools.id
+          when 'ragflow-knowledge-search' then 1
+          else 99
+        end, mcp_tools.id asc
+        limit %s
+        """,
+        (tenant_id, include_disabled, limit),
+    )
+    return [_tool_policy_projection(dict(row), tenant_id=tenant_id) for row in await cursor.fetchall()]
+
+
+async def upsert_admin_tool_policy(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    tool_id: str,
+    status: str,
+    risk_level: str,
+    write_capable: bool,
+    visible_to_user: bool,
+    reason: str,
+    updated_by: str,
+) -> dict[str, Any]:
+    """Upsert a tenant-scoped tool policy and return its effective runtime projection."""
+    cursor = await conn.execute(
+        """
+        with upserted as (
+          insert into tool_policies(
+            tenant_id, tool_id, status, write_capable, risk_level,
+            visible_to_user, reason, updated_by, updated_at
+          )
+          select %s, mcp_tools.id, %s, %s, %s, %s, %s, %s, now()
+          from mcp_tools
+          where mcp_tools.id = %s
+          on conflict (tenant_id, tool_id) do update
+          set status = excluded.status,
+              write_capable = excluded.write_capable,
+              risk_level = excluded.risk_level,
+              visible_to_user = excluded.visible_to_user,
+              reason = excluded.reason,
+              updated_by = excluded.updated_by,
+              updated_at = now()
+          returning *
+        )
+        select
+          mcp_tools.id as tool_id,
+          mcp_tools.server_id,
+          mcp_tools.name,
+          mcp_tools.description,
+          mcp_tools.status as registry_status,
+          upserted.status as policy_status,
+          mcp_tools.write_capable as registry_write_capable,
+          upserted.write_capable as policy_write_capable,
+          mcp_tools.risk_level as registry_risk_level,
+          upserted.risk_level as policy_risk_level,
+          mcp_tools.visible_to_user as registry_visible_to_user,
+          upserted.visible_to_user as policy_visible_to_user,
+          upserted.reason,
+          upserted.updated_by,
+          upserted.updated_at
+        from upserted
+        join mcp_tools on mcp_tools.id = upserted.tool_id
+        """,
+        (
+            tenant_id,
+            status,
+            write_capable,
+            risk_level,
+            visible_to_user,
+            reason,
+            updated_by,
+            tool_id,
+        ),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise RepositoryNotFoundError("mcp_tool_not_found")
+    return _tool_policy_projection(dict(row), tenant_id=tenant_id)
 
 
 async def list_workbench_capabilities(
@@ -383,7 +600,12 @@ async def list_workbench_capabilities(
           agents.description,
           case
             when skills.executor_type = 'ragflow'
-             and coalesce(mcp_tools.status, 'disabled') <> 'active'
+             and (
+               coalesce(mcp_tools.status, 'disabled') <> 'active'
+               or coalesce(tool_policies.status, 'disabled') <> 'active'
+               or coalesce(mcp_tools.visible_to_user, false) = false
+               or coalesce(tool_policies.visible_to_user, false) = false
+             )
             then 'disabled'
             else coalesce(tenant_workbench_skills.status, skills.status)
           end as status,
@@ -395,7 +617,12 @@ async def list_workbench_capabilities(
           skills.executor_type,
           case when skills.id = 'ragflow-knowledge-search' then mcp_tools.server_id else null end as mcp_server_id,
           case when skills.id = 'ragflow-knowledge-search' then mcp_tools.id else null end as mcp_tool_id,
-          case when skills.id = 'ragflow-knowledge-search' then mcp_tools.risk_level else null end as risk_level,
+          case
+            when skills.id <> 'ragflow-knowledge-search' then null
+            when mcp_tools.risk_level = 'high' or tool_policies.risk_level = 'high' then 'high'
+            when mcp_tools.risk_level = 'medium' or tool_policies.risk_level = 'medium' then 'medium'
+            else coalesce(mcp_tools.risk_level, 'low')
+          end as risk_level,
           0 as recent_failures
         from agents
         join skills on skills.id = agents.default_skill_id
@@ -404,6 +631,9 @@ async def list_workbench_capabilities(
          and tenant_workbench_skills.skill_id = skills.id
         left join mcp_tools
           on mcp_tools.id = skills.id
+        left join tool_policies
+          on tool_policies.tenant_id = agents.tenant_id
+         and tool_policies.tool_id = mcp_tools.id
         where agents.tenant_id = %s
           and agents.id in ('general-agent', 'qa-word-review', 'baoyu-translate', 'sop-assistant')
           and agents.status = 'active'
@@ -1392,6 +1622,7 @@ async def decide_tool_permission_request(
     decision: str,
     reason: str,
     decision_payload_json: dict[str, Any],
+    expires_in_seconds: int = 900,
 ) -> dict[str, Any] | None:
     cursor = await conn.execute(
         """
@@ -1400,6 +1631,7 @@ async def decide_tool_permission_request(
             decision = %s,
             reason = %s,
             decision_payload_json = %s::jsonb,
+            expires_at = now() + (%s * interval '1 second'),
             decided_at = now(),
             updated_at = now()
         where tenant_id = %s
@@ -1409,7 +1641,16 @@ async def decide_tool_permission_request(
           and status = 'pending'
         returning *
         """,
-        (decision, reason, dumps_json(decision_payload_json), tenant_id, user_id, run_id, request_id),
+        (
+            decision,
+            reason,
+            dumps_json(decision_payload_json),
+            int(expires_in_seconds),
+            tenant_id,
+            user_id,
+            run_id,
+            request_id,
+        ),
     )
     return await cursor.fetchone()
 

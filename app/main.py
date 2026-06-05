@@ -5,6 +5,7 @@ from app.routes.agent_apps import router as agent_apps_router
 from app.routes.admin_runtime import router as admin_runtime_router
 from app.routes.admin_runs import router as admin_runs_router
 from app.routes.admin_skills import router as admin_skills_router
+from app.routes.admin_tool_policies import router as admin_tool_policies_router
 from app.routes.auth import router as auth_router
 from app.routes.chat import router as chat_router
 from app.routes.context import router as context_router
@@ -50,6 +51,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_runtime_router, prefix="/api/ai")
     app.include_router(admin_runs_router, prefix="/api/ai")
     app.include_router(admin_skills_router, prefix="/api/ai")
+    app.include_router(admin_tool_policies_router, prefix="/api/ai")
     app.include_router(lambchat_compat_router, prefix="/api")
     app.include_router(chat_router, prefix="/api")
     return app

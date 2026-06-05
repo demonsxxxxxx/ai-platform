@@ -123,10 +123,25 @@ async def decide_tool_permission(
             decision=request.decision,
             reason=request.reason,
             decision_payload_json=request.decision_payload,
+            expires_in_seconds=request.expires_in_seconds,
         )
         if row is None:
             raise HTTPException(status_code=409, detail="tool_permission_request_not_pending")
         trace_id = str(row.get("trace_id") or existing.get("trace_id") or standard_trace_id(run_id))
+        event_payload = {
+            "visible_to_user": True,
+            "permission_request_id": request_id,
+            "tool_id": row.get("tool_id"),
+            "tool_call_id": row.get("tool_call_id"),
+            "action": row.get("action") or existing.get("action") or "execute",
+            "risk_level": row.get("risk_level") or existing.get("risk_level") or "low",
+            "write_capable": bool(row.get("write_capable") if row.get("write_capable") is not None else existing.get("write_capable")),
+            "decision": request.decision,
+            "reason": request.reason,
+            "status": row.get("status") or "decided",
+        }
+        if row.get("expires_at") is not None:
+            event_payload["expires_at"] = row.get("expires_at")
         await repositories.append_event(
             conn,
             tenant_id=principal.tenant_id,
@@ -135,18 +150,7 @@ async def decide_tool_permission(
             event_type="tool_permission_decided",
             stage="tool_policy",
             message="工具权限已决策",
-            payload={
-                "visible_to_user": True,
-                "permission_request_id": request_id,
-                "tool_id": row.get("tool_id"),
-                "tool_call_id": row.get("tool_call_id"),
-                "action": row.get("action") or existing.get("action") or "execute",
-                "risk_level": row.get("risk_level") or existing.get("risk_level") or "low",
-                "write_capable": bool(row.get("write_capable") if row.get("write_capable") is not None else existing.get("write_capable")),
-                "decision": request.decision,
-                "reason": request.reason,
-                "status": row.get("status") or "decided",
-            },
+            payload=event_payload,
         )
         await repositories.append_audit_log(
             conn,
