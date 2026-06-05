@@ -67,6 +67,9 @@ Access rules:
 - Public agent ids such as `document-review` are normalized to the internal
   agent id for storage and lookup, then projected back to the public id in
   responses and audit metadata.
+- Existing session-scoped memory record endpoints must follow the same
+  public-to-internal routing before session/policy lookup and must keep record
+  responses plus audit metadata projected back to public agent ids.
 - The response uses the existing public `_memory_policy_response` projection.
 - The audit event is public-safe and contains only tenant/workspace/user/agent
   policy metadata, not memory content or executor private payload.
@@ -193,6 +196,9 @@ Focused tests cover:
 - Ordinary user update returns `404` for missing or foreign optional agent.
 - Ordinary user update rejects unsafe body ids with `422` before repository
   writes.
+- Session-scoped memory record create/list/delete accepts public agent ids,
+  maps them to internal agent ids for session/policy/repository operations, and
+  does not expose internal agent ids in responses or audit metadata.
 - Admin `GET /admin/memory/policies` requires memory-admin role.
 - Admin policy inventory calls the repository with `principal.tenant_id` and
   returns sanitized public policy projections.
