@@ -308,9 +308,10 @@ behavior.
 
 ### P2 Resume Checkpoint Lineage Materialization
 
-Status: implemented on feature branch `feat/p2-resume-checkpoint-lineage` for
-local verification before 211 deployment. This extends copied/retry run resume
-metadata with safe per-step checkpoint lineage while preserving the existing
+Status: merged on `main` via PR #8 at
+`9b85c008fb5493fca55b00aaa339af9b399fe030`, deployed to 211, and smoked. This
+extends copied/retry run resume metadata with safe per-step checkpoint lineage
+while preserving the existing
 `resume.completed_step_outputs` map. Seeded copied steps and executor
 `agent_step_reused` events now carry safe `checkpoint_id`, `source_step_id`, and
 source-run linkage so checkpoint audit/provenance can keep a stable graph after
@@ -322,7 +323,15 @@ lineage.
 
 Focused local coverage verifies repository resume metadata, copied-run step
 seeding, adapter checkpoint reuse events, and existing checkpoint audit
-projection behavior. This does not start automatic retry policy scheduling,
+projection behavior. The 211 deployment uses image
+`sha256:209fa533f1f08f8cf3b76a92d23b2b4e699fa2128cb99bf11652cfd60d26cb13`
+with labels
+`ai-platform.source-revision=9b85c008fb5493fca55b00aaa339af9b399fe030` and
+`ai-platform.source_note=p2-resume-checkpoint-lineage`. The 211 smoke verified
+API health, container labels, worker step `source_step_id` backfill,
+server-owned resume checkpoint materialization, forged resume stripping,
+seeded copied-step checkpoint lineage, route-level resume strip helpers, and DB
+smoke data cleanup. This does not start automatic retry policy scheduling,
 autonomous subagent dispatch, high-risk tool execution, or new sandbox behavior.
 
 ## 禁止项
