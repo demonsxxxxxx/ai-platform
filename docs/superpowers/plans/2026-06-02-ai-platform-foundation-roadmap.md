@@ -59,8 +59,6 @@
 
 后续硬化：
 
-- Memory UI。
-- tenant/user opt-out UI。
 - 后台调度化 cleanup。
 - configurable redaction policy。
 - 更广业务 payload 覆盖审计。
@@ -190,18 +188,22 @@ does not start Long Task / Multi-Agent Runtime.
 
 Status: backend management slice merged on `main` via PR #2, PR #3, and
 PR #4, then deployed/smoked on 211 at
-`7f0a1133736f509be9d24a3b86eb03b2bbf5ead6`.
+`7f0a1133736f509be9d24a3b86eb03b2bbf5ead6`. The P1 frontend visible
+management entry was deployed through the existing 211 thin shell at
+`frontend-dist-ai-platform-20260605-114824`.
 
-The P1 backend management slice adds ordinary-user memory policy
-self-management and an admin same-tenant memory policy inventory projection.
-Existing session scoping, retention cleanup, redaction, public/admin
-projections, and `long_term_memory_enabled = false` fail-closed behavior remain
-the governing constraints. The 211 smoke verified health, schema application,
+The P1 user/admin management baseline is closed for the current slice. It adds
+ordinary-user memory policy self-management, user-visible memory record
+management on the existing `/memory` route, admin same-tenant policy and record
+inventory projections, admin-triggered retention cleanup, public projection
+redaction, and `long_term_memory_enabled = false` fail-closed behavior. The 211
+smoke verified frontend `/memory`, health, ordinary-user policy get/update,
 public `document-review` memory record create/list/delete routing, user opt-out
-blocking writes, admin inventory access, ordinary-user admin denial, and
-user/agent inventory indexes. Remaining Memory / Context work before advancing
-past this stage is frontend UI wiring / visible management entry, scheduled
-cleanup operations, and configurable redaction policy.
+blocking writes with empty record projection, admin inventory access,
+ordinary-user admin denial, and admin retention cleanup. Backend scheduled
+cleanup and configurable redaction policy remain follow-up hardening gates for
+the full Memory / Context PRD gate; they are not claimed complete and do not
+permit cross-session long-term memory.
 
 ## 禁止项
 
