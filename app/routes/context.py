@@ -139,8 +139,9 @@ async def _effective_session_agent_id(
     session_id: str | None,
     agent_id: str | None,
 ) -> str | None:
+    internal_agent_id = internal_agent_id_for_request(agent_id) if agent_id else None
     if not session_id:
-        return agent_id
+        return internal_agent_id
     session = await repositories.get_authorized_session(
         conn,
         tenant_id=principal.tenant_id,
@@ -152,9 +153,9 @@ async def _effective_session_agent_id(
     session_agent_id = str(session.get("agent_id") or "")
     if not session_agent_id:
         raise RepositoryNotFoundError("session_not_found")
-    if agent_id and agent_id != session_agent_id:
+    if internal_agent_id and internal_agent_id != session_agent_id:
         raise RepositoryNotFoundError("session_not_found")
-    return agent_id or session_agent_id
+    return internal_agent_id or session_agent_id
 
 
 @router.post("/runs/{run_id}/context/snapshots")
@@ -246,6 +247,7 @@ async def create_memory_record(
 ) -> dict[str, object]:
     if not request.session_id:
         raise HTTPException(status_code=400, detail="memory_session_id_required")
+    internal_agent_id = internal_agent_id_for_request(request.agent_id) if request.agent_id else None
     denied_by_policy = False
     try:
         async with transaction() as conn:
@@ -261,7 +263,7 @@ async def create_memory_record(
                 principal=principal,
                 workspace_id=request.workspace_id,
                 session_id=request.session_id,
-                agent_id=request.agent_id,
+                agent_id=internal_agent_id,
             )
             policy = await repositories.get_effective_memory_policy(
                 conn,
@@ -282,7 +284,7 @@ async def create_memory_record(
                     payload_json=sanitize_public_payload(
                         {
                             "workspace_id": request.workspace_id,
-                            "agent_id": effective_agent_id,
+                            "agent_id": public_agent_id_for_projection(effective_agent_id) or effective_agent_id,
                             "session_id": request.session_id,
                             "record_type": request.record_type,
                             "reason": "memory_policy_disabled",
@@ -322,6 +324,7 @@ async def list_memory_records(
 ) -> dict[str, object]:
     workspace_id = _safe_query_id(workspace_id, "workspace_id")
     agent_id = _safe_query_id(agent_id, "agent_id") if agent_id else None
+    internal_agent_id = internal_agent_id_for_request(agent_id) if agent_id else None
     session_id = _safe_query_id(session_id, "session_id") if session_id else None
     if not session_id:
         raise HTTPException(status_code=400, detail="memory_session_id_required")
@@ -332,7 +335,7 @@ async def list_memory_records(
                 principal=principal,
                 workspace_id=workspace_id,
                 session_id=session_id,
-                agent_id=agent_id,
+                agent_id=internal_agent_id,
             )
             policy = await repositories.get_effective_memory_policy(
                 conn,
@@ -369,6 +372,7 @@ async def delete_memory_record(
     record_id = _safe_query_id(record_id, "record_id")
     workspace_id = _safe_query_id(workspace_id, "workspace_id")
     agent_id = _safe_query_id(agent_id, "agent_id") if agent_id else None
+    internal_agent_id = internal_agent_id_for_request(agent_id) if agent_id else None
     session_id = _safe_query_id(session_id, "session_id") if session_id else None
     if not session_id:
         raise HTTPException(status_code=400, detail="memory_session_id_required")
@@ -379,7 +383,7 @@ async def delete_memory_record(
                 principal=principal,
                 workspace_id=workspace_id,
                 session_id=session_id,
-                agent_id=agent_id,
+                agent_id=internal_agent_id,
             )
             row = await repositories.delete_memory_record(
                 conn,
@@ -403,7 +407,7 @@ async def delete_memory_record(
                 payload_json=sanitize_public_payload(
                     {
                         "workspace_id": workspace_id,
-                        "agent_id": row.get("agent_id"),
+                        "agent_id": public_agent_id_for_projection(row.get("agent_id")),
                         "session_id": row.get("session_id"),
                         "record_type": row.get("record_type"),
                         "reason": _audit_reason(reason),

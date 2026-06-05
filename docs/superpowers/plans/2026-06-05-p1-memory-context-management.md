@@ -718,5 +718,9 @@ Expected:
 - Ordinary user policy update returns `200`.
 - Ordinary user admin policy inventory returns `403`.
 - Admin policy inventory returns `200`.
+- Public `agent_id=document-review` memory record create/list/delete smoke uses
+  the internal session agent for policy/repository operations while responses
+  and audit metadata stay public. After user opt-out, `POST /memory/records`
+  returns `403 memory_policy_disabled` and `GET /memory/records` returns `[]`.
 - Smoke outputs contain no raw secret, raw memory content, runtime private
   payload, storage key, or runtime path.

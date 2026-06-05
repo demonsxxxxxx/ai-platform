@@ -578,6 +578,215 @@ def test_create_memory_record_denies_write_when_memory_policy_disabled_and_audit
     assert "hidden" not in str(calls)
 
 
+def test_create_memory_record_maps_public_agent_id_before_session_policy_and_audit(monkeypatch):
+    calls = []
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        calls.append(("workspace", tenant_id, workspace_id))
+
+    async def fake_ensure_user(conn, **kwargs):
+        calls.append(("user", kwargs))
+
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        calls.append(("session", tenant_id, user_id, session_id))
+        return {"id": session_id, "workspace_id": "workspace-a", "agent_id": "qa-word-review"}
+
+    async def fake_get_effective_memory_policy(conn, **kwargs):
+        calls.append(("policy", kwargs))
+        assert kwargs["agent_id"] == "qa-word-review"
+        return {
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "agent_id": kwargs["agent_id"],
+            "memory_enabled": False,
+            "long_term_memory_enabled": False,
+            "retention_days": 90,
+            "source": "stored",
+            "reason": "agent opt-out",
+            "updated_by": "admin-a",
+            "updated_at": "2026-06-02T12:00:00Z",
+        }
+
+    async def fail_create_memory_record(conn, **kwargs):
+        raise AssertionError("disabled memory policy must block public-agent memory writes")
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "audit-policy"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.routes.context.repositories.create_memory_record", fail_create_memory_record)
+    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/memory/records",
+        headers=headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "agent_id": "document-review",
+            "session_id": "session-a",
+            "record_type": "session_summary",
+            "content": "Do not store this.",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "memory_policy_disabled"
+    assert calls[2] == ("session", "tenant-a", "user-a", "session-a")
+    assert calls[3][0] == "policy"
+    assert calls[4][1]["payload_json"]["agent_id"] == "document-review"
+    assert "qa-word-review" not in response.text
+
+
+def test_create_memory_record_maps_public_agent_id_for_success_response(monkeypatch):
+    calls = []
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        calls.append(("workspace", tenant_id, workspace_id))
+
+    async def fake_ensure_user(conn, **kwargs):
+        calls.append(("user", kwargs))
+
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        calls.append(("session", tenant_id, user_id, session_id))
+        return {"id": session_id, "workspace_id": "workspace-a", "agent_id": "qa-word-review"}
+
+    async def fake_get_effective_memory_policy(conn, **kwargs):
+        calls.append(("policy", kwargs))
+        assert kwargs["agent_id"] == "qa-word-review"
+        return {
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "agent_id": kwargs["agent_id"],
+            "memory_enabled": True,
+            "long_term_memory_enabled": False,
+            "retention_days": 30,
+            "source": "stored",
+            "reason": "",
+            "updated_by": "admin-a",
+            "updated_at": "2026-06-02T12:00:00Z",
+        }
+
+    async def fake_create_memory_record(conn, **kwargs):
+        calls.append(("memory", kwargs))
+        assert kwargs["agent_id"] == "qa-word-review"
+        return {
+            "id": "mem-public-success",
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "agent_id": kwargs["agent_id"],
+            "session_id": kwargs["session_id"],
+            "record_type": kwargs["record_type"],
+            "content": kwargs["content"],
+            "metadata_json": kwargs["metadata_json"],
+            "status": "active",
+            "expires_at": "2026-07-02T12:00:00Z",
+        }
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.routes.context.repositories.create_memory_record", fake_create_memory_record)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/memory/records",
+        headers=headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "agent_id": "document-review",
+            "session_id": "session-a",
+            "record_type": "task_note",
+            "content": "Store this.",
+            "metadata": {"source": "test"},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()["memory_record"]
+    assert body["agent_id"] == "document-review"
+    assert calls[4][0] == "memory"
+    assert "qa-word-review" not in response.text
+
+
+def test_create_memory_record_omitted_agent_id_projects_session_agent_in_denied_audit(monkeypatch):
+    calls = []
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        calls.append(("workspace", tenant_id, workspace_id))
+
+    async def fake_ensure_user(conn, **kwargs):
+        calls.append(("user", kwargs))
+
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        calls.append(("session", tenant_id, user_id, session_id))
+        return {"id": session_id, "workspace_id": "workspace-a", "agent_id": "qa-word-review"}
+
+    async def fake_get_effective_memory_policy(conn, **kwargs):
+        calls.append(("policy", kwargs))
+        assert kwargs["agent_id"] == "qa-word-review"
+        return {
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "agent_id": kwargs["agent_id"],
+            "memory_enabled": False,
+            "long_term_memory_enabled": False,
+            "retention_days": 90,
+            "source": "stored",
+            "reason": "session agent opt-out",
+            "updated_by": "admin-a",
+            "updated_at": "2026-06-02T12:00:00Z",
+        }
+
+    async def fail_create_memory_record(conn, **kwargs):
+        raise AssertionError("disabled memory policy must block omitted-agent public session writes")
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "audit-policy"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.routes.context.repositories.create_memory_record", fail_create_memory_record)
+    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/memory/records",
+        headers=headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "session_id": "session-a",
+            "record_type": "session_summary",
+            "content": "Do not store this.",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "memory_policy_disabled"
+    assert calls[2] == ("session", "tenant-a", "user-a", "session-a")
+    assert calls[3][0] == "policy"
+    assert calls[4][1]["payload_json"]["agent_id"] == "document-review"
+    assert "qa-word-review" not in str(calls[4][1]["payload_json"])
+
+
 def test_create_memory_record_uses_session_agent_for_policy_when_agent_id_is_omitted(monkeypatch):
     calls = []
 
@@ -736,6 +945,84 @@ def test_delete_memory_record_soft_deletes_and_writes_audit(monkeypatch):
     }
 
 
+def test_delete_memory_record_maps_public_agent_id_before_session_delete_and_audit(monkeypatch):
+    calls = []
+
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        calls.append(("session", tenant_id, user_id, session_id))
+        return {"id": session_id, "workspace_id": "workspace-a", "agent_id": "qa-word-review"}
+
+    async def fake_delete_memory_record(conn, *, tenant_id, workspace_id, user_id, agent_id, session_id, record_id):
+        calls.append(("delete", tenant_id, workspace_id, user_id, agent_id, session_id, record_id))
+        return {
+            "id": record_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "user_id": user_id,
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "record_type": "task_note",
+            "content": "deleted content",
+            "metadata_json": {"source": "test"},
+            "status": "deleted",
+            "deleted_at": "2026-06-03T12:00:00Z",
+            "created_at": "2026-06-03T11:00:00Z",
+        }
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "audit-delete"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.routes.context.repositories.delete_memory_record", fake_delete_memory_record)
+    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.delete(
+        "/api/ai/memory/records/mem-a?workspace_id=workspace-a&agent_id=document-review&session_id=session-a",
+        headers=headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()["memory_record"]
+    assert body["agent_id"] == "document-review"
+    assert calls[1] == ("delete", "tenant-a", "workspace-a", "user-a", "qa-word-review", "session-a", "mem-a")
+    assert calls[2][1]["payload_json"]["agent_id"] == "document-review"
+    assert "qa-word-review" not in response.text
+
+
+def test_delete_memory_record_rejects_agent_session_mismatch_before_delete_or_audit(monkeypatch):
+    calls = []
+
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        calls.append(("session", tenant_id, user_id, session_id))
+        return {"id": session_id, "workspace_id": "workspace-a", "agent_id": "qa-word-review"}
+
+    async def fail_delete_memory_record(conn, **kwargs):
+        raise AssertionError("agent/session mismatch must not delete memory records")
+
+    async def fail_append_audit_log(conn, **kwargs):
+        raise AssertionError("agent/session mismatch must not write delete audit")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.routes.context.repositories.delete_memory_record", fail_delete_memory_record)
+    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fail_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.delete(
+        "/api/ai/memory/records/mem-a?workspace_id=workspace-a&agent_id=general-agent&session_id=session-a",
+        headers=headers(),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "session_not_found"
+    assert calls == [("session", "tenant-a", "user-a", "session-a")]
+
+
 def test_delete_memory_record_requires_session_scope(monkeypatch):
     async def fail_delete_memory_record(conn, **kwargs):
         raise AssertionError("memory delete must not query without explicit session scope")
@@ -868,6 +1155,114 @@ def test_list_memory_records_returns_empty_when_memory_policy_disabled(monkeypat
 
     assert response.status_code == 200
     assert response.json() == {"memory_records": []}
+
+
+def test_list_memory_records_maps_public_agent_id_before_session_policy(monkeypatch):
+    calls = []
+
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        calls.append(("session", tenant_id, user_id, session_id))
+        return {"id": session_id, "workspace_id": "workspace-a", "agent_id": "qa-word-review"}
+
+    async def fake_get_effective_memory_policy(conn, **kwargs):
+        calls.append(("policy", kwargs))
+        assert kwargs["agent_id"] == "qa-word-review"
+        return {
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "agent_id": kwargs["agent_id"],
+            "memory_enabled": False,
+            "long_term_memory_enabled": False,
+            "retention_days": 90,
+            "source": "stored",
+            "reason": "agent opt-out",
+            "updated_by": "admin-a",
+            "updated_at": "2026-06-02T12:00:00Z",
+        }
+
+    async def fail_list_memory_records(conn, **kwargs):
+        raise AssertionError("disabled memory policy must block public-agent memory reads")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.routes.context.repositories.list_memory_records", fail_list_memory_records)
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/ai/memory/records?workspace_id=workspace-a&agent_id=document-review&session_id=session-a",
+        headers=headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"memory_records": []}
+    assert calls[0] == ("session", "tenant-a", "user-a", "session-a")
+    assert calls[1][0] == "policy"
+
+
+def test_list_memory_records_maps_public_agent_id_for_non_empty_response(monkeypatch):
+    calls = []
+
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        calls.append(("session", tenant_id, user_id, session_id))
+        return {"id": session_id, "workspace_id": "workspace-a", "agent_id": "qa-word-review"}
+
+    async def fake_get_effective_memory_policy(conn, **kwargs):
+        calls.append(("policy", kwargs))
+        assert kwargs["agent_id"] == "qa-word-review"
+        return {
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "agent_id": kwargs["agent_id"],
+            "memory_enabled": True,
+            "long_term_memory_enabled": False,
+            "retention_days": 90,
+            "source": "stored",
+            "reason": "",
+            "updated_by": "admin-a",
+            "updated_at": "2026-06-02T12:00:00Z",
+        }
+
+    async def fake_list_memory_records(conn, **kwargs):
+        calls.append(("list", kwargs))
+        assert kwargs["agent_id"] == "qa-word-review"
+        return [
+            {
+                "id": "mem-public-list",
+                "tenant_id": kwargs["tenant_id"],
+                "workspace_id": kwargs["workspace_id"],
+                "user_id": kwargs["user_id"],
+                "agent_id": kwargs["agent_id"],
+                "session_id": kwargs["session_id"],
+                "record_type": "task_note",
+                "content": "Stored note.",
+                "metadata_json": {"source": "test"},
+                "status": "active",
+                "expires_at": "2026-07-02T12:00:00Z",
+                "created_at": "2026-06-02T12:00:00Z",
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.routes.context.repositories.list_memory_records", fake_list_memory_records)
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/ai/memory/records?workspace_id=workspace-a&agent_id=document-review&session_id=session-a",
+        headers=headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()["memory_records"]
+    assert body[0]["agent_id"] == "document-review"
+    assert calls[2][0] == "list"
+    assert "qa-word-review" not in response.text
 
 
 def test_list_memory_records_uses_session_agent_for_policy_when_agent_id_is_omitted(monkeypatch):
