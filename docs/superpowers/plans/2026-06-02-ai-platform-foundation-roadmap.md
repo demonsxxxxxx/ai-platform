@@ -308,10 +308,10 @@ behavior.
 
 ### P2 Resume Checkpoint Lineage Materialization
 
-Status: merged on `main` via PR #8 at
-`9b85c008fb5493fca55b00aaa339af9b399fe030`, deployed to 211, and smoked. This
-extends copied/retry run resume metadata with safe per-step checkpoint lineage
-while preserving the existing
+Status: merged directly on `main` at
+`9b85c008fb5493fca55b00aaa339af9b399fe030` with PR #8 opened for review/tracking,
+deployed to 211, and smoked. This extends copied/retry run resume metadata with
+safe per-step checkpoint lineage while preserving the existing
 `resume.completed_step_outputs` map. Seeded copied steps and executor
 `agent_step_reused` events now carry safe `checkpoint_id`, `source_step_id`, and
 source-run linkage so checkpoint audit/provenance can keep a stable graph after
