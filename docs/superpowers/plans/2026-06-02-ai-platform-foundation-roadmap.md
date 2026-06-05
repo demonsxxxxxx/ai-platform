@@ -374,6 +374,31 @@ cleanup. Runtime-only Docker rebasing hit Docker `max depth exceeded`, so the
 deployment flattened the current healthy API container with `docker export` /
 `docker import` before rebuilding the runtime-only image.
 
+### P2 Artifact Tree Operational Projection
+
+Status: implemented locally on feature branch
+`p2-artifact-tree-operational-projection` and pending PR / 211 deployment
+verification. This hardens the existing read-only
+`ai-platform.run-provenance.v1` projection with deterministic artifact graph
+edges, operational artifact tree parent metadata, and artifact-level lineage
+gaps for frontend/admin visualization. It keeps `/runs/{run_id}/provenance`
+owner-scoped and reuses the existing public projections instead of adding a
+parallel endpoint.
+
+The slice adds output-side fail-closed graph-id validation for artifact-derived
+`source_step_id`, `checkpoint_id`, and `subagent_id`, so unsafe upstream lineage
+cannot enter `artifact_tree`, graph `edges`, or public `lineage`. Local TDD
+coverage verifies normal step/checkpoint/subagent/artifact edges, artifact-only
+producer gaps, dirty-lineage redaction, and no leakage of raw skill ids,
+storage keys, runtime private payloads, command hashes, or runtime paths.
+Inherited-configuration review found one Important output-validation issue; it
+was fixed with a regression test.
+
+Local verification recorded `python -m compileall -q app tools scripts`,
+focused `tests/test_event_playback_routes.py tests/test_source_authority_docs.py`,
+and full pytest. This remains read-only and does not start autonomous subagent
+dispatch, high-risk tool execution, retry scheduling, or new sandbox behavior.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。

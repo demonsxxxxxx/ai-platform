@@ -473,6 +473,129 @@ def _provenance_step_card(row: dict[str, object], principal: AuthPrincipal) -> d
     return card
 
 
+def _add_provenance_edge(
+    edges: list[dict[str, str]],
+    seen_edges: set[tuple[str, str, str]],
+    *,
+    source_id: object,
+    target_id: object,
+    edge_kind: str,
+) -> None:
+    source = str(source_id) if source_id else ""
+    target = str(target_id) if target_id else ""
+    if not source or not target:
+        return
+    key = (source, target, edge_kind)
+    if key in seen_edges:
+        return
+    seen_edges.add(key)
+    edges.append({"source_id": source, "target_id": target, "edge_kind": edge_kind})
+
+
+def _artifact_raw_lineage_value(row: dict[str, object], key: str) -> object:
+    if key in row:
+        return row.get(key)
+    manifest = row.get("manifest_json") if isinstance(row.get("manifest_json"), dict) else {}
+    return manifest.get(key)
+
+
+def _artifact_graph_id_from_row_or_lineage(
+    *,
+    field_name: str,
+    row: dict[str, object],
+    lineage: dict[str, object],
+    unsafe_gap: str,
+    missing_gap: str | None = None,
+) -> tuple[str | None, list[str]]:
+    raw_value = _artifact_raw_lineage_value(row, field_name)
+    candidate = raw_value if raw_value is not None else lineage.get(field_name)
+    if candidate is None:
+        return None, [missing_gap] if missing_gap else []
+    graph_id = _safe_provenance_graph_id(field_name, candidate)
+    if graph_id is None:
+        return None, [unsafe_gap]
+    return graph_id, []
+
+
+def _artifact_tree_source_step(
+    *,
+    row: dict[str, object],
+    lineage: dict[str, object],
+    step_by_id: dict[str, dict[str, object]],
+) -> tuple[str | None, list[str]]:
+    source_step_id, gaps = _artifact_graph_id_from_row_or_lineage(
+        field_name="source_step_id",
+        row=row,
+        lineage=lineage,
+        unsafe_gap="artifact_source_step_unsafe",
+        missing_gap="artifact_source_step_missing",
+    )
+    if source_step_id and source_step_id not in step_by_id:
+        gaps.append("producer_step_missing")
+    return source_step_id, sorted(set(gaps))
+
+
+def _artifact_tree_checkpoint(
+    *,
+    row: dict[str, object],
+    lineage: dict[str, object],
+) -> tuple[str | None, list[str]]:
+    return _artifact_graph_id_from_row_or_lineage(
+        field_name="checkpoint_id",
+        row=row,
+        lineage=lineage,
+        unsafe_gap="artifact_checkpoint_unsafe",
+    )
+
+
+def _artifact_tree_subagent(
+    *,
+    row: dict[str, object],
+    lineage: dict[str, object],
+) -> tuple[str | None, list[str]]:
+    return _artifact_graph_id_from_row_or_lineage(
+        field_name="subagent_id",
+        row=row,
+        lineage=lineage,
+        unsafe_gap="artifact_subagent_unsafe",
+    )
+
+
+def _artifact_tree_lineage(
+    lineage: dict[str, object],
+    *,
+    source_step_id: str | None,
+    checkpoint_id: str | None,
+    subagent_id: str | None,
+) -> dict[str, object]:
+    projected = artifact_lineage_contract(lineage)
+    projected.pop("source_step_id", None)
+    projected.pop("checkpoint_id", None)
+    projected.pop("subagent_id", None)
+    if source_step_id:
+        projected["source_step_id"] = source_step_id
+    if checkpoint_id:
+        projected["checkpoint_id"] = checkpoint_id
+    if subagent_id:
+        projected["subagent_id"] = subagent_id
+    return projected
+
+
+def _artifact_tree_parent(
+    *,
+    produced_by_step_id: str | None,
+    checkpoint_id: object,
+    subagent_id: object,
+) -> tuple[str | None, str | None]:
+    if produced_by_step_id:
+        return produced_by_step_id, "step"
+    if checkpoint_id:
+        return str(checkpoint_id), "checkpoint"
+    if subagent_id:
+        return str(subagent_id), "subagent"
+    return None, None
+
+
 def run_provenance_snapshot(
     *,
     run: dict[str, object],
@@ -486,35 +609,12 @@ def run_provenance_snapshot(
     step_by_id = {str(item["step_id"]): item for item in step_cards}
     artifacts_by_checkpoint: dict[str, list[str]] = {}
     artifacts_by_subagent: dict[str, list[str]] = {}
-    artifact_tree: list[dict[str, object]] = []
-    for artifact in artifact_cards:
-        raw_lineage = artifact.get("lineage")
-        lineage = raw_lineage if isinstance(raw_lineage, dict) else {}
-        checkpoint_id = lineage.get("checkpoint_id")
-        subagent_id = lineage.get("subagent_id")
-        source_step_id = lineage.get("source_step_id")
-        artifact_id = str(artifact["artifact_id"])
-        if checkpoint_id:
-            artifacts_by_checkpoint.setdefault(str(checkpoint_id), []).append(artifact_id)
-        if subagent_id:
-            artifacts_by_subagent.setdefault(str(subagent_id), []).append(artifact_id)
-        source_step_key = str(source_step_id) if source_step_id else None
-        artifact_tree.append(
-            {
-                "artifact_id": artifact_id,
-                "artifact_type": artifact.get("artifact_type"),
-                "label": artifact.get("label"),
-                "produced_by_step_id": source_step_key if source_step_key in step_by_id else None,
-                "producer_kind": lineage.get("producer_kind"),
-                "producer_role": lineage.get("producer_role"),
-                "checkpoint_id": str(checkpoint_id) if checkpoint_id else None,
-                "subagent_id": str(subagent_id) if subagent_id else None,
-                "lineage": lineage,
-            }
-        )
-
     checkpoints: dict[str, dict[str, object]] = {}
     subagents: dict[str, dict[str, object]] = {}
+    edges: list[dict[str, str]] = []
+    seen_edges: set[tuple[str, str, str]] = set()
+    artifact_tree: list[dict[str, object]] = []
+    graph_gaps: list[dict[str, object]] = []
     for step in step_cards:
         raw_payload = step.get("payload")
         payload = raw_payload if isinstance(raw_payload, dict) else {}
@@ -546,6 +646,93 @@ def run_provenance_snapshot(
             subagent["statuses"].append(step.get("status"))
             if checkpoint_id:
                 subagent["checkpoint_ids"].append(str(checkpoint_id))
+        if checkpoint_id:
+            _add_provenance_edge(
+                edges,
+                seen_edges,
+                source_id=step_id,
+                target_id=checkpoint_id,
+                edge_kind="step_checkpoint",
+            )
+        if subagent_id:
+            _add_provenance_edge(
+                edges,
+                seen_edges,
+                source_id=subagent_id,
+                target_id=step_id,
+                edge_kind="subagent_step",
+            )
+
+    for row, artifact in zip(artifacts, artifact_cards):
+        raw_lineage = artifact.get("lineage")
+        lineage = raw_lineage if isinstance(raw_lineage, dict) else {}
+        source_step_id, source_gaps = _artifact_tree_source_step(row=row, lineage=lineage, step_by_id=step_by_id)
+        checkpoint_id, checkpoint_gaps = _artifact_tree_checkpoint(row=row, lineage=lineage)
+        subagent_id, subagent_gaps = _artifact_tree_subagent(row=row, lineage=lineage)
+        gaps = sorted(set(source_gaps + checkpoint_gaps + subagent_gaps))
+        public_lineage = _artifact_tree_lineage(
+            lineage,
+            source_step_id=source_step_id,
+            checkpoint_id=checkpoint_id,
+            subagent_id=subagent_id,
+        )
+        artifact_id = str(artifact["artifact_id"])
+        if checkpoint_id:
+            artifacts_by_checkpoint.setdefault(checkpoint_id, []).append(artifact_id)
+        if subagent_id:
+            artifacts_by_subagent.setdefault(subagent_id, []).append(artifact_id)
+        produced_by_step_id = source_step_id if source_step_id in step_by_id else None
+        parent_id, parent_kind = _artifact_tree_parent(
+            produced_by_step_id=produced_by_step_id,
+            checkpoint_id=checkpoint_id,
+            subagent_id=subagent_id,
+        )
+        if produced_by_step_id:
+            _add_provenance_edge(
+                edges,
+                seen_edges,
+                source_id=produced_by_step_id,
+                target_id=artifact_id,
+                edge_kind="produced_artifact",
+            )
+        if checkpoint_id:
+            _add_provenance_edge(
+                edges,
+                seen_edges,
+                source_id=checkpoint_id,
+                target_id=artifact_id,
+                edge_kind="checkpoint_artifact",
+            )
+        if subagent_id:
+            _add_provenance_edge(
+                edges,
+                seen_edges,
+                source_id=subagent_id,
+                target_id=artifact_id,
+                edge_kind="subagent_artifact",
+            )
+        if gaps:
+            graph_gaps.append({"node_id": artifact_id, "node_kind": "artifact", "gaps": gaps})
+        artifact_tree.append(
+            {
+                "node_id": artifact_id,
+                "node_kind": "artifact",
+                "artifact_id": artifact_id,
+                "artifact_type": artifact.get("artifact_type"),
+                "label": artifact.get("label"),
+                "produced_by_step_id": produced_by_step_id,
+                "source_step_id": source_step_id,
+                "parent_id": parent_id,
+                "parent_kind": parent_kind,
+                "children_ids": [],
+                "producer_kind": public_lineage.get("producer_kind"),
+                "producer_role": public_lineage.get("producer_role"),
+                "checkpoint_id": checkpoint_id,
+                "subagent_id": subagent_id,
+                "lineage": public_lineage,
+                "gaps": gaps,
+            }
+        )
 
     for checkpoint_id, artifact_ids in artifacts_by_checkpoint.items():
         checkpoint = checkpoints.setdefault(
@@ -600,7 +787,9 @@ def run_provenance_snapshot(
                 "artifacts": len(artifact_cards),
                 "checkpoints": len(checkpoint_items),
                 "subagents": len(subagent_items),
-            }
+            },
+            "edges": edges,
+            "gaps": graph_gaps,
         },
     }
 

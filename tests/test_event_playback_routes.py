@@ -412,6 +412,211 @@ def test_run_provenance_snapshot_links_steps_checkpoints_and_artifacts(monkeypat
     assert "qa-file-reviewer" not in public_dump
 
 
+def test_run_provenance_snapshot_projects_operational_artifact_tree(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("tenant-a", "user-a", "run-a")
+        return run_row()
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return [artifact_row()]
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        row = step_row()
+        row["payload_json"] = {
+            **row["payload_json"],
+            "checkpoint_id": "checkpoint-a",
+            "checkpoint_reused": True,
+            "subagent_id": "subagent-a",
+            "output": "sanitized reviewer output",
+        }
+        row["status"] = "succeeded"
+        return [row]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-a/provenance", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["artifact_tree"] == [
+        {
+            "node_id": "artifact-a",
+            "node_kind": "artifact",
+            "artifact_id": "artifact-a",
+            "artifact_type": "docx",
+            "label": "reviewed.docx",
+            "produced_by_step_id": "step-a",
+            "source_step_id": "step-a",
+            "parent_id": "step-a",
+            "parent_kind": "step",
+            "children_ids": [],
+            "producer_kind": "subagent",
+            "producer_role": "reviewer",
+            "checkpoint_id": "checkpoint-a",
+            "subagent_id": "subagent-a",
+            "lineage": {
+                "source_run_id": "run-a",
+                "source_event_id": "evt-6",
+                "source_step_id": "step-a",
+                "source_file_id": "file-a",
+                "producer_kind": "subagent",
+                "producer_role": "reviewer",
+                "checkpoint_id": "checkpoint-a",
+                "subagent_id": "subagent-a",
+            },
+            "gaps": [],
+        }
+    ]
+    assert body["graph"]["edges"] == [
+        {"source_id": "step-a", "target_id": "checkpoint-a", "edge_kind": "step_checkpoint"},
+        {"source_id": "subagent-a", "target_id": "step-a", "edge_kind": "subagent_step"},
+        {"source_id": "step-a", "target_id": "artifact-a", "edge_kind": "produced_artifact"},
+        {"source_id": "checkpoint-a", "target_id": "artifact-a", "edge_kind": "checkpoint_artifact"},
+        {"source_id": "subagent-a", "target_id": "artifact-a", "edge_kind": "subagent_artifact"},
+    ]
+    assert body["graph"]["gaps"] == []
+
+
+def test_run_provenance_snapshot_reports_artifact_tree_gaps(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("tenant-a", "user-a", "run-a")
+        return run_row()
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        row = artifact_row()
+        row["id"] = "artifact-orphan"
+        row["manifest_json"] = {
+            "schema_version": "ai-platform.artifact-manifest.v1",
+            "artifact_type": "docx",
+            "source_run_id": "run-a",
+            "source_step_id": "step-missing",
+            "producer_kind": "agent",
+            "checkpoint_id": "checkpoint-orphan",
+        }
+        return [row]
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-a/provenance", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["artifact_tree"][0]["artifact_id"] == "artifact-orphan"
+    assert body["artifact_tree"][0]["source_step_id"] == "step-missing"
+    assert body["artifact_tree"][0]["produced_by_step_id"] is None
+    assert body["artifact_tree"][0]["parent_id"] == "checkpoint-orphan"
+    assert body["artifact_tree"][0]["parent_kind"] == "checkpoint"
+    assert body["artifact_tree"][0]["gaps"] == ["producer_step_missing"]
+    assert body["graph"]["gaps"] == [
+        {"node_id": "artifact-orphan", "node_kind": "artifact", "gaps": ["producer_step_missing"]}
+    ]
+    assert body["graph"]["edges"] == [
+        {"source_id": "checkpoint-orphan", "target_id": "artifact-orphan", "edge_kind": "checkpoint_artifact"}
+    ]
+    public_dump = str(body)
+    assert "storage_key" not in public_dump
+    assert "qa-file-reviewer" not in public_dump
+
+
+def test_run_provenance_snapshot_fail_closes_dirty_artifact_lineage_graph_ids(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("tenant-a", "user-a", "run-a")
+        return run_row()
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        row = artifact_row()
+        row["manifest_json"] = {"schema_version": "ai-platform.artifact-manifest.v1", "artifact_type": "docx"}
+        return [row]
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return []
+
+    def dirty_artifact_card(row, principal=None):
+        return {
+            "id": "artifact-a",
+            "artifact_id": "artifact-a",
+            "artifact_type": "docx",
+            "label": "reviewed.docx",
+            "lineage": {
+                "source_step_id": "qa-file-reviewer-step",
+                "checkpoint_id": "qa-file-reviewer-checkpoint",
+                "subagent_id": "qa-file-reviewer-subagent",
+                "producer_kind": "agent",
+                "storage_key": "tenants/tenant-a/private/reviewed.docx",
+                "runtime_private_payload": {"token": "secret-token"},
+                "command_sha256": "a" * 64,
+            },
+        }
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.routes.runs.artifact_card", dirty_artifact_card)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-a/provenance", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["artifact_tree"] == [
+        {
+            "node_id": "artifact-a",
+            "node_kind": "artifact",
+            "artifact_id": "artifact-a",
+            "artifact_type": "docx",
+            "label": "reviewed.docx",
+            "produced_by_step_id": None,
+            "source_step_id": None,
+            "parent_id": None,
+            "parent_kind": None,
+            "children_ids": [],
+            "producer_kind": "agent",
+            "producer_role": None,
+            "checkpoint_id": None,
+            "subagent_id": None,
+            "lineage": {"producer_kind": "agent"},
+            "gaps": [
+                "artifact_checkpoint_unsafe",
+                "artifact_source_step_unsafe",
+                "artifact_subagent_unsafe",
+            ],
+        }
+    ]
+    assert body["graph"]["edges"] == []
+    assert body["graph"]["gaps"] == [
+        {
+            "node_id": "artifact-a",
+            "node_kind": "artifact",
+            "gaps": [
+                "artifact_checkpoint_unsafe",
+                "artifact_source_step_unsafe",
+                "artifact_subagent_unsafe",
+            ],
+        }
+    ]
+    public_dump = str(body)
+    assert "qa-file-reviewer" not in public_dump
+    assert "storage_key" not in public_dump
+    assert "runtime_private_payload" not in public_dump
+    assert "secret-token" not in public_dump
+    assert "command_sha256" not in public_dump
+
+
 def test_run_provenance_snapshot_rejects_unsafe_step_graph_ids(monkeypatch):
     unsafe_hash = "a" * 64
 
