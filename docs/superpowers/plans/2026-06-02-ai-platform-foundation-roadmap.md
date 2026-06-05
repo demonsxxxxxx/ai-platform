@@ -479,6 +479,54 @@ payload source `executor_callback`, ordinary-user projection containing only
 `admin_only` browser snapshot data, and DB smoke cleanup with zero remaining
 events for the smoke run.
 
+### P2 Multi-Agent Dispatch Ledger
+
+Status: deployed on 211 as the first controlled write-side multi-agent runtime
+ledger slice via PR #10 and main commit
+`07ef6e77bd6a7c0d3be1393a8aef5c7bb2665c7c`. This adds the admin-only
+`POST /api/ai/runs/{run_id}/multi-agent/dispatch/claims` contract for claiming
+safe ready multi-agent steps without starting autonomous scheduling.
+
+The slice updates the existing run-control readiness projection so ordinary
+owners see dispatch fail closed with `admin_only_dispatch`, while an owner with
+an admin role can see a `ready_steps_available` dispatch gate for active runs
+that have safe ready steps. Terminal runs stay disabled with
+`run_not_dispatchable`, and runs with only unsafe ready dependencies stay
+disabled with `no_safe_ready_steps`. The claim route records the claimed step
+as `running`, appends a hidden `agent_step_started` event, and appends
+`run.multi_agent.dispatch.claim` audit evidence. Unsafe step keys or
+dependencies are rejected before writes with `409 unsafe_step_reference`.
+
+Local verification recorded `python -m compileall -q app tools scripts`,
+focused `tests/test_run_control_routes.py tests/test_control_plane_contracts.py
+tests/test_source_authority_docs.py tests/test_event_playback_routes.py` with
+`112 passed`, and full pytest with `937 passed, 6 skipped, 2 warnings`.
+Inherited-configuration multi-agent review found one Important issue where
+terminal runs could advertise dispatch despite claim rejection; it was fixed
+with a regression test, and the follow-up review found no blockers. The review
+tool did not expose explicit model or reasoning-effort fields, so this was
+recorded as inherited-configuration review rather than an explicit model gate.
+
+The 211 deployment uses image
+`sha256:22cd7528cebe3027495813593548e6c1b8c5e0469de425c5d692a7c8f50bc4bb`
+for both `ai-platform-api` and `ai-platform-worker`, with
+`ai-platform.source-revision=07ef6e77bd6a7c0d3be1393a8aef5c7bb2665c7c` and
+`ai-platform.source_note=p2-multi-agent-dispatch-ledger`. The 211 smoke
+verified API health, OpenAPI route exposure, API/worker label parity,
+owner-scoped ordinary readiness reason `admin_only_dispatch`, owner admin-role
+readiness reason `ready_steps_available`, successful `code` step claim,
+`run_steps.status = running` with `dispatch_state = claimed`, hidden
+`agent_step_started` event visibility to admin and absence from ordinary-user
+event projection, `run.multi_agent.dispatch.claim` audit persistence, unsafe
+dependency claim `409 unsafe_step_reference`, clean recent API logs, quiet
+worker logs, and DB smoke data cleanup with zero remaining smoke runs,
+sessions, users, events, and audits.
+
+This does not start an autonomous scheduler, subagent worker process, sandbox
+expansion, high-risk tool execution, new DB migration, or new frontend entry.
+It only establishes the admin-controlled dispatch ledger required before
+future checkpoint/resume/subagent orchestration can be made operational.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。
