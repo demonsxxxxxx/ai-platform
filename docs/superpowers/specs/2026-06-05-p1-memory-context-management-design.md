@@ -188,10 +188,16 @@ Focused tests cover:
 - Ordinary user `PUT /memory/policy` updates only the caller's policy and writes
   redacted audit metadata.
 - Ordinary user cannot enable long-term memory.
+- Ordinary user policy read/update returns `404 workspace_not_found` for a
+  missing or foreign workspace before policy repository access.
 - Ordinary user update returns `404` for missing or foreign optional agent.
+- Ordinary user update rejects unsafe body ids with `422` before repository
+  writes.
 - Admin `GET /admin/memory/policies` requires memory-admin role.
 - Admin policy inventory calls the repository with `principal.tenant_id` and
   returns sanitized public policy projections.
+- Admin policy inventory returns `404 workspace_not_found` for a missing or
+  foreign workspace before inventory repository access.
 - Admin policy inventory rejects unsafe query ids before repository access.
 - Repository `list_admin_memory_policies` is tenant-scoped, clamps limit, and
   clamps legacy long-term rows to `False`.
