@@ -418,17 +418,25 @@ create table if not exists memory_policies (
   memory_enabled boolean not null default true,
   long_term_memory_enabled boolean not null default false,
   retention_days integer not null default 90,
+  redaction_mode text not null default 'standard',
   reason text not null default '',
   updated_by text not null default '',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint chk_memory_policies_long_term_disabled check (long_term_memory_enabled = false),
+  constraint chk_memory_policies_redaction_mode check (redaction_mode in ('standard', 'strict')),
   check (retention_days >= 1 and retention_days <= 3650)
 );
+
+alter table memory_policies add column if not exists redaction_mode text not null default 'standard';
 
 update memory_policies
 set long_term_memory_enabled = false
 where long_term_memory_enabled = true;
+
+update memory_policies
+set redaction_mode = 'strict'
+where redaction_mode is null or redaction_mode not in ('standard', 'strict');
 
 do $$
 begin
@@ -440,6 +448,19 @@ begin
   ) then
     alter table memory_policies
       add constraint chk_memory_policies_long_term_disabled check (long_term_memory_enabled = false);
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'chk_memory_policies_redaction_mode'
+      and conrelid = 'memory_policies'::regclass
+  ) then
+    alter table memory_policies
+      add constraint chk_memory_policies_redaction_mode check (redaction_mode in ('standard', 'strict'));
   end if;
 end $$;
 

@@ -129,6 +129,12 @@ def test_schema_declares_p0_memory_tool_event_and_sandbox_contracts():
     assert "create index if not exists idx_memory_records_scope" in schema
     assert "create table if not exists memory_policies" in schema
     assert "long_term_memory_enabled boolean not null default false" in schema
+    assert "redaction_mode text not null default 'standard'" in schema
+    assert "alter table memory_policies add column if not exists redaction_mode" in schema
+    assert "chk_memory_policies_redaction_mode" in schema
+    assert "redaction_mode in ('standard', 'strict')" in schema
+    assert "set redaction_mode = 'strict'" in schema
+    assert "where redaction_mode is null or redaction_mode not in ('standard', 'strict')" in schema
     assert "check (long_term_memory_enabled = false)" in schema
     assert "update memory_policies" in schema
     assert "set long_term_memory_enabled = false" in schema

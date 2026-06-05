@@ -55,6 +55,7 @@ def test_memory_public_projections_map_internal_agent_ids():
         "memory_enabled": True,
         "long_term_memory_enabled": False,
         "retention_days": 90,
+        "redaction_mode": "strict",
         "source": "default",
         "reason": "",
         "updated_by": "",
@@ -68,9 +69,48 @@ def test_memory_public_projections_map_internal_agent_ids():
     assert memory["agent_id"] == "document-review"
     assert deleted["agent_id"] == "document-review"
     assert policy_payload["agent_id"] == "document-review"
+    assert policy_payload["redaction_mode"] == "strict"
     assert "qa-word-review" not in str(memory)
     assert "qa-word-review" not in str(deleted)
     assert "qa-word-review" not in str(policy_payload)
+
+
+def test_memory_policy_projection_treats_invalid_stored_redaction_mode_as_strict():
+    policy = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "memory_enabled": True,
+        "long_term_memory_enabled": False,
+        "retention_days": 90,
+        "redaction_mode": "off",
+        "source": "stored",
+        "reason": "manual dirty row",
+        "updated_by": "admin-a",
+        "updated_at": "2026-06-05T00:00:00Z",
+    }
+
+    assert _memory_policy_response(policy)["redaction_mode"] == "strict"
+
+
+def test_memory_policy_projection_treats_blank_stored_redaction_mode_as_strict():
+    policy = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "memory_enabled": True,
+        "long_term_memory_enabled": False,
+        "retention_days": 90,
+        "redaction_mode": "",
+        "source": "stored",
+        "reason": "manual dirty row",
+        "updated_by": "admin-a",
+        "updated_at": "2026-06-05T00:00:00Z",
+    }
+
+    assert _memory_policy_response(policy)["redaction_mode"] == "strict"
 
 
 def test_create_context_snapshot_records_snapshot_and_event(monkeypatch):
@@ -448,6 +488,7 @@ def test_create_memory_record_applies_effective_policy_retention_days(monkeypatc
             "memory_enabled": True,
             "long_term_memory_enabled": False,
             "retention_days": 30,
+            "redaction_mode": "strict",
             "source": "stored",
             "reason": "short retention",
             "updated_by": "admin-a",
@@ -456,6 +497,7 @@ def test_create_memory_record_applies_effective_policy_retention_days(monkeypatc
 
     async def fake_create_memory_record(conn, **kwargs):
         assert kwargs["retention_days"] == 30
+        assert kwargs["redaction_mode"] == "strict"
         calls.append(("memory", kwargs))
         return {
             "id": "mem-retention",
@@ -1888,6 +1930,7 @@ def test_admin_list_memory_policies_returns_operational_projection(monkeypatch):
                 "memory_enabled": False,
                 "long_term_memory_enabled": True,
                 "retention_days": 30,
+                "redaction_mode": "strict",
                 "source": "stored",
                 "reason": "user opt-out client_secret=[redacted-secret]",
                 "updated_by": "user-b",
@@ -1919,6 +1962,7 @@ def test_admin_list_memory_policies_returns_operational_projection(monkeypatch):
                 "memory_enabled": False,
                 "long_term_memory_enabled": False,
                 "retention_days": 30,
+                "redaction_mode": "strict",
                 "source": "stored",
                 "reason": "user opt-out client_secret=[redacted-secret]",
                 "updated_by": "user-b",
@@ -2037,6 +2081,8 @@ def test_admin_list_memory_policies_returns_404_for_missing_or_foreign_agent(mon
 
 def test_update_memory_policy_allows_user_self_opt_out_and_audits(monkeypatch):
     calls = []
+    raw_openai = "sk-strictaudit1234567890"
+    raw_jwt = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJhdWRpdCJ9.signature1234567890"
 
     async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
         calls.append(("workspace", tenant_id, workspace_id))
@@ -2054,6 +2100,7 @@ def test_update_memory_policy_allows_user_self_opt_out_and_audits(monkeypatch):
             "memory_enabled": kwargs["memory_enabled"],
             "long_term_memory_enabled": kwargs["long_term_memory_enabled"],
             "retention_days": kwargs["retention_days"],
+            "redaction_mode": kwargs["redaction_mode"],
             "source": "stored",
             "reason": kwargs["reason"],
             "updated_by": kwargs["updated_by"],
@@ -2080,7 +2127,11 @@ def test_update_memory_policy_allows_user_self_opt_out_and_audits(monkeypatch):
             "memory_enabled": False,
             "long_term_memory_enabled": False,
             "retention_days": 30,
-            "reason": "self opt-out client_secret=client-secret openai_api_key=sk-openai id_token=id-token",
+            "redaction_mode": "strict",
+            "reason": (
+                "self opt-out client_secret=client-secret openai_api_key=sk-openai id_token=id-token "
+                f"{raw_openai} {raw_jwt}"
+            ),
         },
     )
 
@@ -2089,9 +2140,11 @@ def test_update_memory_policy_allows_user_self_opt_out_and_audits(monkeypatch):
     assert body["user_id"] == "user-a"
     assert body["memory_enabled"] is False
     assert body["long_term_memory_enabled"] is False
+    assert body["redaction_mode"] == "strict"
     assert (
         body["reason"]
-        == "self opt-out client_secret=[redacted-secret] openai_api_key=[redacted-secret] id_token=[redacted-secret]"
+        == "self opt-out client_secret=[redacted-secret] openai_api_key=[redacted-secret] "
+        "id_token=[redacted-secret] [redacted-secret] [redacted-secret]"
     )
     assert calls[0] == ("workspace", "tenant-a", "workspace-a")
     assert calls[1] == (
@@ -2100,11 +2153,15 @@ def test_update_memory_policy_allows_user_self_opt_out_and_audits(monkeypatch):
     )
     assert calls[2][1]["user_id"] == "user-a"
     assert calls[2][1]["updated_by"] == "user-a"
+    assert calls[2][1]["redaction_mode"] == "strict"
     assert calls[3][1]["action"] == "memory.policy.updated"
     assert calls[3][1]["payload_json"]["target_user_id"] == "user-a"
+    assert calls[3][1]["payload_json"]["redaction_mode"] == "strict"
     assert "client-secret" not in str(calls)
     assert "sk-openai" not in str(calls)
     assert "id-token" not in str(calls)
+    assert raw_openai not in str(calls)
+    assert raw_jwt not in str(calls)
 
 
 def test_update_memory_policy_rejects_long_term_enable_for_user(monkeypatch):
@@ -2170,6 +2227,30 @@ def test_update_memory_policy_rejects_unsafe_body_ids_with_422(monkeypatch):
 
     assert bad_workspace.status_code == 422
     assert bad_agent.status_code == 422
+
+
+def test_update_memory_policy_rejects_invalid_redaction_mode_before_write(monkeypatch):
+    async def fail_set_memory_policy(conn, **kwargs):
+        raise AssertionError("invalid redaction mode must fail before repository write")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.repositories.set_memory_policy", fail_set_memory_policy, raising=False)
+    client = TestClient(create_app())
+
+    response = client.put(
+        "/api/ai/memory/policy",
+        headers=headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "memory_enabled": True,
+            "long_term_memory_enabled": False,
+            "retention_days": 30,
+            "redaction_mode": "off",
+            "reason": "invalid mode",
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_update_memory_policy_returns_404_for_missing_or_foreign_workspace(monkeypatch):
@@ -2270,6 +2351,7 @@ def test_get_memory_policy_maps_public_agent_id_before_lookup(monkeypatch):
             "memory_enabled": False,
             "long_term_memory_enabled": False,
             "retention_days": 30,
+            "redaction_mode": "strict",
             "source": "stored",
             "reason": "user opt-out",
             "updated_by": "user-a",
@@ -2291,6 +2373,7 @@ def test_get_memory_policy_maps_public_agent_id_before_lookup(monkeypatch):
     assert response.status_code == 200
     body = response.json()["memory_policy"]
     assert body["agent_id"] == "document-review"
+    assert body["redaction_mode"] == "strict"
     assert calls == [
         ("workspace", "tenant-a", "workspace-a"),
         ("agent", "tenant-a", "qa-word-review"),
@@ -2372,6 +2455,7 @@ def test_update_memory_policy_maps_public_agent_id_before_writing(monkeypatch):
             "memory_enabled": kwargs["memory_enabled"],
             "long_term_memory_enabled": kwargs["long_term_memory_enabled"],
             "retention_days": kwargs["retention_days"],
+            "redaction_mode": kwargs["redaction_mode"],
             "source": "stored",
             "reason": kwargs["reason"],
             "updated_by": kwargs["updated_by"],
@@ -2400,6 +2484,7 @@ def test_update_memory_policy_maps_public_agent_id_before_writing(monkeypatch):
             "memory_enabled": False,
             "long_term_memory_enabled": False,
             "retention_days": 30,
+            "redaction_mode": "strict",
             "reason": "agent scoped opt-out",
         },
     )
@@ -2407,10 +2492,12 @@ def test_update_memory_policy_maps_public_agent_id_before_writing(monkeypatch):
     assert response.status_code == 200
     body = response.json()["memory_policy"]
     assert body["agent_id"] == "document-review"
+    assert body["redaction_mode"] == "strict"
     assert ("agent", "tenant-a", "qa-word-review") in calls
     policy_call = next(call for call in calls if call[0] == "policy")
     audit_call = next(call for call in calls if call[0] == "audit")
     assert policy_call[1]["agent_id"] == "qa-word-review"
+    assert policy_call[1]["redaction_mode"] == "strict"
     assert audit_call[1]["payload_json"]["agent_id"] == "document-review"
     assert "qa-word-review" not in response.text
 
@@ -2441,6 +2528,7 @@ def test_admin_set_memory_policy_maps_public_agent_id_before_writing(monkeypatch
             "memory_enabled": kwargs["memory_enabled"],
             "long_term_memory_enabled": kwargs["long_term_memory_enabled"],
             "retention_days": kwargs["retention_days"],
+            "redaction_mode": kwargs["redaction_mode"],
             "source": "stored",
             "reason": kwargs["reason"],
             "updated_by": kwargs["updated_by"],
@@ -2469,6 +2557,7 @@ def test_admin_set_memory_policy_maps_public_agent_id_before_writing(monkeypatch
             "memory_enabled": False,
             "long_term_memory_enabled": False,
             "retention_days": 30,
+            "redaction_mode": "strict",
             "reason": "admin agent scoped opt-out",
         },
     )
@@ -2476,10 +2565,12 @@ def test_admin_set_memory_policy_maps_public_agent_id_before_writing(monkeypatch
     assert response.status_code == 200
     body = response.json()["memory_policy"]
     assert body["agent_id"] == "document-review"
+    assert body["redaction_mode"] == "strict"
     assert ("agent", "tenant-a", "qa-word-review") in calls
     policy_call = next(call for call in calls if call[0] == "policy")
     audit_call = next(call for call in calls if call[0] == "audit")
     assert policy_call[1]["agent_id"] == "qa-word-review"
+    assert policy_call[1]["redaction_mode"] == "strict"
     assert audit_call[1]["payload_json"]["agent_id"] == "document-review"
     assert "qa-word-review" not in response.text
 
@@ -2508,6 +2599,30 @@ def test_admin_set_memory_policy_rejects_long_term_enable_until_governance_compl
 
     assert response.status_code == 409
     assert response.json()["detail"] == "long_term_memory_not_available"
+
+
+def test_admin_set_memory_policy_rejects_invalid_redaction_mode_before_write(monkeypatch):
+    async def fail_set_memory_policy(conn, **kwargs):
+        raise AssertionError("invalid redaction mode must fail before admin repository write")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.repositories.set_memory_policy", fail_set_memory_policy, raising=False)
+    client = TestClient(create_app())
+
+    response = client.put(
+        "/api/ai/admin/memory/policies/user-a",
+        headers=admin_headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "memory_enabled": True,
+            "long_term_memory_enabled": False,
+            "retention_days": 30,
+            "redaction_mode": "off",
+            "reason": "invalid mode",
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_admin_set_memory_policy_returns_404_for_missing_target_user(monkeypatch):
@@ -2581,6 +2696,8 @@ def test_admin_set_memory_policy_returns_404_for_missing_or_foreign_agent(monkey
 
 def test_admin_set_memory_policy_updates_policy_and_writes_audit(monkeypatch):
     calls = []
+    raw_openai = "sk-adminstrictaudit1234567890"
+    raw_jwt = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJhZG1pbiJ9.signature1234567890"
 
     async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
         calls.append(("workspace", tenant_id, workspace_id))
@@ -2595,6 +2712,7 @@ def test_admin_set_memory_policy_updates_policy_and_writes_audit(monkeypatch):
             "memory_enabled": kwargs["memory_enabled"],
             "long_term_memory_enabled": kwargs["long_term_memory_enabled"],
             "retention_days": kwargs["retention_days"],
+            "redaction_mode": kwargs["redaction_mode"],
             "source": "stored",
             "reason": kwargs["reason"],
             "updated_by": kwargs["updated_by"],
@@ -2631,7 +2749,11 @@ def test_admin_set_memory_policy_updates_policy_and_writes_audit(monkeypatch):
             "memory_enabled": False,
             "long_term_memory_enabled": False,
             "retention_days": 30,
-            "reason": "opt out token=hidden client_secret=client-secret openai_api_key=sk-openai id_token=id-token",
+            "redaction_mode": "strict",
+            "reason": (
+                "opt out token=hidden client_secret=client-secret openai_api_key=sk-openai id_token=id-token "
+                f"{raw_openai} {raw_jwt}"
+            ),
         },
     )
 
@@ -2641,11 +2763,21 @@ def test_admin_set_memory_policy_updates_policy_and_writes_audit(monkeypatch):
     assert body["memory_enabled"] is False
     assert body["long_term_memory_enabled"] is False
     assert body["retention_days"] == 30
-    assert body["reason"] == "opt out token=[redacted-secret] client_secret=[redacted-secret] openai_api_key=[redacted-secret] id_token=[redacted-secret]"
+    assert body["redaction_mode"] == "strict"
+    assert (
+        body["reason"]
+        == "opt out token=[redacted-secret] client_secret=[redacted-secret] openai_api_key=[redacted-secret] "
+        "id_token=[redacted-secret] [redacted-secret] [redacted-secret]"
+    )
     assert calls[0] == ("workspace", "tenant-a", "workspace-a")
     assert calls[1] == ("target_user", "tenant-a", "user-a")
     assert calls[2] == ("agent", "tenant-a", "general-agent")
-    assert calls[3][1]["reason"] == "opt out token=[redacted-secret] client_secret=[redacted-secret] openai_api_key=[redacted-secret] id_token=[redacted-secret]"
+    assert (
+        calls[3][1]["reason"]
+        == "opt out token=[redacted-secret] client_secret=[redacted-secret] openai_api_key=[redacted-secret] "
+        "id_token=[redacted-secret] [redacted-secret] [redacted-secret]"
+    )
+    assert calls[3][1]["redaction_mode"] == "strict"
     assert calls[4][1]["action"] == "admin.memory.policy.updated"
     assert calls[4][1]["payload_json"] == {
         "workspace_id": "workspace-a",
@@ -2654,12 +2786,18 @@ def test_admin_set_memory_policy_updates_policy_and_writes_audit(monkeypatch):
         "memory_enabled": False,
         "long_term_memory_enabled": False,
         "retention_days": 30,
-        "reason": "opt out token=[redacted-secret] client_secret=[redacted-secret] openai_api_key=[redacted-secret] id_token=[redacted-secret]",
+        "redaction_mode": "strict",
+        "reason": (
+            "opt out token=[redacted-secret] client_secret=[redacted-secret] openai_api_key=[redacted-secret] "
+            "id_token=[redacted-secret] [redacted-secret] [redacted-secret]"
+        ),
     }
     assert "hidden" not in str(calls)
     assert "client-secret" not in str(calls)
     assert "sk-openai" not in str(calls)
     assert "id-token" not in str(calls)
+    assert raw_openai not in str(calls)
+    assert raw_jwt not in str(calls)
 
 def test_admin_list_memory_policies_returns_same_tenant_public_projection(monkeypatch):
     calls = []
@@ -2682,6 +2820,7 @@ def test_admin_list_memory_policies_returns_same_tenant_public_projection(monkey
                 "memory_enabled": False,
                 "long_term_memory_enabled": True,
                 "retention_days": 14,
+                "redaction_mode": "strict",
                 "source": "stored",
                 "reason": "admin note client_secret=client-secret",
                 "updated_by": "admin-a",
@@ -2716,6 +2855,7 @@ def test_admin_list_memory_policies_returns_same_tenant_public_projection(monkey
             "memory_enabled": False,
             "long_term_memory_enabled": False,
             "retention_days": 14,
+            "redaction_mode": "strict",
             "source": "stored",
             "reason": "admin note client_secret=[redacted-secret]",
             "updated_by": "admin-a",

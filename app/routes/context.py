@@ -15,10 +15,11 @@ from app.validation import assert_safe_id
 router = APIRouter()
 
 MEMORY_ADMIN_ROLES = {"admin", TENANT_ADMIN_ROLE, PLATFORM_ADMIN_ROLE, BREAK_GLASS_ADMIN_ROLE}
+MEMORY_REDACTION_MODES = {"standard", "strict"}
 
 
-def _audit_reason(value: str) -> str:
-    return redact_memory_text(value)
+def _audit_reason(value: str, *, redaction_mode: str = "standard") -> str:
+    return redact_memory_text(value, mode=redaction_mode)
 
 
 def _is_memory_admin(principal: AuthPrincipal) -> bool:
@@ -116,6 +117,12 @@ def _memory_operator_response(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _memory_policy_response(policy: dict[str, Any]) -> dict[str, Any]:
+    raw_redaction_mode = policy.get("redaction_mode")
+    redaction_mode = str(raw_redaction_mode).strip() if raw_redaction_mode is not None else ""
+    if not redaction_mode:
+        redaction_mode = "strict"
+    if redaction_mode not in MEMORY_REDACTION_MODES:
+        redaction_mode = "strict"
     return {
         "tenant_id": str(policy["tenant_id"]),
         "workspace_id": str(policy["workspace_id"]),
@@ -124,8 +131,9 @@ def _memory_policy_response(policy: dict[str, Any]) -> dict[str, Any]:
         "memory_enabled": bool(policy.get("memory_enabled", True)),
         "long_term_memory_enabled": False,
         "retention_days": int(policy.get("retention_days") or 90),
+        "redaction_mode": redaction_mode,
         "source": str(policy.get("source") or "default"),
-        "reason": _audit_reason(str(policy.get("reason") or "")),
+        "reason": _audit_reason(str(policy.get("reason") or ""), redaction_mode=redaction_mode),
         "updated_by": str(policy.get("updated_by") or ""),
         "updated_at": policy.get("updated_at"),
     }
@@ -306,6 +314,7 @@ async def create_memory_record(
                     content=request.content,
                     metadata_json=request.metadata,
                     retention_days=int(policy.get("retention_days") or 90),
+                    redaction_mode=str(policy.get("redaction_mode") or "standard"),
                 )
     except RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -459,7 +468,7 @@ async def update_memory_policy(
     """Let the authenticated user manage their own public memory policy."""
     if request.long_term_memory_enabled:
         raise HTTPException(status_code=409, detail="long_term_memory_not_available")
-    reason = _audit_reason(request.reason)
+    reason = _audit_reason(request.reason, redaction_mode=request.redaction_mode)
     internal_agent_id = internal_agent_id_for_request(request.agent_id) if request.agent_id else None
     public_agent_id = public_agent_id_for_projection(internal_agent_id) if internal_agent_id else None
     try:
@@ -488,6 +497,7 @@ async def update_memory_policy(
                 memory_enabled=request.memory_enabled,
                 long_term_memory_enabled=False,
                 retention_days=request.retention_days,
+                redaction_mode=request.redaction_mode,
                 reason=reason,
                 updated_by=principal.user_id,
             )
@@ -507,6 +517,7 @@ async def update_memory_policy(
                         "memory_enabled": request.memory_enabled,
                         "long_term_memory_enabled": False,
                         "retention_days": request.retention_days,
+                        "redaction_mode": request.redaction_mode,
                         "reason": reason,
                     }
                 ),
@@ -577,7 +588,7 @@ async def admin_set_memory_policy(
     if request.long_term_memory_enabled:
         raise HTTPException(status_code=409, detail="long_term_memory_not_available")
     target_user_id = assert_safe_id(target_user_id, "target_user_id")
-    reason = _audit_reason(request.reason)
+    reason = _audit_reason(request.reason, redaction_mode=request.redaction_mode)
     internal_agent_id = internal_agent_id_for_request(request.agent_id) if request.agent_id else None
     public_agent_id = public_agent_id_for_projection(internal_agent_id) if internal_agent_id else None
     try:
@@ -603,6 +614,7 @@ async def admin_set_memory_policy(
                 memory_enabled=request.memory_enabled,
                 long_term_memory_enabled=False,
                 retention_days=request.retention_days,
+                redaction_mode=request.redaction_mode,
                 reason=reason,
                 updated_by=principal.user_id,
             )
@@ -622,6 +634,7 @@ async def admin_set_memory_policy(
                         "memory_enabled": request.memory_enabled,
                         "long_term_memory_enabled": False,
                         "retention_days": request.retention_days,
+                        "redaction_mode": request.redaction_mode,
                         "reason": reason,
                     }
                 ),

@@ -255,6 +255,7 @@ class MemoryPolicyRequest(BaseModel):
     memory_enabled: bool = True
     long_term_memory_enabled: bool = False
     retention_days: int = Field(default=90, ge=1, le=3650)
+    redaction_mode: Literal["standard", "strict"] = "standard"
     reason: str = Field(default="", max_length=2000)
 
     @field_validator("workspace_id")

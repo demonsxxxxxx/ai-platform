@@ -474,6 +474,7 @@ async def test_get_effective_memory_policy_defaults_to_session_only_memory_when_
         "memory_enabled": True,
         "long_term_memory_enabled": False,
         "retention_days": 90,
+        "redaction_mode": "standard",
         "source": "default",
         "reason": "",
         "updated_by": "",
@@ -494,6 +495,7 @@ async def test_get_effective_memory_policy_clamps_legacy_long_term_memory_enable
                 "memory_enabled": True,
                 "long_term_memory_enabled": True,
                 "retention_days": 90,
+                "redaction_mode": "standard",
                 "reason": "legacy dirty row",
                 "updated_by": "legacy-admin",
                 "updated_at": "2026-06-02T12:00:00Z",
@@ -514,6 +516,75 @@ async def test_get_effective_memory_policy_clamps_legacy_long_term_memory_enable
     assert policy["source"] == "stored"
     assert policy["memory_enabled"] is True
     assert policy["long_term_memory_enabled"] is False
+    assert policy["redaction_mode"] == "standard"
+
+
+@pytest.mark.asyncio
+async def test_get_effective_memory_policy_treats_invalid_stored_redaction_mode_as_strict():
+    class DirtyPolicyCursor:
+        async def fetchone(self):
+            return {
+                "id": "mempol-dirty",
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "agent_id": "general-agent",
+                "memory_enabled": True,
+                "long_term_memory_enabled": False,
+                "retention_days": 90,
+                "redaction_mode": "off",
+                "reason": "manual dirty row",
+                "updated_by": "legacy-admin",
+                "updated_at": "2026-06-02T12:00:00Z",
+            }
+
+    class PolicyConnection:
+        async def execute(self, sql, params):
+            return DirtyPolicyCursor()
+
+    policy = await repositories.get_effective_memory_policy(
+        PolicyConnection(),
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        agent_id="general-agent",
+    )
+
+    assert policy["redaction_mode"] == "strict"
+
+
+@pytest.mark.asyncio
+async def test_get_effective_memory_policy_treats_blank_stored_redaction_mode_as_strict():
+    class DirtyPolicyCursor:
+        async def fetchone(self):
+            return {
+                "id": "mempol-dirty",
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "agent_id": "general-agent",
+                "memory_enabled": True,
+                "long_term_memory_enabled": False,
+                "retention_days": 90,
+                "redaction_mode": "",
+                "reason": "manual dirty row",
+                "updated_by": "legacy-admin",
+                "updated_at": "2026-06-02T12:00:00Z",
+            }
+
+    class PolicyConnection:
+        async def execute(self, sql, params):
+            return DirtyPolicyCursor()
+
+    policy = await repositories.get_effective_memory_policy(
+        PolicyConnection(),
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        agent_id="general-agent",
+    )
+
+    assert policy["redaction_mode"] == "strict"
 
 
 @pytest.mark.asyncio
@@ -529,6 +600,7 @@ async def test_set_memory_policy_upserts_deterministic_scope_without_secret_reas
                 "memory_enabled": False,
                 "long_term_memory_enabled": False,
                 "retention_days": 30,
+                "redaction_mode": "strict",
                 "reason": "user opt-out [redacted-secret]",
                 "updated_by": "admin-a",
                 "updated_at": "2026-06-02T12:00:00Z",
@@ -553,6 +625,7 @@ async def test_set_memory_policy_upserts_deterministic_scope_without_secret_reas
         memory_enabled=False,
         long_term_memory_enabled=False,
         retention_days=30,
+        redaction_mode="strict",
         reason="user opt-out [redacted-secret]",
         updated_by="admin-a",
     )
@@ -561,7 +634,7 @@ async def test_set_memory_policy_upserts_deterministic_scope_without_secret_reas
     assert "insert into memory_policies" in sql
     assert "on conflict (id) do update" in sql
     assert "token=hidden" not in str(params)
-    assert params[1:10] == (
+    assert params[1:11] == (
         "tenant-a",
         "workspace-a",
         "user-a",
@@ -569,11 +642,13 @@ async def test_set_memory_policy_upserts_deterministic_scope_without_secret_reas
         False,
         False,
         30,
+        "strict",
         "user opt-out [redacted-secret]",
         "admin-a",
     )
     assert policy["memory_enabled"] is False
     assert policy["long_term_memory_enabled"] is False
+    assert policy["redaction_mode"] == "strict"
     assert policy["source"] == "stored"
 
 
@@ -593,7 +668,52 @@ async def test_set_memory_policy_rejects_long_term_enable_at_repository_boundary
             memory_enabled=True,
             long_term_memory_enabled=True,
             retention_days=90,
+            redaction_mode="standard",
             reason="enable",
+            updated_by="admin-a",
+        )
+
+
+@pytest.mark.asyncio
+async def test_set_memory_policy_rejects_invalid_redaction_mode_before_sql():
+    class FailConnection:
+        async def execute(self, sql, params):
+            raise AssertionError("repository must reject invalid redaction mode before SQL")
+
+    with pytest.raises(RepositoryConflictError, match="memory_redaction_mode_invalid"):
+        await repositories.set_memory_policy(
+            FailConnection(),
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            agent_id="general-agent",
+            memory_enabled=True,
+            long_term_memory_enabled=False,
+            retention_days=90,
+            redaction_mode="off",
+            reason="invalid",
+            updated_by="admin-a",
+        )
+
+
+@pytest.mark.asyncio
+async def test_set_memory_policy_rejects_blank_redaction_mode_before_sql():
+    class FailConnection:
+        async def execute(self, sql, params):
+            raise AssertionError("repository must reject blank redaction mode before SQL")
+
+    with pytest.raises(RepositoryConflictError, match="memory_redaction_mode_invalid"):
+        await repositories.set_memory_policy(
+            FailConnection(),
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            agent_id="general-agent",
+            memory_enabled=True,
+            long_term_memory_enabled=False,
+            retention_days=90,
+            redaction_mode="",
+            reason="invalid",
             updated_by="admin-a",
         )
 
@@ -612,6 +732,7 @@ async def test_list_admin_memory_policies_scopes_filters_clamps_and_closes_long_
                     "memory_enabled": False,
                     "long_term_memory_enabled": True,
                     "retention_days": 30,
+                    "redaction_mode": "strict",
                     "reason": "user opt-out",
                     "updated_by": "user-a",
                     "updated_at": "2026-06-05T00:00:00Z",
@@ -653,6 +774,7 @@ async def test_list_admin_memory_policies_scopes_filters_clamps_and_closes_long_
             "memory_enabled": False,
             "long_term_memory_enabled": False,
             "retention_days": 30,
+            "redaction_mode": "strict",
             "source": "stored",
             "reason": "user opt-out",
             "updated_by": "user-a",
@@ -1111,6 +1233,69 @@ async def test_create_memory_record_redacts_secret_like_content_and_metadata_bef
     assert inserted_metadata["client_secret"] == "[redacted-secret]"
     assert inserted_metadata["openai_api_key"] == "[redacted-secret]"
     assert inserted_metadata["id_token"] == "[redacted-secret]"
+
+
+@pytest.mark.asyncio
+async def test_create_memory_record_strict_mode_redacts_raw_provider_and_jwt_tokens_before_insert():
+    raw_openai = "sk-strict1234567890abcdef"
+    raw_github = "ghp_strict1234567890abcdef"
+    raw_jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzdHJpY3QifQ.signature1234567890"
+
+    class MemoryCursor:
+        async def fetchone(self):
+            return {
+                "id": "mem-strict-redacted",
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "agent_id": "general-agent",
+                "session_id": "session-a",
+                "record_type": "session_summary",
+                "content": "safe",
+                "metadata_json": {"source": "test"},
+                "status": "active",
+                "expires_at": "2026-07-03T12:00:00Z",
+                "deleted_at": None,
+                "created_at": "2026-06-03T12:00:00Z",
+                "updated_at": "2026-06-03T12:00:00Z",
+            }
+
+    class MemoryConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return MemoryCursor()
+
+    conn = MemoryConnection()
+
+    await repositories.create_memory_record(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        agent_id="general-agent",
+        session_id="session-a",
+        record_type="session_summary",
+        content=f"raw provider markers {raw_openai} {raw_github} {raw_jwt}",
+        metadata_json={
+            "source": "test",
+            "note": f"raw provider markers {raw_openai} {raw_github}",
+            "nested": {"jwt": raw_jwt},
+        },
+        retention_days=30,
+        redaction_mode="strict",
+    )
+
+    _, params = conn.calls[0]
+    inserted_content = params[7]
+    inserted_metadata = json.loads(params[8])
+    serialized = f"{inserted_content} {inserted_metadata}"
+    assert raw_openai not in serialized
+    assert raw_github not in serialized
+    assert raw_jwt not in serialized
+    assert serialized.count("[redacted-secret]") >= 3
 
 
 @pytest.mark.asyncio

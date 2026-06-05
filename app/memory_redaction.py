@@ -28,6 +28,18 @@ SECRET_LIKE_TOKEN_VALUE_PATTERN = re.compile(
 )
 EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 CAMEL_BOUNDARY_PATTERN = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+STRICT_PROVIDER_SECRET_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_-])"
+    r"(?:sk-[A-Za-z0-9][A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9_]{10,}|AKIA[0-9A-Z]{16})"
+    r"(?![A-Za-z0-9_-])"
+)
+STRICT_JWT_LIKE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:[A-Za-z0-9_-]{10,}\.){2}[A-Za-z0-9_-]{10,}(?![A-Za-z0-9_-])"
+)
+
+MEMORY_REDACTION_MODE_STANDARD = "standard"
+MEMORY_REDACTION_MODE_STRICT = "strict"
+MEMORY_REDACTION_MODES = {MEMORY_REDACTION_MODE_STANDARD, MEMORY_REDACTION_MODE_STRICT}
 
 SENSITIVE_METADATA_KEY_ALIASES = {
     "apikey",
@@ -98,6 +110,14 @@ SAFE_SECRET_VALUE_FOLLOWERS = {
     "usage",
 }
 SENSITIVE_AUTH_TOKENS = {"bearer", "header", "key", "token", "value"}
+
+
+def normalize_memory_redaction_mode(value: object) -> str:
+    """Return a supported memory redaction mode or raise on unsafe input."""
+    mode = str(value).strip().lower() if value is not None else ""
+    if mode not in MEMORY_REDACTION_MODES:
+        raise ValueError("memory_redaction_mode_invalid")
+    return mode
 
 
 def _normalized_key(value: object) -> str:
@@ -245,32 +265,39 @@ def _redact_secret_like_token_value(match: re.Match[str]) -> str:
     return "[redacted-secret]"
 
 
-def redact_memory_text(value: object) -> str:
+def redact_memory_text(value: object, *, mode: str = MEMORY_REDACTION_MODE_STANDARD) -> str:
+    redaction_mode = normalize_memory_redaction_mode(mode)
     text = "" if value is None else str(value)
     text = QUOTED_SECRET_FIELD_PATTERN.sub(_redact_quoted_secret_field, text)
     text = SECRET_ASSIGNMENT_PATTERN.sub(_redact_secret_assignment, text)
     text = BEARER_TOKEN_PATTERN.sub("Bearer [redacted-secret]", text)
     text = SECRET_LIKE_TOKEN_VALUE_PATTERN.sub(_redact_secret_like_token_value, text)
-    return EMAIL_PATTERN.sub("[redacted-email]", text)
+    text = EMAIL_PATTERN.sub("[redacted-email]", text)
+    if redaction_mode == MEMORY_REDACTION_MODE_STRICT:
+        text = STRICT_PROVIDER_SECRET_PATTERN.sub("[redacted-secret]", text)
+        text = STRICT_JWT_LIKE_PATTERN.sub("[redacted-secret]", text)
+    return text
 
 
-def _redact_metadata_value(value: Any) -> Any:
+def _redact_metadata_value(value: Any, *, mode: str) -> Any:
     if isinstance(value, dict):
-        return {key: redact_memory_metadata_value(key, item) for key, item in value.items()}
+        return {key: redact_memory_metadata_value(key, item, mode=mode) for key, item in value.items()}
     if isinstance(value, list):
-        return [_redact_metadata_value(item) for item in value]
+        return [_redact_metadata_value(item, mode=mode) for item in value]
     if isinstance(value, str):
-        return redact_memory_text(value)
+        return redact_memory_text(value, mode=mode)
     return value
 
 
-def redact_memory_metadata_value(key: object, value: Any) -> Any:
+def redact_memory_metadata_value(key: object, value: Any, *, mode: str = MEMORY_REDACTION_MODE_STANDARD) -> Any:
+    redaction_mode = normalize_memory_redaction_mode(mode)
     if is_sensitive_redaction_key(key):
         return "[redacted-secret]"
-    return _redact_metadata_value(value)
+    return _redact_metadata_value(value, mode=redaction_mode)
 
 
-def redact_memory_metadata(value: Any) -> dict[str, Any]:
+def redact_memory_metadata(value: Any, *, mode: str = MEMORY_REDACTION_MODE_STANDARD) -> dict[str, Any]:
+    redaction_mode = normalize_memory_redaction_mode(mode)
     if not isinstance(value, dict):
         return {}
-    return {str(key): redact_memory_metadata_value(key, item) for key, item in value.items()}
+    return {str(key): redact_memory_metadata_value(key, item, mode=redaction_mode) for key, item in value.items()}

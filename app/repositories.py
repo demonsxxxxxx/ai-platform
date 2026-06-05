@@ -20,7 +20,7 @@ from app.control_plane_contracts import (
     standard_error_code,
     standard_trace_id,
 )
-from app.memory_redaction import redact_memory_metadata, redact_memory_text
+from app.memory_redaction import normalize_memory_redaction_mode, redact_memory_metadata, redact_memory_text
 from app.projection_redaction import sanitize_user_control_input
 from app.skills.dependencies import is_workbench_skill_public
 from app.skills.release_policy import resolve_rollout_skill_decision
@@ -1242,11 +1242,28 @@ def _default_memory_policy(*, tenant_id: str, workspace_id: str, user_id: str, a
         "memory_enabled": True,
         "long_term_memory_enabled": False,
         "retention_days": 90,
+        "redaction_mode": "standard",
         "source": "default",
         "reason": "",
         "updated_by": "",
         "updated_at": None,
     }
+
+
+def _stored_memory_redaction_mode(value: object) -> str:
+    if value is None or str(value).strip() == "":
+        return "strict"
+    try:
+        return normalize_memory_redaction_mode(value)
+    except ValueError:
+        return "strict"
+
+
+def _validated_memory_redaction_mode(value: object) -> str:
+    try:
+        return normalize_memory_redaction_mode(value)
+    except ValueError as exc:
+        raise RepositoryConflictError(str(exc)) from exc
 
 
 def _memory_policy_from_row(row: dict[str, Any], *, source: str = "stored") -> dict[str, Any]:
@@ -1258,6 +1275,7 @@ def _memory_policy_from_row(row: dict[str, Any], *, source: str = "stored") -> d
         "memory_enabled": bool(row.get("memory_enabled", True)),
         "long_term_memory_enabled": False,
         "retention_days": int(row.get("retention_days") or 90),
+        "redaction_mode": _stored_memory_redaction_mode(row.get("redaction_mode")),
         "source": source,
         "reason": str(row.get("reason") or ""),
         "updated_by": str(row.get("updated_by") or ""),
@@ -1277,7 +1295,7 @@ async def get_effective_memory_policy(
         """
         select id, tenant_id, workspace_id, user_id, agent_id,
                memory_enabled, long_term_memory_enabled, retention_days,
-               reason, updated_by, updated_at
+               redaction_mode, reason, updated_by, updated_at
         from memory_policies
         where tenant_id = %s
           and workspace_id = %s
@@ -1304,29 +1322,32 @@ async def set_memory_policy(
     memory_enabled: bool,
     long_term_memory_enabled: bool,
     retention_days: int,
+    redaction_mode: str,
     reason: str,
     updated_by: str,
 ) -> dict[str, Any]:
     if long_term_memory_enabled:
         raise RepositoryConflictError("long_term_memory_not_available")
+    redaction_mode = _validated_memory_redaction_mode(redaction_mode)
     policy_id = memory_policy_id(tenant_id=tenant_id, workspace_id=workspace_id, user_id=user_id, agent_id=agent_id)
     cursor = await conn.execute(
         """
         insert into memory_policies(
           id, tenant_id, workspace_id, user_id, agent_id,
-          memory_enabled, long_term_memory_enabled, retention_days,
+          memory_enabled, long_term_memory_enabled, retention_days, redaction_mode,
           reason, updated_by
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         on conflict (id) do update
         set memory_enabled = excluded.memory_enabled,
             long_term_memory_enabled = excluded.long_term_memory_enabled,
             retention_days = excluded.retention_days,
+            redaction_mode = excluded.redaction_mode,
             reason = excluded.reason,
             updated_by = excluded.updated_by,
             updated_at = now()
         returning id, tenant_id, workspace_id, user_id, agent_id,
-                  memory_enabled, long_term_memory_enabled, retention_days,
+                  memory_enabled, long_term_memory_enabled, retention_days, redaction_mode,
                   reason, updated_by, updated_at
         """,
         (
@@ -1338,6 +1359,7 @@ async def set_memory_policy(
             bool(memory_enabled),
             bool(long_term_memory_enabled),
             int(retention_days),
+            redaction_mode,
             reason,
             updated_by,
         ),
@@ -1361,7 +1383,7 @@ async def list_admin_memory_policies(
         """
         select id, tenant_id, workspace_id, user_id, agent_id,
                memory_enabled, long_term_memory_enabled, retention_days,
-               reason, updated_by, updated_at
+               redaction_mode, reason, updated_by, updated_at
         from memory_policies
         where tenant_id = %s
           and workspace_id = %s
@@ -1387,6 +1409,7 @@ async def create_memory_record(
     content: str,
     metadata_json: dict[str, Any],
     retention_days: int = 90,
+    redaction_mode: str = "standard",
 ) -> dict[str, Any]:
     if not session_id:
         raise RepositoryConflictError("memory_session_id_required")
@@ -1395,9 +1418,10 @@ async def create_memory_record(
     retention_days = int(retention_days)
     if retention_days <= 0:
         raise RepositoryConflictError("memory_retention_days_invalid")
+    redaction_mode = _validated_memory_redaction_mode(redaction_mode)
     record_id = new_id("mem")
-    redacted_content = redact_memory_text(content)
-    redacted_metadata = redact_memory_metadata(metadata_json)
+    redacted_content = redact_memory_text(content, mode=redaction_mode)
+    redacted_metadata = redact_memory_metadata(metadata_json, mode=redaction_mode)
     cursor = await conn.execute(
         """
         insert into memory_records(
