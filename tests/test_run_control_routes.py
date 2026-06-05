@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1753,6 +1754,283 @@ def test_multi_agent_dispatch_claim_requires_admin(monkeypatch):
 
     assert response.status_code == 403
     assert response.json()["detail"] == "admin_required"
+
+
+def test_multi_agent_dispatch_tick_requires_admin(monkeypatch):
+    async def fail_get_run(*args, **kwargs):
+        raise AssertionError("ordinary user must fail before dispatch tick")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.repositories.get_run", fail_get_run, raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run-parent/multi-agent/dispatch/tick", headers=headers())
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "admin_required"
+
+
+def test_multi_agent_dispatch_tick_rejects_when_no_ready_step(monkeypatch):
+    @asynccontextmanager
+    async def tick_transaction():
+        yield object()
+
+    async def fake_get_run(conn, *, tenant_id, run_id, for_update=False):
+        assert (tenant_id, run_id, for_update) == ("default", "run-parent", True)
+        return {
+            "id": "run-parent",
+            "tenant_id": "default",
+            "trace_id": "trace-parent",
+            "status": "running",
+            "input_json": {
+                "input": {
+                    "execution_mode": "multi_agent",
+                    "multi_agent_steps": [
+                        {"step_key": "code", "role": "coder", "depends_on": ["plan"]},
+                    ],
+                }
+            },
+        }
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        assert (tenant_id, run_id) == ("default", "run-parent")
+        return []
+
+    async def fail_claim(*args, **kwargs):
+        raise AssertionError("no-ready tick must not claim a step")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", tick_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_run", fake_get_run, raising=False)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps, raising=False)
+    monkeypatch.setattr("app.routes.runs.repositories.claim_multi_agent_dispatch_step", fail_claim, raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run-parent/multi-agent/dispatch/tick", headers=admin_headers())
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "no_ready_steps"
+
+
+@pytest.mark.parametrize(
+    "unsafe_step_key",
+    [
+        "qa-file-reviewer",
+        "private_payload",
+        "a" * 64,
+        "/app/private.py",
+    ],
+)
+def test_multi_agent_dispatch_tick_rejects_when_only_ready_step_is_unsafe(monkeypatch, unsafe_step_key):
+    @asynccontextmanager
+    async def tick_transaction():
+        yield object()
+
+    async def fake_get_run(conn, *, tenant_id, run_id, for_update=False):
+        assert (tenant_id, run_id, for_update) == ("default", "run-parent", True)
+        return {
+            "id": "run-parent",
+            "tenant_id": "default",
+            "trace_id": "trace-parent",
+            "status": "running",
+            "input_json": {
+                "input": {
+                    "execution_mode": "multi_agent",
+                    "multi_agent_steps": [
+                        {"step_key": unsafe_step_key, "role": "coder", "depends_on": []},
+                    ],
+                }
+            },
+        }
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        assert (tenant_id, run_id) == ("default", "run-parent")
+        return []
+
+    async def fail_claim(*args, **kwargs):
+        raise AssertionError("unsafe tick must not claim a step")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", tick_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_run", fake_get_run, raising=False)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps, raising=False)
+    monkeypatch.setattr("app.routes.runs.repositories.claim_multi_agent_dispatch_step", fail_claim, raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run-parent/multi-agent/dispatch/tick", headers=admin_headers())
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "no_safe_ready_steps"
+
+
+def test_multi_agent_dispatch_tick_claims_handoffs_and_enqueues_next_ready_step(monkeypatch):
+    calls = []
+
+    @asynccontextmanager
+    async def tick_transaction():
+        yield object()
+
+    async def fake_get_run(conn, *, tenant_id, run_id, for_update=False):
+        calls.append(("get_run", tenant_id, run_id, for_update))
+        return {
+            "id": "run-parent",
+            "tenant_id": "default",
+            "trace_id": "trace-parent",
+            "status": "running",
+            "input_json": {
+                "input": {
+                    "message": "build feature",
+                    "execution_mode": "multi_agent",
+                    "multi_agent_steps": [
+                        {"step_key": "plan", "role": "planner", "depends_on": []},
+                        {"step_key": "code", "role": "coder", "depends_on": ["plan"]},
+                    ],
+                }
+            },
+        }
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        calls.append(("list_steps", tenant_id, run_id))
+        return [
+            {
+                "id": "step-plan",
+                "run_id": "run-parent",
+                "step_key": "plan",
+                "step_kind": "agent",
+                "status": "succeeded",
+                "title": "Plan",
+                "role": "planner",
+                "sequence": 1,
+                "payload_json": {
+                    "depends_on": [],
+                    "output": "safe plan",
+                    "checkpoint_id": "checkpoint_step-plan",
+                    "source_step_id": "step-plan",
+                },
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+        ]
+
+    async def fake_claim(conn, **kwargs):
+        calls.append(("claim", kwargs))
+        assert kwargs["tenant_id"] == "default"
+        assert kwargs["run_id"] == "run-parent"
+        assert kwargs["claimed_by"] == "admin-a"
+        assert kwargs["step_key"] == "code"
+        assert kwargs["depends_on"] == ["plan"]
+        return {
+            "dispatch_id": "dispatch-code",
+            "event_id": "evt-claim",
+            "audit_id": "aud-claim",
+            "step": {
+                "id": "step-code",
+                "run_id": "run-parent",
+                "step_key": "code",
+                "step_kind": "agent",
+                "status": "running",
+                "title": "Code",
+                "role": "coder",
+                "sequence": 2,
+                "payload_json": {
+                    "depends_on": ["plan"],
+                    "dispatch_state": "claimed",
+                    "dispatch_id": "dispatch-code",
+                },
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+        }
+
+    async def fake_handoff(conn, **kwargs):
+        calls.append(("handoff", kwargs))
+        assert kwargs == {
+            "tenant_id": "default",
+            "parent_run_id": "run-parent",
+            "dispatch_id": "dispatch-code",
+            "handed_off_by": "admin-a",
+        }
+        return {
+            "child_run_id": "run-child",
+            "run_id": "run-child",
+            "parent_step_id": "step-code",
+            "step_key": "code",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "workspace_id": "default",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "file_ids": [],
+            "input": {"message": "build feature"},
+            "executor_type": "claude-agent-worker",
+            "skill_version": "0.1.0",
+            "release_decision": {},
+            "event_id": "evt-handoff",
+            "child_event_id": "evt-child-created",
+            "audit_id": "aud-handoff",
+        }
+
+    async def fake_prepare(conn, *, copied, principal, queue_principal=None, source):
+        calls.append(("prepare", copied["run_id"], principal.user_id, queue_principal.user_id, source))
+        assert source == "multi_agent_dispatch_tick"
+        return {"run_id": copied["run_id"], "context_snapshot_id": "ctx-child"}
+
+    async def fake_enqueue(payload):
+        calls.append(("enqueue", payload))
+        return 7
+
+    async def fake_queue_insight(tenant_id):
+        calls.append(("queue_insight", tenant_id))
+        return {"queued": 1}
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr(
+        "app.routes.runs.get_settings",
+        lambda: type("S", (), {"multi_agent_dispatch_lease_ttl_seconds": 300})(),
+    )
+    monkeypatch.setattr("app.routes.runs.transaction", tick_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_run", fake_get_run, raising=False)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps, raising=False)
+    monkeypatch.setattr("app.routes.runs.repositories.claim_multi_agent_dispatch_step", fake_claim, raising=False)
+    monkeypatch.setattr("app.routes.runs.repositories.create_multi_agent_dispatch_child_run", fake_handoff, raising=False)
+    monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", fake_prepare, raising=False)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue, raising=False)
+    monkeypatch.setattr("app.routes.runs.get_queue_insight", fake_queue_insight, raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run-parent/multi-agent/dispatch/tick", headers=admin_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "contract_version": "ai-platform.multi-agent-dispatch-tick.v1",
+        "parent_run_id": "run-parent",
+        "dispatch_id": "dispatch-code",
+        "step_key": "code",
+        "step_id": "step-code",
+        "status": "queued",
+        "child_run_id": "run-child",
+        "session_id": "session-a",
+        "queue_position": 7,
+        "queue_insight": {"queued": 1},
+        "claim_event_id": "evt-claim",
+        "claim_audit_id": "aud-claim",
+        "handoff_event_id": "evt-handoff",
+        "child_event_id": "evt-child-created",
+        "handoff_audit_id": "aud-handoff",
+    }
+    assert [item[0] for item in calls] == [
+        "get_run",
+        "list_steps",
+        "claim",
+        "handoff",
+        "prepare",
+        "enqueue",
+        "queue_insight",
+    ]
 
 
 def test_admin_multi_agent_dispatch_claim_maps_repository_conflict_to_409(monkeypatch):
@@ -5802,13 +6080,22 @@ async def test_claim_multi_agent_dispatch_step_writes_step_event_and_audit(monke
 
     calls = []
 
+    class Cursor:
+        def __init__(self, row=None):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
     class FakeConnection:
         async def execute(self, sql, params):
             calls.append(("sql", " ".join(sql.split()), params))
-
-    async def fake_upsert_run_step(conn, **kwargs):
-        calls.append(("step", kwargs))
-        return "step-code"
+            normalized = " ".join(sql.split())
+            if normalized.startswith("insert into run_steps"):
+                return Cursor(row={"id": "step-code"})
+            if "payload_json = payload_json - 'dispatch_expired_at'" in normalized:
+                return Cursor()
+            raise AssertionError(f"unexpected sql: {normalized}")
 
     async def fake_append_event(conn, **kwargs):
         calls.append(("event", kwargs))
@@ -5842,7 +6129,6 @@ async def test_claim_multi_agent_dispatch_step_writes_step_event_and_audit(monke
             }
         ]
 
-    monkeypatch.setattr("app.repositories.upsert_run_step", fake_upsert_run_step)
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
     monkeypatch.setattr("app.repositories.list_run_steps", fake_list_run_steps)
@@ -5865,16 +6151,22 @@ async def test_claim_multi_agent_dispatch_step_writes_step_event_and_audit(monke
     assert result["event_id"] == "evt-code"
     assert result["audit_id"] == "aud-code"
     assert result["step"]["payload_json"]["dispatch_state"] == "claimed"
-    step_call = next(call[1] for call in calls if call[0] == "step")
-    assert step_call["status"] == "running"
-    assert step_call["payload_json"]["depends_on"] == ["plan"]
-    assert step_call["payload_json"]["dispatch_state"] == "claimed"
-    assert step_call["payload_json"]["dispatch_kind"] == "subagent"
-    assert step_call["payload_json"]["dispatch_id"].startswith("dispatch")
-    assert step_call["payload_json"]["dispatch_claimed_by"] == "admin-a"
-    assert step_call["payload_json"]["dispatch_claimed_at"]
-    assert step_call["payload_json"]["dispatch_lease_expires_at"]
-    clear_call = next(call for call in calls if call[0] == "sql")
+    insert_call = next(call for call in calls if call[0] == "sql" and call[1].startswith("insert into run_steps"))
+    insert_payload = json.loads(insert_call[2][8])
+    assert insert_payload["depends_on"] == ["plan"]
+    assert insert_payload["dispatch_state"] == "claimed"
+    assert insert_payload["dispatch_kind"] == "subagent"
+    assert insert_payload["dispatch_id"].startswith("dispatch")
+    assert insert_payload["dispatch_claimed_by"] == "admin-a"
+    assert insert_payload["dispatch_claimed_at"]
+    assert insert_payload["dispatch_lease_expires_at"]
+    assert "where run_steps.status = 'pending'" in insert_call[1]
+    assert (
+        "coalesce(run_steps.payload_json->>'dispatch_state', '') not in ('claimed', 'handed_off')"
+        in insert_call[1]
+    )
+    assert "returning id" in insert_call[1]
+    clear_call = next(call for call in calls if call[0] == "sql" and "dispatch_expired_at" in call[1])
     assert "payload_json = payload_json - 'dispatch_expired_at'" in clear_call[1]
     assert clear_call[2] == ("default", "step-code")
     event_call = next(call[1] for call in calls if call[0] == "event")
@@ -5885,6 +6177,57 @@ async def test_claim_multi_agent_dispatch_step_writes_step_event_and_audit(monke
     assert audit_call["action"] == "run.multi_agent.dispatch.claim"
     assert audit_call["target_id"] == "step-code"
     assert audit_call["payload_json"]["result_status"] == "claimed"
+
+
+@pytest.mark.asyncio
+async def test_claim_multi_agent_dispatch_step_rejects_stale_non_pending_race(monkeypatch):
+    from app import repositories
+
+    calls = []
+
+    class Cursor:
+        async def fetchone(self):
+            return None
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            calls.append(("sql", " ".join(sql.split()), params))
+            if "insert into run_steps" in sql:
+                return Cursor()
+            raise AssertionError(f"stale claim must stop after conditional claim sql: {' '.join(sql.split())}")
+
+    async def fail_append_event(*args, **kwargs):
+        raise AssertionError("stale claim must not emit an event")
+
+    async def fail_append_audit(*args, **kwargs):
+        raise AssertionError("stale claim must not emit audit")
+
+    async def fail_list_steps(*args, **kwargs):
+        raise AssertionError("stale claim must not list steps after failed conditional claim")
+
+    monkeypatch.setattr("app.repositories.append_event", fail_append_event)
+    monkeypatch.setattr("app.repositories.append_audit_log", fail_append_audit)
+    monkeypatch.setattr("app.repositories.list_run_steps", fail_list_steps)
+
+    with pytest.raises(repositories.RepositoryConflictError, match="dispatch_step_not_pending"):
+        await repositories.claim_multi_agent_dispatch_step(
+            FakeConnection(),
+            tenant_id="default",
+            run_id="run-ready",
+            claimed_by="admin-a",
+            trace_id="trace-ready",
+            step_key="code",
+            step_kind="agent",
+            title="Code",
+            role="coder",
+            sequence=2,
+            depends_on=["plan"],
+            lease_ttl_seconds=900,
+        )
+
+    assert calls and calls[0][1].startswith("insert into run_steps")
+    assert "where run_steps.status = 'pending'" in calls[0][1]
+    assert "returning id" in calls[0][1]
 
 
 def test_cancel_run_records_platform_cancel_request(monkeypatch):

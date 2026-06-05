@@ -2823,26 +2823,57 @@ async def claim_multi_agent_dispatch_step(
     dispatch_id = new_id("dispatch")
     claimed_at = datetime.now(timezone.utc)
     lease_expires_at = claimed_at + timedelta(seconds=max(int(lease_ttl_seconds or 0), 1))
-    step_id = await upsert_run_step(
-        conn,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        step_key=step_key,
-        step_kind=step_kind,
-        status="running",
-        title=title,
-        role=role,
-        sequence=sequence,
-        payload_json={
-            "depends_on": depends_on,
-            "dispatch_state": "claimed",
-            "dispatch_kind": "subagent",
-            "dispatch_id": dispatch_id,
-            "dispatch_claimed_by": claimed_by,
-            "dispatch_claimed_at": claimed_at.isoformat(),
-            "dispatch_lease_expires_at": lease_expires_at.isoformat(),
-        },
+    step_id = new_id("step")
+    payload_json = {
+        "depends_on": depends_on,
+        "dispatch_state": "claimed",
+        "dispatch_kind": "subagent",
+        "dispatch_id": dispatch_id,
+        "dispatch_claimed_by": claimed_by,
+        "dispatch_claimed_at": claimed_at.isoformat(),
+        "dispatch_lease_expires_at": lease_expires_at.isoformat(),
+    }
+    claim_cursor = await conn.execute(
+        """
+        insert into run_steps(
+          id, tenant_id, run_id, step_key, step_kind, status, title, role, sequence,
+          payload_json, started_at, finished_at
+        )
+        values (
+          %s, %s, %s, %s, %s, 'running', %s, %s, %s,
+          %s::jsonb, now(), null
+        )
+        on conflict (tenant_id, run_id, step_key)
+        do update set
+          step_kind = excluded.step_kind,
+          status = excluded.status,
+          title = excluded.title,
+          role = excluded.role,
+          sequence = excluded.sequence,
+          payload_json = run_steps.payload_json || excluded.payload_json,
+          started_at = coalesce(run_steps.started_at, excluded.started_at),
+          finished_at = null,
+          updated_at = now()
+        where run_steps.status = 'pending'
+          and coalesce(run_steps.payload_json->>'dispatch_state', '') not in ('claimed', 'handed_off')
+        returning id
+        """,
+        (
+            step_id,
+            tenant_id,
+            run_id,
+            step_key,
+            step_kind,
+            title,
+            role,
+            sequence,
+            dumps_json(payload_json),
+        ),
     )
+    claimed = await claim_cursor.fetchone()
+    if claimed is None:
+        raise RepositoryConflictError("dispatch_step_not_pending")
+    step_id = str(claimed["id"])
     await conn.execute(
         """
         update run_steps

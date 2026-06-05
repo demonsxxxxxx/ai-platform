@@ -850,6 +850,41 @@ This does not start an autonomous scheduler, polling subagent dispatcher, new
 worker process, sandbox/tool privilege expansion, frontend entry, or DB
 migration.
 
+### P2 Multi-Agent Dispatch Tick
+
+Status: implemented locally as the bounded runtime orchestration follow-up to
+dispatch claim, child handoff, child terminal reconciliation, parent cancel
+propagation, and parent terminal rollup. 211 deployment and smoke verification
+remain pending for this slice.
+
+This slice adds admin-only
+`POST /api/ai/runs/{run_id}/multi-agent/dispatch/tick` for one safe ready
+multi-agent parent step. The route locks the parent run, reads current
+readiness, skips non-ready configured or recorded steps, chooses the first ready
+step that passes the existing safe dispatch claim validation, records the claim
+through a conditional insert/update that cannot overwrite a concurrent
+non-pending dispatch state, immediately creates the server-owned child
+run through the existing handoff path, prepares the child queue payload through
+the existing copied-run context snapshot path, commits DB state, and then
+enqueues the child run. The response contract is
+`ai-platform.multi-agent-dispatch-tick.v1` and returns only operational ids,
+queue insight, and claim/handoff event/audit ids.
+
+Local TDD coverage verifies ordinary-user `403 admin_required`, no-ready
+`409 no_ready_steps`, unsafe-ready `409 no_safe_ready_steps`, and successful
+claim + handoff + enqueue sequencing for the next safe ready step. Review-driven
+coverage also verifies unsafe configured ready keys including forbidden aliases,
+private payload terms, hash-like values, invalid path-like ids, and stale
+non-pending claim races. Focused verification for dispatch tick plus existing
+claim/handoff routes passed with `15 passed`; affected route/source-authority
+tests passed with `194 passed`; full local pytest passed with
+`991 passed, 6 skipped, 2 warnings`; `python -m compileall -q app tools scripts`
+and `git diff --check` both exited 0.
+
+This does not start an autonomous scheduler, polling subagent dispatcher, new
+worker process, sandbox/tool privilege expansion, frontend entry, or DB
+migration.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。

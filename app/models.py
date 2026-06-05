@@ -111,6 +111,28 @@ class MultiAgentDispatchHandoffResponse(BaseModel):
     audit_id: str
 
 
+class MultiAgentDispatchTickResponse(BaseModel):
+    """Admin response for one bounded multi-agent dispatch tick."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    contract_version: str
+    parent_run_id: str
+    dispatch_id: str
+    step_key: str
+    step_id: str
+    status: Literal["queued"]
+    child_run_id: str
+    session_id: str
+    queue_position: int | None = None
+    queue_insight: dict[str, Any] | None = None
+    claim_event_id: str
+    claim_audit_id: str
+    handoff_event_id: str
+    child_event_id: str
+    handoff_audit_id: str
+
+
 class AgentApp(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -17,6 +17,7 @@ from app.models import (
     MultiAgentDispatchClaimRequest,
     MultiAgentDispatchClaimResponse,
     MultiAgentDispatchHandoffResponse,
+    MultiAgentDispatchTickResponse,
     QueueRunPayload,
     RunControlResponse,
     RunResponse,
@@ -26,6 +27,7 @@ from app.control_plane_contracts import (
     ARTIFACT_LINEAGE_ID_PREFIXES,
     ARTIFACT_MANIFEST_SCHEMA_VERSION,
     EVENT_ENVELOPE_SCHEMA_VERSION,
+    FORBIDDEN_PUBLIC_KEY_ALIASES,
     EXECUTOR_RESULT_SCHEMA_VERSION,
     HASH_LIKE_VALUE_PATTERN,
     RUN_CONTRACT_VERSION,
@@ -69,6 +71,7 @@ RUN_RESUME_MANIFEST_CONTRACT_VERSION = "ai-platform.run-resume-manifest.v1"
 RUN_CHECKPOINT_AUDIT_CONTRACT_VERSION = "ai-platform.run-checkpoint-audit.v1"
 MULTI_AGENT_DISPATCH_CLAIM_CONTRACT_VERSION = "ai-platform.multi-agent-dispatch-claim.v1"
 MULTI_AGENT_DISPATCH_HANDOFF_CONTRACT_VERSION = "ai-platform.multi-agent-dispatch-handoff.v1"
+MULTI_AGENT_DISPATCH_TICK_CONTRACT_VERSION = "ai-platform.multi-agent-dispatch-tick.v1"
 RUN_CONTROL_ACTIVE_STATUSES = {"queued", "running"}
 RUN_CONTROL_TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 RUN_CONTROL_RETRY_PREVIEW_STATUSES = {"failed", "dead-letter", "dead_letter", "dead-lettered"}
@@ -1139,7 +1142,20 @@ def multi_agent_readiness_snapshot(
 
 
 def _unsafe_dispatch_reference(value: str, *, raw_terms: set[str]) -> bool:
-    return _contains_raw_projection_term(value, raw_terms)
+    raw = str(value or "").strip()
+    sanitized = sanitize_public_text(raw)
+    if not sanitized or sanitized != raw:
+        return True
+    if HASH_LIKE_VALUE_PATTERN.fullmatch(sanitized):
+        return True
+    normalized_key = "".join(ch for ch in sanitized if ch.isalnum()).lower()
+    if normalized_key in FORBIDDEN_PUBLIC_KEY_ALIASES:
+        return True
+    try:
+        assert_safe_id(sanitized, "step_key")
+    except ValueError:
+        return True
+    return _contains_raw_projection_term(sanitized, raw_terms)
 
 
 def _dispatch_claim_sequence(
@@ -1219,6 +1235,57 @@ def _dispatch_claim_candidate(
         "sequence": sequence,
         "depends_on": depends_on,
     }
+
+
+def _dispatch_tick_candidate(
+    *,
+    run: dict[str, object],
+    steps: list[dict[str, object]],
+    principal: AuthPrincipal,
+) -> dict[str, object]:
+    run_status = normalize_run_status(str(run.get("status") or ""))
+    if run_status not in RUN_CONTROL_ACTIVE_STATUSES:
+        raise HTTPException(status_code=409, detail="run_not_dispatchable")
+    if str(_run_execution_input(run).get("execution_mode") or "") != "multi_agent":
+        raise HTTPException(status_code=409, detail="multi_agent_not_enabled")
+
+    readiness = multi_agent_readiness_snapshot(run=run, steps=steps, principal=principal)
+    counts = readiness.get("counts") if isinstance(readiness, dict) else {}
+    if not isinstance(counts, dict) or int(counts.get("ready") or 0) <= 0:
+        raise HTTPException(status_code=409, detail="no_ready_steps")
+
+    configured_steps = _configured_multi_agent_steps(run)
+    configured_by_key = {str(item.get("step_key") or item.get("stepKey")): item for item in configured_steps}
+    recorded_by_key = {str(row.get("step_key")): row for row in steps if row.get("step_key") is not None}
+    ordered_keys = list(configured_by_key)
+    for key, row in sorted(recorded_by_key.items(), key=lambda item: int(item[1].get("sequence") or 0)):
+        if key not in configured_by_key:
+            ordered_keys.append(key)
+
+    for step_key in ordered_keys:
+        try:
+            return {
+                **_dispatch_claim_candidate(
+                    run=run,
+                    steps=steps,
+                    step_key=step_key,
+                    principal=principal,
+                ),
+                "step_key": step_key,
+            }
+        except HTTPException as exc:
+            if exc.status_code == 409 and exc.detail in {
+                "unsafe_step_reference",
+                "step_not_pending",
+                "terminal_step",
+                "already_running",
+                "waiting_on_dependencies",
+                "missing_dependencies",
+                "hidden_dependencies",
+            }:
+                continue
+            raise
+    raise HTTPException(status_code=409, detail="no_safe_ready_steps")
 
 
 def run_control_readiness_snapshot(
@@ -2443,6 +2510,82 @@ async def handoff_multi_agent_dispatch(
         event_id=str(copied["event_id"]),
         child_event_id=str(copied["child_event_id"]),
         audit_id=str(copied["audit_id"]),
+    )
+
+
+@router.post(
+    "/runs/{run_id}/multi-agent/dispatch/tick",
+    response_model=MultiAgentDispatchTickResponse,
+)
+async def tick_multi_agent_dispatch(
+    run_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> MultiAgentDispatchTickResponse:
+    """Claim, hand off, and enqueue one safe ready multi-agent step."""
+
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=403, detail="admin_required")
+    try:
+        async with transaction() as conn:
+            run = await repositories.get_run(conn, tenant_id=principal.tenant_id, run_id=run_id, for_update=True)
+            if run is None:
+                raise HTTPException(status_code=404, detail="run_not_found")
+            steps = await repositories.list_run_steps(conn, tenant_id=principal.tenant_id, run_id=run_id)
+            candidate = _dispatch_tick_candidate(run=run, steps=steps, principal=principal)
+            claimed_step_key = str(candidate["step_key"])
+            claim = await repositories.claim_multi_agent_dispatch_step(
+                conn,
+                tenant_id=principal.tenant_id,
+                run_id=run_id,
+                claimed_by=principal.user_id,
+                trace_id=str(run.get("trace_id") or standard_trace_id(run_id)),
+                lease_ttl_seconds=int(get_settings().multi_agent_dispatch_lease_ttl_seconds),
+                **candidate,
+            )
+            copied = await repositories.create_multi_agent_dispatch_child_run(
+                conn,
+                tenant_id=principal.tenant_id,
+                parent_run_id=run_id,
+                dispatch_id=str(claim["dispatch_id"]),
+                handed_off_by=principal.user_id,
+            )
+            owner_principal = AuthPrincipal(
+                user_id=str(copied["user_id"]),
+                display_name=str(copied.get("user_id") or ""),
+                tenant_id=principal.tenant_id,
+                roles=["user"],
+                source="multi_agent_dispatch_tick",
+            )
+            queue_payload = await prepare_copied_run_for_queue(
+                conn,
+                copied={**copied, "run_id": copied["child_run_id"]},
+                principal=principal,
+                queue_principal=owner_principal,
+                source="multi_agent_dispatch_tick",
+            )
+    except SkillVersionMaterializationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RepositoryNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RepositoryConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    queue_position = await enqueue_run(queue_payload)
+    return MultiAgentDispatchTickResponse(
+        contract_version=MULTI_AGENT_DISPATCH_TICK_CONTRACT_VERSION,
+        parent_run_id=run_id,
+        dispatch_id=str(claim["dispatch_id"]),
+        step_key=claimed_step_key,
+        step_id=str(claim["step"]["id"]),
+        status="queued",
+        child_run_id=str(copied["child_run_id"]),
+        session_id=str(copied["session_id"]),
+        queue_position=queue_position,
+        queue_insight=await get_queue_insight(principal.tenant_id),
+        claim_event_id=str(claim["event_id"]),
+        claim_audit_id=str(claim["audit_id"]),
+        handoff_event_id=str(copied["event_id"]),
+        child_event_id=str(copied["child_event_id"]),
+        handoff_audit_id=str(copied["audit_id"]),
     )
 
 
