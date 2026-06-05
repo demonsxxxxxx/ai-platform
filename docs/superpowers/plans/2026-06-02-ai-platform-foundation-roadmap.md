@@ -779,8 +779,9 @@ migration.
 
 ### P2 Multi-Agent Parent Terminal Rollup
 
-Status: implemented locally as the parent lifecycle closure follow-up to child
-handoff, child terminal reconciliation, and parent cancel propagation.
+Status: deployed on 211 as the parent lifecycle closure follow-up to child
+handoff, child terminal reconciliation, and parent cancel propagation via main
+commit `01291efcf0444e3a885225d9e8e11d6863667684`.
 
 This slice finalizes a same-tenant multi-agent parent run once all persisted
 server-owned parent steps are terminal and no active handed-off child run
@@ -826,8 +827,24 @@ full local pytest passed with
 `983 passed, 6 skipped, 2 warnings`; `python -m compileall -q app tools scripts`
 and `git diff --check` both exited 0. `git diff --check` only emitted
 CRLF-to-LF normalization warnings for three touched files. Verification used
-fresh `.pytest-tmp` child basetemp directories. This slice has not yet completed
-PR merge or 211 deployment.
+fresh `.pytest-tmp` child basetemp directories.
+
+The 211 deployment uses image
+`sha256:bd0b8ea243bbf35c39e8ccada017bdf8b676d836a2e2db6a84520f51a48f33e3`
+for both `ai-platform-api` and `ai-platform-worker`, with
+`ai-platform.source-revision=01291efcf0444e3a885225d9e8e11d6863667684` and
+`ai-platform.source_note=p2-multi-agent-parent-terminal-rollup`. The 211 source
+markers match the same revision and note. The 211 smoke verified API and thin
+shell health, API/worker label parity, a live parent run rolling up to
+`succeeded` after controlled child handoff and terminal reconciliation, parent
+counts `total = 2`, `succeeded = 2`, hidden
+`multi_agent_parent_finalized` event persistence, `run.multi_agent.parent.finalize`
+audit persistence, ordinary-user event projection excluding the hidden parent
+finalized event, redaction of private payload, storage key, runtime path, and
+command fingerprint markers from parent result/event/audit/public projections,
+clean recent API/worker logs, and DB smoke data cleanup with zero remaining
+rows in `audit_logs`, `run_events`, `run_steps`, `runs`, `sessions`, and
+`users`.
 
 This does not start an autonomous scheduler, polling subagent dispatcher, new
 worker process, sandbox/tool privilege expansion, frontend entry, or DB
