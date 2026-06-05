@@ -237,11 +237,15 @@ sandbox expansion, or autonomous multi-agent scheduling.
 
 ### P2 Run Control Readiness Snapshot
 
-Status: started as a read-only P2 foundation slice. This adds the
+Status: started as a read-only P2 foundation slice and deployed/smoked on 211
+at `d068e32d96332f1802c2236bccb1ae104d3810c5`. This adds the
 `ai-platform.run-control-readiness.v1` owner-scoped projection for existing
-run cancel, copy/resume, checkpoint reuse, and future retry readiness. It does
-not start retry scheduling, autonomous multi-agent dispatch, high-risk tool
-execution, or new sandbox behavior.
+run cancel, copy/resume, checkpoint reuse, and future retry readiness. The 211
+smoke verified API health, OpenAPI route exposure, same-tenant ordinary-user
+readiness response, checkpoint resume availability, raw skill/runtime/private
+marker redaction, and smoke data cleanup. It does not start retry scheduling,
+autonomous multi-agent dispatch, high-risk tool execution, or new sandbox
+behavior.
 
 ## 禁止项
 
