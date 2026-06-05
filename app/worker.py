@@ -44,6 +44,17 @@ class WorkerRunCancelled(asyncio.CancelledError):
     """Raised inside the worker when a running run observes a platform cancel request."""
 
 
+@dataclass(frozen=True)
+class _WorkerTerminalAfterTransaction:
+    outcome: WorkerOutcome
+    payload: QueueRunPayload
+    reconciled_parent: dict[str, Any] | None
+
+
+_PARENT_ROLLUP_RETRY_ATTEMPTS = 3
+_PARENT_ROLLUP_RETRY_DELAY_SECONDS = 0.05
+
+
 def parse_queue_payload(raw: dict[str, Any]) -> QueueRunPayload:
     return QueueRunPayload.model_validate(raw)
 
@@ -75,6 +86,41 @@ async def _reconcile_multi_agent_child_terminal_state(
     )
 
 
+def _parent_rollup_retry_args(
+    payload: QueueRunPayload,
+    reconciled: dict[str, Any] | None,
+) -> dict[str, str] | None:
+    if not isinstance(reconciled, dict):
+        return None
+    parent_run_id = str(reconciled.get("parent_run_id") or "").strip()
+    if not parent_run_id:
+        return None
+    if _multi_agent_dispatch_from_payload(payload) is None:
+        return None
+    return {
+        "tenant_id": payload.tenant_id,
+        "parent_run_id": parent_run_id,
+        "triggered_by_child_run_id": payload.run_id,
+    }
+
+
+async def _finalize_multi_agent_parent_after_child_commit(
+    payload: QueueRunPayload,
+    reconciled: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    retry_args = _parent_rollup_retry_args(payload, reconciled)
+    if retry_args is None:
+        return None
+    for attempt in range(_PARENT_ROLLUP_RETRY_ATTEMPTS):
+        async with transaction() as conn:
+            finalized = await repositories.finalize_multi_agent_parent_run_if_ready(conn, **retry_args)
+        if finalized is not None:
+            return finalized
+        if attempt + 1 < _PARENT_ROLLUP_RETRY_ATTEMPTS:
+            await asyncio.sleep(_PARENT_ROLLUP_RETRY_DELAY_SECONDS)
+    return None
+
+
 async def _fail_run_and_reconcile(
     conn,
     *,
@@ -84,7 +130,7 @@ async def _fail_run_and_reconcile(
     error_code: str,
     error_message: str,
     result_json: dict[str, Any] | None = None,
-) -> None:
+) -> dict[str, Any] | None:
     await repositories.fail_run(
         conn,
         tenant_id=tenant_id,
@@ -94,7 +140,7 @@ async def _fail_run_and_reconcile(
         result_json=result_json,
     )
     if tenant_id == payload.tenant_id and run_id == payload.run_id:
-        await _reconcile_multi_agent_child_terminal_state(
+        return await _reconcile_multi_agent_child_terminal_state(
             conn,
             payload=payload,
             child_status="failed",
@@ -102,6 +148,7 @@ async def _fail_run_and_reconcile(
             error_code=error_code,
             error_message=error_message,
         )
+    return None
 
 
 def _mcp_tool_request_payload(payload: QueueRunPayload) -> dict[str, str]:
@@ -722,224 +769,187 @@ async def process_run_payload(
     adapter = None
     run_identity = _payload_identity(payload)
 
-    async with transaction() as conn:
-        locked = await repositories.mark_run_running(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
-        if not locked:
-            existing_run = await repositories.get_run(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
-            if existing_run is None:
-                return WorkerOutcome(
-                    "skipped",
-                    payload.run_id,
-                    "stale_queue_payload",
-                    "Run no longer exists for leased queue payload",
-                )
-            if str(existing_run.get("status") or "") == "queued":
-                error_code = "queue_payload_identity_mismatch"
-                error_message = "Queued run identity is invalid"
-                await _fail_run_and_reconcile(
-                    conn,
-                    payload=payload,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
-                    error_code=error_code,
-                    error_message=error_message,
-                )
-                await repositories.append_event(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
-                    event_type="error",
-                    stage="worker",
-                    message=error_message,
-                    payload={"visible_to_user": False, "severity": "error", "reason": "scope_guard_rejected_lock"},
-                )
-                return WorkerOutcome("failed", payload.run_id, error_code, error_message)
-            await repositories.append_event(
-                conn,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
-                event_type="skip",
-                stage="worker",
-                message="Run is not queued; skipping duplicate or stale payload",
-            )
-            return WorkerOutcome("skipped", payload.run_id)
-        run_identity = _locked_run_identity(payload, locked)
-        mismatch_fields = _identity_mismatch_fields(payload, run_identity)
-        if mismatch_fields:
-            error_code = "queue_payload_identity_mismatch"
-            error_message = "Queue payload identity does not match run record"
-            await _fail_run_and_reconcile(
-                conn,
-                payload=payload,
-                tenant_id=run_identity["tenant_id"],
-                run_id=run_identity["run_id"],
-                error_code=error_code,
-                error_message=error_message,
-            )
-            await repositories.append_event(
-                conn,
-                tenant_id=run_identity["tenant_id"],
-                run_id=run_identity["run_id"],
-                event_type="error",
-                stage="worker",
-                message=error_message,
-                payload={
-                    "visible_to_user": False,
-                    "severity": "error",
-                    "mismatch_fields": mismatch_fields,
-                },
-            )
-            return WorkerOutcome("failed", run_identity["run_id"], error_code, error_message)
-        payload = _payload_with_locked_run_input(payload, locked)
-        await append_user_event(
-            conn,
-            tenant_id=run_identity["tenant_id"],
-            run_id=run_identity["run_id"],
-            event_type="worker_started",
-            stage="worker",
-            message="Run started",
-            payload=_worker_runtime_evidence(worker_id=worker_id, executor_type=payload.executor_type),
-        )
-        if await repositories.is_cancel_requested(conn, tenant_id=run_identity["tenant_id"], run_id=run_identity["run_id"]):
-            cancel_result = {"message": "任务已取消"}
-            await repositories.cancel_run(
-                conn,
-                tenant_id=run_identity["tenant_id"],
-                run_id=run_identity["run_id"],
-                result_json=cancel_result,
-            )
-            await _reconcile_multi_agent_child_terminal_state(
-                conn,
-                payload=payload,
-                child_status="cancelled",
-                result_json=cancel_result,
-            )
-            await append_user_event(
-                conn,
-                tenant_id=run_identity["tenant_id"],
-                run_id=run_identity["run_id"],
-                event_type="run_cancelled",
-                stage="control",
-                message="任务已取消",
-                payload={"severity": "warning"},
-            )
-            return WorkerOutcome("cancelled", run_identity["run_id"])
-        if payload.executor_type == "runtime211":
-            await _fail_run_and_reconcile(
-                conn,
-                payload=payload,
-                tenant_id=run_identity["tenant_id"],
-                run_id=run_identity["run_id"],
-                error_code="legacy_runtime211_direct_executor_disabled",
-                error_message="Direct runtime211 queue execution is disabled; use Claude worker legacy fallback only.",
-            )
-            await repositories.append_event(
-                conn,
-                tenant_id=run_identity["tenant_id"],
-                run_id=run_identity["run_id"],
-                event_type="legacy_runtime211_direct_executor_denied",
-                stage="policy",
-                message="Direct runtime211 queue execution is disabled; use Claude worker legacy fallback only.",
-                payload={
-                    "executor_type": payload.executor_type,
-                    "visible_to_user": False,
-                    "severity": "error",
-                },
-            )
-            return WorkerOutcome(
-                "failed",
-                run_identity["run_id"],
-                "legacy_runtime211_direct_executor_disabled",
-                "Direct runtime211 queue execution is disabled; use Claude worker legacy fallback only.",
-            )
-        if payload.executor_type == "ragflow":
-            try:
-                tool_request_payload = _mcp_tool_request_payload(payload)
-                tool_call_id = _mcp_tool_call_id(payload, tool_request_payload)
-                tool = await repositories.ensure_mcp_tool_active(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    tool_id=payload.skill_id,
-                )
-                tool_gate = evaluate_tool_policy(tool=tool)
-                if not tool_gate.allowed and tool_gate.reason == "tool_permission_required":
-                    permission_decision = await repositories.get_latest_tool_permission_decision(
-                        conn,
-                        tenant_id=payload.tenant_id,
-                        user_id=payload.user_id,
-                        run_id=payload.run_id,
-                        tool_id=payload.skill_id,
-                        tool_call_id=tool_call_id,
-                        request_payload_json=tool_request_payload,
+    terminal_after_transaction: _WorkerTerminalAfterTransaction | None = None
+    try:
+        async with transaction() as conn:
+            locked = await repositories.mark_run_running(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
+            if not locked:
+                existing_run = await repositories.get_run(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
+                if existing_run is None:
+                    return WorkerOutcome(
+                        "skipped",
+                        payload.run_id,
+                        "stale_queue_payload",
+                        "Run no longer exists for leased queue payload",
                     )
-                    tool_gate = evaluate_tool_policy(tool=tool, permission_decision=permission_decision)
-                if not tool_gate.allowed:
-                    await _fail_run_and_reconcile(
+                if str(existing_run.get("status") or "") == "queued":
+                    error_code = "queue_payload_identity_mismatch"
+                    error_message = "Queued run identity is invalid"
+                    reconciled_parent = await _fail_run_and_reconcile(
                         conn,
                         payload=payload,
                         tenant_id=payload.tenant_id,
                         run_id=payload.run_id,
-                        error_code=tool_gate.reason,
-                        error_message="MCP tool denied by policy",
+                        error_code=error_code,
+                        error_message=error_message,
                     )
                     await repositories.append_event(
                         conn,
                         tenant_id=payload.tenant_id,
                         run_id=payload.run_id,
-                        event_type="mcp_tool_denied",
-                        stage="tool_policy",
-                        message="MCP tool denied by policy",
-                        payload={
-                            "mcp_tool_id": payload.skill_id,
-                            "policy": "tool_permission_gate",
-                            "reason": tool_gate.reason,
-                            "risk_level": tool_gate.risk_level,
-                            "write_capable": tool_gate.write_capable,
-                            "decision": tool_gate.decision,
-                            "permission_request_id": tool_gate.permission_request_id,
-                            "visible_to_user": True,
-                            "severity": "error",
-                        },
+                        event_type="error",
+                        stage="worker",
+                        message=error_message,
+                        payload={"visible_to_user": False, "severity": "error", "reason": "scope_guard_rejected_lock"},
                     )
-                    await repositories.append_audit_log(
+                    terminal_after_transaction = _WorkerTerminalAfterTransaction(
+                        WorkerOutcome("failed", payload.run_id, error_code, error_message),
+                        payload,
+                        reconciled_parent,
+                    )
+                    return terminal_after_transaction.outcome
+                await repositories.append_event(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                    event_type="skip",
+                    stage="worker",
+                    message="Run is not queued; skipping duplicate or stale payload",
+                )
+                return WorkerOutcome("skipped", payload.run_id)
+            run_identity = _locked_run_identity(payload, locked)
+            mismatch_fields = _identity_mismatch_fields(payload, run_identity)
+            if mismatch_fields:
+                error_code = "queue_payload_identity_mismatch"
+                error_message = "Queue payload identity does not match run record"
+                reconciled_parent = await _fail_run_and_reconcile(
+                    conn,
+                    payload=payload,
+                    tenant_id=run_identity["tenant_id"],
+                    run_id=run_identity["run_id"],
+                    error_code=error_code,
+                    error_message=error_message,
+                )
+                await repositories.append_event(
+                    conn,
+                    tenant_id=run_identity["tenant_id"],
+                    run_id=run_identity["run_id"],
+                    event_type="error",
+                    stage="worker",
+                    message=error_message,
+                    payload={
+                        "visible_to_user": False,
+                        "severity": "error",
+                        "mismatch_fields": mismatch_fields,
+                    },
+                )
+                terminal_after_transaction = _WorkerTerminalAfterTransaction(
+                    WorkerOutcome("failed", run_identity["run_id"], error_code, error_message),
+                    payload,
+                    reconciled_parent,
+                )
+                return terminal_after_transaction.outcome
+            payload = _payload_with_locked_run_input(payload, locked)
+            await append_user_event(
+                conn,
+                tenant_id=run_identity["tenant_id"],
+                run_id=run_identity["run_id"],
+                event_type="worker_started",
+                stage="worker",
+                message="Run started",
+                payload=_worker_runtime_evidence(worker_id=worker_id, executor_type=payload.executor_type),
+            )
+            if await repositories.is_cancel_requested(conn, tenant_id=run_identity["tenant_id"], run_id=run_identity["run_id"]):
+                cancel_result = {"message": "任务已取消"}
+                await repositories.cancel_run(
+                    conn,
+                    tenant_id=run_identity["tenant_id"],
+                    run_id=run_identity["run_id"],
+                    result_json=cancel_result,
+                )
+                reconciled_parent = await _reconcile_multi_agent_child_terminal_state(
+                    conn,
+                    payload=payload,
+                    child_status="cancelled",
+                    result_json=cancel_result,
+                )
+                await append_user_event(
+                    conn,
+                    tenant_id=run_identity["tenant_id"],
+                    run_id=run_identity["run_id"],
+                    event_type="run_cancelled",
+                    stage="control",
+                    message="任务已取消",
+                    payload={"severity": "warning"},
+                )
+                terminal_after_transaction = _WorkerTerminalAfterTransaction(
+                    WorkerOutcome("cancelled", run_identity["run_id"]),
+                    payload,
+                    reconciled_parent,
+                )
+                return terminal_after_transaction.outcome
+            if payload.executor_type == "runtime211":
+                reconciled_parent = await _fail_run_and_reconcile(
+                    conn,
+                    payload=payload,
+                    tenant_id=run_identity["tenant_id"],
+                    run_id=run_identity["run_id"],
+                    error_code="legacy_runtime211_direct_executor_disabled",
+                    error_message="Direct runtime211 queue execution is disabled; use Claude worker legacy fallback only.",
+                )
+                await repositories.append_event(
+                    conn,
+                    tenant_id=run_identity["tenant_id"],
+                    run_id=run_identity["run_id"],
+                    event_type="legacy_runtime211_direct_executor_denied",
+                    stage="policy",
+                    message="Direct runtime211 queue execution is disabled; use Claude worker legacy fallback only.",
+                    payload={
+                        "executor_type": payload.executor_type,
+                        "visible_to_user": False,
+                        "severity": "error",
+                    },
+                )
+                terminal_after_transaction = _WorkerTerminalAfterTransaction(
+                    WorkerOutcome(
+                        "failed",
+                        run_identity["run_id"],
+                        "legacy_runtime211_direct_executor_disabled",
+                        "Direct runtime211 queue execution is disabled; use Claude worker legacy fallback only.",
+                    ),
+                    payload,
+                    reconciled_parent,
+                )
+                return terminal_after_transaction.outcome
+            if payload.executor_type == "ragflow":
+                try:
+                    tool_request_payload = _mcp_tool_request_payload(payload)
+                    tool_call_id = _mcp_tool_call_id(payload, tool_request_payload)
+                    tool = await repositories.ensure_mcp_tool_active(
                         conn,
                         tenant_id=payload.tenant_id,
-                        user_id=payload.user_id,
-                        action="mcp_tool_policy_denied",
-                        target_type="mcp_tool",
-                        target_id=payload.skill_id,
-                        trace_id=trace_id,
-                        payload_json={
-                            "run_id": payload.run_id,
-                            "session_id": payload.session_id,
-                            "agent_id": payload.agent_id,
-                            "skill_id": payload.skill_id,
-                            "reason": tool_gate.reason,
-                            "risk_level": tool_gate.risk_level,
-                            "write_capable": tool_gate.write_capable,
-                            "decision": tool_gate.decision,
-                            "permission_request_id": tool_gate.permission_request_id,
-                        },
+                        tool_id=payload.skill_id,
                     )
-                    return WorkerOutcome("failed", payload.run_id, tool_gate.reason, "MCP tool denied by policy")
-                if tool_gate.decision == "allow_once":
-                    consumed_decision = await repositories.consume_tool_permission_decision(
-                        conn,
-                        tenant_id=payload.tenant_id,
-                        user_id=payload.user_id,
-                        run_id=payload.run_id,
-                        request_id=tool_gate.permission_request_id,
-                    )
-                    if consumed_decision is None:
-                        error_code = "tool_permission_consumed_or_expired"
-                        error_message = "MCP tool permission decision was already consumed or expired"
-                        await _fail_run_and_reconcile(
+                    tool_gate = evaluate_tool_policy(tool=tool)
+                    if not tool_gate.allowed and tool_gate.reason == "tool_permission_required":
+                        permission_decision = await repositories.get_latest_tool_permission_decision(
+                            conn,
+                            tenant_id=payload.tenant_id,
+                            user_id=payload.user_id,
+                            run_id=payload.run_id,
+                            tool_id=payload.skill_id,
+                            tool_call_id=tool_call_id,
+                            request_payload_json=tool_request_payload,
+                        )
+                        tool_gate = evaluate_tool_policy(tool=tool, permission_decision=permission_decision)
+                    if not tool_gate.allowed:
+                        reconciled_parent = await _fail_run_and_reconcile(
                             conn,
                             payload=payload,
                             tenant_id=payload.tenant_id,
                             run_id=payload.run_id,
-                            error_code=error_code,
-                            error_message=error_message,
+                            error_code=tool_gate.reason,
+                            error_message="MCP tool denied by policy",
                         )
                         await repositories.append_event(
                             conn,
@@ -951,7 +961,7 @@ async def process_run_payload(
                             payload={
                                 "mcp_tool_id": payload.skill_id,
                                 "policy": "tool_permission_gate",
-                                "reason": error_code,
+                                "reason": tool_gate.reason,
                                 "risk_level": tool_gate.risk_level,
                                 "write_capable": tool_gate.write_capable,
                                 "decision": tool_gate.decision,
@@ -973,108 +983,198 @@ async def process_run_payload(
                                 "session_id": payload.session_id,
                                 "agent_id": payload.agent_id,
                                 "skill_id": payload.skill_id,
-                                "reason": error_code,
+                                "reason": tool_gate.reason,
                                 "risk_level": tool_gate.risk_level,
                                 "write_capable": tool_gate.write_capable,
                                 "decision": tool_gate.decision,
                                 "permission_request_id": tool_gate.permission_request_id,
-                                "auto_allowed": tool_gate.auto_allowed,
                             },
                         )
-                        return WorkerOutcome("failed", payload.run_id, error_code, error_message)
-                await repositories.append_audit_log(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    user_id=payload.user_id,
-                    action="mcp_tool_policy_allowed",
-                    target_type="mcp_tool",
-                    target_id=payload.skill_id,
-                    trace_id=trace_id,
-                    payload_json={
-                        "run_id": payload.run_id,
-                        "session_id": payload.session_id,
-                        "agent_id": payload.agent_id,
-                        "skill_id": payload.skill_id,
-                        "reason": tool_gate.reason,
-                        "risk_level": tool_gate.risk_level,
-                        "write_capable": tool_gate.write_capable,
-                        "decision": tool_gate.decision,
-                        "permission_request_id": tool_gate.permission_request_id,
-                        "auto_allowed": tool_gate.auto_allowed,
-                    },
-                )
-            except repositories.RepositoryConflictError as exc:
-                await _fail_run_and_reconcile(
+                        terminal_after_transaction = _WorkerTerminalAfterTransaction(
+                            WorkerOutcome("failed", payload.run_id, tool_gate.reason, "MCP tool denied by policy"),
+                            payload,
+                            reconciled_parent,
+                        )
+                        return terminal_after_transaction.outcome
+                    if tool_gate.decision == "allow_once":
+                        consumed_decision = await repositories.consume_tool_permission_decision(
+                            conn,
+                            tenant_id=payload.tenant_id,
+                            user_id=payload.user_id,
+                            run_id=payload.run_id,
+                            request_id=tool_gate.permission_request_id,
+                        )
+                        if consumed_decision is None:
+                            error_code = "tool_permission_consumed_or_expired"
+                            error_message = "MCP tool permission decision was already consumed or expired"
+                            reconciled_parent = await _fail_run_and_reconcile(
+                                conn,
+                                payload=payload,
+                                tenant_id=payload.tenant_id,
+                                run_id=payload.run_id,
+                                error_code=error_code,
+                                error_message=error_message,
+                            )
+                            await repositories.append_event(
+                                conn,
+                                tenant_id=payload.tenant_id,
+                                run_id=payload.run_id,
+                                event_type="mcp_tool_denied",
+                                stage="tool_policy",
+                                message="MCP tool denied by policy",
+                                payload={
+                                    "mcp_tool_id": payload.skill_id,
+                                    "policy": "tool_permission_gate",
+                                    "reason": error_code,
+                                    "risk_level": tool_gate.risk_level,
+                                    "write_capable": tool_gate.write_capable,
+                                    "decision": tool_gate.decision,
+                                    "permission_request_id": tool_gate.permission_request_id,
+                                    "visible_to_user": True,
+                                    "severity": "error",
+                                },
+                            )
+                            await repositories.append_audit_log(
+                                conn,
+                                tenant_id=payload.tenant_id,
+                                user_id=payload.user_id,
+                                action="mcp_tool_policy_denied",
+                                target_type="mcp_tool",
+                                target_id=payload.skill_id,
+                                trace_id=trace_id,
+                                payload_json={
+                                    "run_id": payload.run_id,
+                                    "session_id": payload.session_id,
+                                    "agent_id": payload.agent_id,
+                                    "skill_id": payload.skill_id,
+                                    "reason": error_code,
+                                    "risk_level": tool_gate.risk_level,
+                                    "write_capable": tool_gate.write_capable,
+                                    "decision": tool_gate.decision,
+                                    "permission_request_id": tool_gate.permission_request_id,
+                                    "auto_allowed": tool_gate.auto_allowed,
+                                },
+                            )
+                            terminal_after_transaction = _WorkerTerminalAfterTransaction(
+                                WorkerOutcome("failed", payload.run_id, error_code, error_message),
+                                payload,
+                                reconciled_parent,
+                            )
+                            return terminal_after_transaction.outcome
+                    await repositories.append_audit_log(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        user_id=payload.user_id,
+                        action="mcp_tool_policy_allowed",
+                        target_type="mcp_tool",
+                        target_id=payload.skill_id,
+                        trace_id=trace_id,
+                        payload_json={
+                            "run_id": payload.run_id,
+                            "session_id": payload.session_id,
+                            "agent_id": payload.agent_id,
+                            "skill_id": payload.skill_id,
+                            "reason": tool_gate.reason,
+                            "risk_level": tool_gate.risk_level,
+                            "write_capable": tool_gate.write_capable,
+                            "decision": tool_gate.decision,
+                            "permission_request_id": tool_gate.permission_request_id,
+                            "auto_allowed": tool_gate.auto_allowed,
+                        },
+                    )
+                except repositories.RepositoryConflictError as exc:
+                    reconciled_parent = await _fail_run_and_reconcile(
+                        conn,
+                        payload=payload,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        error_code=str(exc),
+                        error_message="MCP tool denied by policy",
+                    )
+                    await repositories.append_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type="mcp_tool_denied",
+                        stage="tool_policy",
+                        message="MCP tool denied by policy",
+                        payload={
+                            "mcp_tool_id": payload.skill_id,
+                            "policy": "deny_by_default",
+                            "reason": str(exc),
+                            "visible_to_user": True,
+                            "severity": "error",
+                        },
+                    )
+                    terminal_after_transaction = _WorkerTerminalAfterTransaction(
+                        WorkerOutcome("failed", payload.run_id, str(exc), "MCP tool denied by policy"),
+                        payload,
+                        reconciled_parent,
+                    )
+                    return terminal_after_transaction.outcome
+                except repositories.RepositoryNotFoundError as exc:
+                    reconciled_parent = await _fail_run_and_reconcile(
+                        conn,
+                        payload=payload,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        error_code=str(exc),
+                        error_message="MCP tool denied by policy",
+                    )
+                    await repositories.append_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type="mcp_tool_denied",
+                        stage="tool_policy",
+                        message="MCP tool denied by policy",
+                        payload={
+                            "mcp_tool_id": payload.skill_id,
+                            "policy": "deny_by_default",
+                            "reason": str(exc),
+                            "visible_to_user": True,
+                            "severity": "error",
+                        },
+                    )
+                    terminal_after_transaction = _WorkerTerminalAfterTransaction(
+                        WorkerOutcome("failed", payload.run_id, str(exc), "MCP tool denied by policy"),
+                        payload,
+                        reconciled_parent,
+                    )
+                    return terminal_after_transaction.outcome
+            try:
+                adapter = adapter_registry.get(payload.executor_type)
+            except KeyError as exc:
+                reconciled_parent = await _fail_run_and_reconcile(
                     conn,
                     payload=payload,
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
-                    error_code=str(exc),
-                    error_message="MCP tool denied by policy",
+                    error_code="unknown_executor_type",
+                    error_message=str(exc),
                 )
                 await repositories.append_event(
                     conn,
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
-                    event_type="mcp_tool_denied",
-                    stage="tool_policy",
-                    message="MCP tool denied by policy",
-                    payload={
-                        "mcp_tool_id": payload.skill_id,
-                        "policy": "deny_by_default",
-                        "reason": str(exc),
-                        "visible_to_user": True,
-                        "severity": "error",
-                    },
+                    event_type="error",
+                    stage="worker",
+                    message="Unknown executor type",
+                    payload={"executor_type": payload.executor_type},
                 )
-                return WorkerOutcome("failed", payload.run_id, str(exc), "MCP tool denied by policy")
-            except repositories.RepositoryNotFoundError as exc:
-                await _fail_run_and_reconcile(
-                    conn,
-                    payload=payload,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
-                    error_code=str(exc),
-                    error_message="MCP tool denied by policy",
+                terminal_after_transaction = _WorkerTerminalAfterTransaction(
+                    WorkerOutcome("failed", payload.run_id, "unknown_executor_type", str(exc)),
+                    payload,
+                    reconciled_parent,
                 )
-                await repositories.append_event(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
-                    event_type="mcp_tool_denied",
-                    stage="tool_policy",
-                    message="MCP tool denied by policy",
-                    payload={
-                        "mcp_tool_id": payload.skill_id,
-                        "policy": "deny_by_default",
-                        "reason": str(exc),
-                        "visible_to_user": True,
-                        "severity": "error",
-                    },
-                )
-                return WorkerOutcome("failed", payload.run_id, str(exc), "MCP tool denied by policy")
-        try:
-            adapter = adapter_registry.get(payload.executor_type)
-        except KeyError as exc:
-            await _fail_run_and_reconcile(
-                conn,
-                payload=payload,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
-                error_code="unknown_executor_type",
-                error_message=str(exc),
+                return terminal_after_transaction.outcome
+            context_ref = await _ensure_worker_context_snapshot(conn, payload, trace_id=trace_id, run_identity=run_identity)
+    finally:
+        if terminal_after_transaction is not None:
+            await _finalize_multi_agent_parent_after_child_commit(
+                terminal_after_transaction.payload,
+                terminal_after_transaction.reconciled_parent,
             )
-            await repositories.append_event(
-                conn,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
-                event_type="error",
-                stage="worker",
-                message="Unknown executor type",
-                payload={"executor_type": payload.executor_type},
-            )
-            return WorkerOutcome("failed", payload.run_id, "unknown_executor_type", str(exc))
-        context_ref = await _ensure_worker_context_snapshot(conn, payload, trace_id=trace_id, run_identity=run_identity)
 
     run_payload = RunPayload(
         tenant_id=run_identity["tenant_id"],
@@ -1174,6 +1274,7 @@ async def process_run_payload(
                     },
                 )
     except WorkerRunCancelled:
+        reconciled_parent = None
         async with transaction() as conn:
             cancel_result = {"message": "任务已取消"}
             await repositories.cancel_run(
@@ -1182,7 +1283,7 @@ async def process_run_payload(
                 run_id=payload.run_id,
                 result_json=cancel_result,
             )
-            await _reconcile_multi_agent_child_terminal_state(
+            reconciled_parent = await _reconcile_multi_agent_child_terminal_state(
                 conn,
                 payload=payload,
                 child_status="cancelled",
@@ -1197,10 +1298,12 @@ async def process_run_payload(
                 message="任务已取消",
                 payload={"severity": "warning"},
             )
+        await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
         return WorkerOutcome("cancelled", payload.run_id)
     except Exception as exc:
+        reconciled_parent = None
         async with transaction() as conn:
-            await _fail_run_and_reconcile(
+            reconciled_parent = await _fail_run_and_reconcile(
                 conn,
                 payload=payload,
                 tenant_id=payload.tenant_id,
@@ -1226,6 +1329,7 @@ async def process_run_payload(
                 message="Executor failed",
                 payload={"error": str(exc), "executor_type": payload.executor_type, "visible_to_user": False},
             )
+        await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
         return WorkerOutcome("failed", payload.run_id, "executor_failure", str(exc))
 
     observability = _executor_observability(result.executor_payload, latency_ms=latency_ms)
@@ -1280,6 +1384,7 @@ async def process_run_payload(
     }
     if skill_snapshot:
         result_payload["skills"] = skill_snapshot
+    reconciled_parent = None
     async with transaction() as conn:
         cancel_requested = await repositories.is_cancel_requested(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
         if result.status == "succeeded" and cancel_requested:
@@ -1386,7 +1491,7 @@ async def process_run_payload(
                 run_id=payload.run_id,
                 result_json=result_payload,
             )
-            await _reconcile_multi_agent_child_terminal_state(
+            reconciled_parent = await _reconcile_multi_agent_child_terminal_state(
                 conn,
                 payload=payload,
                 child_status="succeeded",
@@ -1411,43 +1516,45 @@ async def process_run_payload(
                 message="Run succeeded",
                 payload={"artifact_count": len(result.artifacts), "visible_to_user": False},
             )
-            return WorkerOutcome("succeeded", payload.run_id)
-
-        reported_error_code = str(result.result.get("error_code") or "executor_reported_failure")
-        reported_error_message = str(result.result.get("message") or "Executor reported failure")
-        await _attach_multi_agent_result_summary(
-            conn,
-            tenant_id=payload.tenant_id,
-            run_id=payload.run_id,
-            result_capabilities=result.capabilities,
-            result_payload=result_payload,
-        )
-        await _fail_run_and_reconcile(
-            conn,
-            payload=payload,
-            tenant_id=payload.tenant_id,
-            run_id=payload.run_id,
-            error_code=reported_error_code,
-            error_message=reported_error_message,
-            result_json=result_payload,
-        )
-        await append_user_event(
-            conn,
-            tenant_id=payload.tenant_id,
-            run_id=payload.run_id,
-            event_type="run_failed",
-            stage="worker",
-            message="Run failed",
-            payload={"artifact_count": len(result.artifacts), "severity": "error"},
-            **terminal_event_kwargs,
-        )
-        await repositories.append_event(
-            conn,
-            tenant_id=payload.tenant_id,
-            run_id=payload.run_id,
-            event_type="error",
-            stage="worker",
-            message="Run failed",
-            payload={"artifact_count": len(result.artifacts), "visible_to_user": False},
-        )
-        return WorkerOutcome("failed", payload.run_id, reported_error_code, reported_error_message)
+            terminal_outcome = WorkerOutcome("succeeded", payload.run_id)
+        else:
+            reported_error_code = str(result.result.get("error_code") or "executor_reported_failure")
+            reported_error_message = str(result.result.get("message") or "Executor reported failure")
+            await _attach_multi_agent_result_summary(
+                conn,
+                tenant_id=payload.tenant_id,
+                run_id=payload.run_id,
+                result_capabilities=result.capabilities,
+                result_payload=result_payload,
+            )
+            reconciled_parent = await _fail_run_and_reconcile(
+                conn,
+                payload=payload,
+                tenant_id=payload.tenant_id,
+                run_id=payload.run_id,
+                error_code=reported_error_code,
+                error_message=reported_error_message,
+                result_json=result_payload,
+            )
+            await append_user_event(
+                conn,
+                tenant_id=payload.tenant_id,
+                run_id=payload.run_id,
+                event_type="run_failed",
+                stage="worker",
+                message="Run failed",
+                payload={"artifact_count": len(result.artifacts), "severity": "error"},
+                **terminal_event_kwargs,
+            )
+            await repositories.append_event(
+                conn,
+                tenant_id=payload.tenant_id,
+                run_id=payload.run_id,
+                event_type="error",
+                stage="worker",
+                message="Run failed",
+                payload={"artifact_count": len(result.artifacts), "visible_to_user": False},
+            )
+            terminal_outcome = WorkerOutcome("failed", payload.run_id, reported_error_code, reported_error_message)
+    await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
+    return terminal_outcome

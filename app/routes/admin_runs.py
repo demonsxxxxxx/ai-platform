@@ -150,6 +150,13 @@ async def admin_run_cancel(
                     *list(result.get("active_sandbox_leases") or []),
                     *list(propagation["active_sandbox_leases"]),
                 ]
+            finalized_parent = await repositories.finalize_multi_agent_parent_run_if_ready(
+                conn,
+                tenant_id=principal.tenant_id,
+                parent_run_id=run_id,
+            )
+            if finalized_parent and finalized_parent.get("status"):
+                result["status"] = str(finalized_parent["status"])
     if result is None:
         raise HTTPException(status_code=404, detail="active_run_not_found")
     queue_cleanup_failures = await _remove_cancelled_queue_payloads(

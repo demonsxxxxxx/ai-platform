@@ -11,6 +11,7 @@ from app.control_plane_contracts import (
     AUDIT_EVENT_SCHEMA_VERSION,
     EVENT_ENVELOPE_SCHEMA_VERSION,
     EXECUTOR_RESULT_SCHEMA_VERSION,
+    HASH_LIKE_VALUE_PATTERN,
     RUN_CONTRACT_VERSION,
     artifact_lineage_contract,
     artifact_manifest_contract,
@@ -3340,6 +3341,256 @@ def _safe_child_error_code(error_code: str | None, *, child_status: str) -> str:
     return standard_error_code(normalized)
 
 
+def _parent_multi_agent_message(status: str) -> str:
+    if status == "succeeded":
+        return "Multi-agent run succeeded"
+    if status == "failed":
+        return "Multi-agent run failed"
+    if status == "cancelled":
+        return "Multi-agent run cancelled"
+    return "Multi-agent run finalized"
+
+
+def _safe_parent_step_text(value: Any) -> str:
+    sanitized = sanitize_public_text(value)
+    if HASH_LIKE_VALUE_PATTERN.fullmatch(sanitized.strip()):
+        return ""
+    return sanitized
+
+
+def _safe_parent_step_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    cleaned: dict[str, Any] = {}
+    depends_on = payload.get("depends_on")
+    if isinstance(depends_on, list):
+        cleaned["depends_on"] = [
+            safe_dependency
+            for item in depends_on
+            if (safe_dependency := _safe_parent_step_text(item))
+        ]
+    else:
+        cleaned["depends_on"] = []
+    for key in (
+        "dispatch_state",
+        "dispatch_child_run_id",
+        "checkpoint_id",
+        "source_step_id",
+        "output",
+        "error_code",
+        "error",
+    ):
+        safe_value = _safe_parent_step_text(payload.get(key))
+        if safe_value:
+            target_key = "child_run_id" if key == "dispatch_child_run_id" else key
+            cleaned[target_key] = safe_value
+    return cleaned
+
+
+def _multi_agent_parent_step_summary(row: dict[str, Any]) -> dict[str, Any]:
+    payload = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
+    safe_payload = _safe_parent_step_payload(payload)
+    return {
+        "step_key": _safe_parent_step_text(row.get("step_key")) or str(row.get("id") or ""),
+        "status": str(row.get("status") or ""),
+        "role": _safe_parent_step_text(row.get("role")) or None,
+        "sequence": _coerce_int(row.get("sequence")),
+        "depends_on": safe_payload.pop("depends_on", []),
+        **safe_payload,
+    }
+
+
+def _multi_agent_parent_counts(steps: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "total": len(steps),
+        "succeeded": sum(1 for item in steps if str(item.get("status") or "") == "succeeded"),
+        "failed": sum(1 for item in steps if str(item.get("status") or "") == "failed"),
+        "cancelled": sum(1 for item in steps if str(item.get("status") or "") == "cancelled"),
+    }
+
+
+def _multi_agent_parent_status(parent_run: dict[str, Any], steps: list[dict[str, Any]]) -> str | None:
+    if not steps:
+        return None
+    statuses = {str(item.get("status") or "") for item in steps}
+    if not statuses.issubset(TERMINAL_RUN_STATUSES):
+        return None
+    if "failed" in statuses:
+        return "failed"
+    if parent_run.get("cancel_requested_at") or "cancelled" in statuses:
+        return "cancelled"
+    return "succeeded"
+
+
+def _multi_agent_parent_has_open_dispatch(steps: list[dict[str, Any]]) -> bool:
+    for row in steps:
+        payload = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
+        if str(payload.get("dispatch_state") or "") in {"claimed", "handed_off"}:
+            return True
+    return False
+
+
+def _configured_multi_agent_step_keys(configured_steps: object) -> set[str] | None:
+    if not isinstance(configured_steps, list):
+        return None
+    keys: list[str] = []
+    for item in configured_steps:
+        if not isinstance(item, dict):
+            return None
+        key = str(item.get("step_key") or item.get("stepKey") or "").strip()
+        if not key:
+            return None
+        keys.append(key)
+    key_set = set(keys)
+    if len(key_set) != len(keys):
+        return None
+    return key_set
+
+
+async def finalize_multi_agent_parent_run_if_ready(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    parent_run_id: str,
+    triggered_by_child_run_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Finalize a multi-agent parent run after all server-owned child steps settle."""
+    parent_cursor = await conn.execute(
+        """
+        select id, tenant_id, copied_from_run_id, trace_id, status, cancel_requested_at, input_json
+        from runs
+        where tenant_id = %s and id = %s
+        for update skip locked
+        """,
+        (tenant_id, parent_run_id),
+    )
+    parent_run = await parent_cursor.fetchone()
+    if parent_run is None:
+        return None
+    if parent_run.get("copied_from_run_id"):
+        return None
+    parent_status = str(parent_run.get("status") or "")
+    if parent_status in TERMINAL_RUN_STATUSES:
+        return None
+    if parent_status != "running" and parent_run.get("cancel_requested_at") is None:
+        return None
+    execution_input = _run_execution_input_from_row(parent_run)
+    if str(execution_input.get("execution_mode") or "") != "multi_agent":
+        return None
+    if "multi_agent_steps" in execution_input:
+        configured_keys = _configured_multi_agent_step_keys(execution_input.get("multi_agent_steps"))
+    else:
+        configured_keys = set()
+    if configured_keys is None:
+        return None
+    configured_count = len(configured_keys)
+    steps = await list_run_steps(conn, tenant_id=tenant_id, run_id=parent_run_id)
+    if not steps and configured_count <= 0:
+        return None
+    if len(steps) < configured_count:
+        return None
+    recorded_keys = {str(row.get("step_key") or "").strip() for row in steps}
+    if not configured_keys.issubset(recorded_keys):
+        return None
+    if _multi_agent_parent_has_open_dispatch(steps):
+        return None
+    target_status = _multi_agent_parent_status(parent_run, steps)
+    if target_status is None:
+        return None
+    active_cursor = await conn.execute(
+        """
+        select child.id, child.status
+        from runs child
+        where child.tenant_id = %s
+          and child.copied_from_run_id = %s
+          and child.status in ('queued', 'running')
+          and (
+            child.input_json#>>'{input,multi_agent_dispatch,parent_run_id}' = %s
+            or child.input_json#>>'{multi_agent_dispatch,parent_run_id}' = %s
+          )
+        """,
+        (tenant_id, parent_run_id, parent_run_id, parent_run_id),
+    )
+    active_children = list(await active_cursor.fetchall())
+    if active_children:
+        return None
+    summaries = [_multi_agent_parent_step_summary(row) for row in steps]
+    counts = _multi_agent_parent_counts(summaries)
+    result_json: dict[str, Any] = {
+        "message": _parent_multi_agent_message(target_status),
+        "multi_agent": {
+            "status": target_status,
+            "counts": counts,
+            "steps": summaries,
+        },
+    }
+    safe_triggered_by = sanitize_public_text(triggered_by_child_run_id)
+    if safe_triggered_by:
+        result_json["multi_agent"]["triggered_by_child_run_id"] = safe_triggered_by
+    update_cursor = await conn.execute(
+        """
+        update runs
+        set
+          status = %s,
+          result_json = %s::jsonb,
+          finished_at = now(),
+          error_code = case when %s = 'failed' then 'multi_agent_child_failed' else null end,
+          error_message = case when %s = 'failed' then 'Multi-agent child step failed' else null end
+        where tenant_id = %s
+          and id = %s
+          and status not in ('succeeded', 'failed', 'cancelled')
+        returning id, status
+        """,
+        (
+            target_status,
+            dumps_json(result_json),
+            target_status,
+            target_status,
+            tenant_id,
+            parent_run_id,
+        ),
+    )
+    updated = await update_cursor.fetchone()
+    if updated is None:
+        return None
+    event_payload: dict[str, Any] = {
+        "visible_to_user": False,
+        "status": target_status,
+        "counts": counts,
+    }
+    if safe_triggered_by:
+        event_payload["triggered_by_child_run_id"] = safe_triggered_by
+    event_id = await append_event(
+        conn,
+        tenant_id=tenant_id,
+        run_id=parent_run_id,
+        trace_id=parent_run.get("trace_id"),
+        event_type="multi_agent_parent_finalized",
+        stage="control",
+        message=_parent_multi_agent_message(target_status),
+        visible_to_user=False,
+        payload=event_payload,
+    )
+    audit_payload: dict[str, Any] = {"status": target_status, "counts": counts}
+    if safe_triggered_by:
+        audit_payload["triggered_by_child_run_id"] = safe_triggered_by
+    audit_id = await append_audit_log(
+        conn,
+        tenant_id=tenant_id,
+        user_id=None,
+        action="run.multi_agent.parent.finalize",
+        target_type="run",
+        target_id=parent_run_id,
+        trace_id=parent_run.get("trace_id"),
+        payload_json=audit_payload,
+    )
+    return {
+        "parent_run_id": parent_run_id,
+        "status": target_status,
+        "event_id": event_id,
+        "audit_id": audit_id,
+        "counts": counts,
+    }
+
+
 def _child_dispatch_metadata(child_run: dict[str, Any]) -> dict[str, Any]:
     execution_input = _run_execution_input_from_row(child_run)
     dispatch = execution_input.get("multi_agent_dispatch")
@@ -3504,6 +3755,12 @@ async def reconcile_multi_agent_child_run_terminal_state(
             "child_status": child_status,
             "result_status": parent_step_status,
         },
+    )
+    await finalize_multi_agent_parent_run_if_ready(
+        conn,
+        tenant_id=tenant_id,
+        parent_run_id=parent_run_id,
+        triggered_by_child_run_id=child_run_id,
     )
     return {
         "parent_run_id": parent_run_id,

@@ -82,6 +82,16 @@ def default_cancel_not_requested(monkeypatch):
         raising=False,
     )
 
+    async def finalize_multi_agent_parent_run_if_ready(conn, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.worker.repositories.finalize_multi_agent_parent_run_if_ready",
+        finalize_multi_agent_parent_run_if_ready,
+        raising=False,
+    )
+    monkeypatch.setattr("app.worker._PARENT_ROLLUP_RETRY_DELAY_SECONDS", 0, raising=False)
+
 
 @pytest.mark.asyncio
 async def test_reused_step_event_clears_checkpoint_reuse_pending(monkeypatch):
@@ -382,6 +392,91 @@ async def test_worker_reconciles_multi_agent_child_after_success(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_worker_retries_multi_agent_parent_rollup_after_child_transaction_commit(monkeypatch):
+    calls = []
+    tx_counter = 0
+    tx_events = []
+
+    @asynccontextmanager
+    async def recording_transaction():
+        nonlocal tx_counter
+        tx_counter += 1
+        tx_label = f"tx-{tx_counter}"
+        tx_events.append(("enter", tx_label))
+        try:
+            yield tx_label
+        except BaseException:
+            tx_events.append(("rollback", tx_label))
+            raise
+        else:
+            tx_events.append(("commit", tx_label))
+        finally:
+            tx_events.append(("exit", tx_label))
+
+    child_input = {
+        "mode": "file",
+        "multi_agent_dispatch": {
+            "parent_run_id": "run-parent",
+            "parent_step_id": "step-code",
+            "dispatch_id": "dispatch-code",
+            "step_key": "code",
+        },
+    }
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", conn, kwargs["event_type"]))
+        return "evt-a"
+
+    async def create_artifact(conn, **kwargs):
+        return None
+
+    async def complete_run(conn, *, tenant_id, run_id, result_json):
+        calls.append(("complete", conn, run_id))
+
+    async def reconcile(conn, **kwargs):
+        calls.append(("reconcile", conn, kwargs))
+        return {"parent_run_id": "run-parent"}
+
+    async def finalize(conn, **kwargs):
+        calls.append(("finalize", conn, kwargs))
+        if len([item for item in calls if item[0] == "finalize"]) == 1:
+            return None
+        return {"parent_run_id": "run-parent", "status": "succeeded"}
+
+    monkeypatch.setattr("app.worker.transaction", recording_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.reconcile_multi_agent_child_run_terminal_state", reconcile)
+    monkeypatch.setattr("app.worker.repositories.finalize_multi_agent_parent_run_if_ready", finalize)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    outcome = await process_run_payload(
+        base_payload(run_id="run-child", input=child_input),
+        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+    )
+
+    assert outcome.status == "succeeded"
+    reconcile_call = next(item for item in calls if item[0] == "reconcile")
+    finalize_calls = [item for item in calls if item[0] == "finalize"]
+    assert len(finalize_calls) == 2
+    assert finalize_calls[0][1] != reconcile_call[1]
+    assert finalize_calls[1][1] != reconcile_call[1]
+    assert finalize_calls[0][2] == {
+        "tenant_id": "tenant-a",
+        "parent_run_id": "run-parent",
+        "triggered_by_child_run_id": "run-child",
+    }
+    assert finalize_calls[1][2] == finalize_calls[0][2]
+    assert tx_events.index(("exit", reconcile_call[1])) < tx_events.index(("enter", finalize_calls[0][1]))
+    assert tx_events.index(("exit", finalize_calls[0][1])) < tx_events.index(("enter", finalize_calls[1][1]))
+
+
+@pytest.mark.asyncio
 async def test_worker_reconciles_multi_agent_child_after_failure(monkeypatch):
     calls = []
 
@@ -640,6 +735,83 @@ async def test_worker_reconciles_multi_agent_child_after_unknown_executor(monkey
     assert reconcile_call["child_run_id"] == "run-child"
     assert reconcile_call["child_status"] == "failed"
     assert reconcile_call["error_code"] == "unknown_executor_type"
+
+
+@pytest.mark.asyncio
+async def test_worker_retries_parent_rollup_after_early_unknown_executor_reconciliation(monkeypatch):
+    calls = []
+    tx_counter = 0
+    tx_events = []
+
+    @asynccontextmanager
+    async def recording_transaction():
+        nonlocal tx_counter
+        tx_counter += 1
+        tx_label = f"tx-{tx_counter}"
+        tx_events.append(("enter", tx_label))
+        try:
+            yield tx_label
+        except BaseException:
+            tx_events.append(("rollback", tx_label))
+            raise
+        else:
+            tx_events.append(("commit", tx_label))
+        finally:
+            tx_events.append(("exit", tx_label))
+
+    child_input = {
+        "mode": "file",
+        "multi_agent_dispatch": {
+            "parent_run_id": "run-parent",
+            "parent_step_id": "step-code",
+            "dispatch_id": "dispatch-code",
+            "step_key": "code",
+        },
+    }
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", conn, kwargs["event_type"]))
+        return "evt-a"
+
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+        calls.append(("fail", conn, error_code))
+
+    async def reconcile(conn, **kwargs):
+        calls.append(("reconcile", conn, kwargs))
+        return {"parent_run_id": "run-parent"}
+
+    async def finalize(conn, **kwargs):
+        calls.append(("finalize", conn, kwargs))
+        return {"parent_run_id": "run-parent", "status": "failed"}
+
+    monkeypatch.setattr("app.worker.transaction", recording_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.reconcile_multi_agent_child_run_terminal_state", reconcile)
+    monkeypatch.setattr("app.worker.repositories.finalize_multi_agent_parent_run_if_ready", finalize)
+
+    outcome = await process_run_payload(
+        base_payload(run_id="run-child", executor_type="missing", input=child_input),
+        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "unknown_executor_type"
+    reconcile_call = next(item for item in calls if item[0] == "reconcile")
+    finalize_call = next(item for item in calls if item[0] == "finalize")
+    assert finalize_call[1] != reconcile_call[1]
+    assert finalize_call[2] == {
+        "tenant_id": "tenant-a",
+        "parent_run_id": "run-parent",
+        "triggered_by_child_run_id": "run-child",
+    }
+    assert ("commit", reconcile_call[1]) in tx_events
+    assert ("rollback", reconcile_call[1]) not in tx_events
+    assert tx_events.index(("exit", reconcile_call[1])) < tx_events.index(("enter", finalize_call[1]))
 
 
 @pytest.mark.asyncio

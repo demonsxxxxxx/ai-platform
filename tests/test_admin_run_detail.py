@@ -10,6 +10,9 @@ def auth_settings():
 
 
 class EmptyPropagationCursor:
+    async def fetchone(self):
+        return None
+
     async def fetchall(self):
         return []
 
@@ -18,6 +21,8 @@ class EmptyPropagationConnection:
     async def execute(self, sql, params):
         normalized = " ".join(sql.split())
         if normalized.startswith("select child.id") and "from runs child" in normalized:
+            return EmptyPropagationCursor()
+        if normalized.startswith("select id, tenant_id") and "cancel_requested_at" in normalized:
             return EmptyPropagationCursor()
         raise AssertionError(f"unexpected fake transaction sql: {normalized}")
 

@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 import base64
 import hashlib
+import json
 
 import pytest
 from fastapi import HTTPException
@@ -2191,6 +2192,48 @@ def test_multi_agent_snapshot_normalizes_legacy_canceled_step_status():
 
     assert snapshot["steps"][0]["status"] == "cancelled"
     assert snapshot["counts"]["cancelled"] == 1
+
+
+def test_multi_agent_snapshot_redacts_parent_finalized_private_payload():
+    principal = AuthPrincipal(user_id="user-a", display_name="User", tenant_id="default", roles=["user"], source="test")
+    snapshot = multi_agent_snapshot_from_steps(
+        "run-parent",
+        [
+            {
+                "id": "step-code",
+                "run_id": "run-parent",
+                "step_key": "code",
+                "step_kind": "agent",
+                "status": "succeeded",
+                "title": "Code",
+                "role": "coder",
+                "sequence": 1,
+                "payload_json": {
+                    "depends_on": [],
+                    "dispatch_state": "completed",
+                    "dispatch_child_run_id": "run-child",
+                    "output": "safe output",
+                    "private_payload": "hidden",
+                    "storage_key": "tenant/default/private/object",
+                    "worker_path": "/app/private.py",
+                    "command_sha256": "a" * 64,
+                },
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ],
+        principal=principal,
+    )
+
+    assert snapshot["counts"]["succeeded"] == 1
+    dumped = json.dumps(snapshot, ensure_ascii=False)
+    assert "safe output" in dumped
+    assert "private_payload" not in dumped
+    assert "storage_key" not in dumped
+    assert "/app/private.py" not in dumped
+    assert "command_sha256" not in dumped
 
 
 def test_run_event_stream_heartbeat_includes_queue_insight_while_queued(monkeypatch):

@@ -777,6 +777,62 @@ This does not start an autonomous scheduler, polling subagent dispatcher, new
 worker process, sandbox/tool privilege expansion, frontend entry, or DB
 migration.
 
+### P2 Multi-Agent Parent Terminal Rollup
+
+Status: implemented locally as the parent lifecycle closure follow-up to child
+handoff, child terminal reconciliation, and parent cancel propagation.
+
+This slice finalizes a same-tenant multi-agent parent run once all persisted
+server-owned parent steps are terminal and no active handed-off child run
+remains. Parent `result_json`, hidden `multi_agent_parent_finalized` event, and
+audit payloads expose only public-safe step summaries and counts. Child
+reconciliation invokes the rollup only after a parent-step update succeeds, so
+stale or forged child relationships do not finalize the parent run.
+
+Local TDD verification recorded RED failures for the new event taxonomy,
+missing repository helper, and missing reconciliation hook, then GREEN coverage
+for successful parent finalization, failed/cancelled rollup status, active-child
+and non-multi-agent blocking, open dispatch-state blocking, missing configured
+step blocking, ordinary copied-run exclusion, skip-locked parent selection,
+stale reconciliation exclusion, and public multi-agent snapshot redaction. An
+inherited-configuration multi-agent review identified parent/child lock-order
+risk, incomplete configured-step identity checks, and copied-run exclusion gaps;
+the follow-up fixes now use skip-locked parent selection, reject copied parent
+runs, and require configured step keys to be unique and persisted. A follow-up
+inherited-configuration review identified a remaining cancel/reconciliation
+race where `skip locked` could skip the parent while cancel held the row lock;
+owner and admin cancel paths now perform an in-transaction parent finalize pass
+after cancel propagation, and tests cover that compensation plus duplicate /
+malformed configured step blocking. A final inherited-configuration review then
+identified a sibling child reconciliation race; the worker now performs a
+bounded post-commit parent rollup retry in a fresh transaction after successful
+child terminal reconciliation, including early terminal worker failures that
+reconcile a child before returning. A final inherited-configuration review found
+that exception-based early terminal exits could roll back the worker transaction
+before the nominal post-commit retry; early terminal paths now return normally
+from the transaction block so the retry runs after commit. The same review pass
+also found hidden active children could be missed through a parent-step join and
+hash-like fingerprint values could survive in allowed parent step fields; the
+active-child check now uses the child run's server-owned dispatch metadata
+directly, and parent step summaries drop hash-like values even under otherwise
+allowed keys. Present-but-non-list `multi_agent_steps` now fail closed, and
+cancel responses adopt the terminal parent status when the in-transaction
+compensation finalizes the parent. Final inherited-configuration re-review
+reported no Critical or Important findings; the only Minor note was that older
+multi-agent dispatch event taxonomy cleanup remains a separate non-blocking
+follow-up. Focused verification passed with `18 passed`; worker terminal focused
+verification passed with `12 passed`; affected suites passed with `272 passed`;
+full local pytest passed with
+`983 passed, 6 skipped, 2 warnings`; `python -m compileall -q app tools scripts`
+and `git diff --check` both exited 0. `git diff --check` only emitted
+CRLF-to-LF normalization warnings for three touched files. Verification used
+fresh `.pytest-tmp` child basetemp directories. This slice has not yet completed
+PR merge or 211 deployment.
+
+This does not start an autonomous scheduler, polling subagent dispatcher, new
+worker process, sandbox/tool privilege expansion, frontend entry, or DB
+migration.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。

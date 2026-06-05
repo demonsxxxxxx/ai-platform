@@ -173,6 +173,7 @@ STANDARD_EVENT_TYPES = frozenset(
         "mcp_tool_call_completed",
         "mcp_tool_call_started",
         "mcp_tool_denied",
+        "multi_agent_parent_finalized",
         "queued",
         "run_cancelled",
         "run_completed",
