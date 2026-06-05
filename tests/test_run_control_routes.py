@@ -4285,6 +4285,519 @@ async def test_create_multi_agent_dispatch_child_run_rejects_malformed_claim_lea
 
 
 @pytest.mark.asyncio
+async def test_reconcile_multi_agent_child_success_updates_parent_step_event_and_audit(monkeypatch):
+    from app import repositories
+    import json
+
+    calls = []
+
+    child_run = {
+        "id": "run-child",
+        "tenant_id": "default",
+        "copied_from_run_id": "run-parent",
+        "trace_id": "trace-child",
+        "status": "succeeded",
+        "input_json": {
+            "input": {
+                "multi_agent_dispatch": {
+                    "parent_run_id": "run-parent",
+                    "parent_step_id": "step-code",
+                    "step_key": "code",
+                    "dispatch_id": "dispatch-code",
+                }
+            }
+        },
+    }
+    parent_step = {
+        "id": "step-code",
+        "run_id": "run-parent",
+        "step_key": "code",
+        "step_kind": "agent",
+        "status": "running",
+        "title": "Code",
+        "role": "coder",
+        "sequence": 2,
+        "payload_json": {
+            "dispatch_id": "dispatch-code",
+            "dispatch_state": "handed_off",
+            "dispatch_child_run_id": "run-child",
+        },
+    }
+
+    class Cursor:
+        def __init__(self, row=None):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append(("sql", normalized, params))
+            if normalized.startswith("select id, tenant_id, copied_from_run_id"):
+                return Cursor(row=child_run)
+            if normalized.startswith("select id, run_id, step_key") and "from run_steps" in normalized:
+                return Cursor(row=parent_step)
+            if normalized.startswith("update run_steps"):
+                return Cursor(row={"id": "step-code"})
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-reconcile"
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "aud-reconcile"
+
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+
+    result = await repositories.reconcile_multi_agent_child_run_terminal_state(
+        FakeConnection(),
+        tenant_id="default",
+        child_run_id="run-child",
+        child_status="succeeded",
+        result_json={
+            "message": "child output",
+            "executor_payload": {"private_payload": "must not copy"},
+            "artifacts": [{"storage_key": "private/object"}],
+        },
+    )
+
+    assert result == {
+        "parent_run_id": "run-parent",
+        "parent_step_id": "step-code",
+        "child_run_id": "run-child",
+        "step_key": "code",
+        "status": "succeeded",
+        "dispatch_state": "completed",
+        "event_id": "evt-reconcile",
+        "audit_id": "aud-reconcile",
+    }
+    update_sql, update_params = next(
+        (sql, params) for kind, sql, params in calls if kind == "sql" and sql.startswith("update run_steps")
+    )
+    assert "dispatch_child_run_id" in update_sql
+    assert "dispatch_state' = 'handed_off'" in update_sql
+    update_payload = json.loads(update_params[0])
+    assert update_payload["dispatch_state"] == "completed"
+    assert update_payload["dispatch_child_status"] == "succeeded"
+    assert update_payload["output"] == "child output"
+    assert update_payload["checkpoint_id"] == "checkpoint_step-code"
+    assert update_payload["source_step_id"] == "step-code"
+    assert "default" in update_params
+    assert "run-parent" in update_params
+    assert "step-code" in update_params
+    assert "dispatch-code" in update_params
+    assert "run-child" in update_params
+    event = next(item[1] for item in calls if item[0] == "event")
+    assert event["run_id"] == "run-parent"
+    assert event["event_type"] == "multi_agent_dispatch_reconciled"
+    assert event["visible_to_user"] is False
+    audit = next(item[1] for item in calls if item[0] == "audit")
+    assert audit["action"] == "run.multi_agent.dispatch.reconcile"
+    assert audit["target_id"] == "step-code"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_multi_agent_child_failure_does_not_copy_private_payload(monkeypatch):
+    from app import repositories
+    import json
+
+    calls = []
+
+    class Cursor:
+        def __init__(self, row=None):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append(("sql", normalized, params))
+            if normalized.startswith("select id, tenant_id, copied_from_run_id"):
+                return Cursor(
+                    row={
+                        "id": "run-child",
+                        "tenant_id": "default",
+                        "copied_from_run_id": "run-parent",
+                        "trace_id": "trace-child",
+                        "status": "failed",
+                        "input_json": {
+                            "input": {
+                                "multi_agent_dispatch": {
+                                    "parent_run_id": "run-parent",
+                                    "parent_step_id": "step-code",
+                                    "step_key": "code",
+                                    "dispatch_id": "dispatch-code",
+                                }
+                            }
+                        },
+                    }
+                )
+            if normalized.startswith("select id, run_id, step_key") and "from run_steps" in normalized:
+                return Cursor(
+                    row={
+                        "id": "step-code",
+                        "run_id": "run-parent",
+                        "step_key": "code",
+                        "step_kind": "agent",
+                        "status": "running",
+                        "title": "Code",
+                        "role": "coder",
+                        "sequence": 2,
+                        "payload_json": {
+                            "dispatch_id": "dispatch-code",
+                            "dispatch_state": "handed_off",
+                            "dispatch_child_run_id": "run-child",
+                        },
+                    }
+                )
+            if normalized.startswith("update run_steps"):
+                return Cursor(row={"id": "step-code"})
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-reconcile"
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "aud-reconcile"
+
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+
+    result = await repositories.reconcile_multi_agent_child_run_terminal_state(
+        FakeConnection(),
+        tenant_id="default",
+        child_run_id="run-child",
+        child_status="failed",
+        result_json={
+            "message": "failed at /var/lib/private",
+            "executor_payload": {"worker_path": "/app/private.py"},
+            "private_payload": {"secret": "abc"},
+            "storage_key": "tenant/default/private",
+        },
+        error_code="executor_failed",
+        error_message="failed at /var/lib/private",
+    )
+
+    assert result["status"] == "failed"
+    assert result["dispatch_state"] == "failed"
+    update_sql, update_params = next(
+        (sql, params) for kind, sql, params in calls if kind == "sql" and sql.startswith("update run_steps")
+    )
+    assert "status = %s" in update_sql
+    update_payload = json.loads(update_params[0])
+    payload_dump = json.dumps(update_payload, ensure_ascii=False).lower()
+    assert update_payload["dispatch_state"] == "failed"
+    assert update_payload["dispatch_child_status"] == "failed"
+    assert update_payload["error_code"] == "executor_failed"
+    assert update_payload["error"] == "child_run_failed"
+    assert "executor_payload" not in payload_dump
+    assert "private_payload" not in payload_dump
+    assert "worker_path" not in payload_dump
+    assert "storage_key" not in payload_dump
+    assert "/var/" not in payload_dump
+    assert "/app/" not in payload_dump
+
+
+@pytest.mark.asyncio
+async def test_reconcile_multi_agent_child_ignores_forged_unmatched_relationship(monkeypatch):
+    from app import repositories
+
+    calls = []
+
+    class Cursor:
+        def __init__(self, row=None):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append(("sql", normalized, params))
+            if normalized.startswith("select id, tenant_id, copied_from_run_id"):
+                return Cursor(
+                    row={
+                        "id": "run-child",
+                        "tenant_id": "default",
+                        "copied_from_run_id": "run-parent",
+                        "trace_id": "trace-child",
+                        "status": "succeeded",
+                        "input_json": {
+                            "input": {
+                                "multi_agent_dispatch": {
+                                    "parent_run_id": "run-other",
+                                    "parent_step_id": "step-code",
+                                    "step_key": "code",
+                                    "dispatch_id": "dispatch-code",
+                                }
+                            }
+                        },
+                    }
+                )
+            raise AssertionError(f"forged relationship must not continue to writes: {normalized}")
+
+    async def fake_append_event(conn, **kwargs):
+        raise AssertionError("forged relationship must not append events")
+
+    async def fake_append_audit_log(conn, **kwargs):
+        raise AssertionError("forged relationship must not append audit")
+
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+
+    result = await repositories.reconcile_multi_agent_child_run_terminal_state(
+        FakeConnection(),
+        tenant_id="default",
+        child_run_id="run-child",
+        child_status="succeeded",
+        result_json={"message": "forged"},
+    )
+
+    assert result is None
+    assert not any(item[1].startswith("update run_steps") for item in calls if item[0] == "sql")
+
+
+@pytest.mark.asyncio
+async def test_reconcile_multi_agent_child_requires_persisted_terminal_child_status(monkeypatch):
+    from app import repositories
+
+    calls = []
+
+    class Cursor:
+        def __init__(self, row=None):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append(("sql", normalized, params))
+            if normalized.startswith("select id, tenant_id, copied_from_run_id"):
+                return Cursor(
+                    row={
+                        "id": "run-child",
+                        "tenant_id": "default",
+                        "copied_from_run_id": "run-parent",
+                        "trace_id": "trace-child",
+                        "status": "running",
+                        "input_json": {
+                            "input": {
+                                "multi_agent_dispatch": {
+                                    "parent_run_id": "run-parent",
+                                    "parent_step_id": "step-code",
+                                    "step_key": "code",
+                                    "dispatch_id": "dispatch-code",
+                                }
+                            }
+                        },
+                    }
+                )
+            raise AssertionError(f"non-terminal child must not load parent step: {normalized}")
+
+    async def fake_append_event(conn, **kwargs):
+        raise AssertionError("non-terminal child must not append events")
+
+    async def fake_append_audit_log(conn, **kwargs):
+        raise AssertionError("non-terminal child must not append audit")
+
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+
+    result = await repositories.reconcile_multi_agent_child_run_terminal_state(
+        FakeConnection(),
+        tenant_id="default",
+        child_run_id="run-child",
+        child_status="succeeded",
+        result_json={"message": "not terminal yet"},
+    )
+
+    assert result is None
+    assert not any(item[1].startswith("update run_steps") for item in calls if item[0] == "sql")
+
+
+@pytest.mark.asyncio
+async def test_reconcile_multi_agent_child_sanitizes_unsafe_error_code(monkeypatch):
+    from app import repositories
+    import json
+
+    calls = []
+
+    class Cursor:
+        def __init__(self, row=None):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append(("sql", normalized, params))
+            if normalized.startswith("select id, tenant_id, copied_from_run_id"):
+                return Cursor(
+                    row={
+                        "id": "run-child",
+                        "tenant_id": "default",
+                        "copied_from_run_id": "run-parent",
+                        "trace_id": "trace-child",
+                        "status": "failed",
+                        "input_json": {
+                            "input": {
+                                "multi_agent_dispatch": {
+                                    "parent_run_id": "run-parent",
+                                    "parent_step_id": "step-code",
+                                    "step_key": "code",
+                                    "dispatch_id": "dispatch-code",
+                                }
+                            }
+                        },
+                    }
+                )
+            if normalized.startswith("select id, run_id, step_key") and "from run_steps" in normalized:
+                return Cursor(
+                    row={
+                        "id": "step-code",
+                        "run_id": "run-parent",
+                        "step_key": "code",
+                        "step_kind": "agent",
+                        "status": "running",
+                        "title": "Code",
+                        "role": "coder",
+                        "sequence": 2,
+                        "payload_json": {
+                            "dispatch_id": "dispatch-code",
+                            "dispatch_state": "handed_off",
+                            "dispatch_child_run_id": "run-child",
+                        },
+                    }
+                )
+            if normalized.startswith("update run_steps"):
+                return Cursor(row={"id": "step-code"})
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-reconcile"
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "aud-reconcile"
+
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+
+    result = await repositories.reconcile_multi_agent_child_run_terminal_state(
+        FakeConnection(),
+        tenant_id="default",
+        child_run_id="run-child",
+        child_status="failed",
+        result_json={"message": "safe failure"},
+        error_code="/app/private.py?api_key=secret",
+        error_message="safe failure",
+    )
+
+    assert result["status"] == "failed"
+    update_params = next(params for kind, sql, params in calls if kind == "sql" and sql.startswith("update run_steps"))
+    update_payload = json.loads(update_params[0])
+    assert update_payload["error_code"] == "child_run_failed"
+    payload_dump = json.dumps(update_payload, ensure_ascii=False).lower()
+    assert "/app/" not in payload_dump
+    assert "api_key" not in payload_dump
+    assert "secret" not in payload_dump
+
+
+@pytest.mark.asyncio
+async def test_reconcile_multi_agent_child_skips_event_and_audit_when_update_is_stale(monkeypatch):
+    from app import repositories
+
+    calls = []
+
+    class Cursor:
+        def __init__(self, row=None):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append(("sql", normalized, params))
+            if normalized.startswith("select id, tenant_id, copied_from_run_id"):
+                return Cursor(
+                    row={
+                        "id": "run-child",
+                        "tenant_id": "default",
+                        "copied_from_run_id": "run-parent",
+                        "trace_id": "trace-child",
+                        "status": "succeeded",
+                        "input_json": {
+                            "input": {
+                                "multi_agent_dispatch": {
+                                    "parent_run_id": "run-parent",
+                                    "parent_step_id": "step-code",
+                                    "step_key": "code",
+                                    "dispatch_id": "dispatch-code",
+                                }
+                            }
+                        },
+                    }
+                )
+            if normalized.startswith("select id, run_id, step_key") and "from run_steps" in normalized:
+                return Cursor(
+                    row={
+                        "id": "step-code",
+                        "run_id": "run-parent",
+                        "step_key": "code",
+                        "step_kind": "agent",
+                        "status": "running",
+                        "title": "Code",
+                        "role": "coder",
+                        "sequence": 2,
+                        "payload_json": {
+                            "dispatch_id": "dispatch-code",
+                            "dispatch_state": "handed_off",
+                            "dispatch_child_run_id": "run-child",
+                        },
+                    }
+                )
+            if normalized.startswith("update run_steps"):
+                return Cursor(row=None)
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    async def fake_append_event(conn, **kwargs):
+        raise AssertionError("stale update must not append events")
+
+    async def fake_append_audit_log(conn, **kwargs):
+        raise AssertionError("stale update must not append audit")
+
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+
+    result = await repositories.reconcile_multi_agent_child_run_terminal_state(
+        FakeConnection(),
+        tenant_id="default",
+        child_run_id="run-child",
+        child_status="succeeded",
+        result_json={"message": "child output"},
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
 async def test_claim_multi_agent_dispatch_step_writes_step_event_and_audit(monkeypatch):
     from app import repositories
 

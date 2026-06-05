@@ -3295,6 +3295,228 @@ async def create_multi_agent_dispatch_child_run(
     }
 
 
+def _terminal_dispatch_state(child_status: str) -> tuple[str, str]:
+    if child_status == "succeeded":
+        return "succeeded", "completed"
+    if child_status == "failed":
+        return "failed", "failed"
+    if child_status == "cancelled":
+        return "cancelled", "cancelled"
+    raise ValueError("unsupported_child_status")
+
+
+def _safe_child_result_output(result_json: dict[str, Any] | None) -> str:
+    if not isinstance(result_json, dict):
+        return ""
+    return sanitize_public_text(result_json.get("message"))
+
+
+def _safe_child_error_message(
+    *,
+    child_status: str,
+    result_json: dict[str, Any] | None,
+    error_message: str | None,
+) -> str:
+    safe_message = sanitize_public_text(error_message)
+    if safe_message:
+        return safe_message
+    if isinstance(result_json, dict):
+        safe_message = sanitize_public_text(result_json.get("message"))
+        if safe_message:
+            return safe_message
+    return "child_run_cancelled" if child_status == "cancelled" else "child_run_failed"
+
+
+def _safe_child_error_code(error_code: str | None, *, child_status: str) -> str:
+    fallback = "child_run_cancelled" if child_status == "cancelled" else "child_run_failed"
+    safe_code = sanitize_public_text(error_code)
+    if not safe_code:
+        return fallback
+    normalized = safe_code.strip().lower().replace("-", "_")
+    if not normalized or len(normalized) > 80:
+        return fallback
+    if not all(ch.isalnum() or ch == "_" for ch in normalized):
+        return fallback
+    return standard_error_code(normalized)
+
+
+def _child_dispatch_metadata(child_run: dict[str, Any]) -> dict[str, Any]:
+    execution_input = _run_execution_input_from_row(child_run)
+    dispatch = execution_input.get("multi_agent_dispatch")
+    return dispatch if isinstance(dispatch, dict) else {}
+
+
+async def reconcile_multi_agent_child_run_terminal_state(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    child_run_id: str,
+    child_status: str,
+    result_json: dict[str, Any] | None = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> dict[str, Any] | None:
+    """Mirror a server-owned terminal child run onto its handed-off parent step."""
+
+    parent_step_status, dispatch_state = _terminal_dispatch_state(child_status)
+    child_cursor = await conn.execute(
+        """
+        select id, tenant_id, copied_from_run_id, trace_id, status, input_json
+        from runs
+        where tenant_id = %s and id = %s
+        for update
+        """,
+        (tenant_id, child_run_id),
+    )
+    child_run = await child_cursor.fetchone()
+    if child_run is None:
+        return None
+    if str(child_run.get("status") or "") != child_status or child_status not in TERMINAL_RUN_STATUSES:
+        return None
+    parent_run_id = str(child_run.get("copied_from_run_id") or "").strip()
+    if not parent_run_id:
+        return None
+    dispatch = _child_dispatch_metadata(child_run)
+    if str(dispatch.get("parent_run_id") or "") != parent_run_id:
+        return None
+    parent_step_id = str(dispatch.get("parent_step_id") or "").strip()
+    dispatch_id = str(dispatch.get("dispatch_id") or "").strip()
+    step_key = str(dispatch.get("step_key") or "").strip()
+    if not parent_step_id or not dispatch_id or not step_key:
+        return None
+
+    step_cursor = await conn.execute(
+        """
+        select id, run_id, step_key, step_kind, status, title, role, sequence, payload_json
+        from run_steps
+        where tenant_id = %s
+          and run_id = %s
+          and id = %s
+        for update
+        """,
+        (tenant_id, parent_run_id, parent_step_id),
+    )
+    parent_step = await step_cursor.fetchone()
+    if parent_step is None:
+        return None
+    step_payload = parent_step.get("payload_json") if isinstance(parent_step.get("payload_json"), dict) else {}
+    if (
+        str(parent_step.get("step_key") or "") != step_key
+        or str(step_payload.get("dispatch_id") or "") != dispatch_id
+        or str(step_payload.get("dispatch_child_run_id") or "") != child_run_id
+        or step_payload.get("dispatch_state") != "handed_off"
+    ):
+        return None
+
+    reconciled_at = datetime.now(timezone.utc).isoformat()
+    update_payload: dict[str, Any] = {
+        "dispatch_state": dispatch_state,
+        "dispatch_child_status": child_status,
+        "dispatch_reconciled_at": reconciled_at,
+        "dispatch_child_run_id": child_run_id,
+    }
+    if child_status == "succeeded":
+        output = _safe_child_result_output(result_json)
+        if output:
+            update_payload["output"] = output
+            lineage = artifact_lineage_contract(
+                {
+                    "checkpoint_id": f"checkpoint_{parent_step_id}",
+                    "source_step_id": parent_step_id,
+                },
+                source_run_id=parent_run_id,
+            )
+            checkpoint_id = lineage.get("checkpoint_id")
+            source_step_id = lineage.get("source_step_id")
+            if checkpoint_id and source_step_id:
+                update_payload["checkpoint_id"] = str(checkpoint_id)
+                update_payload["source_step_id"] = str(source_step_id)
+    elif child_status in {"failed", "cancelled"}:
+        update_payload["error_code"] = _safe_child_error_code(error_code or f"child_run_{child_status}", child_status=child_status)
+        update_payload["error"] = _safe_child_error_message(
+            child_status=child_status,
+            result_json=result_json,
+            error_message=error_message,
+        )
+
+    update_cursor = await conn.execute(
+        """
+        update run_steps
+        set
+          payload_json = payload_json || %s::jsonb,
+          status = %s,
+          finished_at = coalesce(finished_at, now()),
+          updated_at = now()
+        where tenant_id = %s
+          and run_id = %s
+          and id = %s
+          and payload_json->>'dispatch_id' = %s
+          and payload_json->>'dispatch_child_run_id' = %s
+          and payload_json->>'dispatch_state' = 'handed_off'
+        returning id
+        """,
+        (
+            dumps_json(update_payload),
+            parent_step_status,
+            tenant_id,
+            parent_run_id,
+            parent_step_id,
+            dispatch_id,
+            child_run_id,
+        ),
+    )
+    updated = await update_cursor.fetchone()
+    if updated is None:
+        return None
+
+    event_id = await append_event(
+        conn,
+        tenant_id=tenant_id,
+        run_id=parent_run_id,
+        trace_id=child_run.get("trace_id"),
+        event_type="multi_agent_dispatch_reconciled",
+        stage="control",
+        message="Multi-agent child run reconciled",
+        visible_to_user=False,
+        payload={
+            "visible_to_user": False,
+            "step_key": step_key,
+            "dispatch_id": dispatch_id,
+            "child_run_id": child_run_id,
+            "child_status": child_status,
+            "dispatch_state": dispatch_state,
+        },
+    )
+    audit_id = await append_audit_log(
+        conn,
+        tenant_id=tenant_id,
+        user_id=None,
+        action="run.multi_agent.dispatch.reconcile",
+        target_type="run_step",
+        target_id=parent_step_id,
+        trace_id=child_run.get("trace_id"),
+        payload_json={
+            "parent_run_id": parent_run_id,
+            "parent_step_id": parent_step_id,
+            "step_key": step_key,
+            "dispatch_id": dispatch_id,
+            "child_run_id": child_run_id,
+            "child_status": child_status,
+            "result_status": parent_step_status,
+        },
+    )
+    return {
+        "parent_run_id": parent_run_id,
+        "parent_step_id": parent_step_id,
+        "child_run_id": child_run_id,
+        "step_key": step_key,
+        "status": parent_step_status,
+        "dispatch_state": dispatch_state,
+        "event_id": event_id,
+        "audit_id": audit_id,
+    }
+
+
 async def list_run_steps(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> list[dict[str, Any]]:
     cursor = await conn.execute(
         """

@@ -327,6 +327,322 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_worker_reconciles_multi_agent_child_after_success(monkeypatch):
+    calls = []
+
+    child_input = {
+        "mode": "file",
+        "multi_agent_dispatch": {
+            "parent_run_id": "run-parent",
+            "parent_step_id": "step-code",
+            "dispatch_id": "dispatch-code",
+            "step_key": "code",
+        },
+    }
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"]))
+        return "evt-a"
+
+    async def create_artifact(conn, **kwargs):
+        return None
+
+    async def complete_run(conn, *, tenant_id, run_id, result_json):
+        calls.append(("complete", run_id, result_json["message"]))
+
+    async def reconcile(conn, **kwargs):
+        calls.append(("reconcile", kwargs))
+        return {"parent_run_id": "run-parent"}
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.reconcile_multi_agent_child_run_terminal_state", reconcile)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    outcome = await process_run_payload(
+        base_payload(run_id="run-child", input=child_input),
+        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+    )
+
+    assert outcome.status == "succeeded"
+    complete_index = next(index for index, item in enumerate(calls) if item[0] == "complete")
+    reconcile_index = next(index for index, item in enumerate(calls) if item[0] == "reconcile")
+    assert complete_index < reconcile_index
+    reconcile_call = calls[reconcile_index][1]
+    assert reconcile_call["tenant_id"] == "tenant-a"
+    assert reconcile_call["child_run_id"] == "run-child"
+    assert reconcile_call["child_status"] == "succeeded"
+    assert reconcile_call["result_json"]["message"].startswith("fake run completed for run-child")
+
+
+@pytest.mark.asyncio
+async def test_worker_reconciles_multi_agent_child_after_failure(monkeypatch):
+    calls = []
+
+    child_input = {
+        "mode": "file",
+        "multi_agent_dispatch": {
+            "parent_run_id": "run-parent",
+            "parent_step_id": "step-code",
+            "dispatch_id": "dispatch-code",
+            "step_key": "code",
+        },
+    }
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"]))
+        return "evt-a"
+
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+        calls.append(("fail", run_id, error_code, error_message, result_json))
+
+    async def reconcile(conn, **kwargs):
+        calls.append(("reconcile", kwargs))
+        return {"parent_run_id": "run-parent"}
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.reconcile_multi_agent_child_run_terminal_state", reconcile)
+
+    outcome = await process_run_payload(
+        base_payload(run_id="run-child", input=child_input),
+        AdapterRegistry({"fake": FakeFailureAdapter()}),
+    )
+
+    assert outcome.status == "failed"
+    fail_index = next(index for index, item in enumerate(calls) if item[0] == "fail")
+    reconcile_index = next(index for index, item in enumerate(calls) if item[0] == "reconcile")
+    assert fail_index < reconcile_index
+    reconcile_call = calls[reconcile_index][1]
+    assert reconcile_call["child_run_id"] == "run-child"
+    assert reconcile_call["child_status"] == "failed"
+    assert reconcile_call["error_code"] == "fake_failure"
+    assert reconcile_call["error_message"] == "fake run failed for run-child"
+
+
+@pytest.mark.asyncio
+async def test_worker_reconciles_multi_agent_child_after_cancel(monkeypatch):
+    calls = []
+    cancel_checks = 0
+
+    child_input = {
+        "mode": "file",
+        "multi_agent_dispatch": {
+            "parent_run_id": "run-parent",
+            "parent_step_id": "step-code",
+            "dispatch_id": "dispatch-code",
+            "step_key": "code",
+        },
+    }
+
+    class StreamingAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            await event_sink(
+                event_type="assistant_delta",
+                stage="message",
+                message="partial",
+                payload={"delta": "partial"},
+            )
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="adapter/1",
+                executor_type="fake",
+                executor_version="fake/1",
+                capabilities={"streaming": True},
+                result={"message": "should not complete"},
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def is_cancel_requested(conn, *, tenant_id, run_id):
+        nonlocal cancel_checks
+        cancel_checks += 1
+        return cancel_checks >= 2
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"]))
+        return "evt-a"
+
+    async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
+        calls.append(("cancel", run_id, result_json))
+
+    async def reconcile(conn, **kwargs):
+        calls.append(("reconcile", kwargs))
+        return {"parent_run_id": "run-parent"}
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr("app.worker.repositories.reconcile_multi_agent_child_run_terminal_state", reconcile)
+
+    outcome = await process_run_payload(
+        base_payload(run_id="run-child", input=child_input),
+        AdapterRegistry({"fake": StreamingAdapter()}),
+    )
+
+    assert outcome.status == "cancelled"
+    cancel_index = next(index for index, item in enumerate(calls) if item[0] == "cancel")
+    reconcile_index = next(index for index, item in enumerate(calls) if item[0] == "reconcile")
+    assert cancel_index < reconcile_index
+    reconcile_call = calls[reconcile_index][1]
+    assert reconcile_call["child_run_id"] == "run-child"
+    assert reconcile_call["child_status"] == "cancelled"
+    assert reconcile_call["result_json"] == {"message": "任务已取消"}
+
+
+@pytest.mark.asyncio
+async def test_worker_does_not_reconcile_ordinary_run(monkeypatch):
+    calls = []
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        return "evt-a"
+
+    async def create_artifact(conn, **kwargs):
+        return None
+
+    async def complete_run(conn, *, tenant_id, run_id, result_json):
+        calls.append(("complete", run_id))
+
+    async def reconcile(conn, **kwargs):
+        calls.append(("reconcile", kwargs))
+        return {"parent_run_id": "run-parent"}
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.reconcile_multi_agent_child_run_terminal_state", reconcile)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FakeSuccessAdapter()}))
+
+    assert outcome.status == "succeeded"
+    assert ("complete", "run-a") in calls
+    assert not any(item[0] == "reconcile" for item in calls)
+
+
+@pytest.mark.asyncio
+async def test_worker_reconciles_multi_agent_child_after_executor_exception(monkeypatch):
+    calls = []
+
+    child_input = {
+        "mode": "file",
+        "multi_agent_dispatch": {
+            "parent_run_id": "run-parent",
+            "parent_step_id": "step-code",
+            "dispatch_id": "dispatch-code",
+            "step_key": "code",
+        },
+    }
+
+    class RaisingAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            raise RuntimeError("executor crashed")
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"]))
+        return "evt-a"
+
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+        calls.append(("fail", run_id, error_code, error_message, result_json))
+
+    async def reconcile(conn, **kwargs):
+        calls.append(("reconcile", kwargs))
+        return {"parent_run_id": "run-parent"}
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.reconcile_multi_agent_child_run_terminal_state", reconcile)
+
+    outcome = await process_run_payload(
+        base_payload(run_id="run-child", input=child_input),
+        AdapterRegistry({"fake": RaisingAdapter()}),
+    )
+
+    assert outcome.status == "failed"
+    fail_index = next(index for index, item in enumerate(calls) if item[0] == "fail")
+    reconcile_index = next(index for index, item in enumerate(calls) if item[0] == "reconcile")
+    assert fail_index < reconcile_index
+    reconcile_call = calls[reconcile_index][1]
+    assert reconcile_call["child_run_id"] == "run-child"
+    assert reconcile_call["child_status"] == "failed"
+    assert reconcile_call["error_code"] == "executor_failure"
+    assert reconcile_call["error_message"] == "executor crashed"
+
+
+@pytest.mark.asyncio
+async def test_worker_reconciles_multi_agent_child_after_unknown_executor(monkeypatch):
+    calls = []
+
+    child_input = {
+        "mode": "file",
+        "multi_agent_dispatch": {
+            "parent_run_id": "run-parent",
+            "parent_step_id": "step-code",
+            "dispatch_id": "dispatch-code",
+            "step_key": "code",
+        },
+    }
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"]))
+        return "evt-a"
+
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+        calls.append(("fail", run_id, error_code, error_message, result_json))
+
+    async def reconcile(conn, **kwargs):
+        calls.append(("reconcile", kwargs))
+        return {"parent_run_id": "run-parent"}
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.reconcile_multi_agent_child_run_terminal_state", reconcile)
+
+    outcome = await process_run_payload(
+        base_payload(run_id="run-child", executor_type="missing", input=child_input),
+        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+    )
+
+    assert outcome.status == "failed"
+    fail_index = next(index for index, item in enumerate(calls) if item[0] == "fail")
+    reconcile_index = next(index for index, item in enumerate(calls) if item[0] == "reconcile")
+    assert fail_index < reconcile_index
+    reconcile_call = calls[reconcile_index][1]
+    assert reconcile_call["child_run_id"] == "run-child"
+    assert reconcile_call["child_status"] == "failed"
+    assert reconcile_call["error_code"] == "unknown_executor_type"
+
+
+@pytest.mark.asyncio
 async def test_worker_passes_skill_manifest_pins_to_executor(monkeypatch):
     captured = {}
 
