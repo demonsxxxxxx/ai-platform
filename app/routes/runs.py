@@ -26,6 +26,9 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.projection_redaction import (
+    CAPABILITY_BY_AGENT_ID,
+    CAPABILITY_BY_SKILL_ID,
+    PUBLIC_AGENT_ID_BY_CAPABILITY,
     capability_id_from_skill,
     internal_agent_id_for_request,
     public_agent_id_for_projection,
@@ -51,6 +54,15 @@ from app.validation import assert_safe_id
 router = APIRouter()
 RUN_PLAYBACK_CONTRACT_VERSION = "ai-platform.run-playback.v1"
 RUN_PROVENANCE_CONTRACT_VERSION = "ai-platform.run-provenance.v1"
+RUN_CONTROL_READINESS_CONTRACT_VERSION = "ai-platform.run-control-readiness.v1"
+RUN_CONTROL_ACTIVE_STATUSES = {"queued", "running"}
+RUN_CONTROL_TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
+RUN_CONTROL_RETRY_PREVIEW_STATUSES = {"failed", "dead-letter", "dead_letter", "dead-lettered"}
+RUN_CONTROL_PUBLIC_AGENT_IDS = set(PUBLIC_AGENT_ID_BY_CAPABILITY.values())
+RUN_CONTROL_RAW_PROJECTION_TERMS = {
+    *CAPABILITY_BY_SKILL_ID.keys(),
+    *(set(CAPABILITY_BY_AGENT_ID.keys()) - RUN_CONTROL_PUBLIC_AGENT_IDS),
+}
 
 
 def _skill_manifest_pins(skill_id: str, input_payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -155,6 +167,33 @@ def public_text_or_fallback(value: object, fallback: object = "") -> str:
         return text
     fallback_text = sanitize_public_text(fallback)
     return fallback_text or ""
+
+
+def _readiness_raw_projection_terms(run: dict[str, object]) -> set[str]:
+    terms = {term.lower() for term in RUN_CONTROL_RAW_PROJECTION_TERMS if term}
+    raw_skill_id = str(run.get("skill_id") or "")
+    if raw_skill_id:
+        terms.add(raw_skill_id.lower())
+    raw_agent_id = str(run.get("agent_id") or "")
+    public_agent_id = public_agent_id_for_projection(raw_agent_id, raw_skill_id)
+    if raw_agent_id and raw_agent_id != public_agent_id:
+        terms.add(raw_agent_id.lower())
+    return terms
+
+
+def _contains_raw_projection_term(text: str, raw_terms: set[str]) -> bool:
+    normalized = text.lower()
+    return any(term and term in normalized for term in raw_terms)
+
+
+def _readiness_public_text(value: object, *, fallback: object = "", raw_terms: set[str]) -> str:
+    text = public_text_or_fallback(value)
+    if text and not _contains_raw_projection_term(text, raw_terms):
+        return text
+    fallback_text = public_text_or_fallback(fallback)
+    if fallback_text and not _contains_raw_projection_term(fallback_text, raw_terms):
+        return fallback_text
+    return ""
 
 
 def artifact_card(row: dict[str, object], principal: AuthPrincipal | None = None) -> dict[str, object]:
@@ -546,6 +585,115 @@ def run_provenance_snapshot(
                 "subagents": len(subagent_items),
             }
         },
+    }
+
+
+def _control_action(*, enabled: bool, reason: str, method: str | None, href: str | None) -> dict[str, object]:
+    return {"enabled": enabled, "reason": reason, "method": method, "href": href}
+
+
+def _checkpoint_candidate_from_step(
+    row: dict[str, object],
+    principal: AuthPrincipal,
+    *,
+    raw_terms: set[str],
+) -> dict[str, object] | None:
+    payload = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
+    status = normalize_step_status(row.get("status"))
+    if status != "succeeded" or payload.get("output") is None:
+        return None
+    public_step = run_step_response(row, principal=principal)
+    step_id = str(public_step["step_id"])
+    step_key = str(public_step["step_key"])
+    title = public_step.get("title")
+    role = public_step.get("role")
+    if not is_ai_admin(principal):
+        step_key = _readiness_public_text(step_key, fallback=step_id, raw_terms=raw_terms) or step_id
+        title = _readiness_public_text(title, fallback=step_key, raw_terms=raw_terms) or step_key
+        if role is not None:
+            role = _readiness_public_text(role, raw_terms=raw_terms) or None
+    return {
+        "step_id": step_id,
+        "step_key": step_key,
+        "status": str(public_step["status"]),
+        "title": title,
+        "role": role,
+        "sequence": int(public_step.get("sequence") or 0),
+        "reusable": True,
+        "reason": "output_available",
+    }
+
+
+def run_control_readiness_snapshot(
+    *,
+    run: dict[str, object],
+    steps: list[dict[str, object]],
+    principal: AuthPrincipal,
+    queue_insight: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Return read-only readiness for platform-controlled run actions."""
+    run_id = str(run["id"])
+    status = normalize_run_status(str(run["status"]))
+    raw_terms = _readiness_raw_projection_terms(run)
+    checkpoint_candidates = [
+        item
+        for item in (_checkpoint_candidate_from_step(row, principal, raw_terms=raw_terms) for row in steps)
+        if item is not None
+    ]
+    cancel_requested = bool(run.get("cancel_requested_at"))
+    if cancel_requested:
+        cancel_reason = "cancel_already_requested"
+    elif status in RUN_CONTROL_ACTIVE_STATUSES:
+        cancel_reason = "cancel_available"
+    elif status in RUN_CONTROL_TERMINAL_STATUSES:
+        cancel_reason = "terminal_run"
+    else:
+        cancel_reason = "status_not_cancellable"
+    cancel_enabled = cancel_reason == "cancel_available"
+
+    if status in RUN_CONTROL_ACTIVE_STATUSES:
+        resume_reason = "active_run"
+    elif checkpoint_candidates:
+        resume_reason = "checkpoint_outputs_available"
+    else:
+        resume_reason = "no_checkpoint_outputs"
+    resume_enabled = resume_reason == "checkpoint_outputs_available"
+
+    retry_reason = "retry_runtime_not_enabled" if status in RUN_CONTROL_RETRY_PREVIEW_STATUSES else "status_not_retryable"
+    run_summary = run_playback_summary(run, principal)
+    if not is_ai_admin(principal):
+        raw_error_message = run_summary.get("error_message")
+        error_fallback = "run_failed" if raw_error_message and status == "failed" else ""
+        run_summary["error_message"] = _readiness_public_text(
+            raw_error_message,
+            fallback=error_fallback,
+            raw_terms=raw_terms,
+        )
+    return {
+        "contract_version": RUN_CONTROL_READINESS_CONTRACT_VERSION,
+        "run": run_summary,
+        "actions": {
+            "cancel": _control_action(
+                enabled=cancel_enabled,
+                reason=cancel_reason,
+                method="POST",
+                href=f"/api/ai/runs/{run_id}/cancel",
+            ),
+            "resume": _control_action(
+                enabled=resume_enabled,
+                reason=resume_reason,
+                method="POST",
+                href=f"/api/ai/runs/{run_id}/copy",
+            ),
+            "retry": _control_action(
+                enabled=False,
+                reason=retry_reason,
+                method=None,
+                href=None,
+            ),
+        },
+        "checkpoint_candidates": checkpoint_candidates,
+        "queue_insight": queue_insight,
     }
 
 
@@ -1090,6 +1238,36 @@ async def get_copy_run_plan(
     plan = copy_recovery_plan(run, steps, include_raw_skill=is_ai_admin(principal))
     plan["queue_insight"] = await get_queue_insight(principal.tenant_id)
     return plan
+
+
+@router.get("/runs/{run_id}/control/readiness")
+async def get_run_control_readiness(
+    run_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    """Return read-only readiness for platform-controlled run actions."""
+    async with transaction() as conn:
+        run = await repositories.get_authorized_run(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            run_id=run_id,
+        )
+        if run is None:
+            raise HTTPException(status_code=404, detail="run_not_found")
+        steps = await repositories.list_run_steps(conn, tenant_id=principal.tenant_id, run_id=run_id)
+    run_status = normalize_run_status(str(run["status"]))
+    queue_insight = (
+        await queue_insight_for_status(run_status, principal.tenant_id)
+        if run_status == "queued"
+        else None
+    )
+    return run_control_readiness_snapshot(
+        run=run,
+        steps=steps,
+        principal=principal,
+        queue_insight=queue_insight,
+    )
 
 
 @router.post("/runs/{run_id}/cancel", response_model=RunControlResponse, response_model_exclude={"queue_position", "queue_insight"})

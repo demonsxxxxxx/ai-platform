@@ -367,6 +367,234 @@ def test_copy_run_plan_previews_reused_and_rerun_steps(monkeypatch):
     assert "skill_id" not in str(data["confirmation_card"])
 
 
+def readiness_run_row(*, status="failed", cancel_requested_at=None, error_message=None):
+    return {
+        "id": "run-ready",
+        "session_id": "ses-ready",
+        "workspace_id": "default",
+        "agent_id": "qa-word-review",
+        "skill_id": "qa-file-reviewer",
+        "schema_version": "ai-platform.run.v1",
+        "executor_schema_version": "ai-platform.executor-result.v1",
+        "status": status,
+        "trace_id": "trace-ready",
+        "input_json": {"message": "review", "skill_id": "qa-file-reviewer"},
+        "result_json": {},
+        "error_code": None,
+        "error_message": error_message,
+        "cancel_requested_at": cancel_requested_at,
+        "cancel_requested_by": None,
+    }
+
+
+def test_run_control_readiness_enables_resume_from_checkpoint_outputs(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("default", "user-a", "run-ready")
+        return readiness_run_row(status="failed")
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-code",
+                "run_id": run_id,
+                "step_key": "code",
+                "step_kind": "agent",
+                "status": "succeeded",
+                "title": "Code",
+                "role": "coding",
+                "sequence": 1,
+                "payload_json": {
+                    "output": "raw reusable output must not leak",
+                    "skill_ids": ["qa-file-reviewer"],
+                    "resource_limits": {"max_seconds": 60},
+                    "sandbox_mode": "ephemeral",
+                    "work_dir": "/tmp/runtime",
+                    "private_payload": {"token": "secret-token"},
+                },
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+            {
+                "id": "step-test",
+                "run_id": run_id,
+                "step_key": "test",
+                "step_kind": "agent",
+                "status": "failed",
+                "title": "Test",
+                "role": "verifier",
+                "sequence": 2,
+                "payload_json": {"error": "tests failed"},
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+        ]
+
+    async def fake_queue_insight(status, tenant_id):
+        raise AssertionError("queue insight should only be loaded for queued runs")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.routes.runs.queue_insight_for_status", fake_queue_insight)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-ready/control/readiness", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["contract_version"] == "ai-platform.run-control-readiness.v1"
+    assert body["run"]["run_id"] == "run-ready"
+    assert body["run"]["skill_id"] is None
+    assert body["actions"]["cancel"] == {
+        "enabled": False,
+        "reason": "terminal_run",
+        "method": "POST",
+        "href": "/api/ai/runs/run-ready/cancel",
+    }
+    assert body["actions"]["resume"] == {
+        "enabled": True,
+        "reason": "checkpoint_outputs_available",
+        "method": "POST",
+        "href": "/api/ai/runs/run-ready/copy",
+    }
+    assert body["actions"]["retry"] == {
+        "enabled": False,
+        "reason": "retry_runtime_not_enabled",
+        "method": None,
+        "href": None,
+    }
+    assert body["checkpoint_candidates"] == [
+        {
+            "step_id": "step-code",
+            "step_key": "code",
+            "status": "succeeded",
+            "title": "Code",
+            "role": "coding",
+            "sequence": 1,
+            "reusable": True,
+            "reason": "output_available",
+        }
+    ]
+    assert body["queue_insight"] is None
+    public_dump = str(body)
+    assert "raw reusable output" not in public_dump
+    assert "qa-file-reviewer" not in public_dump
+    assert "resource_limits" not in public_dump
+    assert "sandbox_mode" not in public_dump
+    assert "/tmp/" not in public_dump
+    assert "private_payload" not in public_dump
+    assert "secret-token" not in public_dump
+
+
+def test_run_control_readiness_redacts_raw_skill_ids_from_public_scalars(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return readiness_run_row(
+            status="failed",
+            error_message="qa-file-reviewer failed in qa-word-review",
+        )
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-skill",
+                "run_id": run_id,
+                "step_key": "qa-file-reviewer",
+                "step_kind": "agent",
+                "status": "succeeded",
+                "title": "qa-file-reviewer",
+                "role": "qa-word-review",
+                "sequence": 1,
+                "payload_json": {"output": "reusable"},
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-ready/control/readiness", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run"]["error_message"] == "run_failed"
+    assert body["checkpoint_candidates"] == [
+        {
+            "step_id": "step-skill",
+            "step_key": "step-skill",
+            "status": "succeeded",
+            "title": "step-skill",
+            "role": None,
+            "sequence": 1,
+            "reusable": True,
+            "reason": "output_available",
+        }
+    ]
+    public_dump = str(body)
+    assert "qa-file-reviewer" not in public_dump
+    assert "qa-word-review" not in public_dump
+
+
+def test_run_control_readiness_enables_cancel_and_includes_queue_insight(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return readiness_run_row(status="queued")
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return []
+
+    async def fake_queue_insight(status, tenant_id):
+        assert (status, tenant_id) == ("queued", "default")
+        return {"tenant_id": tenant_id, "queued": 2, "running": 1}
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.routes.runs.queue_insight_for_status", fake_queue_insight)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-ready/control/readiness", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["actions"]["cancel"]["enabled"] is True
+    assert body["actions"]["cancel"]["reason"] == "cancel_available"
+    assert body["actions"]["resume"]["enabled"] is False
+    assert body["actions"]["resume"]["reason"] == "active_run"
+    assert body["actions"]["retry"]["reason"] == "status_not_retryable"
+    assert body["queue_insight"] == {"tenant_id": "default", "queued": 2, "running": 1}
+
+
+def test_run_control_readiness_returns_not_found_without_loading_steps(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("default", "user-a", "missing-run")
+        return None
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        raise AssertionError("steps must not be listed for missing run")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/missing-run/control/readiness", headers=headers())
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "run_not_found"}
+
+
 def test_copy_run_plan_redacts_runtime_private_step_titles_for_ordinary_user(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         return {

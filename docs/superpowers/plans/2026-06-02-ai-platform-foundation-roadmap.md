@@ -235,6 +235,14 @@ projection, checkpoint/subagent/artifact linkage, sensitive-field redaction,
 and smoke data cleanup. It does not start high-risk tool execution, Docker
 sandbox expansion, or autonomous multi-agent scheduling.
 
+### P2 Run Control Readiness Snapshot
+
+Status: started as a read-only P2 foundation slice. This adds the
+`ai-platform.run-control-readiness.v1` owner-scoped projection for existing
+run cancel, copy/resume, checkpoint reuse, and future retry readiness. It does
+not start retry scheduling, autonomous multi-agent dispatch, high-risk tool
+execution, or new sandbox behavior.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。
