@@ -121,7 +121,8 @@ projections.
 后续硬化：
 
 - playback 产品化。
-- Artifact/Office preview。
+- Artifact/Office preview allowlist route: closed by the P1 Tool Permission /
+  Agent Frontend V1 hardening follow-up below.
 - 更广事件消费。
 - 文件任务浏览器 UI 验收。
 
@@ -280,6 +281,29 @@ with event card `expires_at`, redaction of private request/decision payloads,
 existing thin-shell frontend root/API health, dist API boundary, and LambChat
 compatibility API gates. This does not open high-risk write tools or start P2
 Long Task / Multi-Agent Runtime.
+
+Artifact preview allowlist was later closed as a P1 Tool Permission / Agent
+Frontend V1 hardening follow-up on `main` at
+`12b6ce07a90e9bf03ec45c0989217e6de08c815f`. The slice adds authenticated
+`/api/ai/artifacts/{artifact_id}/preview`, a shared PDF/Office MIME allowlist,
+inline `Cache-Control: no-store` / `X-Content-Type-Options: nosniff` preview
+responses, admin fallback audit `admin_artifact_previewed`, and artifact card
+/ playback `preview_url` projection only for allowlisted content types. Local
+verification recorded TDD RED for the missing route/projection, focused route
+coverage with `149 passed`, compile success, and full pytest with
+`1010 passed, 6 skipped, 2 warnings`. Inherited-configuration review found no
+Critical issues; accepted feedback added `nosniff`, ordinary-user non-owner 404
+coverage, tighter admin audit assertions, and playback preview projection
+coverage. The 211 runtime-only deployment used image `ai-platform:12b6ce0`
+(`sha256:61979e19395246efbb0952fba305eb868137812467eec1117fe49c20b561ab24`)
+with labels
+`ai-platform.source-revision=12b6ce07a90e9bf03ec45c0989217e6de08c815f` and
+`ai-platform.source_note=p1-artifact-preview-allowlist`. The 211 smoke verified
+API and frontend proxy health, OpenAPI route exposure, source label parity,
+owner DOCX preview 200 with inline/no-store/nosniff headers, non-owner preview
+404, ZIP preview 415 without opening preview, admin preview audit, playback
+`preview_url` allowlist projection, no `storage_key` / private payload leakage,
+clean recent API/worker logs, and smoke data cleanup.
 
 ### P2 Run Provenance Snapshot
 
