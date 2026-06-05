@@ -451,7 +451,8 @@ high-risk tool execution, retry scheduling, or new sandbox behavior.
 
 ### P2 Runtime Typed Callback Events
 
-Status: started as a P2 runtime auditability slice. This extends the internal
+Status: deployed on 211 as a P2 runtime auditability slice via PR #9 and main
+commit `963c245a0404fef6109e78107aa179ba10e99ab3`. This extends the internal
 sandbox executor callback contract so a trusted runtime callback can include
 validated `AgentEvent` entries such as `checkpoint_created`,
 `subagent_started`, `subagent_completed`, and `agent_step_completed`. The
@@ -463,8 +464,20 @@ This slice keeps the callback endpoint internal and callback-token protected.
 It preserves existing `new_message`, `state_patch`, and terminal status
 compatibility mapping, keeps `admin_only` events hidden from ordinary users,
 and does not enqueue work, start autonomous subagents, open sandbox/tool
-access, or change worker scheduling. 211 deployment and smoke evidence must be
-recorded after deployment, not before.
+access, or change worker scheduling.
+
+211 deployment evidence: API and worker were recreated from image
+`sha256:3a119bfb77e07e84e959cef9d3338293fdcfb3b32b5d68f0e1cc411e99f30d47`
+with labels `ai-platform.source-branch=main`,
+`ai-platform.source-revision=963c245a0404fef6109e78107aa179ba10e99ab3`, and
+`ai-platform.source_note=p2-runtime-typed-callback-events`. The 211 smoke
+verified `/api/ai/health`, OpenAPI exposure, callback response
+`{"accepted": true, "event_count": 5}`, persisted stages
+`executor`, `checkpoint`, `subagent`, `agent`, and `browser`, typed event
+payload source `executor_callback`, ordinary-user projection containing only
+`checkpoint_created`, `subagent_started`, and `agent_step_completed`, hidden
+`admin_only` browser snapshot data, and DB smoke cleanup with zero remaining
+events for the smoke run.
 
 ## 禁止项
 
