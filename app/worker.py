@@ -48,6 +48,62 @@ def parse_queue_payload(raw: dict[str, Any]) -> QueueRunPayload:
     return QueueRunPayload.model_validate(raw)
 
 
+def _multi_agent_dispatch_from_payload(payload: QueueRunPayload) -> dict[str, Any] | None:
+    dispatch = payload.input.get("multi_agent_dispatch")
+    return dispatch if isinstance(dispatch, dict) else None
+
+
+async def _reconcile_multi_agent_child_terminal_state(
+    conn,
+    *,
+    payload: QueueRunPayload,
+    child_status: str,
+    result_json: dict[str, Any] | None = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> dict[str, Any] | None:
+    if _multi_agent_dispatch_from_payload(payload) is None:
+        return None
+    return await repositories.reconcile_multi_agent_child_run_terminal_state(
+        conn,
+        tenant_id=payload.tenant_id,
+        child_run_id=payload.run_id,
+        child_status=child_status,
+        result_json=result_json,
+        error_code=error_code,
+        error_message=error_message,
+    )
+
+
+async def _fail_run_and_reconcile(
+    conn,
+    *,
+    payload: QueueRunPayload,
+    tenant_id: str,
+    run_id: str,
+    error_code: str,
+    error_message: str,
+    result_json: dict[str, Any] | None = None,
+) -> None:
+    await repositories.fail_run(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        error_code=error_code,
+        error_message=error_message,
+        result_json=result_json,
+    )
+    if tenant_id == payload.tenant_id and run_id == payload.run_id:
+        await _reconcile_multi_agent_child_terminal_state(
+            conn,
+            payload=payload,
+            child_status="failed",
+            result_json=result_json,
+            error_code=error_code,
+            error_message=error_message,
+        )
+
+
 def _mcp_tool_request_payload(payload: QueueRunPayload) -> dict[str, str]:
     serialized = json.dumps(payload.input, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return {"input_sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest()}
@@ -390,8 +446,9 @@ async def _fail_policy_denied_run(
     event_payload: dict[str, Any],
 ) -> WorkerOutcome:
     async with transaction() as conn:
-        await repositories.fail_run(
+        await _fail_run_and_reconcile(
             conn,
+            payload=payload,
             tenant_id=payload.tenant_id,
             run_id=payload.run_id,
             error_code=error_code,
@@ -679,8 +736,9 @@ async def process_run_payload(
             if str(existing_run.get("status") or "") == "queued":
                 error_code = "queue_payload_identity_mismatch"
                 error_message = "Queued run identity is invalid"
-                await repositories.fail_run(
+                await _fail_run_and_reconcile(
                     conn,
+                    payload=payload,
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
                     error_code=error_code,
@@ -710,8 +768,9 @@ async def process_run_payload(
         if mismatch_fields:
             error_code = "queue_payload_identity_mismatch"
             error_message = "Queue payload identity does not match run record"
-            await repositories.fail_run(
+            await _fail_run_and_reconcile(
                 conn,
+                payload=payload,
                 tenant_id=run_identity["tenant_id"],
                 run_id=run_identity["run_id"],
                 error_code=error_code,
@@ -742,11 +801,18 @@ async def process_run_payload(
             payload=_worker_runtime_evidence(worker_id=worker_id, executor_type=payload.executor_type),
         )
         if await repositories.is_cancel_requested(conn, tenant_id=run_identity["tenant_id"], run_id=run_identity["run_id"]):
+            cancel_result = {"message": "任务已取消"}
             await repositories.cancel_run(
                 conn,
                 tenant_id=run_identity["tenant_id"],
                 run_id=run_identity["run_id"],
-                result_json={"message": "任务已取消"},
+                result_json=cancel_result,
+            )
+            await _reconcile_multi_agent_child_terminal_state(
+                conn,
+                payload=payload,
+                child_status="cancelled",
+                result_json=cancel_result,
             )
             await append_user_event(
                 conn,
@@ -759,8 +825,9 @@ async def process_run_payload(
             )
             return WorkerOutcome("cancelled", run_identity["run_id"])
         if payload.executor_type == "runtime211":
-            await repositories.fail_run(
+            await _fail_run_and_reconcile(
                 conn,
+                payload=payload,
                 tenant_id=run_identity["tenant_id"],
                 run_id=run_identity["run_id"],
                 error_code="legacy_runtime211_direct_executor_disabled",
@@ -807,8 +874,9 @@ async def process_run_payload(
                     )
                     tool_gate = evaluate_tool_policy(tool=tool, permission_decision=permission_decision)
                 if not tool_gate.allowed:
-                    await repositories.fail_run(
+                    await _fail_run_and_reconcile(
                         conn,
+                        payload=payload,
                         tenant_id=payload.tenant_id,
                         run_id=payload.run_id,
                         error_code=tool_gate.reason,
@@ -865,8 +933,9 @@ async def process_run_payload(
                     if consumed_decision is None:
                         error_code = "tool_permission_consumed_or_expired"
                         error_message = "MCP tool permission decision was already consumed or expired"
-                        await repositories.fail_run(
+                        await _fail_run_and_reconcile(
                             conn,
+                            payload=payload,
                             tenant_id=payload.tenant_id,
                             run_id=payload.run_id,
                             error_code=error_code,
@@ -935,8 +1004,9 @@ async def process_run_payload(
                     },
                 )
             except repositories.RepositoryConflictError as exc:
-                await repositories.fail_run(
+                await _fail_run_and_reconcile(
                     conn,
+                    payload=payload,
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
                     error_code=str(exc),
@@ -959,8 +1029,9 @@ async def process_run_payload(
                 )
                 return WorkerOutcome("failed", payload.run_id, str(exc), "MCP tool denied by policy")
             except repositories.RepositoryNotFoundError as exc:
-                await repositories.fail_run(
+                await _fail_run_and_reconcile(
                     conn,
+                    payload=payload,
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
                     error_code=str(exc),
@@ -985,8 +1056,9 @@ async def process_run_payload(
         try:
             adapter = adapter_registry.get(payload.executor_type)
         except KeyError as exc:
-            await repositories.fail_run(
+            await _fail_run_and_reconcile(
                 conn,
+                payload=payload,
                 tenant_id=payload.tenant_id,
                 run_id=payload.run_id,
                 error_code="unknown_executor_type",
@@ -1103,11 +1175,18 @@ async def process_run_payload(
                 )
     except WorkerRunCancelled:
         async with transaction() as conn:
+            cancel_result = {"message": "任务已取消"}
             await repositories.cancel_run(
                 conn,
                 tenant_id=payload.tenant_id,
                 run_id=payload.run_id,
-                result_json={"message": "任务已取消"},
+                result_json=cancel_result,
+            )
+            await _reconcile_multi_agent_child_terminal_state(
+                conn,
+                payload=payload,
+                child_status="cancelled",
+                result_json=cancel_result,
             )
             await append_user_event(
                 conn,
@@ -1121,8 +1200,9 @@ async def process_run_payload(
         return WorkerOutcome("cancelled", payload.run_id)
     except Exception as exc:
         async with transaction() as conn:
-            await repositories.fail_run(
+            await _fail_run_and_reconcile(
                 conn,
+                payload=payload,
                 tenant_id=payload.tenant_id,
                 run_id=payload.run_id,
                 error_code="executor_failure",
@@ -1306,6 +1386,12 @@ async def process_run_payload(
                 run_id=payload.run_id,
                 result_json=result_payload,
             )
+            await _reconcile_multi_agent_child_terminal_state(
+                conn,
+                payload=payload,
+                child_status="succeeded",
+                result_json=result_payload,
+            )
             await append_user_event(
                 conn,
                 tenant_id=payload.tenant_id,
@@ -1336,8 +1422,9 @@ async def process_run_payload(
             result_capabilities=result.capabilities,
             result_payload=result_payload,
         )
-        await repositories.fail_run(
+        await _fail_run_and_reconcile(
             conn,
+            payload=payload,
             tenant_id=payload.tenant_id,
             run_id=payload.run_id,
             error_code=reported_error_code,
