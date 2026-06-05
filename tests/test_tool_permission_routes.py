@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
@@ -150,6 +151,50 @@ def test_tool_permission_decision_writes_event_and_audit(monkeypatch):
         "expires_at": "2026-06-05T12:15:00Z",
     }
     assert calls[2][1]["action"] == "tool.permission.decision"
+
+
+def test_tool_permission_decision_serializes_datetime_expiry_for_event_payload(monkeypatch):
+    calls = []
+    expires_at = datetime(2026, 6, 5, 12, 15, tzinfo=timezone.utc)
+
+    async def fake_get_tool_permission_request(conn, *, tenant_id, user_id, run_id, request_id):
+        return permission_row(risk_level="medium", write_capable=False)
+
+    async def fake_decide_tool_permission_request(conn, **kwargs):
+        return permission_row(
+            status="decided",
+            decision=kwargs["decision"],
+            reason=kwargs["reason"],
+            risk_level="medium",
+            write_capable=False,
+            expires_at=expires_at,
+        )
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(kwargs)
+        return "evt-a"
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(kwargs)
+        return "aud-a"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.tool_permissions.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.tool_permissions.repositories.get_tool_permission_request", fake_get_tool_permission_request)
+    monkeypatch.setattr("app.routes.tool_permissions.repositories.decide_tool_permission_request", fake_decide_tool_permission_request)
+    monkeypatch.setattr("app.routes.tool_permissions.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.routes.tool_permissions.repositories.append_audit_log", fake_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runs/run-a/tool-permissions/tpr-a/decision",
+        headers=headers(),
+        json={"decision": "allow_once", "reason": "read-only query"},
+    )
+
+    assert response.status_code == 200
+    assert calls[0]["event_type"] == "tool_permission_decided"
+    assert calls[0]["payload"]["expires_at"] == "2026-06-05T12:15:00+00:00"
 
 
 def test_tool_permission_response_hides_internal_request_and_decision_payloads(monkeypatch):

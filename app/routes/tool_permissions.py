@@ -11,6 +11,11 @@ from app.tool_permission_projection import permission_response
 
 router = APIRouter()
 
+
+def _event_timestamp(value: object) -> object:
+    return value.isoformat() if hasattr(value, "isoformat") else value
+
+
 @router.post("/runs/{run_id}/tool-permissions/request")
 async def request_tool_permission(
     run_id: str,
@@ -141,7 +146,7 @@ async def decide_tool_permission(
             "status": row.get("status") or "decided",
         }
         if row.get("expires_at") is not None:
-            event_payload["expires_at"] = row.get("expires_at")
+            event_payload["expires_at"] = _event_timestamp(row.get("expires_at"))
         await repositories.append_event(
             conn,
             tenant_id=principal.tenant_id,
