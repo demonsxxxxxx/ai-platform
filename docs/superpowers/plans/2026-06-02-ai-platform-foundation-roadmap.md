@@ -642,6 +642,71 @@ worker process, sandbox/tool privilege expansion, frontend entry, or DB
 migration. It only establishes a bounded admin-controlled handoff primitive
 needed before broader resume/cancel/retry and multi-agent orchestration.
 
+### P2 Multi-Agent Child Completion Reconciliation
+
+Status: deployed on 211 as the terminal child-run reconciliation follow-up to
+controlled handoff via PR #13 and main commit
+`5c69397b913649d664321265a8265abe27103068`. This adds internal repository and
+worker reconciliation so a server-owned handed-off child run that reaches
+`succeeded`, `failed`, or `cancelled` updates the parent dispatch step terminal
+state, dependency readiness, checkpoint lineage, hidden event evidence, and
+audit evidence.
+
+The slice validates the child run from persisted DB state before mutating the
+parent step: same tenant, child `copied_from_run_id`, persisted terminal child
+status, server-owned `multi_agent_dispatch`, matching parent step id,
+`dispatch_id`, `dispatch_child_run_id`, and `dispatch_state = handed_off`.
+Success writes public-safe `output`, `checkpoint_id`, and `source_step_id`.
+Failure and cancellation write public-safe error metadata with unsafe
+`error_code` fallback values such as `child_run_failed` or
+`child_run_cancelled`. Stale or already reconciled parent steps return without
+event or audit side effects.
+
+Local verification recorded repository reconciliation tests with `3 passed`,
+worker terminal hook tests with `6 passed`, related regression coverage with
+`237 passed`, review regression tests with `3 passed`, `python -m compileall -q
+app tools scripts` exit 0, `git diff --check` exit 0, and full pytest with
+`961 passed, 6 skipped, 2 warnings`. Inherited-configuration review first found
+two Important issues around persisted child terminal status validation and
+unsafe parent-step `error_code` copying; both were fixed with RED regression
+tests and follow-up review reported no Critical, Important, or Minor findings.
+The review tool did not expose explicit model or reasoning-effort fields, so
+this remains recorded as inherited-configuration review rather than an explicit
+model gate.
+
+The 211 source marker is
+`5c69397b913649d664321265a8265abe27103068`. The deployed image for both
+`ai-platform-api` and `ai-platform-worker` is
+`sha256:669fb12bc7242775cfceee0768f47793472c8da8a78de7ad857a3462a0e6a640`,
+with labels
+`ai-platform.source-revision=5c69397b913649d664321265a8265abe27103068`,
+`ai-platform.source-branch=main`, and
+`ai-platform.source_note=p2-multi-agent-child-reconciliation`. Remote source
+compile passed with `python3 -m compileall -q app tools scripts`; container
+compile passed with `python -m compileall -q app tools scripts`. Because this
+slice has no dependency changes, 211 deployment used the current healthy image
+as the base, copied the synced runtime source into a new runtime-only image,
+restored executable entrypoint permissions, and recreated API/worker with the
+repo-local compose file while reading the existing 211 runtime `.env` path
+without printing or copying secret values.
+
+The 211 smoke verified `/api/ai/health`, API/worker label parity, host and
+container SHA256 parity for `app/repositories.py` and `app/worker.py`, successful
+child reconciliation to parent step `succeeded/completed` with safe
+`checkpoint_id` and `source_step_id`, failed child reconciliation to parent step
+`failed/failed` with unsafe error code fallback `child_run_failed`, two hidden
+`multi_agent_dispatch_reconciled` events, two
+`run.multi_agent.dispatch.reconcile` audit rows, no private marker leakage in
+parent payload/event/audit evidence, clean recent API/worker logs, and DB smoke
+cleanup with zero remaining rows in `audit_logs`, `run_events`, `run_steps`,
+`runs`, `sessions`, `agents`, `users`, `workspaces`, and `tenants`.
+
+This does not start an autonomous scheduler, polling subagent dispatcher, new
+worker process, sandbox/tool privilege expansion, frontend entry, or DB
+migration. It only closes the terminal-state reconciliation gap after controlled
+child handoff so future resume/cancel/retry and multi-agent orchestration can
+read consistent parent dispatch state.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。

@@ -259,10 +259,44 @@ $base = Join-Path $env:TEMP 'ai-platform-pytest'; New-Item -ItemType Directory -
 
 Result: `961 passed, 6 skipped, 2 warnings`.
 
-- [ ] **Step 6: Update roadmap evidence**
+- [x] **Step 6: Update roadmap evidence**
 
 Add a `P2 Multi-Agent Child Completion Reconciliation` section with local test, review, PR, merge, and 211 smoke evidence after those gates actually complete.
 
-- [ ] **Step 7: Commit, push, PR, merge, deploy to 211, smoke**
+Actual: updated `docs/superpowers/plans/2026-06-02-ai-platform-foundation-roadmap.md`
+with PR #13, main commit `5c69397b913649d664321265a8265abe27103068`, local
+verification counts, inherited-configuration review results, 211 image labels,
+runtime-only deployment details, smoke evidence, cleanup evidence, and explicit
+non-goals.
+
+- [x] **Step 7: Commit, push, PR, merge, deploy to 211, smoke**
 
 Use the normal feature branch and PR flow. Deploy on 211 only, verify health, OpenAPI/source label parity, and a live smoke that a terminal child run reconciles a parent step and writes hidden event/audit without leaking private payload.
+
+Actual: PR #13 (`p2-multi-agent-child-reconciliation`) was merged into `main`
+at `5c69397b913649d664321265a8265abe27103068`. The 211 source was synced from
+that commit, remote compile passed, and API/worker were recreated from
+`ai-platform:5c69397b9136` with image
+`sha256:669fb12bc7242775cfceee0768f47793472c8da8a78de7ad857a3462a0e6a640` and
+labels `ai-platform.source-revision=5c69397b913649d664321265a8265abe27103068`,
+`ai-platform.source-branch=main`, and
+`ai-platform.source_note=p2-multi-agent-child-reconciliation`.
+
+211 verification passed:
+
+- `/api/ai/health` returned `{"status":"ok"}`.
+- API and worker were both running the same labeled image.
+- Container compile passed with `python -m compileall -q app tools scripts`.
+- Host/container SHA256 matched for `app/repositories.py` and `app/worker.py`.
+- Live DB smoke reconciled a succeeded child to parent step
+  `succeeded/completed` with safe `checkpoint_id` and `source_step_id`.
+- Live DB smoke reconciled a failed child to parent step `failed/failed` with
+  unsafe error-code fallback `child_run_failed`.
+- Smoke wrote two hidden `multi_agent_dispatch_reconciled` events and two
+  `run.multi_agent.dispatch.reconcile` audit rows.
+- Parent payload/event/audit evidence had no private marker leakage.
+- Smoke cleanup left zero rows for the smoke tenant in `audit_logs`,
+  `run_events`, `run_steps`, `runs`, `sessions`, `agents`, `users`,
+  `workspaces`, and `tenants`.
+- Recent API/worker logs had no traceback/error/exception/permission-denied
+  lines.
