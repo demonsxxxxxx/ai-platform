@@ -527,6 +527,64 @@ expansion, high-risk tool execution, new DB migration, or new frontend entry.
 It only establishes the admin-controlled dispatch ledger required before
 future checkpoint/resume/subagent orchestration can be made operational.
 
+### P2 Multi-Agent Dispatch Lease Cleanup
+
+Status: deployed on 211 as the bounded cleanup follow-up to the dispatch
+ledger via PR #11 and main commit
+`42f2064af1449ba307e7a090c7ec30db3f39ea97`. This adds lease metadata to
+admin multi-agent dispatch claims and exposes admin-only
+`POST /api/ai/admin/runtime/multi-agent/dispatch/cleanup` to reclaim expired
+claimed steps back to `pending` before an autonomous subagent scheduler exists.
+
+The slice keeps lease state in `run_steps.payload_json` and writes
+`run.multi_agent.dispatch.expire` audit rows. Cleanup is same-tenant,
+admin-only, uses Python-side ISO timestamp parsing instead of SQL casts, skips
+malformed/future leases, scans past unreclaimable candidates until the requested
+number of actual expired claims is reclaimed or candidates are exhausted, uses
+`skip locked`, and clears stale `dispatch_expired_at` when a step is claimed
+again.
+
+Local verification recorded the review RED tests (`3 failed` before safe
+timestamp parsing and stale marker cleanup), second-review RED tests
+(`3 failed` before batch scanning and `skip locked`), final focused coverage
+with `194 passed`, `python -m compileall -q app tools scripts` exit 0,
+`git diff --check` exit 0 with only an `app/settings.py` CRLF/LF warning, and
+full pytest with `942 passed, 6 skipped, 2 warnings`. Inherited-configuration
+review found malformed timestamp, parent-run-status, stale
+`dispatch_expired_at`, candidate-window, and `skip locked` issues; all were
+fixed with regression tests, and final review reported no Critical, Important,
+or Minor findings. The review tool did not expose explicit model or
+reasoning-effort fields, so this remains recorded as inherited-configuration
+review.
+
+The 211 source marker is
+`42f2064af1449ba307e7a090c7ec30db3f39ea97`. The deployed image for both
+`ai-platform-api` and `ai-platform-worker` is
+`sha256:32d0c21156c67a28041814f3b64bf497fceec5da831cbe05875d7bb56f4728d6`,
+with labels
+`ai-platform.source-revision=42f2064af1449ba307e7a090c7ec30db3f39ea97` and
+`ai-platform.source_note=p2-multi-agent-dispatch-lease-cleanup`. Remote Docker
+build was attempted on 211 but the legacy builder failed because the host could
+not fetch `setuptools>=40.8.0`; because this slice has no dependency changes,
+deployment used the previous healthy image as a base, copied the new source
+tree into `/app`, restored executable entrypoint permissions and image
+entrypoint/CMD metadata, committed the image with source labels, and recreated
+API/worker with compose.
+
+The 211 smoke verified `/api/ai/health`, OpenAPI exposure for both
+`/api/ai/admin/runtime/multi-agent/dispatch/cleanup` and
+`/api/ai/runs/{run_id}/multi-agent/dispatch/claims`, ordinary-user cleanup
+`403 not_ai_admin`, admin cleanup `200` with `expired_count = 1`, reclaimed
+step `status = pending` and `dispatch_state = expired`, audit action
+`run.multi_agent.dispatch.expire`, API/worker label parity, clean runtime
+startup logs, and smoke tenant DB cleanup with zero remaining rows in
+`audit_logs`, `run_steps`, `runs`, `sessions`, `agents`, `users`,
+`workspaces`, and `tenants`.
+
+This does not start an autonomous scheduler, child run handoff, queue enqueue,
+subagent worker process, sandbox/tool privilege expansion, frontend entry, or
+DB migration.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。
