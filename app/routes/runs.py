@@ -57,6 +57,7 @@ RUN_PLAYBACK_CONTRACT_VERSION = "ai-platform.run-playback.v1"
 RUN_PROVENANCE_CONTRACT_VERSION = "ai-platform.run-provenance.v1"
 RUN_CONTROL_READINESS_CONTRACT_VERSION = "ai-platform.run-control-readiness.v1"
 RUN_RESUME_MANIFEST_CONTRACT_VERSION = "ai-platform.run-resume-manifest.v1"
+RUN_CHECKPOINT_AUDIT_CONTRACT_VERSION = "ai-platform.run-checkpoint-audit.v1"
 RUN_CONTROL_ACTIVE_STATUSES = {"queued", "running"}
 RUN_CONTROL_TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 RUN_CONTROL_RETRY_PREVIEW_STATUSES = {"failed", "dead-letter", "dead_letter", "dead-lettered"}
@@ -434,6 +435,20 @@ def _safe_provenance_graph_id(field_name: str, value: object) -> str | None:
     if not any(normalized == prefix or normalized.startswith(f"{prefix}-") or normalized.startswith(f"{prefix}_") for prefix in prefixes):
         return None
     return safe_id
+
+
+def _checkpoint_audit_safe_checkpoint_id(
+    value: object,
+    principal: AuthPrincipal,
+    *,
+    raw_terms: set[str],
+) -> str | None:
+    checkpoint_id = _safe_provenance_graph_id("checkpoint_id", value)
+    if checkpoint_id is None:
+        return None
+    if not is_ai_admin(principal) and _contains_raw_projection_term(checkpoint_id, raw_terms):
+        return None
+    return checkpoint_id
 
 
 def _provenance_step_card(row: dict[str, object], principal: AuthPrincipal) -> dict[str, object]:
@@ -818,6 +833,196 @@ def run_resume_manifest_snapshot(
         "reason": "reuse_pending" if resume_enabled else "no_reuse_pending",
         "counts": counts,
         "steps": manifest_steps,
+    }
+
+
+def _checkpoint_audit_step_label(
+    row: dict[str, object],
+    principal: AuthPrincipal,
+    *,
+    raw_terms: set[str],
+) -> str:
+    public_step = run_step_response(row, principal=principal)
+    step_id = str(public_step["step_id"])
+    step_key = str(public_step["step_key"])
+    if is_ai_admin(principal):
+        return step_key
+    return _resume_manifest_public_text(step_key, fallback=step_id, raw_terms=raw_terms) or step_id
+
+
+def _checkpoint_audit_state(
+    *,
+    has_steps: bool,
+    resume_reusable: bool,
+    artifact_materialized: bool,
+) -> str:
+    if resume_reusable and artifact_materialized:
+        return "materialized"
+    if has_steps and not artifact_materialized:
+        return "step_only" if resume_reusable else "incomplete"
+    if artifact_materialized and not has_steps:
+        return "artifact_only"
+    return "incomplete"
+
+
+def run_checkpoint_audit_snapshot(
+    *,
+    run: dict[str, object],
+    steps: list[dict[str, object]],
+    artifacts: list[dict[str, object]],
+    principal: AuthPrincipal,
+) -> dict[str, object]:
+    """Return read-only checkpoint reusable-output and artifact materialization state."""
+    raw_terms = _readiness_raw_projection_terms(run)
+    checkpoints: dict[str, dict[str, object]] = {}
+    step_ids = {str(row["id"]) for row in steps}
+    step_checkpoint_ids: dict[str, str] = {}
+    uncheckpointed: list[dict[str, object]] = []
+
+    for row in steps:
+        payload = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
+        status = normalize_step_status(row.get("status"))
+        output_available = status == "succeeded" and payload.get("output") is not None
+        checkpoint_id = _checkpoint_audit_safe_checkpoint_id(payload.get("checkpoint_id"), principal, raw_terms=raw_terms)
+        if checkpoint_id:
+            step_checkpoint_ids[str(row["id"])] = checkpoint_id
+            item = checkpoints.setdefault(
+                checkpoint_id,
+                {
+                    "checkpoint_id": checkpoint_id,
+                    "step_ids": [],
+                    "artifact_ids": [],
+                    "resume_reusable": False,
+                    "artifact_materialized": False,
+                    "reuse_pending": 0,
+                    "reused": 0,
+                    "gaps": set(),
+                },
+            )
+            item["step_ids"].append(str(row["id"]))
+            item["resume_reusable"] = bool(item["resume_reusable"]) or output_available
+            item["reuse_pending"] = int(item["reuse_pending"]) + (1 if payload.get("checkpoint_reuse_pending") else 0)
+            item["reused"] = int(item["reused"]) + (1 if payload.get("checkpoint_reused") else 0)
+        elif output_available:
+            uncheckpointed.append(
+                {
+                    "step_id": str(row["id"]),
+                    "step_key": _checkpoint_audit_step_label(row, principal, raw_terms=raw_terms),
+                    "status": status,
+                    "reason": "missing_checkpoint_id",
+                }
+            )
+
+    artifact_cards = [artifact_card(row, principal=principal) for row in artifacts]
+    for row, artifact in zip(artifacts, artifact_cards):
+        lineage = artifact.get("lineage") if isinstance(artifact.get("lineage"), dict) else {}
+        checkpoint_id = _checkpoint_audit_safe_checkpoint_id(lineage.get("checkpoint_id"), principal, raw_terms=raw_terms)
+        if not checkpoint_id:
+            continue
+        item = checkpoints.setdefault(
+            checkpoint_id,
+            {
+                "checkpoint_id": checkpoint_id,
+                "step_ids": [],
+                "artifact_ids": [],
+                "resume_reusable": False,
+                "artifact_materialized": False,
+                "reuse_pending": 0,
+                "reused": 0,
+                "gaps": set(),
+            },
+        )
+        item["artifact_ids"].append(str(artifact["artifact_id"]))
+        manifest = row.get("manifest_json") if isinstance(row.get("manifest_json"), dict) else {}
+        raw_source_step_id = manifest.get("source_step_id") if isinstance(manifest, dict) else None
+        source_step_id = _safe_provenance_graph_id("source_step_id", raw_source_step_id)
+        source_step_checkpoint_id = step_checkpoint_ids.get(str(source_step_id)) if source_step_id else None
+        if raw_source_step_id is None:
+            gaps = item["gaps"] if isinstance(item["gaps"], set) else set()
+            gaps.add("artifact_source_step_missing")
+            item["gaps"] = gaps
+        elif source_step_id is None:
+            gaps = item["gaps"] if isinstance(item["gaps"], set) else set()
+            gaps.add("artifact_source_step_unsafe")
+            item["gaps"] = gaps
+        elif str(source_step_id) not in step_ids:
+            gaps = item["gaps"] if isinstance(item["gaps"], set) else set()
+            gaps.add("producer_step_missing")
+            item["gaps"] = gaps
+            if not item["step_ids"]:
+                item["artifact_materialized"] = True
+        elif source_step_checkpoint_id != checkpoint_id:
+            gaps = item["gaps"] if isinstance(item["gaps"], set) else set()
+            gaps.add("producer_checkpoint_mismatch")
+            item["gaps"] = gaps
+        else:
+            item["artifact_materialized"] = True
+
+    checkpoint_items = []
+    for item in checkpoints.values():
+        step_ids_for_checkpoint = _unique_sorted(item["step_ids"] if isinstance(item["step_ids"], list) else [])
+        artifact_ids = _unique_sorted(item["artifact_ids"] if isinstance(item["artifact_ids"], list) else [])
+        resume_reusable = bool(item["resume_reusable"])
+        artifact_materialized = bool(item["artifact_materialized"])
+        state = _checkpoint_audit_state(
+            has_steps=bool(step_ids_for_checkpoint),
+            resume_reusable=resume_reusable,
+            artifact_materialized=artifact_materialized,
+        )
+        gaps = item["gaps"] if isinstance(item["gaps"], set) else set()
+        gaps = set(gaps)
+        if bool(step_ids_for_checkpoint) and not resume_reusable:
+            gaps.add("no_reusable_output")
+        if state == "step_only" and not artifact_ids:
+            gaps.add("no_artifact_lineage")
+        if state == "artifact_only" and not gaps:
+            gaps.add("producer_step_missing")
+        checkpoint_items.append(
+            {
+                "checkpoint_id": str(item["checkpoint_id"]),
+                "audit_state": state,
+                "resume_reusable": resume_reusable,
+                "artifact_materialized": artifact_materialized,
+                "step_ids": step_ids_for_checkpoint,
+                "artifact_ids": artifact_ids,
+                "reuse": {
+                    "pending": int(item["reuse_pending"]),
+                    "reused": int(item["reused"]),
+                },
+                "gaps": sorted(gaps),
+            }
+        )
+
+    checkpoint_items = sorted(checkpoint_items, key=lambda entry: str(entry["checkpoint_id"]))
+    counts = {
+        "checkpoints": len(checkpoint_items),
+        "resume_reusable": sum(1 for item in checkpoint_items if item["resume_reusable"]),
+        "artifact_materialized": sum(1 for item in checkpoint_items if item["artifact_materialized"]),
+        "step_only": sum(1 for item in checkpoint_items if item["audit_state"] == "step_only"),
+        "artifact_only": sum(1 for item in checkpoint_items if item["audit_state"] == "artifact_only"),
+        "incomplete": sum(1 for item in checkpoint_items if item["audit_state"] == "incomplete"),
+        "gaps": sum(len(item["gaps"]) for item in checkpoint_items) + len(uncheckpointed),
+        "uncheckpointed_reusable_steps": len(uncheckpointed),
+    }
+    run_summary = run_playback_summary(run, principal)
+    if not is_ai_admin(principal):
+        raw_error_message = run_summary.get("error_message")
+        error_fallback = (
+            "run_failed"
+            if raw_error_message and normalize_run_status(str(run["status"])) == "failed"
+            else ""
+        )
+        run_summary["error_message"] = _readiness_public_text(
+            raw_error_message,
+            fallback=error_fallback,
+            raw_terms=raw_terms,
+        )
+    return {
+        "contract_version": RUN_CHECKPOINT_AUDIT_CONTRACT_VERSION,
+        "run": run_summary,
+        "counts": counts,
+        "checkpoints": checkpoint_items,
+        "uncheckpointed_reusable_steps": uncheckpointed,
     }
 
 
@@ -1439,6 +1644,27 @@ async def get_run_resume_manifest(
         principal=principal,
         authorized_source_run_ids=authorized_source_run_ids,
     )
+
+
+@router.get("/runs/{run_id}/checkpoints/audit")
+async def get_run_checkpoint_audit(
+    run_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    """Return read-only checkpoint materialization audit for an authorized run."""
+    tenant_id = principal.tenant_id
+    async with transaction() as conn:
+        run = await repositories.get_authorized_run(
+            conn,
+            tenant_id=tenant_id,
+            user_id=principal.user_id,
+            run_id=run_id,
+        )
+        if run is None:
+            raise HTTPException(status_code=404, detail="run_not_found")
+        steps = await repositories.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
+        artifacts = await repositories.list_run_artifacts(conn, tenant_id=tenant_id, run_id=run_id)
+    return run_checkpoint_audit_snapshot(run=run, steps=steps, artifacts=artifacts, principal=principal)
 
 
 @router.post("/runs/{run_id}/cancel", response_model=RunControlResponse, response_model_exclude={"queue_position", "queue_insight"})

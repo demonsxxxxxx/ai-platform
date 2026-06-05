@@ -979,6 +979,583 @@ def test_run_resume_manifest_returns_not_found_without_loading_steps(monkeypatch
     assert response.json() == {"detail": "run_not_found"}
 
 
+def test_run_checkpoint_audit_projects_materialization_without_private_payload(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("default", "user-a", "run-a")
+        return {
+            "id": "run-a",
+            "session_id": "ses-a",
+            "schema_version": "ai-platform.run.v1",
+            "executor_schema_version": "ai-platform.executor-result.v1",
+            "user_id": "user-a",
+            "workspace_id": "default",
+            "status": "failed",
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "trace_id": "trace-a",
+            "input_json": {},
+            "result_json": {},
+            "cancel_requested_at": None,
+            "cancel_requested_by": None,
+            "error_code": None,
+            "error_message": "qa-file-reviewer wrote /tmp/private-output",
+        }
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-code",
+                "run_id": run_id,
+                "step_key": "qa-file-reviewer-step",
+                "step_kind": "agent",
+                "status": "succeeded",
+                "title": "qa-file-reviewer produced C:/runtime/private",
+                "role": "reviewer",
+                "sequence": 1,
+                "payload_json": {
+                    "checkpoint_id": "checkpoint-a",
+                    "checkpoint_reused": True,
+                    "output": "raw checkpoint output must not leak",
+                    "resource_limits": {"max_tool_calls": 99},
+                    "sandbox_mode": "ephemeral",
+                    "command_sha256": "a" * 64,
+                    "private_payload": {"storage_key": "tenants/default/private"},
+                },
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "artifact-report",
+                "trace_id": "trace-a",
+                "artifact_type": "reviewed_docx",
+                "label": "Reviewed report",
+                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "storage_key": "tenants/default/runs/run-a/artifacts/report.docx",
+                "size_bytes": 12,
+                "manifest_version": "ai-platform.artifact-manifest.v1",
+                "manifest_json": {
+                    "schema_version": "ai-platform.artifact-manifest.v1",
+                    "artifact_type": "reviewed_docx",
+                    "source_step_id": "step-code",
+                    "checkpoint_id": "checkpoint-a",
+                    "producer_kind": "agent",
+                    "producer_role": "reviewer",
+                    "local_path": "/tmp/private/report.docx",
+                    "skill_id": "qa-file-reviewer",
+                },
+                "created_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-a/checkpoints/audit", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["contract_version"] == "ai-platform.run-checkpoint-audit.v1"
+    assert body["run"]["run_id"] == "run-a"
+    assert body["run"]["skill_id"] is None
+    assert body["counts"] == {
+        "checkpoints": 1,
+        "resume_reusable": 1,
+        "artifact_materialized": 1,
+        "step_only": 0,
+        "artifact_only": 0,
+        "incomplete": 0,
+        "gaps": 0,
+        "uncheckpointed_reusable_steps": 0,
+    }
+    assert body["checkpoints"] == [
+        {
+            "checkpoint_id": "checkpoint-a",
+            "audit_state": "materialized",
+            "resume_reusable": True,
+            "artifact_materialized": True,
+            "step_ids": ["step-code"],
+            "artifact_ids": ["artifact-report"],
+            "reuse": {"pending": 0, "reused": 1},
+            "gaps": [],
+        }
+    ]
+    public_dump = str(body)
+    assert "raw checkpoint output" not in public_dump
+    assert "storage_key" not in public_dump
+    assert "command_sha256" not in public_dump
+    assert "resource_limits" not in public_dump
+    assert "sandbox_mode" not in public_dump
+    assert "private_payload" not in public_dump
+    assert "/tmp/" not in public_dump
+    assert "C:/runtime" not in public_dump
+    assert "qa-file-reviewer" not in public_dump
+
+
+def test_run_checkpoint_audit_reports_artifact_only_and_uncheckpointed_step_gaps(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return resume_manifest_run_row(status="failed")
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-uncheckpointed",
+                "run_id": run_id,
+                "step_key": "review",
+                "step_kind": "agent",
+                "status": "succeeded",
+                "title": "Review",
+                "role": "reviewer",
+                "sequence": 1,
+                "payload_json": {"output": "reusable but no checkpoint id"},
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "artifact-orphan",
+                "trace_id": "trace-resume",
+                "artifact_type": "reviewed_docx",
+                "label": "Orphan artifact",
+                "content_type": "application/octet-stream",
+                "storage_key": "tenants/default/runs/run-resume/artifacts/orphan.docx",
+                "size_bytes": 1,
+                "manifest_version": "ai-platform.artifact-manifest.v1",
+                "manifest_json": {
+                    "schema_version": "ai-platform.artifact-manifest.v1",
+                    "artifact_type": "reviewed_docx",
+                    "checkpoint_id": "checkpoint-orphan",
+                    "source_step_id": "step-missing",
+                    "producer_kind": "agent",
+                },
+                "created_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["counts"]["artifact_only"] == 1
+    assert body["counts"]["gaps"] == 2
+    assert body["checkpoints"] == [
+        {
+            "checkpoint_id": "checkpoint-orphan",
+            "audit_state": "artifact_only",
+            "resume_reusable": False,
+            "artifact_materialized": True,
+            "step_ids": [],
+            "artifact_ids": ["artifact-orphan"],
+            "reuse": {"pending": 0, "reused": 0},
+            "gaps": ["producer_step_missing"],
+        }
+    ]
+    assert body["uncheckpointed_reusable_steps"] == [
+        {
+            "step_id": "step-uncheckpointed",
+            "step_key": "review",
+            "status": "succeeded",
+            "reason": "missing_checkpoint_id",
+        }
+    ]
+
+
+def test_run_checkpoint_audit_redacts_raw_skill_reference_in_checkpoint_id(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return resume_manifest_run_row(status="failed")
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-unsafe",
+                "run_id": run_id,
+                "step_key": "qa-file-reviewer-step",
+                "step_kind": "agent",
+                "status": "succeeded",
+                "title": "Unsafe checkpoint",
+                "role": "reviewer",
+                "sequence": 1,
+                "payload_json": {
+                    "checkpoint_id": "checkpoint-qa-file-reviewer",
+                    "output": "reusable output must not leak",
+                },
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "artifact-unsafe",
+                "trace_id": "trace-resume",
+                "artifact_type": "reviewed_docx",
+                "label": "Unsafe artifact",
+                "content_type": "application/octet-stream",
+                "storage_key": "tenants/default/runs/run-resume/artifacts/unsafe.docx",
+                "size_bytes": 1,
+                "manifest_version": "ai-platform.artifact-manifest.v1",
+                "manifest_json": {
+                    "schema_version": "ai-platform.artifact-manifest.v1",
+                    "artifact_type": "reviewed_docx",
+                    "checkpoint_id": "checkpoint-qa-file-reviewer",
+                    "source_step_id": "step-unsafe",
+                    "producer_kind": "agent",
+                },
+                "created_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["checkpoints"] == []
+    assert body["uncheckpointed_reusable_steps"] == [
+        {
+            "step_id": "step-unsafe",
+            "step_key": "step-unsafe",
+            "status": "succeeded",
+            "reason": "missing_checkpoint_id",
+        }
+    ]
+    public_dump = str(body)
+    assert "qa-file-reviewer" not in public_dump
+    assert "checkpoint-qa-file-reviewer" not in public_dump
+    assert "reusable output" not in public_dump
+
+
+def test_run_checkpoint_audit_reports_step_only_incomplete_and_producer_mismatch(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return resume_manifest_run_row(status="failed")
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-reusable",
+                "run_id": run_id,
+                "step_key": "code",
+                "step_kind": "agent",
+                "status": "succeeded",
+                "title": "Code",
+                "role": "coder",
+                "sequence": 1,
+                "payload_json": {"checkpoint_id": "checkpoint-a", "output": "reusable"},
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+            {
+                "id": "step-pending",
+                "run_id": run_id,
+                "step_key": "verify",
+                "step_kind": "agent",
+                "status": "pending",
+                "title": "Verify",
+                "role": "verifier",
+                "sequence": 2,
+                "payload_json": {"checkpoint_id": "checkpoint-a"},
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+            {
+                "id": "step-other",
+                "run_id": run_id,
+                "step_key": "other",
+                "step_kind": "agent",
+                "status": "succeeded",
+                "title": "Other",
+                "role": "coder",
+                "sequence": 3,
+                "payload_json": {"checkpoint_id": "checkpoint-b", "output": "other reusable"},
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+            {
+                "id": "step-incomplete",
+                "run_id": run_id,
+                "step_key": "blocked",
+                "step_kind": "agent",
+                "status": "failed",
+                "title": "Blocked",
+                "role": "verifier",
+                "sequence": 4,
+                "payload_json": {"checkpoint_id": "checkpoint-empty"},
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+        ]
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "artifact-wrong",
+                "trace_id": "trace-resume",
+                "artifact_type": "reviewed_docx",
+                "label": "Wrong checkpoint artifact",
+                "content_type": "application/octet-stream",
+                "storage_key": "tenants/default/runs/run-resume/artifacts/wrong.docx",
+                "size_bytes": 1,
+                "manifest_version": "ai-platform.artifact-manifest.v1",
+                "manifest_json": {
+                    "schema_version": "ai-platform.artifact-manifest.v1",
+                    "artifact_type": "reviewed_docx",
+                    "checkpoint_id": "checkpoint-a",
+                    "source_step_id": "step-other",
+                    "producer_kind": "agent",
+                },
+                "created_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=headers())
+
+    assert response.status_code == 200
+    checkpoints = {item["checkpoint_id"]: item for item in response.json()["checkpoints"]}
+    assert checkpoints["checkpoint-a"] == {
+        "checkpoint_id": "checkpoint-a",
+        "audit_state": "step_only",
+        "resume_reusable": True,
+        "artifact_materialized": False,
+        "step_ids": ["step-pending", "step-reusable"],
+        "artifact_ids": ["artifact-wrong"],
+        "reuse": {"pending": 0, "reused": 0},
+        "gaps": ["producer_checkpoint_mismatch"],
+    }
+    assert checkpoints["checkpoint-empty"] == {
+        "checkpoint_id": "checkpoint-empty",
+        "audit_state": "incomplete",
+        "resume_reusable": False,
+        "artifact_materialized": False,
+        "step_ids": ["step-incomplete"],
+        "artifact_ids": [],
+        "reuse": {"pending": 0, "reused": 0},
+        "gaps": ["no_reusable_output"],
+    }
+
+
+def test_run_checkpoint_audit_requires_valid_artifact_source_step_for_materialization(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return resume_manifest_run_row(status="failed")
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-reusable",
+                "run_id": run_id,
+                "step_key": "code",
+                "step_kind": "agent",
+                "status": "succeeded",
+                "title": "Code",
+                "role": "coder",
+                "sequence": 1,
+                "payload_json": {"checkpoint_id": "checkpoint-a", "output": "reusable"},
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "artifact-no-source",
+                "trace_id": "trace-resume",
+                "artifact_type": "reviewed_docx",
+                "label": "No source artifact",
+                "content_type": "application/octet-stream",
+                "storage_key": "tenants/default/runs/run-resume/artifacts/no-source.docx",
+                "size_bytes": 1,
+                "manifest_version": "ai-platform.artifact-manifest.v1",
+                "manifest_json": {
+                    "schema_version": "ai-platform.artifact-manifest.v1",
+                    "artifact_type": "reviewed_docx",
+                    "checkpoint_id": "checkpoint-a",
+                    "producer_kind": "agent",
+                },
+                "created_at": None,
+            },
+            {
+                "id": "artifact-unsafe-source",
+                "trace_id": "trace-resume",
+                "artifact_type": "reviewed_docx",
+                "label": "Unsafe source artifact",
+                "content_type": "application/octet-stream",
+                "storage_key": "tenants/default/runs/run-resume/artifacts/unsafe-source.docx",
+                "size_bytes": 1,
+                "manifest_version": "ai-platform.artifact-manifest.v1",
+                "manifest_json": {
+                    "schema_version": "ai-platform.artifact-manifest.v1",
+                    "artifact_type": "reviewed_docx",
+                    "checkpoint_id": "checkpoint-a",
+                    "source_step_id": "qa-file-reviewer-step",
+                    "producer_kind": "agent",
+                },
+                "created_at": None,
+            },
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=headers())
+
+    assert response.status_code == 200
+    assert response.json()["checkpoints"] == [
+        {
+            "checkpoint_id": "checkpoint-a",
+            "audit_state": "step_only",
+            "resume_reusable": True,
+            "artifact_materialized": False,
+            "step_ids": ["step-reusable"],
+            "artifact_ids": ["artifact-no-source", "artifact-unsafe-source"],
+            "reuse": {"pending": 0, "reused": 0},
+            "gaps": ["artifact_source_step_missing", "artifact_source_step_unsafe"],
+        }
+    ]
+
+
+def test_run_checkpoint_audit_missing_producer_does_not_materialize_existing_checkpoint(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return resume_manifest_run_row(status="failed")
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-reusable",
+                "run_id": run_id,
+                "step_key": "code",
+                "step_kind": "agent",
+                "status": "succeeded",
+                "title": "Code",
+                "role": "coder",
+                "sequence": 1,
+                "payload_json": {"checkpoint_id": "checkpoint-a", "output": "reusable"},
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "artifact-missing-producer",
+                "trace_id": "trace-resume",
+                "artifact_type": "reviewed_docx",
+                "label": "Missing producer artifact",
+                "content_type": "application/octet-stream",
+                "storage_key": "tenants/default/runs/run-resume/artifacts/missing-producer.docx",
+                "size_bytes": 1,
+                "manifest_version": "ai-platform.artifact-manifest.v1",
+                "manifest_json": {
+                    "schema_version": "ai-platform.artifact-manifest.v1",
+                    "artifact_type": "reviewed_docx",
+                    "checkpoint_id": "checkpoint-a",
+                    "source_step_id": "step-missing",
+                    "producer_kind": "agent",
+                },
+                "created_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=headers())
+
+    assert response.status_code == 200
+    assert response.json()["checkpoints"] == [
+        {
+            "checkpoint_id": "checkpoint-a",
+            "audit_state": "step_only",
+            "resume_reusable": True,
+            "artifact_materialized": False,
+            "step_ids": ["step-reusable"],
+            "artifact_ids": ["artifact-missing-producer"],
+            "reuse": {"pending": 0, "reused": 0},
+            "gaps": ["producer_step_missing"],
+        }
+    ]
+
+
+def test_run_checkpoint_audit_returns_not_found_without_loading_steps_or_artifacts(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return None
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        raise AssertionError("steps must not load for missing run")
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        raise AssertionError("artifacts must not load for missing run")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/missing-run/checkpoints/audit", headers=headers())
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "run_not_found"
+
+
 def test_copy_run_plan_redacts_runtime_private_step_titles_for_ordinary_user(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         return {

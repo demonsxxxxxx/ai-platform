@@ -260,6 +260,17 @@ marker redaction, and smoke data cleanup. It does not start retry scheduling,
 autonomous multi-agent dispatch, high-risk tool execution, or new sandbox
 behavior.
 
+### P2 Checkpoint Materialization Audit Snapshot
+
+Status: local implementation and inherited-configuration multi-agent review in
+progress; 211 deployment/smoke is not yet complete. This adds the
+`ai-platform.run-checkpoint-audit.v1` owner-scoped projection for existing
+checkpoint reusable-output state, artifact materialization, producer linkage
+gaps, unsafe checkpoint id redaction, and uncheckpointed reusable step gaps.
+The local verification passed focused route/source-authority tests, compile,
+and full pytest. This does not start retry scheduling, autonomous multi-agent
+dispatch, high-risk tool execution, or new sandbox behavior.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。
