@@ -701,7 +701,7 @@ def run_control_readiness_snapshot(
                 enabled=resume_enabled,
                 reason=resume_reason,
                 method="POST",
-                href=f"/api/ai/runs/{run_id}/copy",
+                href=f"/api/ai/runs/{run_id}/resume",
             ),
             "retry": _control_action(
                 enabled=retry_enabled,
@@ -1647,6 +1647,46 @@ async def retry_run(
                     copied=copied,
                     principal=principal,
                     source="retry_run",
+                )
+    except SkillVersionMaterializationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RepositoryNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RepositoryConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if copied is None:
+        raise HTTPException(status_code=404, detail="run_not_found")
+    queue_position = await enqueue_run(queue_payload)
+    return RunControlResponse(
+        run_id=copied["run_id"],
+        session_id=copied["session_id"],
+        status="queued",
+        queue_position=queue_position,
+        queue_insight=await queue_insight_for_status("queued", principal.tenant_id),
+    )
+
+
+@router.post("/runs/{run_id}/resume", response_model=RunControlResponse)
+async def resume_run(
+    run_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> RunControlResponse:
+    """Queue a platform-controlled resume run for an authorized checkpointed source."""
+    try:
+        async with transaction() as conn:
+            await enforce_user_active_run_limit(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
+            copied = await repositories.resume_run_as_new_task(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                run_id=run_id,
+            )
+            if copied is not None:
+                queue_payload = await prepare_copied_run_for_queue(
+                    conn,
+                    copied=copied,
+                    principal=principal,
+                    source="resume_run",
                 )
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

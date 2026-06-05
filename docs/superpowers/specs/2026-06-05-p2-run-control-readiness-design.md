@@ -4,8 +4,9 @@
 
 Add a read-only run control readiness contract for P2 Long Task / Multi-Agent
 Runtime foundations. The contract tells ordinary users and admins whether the
-current run can be cancelled, resumed through copy-run checkpoint reuse, or
-retried later, and why each action is enabled or blocked.
+current run can be cancelled, resumed through an explicit resume request backed
+by copy-run checkpoint reuse, or retried later, and why each action is enabled
+or blocked.
 
 This slice does not add retry scheduling, autonomous multi-agent dispatch,
 new sandbox/tool execution, or a new frontend entry. It exposes current platform
@@ -67,7 +68,7 @@ step output. Admin users may keep operational step controls already allowed by
       "enabled": true,
       "reason": "checkpoint_outputs_available",
       "method": "POST",
-      "href": "/api/ai/runs/run-a/copy"
+      "href": "/api/ai/runs/run-a/resume"
     },
     "retry": {
       "enabled": false,
@@ -102,7 +103,7 @@ step output. Admin users may keep operational step controls already allowed by
 Add focused tests in `tests/test_run_control_routes.py`:
 
 - failed run with succeeded step output returns resume enabled and cancel
-  blocked.
+  blocked, with the resume action pointing at `/api/ai/runs/{run_id}/resume`.
 - queued run returns cancel enabled and queue insight.
 - ordinary-user readiness response does not expose raw skill ids, resource
   limits, sandbox mode, runtime paths, private payloads, or raw output.
@@ -128,6 +129,7 @@ After review and local full-suite pass, deploy to 211 and verify:
 ## Non-Goals
 
 - No retry scheduler or dead-letter requeue implementation.
-- No new worker resume behavior beyond existing copy-run path.
+- No new worker resume behavior beyond the existing copy-run checkpoint reuse
+  execution path.
 - No new frontend route.
 - No change to sandbox provider, tool permission policy, or executor behavior.

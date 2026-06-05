@@ -865,6 +865,30 @@ async def get_active_retry_for_source_run(
     return await cursor.fetchone()
 
 
+async def get_active_resume_for_source_run(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    run_id: str,
+) -> dict[str, Any] | None:
+    """Return an active same-owner child run that would duplicate a resume request."""
+    cursor = await conn.execute(
+        """
+        select id, status
+        from runs
+        where tenant_id = %s
+          and user_id = %s
+          and copied_from_run_id = %s
+          and status in ('queued', 'running')
+        order by created_at desc
+        limit 1
+        """,
+        (tenant_id, user_id, run_id),
+    )
+    return await cursor.fetchone()
+
+
 async def append_event(
     conn: AsyncConnection,
     *,
@@ -3464,6 +3488,68 @@ async def retry_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_i
         tenant_id=tenant_id,
         user_id=user_id,
         action="run.retry",
+        target_type="run",
+        target_id=run_id,
+        trace_id=source.get("trace_id"),
+        payload_json={
+            "source_run_id": run_id,
+            "new_run_id": copied["run_id"],
+            "source_status": source_status,
+        },
+    )
+    return copied
+
+
+async def resume_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id: str, run_id: str) -> dict[str, Any] | None:
+    """Create a queued resume child run from a non-active source with reusable output."""
+    source = await get_authorized_run(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id, for_update=True)
+    if source is None:
+        return None
+    source_status = str(source.get("status") or "")
+    if source_status in ACTIVE_RUN_STATUSES:
+        raise RepositoryConflictError("active_run")
+    completed_step_outputs, _completed_step_checkpoints = await _completed_steps_for_resume(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+    )
+    if not completed_step_outputs:
+        raise RepositoryConflictError("no_checkpoint_outputs")
+    active_resume = await get_active_resume_for_source_run(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        run_id=run_id,
+    )
+    if active_resume is not None:
+        raise RepositoryConflictError("resume_already_active")
+    copied = await copy_run_as_new_task(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id)
+    if copied is None:
+        return None
+    await append_event(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        trace_id=source.get("trace_id"),
+        event_type="resume_requested",
+        stage="control",
+        message="已请求从 checkpoint 恢复",
+        payload={"visible_to_user": True, "new_run_id": copied["run_id"]},
+    )
+    await append_event(
+        conn,
+        tenant_id=tenant_id,
+        run_id=str(copied["run_id"]),
+        event_type="run_resume_created",
+        stage="control",
+        message="已创建恢复任务",
+        payload={"visible_to_user": True, "copied_from_run_id": run_id},
+    )
+    await append_audit_log(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="run.resume",
         target_type="run",
         target_id=run_id,
         trace_id=source.get("trace_id"),

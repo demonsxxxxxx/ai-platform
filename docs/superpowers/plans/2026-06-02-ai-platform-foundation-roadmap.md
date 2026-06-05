@@ -334,6 +334,26 @@ seeded copied-step checkpoint lineage, route-level resume strip helpers, and DB
 smoke data cleanup. This does not start automatic retry policy scheduling,
 autonomous subagent dispatch, high-risk tool execution, or new sandbox behavior.
 
+### P2 Resume Run Request
+
+Status: write-side P2 resume lifecycle control is the current implementation
+slice and requires final commit plus 211 smoke evidence before it is treated as
+complete. This adds owner-scoped `POST /api/ai/runs/{run_id}/resume` for
+non-active source runs with reusable checkpoint output. It creates a copied
+queued run through the existing copy-run/context/queue path, records
+`resume_requested`, `run_resume_created`, and `run.resume` audit evidence,
+seeds resume-created steps with `seeded_from = resume_run`, and updates
+run-control readiness so the resume action points to the explicit `/resume`
+endpoint instead of generic copy.
+
+Focused local coverage verifies readiness href alignment, owner-scoped resume
+creation, reusable checkpoint-output gating, active source rejection,
+same-source active child idempotency with `resume_already_active`, resume
+events/audit, context snapshot `source = resume_run`, queue payload context
+`source = resume_run`, and existing copy/retry controls. This does not start
+automatic retry policy scheduling, autonomous subagent dispatch, high-risk tool
+execution, or new sandbox behavior.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。

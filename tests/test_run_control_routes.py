@@ -558,6 +558,160 @@ def test_retry_run_returns_not_found_without_enqueue(monkeypatch):
     assert calls == [("count", "default", "user-a"), ("retry", "default", "user-a", "missing-run")]
 
 
+def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
+    calls = {"resume": [], "enqueue": [], "context": [], "step": []}
+
+    async def fake_resume_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+        calls["resume"].append((tenant_id, user_id, run_id))
+        return {
+            "session_id": "ses-old",
+            "run_id": "run-resume-new",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "workspace_id": "default",
+            "file_ids": [],
+            "input": {
+                "message": "resume",
+                "copied_from_run_id": run_id,
+                "multi_agent_steps": [
+                    {"step_key": "code", "role": "coding"},
+                    {"step_key": "verify", "role": "test", "depends_on": ["code"]},
+                ],
+                "resume": {
+                    "copied_from_run_id": run_id,
+                    "completed_step_outputs": {"code": "code output"},
+                    "completed_step_checkpoints": {
+                        "code": {
+                            "checkpoint_id": "checkpoint-code",
+                            "source_step_id": "step-code-source",
+                            "copied_from_run_id": run_id,
+                        }
+                    },
+                },
+            },
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-a",
+            "release_policy_version": "",
+            "release_decision": {
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "policy_active": False,
+                "selected_version": "hash-a",
+                "selected_track": "manifest_pin",
+            },
+        }
+
+    async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
+        assert skill_id == "general-chat"
+        assert input_payload["resume"]["completed_step_outputs"] == {"code": "code output"}
+        assert release_policy_version == ""
+        return [{"skill_id": skill_id, "content_hash": "hash-a"}]
+
+    async def fake_update_run_input_skill_version(conn, **kwargs):
+        return None
+
+    async def fake_append_event(conn, **kwargs):
+        return None
+
+    async def fake_record_context(conn, **kwargs):
+        calls["context"].append(kwargs)
+        return {
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_snapshot_id": "ctx_resume_route",
+            "source": kwargs["source"],
+            "message_count": len(kwargs.get("message_ids") or []),
+            "file_count": len(kwargs.get("file_ids") or []),
+            "memory_record_count": 0,
+        }
+
+    async def fake_upsert_run_step(conn, **kwargs):
+        calls["step"].append(kwargs)
+        return f"step-{kwargs['step_key']}"
+
+    async def fake_enqueue_run(payload):
+        calls["enqueue"].append(payload)
+        return 2
+
+    async def fake_get_queue_insight(tenant_id):
+        return {"tenant_id": tenant_id, "reason": "workers_busy"}
+
+    async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
+        calls["active_limit"] = (tenant_id, user_id)
+        return 0
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.count_active_runs_for_user", fake_count_active_runs_for_user)
+    monkeypatch.setattr("app.routes.runs.repositories.resume_run_as_new_task", fake_resume_run_as_new_task, raising=False)
+    monkeypatch.setattr("app.routes.runs._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
+    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_context)
+    monkeypatch.setattr("app.routes.runs.repositories.upsert_run_step", fake_upsert_run_step)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.runs.get_queue_insight", fake_get_queue_insight)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run-failed/resume", headers=headers())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "run_id": "run-resume-new",
+        "session_id": "ses-old",
+        "status": "queued",
+        "queue_position": 2,
+        "queue_insight": {"tenant_id": "default", "reason": "workers_busy"},
+    }
+    assert calls["resume"] == [("default", "user-a", "run-failed")]
+    assert calls["active_limit"] == ("default", "user-a")
+    assert calls["context"][0]["source"] == "resume_run"
+    assert calls["enqueue"][0]["context_snapshot_id"] == "ctx_resume_route"
+    assert calls["enqueue"][0]["context_snapshot"]["source"] == "resume_run"
+    assert calls["enqueue"][0]["input"]["resume"]["completed_step_outputs"] == {"code": "code output"}
+    assert [(item["step_key"], item["status"]) for item in calls["step"]] == [
+        ("code", "pending"),
+        ("verify", "pending"),
+    ]
+    assert calls["step"][0]["payload_json"]["seeded_from"] == "resume_run"
+    assert calls["step"][0]["payload_json"]["checkpoint_reuse_pending"] is True
+    assert calls["step"][0]["payload_json"]["checkpoint_id"] == "checkpoint-code"
+    assert calls["step"][0]["payload_json"]["source_step_id"] == "step-code-source"
+    assert calls["step"][1]["payload_json"]["depends_on"] == ["code"]
+
+
+def test_resume_run_rejects_source_without_checkpoint_outputs(monkeypatch):
+    from app.repositories import RepositoryConflictError
+
+    calls = []
+
+    async def fake_resume_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+        calls.append(("resume", tenant_id, user_id, run_id))
+        raise RepositoryConflictError("no_checkpoint_outputs")
+
+    async def fake_enqueue_run(payload):
+        calls.append(("enqueue", payload))
+        return 1
+
+    async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
+        calls.append(("count", tenant_id, user_id))
+        return 0
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.count_active_runs_for_user", fake_count_active_runs_for_user)
+    monkeypatch.setattr("app.routes.runs.repositories.resume_run_as_new_task", fake_resume_run_as_new_task, raising=False)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run-no-checkpoint/resume", headers=headers())
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "no_checkpoint_outputs"
+    assert calls == [
+        ("count", "default", "user-a"),
+        ("resume", "default", "user-a", "run-no-checkpoint"),
+    ]
+
+
 def test_copy_run_plan_previews_reused_and_rerun_steps(monkeypatch):
     calls = {}
 
@@ -739,7 +893,7 @@ def test_run_control_readiness_enables_resume_from_checkpoint_outputs(monkeypatc
         "enabled": True,
         "reason": "checkpoint_outputs_available",
         "method": "POST",
-        "href": "/api/ai/runs/run-ready/copy",
+        "href": "/api/ai/runs/run-ready/resume",
     }
     assert body["actions"]["retry"] == {
         "enabled": True,
@@ -2235,6 +2389,258 @@ async def test_copy_run_as_new_task_adds_completed_step_outputs_to_resume(monkey
             },
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_resume_run_as_new_task_rejects_active_source_without_copy(monkeypatch):
+    from app import repositories
+
+    class RecordingConnection:
+        def __init__(self):
+            self.executed = []
+
+        async def execute(self, sql, params):
+            self.executed.append((" ".join(sql.split()), params))
+
+            class Cursor:
+                async def fetchone(self):
+                    return None
+
+                async def fetchall(self):
+                    return []
+
+            return Cursor()
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id, for_update=False):
+        assert for_update is True
+        return {
+            "id": run_id,
+            "status": "running",
+            "workspace_id": "default",
+            "session_id": "ses_old",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "input_json": {"input": {"message": "resume"}},
+        }
+
+    async def fail_copy_run_as_new_task(*args, **kwargs):
+        raise AssertionError("active source must not be copied for resume")
+
+    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.repositories.copy_run_as_new_task", fail_copy_run_as_new_task)
+    conn = RecordingConnection()
+
+    with pytest.raises(repositories.RepositoryConflictError, match="active_run"):
+        await repositories.resume_run_as_new_task(
+            conn,
+            tenant_id="default",
+            user_id="user-a",
+            run_id="run_active",
+        )
+
+    assert not any("insert into runs" in sql for sql, _params in conn.executed)
+
+
+@pytest.mark.asyncio
+async def test_resume_run_as_new_task_rejects_source_without_completed_outputs(monkeypatch):
+    from app import repositories
+
+    class FakeCursor:
+        async def fetchone(self):
+            return None
+
+        async def fetchall(self):
+            return []
+
+    class RecordingConnection:
+        def __init__(self):
+            self.executed = []
+
+        async def execute(self, sql, params):
+            self.executed.append((" ".join(sql.split()), params))
+            return FakeCursor()
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id, for_update=False):
+        assert for_update is True
+        return {
+            "id": run_id,
+            "status": "failed",
+            "workspace_id": "default",
+            "session_id": "ses_old",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "input_json": {"input": {"message": "resume"}},
+        }
+
+    async def fail_copy_run_as_new_task(*args, **kwargs):
+        raise AssertionError("source without checkpoint outputs must not be copied for resume")
+
+    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.repositories.copy_run_as_new_task", fail_copy_run_as_new_task)
+    conn = RecordingConnection()
+
+    with pytest.raises(repositories.RepositoryConflictError, match="no_checkpoint_outputs"):
+        await repositories.resume_run_as_new_task(
+            conn,
+            tenant_id="default",
+            user_id="user-a",
+            run_id="run_failed",
+        )
+
+    assert any("from run_steps" in sql for sql, _params in conn.executed)
+    assert not any("insert into runs" in sql for sql, _params in conn.executed)
+
+
+@pytest.mark.asyncio
+async def test_resume_run_as_new_task_rejects_when_resume_is_already_active(monkeypatch):
+    from app import repositories
+
+    calls = []
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id, for_update=False):
+        assert for_update is True
+        return {
+            "id": run_id,
+            "status": "failed",
+            "workspace_id": "default",
+            "session_id": "ses_old",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "input_json": {"input": {"message": "resume"}},
+        }
+
+    async def fake_completed_steps_for_resume(conn, *, tenant_id, run_id):
+        calls.append(("completed", tenant_id, run_id))
+        return {"code": "code output"}, {
+            "code": {
+                "checkpoint_id": "checkpoint-code",
+                "source_step_id": "step-code-source",
+                "copied_from_run_id": run_id,
+            }
+        }
+
+    async def fake_get_active_resume_for_source_run(conn, *, tenant_id, user_id, run_id):
+        calls.append(("active_resume", tenant_id, user_id, run_id))
+        return {"id": "run-resume-active", "status": "queued"}
+
+    async def fail_copy_run_as_new_task(*args, **kwargs):
+        raise AssertionError("active resume source must not be copied again")
+
+    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.repositories._completed_steps_for_resume", fake_completed_steps_for_resume)
+    monkeypatch.setattr("app.repositories.get_active_resume_for_source_run", fake_get_active_resume_for_source_run, raising=False)
+    monkeypatch.setattr("app.repositories.copy_run_as_new_task", fail_copy_run_as_new_task)
+
+    with pytest.raises(repositories.RepositoryConflictError, match="resume_already_active"):
+        await repositories.resume_run_as_new_task(
+            object(),
+            tenant_id="default",
+            user_id="user-a",
+            run_id="run-failed",
+        )
+
+    assert calls == [
+        ("completed", "default", "run-failed"),
+        ("active_resume", "default", "user-a", "run-failed"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resume_run_as_new_task_records_resume_events_and_audit(monkeypatch):
+    from app import repositories
+
+    calls = []
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id, for_update=False):
+        assert for_update is True
+        return {
+            "id": run_id,
+            "status": "failed",
+            "workspace_id": "default",
+            "session_id": "ses_old",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "trace_id": "trace-source",
+            "input_json": {"input": {"message": "resume"}},
+        }
+
+    async def fake_completed_steps_for_resume(conn, *, tenant_id, run_id):
+        calls.append(("completed", tenant_id, run_id))
+        return {"code": "code output"}, {
+            "code": {
+                "checkpoint_id": "checkpoint-code",
+                "source_step_id": "step-code-source",
+                "copied_from_run_id": run_id,
+            }
+        }
+
+    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+        calls.append(("copy", tenant_id, user_id, run_id))
+        return {
+            "session_id": "ses-old",
+            "run_id": "run-resume-new",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "workspace_id": "default",
+            "file_ids": [],
+            "input": {"message": "resume", "resume": {"completed_step_outputs": {"code": "code output"}}},
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-a",
+            "release_policy_version": "",
+            "release_decision": {},
+        }
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+
+    async def fake_get_active_resume_for_source_run(conn, *, tenant_id, user_id, run_id):
+        calls.append(("active_resume", tenant_id, user_id, run_id))
+        return None
+
+    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.repositories._completed_steps_for_resume", fake_completed_steps_for_resume)
+    monkeypatch.setattr("app.repositories.get_active_resume_for_source_run", fake_get_active_resume_for_source_run)
+    monkeypatch.setattr("app.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+
+    copied = await repositories.resume_run_as_new_task(
+        object(),
+        tenant_id="default",
+        user_id="user-a",
+        run_id="run-failed",
+    )
+
+    assert copied["run_id"] == "run-resume-new"
+    assert ("completed", "default", "run-failed") in calls
+    assert ("active_resume", "default", "user-a", "run-failed") in calls
+    assert ("copy", "default", "user-a", "run-failed") in calls
+    events = [item[1] for item in calls if item[0] == "event"]
+    assert [event["event_type"] for event in events] == ["resume_requested", "run_resume_created"]
+    assert events[0]["run_id"] == "run-failed"
+    assert events[0]["trace_id"] == "trace-source"
+    assert events[0]["payload"]["new_run_id"] == "run-resume-new"
+    assert events[1]["run_id"] == "run-resume-new"
+    assert events[1]["payload"]["copied_from_run_id"] == "run-failed"
+    audits = [item[1] for item in calls if item[0] == "audit"]
+    assert audits == [
+        {
+            "tenant_id": "default",
+            "user_id": "user-a",
+            "action": "run.resume",
+            "target_type": "run",
+            "target_id": "run-failed",
+            "trace_id": "trace-source",
+            "payload_json": {
+                "source_run_id": "run-failed",
+                "new_run_id": "run-resume-new",
+                "source_status": "failed",
+            },
+        }
+    ]
 
 
 @pytest.mark.asyncio
