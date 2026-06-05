@@ -24,6 +24,8 @@ from app.skills.release_policy import resolve_rollout_skill_decision
 
 
 DEFAULT_RUN_EXECUTOR_TYPES = {"claude-agent-worker", "ragflow"}
+ACTIVE_RUN_STATUSES = {"queued", "running"}
+TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
 
 
 def new_id(prefix: str) -> str:
@@ -45,6 +47,13 @@ class RepositoryNotFoundError(ValueError):
 
 def dumps_json(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False)
+
+
+def _coerce_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _event_severity(payload: dict[str, Any] | None, severity: str | None = None) -> str:
@@ -2506,6 +2515,153 @@ async def list_admin_runs(
         (tenant_id, user_id, user_id, status, status, limit),
     )
     return list(await cursor.fetchall())
+
+
+async def get_admin_runtime_run_summary(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Return same-tenant run status and redacted recent failure aggregates for Admin Runtime."""
+    status_cursor = await conn.execute(
+        """
+        select status, count(*) as count
+        from runs
+        where tenant_id = %s
+        group by status
+        """,
+        (tenant_id,),
+    )
+    status_rows = list(await status_cursor.fetchall())
+    by_status = {
+        str(row["status"]): _coerce_int(row["count"])
+        for row in status_rows
+        if row.get("status") is not None
+    }
+    failure_cursor = await conn.execute(
+        """
+        select id, user_id, agent_id, error_code, error_message, created_at
+        from runs
+        where tenant_id = %s
+          and status = 'failed'
+        order by created_at desc
+        limit %s
+        """,
+        (tenant_id, limit),
+    )
+    failure_rows = list(await failure_cursor.fetchall())
+    return {
+        "total": sum(by_status.values()),
+        "by_status": by_status,
+        "active": sum(by_status.get(status, 0) for status in ACTIVE_RUN_STATUSES),
+        "terminal": sum(by_status.get(status, 0) for status in TERMINAL_RUN_STATUSES),
+        "recent_failures": [
+            {
+                "run_id": row["id"],
+                "user_id": row.get("user_id"),
+                "agent_id": row.get("agent_id"),
+                "error_code": sanitize_public_text(row.get("error_code")) or None,
+                "error_message": sanitize_public_text(row.get("error_message")),
+                "created_at": row.get("created_at"),
+            }
+            for row in failure_rows
+        ],
+    }
+
+
+async def get_admin_runtime_observability_summary(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+) -> dict[str, Any]:
+    """Return same-tenant observability seed metrics for the Admin Runtime overview."""
+    cursor = await conn.execute(
+        """
+        with event_summary as (
+          select
+            count(*) as event_count,
+            count(*) filter (where error_code is not null and error_code <> '') as event_error_count,
+            avg(latency_ms) filter (where latency_ms is not null) as avg_latency_ms,
+            max(latency_ms) as max_latency_ms
+          from run_events
+          where tenant_id = %s
+        ),
+        artifact_summary as (
+          select count(*) as artifact_count
+          from artifacts
+          where tenant_id = %s
+        ),
+        run_totals as (
+          select
+            count(*) filter (where error_code is not null and error_code <> '') as run_error_count,
+            coalesce(sum(input_token_count), 0) as run_input_token_count,
+            coalesce(sum(output_token_count), 0) as run_output_token_count,
+            coalesce(sum(total_token_count), 0) as run_total_token_count,
+            coalesce(sum(estimated_cost_minor), 0) as run_estimated_cost_minor
+          from runs
+          where tenant_id = %s
+        ),
+        error_types as (
+          select coalesce(jsonb_object_agg(error_code, error_count), '{}'::jsonb) as error_types
+          from (
+            select error_code, count(*) as error_count
+            from (
+              select error_code
+              from runs
+              where tenant_id = %s
+                and error_code is not null
+                and error_code <> ''
+              union all
+              select error_code
+              from run_events
+              where tenant_id = %s
+                and error_code is not null
+                and error_code <> ''
+            ) all_errors
+            group by error_code
+          ) errors
+        )
+        select
+          event_summary.event_count,
+          artifact_summary.artifact_count,
+          run_totals.run_error_count + event_summary.event_error_count as error_count,
+          error_types.error_types,
+          event_summary.avg_latency_ms,
+          event_summary.max_latency_ms,
+          run_totals.run_input_token_count as input_token_count,
+          run_totals.run_output_token_count as output_token_count,
+          run_totals.run_total_token_count as total_token_count,
+          run_totals.run_estimated_cost_minor as estimated_cost_minor
+        from event_summary, artifact_summary, run_totals, error_types
+        """,
+        (tenant_id, tenant_id, tenant_id, tenant_id, tenant_id),
+    )
+    row = await cursor.fetchone() or {}
+    raw_error_types = row.get("error_types") if isinstance(row.get("error_types"), dict) else {}
+    error_types = {
+        sanitized_key: _coerce_int(value)
+        for key, value in raw_error_types.items()
+        if (sanitized_key := sanitize_public_text(key))
+    }
+    avg_latency = row.get("avg_latency_ms")
+    max_latency = row.get("max_latency_ms")
+    return {
+        "event_count": _coerce_int(row.get("event_count")),
+        "artifact_count": _coerce_int(row.get("artifact_count")),
+        "error_count": _coerce_int(row.get("error_count")),
+        "error_types": error_types,
+        "latency_ms": {
+            "avg": _coerce_int(avg_latency) if avg_latency is not None else None,
+            "max": _coerce_int(max_latency) if max_latency is not None else None,
+        },
+        "token_counts": {
+            "input": _coerce_int(row.get("input_token_count")),
+            "output": _coerce_int(row.get("output_token_count")),
+            "total": _coerce_int(row.get("total_token_count")),
+        },
+        "estimated_cost_minor": _coerce_int(row.get("estimated_cost_minor")),
+    }
 
 
 async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> dict[str, Any] | None:
