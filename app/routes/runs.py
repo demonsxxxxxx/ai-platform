@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app import repositories
+from app.artifact_preview import artifact_preview_allowed, artifact_preview_url
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capabilities import get_capability
 from app.context_builder import record_initial_context_snapshot
@@ -265,6 +266,7 @@ def _readiness_public_text(value: object, *, fallback: object = "", raw_terms: s
 def artifact_card(row: dict[str, object], principal: AuthPrincipal | None = None) -> dict[str, object]:
     artifact_id = str(row["id"])
     artifact_type = str(row["artifact_type"])
+    content_type = str(row.get("content_type") or "application/octet-stream")
     manifest = row.get("manifest_json") if isinstance(row.get("manifest_json"), dict) else {}
     if principal is not None and not is_ai_admin(principal):
         manifest = redact_raw_skill_references(manifest)
@@ -276,10 +278,10 @@ def artifact_card(row: dict[str, object], principal: AuthPrincipal | None = None
         "artifact_id": artifact_id,
         "artifact_type": artifact_type,
         "label": label,
-        "content_type": str(row.get("content_type") or "application/octet-stream"),
+        "content_type": content_type,
         "size_bytes": int(row.get("size_bytes") or 0),
         "download_url": artifact_download_url(artifact_id),
-        "preview_url": None,
+        "preview_url": artifact_preview_url(artifact_id) if artifact_preview_allowed(content_type) else None,
         "status": "available",
         "lineage": artifact_lineage_contract(manifest, row=row),
         "manifest": artifact_manifest_contract(

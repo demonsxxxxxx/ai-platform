@@ -51,6 +51,7 @@ def test_app_registers_platform_routes():
     assert "/api/ai/runs/{run_id}" in paths
     assert "/api/ai/runs/{run_id}/events" in paths
     assert "/api/ai/artifacts/{artifact_id}/download" in paths
+    assert "/api/ai/artifacts/{artifact_id}/preview" in paths
 
 
 def test_app_allows_browser_cors_for_frontend_cutover():

@@ -4,6 +4,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 
+from app.artifact_preview import artifact_preview_allowed
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
@@ -139,6 +140,62 @@ async def download_artifact(
         media_type=artifact["content_type"] or "application/octet-stream",
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            "X-Artifact-Id": artifact_id,
+        },
+    )
+
+
+@router.get("/artifacts/{artifact_id}/preview")
+async def preview_artifact(
+    artifact_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> Response:
+    tenant_id = principal.tenant_id
+    try:
+        tenant_id = assert_safe_id(tenant_id, "tenant_id")
+        artifact_id = assert_safe_id(artifact_id, "artifact_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    async with transaction() as conn:
+        artifact = await get_authorized_artifact(
+            conn,
+            tenant_id=tenant_id,
+            user_id=principal.user_id,
+            artifact_id=artifact_id,
+        )
+        admin_preview = False
+        if artifact is None and is_ai_admin(principal):
+            artifact = await get_admin_artifact(conn, tenant_id=tenant_id, artifact_id=artifact_id)
+            admin_preview = artifact is not None
+        if artifact is None:
+            raise HTTPException(status_code=404, detail="artifact_not_found")
+        if not artifact_preview_allowed(artifact.get("content_type")):
+            raise HTTPException(status_code=415, detail="artifact_preview_not_allowed")
+        if admin_preview:
+            await append_audit_log(
+                conn,
+                tenant_id=tenant_id,
+                user_id=principal.user_id,
+                action="admin_artifact_previewed",
+                target_type="artifact",
+                target_id=artifact_id,
+                trace_id=artifact.get("trace_id") or standard_trace_id(str(artifact.get("run_id") or "")),
+                payload_json={
+                    "admin_user_id": principal.user_id,
+                    "target_user_id": artifact.get("target_user_id"),
+                    "artifact_id": artifact_id,
+                    "run_id": artifact.get("run_id"),
+                },
+            )
+    filename = PurePosixPath(str(artifact["storage_key"])).name or f"{artifact_id}.bin"
+    content = ObjectStorage().get_bytes(storage_key=artifact["storage_key"])
+    return Response(
+        content=content,
+        media_type=artifact["content_type"] or "application/octet-stream",
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
             "X-Artifact-Id": artifact_id,
         },
     )

@@ -328,6 +328,7 @@ def test_run_playback_projection_redacts_ordinary_user_timeline(monkeypatch):
     assert "qa-file-reviewer" not in public_dump
     assert body["steps"][0]["payload"] == {"public_note": "正在审核"}
     assert body["artifacts"][0]["download_url"] == "/api/ai/artifacts/artifact-a/download"
+    assert body["artifacts"][0]["preview_url"] == "/api/ai/artifacts/artifact-a/preview"
     assert body["artifacts"][0]["lineage"] == {
         "source_run_id": "run-a",
         "source_event_id": "evt-6",

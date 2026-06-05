@@ -661,6 +661,36 @@ def test_artifact_card_redacts_secret_like_admin_label():
     assert "artifact-label-token" not in str(card)
 
 
+def test_artifact_card_exposes_preview_url_only_for_allowlisted_content_type():
+    previewable = artifact_card(
+        {
+            "id": "art-preview",
+            "artifact_type": "reviewed_docx",
+            "label": "批注 Word",
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "size_bytes": 10,
+            "manifest_version": "ai-platform.artifact-manifest.v1",
+            "manifest_json": {},
+            "created_at": None,
+        }
+    )
+    blocked = artifact_card(
+        {
+            "id": "art-zip",
+            "artifact_type": "archive",
+            "label": "archive.zip",
+            "content_type": "application/zip",
+            "size_bytes": 10,
+            "manifest_version": "ai-platform.artifact-manifest.v1",
+            "manifest_json": {},
+            "created_at": None,
+        }
+    )
+
+    assert previewable["preview_url"] == "/api/ai/artifacts/art-preview/preview"
+    assert blocked["preview_url"] is None
+
+
 @pytest.mark.asyncio
 async def test_admin_status_exposes_queue_depths(monkeypatch):
     async def fake_get_queue_status():
