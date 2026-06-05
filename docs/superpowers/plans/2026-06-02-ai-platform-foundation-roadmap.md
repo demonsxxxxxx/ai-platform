@@ -409,6 +409,31 @@ clean API/worker logs, and DB/Redis smoke data cleanup. This remains read-only
 and does not start autonomous subagent dispatch, high-risk tool execution,
 retry scheduling, or new sandbox behavior.
 
+### P2 Multi-Agent Dependency Readiness Projection
+
+Status: implemented locally on feature branch
+`p2-multi-agent-readiness-projection` and pending 211 deployment
+verification. This extends the existing owner-scoped
+`ai-platform.run-control-readiness.v1` projection with read-only multi-agent
+dependency readiness for explicitly `execution_mode = multi_agent` runs. It
+combines configured `multi_agent_steps` and recorded `run_steps` to expose
+public-safe step readiness, dependency statuses, ready/blocked counts, hidden
+dependency counts, and a dispatch gate that remains fail-closed with
+`runtime_dispatch_not_enabled`.
+
+The slice does not enqueue work, start autonomous subagents, open sandbox/tool
+access, or change worker scheduling. It keeps non-multi-agent runs
+backward-compatible by returning `multi_agent = null`, only exposes the
+public `multi_agent` execution mode enum, and blocks hidden/unsafe dependencies
+instead of treating them as absent. Inherited-configuration review found
+execution-mode redaction, hidden dependency, and non-multi-agent compatibility
+issues; each was fixed with regression tests.
+
+Local verification recorded `python -m compileall -q app tools scripts`,
+focused `tests/test_run_control_routes.py tests/test_routes.py
+tests/test_source_authority_docs.py` with `144 passed`, and full pytest with
+`923 passed, 6 skipped, 2 warnings`.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。

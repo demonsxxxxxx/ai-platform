@@ -830,6 +830,237 @@ def _checkpoint_candidate_from_step(
     }
 
 
+def _run_execution_input(run: dict[str, object]) -> dict[str, object]:
+    source_input = run.get("input_json") if isinstance(run.get("input_json"), dict) else {}
+    execution_input = source_input.get("input") if isinstance(source_input.get("input"), dict) else source_input
+    return execution_input if isinstance(execution_input, dict) else {}
+
+
+def _configured_multi_agent_steps(run: dict[str, object]) -> list[dict[str, object]]:
+    execution_input = _run_execution_input(run)
+    configured = execution_input.get("multi_agent_steps")
+    if not isinstance(configured, list):
+        return []
+    return [dict(item) for item in configured if isinstance(item, dict) and (item.get("step_key") or item.get("stepKey"))]
+
+
+def _raw_depends_on(values: object) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    depends_on: list[str] = []
+    for value in values:
+        dependency = str(value).strip() if value is not None else ""
+        if dependency and dependency not in depends_on:
+            depends_on.append(dependency)
+    return depends_on
+
+
+def _projected_dependency(value: str, *, raw_terms: set[str], principal: AuthPrincipal) -> dict[str, str | None]:
+    if is_ai_admin(principal):
+        return {"step_key": public_text_or_fallback(value, value), "reason": None}
+    projected = _readiness_public_text(value, raw_terms=raw_terms)
+    if projected:
+        return {"step_key": projected, "reason": None}
+    return {"step_key": None, "reason": "unsafe_dependency"}
+
+
+def _multi_agent_step_public_text(
+    value: object,
+    *,
+    fallback: object,
+    raw_terms: set[str],
+    principal: AuthPrincipal,
+) -> str:
+    if is_ai_admin(principal):
+        return public_text_or_fallback(value, fallback)
+    return _readiness_public_text(value, fallback=fallback, raw_terms=raw_terms)
+
+
+def _dependency_statuses(
+    depends_on: list[str],
+    status_by_key: dict[str, str],
+    *,
+    raw_terms: set[str],
+    principal: AuthPrincipal,
+) -> list[dict[str, str | None]]:
+    statuses: list[dict[str, str | None]] = []
+    for dependency in depends_on:
+        projected = _projected_dependency(dependency, raw_terms=raw_terms, principal=principal)
+        if projected["reason"] == "unsafe_dependency":
+            statuses.append({"step_key": None, "status": "hidden", "reason": "unsafe_dependency"})
+            continue
+        statuses.append({"step_key": projected["step_key"], "status": status_by_key.get(dependency, "missing")})
+    return statuses
+
+
+def _multi_agent_blocked_reason(status: str, dependency_statuses: list[dict[str, str | None]]) -> str | None:
+    if status in RUN_CONTROL_TERMINAL_STATUSES:
+        return "terminal_step"
+    if status == "running":
+        return "already_running"
+    if any(item["status"] == "hidden" for item in dependency_statuses):
+        return "hidden_dependencies"
+    if any(item["status"] == "missing" for item in dependency_statuses):
+        return "missing_dependencies"
+    if any(item["status"] != "succeeded" for item in dependency_statuses):
+        return "waiting_on_dependencies"
+    return None
+
+
+def multi_agent_readiness_snapshot(
+    *,
+    run: dict[str, object],
+    steps: list[dict[str, object]],
+    principal: AuthPrincipal,
+) -> dict[str, object] | None:
+    """Return public dependency readiness without opening autonomous dispatch."""
+    configured_steps = _configured_multi_agent_steps(run)
+    execution_input = _run_execution_input(run)
+    execution_mode = str(execution_input.get("execution_mode") or "")
+    if execution_mode != "multi_agent":
+        return None
+    public_execution_mode = "multi_agent"
+    raw_terms = _readiness_raw_projection_terms(run)
+    configured_by_key = {
+        str(item.get("step_key") or item.get("stepKey")): item
+        for item in configured_steps
+    }
+    recorded_by_key = {str(row.get("step_key")): row for row in steps if row.get("step_key") is not None}
+    ordered_keys = list(configured_by_key)
+    for key, row in sorted(recorded_by_key.items(), key=lambda item: int(item[1].get("sequence") or 0)):
+        if key not in configured_by_key:
+            ordered_keys.append(key)
+
+    status_by_key = {key: normalize_step_status(row.get("status")) for key, row in recorded_by_key.items()}
+    readiness_steps: list[dict[str, object]] = []
+    for index, step_key in enumerate(ordered_keys, start=1):
+        configured = configured_by_key.get(step_key, {})
+        row = recorded_by_key.get(step_key)
+        if row is not None:
+            public_step = run_step_response(row, principal=principal)
+            payload = public_step.get("payload") if isinstance(public_step.get("payload"), dict) else {}
+            status = str(public_step["status"])
+            step_id = str(public_step["step_id"])
+            sequence = int(public_step.get("sequence") or index)
+            public_step_key = _multi_agent_step_public_text(
+                step_key,
+                fallback=step_id,
+                raw_terms=raw_terms,
+                principal=principal,
+            ) or step_id
+            title_fallback = public_step_key
+            role_fallback = ""
+            title = _multi_agent_step_public_text(
+                public_step.get("title"),
+                fallback=title_fallback,
+                raw_terms=raw_terms,
+                principal=principal,
+            ) or public_step_key
+            role = _multi_agent_step_public_text(
+                public_step.get("role"),
+                fallback=role_fallback,
+                raw_terms=raw_terms,
+                principal=principal,
+            ) or None
+            raw_depends_on = _raw_depends_on(
+                payload.get("depends_on") or configured.get("depends_on") or configured.get("dependsOn"),
+            )
+            source = "recorded"
+        else:
+            status = "pending"
+            step_id = None
+            sequence = index
+            public_step_key = _multi_agent_step_public_text(
+                step_key,
+                fallback=f"step-{index}",
+                raw_terms=raw_terms,
+                principal=principal,
+            ) or f"step-{index}"
+            title = _multi_agent_step_public_text(
+                configured.get("title"),
+                fallback=public_step_key,
+                raw_terms=raw_terms,
+                principal=principal,
+            ) or public_step_key
+            role = _multi_agent_step_public_text(
+                configured.get("role"),
+                fallback="",
+                raw_terms=raw_terms,
+                principal=principal,
+            ) or None
+            raw_depends_on = _raw_depends_on(
+                configured.get("depends_on") or configured.get("dependsOn"),
+            )
+            source = "configured"
+
+        dependency_statuses = _dependency_statuses(
+            raw_depends_on,
+            status_by_key,
+            raw_terms=raw_terms,
+            principal=principal,
+        )
+        projected_depends_on = [str(item["step_key"]) for item in dependency_statuses if item.get("step_key")]
+        blocked_reason = _multi_agent_blocked_reason(status, dependency_statuses)
+        ready = status == "pending" and blocked_reason is None
+        readiness_steps.append(
+            {
+                "step_key": public_step_key,
+                "step_id": step_id,
+                "title": title,
+                "role": role,
+                "sequence": sequence,
+                "status": status,
+                "depends_on": projected_depends_on,
+                "dependency_statuses": dependency_statuses,
+                "ready": ready,
+                "blocked_reason": blocked_reason,
+                "source": source,
+            }
+        )
+
+    missing_dependencies = sum(
+        1
+        for item in readiness_steps
+        for dependency in item["dependency_statuses"]
+        if isinstance(dependency, dict) and dependency.get("status") == "missing"
+    )
+    hidden_dependencies = sum(
+        1
+        for item in readiness_steps
+        for dependency in item["dependency_statuses"]
+        if isinstance(dependency, dict) and dependency.get("status") == "hidden"
+    )
+    blocked = sum(
+        1
+        for item in readiness_steps
+        if item["status"] == "pending"
+        and not item["ready"]
+        and item["blocked_reason"] in {"waiting_on_dependencies", "missing_dependencies", "hidden_dependencies"}
+    )
+    return {
+        "enabled": True,
+        "execution_mode": public_execution_mode,
+        "steps": readiness_steps,
+        "counts": {
+            "configured": len(configured_steps),
+            "recorded": len(steps),
+            "completed": sum(1 for item in readiness_steps if item["status"] == "succeeded"),
+            "ready": sum(1 for item in readiness_steps if item["ready"]),
+            "blocked": blocked,
+            "missing_dependencies": missing_dependencies,
+            "hidden_dependencies": hidden_dependencies,
+        },
+        "gates": {
+            "dispatch": _control_action(
+                enabled=False,
+                reason="runtime_dispatch_not_enabled",
+                method=None,
+                href=None,
+            )
+        },
+    }
+
+
 def run_control_readiness_snapshot(
     *,
     run: dict[str, object],
@@ -901,6 +1132,7 @@ def run_control_readiness_snapshot(
         },
         "checkpoint_candidates": checkpoint_candidates,
         "queue_insight": queue_insight,
+        "multi_agent": multi_agent_readiness_snapshot(run=run, steps=steps, principal=principal),
     }
 
 

@@ -961,6 +961,7 @@ def test_run_control_readiness_redacts_raw_skill_ids_from_public_scalars(monkeyp
     assert response.status_code == 200
     body = response.json()
     assert body["run"]["error_message"] == "run_failed"
+    assert body["multi_agent"] is None
     assert body["checkpoint_candidates"] == [
         {
             "step_id": "step-skill",
@@ -1006,6 +1007,311 @@ def test_run_control_readiness_enables_cancel_and_includes_queue_insight(monkeyp
     assert body["actions"]["resume"]["reason"] == "active_run"
     assert body["actions"]["retry"]["reason"] == "status_not_retryable"
     assert body["queue_insight"] == {"tenant_id": "default", "queued": 2, "running": 1}
+
+
+def test_run_control_readiness_projects_multi_agent_dependency_gates(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        row = readiness_run_row(status="running")
+        row["input_json"] = {
+            "input": {
+                "message": "build feature",
+                "execution_mode": "multi_agent",
+                "multi_agent_steps": [
+                    {
+                        "step_key": "plan",
+                        "role": "planner",
+                        "title": "Plan",
+                        "skill_ids": ["qa-file-reviewer"],
+                    },
+                    {
+                        "step_key": "code",
+                        "role": "coder",
+                        "title": "Code",
+                        "depends_on": ["plan"],
+                        "resource_limits": {"max_tool_calls": 3},
+                    },
+                    {
+                        "step_key": "verify",
+                        "role": "qa-file-reviewer verifier",
+                        "title": "qa-file-reviewer verification",
+                        "depends_on": ["code"],
+                        "sandbox_mode": "ephemeral",
+                    },
+                ],
+            }
+        }
+        return row
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-plan",
+                "run_id": run_id,
+                "step_key": "plan",
+                "step_kind": "agent",
+                "status": "succeeded",
+                "title": "Plan",
+                "role": "planner",
+                "sequence": 1,
+                "payload_json": {
+                    "output": "plan output",
+                    "skill_ids": ["qa-file-reviewer"],
+                    "resource_limits": {"max_seconds": 60},
+                    "sandbox_mode": "ephemeral",
+                },
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+            {
+                "id": "step-code",
+                "run_id": run_id,
+                "step_key": "code",
+                "step_kind": "agent",
+                "status": "pending",
+                "title": "Code",
+                "role": "coder",
+                "sequence": 2,
+                "payload_json": {
+                    "depends_on": ["plan"],
+                    "mcp_tool_ids": ["write.docx"],
+                    "worker_path": "/tmp/runtime/worker.py",
+                },
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+            {
+                "id": "step-verify",
+                "run_id": run_id,
+                "step_key": "verify",
+                "step_kind": "agent",
+                "status": "pending",
+                "title": "qa-file-reviewer verification",
+                "role": "qa-file-reviewer verifier",
+                "sequence": 3,
+                "payload_json": {"depends_on": ["code"], "sandbox_mode": "ephemeral"},
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+        ]
+
+    async def fake_queue_insight(status, tenant_id):
+        return {"tenant_id": tenant_id, "queued": 0, "running": 1}
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.routes.runs.queue_insight_for_status", fake_queue_insight)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-ready/control/readiness", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["multi_agent"]["enabled"] is True
+    assert body["multi_agent"]["execution_mode"] == "multi_agent"
+    assert body["multi_agent"]["counts"] == {
+        "configured": 3,
+        "recorded": 3,
+        "completed": 1,
+        "ready": 1,
+        "blocked": 1,
+        "missing_dependencies": 0,
+        "hidden_dependencies": 0,
+    }
+    assert body["multi_agent"]["gates"]["dispatch"] == {
+        "enabled": False,
+        "reason": "runtime_dispatch_not_enabled",
+        "method": None,
+        "href": None,
+    }
+    assert body["multi_agent"]["steps"] == [
+        {
+            "step_key": "plan",
+            "step_id": "step-plan",
+            "title": "Plan",
+            "role": "planner",
+            "sequence": 1,
+            "status": "succeeded",
+            "depends_on": [],
+            "dependency_statuses": [],
+            "ready": False,
+            "blocked_reason": "terminal_step",
+            "source": "recorded",
+        },
+        {
+            "step_key": "code",
+            "step_id": "step-code",
+            "title": "Code",
+            "role": "coder",
+            "sequence": 2,
+            "status": "pending",
+            "depends_on": ["plan"],
+            "dependency_statuses": [{"step_key": "plan", "status": "succeeded"}],
+            "ready": True,
+            "blocked_reason": None,
+            "source": "recorded",
+        },
+        {
+            "step_key": "verify",
+            "step_id": "step-verify",
+            "title": "verify",
+            "role": None,
+            "sequence": 3,
+            "status": "pending",
+            "depends_on": ["code"],
+            "dependency_statuses": [{"step_key": "code", "status": "pending"}],
+            "ready": False,
+            "blocked_reason": "waiting_on_dependencies",
+            "source": "recorded",
+        },
+    ]
+    public_dump = str(body)
+    assert "qa-file-reviewer" not in public_dump
+    assert "skill_ids" not in public_dump
+    assert "resource_limits" not in public_dump
+    assert "sandbox_mode" not in public_dump
+    assert "mcp_tool_ids" not in public_dump
+    assert "/tmp/runtime" not in public_dump
+
+
+def test_run_control_readiness_blocks_hidden_multi_agent_dependencies(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        row = readiness_run_row(status="running")
+        row["input_json"] = {
+            "input": {
+                "message": "build feature",
+                "execution_mode": "multi_agent",
+                "multi_agent_steps": [
+                    {"step_key": "safe", "title": "Safe", "role": "worker"},
+                    {"step_key": "blocked", "title": "Blocked", "depends_on": ["qa-file-reviewer"]},
+                ],
+            }
+        }
+        return row
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-safe",
+                "run_id": run_id,
+                "step_key": "safe",
+                "step_kind": "agent",
+                "status": "pending",
+                "title": "Safe",
+                "role": "worker",
+                "sequence": 1,
+                "payload_json": {},
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+            {
+                "id": "step-blocked",
+                "run_id": run_id,
+                "step_key": "blocked",
+                "step_kind": "agent",
+                "status": "pending",
+                "title": "Blocked",
+                "role": "worker",
+                "sequence": 2,
+                "payload_json": {"depends_on": ["qa-file-reviewer"]},
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-ready/control/readiness", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["multi_agent"]["enabled"] is True
+    assert body["multi_agent"]["execution_mode"] == "multi_agent"
+    assert body["multi_agent"]["counts"]["ready"] == 1
+    assert body["multi_agent"]["counts"]["blocked"] == 1
+    assert body["multi_agent"]["counts"]["hidden_dependencies"] == 1
+    assert body["multi_agent"]["steps"][1]["depends_on"] == []
+    assert body["multi_agent"]["steps"][1]["dependency_statuses"] == [
+        {"step_key": None, "status": "hidden", "reason": "unsafe_dependency"}
+    ]
+    assert body["multi_agent"]["steps"][1]["ready"] is False
+    assert body["multi_agent"]["steps"][1]["blocked_reason"] == "hidden_dependencies"
+    public_dump = str(body)
+    assert "qa-file-reviewer" not in public_dump
+
+
+def test_run_control_readiness_hides_dirty_multi_agent_execution_mode(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        row = readiness_run_row(status="running")
+        row["input_json"] = {
+            "input": {
+                "message": "legacy configured steps",
+                "execution_mode": "qa-file-reviewer:/tmp/runtime/secret-token",
+                "multi_agent_steps": [{"step_key": "legacy", "title": "Legacy"}],
+            }
+        }
+        return row
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-ready/control/readiness", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["multi_agent"] is None
+    public_dump = str(body)
+    assert "qa-file-reviewer" not in public_dump
+    assert "/tmp/runtime" not in public_dump
+    assert "secret-token" not in public_dump
+
+
+def test_run_control_readiness_does_not_enable_non_multi_agent_configured_steps(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        row = readiness_run_row(status="running")
+        row["input_json"] = {
+            "input": {
+                "message": "legacy configured steps",
+                "execution_mode": "single_agent",
+                "multi_agent_steps": [{"step_key": "legacy", "title": "Legacy"}],
+            }
+        }
+        return row
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-ready/control/readiness", headers=headers())
+
+    assert response.status_code == 200
+    assert response.json()["multi_agent"] is None
 
 
 def test_run_control_readiness_returns_not_found_without_loading_steps(monkeypatch):
