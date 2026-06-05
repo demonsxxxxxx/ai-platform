@@ -205,6 +205,25 @@ cleanup and configurable redaction policy remain follow-up hardening gates for
 the full Memory / Context PRD gate; they are not claimed complete and do not
 permit cross-session long-term memory.
 
+### P1 Tool Permission / Agent Frontend V1
+
+Status: tenant tool policy admin controls merged on `main` via PR #7, followed
+by `05e92292831bcc42c1843981e4294b20e970c0fc` to serialize live permission
+decision expiry events before writing run event JSON. The backend was deployed
+to 211 with image label `ai-platform.source-revision=05e92292831bcc42c1843981e4294b20e970c0fc`.
+
+This slice closes the current P1 tool permission and frontend projection
+baseline. It adds an admin-only same-tenant tool policy inventory/update
+contract, default read-only RAGFlow tenant policy seeding, fail-closed hidden
+behavior when tenant policy is missing, `expires_at` decision projection, and
+frontend handling for pending/decided tool permission cards across live events
+and history replay. The 211 smoke verified admin list/update/audit, ordinary
+user admin denial, missing-policy fail-closed projection, live request/decision
+with event card `expires_at`, redaction of private request/decision payloads,
+existing thin-shell frontend root/API health, dist API boundary, and LambChat
+compatibility API gates. This does not open high-risk write tools or start P2
+Long Task / Multi-Agent Runtime.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。
