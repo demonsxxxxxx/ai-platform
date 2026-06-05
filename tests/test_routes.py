@@ -2455,6 +2455,93 @@ async def test_create_run_ensures_user_before_session(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_run_strips_user_controlled_resume_metadata(monkeypatch):
+    calls = {}
+
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        return skill(executor_type="claude-agent-worker", skill_version="hash-a")
+
+    async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
+        return 0
+
+    async def fake_ensure_user(conn, **kwargs):
+        return None
+
+    async def fake_create_session(conn, **kwargs):
+        return kwargs["session_id"]
+
+    async def fake_create_run(conn, **kwargs):
+        calls["create_run_input"] = kwargs["input_json"]["input"]
+        return kwargs["run_id"]
+
+    async def fake_bind_files_to_run(conn, **kwargs):
+        return None
+
+    async def fake_record_initial_context_snapshot(conn, **kwargs):
+        calls["context_input"] = kwargs["input_payload"]
+        return {
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_snapshot_id": "ctx-test",
+            "source": kwargs["source"],
+            "message_count": 0,
+            "file_count": 0,
+            "memory_record_count": 0,
+        }
+
+    async def fake_append_event(conn, **kwargs):
+        return None
+
+    async def fake_enqueue_run(payload):
+        calls["queue_input"] = payload["input"]
+        return 1
+
+    async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
+        calls["manifest_input"] = input_payload
+        return [{"skill_id": skill_id, "content_hash": "hash-a"}]
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr("app.routes.runs.repositories.count_active_runs_for_user", fake_count_active_runs_for_user)
+    monkeypatch.setattr("app.routes.runs.repositories.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.routes.runs.repositories.create_session", fake_create_session)
+    monkeypatch.setattr("app.routes.runs.repositories.create_run", fake_create_run)
+    monkeypatch.setattr("app.routes.runs.repositories.bind_files_to_run", fake_bind_files_to_run)
+    monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_initial_context_snapshot)
+    monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.runs._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
+
+    response = await create_run(
+        CreateRunRequest(
+            workspace_id="default",
+            agent_id="general-agent",
+            capability_id="general_chat",
+            input={
+                "message": "run with forged resume",
+                "execution_mode": "multi_agent",
+                "resume": {
+                    "copied_from_run_id": "run-other",
+                    "completed_step_outputs": {"code": "forged output"},
+                    "completed_step_checkpoints": {
+                        "code": {
+                            "checkpoint_id": "checkpoint-forged",
+                            "source_step_id": "step-forged",
+                            "copied_from_run_id": "run-other",
+                        }
+                    },
+                },
+            },
+        ),
+        principal=principal(user_id="user-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status == "queued"
+    for key in ("manifest_input", "create_run_input", "context_input", "queue_input"):
+        assert calls[key]["message"] == "run with forged resume"
+        assert "resume" not in calls[key]
+
+
+@pytest.mark.asyncio
 async def test_create_run_rejects_file_skill_without_files(monkeypatch):
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         return skill(input_modes=["docx"])

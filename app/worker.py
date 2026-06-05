@@ -329,7 +329,7 @@ async def _record_run_step_from_event(
     if status != "pending":
         event_payload["checkpoint_reuse_pending"] = False
     role = str(event_payload.get("role") or "agent")
-    await repositories.upsert_run_step(
+    step_id = await repositories.upsert_run_step(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
@@ -341,6 +341,24 @@ async def _record_run_step_from_event(
         sequence=_int_payload_value(event_payload, "step_index", 0),
         payload_json=event_payload,
     )
+    if (
+        status == "succeeded"
+        and event_payload.get("output") is not None
+        and event_payload.get("checkpoint_id")
+        and not event_payload.get("source_step_id")
+    ):
+        await repositories.upsert_run_step(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            step_key=_step_key_from_event(event_payload),
+            step_kind=str(event_payload.get("step_kind") or "agent"),
+            status=status,
+            title=str(event_payload.get("title") or message or role),
+            role=role,
+            sequence=_int_payload_value(event_payload, "step_index", 0),
+            payload_json={"source_step_id": step_id},
+        )
 
 
 def _sdk_import_status() -> str:

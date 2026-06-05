@@ -113,6 +113,36 @@ async def test_reused_step_event_clears_checkpoint_reuse_pending(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_completed_step_event_materializes_source_step_id_for_checkpoint(monkeypatch):
+    calls = []
+
+    async def upsert_run_step(conn, **kwargs):
+        calls.append(kwargs)
+        return "step-created"
+
+    monkeypatch.setattr("app.worker.repositories.upsert_run_step", upsert_run_step, raising=False)
+
+    await _record_run_step_from_event(
+        object(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        event_type="agent_step_completed",
+        message="coding agent completed",
+        payload={
+            "role": "coding",
+            "step_key": "code",
+            "step_index": 1,
+            "checkpoint_id": "checkpoint-run-a-code",
+            "output": "code output",
+        },
+    )
+
+    assert calls[0]["payload_json"]["checkpoint_id"] == "checkpoint-run-a-code"
+    assert "source_step_id" not in calls[0]["payload_json"]
+    assert calls[1]["payload_json"] == {"source_step_id": "step-created"}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("event_type", ["agent_step_started", "agent_step_completed", "agent_step_failed", "agent_step_blocked"])
 async def test_non_pending_step_event_clears_checkpoint_reuse_pending(monkeypatch, event_type):
     calls = []

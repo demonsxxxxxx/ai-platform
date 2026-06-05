@@ -107,6 +107,14 @@ def _validate_queue_payload_for_enqueue(payload: dict[str, Any]) -> dict[str, An
         raise HTTPException(status_code=500, detail="queue_payload_invalid") from exc
 
 
+def _strip_server_owned_resume(input_payload: object) -> object:
+    if not isinstance(input_payload, dict):
+        return input_payload
+    cleaned = dict(input_payload)
+    cleaned.pop("resume", None)
+    return cleaned
+
+
 def _file_ids_from_request(request: ChatStreamRequest) -> list[str]:
     if request.file_ids:
         return request.file_ids
@@ -418,7 +426,7 @@ async def chat_stream(
     explicit_payload = _explicit_intent_payload(requested_agent_id, requested_skill_id)
     resolved_file_ids = _file_ids_from_request(request)
     request_input = request.input if is_ai_admin(principal) else sanitize_user_control_input(request.input)
-    run_input = {"message": request.message, **request_input}
+    run_input = _strip_server_owned_resume({"message": request.message, **request_input})
     try:
         async with transaction() as conn:
             if explicit_payload is None:

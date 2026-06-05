@@ -1063,8 +1063,11 @@ async def test_qa_file_reviewer_multi_agent_plan_emits_steps_and_runs_staged_sdk
         "agent_step_started",
         "agent_step_completed",
     ]
+    assert step_events[1]["payload"]["checkpoint_id"] == "checkpoint-run_1-step-1"
     assert step_events[3]["payload"]["output"] == "reviewed"
     assert step_events[3]["payload"]["artifact_count"] == 1
+    assert step_events[3]["payload"]["checkpoint_id"] == "checkpoint-run_1-step-2"
+    assert step_events[5]["payload"]["checkpoint_id"] == "checkpoint-run_1-step-3"
 
 
 @pytest.mark.asyncio
@@ -1103,10 +1106,22 @@ async def test_multi_agent_file_skill_resume_reuses_completed_steps_without_reru
                 {"step_key": "verify", "role": "verify", "depends_on": ["review"]},
             ],
             "resume": {
-                "copied_from_run_id": "run_original",
+                "copied_from_run_id": "run_mid",
                 "completed_step_outputs": {
                     "inspect": "Input inspected: 1 file(s).",
                     "review": "reviewed Word artifact ready",
+                },
+                "completed_step_checkpoints": {
+                    "inspect": {
+                        "checkpoint_id": "checkpoint-inspect",
+                        "source_step_id": "step-inspect-source",
+                        "copied_from_run_id": "run_original",
+                    },
+                    "review": {
+                        "checkpoint_id": "checkpoint-review",
+                        "source_step_id": "step-review-source",
+                        "copied_from_run_id": "run_original",
+                    },
                 },
             },
         },
@@ -1126,7 +1141,12 @@ async def test_multi_agent_file_skill_resume_reuses_completed_steps_without_reru
         "agent_step_completed",
     ]
     assert step_events[0]["payload"]["copied_from_run_id"] == "run_original"
+    assert step_events[0]["payload"]["checkpoint_id"] == "checkpoint-inspect"
+    assert step_events[0]["payload"]["source_step_id"] == "step-inspect-source"
     assert step_events[1]["payload"]["output"] == "reviewed Word artifact ready"
+    assert step_events[1]["payload"]["checkpoint_id"] == "checkpoint-review"
+    assert step_events[1]["payload"]["source_step_id"] == "step-review-source"
+    assert step_events[1]["payload"]["copied_from_run_id"] == "run_original"
     assert step_events[3]["payload"]["output"] == "Verification completed: 0 artifact(s) prepared."
 
 

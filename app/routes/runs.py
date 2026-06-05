@@ -1208,6 +1208,44 @@ async def queue_insight_for_status(status: str, tenant_id: str) -> dict[str, Any
     return await get_queue_insight(tenant_id)
 
 
+def _resume_checkpoint_lineage(
+    completed_checkpoints: dict[object, object],
+    *,
+    step_key: str,
+    copied_from_run_id: object,
+) -> dict[str, str]:
+    checkpoint = completed_checkpoints.get(step_key)
+    if not isinstance(checkpoint, dict):
+        return {}
+    lineage = artifact_lineage_contract(
+        {
+            "checkpoint_id": checkpoint.get("checkpoint_id"),
+            "source_step_id": checkpoint.get("source_step_id"),
+        },
+        source_run_id=checkpoint.get("copied_from_run_id") or copied_from_run_id,
+    )
+    checkpoint_id = lineage.get("checkpoint_id")
+    source_step_id = lineage.get("source_step_id")
+    source_run_id = lineage.get("source_run_id")
+    if not checkpoint_id or not source_step_id:
+        return {}
+    result = {
+        "checkpoint_id": str(checkpoint_id),
+        "source_step_id": str(source_step_id),
+    }
+    if source_run_id:
+        result["copied_from_run_id"] = str(source_run_id)
+    return result
+
+
+def _strip_server_owned_resume(input_payload: object) -> object:
+    if not isinstance(input_payload, dict):
+        return input_payload
+    cleaned = dict(input_payload)
+    cleaned.pop("resume", None)
+    return cleaned
+
+
 async def seed_copied_run_steps(conn, *, tenant_id: str, run_id: str, copied_input: dict[str, Any], source: str) -> None:
     steps = copied_input.get("multi_agent_steps")
     if not isinstance(steps, list):
@@ -1216,6 +1254,9 @@ async def seed_copied_run_steps(conn, *, tenant_id: str, run_id: str, copied_inp
     completed_outputs = resume.get("completed_step_outputs") if isinstance(resume, dict) else {}
     if not isinstance(completed_outputs, dict):
         completed_outputs = {}
+    completed_checkpoints = resume.get("completed_step_checkpoints") if isinstance(resume, dict) else {}
+    if not isinstance(completed_checkpoints, dict):
+        completed_checkpoints = {}
     copied_from_run_id = resume.get("copied_from_run_id") if isinstance(resume, dict) else copied_input.get("copied_from_run_id")
     for index, raw_step in enumerate(steps, start=1):
         if not isinstance(raw_step, dict):
@@ -1240,10 +1281,16 @@ async def seed_copied_run_steps(conn, *, tenant_id: str, run_id: str, copied_inp
         if isinstance(resource_limits, dict):
             payload_json["resource_limits"] = resource_limits
         if reused:
+            checkpoint_lineage = _resume_checkpoint_lineage(
+                completed_checkpoints,
+                step_key=step_key,
+                copied_from_run_id=copied_from_run_id,
+            )
             payload_json.update(
                 {
                     "checkpoint_reuse_pending": True,
                     "copied_from_run_id": copied_from_run_id,
+                    **checkpoint_lineage,
                 }
             )
         await repositories.upsert_run_step(
@@ -1389,6 +1436,7 @@ async def create_run(
     user_id = principal.user_id
     resolved_agent_id, resolved_skill_id = resolve_run_selector(request, principal)
     run_input = request.input if is_ai_admin(principal) else sanitize_user_control_input(request.input)
+    run_input = _strip_server_owned_resume(run_input)
     try:
         async with transaction() as conn:
             skill = await repositories.resolve_agent_skill(

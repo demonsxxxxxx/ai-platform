@@ -306,6 +306,25 @@ smoke data cleanup. This does not start automatic retry policy scheduling,
 autonomous subagent dispatch, high-risk tool execution, or new sandbox
 behavior.
 
+### P2 Resume Checkpoint Lineage Materialization
+
+Status: implemented on feature branch `feat/p2-resume-checkpoint-lineage` for
+local verification before 211 deployment. This extends copied/retry run resume
+metadata with safe per-step checkpoint lineage while preserving the existing
+`resume.completed_step_outputs` map. Seeded copied steps and executor
+`agent_step_reused` events now carry safe `checkpoint_id`, `source_step_id`, and
+source-run linkage so checkpoint audit/provenance can keep a stable graph after
+copy, retry, and resume. Completed multi-agent file-skill steps also materialize
+safe checkpoint ids before copy/retry, while copy strips user-controlled
+`resume` metadata, ordinary create-run and chat-stream input cannot inject
+server-owned resume state, and chained reuse preserves the original producer
+lineage.
+
+Focused local coverage verifies repository resume metadata, copied-run step
+seeding, adapter checkpoint reuse events, and existing checkpoint audit
+projection behavior. This does not start automatic retry policy scheduling,
+autonomous subagent dispatch, high-risk tool execution, or new sandbox behavior.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。

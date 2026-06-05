@@ -11,6 +11,7 @@ from app.control_plane_contracts import (
     EVENT_ENVELOPE_SCHEMA_VERSION,
     EXECUTOR_RESULT_SCHEMA_VERSION,
     RUN_CONTRACT_VERSION,
+    artifact_lineage_contract,
     artifact_manifest_contract,
     sanitize_public_payload,
     sanitize_public_text,
@@ -3333,15 +3334,23 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
     source_execution_input = source_input.get("input") if isinstance(source_input.get("input"), dict) else source_input
     if isinstance(source_execution_input, dict):
         source_execution_input = sanitize_user_control_input(source_execution_input)
+        source_execution_input.pop("resume", None)
     else:
         source_execution_input = {}
     copied_execution_input = {**source_execution_input, "copied_from_run_id": run_id}
-    completed_step_outputs = await _completed_step_outputs_for_resume(conn, tenant_id=tenant_id, run_id=run_id)
+    completed_step_outputs, completed_step_checkpoints = await _completed_steps_for_resume(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+    )
     if completed_step_outputs:
-        copied_execution_input["resume"] = {
+        resume_payload: dict[str, Any] = {
             "copied_from_run_id": run_id,
             "completed_step_outputs": completed_step_outputs,
         }
+        if completed_step_checkpoints:
+            resume_payload["completed_step_checkpoints"] = completed_step_checkpoints
+        copied_execution_input["resume"] = resume_payload
     copied_input_json = (
         {**sanitized_source_input, "input": copied_execution_input, "copied_from_run_id": run_id}
         if isinstance(source_input.get("input"), dict)
@@ -3503,15 +3512,15 @@ async def update_run_input_skill_version(
     )
 
 
-async def _completed_step_outputs_for_resume(
+async def _completed_steps_for_resume(
     conn: AsyncConnection,
     *,
     tenant_id: str,
     run_id: str,
-) -> dict[str, str]:
+) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
     cursor = await conn.execute(
         """
-        select step_key, payload_json
+        select id, step_key, payload_json
         from run_steps
         where tenant_id = %s
           and run_id = %s
@@ -3522,11 +3531,39 @@ async def _completed_step_outputs_for_resume(
     )
     rows = await cursor.fetchall()
     outputs: dict[str, str] = {}
+    checkpoints: dict[str, dict[str, str]] = {}
     for row in rows:
         payload = row.get("payload_json") or {}
         if not isinstance(payload, dict) or payload.get("output") is None:
             continue
-        outputs[str(row["step_key"])] = str(payload["output"])
+        step_key = str(row["step_key"])
+        outputs[step_key] = str(payload["output"])
+        lineage = artifact_lineage_contract(
+            {
+                "checkpoint_id": payload.get("checkpoint_id"),
+                "source_step_id": payload.get("source_step_id") or row.get("id"),
+            },
+            source_run_id=payload.get("copied_from_run_id") or run_id,
+        )
+        checkpoint_id = lineage.get("checkpoint_id")
+        source_step_id = lineage.get("source_step_id")
+        source_run_id = lineage.get("source_run_id")
+        if checkpoint_id and source_step_id and source_run_id:
+            checkpoints[step_key] = {
+                "checkpoint_id": str(checkpoint_id),
+                "source_step_id": str(source_step_id),
+                "copied_from_run_id": str(source_run_id),
+            }
+    return outputs, checkpoints
+
+
+async def _completed_step_outputs_for_resume(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+) -> dict[str, str]:
+    outputs, _checkpoints = await _completed_steps_for_resume(conn, tenant_id=tenant_id, run_id=run_id)
     return outputs
 
 

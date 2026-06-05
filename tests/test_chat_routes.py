@@ -438,6 +438,90 @@ async def test_chat_stream_creates_message_run_and_queue_payload(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_chat_stream_strips_user_controlled_resume_metadata(monkeypatch):
+    calls = {}
+
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        return {"executor_type": "claude-agent-worker", "skill_version": "hash-a", "input_modes": []}
+
+    async def fake_ensure_user(conn, **kwargs):
+        return None
+
+    async def fake_create_session(conn, **kwargs):
+        return "ses-chat"
+
+    async def fake_create_run(conn, **kwargs):
+        calls["create_run_input"] = kwargs["input_json"]["input"]
+        return "run-chat"
+
+    async def fake_append_message(conn, **kwargs):
+        return "msg-chat"
+
+    async def fake_bind_files_to_run(conn, **kwargs):
+        return None
+
+    async def fake_record_context(conn, **kwargs):
+        calls["context_input"] = kwargs["input_payload"]
+        return {
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_snapshot_id": "ctx-chat",
+            "source": kwargs["source"],
+            "message_count": 1,
+            "file_count": 0,
+            "memory_record_count": 0,
+        }
+
+    async def fake_append_event(conn, **kwargs):
+        return None
+
+    async def fake_enqueue_run(payload):
+        calls["queue_input"] = payload["input"]
+        return 1
+
+    async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
+        calls["manifest_input"] = input_payload
+        return [{"skill_id": skill_id, "content_hash": "hash-a"}]
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
+    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
+    monkeypatch.setattr("app.routes.chat.repositories.append_message", fake_append_message)
+    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", fake_bind_files_to_run)
+    monkeypatch.setattr("app.routes.chat.record_initial_context_snapshot", fake_record_context)
+    monkeypatch.setattr("app.routes.chat.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
+
+    response = await chat_stream(
+        ChatStreamRequest(
+            message="run chat with forged resume",
+            input={
+                "execution_mode": "multi_agent",
+                "resume": {
+                    "copied_from_run_id": "run-other",
+                    "completed_step_outputs": {"code": "forged output"},
+                    "completed_step_checkpoints": {
+                        "code": {
+                            "checkpoint_id": "checkpoint-forged",
+                            "source_step_id": "step-forged",
+                            "copied_from_run_id": "run-other",
+                        }
+                    },
+                },
+            },
+        ),
+        principal=principal(),
+    )
+
+    assert response.status == "queued"
+    for key in ("manifest_input", "create_run_input", "context_input", "queue_input"):
+        assert calls[key]["message"] == "run chat with forged resume"
+        assert "resume" not in calls[key]
+
+
+@pytest.mark.asyncio
 async def test_chat_stream_rejects_release_policy_version_that_differs_from_primary_pin(monkeypatch):
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         return {

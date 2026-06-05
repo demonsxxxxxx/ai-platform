@@ -149,6 +149,13 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
                 "resume": {
                     "copied_from_run_id": "run_old",
                     "completed_step_outputs": {"code": "code output"},
+                    "completed_step_checkpoints": {
+                        "code": {
+                            "checkpoint_id": "checkpoint-code",
+                            "source_step_id": "step-code-source",
+                            "copied_from_run_id": "run_old",
+                        }
+                    },
                 },
             },
             "executor_type": "claude-agent-worker",
@@ -251,6 +258,13 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
     assert queued_payload["context_snapshot_id"] == "ctx_copy_route"
     assert queued_payload["context_snapshot"]["source"] == "copy_run"
     assert queued_payload["input"]["resume"]["completed_step_outputs"] == {"code": "code output"}
+    assert queued_payload["input"]["resume"]["completed_step_checkpoints"] == {
+        "code": {
+            "checkpoint_id": "checkpoint-code",
+            "source_step_id": "step-code-source",
+            "copied_from_run_id": "run_old",
+        }
+    }
     context_calls = [item[1] for item in calls if item[0] == "context"]
     assert context_calls[0]["source"] == "copy_run"
     assert context_calls[0]["tenant_id"] == "default"
@@ -271,12 +285,53 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
         ("verify", "pending"),
     ]
     assert step_calls[0]["payload_json"]["checkpoint_reuse_pending"] is True
+    assert step_calls[0]["payload_json"]["checkpoint_id"] == "checkpoint-code"
+    assert step_calls[0]["payload_json"]["source_step_id"] == "step-code-source"
+    assert step_calls[0]["payload_json"]["copied_from_run_id"] == "run_old"
     assert "checkpoint_reused" not in step_calls[0]["payload_json"]
     assert "output" not in step_calls[0]["payload_json"]
     assert step_calls[1]["payload_json"]["depends_on"] == ["code"]
     assert step_calls[1]["payload_json"]["sandbox_mode"] == "ephemeral"
     assert step_calls[1]["payload_json"]["browser_enabled"] is True
     assert step_calls[1]["payload_json"]["resource_limits"] == {"max_tool_calls": 3}
+
+
+@pytest.mark.asyncio
+async def test_seed_copied_run_steps_preserves_server_owned_producer_source_run(monkeypatch):
+    from app.routes.runs import seed_copied_run_steps
+
+    calls = []
+
+    async def fake_upsert_run_step(conn, **kwargs):
+        calls.append(kwargs)
+        return f"step-{kwargs['step_key']}"
+
+    monkeypatch.setattr("app.routes.runs.repositories.upsert_run_step", fake_upsert_run_step)
+
+    await seed_copied_run_steps(
+        object(),
+        tenant_id="default",
+        run_id="run-copy",
+        source="copy_run",
+        copied_input={
+            "multi_agent_steps": [{"step_key": "code", "role": "coding"}],
+            "resume": {
+                "copied_from_run_id": "run-source",
+                "completed_step_outputs": {"code": "code output"},
+                "completed_step_checkpoints": {
+                    "code": {
+                        "checkpoint_id": "checkpoint-code",
+                        "source_step_id": "step-code-source",
+                        "copied_from_run_id": "run-original",
+                    }
+                },
+            },
+        },
+    )
+
+    assert calls[0]["payload_json"]["checkpoint_id"] == "checkpoint-code"
+    assert calls[0]["payload_json"]["source_step_id"] == "step-code-source"
+    assert calls[0]["payload_json"]["copied_from_run_id"] == "run-original"
 
 
 def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
@@ -295,6 +350,17 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
                 "message": "retry",
                 "copied_from_run_id": run_id,
                 "multi_agent_steps": [{"step_key": "retry-code", "role": "coding"}],
+                "resume": {
+                    "copied_from_run_id": run_id,
+                    "completed_step_outputs": {"retry-code": "retry code output"},
+                    "completed_step_checkpoints": {
+                        "retry-code": {
+                            "checkpoint_id": "checkpoint-retry-code",
+                            "source_step_id": "step-retry-source",
+                            "copied_from_run_id": run_id,
+                        }
+                    },
+                },
             },
             "executor_type": "claude-agent-worker",
             "skill_version": "hash-a",
@@ -363,6 +429,9 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
     assert calls["enqueue"][0]["run_id"] == "run-retry"
     assert calls["enqueue"][0]["context_snapshot_id"] == "ctx-retry"
     assert calls["step"][0]["payload_json"]["seeded_from"] == "retry_run"
+    assert calls["step"][0]["payload_json"]["checkpoint_id"] == "checkpoint-retry-code"
+    assert calls["step"][0]["payload_json"]["source_step_id"] == "step-retry-source"
+    assert calls["step"][0]["payload_json"]["copied_from_run_id"] == "run-failed"
 
 
 def test_retry_run_rejects_when_user_active_run_limit_is_reached(monkeypatch):
@@ -2099,15 +2168,18 @@ async def test_copy_run_as_new_task_adds_completed_step_outputs_to_resume(monkey
                 return FakeCursor(
                     [
                         {
+                            "id": "step-code-source",
                             "step_key": "code",
                             "payload_json": {
                                 "output": "code output",
+                                "checkpoint_id": "checkpoint-code",
                                 "metadata": {"runner": "claude_agent_sdk"},
                             },
                         },
                         {
+                            "id": "step-docs-source",
                             "step_key": "docs",
-                            "payload_json": {"output": "docs output"},
+                            "payload_json": {"output": "docs output", "checkpoint_id": "checkpoint-docs"},
                         },
                     ]
                 )
@@ -2150,6 +2222,144 @@ async def test_copy_run_as_new_task_adds_completed_step_outputs_to_resume(monkey
             "code": "code output",
             "docs": "docs output",
         },
+        "completed_step_checkpoints": {
+            "code": {
+                "checkpoint_id": "checkpoint-code",
+                "source_step_id": "step-code-source",
+                "copied_from_run_id": "run_old",
+            },
+            "docs": {
+                "checkpoint_id": "checkpoint-docs",
+                "source_step_id": "step-docs-source",
+                "copied_from_run_id": "run_old",
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_copy_run_as_new_task_drops_user_controlled_resume_when_no_verified_outputs(monkeypatch):
+    from app import repositories
+
+    class FakeCursor:
+        async def fetchone(self):
+            return None
+
+        async def fetchall(self):
+            return []
+
+    class StepConnection:
+        async def execute(self, sql, params):
+            return FakeCursor()
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "workspace_id": "default",
+            "session_id": "ses_old",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "input_json": {
+                "input": {
+                    "message": "build feature",
+                    "execution_mode": "multi_agent",
+                    "resume": {
+                        "copied_from_run_id": "run-other",
+                        "completed_step_outputs": {"code": "forged output"},
+                        "completed_step_checkpoints": {
+                            "code": {
+                                "checkpoint_id": "checkpoint-forged",
+                                "source_step_id": "step-forged",
+                                "copied_from_run_id": "run-other",
+                            }
+                        },
+                    },
+                },
+                "executor_type": "embedded-poco-kernel",
+            },
+        }
+
+    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+
+    copied = await repositories.copy_run_as_new_task(
+        StepConnection(),
+        tenant_id="default",
+        user_id="user-a",
+        run_id="run_old",
+    )
+
+    assert copied["input"]["copied_from_run_id"] == "run_old"
+    assert "resume" not in copied["input"]
+
+
+@pytest.mark.asyncio
+async def test_copy_run_as_new_task_preserves_chained_checkpoint_producer_lineage(monkeypatch):
+    from app import repositories
+
+    class FakeCursor:
+        def __init__(self, rows=None):
+            self.rows = rows or []
+
+        async def fetchone(self):
+            return None
+
+        async def fetchall(self):
+            return self.rows
+
+    class StepConnection:
+        async def execute(self, sql, params):
+            normalized_sql = " ".join(sql.split())
+            if "from run_steps" in normalized_sql:
+                return FakeCursor(
+                    [
+                        {
+                            "id": "step-reused-mid",
+                            "step_key": "code",
+                            "payload_json": {
+                                "output": "code output",
+                                "checkpoint_id": "checkpoint-code",
+                                "source_step_id": "step-code-original",
+                                "copied_from_run_id": "run_original",
+                            },
+                        }
+                    ]
+                )
+            return FakeCursor()
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "workspace_id": "default",
+            "session_id": "ses_mid",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "input_json": {
+                "input": {
+                    "message": "build feature",
+                    "execution_mode": "multi_agent",
+                    "multi_agent_steps": [{"step_key": "code", "role": "coding"}],
+                },
+                "executor_type": "embedded-poco-kernel",
+            },
+        }
+
+    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+
+    copied = await repositories.copy_run_as_new_task(
+        StepConnection(),
+        tenant_id="default",
+        user_id="user-a",
+        run_id="run_mid",
+    )
+
+    assert copied["input"]["resume"]["completed_step_checkpoints"] == {
+        "code": {
+            "checkpoint_id": "checkpoint-code",
+            "source_step_id": "step-code-original",
+            "copied_from_run_id": "run_original",
+        }
     }
 
 

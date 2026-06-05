@@ -7,7 +7,7 @@ import shutil
 from typing import Any
 
 from app import repositories
-from app.control_plane_contracts import standard_trace_id
+from app.control_plane_contracts import artifact_lineage_contract, standard_trace_id
 from app.db import transaction
 from app.executors.base import ArtifactManifest, ExecutorEventSink, ExecutorResult, RunPayload
 from app.executors.claude_agent_sdk_runner import (
@@ -222,6 +222,7 @@ class ClaudeAgentWorkerAdapter:
     ) -> ExecutorResult:
         steps = _file_skill_steps(payload.input)
         completed_outputs = _resume_completed_step_outputs(payload.input)
+        completed_checkpoints = _resume_completed_step_checkpoints(payload.input)
         copied_from_run_id = _resume_copied_from_run_id(payload.input)
         completed_step_keys: set[str] = set(completed_outputs)
         skill_result: ExecutorResult | None = None
@@ -235,6 +236,11 @@ class ClaudeAgentWorkerAdapter:
             step_key = str(step["step_key"])
             role = str(step["role"])
             if step_key in completed_outputs:
+                checkpoint_lineage = _resume_checkpoint_lineage(
+                    completed_checkpoints,
+                    step_key=step_key,
+                    copied_from_run_id=copied_from_run_id,
+                )
                 await self._emit_agent_step(
                     event_sink,
                     event_type="agent_step_reused",
@@ -245,6 +251,7 @@ class ClaudeAgentWorkerAdapter:
                         "output": completed_outputs[step_key],
                         "copied_from_run_id": copied_from_run_id,
                         "checkpoint_reused": True,
+                        **checkpoint_lineage,
                     },
                 )
                 continue
@@ -301,6 +308,8 @@ class ClaudeAgentWorkerAdapter:
                 output = _non_execution_step_output(step=step, payload=payload, skill_result=skill_result)
                 extra_payload = {"output": output}
 
+            checkpoint_payload = _completed_step_checkpoint_payload(payload, step_index=index)
+            extra_payload.update({key: value for key, value in checkpoint_payload.items() if key not in extra_payload})
             await self._emit_agent_step(
                 event_sink,
                 event_type="agent_step_completed",
@@ -1374,6 +1383,59 @@ def _resume_completed_step_outputs(input_payload: dict[str, object]) -> dict[str
     if not isinstance(outputs, dict):
         return {}
     return {str(key): str(value) for key, value in outputs.items() if value is not None}
+
+
+def _resume_completed_step_checkpoints(input_payload: dict[str, object]) -> dict[str, dict[str, object]]:
+    resume = input_payload.get("resume")
+    if not isinstance(resume, dict):
+        return {}
+    checkpoints = resume.get("completed_step_checkpoints")
+    if not isinstance(checkpoints, dict):
+        return {}
+    result: dict[str, dict[str, object]] = {}
+    for key, value in checkpoints.items():
+        if isinstance(value, dict):
+            result[str(key)] = dict(value)
+    return result
+
+
+def _resume_checkpoint_lineage(
+    completed_checkpoints: dict[str, dict[str, object]],
+    *,
+    step_key: str,
+    copied_from_run_id: object,
+) -> dict[str, str]:
+    checkpoint = completed_checkpoints.get(step_key)
+    if not isinstance(checkpoint, dict):
+        return {}
+    lineage = artifact_lineage_contract(
+        {
+            "checkpoint_id": checkpoint.get("checkpoint_id"),
+            "source_step_id": checkpoint.get("source_step_id"),
+        },
+        source_run_id=checkpoint.get("copied_from_run_id") or copied_from_run_id,
+    )
+    checkpoint_id = lineage.get("checkpoint_id")
+    source_step_id = lineage.get("source_step_id")
+    source_run_id = lineage.get("source_run_id")
+    if not checkpoint_id or not source_step_id:
+        return {}
+    result = {
+        "checkpoint_id": str(checkpoint_id),
+        "source_step_id": str(source_step_id),
+    }
+    if source_run_id:
+        result["copied_from_run_id"] = str(source_run_id)
+    return result
+
+
+def _completed_step_checkpoint_payload(payload: RunPayload, *, step_index: int) -> dict[str, str]:
+    checkpoint_id = artifact_lineage_contract(
+        {"checkpoint_id": f"checkpoint-{payload.run_id}-step-{step_index}"}
+    ).get("checkpoint_id")
+    if not checkpoint_id:
+        return {}
+    return {"checkpoint_id": str(checkpoint_id)}
 
 
 def _resume_copied_from_run_id(input_payload: dict[str, object]) -> str | None:
