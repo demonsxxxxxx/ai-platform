@@ -279,6 +279,216 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
     assert step_calls[1]["payload_json"]["resource_limits"] == {"max_tool_calls": 3}
 
 
+def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
+    calls = {"retry": [], "enqueue": [], "step": []}
+
+    async def fake_retry_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+        calls["retry"].append((tenant_id, user_id, run_id))
+        return {
+            "session_id": "ses-old",
+            "run_id": "run-retry",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "workspace_id": "default",
+            "file_ids": [],
+            "input": {
+                "message": "retry",
+                "copied_from_run_id": run_id,
+                "multi_agent_steps": [{"step_key": "retry-code", "role": "coding"}],
+            },
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-a",
+            "release_policy_version": "",
+            "release_decision": {
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "policy_active": False,
+                "selected_version": "hash-a",
+                "selected_track": "manifest_pin",
+            },
+        }
+
+    async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
+        assert skill_id == "general-chat"
+        assert input_payload["copied_from_run_id"] == "run-failed"
+        assert release_policy_version == ""
+        return [{"skill_id": skill_id, "content_hash": "hash-a"}]
+
+    async def fake_record_initial_context_snapshot(conn, **kwargs):
+        assert kwargs["source"] == "retry_run"
+        return {"context_snapshot_id": "ctx-retry", "source": "retry_run"}
+
+    async def fake_enqueue_run(payload):
+        calls["enqueue"].append(payload)
+        return 3
+
+    async def fake_get_queue_insight(tenant_id):
+        return {"tenant_id": tenant_id}
+
+    async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
+        calls["active_limit"] = (tenant_id, user_id)
+        return 0
+
+    async def fake_update_run_input_skill_version(conn, **kwargs):
+        return None
+
+    async def fake_append_event(conn, **kwargs):
+        return None
+
+    async def fake_upsert_run_step(conn, **kwargs):
+        calls["step"].append(kwargs)
+        return f"step-{kwargs['step_key']}"
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.count_active_runs_for_user", fake_count_active_runs_for_user)
+    monkeypatch.setattr("app.routes.runs.repositories.retry_run_as_new_task", fake_retry_run_as_new_task, raising=False)
+    monkeypatch.setattr("app.routes.runs._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
+    monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_initial_context_snapshot)
+    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.routes.runs.repositories.upsert_run_step", fake_upsert_run_step)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.runs.get_queue_insight", fake_get_queue_insight)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run-failed/retry", headers=headers())
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == "run-retry"
+    assert response.json()["session_id"] == "ses-old"
+    assert response.json()["status"] == "queued"
+    assert response.json()["queue_position"] == 3
+    assert calls["retry"] == [("default", "user-a", "run-failed")]
+    assert calls["active_limit"] == ("default", "user-a")
+    assert calls["enqueue"][0]["run_id"] == "run-retry"
+    assert calls["enqueue"][0]["context_snapshot_id"] == "ctx-retry"
+    assert calls["step"][0]["payload_json"]["seeded_from"] == "retry_run"
+
+
+def test_retry_run_rejects_when_user_active_run_limit_is_reached(monkeypatch):
+    calls = []
+
+    class LimitSettings:
+        max_active_runs_per_user = 1
+
+    async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
+        calls.append(("count", tenant_id, user_id))
+        return 1
+
+    async def fail_retry_run_as_new_task(*args, **kwargs):
+        calls.append(("retry", kwargs))
+        raise AssertionError("retry must not create a copied run after admission rejection")
+
+    async def fail_enqueue_run(payload):
+        calls.append(("enqueue", payload))
+        raise AssertionError("retry must not enqueue after admission rejection")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.get_settings", lambda: LimitSettings())
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.count_active_runs_for_user", fake_count_active_runs_for_user)
+    monkeypatch.setattr("app.routes.runs.repositories.retry_run_as_new_task", fail_retry_run_as_new_task, raising=False)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue_run)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run-failed/retry", headers=headers())
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "user_active_run_limit_exceeded"
+    assert calls == [("count", "default", "user-a")]
+
+
+def test_retry_run_returns_not_found_for_stale_source_capability(monkeypatch):
+    from app.repositories import RepositoryNotFoundError
+
+    calls = []
+
+    async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
+        calls.append(("count", tenant_id, user_id))
+        return 0
+
+    async def fake_retry_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+        calls.append(("retry", tenant_id, user_id, run_id))
+        raise RepositoryNotFoundError("agent_or_skill_not_found")
+
+    async def fail_enqueue_run(payload):
+        calls.append(("enqueue", payload))
+        raise AssertionError("retry must not enqueue stale source capabilities")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.count_active_runs_for_user", fake_count_active_runs_for_user)
+    monkeypatch.setattr("app.routes.runs.repositories.retry_run_as_new_task", fake_retry_run_as_new_task, raising=False)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue_run)
+    client = TestClient(create_app(), raise_server_exceptions=False)
+
+    response = client.post("/api/ai/runs/run-failed/retry", headers=headers())
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "agent_or_skill_not_found"
+    assert calls == [("count", "default", "user-a"), ("retry", "default", "user-a", "run-failed")]
+
+
+def test_retry_run_rejects_non_retryable_source_without_enqueue(monkeypatch):
+    from app.repositories import RepositoryConflictError
+
+    calls = []
+
+    async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
+        calls.append(("count", tenant_id, user_id))
+        return 0
+
+    async def fake_retry_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+        calls.append(("retry", tenant_id, user_id, run_id))
+        raise RepositoryConflictError("status_not_retryable")
+
+    async def fake_enqueue_run(payload):
+        calls.append(("enqueue", payload))
+        return 1
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.count_active_runs_for_user", fake_count_active_runs_for_user)
+    monkeypatch.setattr("app.routes.runs.repositories.retry_run_as_new_task", fake_retry_run_as_new_task, raising=False)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run-running/retry", headers=headers())
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "status_not_retryable"
+    assert calls == [("count", "default", "user-a"), ("retry", "default", "user-a", "run-running")]
+
+
+def test_retry_run_returns_not_found_without_enqueue(monkeypatch):
+    calls = []
+
+    async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
+        calls.append(("count", tenant_id, user_id))
+        return 0
+
+    async def fake_retry_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+        calls.append(("retry", tenant_id, user_id, run_id))
+        return None
+
+    async def fake_enqueue_run(payload):
+        calls.append(("enqueue", payload))
+        return 1
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.count_active_runs_for_user", fake_count_active_runs_for_user)
+    monkeypatch.setattr("app.routes.runs.repositories.retry_run_as_new_task", fake_retry_run_as_new_task, raising=False)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/missing-run/retry", headers=headers())
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "run_not_found"
+    assert calls == [("count", "default", "user-a"), ("retry", "default", "user-a", "missing-run")]
+
+
 def test_copy_run_plan_previews_reused_and_rerun_steps(monkeypatch):
     calls = {}
 
@@ -463,10 +673,10 @@ def test_run_control_readiness_enables_resume_from_checkpoint_outputs(monkeypatc
         "href": "/api/ai/runs/run-ready/copy",
     }
     assert body["actions"]["retry"] == {
-        "enabled": False,
-        "reason": "retry_runtime_not_enabled",
-        "method": None,
-        "href": None,
+        "enabled": True,
+        "reason": "retry_available",
+        "method": "POST",
+        "href": "/api/ai/runs/run-ready/retry",
     }
     assert body["checkpoint_candidates"] == [
         {
@@ -1941,6 +2151,149 @@ async def test_copy_run_as_new_task_adds_completed_step_outputs_to_resume(monkey
             "docs": "docs output",
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_retry_run_as_new_task_rejects_non_retryable_status(monkeypatch):
+    from app import repositories
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id, for_update=False):
+        assert for_update is True
+        return {
+            "id": run_id,
+            "status": "running",
+            "workspace_id": "default",
+            "session_id": "ses-old",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "input_json": {"input": {"message": "retry"}},
+        }
+
+    async def fail_copy(*args, **kwargs):
+        raise AssertionError("non-retryable source must not be copied")
+
+    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.repositories.copy_run_as_new_task", fail_copy)
+
+    with pytest.raises(repositories.RepositoryConflictError, match="status_not_retryable"):
+        await repositories.retry_run_as_new_task(object(), tenant_id="default", user_id="user-a", run_id="run-running")
+
+
+@pytest.mark.asyncio
+async def test_retry_run_as_new_task_rejects_when_retry_is_already_active(monkeypatch):
+    from app import repositories
+
+    class ActiveRetryCursor:
+        async def fetchone(self):
+            return {"id": "run-retry-active", "status": "queued"}
+
+    class ActiveRetryConnection:
+        def __init__(self):
+            self.queries = []
+
+        async def execute(self, sql, params):
+            self.queries.append((" ".join(sql.split()), params))
+            if "copied_from_run_id = %s" in " ".join(sql.split()):
+                return ActiveRetryCursor()
+            raise AssertionError(f"unexpected query before active retry rejection: {sql}")
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id, for_update=False):
+        assert for_update is True
+        return {
+            "id": run_id,
+            "status": "failed",
+            "workspace_id": "default",
+            "session_id": "ses-old",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "input_json": {"input": {"message": "retry"}},
+        }
+
+    async def fail_copy(*args, **kwargs):
+        raise AssertionError("active retry source must not be copied again")
+
+    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.repositories.copy_run_as_new_task", fail_copy)
+    conn = ActiveRetryConnection()
+
+    with pytest.raises(repositories.RepositoryConflictError, match="retry_already_active"):
+        await repositories.retry_run_as_new_task(conn, tenant_id="default", user_id="user-a", run_id="run-failed")
+
+    sql, params = conn.queries[0]
+    assert "status in ('queued', 'running')" in sql
+    assert params == ("default", "user-a", "run-failed")
+
+
+@pytest.mark.asyncio
+async def test_retry_run_as_new_task_records_retry_events_and_audit(monkeypatch):
+    from app import repositories
+
+    calls = []
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id, for_update=False):
+        calls.append(("source_lock", tenant_id, user_id, run_id, for_update))
+        return {
+            "id": run_id,
+            "status": "failed",
+            "trace_id": "trace-old",
+            "workspace_id": "default",
+            "session_id": "ses-old",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "input_json": {"input": {"message": "retry"}},
+        }
+
+    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+        return {
+            "session_id": "ses-old",
+            "run_id": "run-new",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "workspace_id": "default",
+            "file_ids": [],
+            "input": {"copied_from_run_id": run_id},
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-a",
+            "release_policy_version": "",
+            "release_decision": {},
+        }
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+
+    async def fake_get_active_retry_for_source_run(conn, *, tenant_id, user_id, run_id):
+        calls.append(("active_retry", tenant_id, user_id, run_id))
+        return None
+
+    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
+    monkeypatch.setattr(
+        "app.repositories.get_active_retry_for_source_run",
+        fake_get_active_retry_for_source_run,
+        raising=False,
+    )
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+
+    copied = await repositories.retry_run_as_new_task(
+        object(),
+        tenant_id="default",
+        user_id="user-a",
+        run_id="run-failed",
+    )
+
+    assert copied["run_id"] == "run-new"
+    assert calls[0] == ("source_lock", "default", "user-a", "run-failed", True)
+    assert calls[1] == ("active_retry", "default", "user-a", "run-failed")
+    event_types = [call[1]["event_type"] for call in calls if call[0] == "event"]
+    assert event_types == ["retry_requested", "run_retry_created"]
+    audit = [call[1] for call in calls if call[0] == "audit"][0]
+    assert audit["action"] == "run.retry"
+    assert audit["target_id"] == "run-failed"
+    assert audit["payload_json"]["new_run_id"] == "run-new"
 
 
 def test_cancel_run_records_platform_cancel_request(monkeypatch):

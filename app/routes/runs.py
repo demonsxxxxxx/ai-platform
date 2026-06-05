@@ -676,7 +676,8 @@ def run_control_readiness_snapshot(
         resume_reason = "no_checkpoint_outputs"
     resume_enabled = resume_reason == "checkpoint_outputs_available"
 
-    retry_reason = "retry_runtime_not_enabled" if status in RUN_CONTROL_RETRY_PREVIEW_STATUSES else "status_not_retryable"
+    retry_enabled = status in RUN_CONTROL_RETRY_PREVIEW_STATUSES
+    retry_reason = "retry_available" if retry_enabled else "status_not_retryable"
     run_summary = run_playback_summary(run, principal)
     if not is_ai_admin(principal):
         raw_error_message = run_summary.get("error_message")
@@ -703,10 +704,10 @@ def run_control_readiness_snapshot(
                 href=f"/api/ai/runs/{run_id}/copy",
             ),
             "retry": _control_action(
-                enabled=False,
+                enabled=retry_enabled,
                 reason=retry_reason,
-                method=None,
-                href=None,
+                method="POST",
+                href=f"/api/ai/runs/{run_id}/retry",
             ),
         },
         "checkpoint_candidates": checkpoint_candidates,
@@ -1207,7 +1208,7 @@ async def queue_insight_for_status(status: str, tenant_id: str) -> dict[str, Any
     return await get_queue_insight(tenant_id)
 
 
-async def seed_copied_run_steps(conn, *, tenant_id: str, run_id: str, copied_input: dict[str, Any]) -> None:
+async def seed_copied_run_steps(conn, *, tenant_id: str, run_id: str, copied_input: dict[str, Any], source: str) -> None:
     steps = copied_input.get("multi_agent_steps")
     if not isinstance(steps, list):
         return
@@ -1229,7 +1230,7 @@ async def seed_copied_run_steps(conn, *, tenant_id: str, run_id: str, copied_inp
             "depends_on": raw_step.get("depends_on") or raw_step.get("dependsOn") or [],
             "skill_ids": raw_step.get("skill_ids") or raw_step.get("skillIds") or [],
             "mcp_tool_ids": raw_step.get("mcp_tool_ids") or raw_step.get("mcpToolIds") or [],
-            "seeded_from": "copy_run",
+            "seeded_from": source,
         }
         if raw_step.get("sandbox_mode") is not None:
             payload_json["sandbox_mode"] = raw_step.get("sandbox_mode")
@@ -1257,6 +1258,110 @@ async def seed_copied_run_steps(conn, *, tenant_id: str, run_id: str, copied_inp
             sequence=int(raw_step.get("sequence") or index),
             payload_json=payload_json,
         )
+
+
+async def prepare_copied_run_for_queue(
+    conn,
+    *,
+    copied: dict[str, Any],
+    principal: AuthPrincipal,
+    source: str,
+) -> dict[str, Any]:
+    copied_skill_version = str(copied.get("skill_version") or "")
+    skill_manifests = await _governed_skill_manifest_pins(
+        conn,
+        skill_id=str(copied["skill_id"]),
+        input_payload=copied["input"] if isinstance(copied.get("input"), dict) else {},
+        release_policy_version=copied.get("release_policy_version"),
+    )
+    copied_skill_version = governed_locked_skill_version(
+        skill_id=str(copied["skill_id"]),
+        skill_manifests=skill_manifests,
+        fallback_version=copied_skill_version,
+        release_policy_version=copied.get("release_policy_version"),
+    )
+    copied["skill_version"] = copied_skill_version
+    copied["release_decision"] = release_decision_payload_for_locked_version(
+        copied.get("release_decision") if isinstance(copied.get("release_decision"), dict) else {},
+        locked_version=copied_skill_version,
+    )
+    await repositories.update_run_input_skill_version(
+        conn,
+        tenant_id=principal.tenant_id,
+        run_id=copied["run_id"],
+        skill_version=copied_skill_version,
+    )
+    await repositories.append_event(
+        conn,
+        tenant_id=principal.tenant_id,
+        run_id=copied["run_id"],
+        event_type="skill_release_decision",
+        stage="control",
+        message="已锁定 Skill 发布决策",
+        payload=_release_decision_event_payload(
+            copied.get("release_decision") if isinstance(copied.get("release_decision"), dict) else {},
+            skill_id=str(copied["skill_id"]),
+        ),
+    )
+    context_ref = await record_initial_context_snapshot(
+        conn,
+        tenant_id=principal.tenant_id,
+        workspace_id=str(copied["workspace_id"]),
+        user_id=principal.user_id,
+        session_id=str(copied["session_id"]),
+        run_id=str(copied["run_id"]),
+        trace_id=standard_trace_id(str(copied["run_id"])),
+        agent_id=str(copied["agent_id"]),
+        skill_id=str(copied["skill_id"]),
+        input_payload=copied["input"] if isinstance(copied.get("input"), dict) else {},
+        message_ids=[],
+        file_ids=list(copied["file_ids"]),
+        source=source,
+    )
+    for event in initial_run_event_specs(
+        agent_id=str(copied["agent_id"]),
+        skill_id=str(copied["skill_id"]),
+        skill_version=copied_skill_version,
+        executor_type=str(copied["executor_type"]),
+        file_ids=list(copied["file_ids"]),
+        source=source,
+    ):
+        await repositories.append_event(
+            conn,
+            tenant_id=principal.tenant_id,
+            run_id=copied["run_id"],
+            event_type=event["event_type"],
+            stage=event["stage"],
+            message=event["message"],
+            payload=event["payload"],
+        )
+    queue_payload = _validate_queue_payload_for_enqueue(
+        {
+            "tenant_id": principal.tenant_id,
+            "workspace_id": copied["workspace_id"],
+            "user_id": principal.user_id,
+            "session_id": copied["session_id"],
+            "run_id": copied["run_id"],
+            "agent_id": copied["agent_id"],
+            "skill_id": copied["skill_id"],
+            "file_ids": copied["file_ids"],
+            "input": copied["input"],
+            "executor_type": copied["executor_type"],
+            "skill_version": copied_skill_version,
+            "release_decision": copied.get("release_decision") if isinstance(copied.get("release_decision"), dict) else {},
+            "skill_manifests": skill_manifests,
+            "context_snapshot_id": context_ref["context_snapshot_id"],
+            "context_snapshot": context_ref,
+        }
+    )
+    await seed_copied_run_steps(
+        conn,
+        tenant_id=principal.tenant_id,
+        run_id=copied["run_id"],
+        copied_input=copied["input"],
+        source=source,
+    )
+    return queue_payload
 
 
 def resolve_run_selector(request: CreateRunRequest, principal: AuthPrincipal) -> tuple[str, str]:
@@ -1454,100 +1559,52 @@ async def copy_run(
                 run_id=run_id,
             )
             if copied is not None:
-                copied_skill_version = str(copied.get("skill_version") or "")
-                skill_manifests = await _governed_skill_manifest_pins(
+                queue_payload = await prepare_copied_run_for_queue(
                     conn,
-                    skill_id=str(copied["skill_id"]),
-                    input_payload=copied["input"] if isinstance(copied.get("input"), dict) else {},
-                    release_policy_version=copied.get("release_policy_version"),
-                )
-                copied_skill_version = governed_locked_skill_version(
-                    skill_id=str(copied["skill_id"]),
-                    skill_manifests=skill_manifests,
-                    fallback_version=copied_skill_version,
-                    release_policy_version=copied.get("release_policy_version"),
-                )
-                copied["skill_version"] = copied_skill_version
-                copied["release_decision"] = release_decision_payload_for_locked_version(
-                    copied.get("release_decision") if isinstance(copied.get("release_decision"), dict) else {},
-                    locked_version=copied_skill_version,
-                )
-                await repositories.update_run_input_skill_version(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    run_id=copied["run_id"],
-                    skill_version=copied_skill_version,
-                )
-                await repositories.append_event(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    run_id=copied["run_id"],
-                    event_type="skill_release_decision",
-                    stage="control",
-                    message="已锁定 Skill 发布决策",
-                    payload=_release_decision_event_payload(
-                        copied.get("release_decision") if isinstance(copied.get("release_decision"), dict) else {},
-                        skill_id=str(copied["skill_id"]),
-                    ),
-                )
-                context_ref = await record_initial_context_snapshot(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    workspace_id=str(copied["workspace_id"]),
-                    user_id=principal.user_id,
-                    session_id=str(copied["session_id"]),
-                    run_id=str(copied["run_id"]),
-                    trace_id=standard_trace_id(str(copied["run_id"])),
-                    agent_id=str(copied["agent_id"]),
-                    skill_id=str(copied["skill_id"]),
-                    input_payload=copied["input"] if isinstance(copied.get("input"), dict) else {},
-                    message_ids=[],
-                    file_ids=list(copied["file_ids"]),
+                    copied=copied,
+                    principal=principal,
                     source="copy_run",
-                )
-                for event in initial_run_event_specs(
-                    agent_id=str(copied["agent_id"]),
-                    skill_id=str(copied["skill_id"]),
-                    skill_version=copied_skill_version,
-                    executor_type=str(copied["executor_type"]),
-                    file_ids=list(copied["file_ids"]),
-                    source="copy_run",
-                ):
-                    await repositories.append_event(
-                        conn,
-                        tenant_id=principal.tenant_id,
-                        run_id=copied["run_id"],
-                        event_type=event["event_type"],
-                        stage=event["stage"],
-                        message=event["message"],
-                        payload=event["payload"],
-                    )
-                queue_payload = _validate_queue_payload_for_enqueue(
-                    {
-                        "tenant_id": principal.tenant_id,
-                        "workspace_id": copied["workspace_id"],
-                        "user_id": principal.user_id,
-                        "session_id": copied["session_id"],
-                        "run_id": copied["run_id"],
-                        "agent_id": copied["agent_id"],
-                        "skill_id": copied["skill_id"],
-                        "file_ids": copied["file_ids"],
-                        "input": copied["input"],
-                        "executor_type": copied["executor_type"],
-                        "skill_version": copied_skill_version,
-                        "release_decision": copied.get("release_decision") if isinstance(copied.get("release_decision"), dict) else {},
-                        "skill_manifests": skill_manifests,
-                        "context_snapshot_id": context_ref["context_snapshot_id"],
-                        "context_snapshot": context_ref,
-                    }
-                )
-                await seed_copied_run_steps(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    run_id=copied["run_id"],
-                    copied_input=copied["input"],
                 )
     except SkillVersionMaterializationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if copied is None:
+        raise HTTPException(status_code=404, detail="run_not_found")
+    queue_position = await enqueue_run(queue_payload)
+    return RunControlResponse(
+        run_id=copied["run_id"],
+        session_id=copied["session_id"],
+        status="queued",
+        queue_position=queue_position,
+        queue_insight=await queue_insight_for_status("queued", principal.tenant_id),
+    )
+
+
+@router.post("/runs/{run_id}/retry", response_model=RunControlResponse)
+async def retry_run(
+    run_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> RunControlResponse:
+    try:
+        async with transaction() as conn:
+            await enforce_user_active_run_limit(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
+            copied = await repositories.retry_run_as_new_task(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                run_id=run_id,
+            )
+            if copied is not None:
+                queue_payload = await prepare_copied_run_for_queue(
+                    conn,
+                    copied=copied,
+                    principal=principal,
+                    source="retry_run",
+                )
+    except SkillVersionMaterializationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RepositoryNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if copied is None:
         raise HTTPException(status_code=404, detail="run_not_found")

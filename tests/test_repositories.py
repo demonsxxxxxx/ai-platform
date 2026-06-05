@@ -1902,6 +1902,23 @@ async def test_get_run_identity_can_lock_row_for_callback_race_window():
 
 
 @pytest.mark.asyncio
+async def test_get_authorized_run_can_lock_row_for_retry_race_window():
+    conn = RecordingConnection()
+
+    await repositories.get_authorized_run(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        run_id="run-a",
+        for_update=True,
+    )
+
+    sql, params = conn.calls[0]
+    assert sql.endswith("for update")
+    assert params == ("tenant-a", "run-a", "user-a")
+
+
+@pytest.mark.asyncio
 async def test_upsert_run_step_merges_existing_payload_on_conflict():
     conn = RecordingConnection()
 

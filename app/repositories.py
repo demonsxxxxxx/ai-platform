@@ -27,6 +27,7 @@ from app.tool_policy import max_risk
 DEFAULT_RUN_EXECUTOR_TYPES = {"claude-agent-worker", "ragflow"}
 ACTIVE_RUN_STATUSES = {"queued", "running"}
 TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
+RETRYABLE_RUN_STATUSES = {"failed", "dead-letter", "dead_letter", "dead-lettered"}
 
 
 def new_id(prefix: str) -> str:
@@ -840,6 +841,29 @@ async def count_active_runs_for_user(conn: AsyncConnection, *, tenant_id: str, u
     return int(row["count"] if row else 0)
 
 
+async def get_active_retry_for_source_run(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    run_id: str,
+) -> dict[str, Any] | None:
+    cursor = await conn.execute(
+        """
+        select id, status
+        from runs
+        where tenant_id = %s
+          and user_id = %s
+          and copied_from_run_id = %s
+          and status in ('queued', 'running')
+        order by created_at desc
+        limit 1
+        """,
+        (tenant_id, user_id, run_id),
+    )
+    return await cursor.fetchone()
+
+
 async def append_event(
     conn: AsyncConnection,
     *,
@@ -926,14 +950,17 @@ async def get_authorized_run(
     tenant_id: str,
     user_id: str,
     run_id: str,
+    for_update: bool = False,
 ) -> dict[str, Any] | None:
+    lock_clause = "for update" if for_update else ""
     cursor = await conn.execute(
-        """
+        f"""
         select *
         from runs
         where tenant_id = %s
           and id = %s
           and user_id = %s
+        {lock_clause}
         """,
         (tenant_id, run_id, user_id),
     )
@@ -3384,6 +3411,60 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
         "release_policy_version": release_policy_version,
         "release_decision": release_decision_payload,
     }
+
+
+async def retry_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id: str, run_id: str) -> dict[str, Any] | None:
+    source = await get_authorized_run(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id, for_update=True)
+    if source is None:
+        return None
+    source_status = str(source.get("status") or "")
+    if source_status not in RETRYABLE_RUN_STATUSES:
+        raise RepositoryConflictError("status_not_retryable")
+    active_retry = await get_active_retry_for_source_run(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        run_id=run_id,
+    )
+    if active_retry is not None:
+        raise RepositoryConflictError("retry_already_active")
+    copied = await copy_run_as_new_task(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id)
+    if copied is None:
+        return None
+    await append_event(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        trace_id=source.get("trace_id"),
+        event_type="retry_requested",
+        stage="control",
+        message="已请求重试",
+        payload={"visible_to_user": True, "new_run_id": copied["run_id"]},
+    )
+    await append_event(
+        conn,
+        tenant_id=tenant_id,
+        run_id=str(copied["run_id"]),
+        event_type="run_retry_created",
+        stage="control",
+        message="已创建重试任务",
+        payload={"visible_to_user": True, "copied_from_run_id": run_id},
+    )
+    await append_audit_log(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="run.retry",
+        target_type="run",
+        target_id=run_id,
+        trace_id=source.get("trace_id"),
+        payload_json={
+            "source_run_id": run_id,
+            "new_run_id": copied["run_id"],
+            "source_status": source_status,
+        },
+    )
+    return copied
 
 
 async def update_run_input_skill_version(
