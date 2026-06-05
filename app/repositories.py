@@ -3007,6 +3007,294 @@ async def cleanup_expired_multi_agent_dispatch_claims(
     return cleaned
 
 
+def _run_execution_input_from_row(run: dict[str, Any]) -> dict[str, Any]:
+    source_input = run.get("input_json") if isinstance(run.get("input_json"), dict) else {}
+    execution_input = source_input.get("input") if isinstance(source_input.get("input"), dict) else source_input
+    return execution_input if isinstance(execution_input, dict) else {}
+
+
+def _clean_child_execution_input(source_execution_input: dict[str, Any]) -> dict[str, Any]:
+    cleaned = sanitize_user_control_input(source_execution_input)
+    cleaned.pop("resume", None)
+    cleaned.pop("multi_agent_dispatch", None)
+    return cleaned
+
+
+def _completed_dependency_resume_payload(
+    steps: list[dict[str, Any]],
+    *,
+    parent_run_id: str,
+    depends_on: list[str],
+) -> dict[str, Any]:
+    rows_by_key = {str(row.get("step_key")): row for row in steps if row.get("step_key") is not None}
+    completed_outputs: dict[str, str] = {}
+    completed_checkpoints: dict[str, dict[str, str]] = {}
+    for dependency in depends_on:
+        row = rows_by_key.get(dependency)
+        if row is None or str(row.get("status") or "") != "succeeded":
+            raise RepositoryConflictError("dispatch_dependency_not_succeeded")
+        payload = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
+        if payload.get("output") is None:
+            raise RepositoryConflictError("dispatch_dependency_output_missing")
+        completed_outputs[dependency] = str(payload["output"])
+        lineage = artifact_lineage_contract(
+            {
+                "checkpoint_id": payload.get("checkpoint_id"),
+                "source_step_id": payload.get("source_step_id") or row.get("id"),
+            },
+            source_run_id=payload.get("copied_from_run_id") or parent_run_id,
+        )
+        checkpoint_id = lineage.get("checkpoint_id")
+        source_step_id = lineage.get("source_step_id")
+        source_run_id = lineage.get("source_run_id")
+        if checkpoint_id and source_step_id and source_run_id:
+            completed_checkpoints[dependency] = {
+                "checkpoint_id": str(checkpoint_id),
+                "source_step_id": str(source_step_id),
+                "copied_from_run_id": str(source_run_id),
+            }
+    if not completed_outputs:
+        return {}
+    resume: dict[str, Any] = {
+        "copied_from_run_id": parent_run_id,
+        "completed_step_outputs": completed_outputs,
+    }
+    if completed_checkpoints:
+        resume["completed_step_checkpoints"] = completed_checkpoints
+    return resume
+
+
+async def create_multi_agent_dispatch_child_run(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    parent_run_id: str,
+    dispatch_id: str,
+    handed_off_by: str,
+) -> dict[str, Any]:
+    """Create one queued child run for an admin-claimed multi-agent dispatch step."""
+    parent_cursor = await conn.execute(
+        """
+        select id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id,
+               trace_id, status, input_json
+        from runs
+        where tenant_id = %s and id = %s
+        for update
+        """,
+        (tenant_id, parent_run_id),
+    )
+    parent = await parent_cursor.fetchone()
+    if parent is None:
+        raise RepositoryNotFoundError("run_not_found")
+    if str(parent.get("status") or "") not in ACTIVE_RUN_STATUSES:
+        raise RepositoryConflictError("run_not_dispatchable")
+
+    step_cursor = await conn.execute(
+        """
+        select id, run_id, step_key, step_kind, status, title, role, sequence, payload_json
+        from run_steps
+        where tenant_id = %s
+          and run_id = %s
+          and payload_json->>'dispatch_id' = %s
+        for update
+        """,
+        (tenant_id, parent_run_id, dispatch_id),
+    )
+    step = await step_cursor.fetchone()
+    if step is None:
+        raise RepositoryNotFoundError("dispatch_claim_not_found")
+    payload = step.get("payload_json") if isinstance(step.get("payload_json"), dict) else {}
+    if payload.get("dispatch_child_run_id"):
+        raise RepositoryConflictError("dispatch_already_handed_off")
+    if str(step.get("status") or "") != "running" or payload.get("dispatch_state") != "claimed":
+        raise RepositoryConflictError("dispatch_claim_not_active")
+    lease_expires_at = _parse_iso_datetime(payload.get("dispatch_lease_expires_at"))
+    if lease_expires_at is None:
+        raise RepositoryConflictError("dispatch_claim_lease_invalid")
+    if lease_expires_at <= datetime.now(timezone.utc):
+        raise RepositoryConflictError("dispatch_claim_expired")
+
+    steps = await list_run_steps(conn, tenant_id=tenant_id, run_id=parent_run_id)
+    depends_on = [str(item) for item in payload.get("depends_on") or [] if str(item)]
+    resume_payload = _completed_dependency_resume_payload(steps, parent_run_id=parent_run_id, depends_on=depends_on)
+    source_input = parent.get("input_json") if isinstance(parent.get("input_json"), dict) else {}
+    source_execution_input = _run_execution_input_from_row(parent)
+    child_execution_input = {
+        **_clean_child_execution_input(source_execution_input),
+        "copied_from_run_id": parent_run_id,
+        "execution_mode": "multi_agent",
+        "multi_agent_steps": [
+            {
+                "step_key": str(step["step_key"]),
+                "role": str(step.get("role") or ""),
+                "title": str(step.get("title") or step["step_key"]),
+                "depends_on": depends_on,
+            }
+        ],
+        "multi_agent_dispatch": {
+            "parent_run_id": parent_run_id,
+            "parent_step_id": str(step["id"]),
+            "step_key": str(step["step_key"]),
+            "dispatch_id": dispatch_id,
+        },
+    }
+    if resume_payload:
+        child_execution_input["resume"] = resume_payload
+
+    sanitized_source_input = sanitize_user_control_input(source_input)
+    if isinstance(source_input.get("input"), dict):
+        child_input_json = {
+            **sanitized_source_input,
+            "input": child_execution_input,
+            "copied_from_run_id": parent_run_id,
+        }
+    else:
+        child_input_json = child_execution_input
+
+    skill = await resolve_agent_skill(
+        conn,
+        tenant_id=tenant_id,
+        agent_id=str(parent["agent_id"]),
+        skill_id=str(parent["skill_id"]),
+    )
+    executor_type = str(skill["executor_type"])
+    release_decision = resolve_rollout_skill_decision(
+        skill,
+        tenant_id=tenant_id,
+        skill_id=str(parent["skill_id"]),
+        rollout_key=str(parent["user_id"]),
+    )
+    skill_version = release_decision.selected_version
+    release_decision_payload = release_decision.to_payload()
+    release_policy_version = skill_version if release_decision.policy_active else ""
+    if isinstance(child_input_json, dict):
+        child_input_json["executor_type"] = executor_type
+        child_input_json["skill_version"] = skill_version
+        child_input_json["release_decision"] = release_decision_payload
+
+    child_run_id = new_id("run")
+    await conn.execute(
+        """
+        insert into runs(
+          id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id,
+          trace_id, schema_version, executor_schema_version,
+          status, input_json, queued_at, copied_from_run_id
+        )
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s)
+        """,
+        (
+            child_run_id,
+            tenant_id,
+            parent["workspace_id"],
+            parent["session_id"],
+            parent["user_id"],
+            parent["agent_id"],
+            parent["skill_id"],
+            standard_trace_id(child_run_id),
+            RUN_CONTRACT_VERSION,
+            EXECUTOR_RESULT_SCHEMA_VERSION,
+            dumps_json(child_input_json),
+            parent_run_id,
+        ),
+    )
+    handed_off_at = datetime.now(timezone.utc).isoformat()
+    await conn.execute(
+        """
+        update run_steps
+        set
+          payload_json = payload_json || %s::jsonb,
+          updated_at = now()
+        where tenant_id = %s
+          and id = %s
+          and payload_json->>'dispatch_id' = %s
+        """,
+        (
+            dumps_json(
+                {
+                    "dispatch_state": "handed_off",
+                    "dispatch_child_run_id": child_run_id,
+                    "dispatch_handed_off_at": handed_off_at,
+                }
+            ),
+            tenant_id,
+            step["id"],
+            dispatch_id,
+        ),
+    )
+    event_id = await append_event(
+        conn,
+        tenant_id=tenant_id,
+        run_id=parent_run_id,
+        trace_id=parent.get("trace_id"),
+        event_type="multi_agent_dispatch_handoff",
+        stage="control",
+        message="Multi-agent dispatch handed off to child run",
+        visible_to_user=False,
+        payload={
+            "visible_to_user": False,
+            "step_key": str(step["step_key"]),
+            "dispatch_id": dispatch_id,
+            "child_run_id": child_run_id,
+        },
+    )
+    child_event_id = await append_event(
+        conn,
+        tenant_id=tenant_id,
+        run_id=child_run_id,
+        event_type="run_multi_agent_child_created",
+        stage="control",
+        message="Multi-agent child run created",
+        payload={
+            "visible_to_user": True,
+            "copied_from_run_id": parent_run_id,
+            "parent_step_id": str(step["id"]),
+            "step_key": str(step["step_key"]),
+            "dispatch_id": dispatch_id,
+        },
+    )
+    audit_id = await append_audit_log(
+        conn,
+        tenant_id=tenant_id,
+        user_id=handed_off_by,
+        action="run.multi_agent.dispatch.handoff",
+        target_type="run_step",
+        target_id=str(step["id"]),
+        trace_id=parent.get("trace_id"),
+        payload_json={
+            "parent_run_id": parent_run_id,
+            "parent_step_id": str(step["id"]),
+            "step_key": str(step["step_key"]),
+            "dispatch_id": dispatch_id,
+            "child_run_id": child_run_id,
+            "admin_user_id": handed_off_by,
+            "result_status": "queued",
+        },
+    )
+    file_ids = list(source_input.get("file_ids") or [])
+    return {
+        "parent_run_id": parent_run_id,
+        "parent_step_id": str(step["id"]),
+        "step_key": str(step["step_key"]),
+        "dispatch_id": dispatch_id,
+        "child_run_id": child_run_id,
+        "run_id": child_run_id,
+        "session_id": parent["session_id"],
+        "workspace_id": parent["workspace_id"],
+        "user_id": parent["user_id"],
+        "agent_id": parent["agent_id"],
+        "skill_id": parent["skill_id"],
+        "file_ids": file_ids,
+        "input": child_execution_input,
+        "executor_type": executor_type,
+        "skill_version": skill_version,
+        "release_policy_version": release_policy_version,
+        "release_decision": release_decision_payload,
+        "event_id": event_id,
+        "child_event_id": child_event_id,
+        "audit_id": audit_id,
+    }
+
+
 async def list_run_steps(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> list[dict[str, Any]]:
     cursor = await conn.execute(
         """

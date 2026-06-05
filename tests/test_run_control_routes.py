@@ -1871,6 +1871,191 @@ def test_multi_agent_dispatch_hidden_claim_event_is_absent_from_ordinary_events(
     assert "dispatch-code" not in str(events)
 
 
+def test_multi_agent_dispatch_handoff_requires_admin(monkeypatch):
+    async def fail_handoff(*args, **kwargs):
+        raise AssertionError("non-admin handoff must fail before repository writes")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.repositories.create_multi_agent_dispatch_child_run", fail_handoff, raising=False)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runs/run-ready/multi-agent/dispatch/claims/dispatch-code/handoff",
+        headers=headers(),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "admin_required"
+
+
+def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues(monkeypatch):
+    calls = {"handoff": [], "context": [], "queue": [], "step": []}
+
+    async def fake_handoff(conn, *, tenant_id, parent_run_id, dispatch_id, handed_off_by):
+        calls["handoff"].append((tenant_id, parent_run_id, dispatch_id, handed_off_by))
+        return {
+            "parent_run_id": parent_run_id,
+            "parent_step_id": "step-code",
+            "step_key": "code",
+            "dispatch_id": dispatch_id,
+            "child_run_id": "run-child",
+            "session_id": "ses-owner",
+            "workspace_id": "default",
+            "user_id": "user-a",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "file_ids": ["file-a"],
+            "input": {
+                "message": "build feature",
+                "execution_mode": "multi_agent",
+                "multi_agent_steps": [{"step_key": "code", "role": "coder", "depends_on": ["plan"]}],
+                "multi_agent_dispatch": {
+                    "parent_run_id": parent_run_id,
+                    "parent_step_id": "step-code",
+                    "step_key": "code",
+                    "dispatch_id": dispatch_id,
+                },
+                "resume": {
+                    "copied_from_run_id": parent_run_id,
+                    "completed_step_outputs": {"plan": "plan output"},
+                    "completed_step_checkpoints": {
+                        "plan": {
+                            "checkpoint_id": "checkpoint-plan",
+                            "source_step_id": "step-plan",
+                            "copied_from_run_id": parent_run_id,
+                        }
+                    },
+                },
+            },
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-a",
+            "release_policy_version": "",
+            "release_decision": {
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "policy_active": False,
+                "selected_version": "hash-a",
+                "selected_track": "manifest_pin",
+            },
+            "event_id": "evt-handoff",
+            "child_event_id": "evt-child",
+            "audit_id": "aud-handoff",
+        }
+
+    async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
+        assert skill_id == "general-chat"
+        assert input_payload["multi_agent_dispatch"]["dispatch_id"] == "dispatch-code"
+        assert release_policy_version == ""
+        return [{"skill_id": skill_id, "content_hash": "hash-a"}]
+
+    async def fake_record_initial_context_snapshot(conn, **kwargs):
+        calls["context"].append(kwargs)
+        return {"context_snapshot_id": "ctx-child", "source": kwargs["source"]}
+
+    async def fake_update_run_input_skill_version(conn, **kwargs):
+        calls["skill_version"] = kwargs
+
+    async def fake_append_event(conn, **kwargs):
+        calls.setdefault("events", []).append(kwargs)
+
+    async def fake_seed_copied_run_steps(conn, **kwargs):
+        calls["step"].append(kwargs)
+
+    async def fake_enqueue_run(payload):
+        calls["queue"].append(payload)
+        return 4
+
+    async def fake_get_queue_insight(tenant_id):
+        return {"tenant_id": tenant_id, "reason": "worker_available"}
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.create_multi_agent_dispatch_child_run", fake_handoff, raising=False)
+    monkeypatch.setattr("app.routes.runs._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
+    monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_initial_context_snapshot)
+    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.routes.runs.seed_copied_run_steps", fake_seed_copied_run_steps)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.runs.get_queue_insight", fake_get_queue_insight)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runs/run-ready/multi-agent/dispatch/claims/dispatch-code/handoff",
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "contract_version": "ai-platform.multi-agent-dispatch-handoff.v1",
+        "parent_run_id": "run-ready",
+        "dispatch_id": "dispatch-code",
+        "step_key": "code",
+        "step_id": "step-code",
+        "status": "queued",
+        "child_run_id": "run-child",
+        "session_id": "ses-owner",
+        "queue_position": 4,
+        "queue_insight": {"tenant_id": "default", "reason": "worker_available"},
+        "event_id": "evt-handoff",
+        "child_event_id": "evt-child",
+        "audit_id": "aud-handoff",
+    }
+    assert calls["handoff"] == [("default", "run-ready", "dispatch-code", "admin-a")]
+    assert calls["context"][0]["source"] == "multi_agent_dispatch_handoff"
+    assert calls["context"][0]["user_id"] == "user-a"
+    assert calls["context"][0]["run_id"] == "run-child"
+    assert calls["queue"][0]["user_id"] == "user-a"
+    assert calls["queue"][0]["run_id"] == "run-child"
+    assert calls["queue"][0]["context_snapshot_id"] == "ctx-child"
+    assert calls["queue"][0]["context_snapshot"]["source"] == "multi_agent_dispatch_handoff"
+    assert calls["step"][0]["source"] == "multi_agent_dispatch_handoff"
+
+
+def test_admin_multi_agent_dispatch_handoff_rejects_duplicate_without_enqueue(monkeypatch):
+    async def fake_handoff(conn, *, tenant_id, parent_run_id, dispatch_id, handed_off_by):
+        raise RepositoryConflictError("dispatch_already_handed_off")
+
+    async def fail_enqueue(payload):
+        raise AssertionError("duplicate handoff must not enqueue")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.create_multi_agent_dispatch_child_run", fake_handoff, raising=False)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runs/run-ready/multi-agent/dispatch/claims/dispatch-code/handoff",
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "dispatch_already_handed_off"
+
+
+def test_admin_multi_agent_dispatch_handoff_rejects_expired_claim_without_enqueue(monkeypatch):
+    async def fake_handoff(conn, *, tenant_id, parent_run_id, dispatch_id, handed_off_by):
+        raise RepositoryConflictError("dispatch_claim_expired")
+
+    async def fail_enqueue(payload):
+        raise AssertionError("expired handoff must not enqueue")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.create_multi_agent_dispatch_child_run", fake_handoff, raising=False)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runs/run-ready/multi-agent/dispatch/claims/dispatch-code/handoff",
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "dispatch_claim_expired"
+
+
 def test_run_control_readiness_returns_not_found_without_loading_steps(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         assert (tenant_id, user_id, run_id) == ("default", "user-a", "missing-run")
@@ -3773,6 +3958,330 @@ async def test_retry_run_as_new_task_records_retry_events_and_audit(monkeypatch)
     assert audit["action"] == "run.retry"
     assert audit["target_id"] == "run-failed"
     assert audit["payload_json"]["new_run_id"] == "run-new"
+
+
+@pytest.mark.asyncio
+async def test_create_multi_agent_dispatch_child_run_records_parent_child_events_and_audit(monkeypatch):
+    from app import repositories
+    import json
+
+    calls = []
+
+    parent_run = {
+        "id": "run-parent",
+        "tenant_id": "default",
+        "workspace_id": "default",
+        "session_id": "ses-owner",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "trace_id": "trace-parent",
+        "status": "running",
+        "input_json": {
+            "workerPath": "/var/lib/ai-platform/private-worker.py",
+            "input": {
+                "message": "build feature",
+                "execution_mode": "multi_agent",
+                "resume": {"completed_step_outputs": {"code": "forged"}},
+                "multi_agent_dispatch": {"dispatch_id": "forged"},
+                "multi_agent_steps": [
+                    {"step_key": "plan", "role": "planner"},
+                    {"step_key": "code", "role": "coder", "depends_on": ["plan"]},
+                ],
+            },
+            "file_ids": ["file-a"],
+        },
+    }
+    claimed_step = {
+        "id": "step-code",
+        "run_id": "run-parent",
+        "step_key": "code",
+        "step_kind": "agent",
+        "status": "running",
+        "title": "Code",
+        "role": "coder",
+        "sequence": 2,
+        "payload_json": {
+            "depends_on": ["plan"],
+            "dispatch_state": "claimed",
+            "dispatch_id": "dispatch-code",
+            "dispatch_lease_expires_at": "2999-01-01T00:00:00+00:00",
+        },
+    }
+    all_steps = [
+        {
+            "id": "step-plan",
+            "run_id": "run-parent",
+            "step_key": "plan",
+            "step_kind": "agent",
+            "status": "succeeded",
+            "title": "Plan",
+            "role": "planner",
+            "sequence": 1,
+            "payload_json": {
+                "output": "plan output",
+                "checkpoint_id": "checkpoint-plan",
+                "source_step_id": "step-plan",
+            },
+        },
+        claimed_step,
+    ]
+
+    class Cursor:
+        def __init__(self, row=None, rows=None):
+            self.row = row
+            self.rows = rows or []
+
+        async def fetchone(self):
+            return self.row
+
+        async def fetchall(self):
+            return self.rows
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append(("sql", normalized, params))
+            if normalized.startswith("select id, tenant_id, workspace_id") and "from runs" in normalized:
+                return Cursor(row=parent_run)
+            if "from run_steps" in normalized and "payload_json->>'dispatch_id'" in normalized:
+                return Cursor(row=claimed_step)
+            if normalized.startswith("select id, run_id, step_key"):
+                return Cursor(rows=all_steps)
+            if normalized.startswith("insert into runs"):
+                return Cursor()
+            if normalized.startswith("update run_steps"):
+                return Cursor()
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        assert (tenant_id, agent_id, skill_id) == ("default", "general-agent", "general-chat")
+        return {"executor_type": "claude-agent-worker", "skill_version": "hash-a"}
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return f"evt-{kwargs['event_type']}"
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "aud-handoff"
+
+    monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+
+    copied = await repositories.create_multi_agent_dispatch_child_run(
+        FakeConnection(),
+        tenant_id="default",
+        parent_run_id="run-parent",
+        dispatch_id="dispatch-code",
+        handed_off_by="admin-a",
+    )
+
+    assert copied["child_run_id"].startswith("run")
+    assert copied["run_id"] == copied["child_run_id"]
+    assert copied["user_id"] == "user-a"
+    assert copied["session_id"] == "ses-owner"
+    insert_sql, insert_params = next((sql, params) for kind, sql, params in calls if kind == "sql" and sql.startswith("insert into runs"))
+    assert "copied_from_run_id" in insert_sql
+    persisted_input = json.loads(insert_params[10])
+    assert persisted_input["copied_from_run_id"] == "run-parent"
+    assert persisted_input["input"]["multi_agent_dispatch"]["dispatch_id"] == "dispatch-code"
+    assert persisted_input["input"]["resume"]["completed_step_outputs"] == {"plan": "plan output"}
+    assert persisted_input["input"]["resume"]["completed_step_checkpoints"]["plan"]["checkpoint_id"] == "checkpoint-plan"
+    assert persisted_input["input"]["multi_agent_steps"] == [
+        {"step_key": "code", "role": "coder", "title": "Code", "depends_on": ["plan"]}
+    ]
+    persisted_dump = json.dumps(persisted_input, ensure_ascii=False)
+    assert "forged" not in persisted_dump
+    assert "private-worker" not in persisted_dump
+    update_sql, update_params = next((sql, params) for kind, sql, params in calls if kind == "sql" and sql.startswith("update run_steps"))
+    assert "payload_json = payload_json || %s::jsonb" in update_sql
+    update_payload = json.loads(update_params[0])
+    assert update_payload["dispatch_child_run_id"] == copied["child_run_id"]
+    assert update_payload["dispatch_state"] == "handed_off"
+    assert update_params[1:4] == ("default", "step-code", "dispatch-code")
+    event_types = [item[1]["event_type"] for item in calls if item[0] == "event"]
+    assert event_types == ["multi_agent_dispatch_handoff", "run_multi_agent_child_created"]
+    audit = next(item[1] for item in calls if item[0] == "audit")
+    assert audit["action"] == "run.multi_agent.dispatch.handoff"
+    assert audit["target_id"] == "step-code"
+    assert audit["payload_json"]["child_run_id"] == copied["child_run_id"]
+    assert audit["payload_json"]["admin_user_id"] == "admin-a"
+
+
+@pytest.mark.asyncio
+async def test_create_multi_agent_dispatch_child_run_builds_single_step_resume_input(monkeypatch):
+    from app import repositories
+
+    class Cursor:
+        def __init__(self, row=None, rows=None):
+            self.row = row
+            self.rows = rows or []
+
+        async def fetchone(self):
+            return self.row
+
+        async def fetchall(self):
+            return self.rows
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            if normalized.startswith("select id, tenant_id, workspace_id") and "from runs" in normalized:
+                return Cursor(
+                    row={
+                        "id": "run-parent",
+                        "tenant_id": "default",
+                        "workspace_id": "default",
+                        "session_id": "ses-owner",
+                        "user_id": "user-a",
+                        "agent_id": "general-agent",
+                        "skill_id": "general-chat",
+                        "trace_id": "trace-parent",
+                        "status": "running",
+                        "input_json": {
+                            "input": {
+                                "message": "build feature",
+                                "execution_mode": "multi_agent",
+                                "multi_agent_steps": [
+                                    {"step_key": "plan", "role": "planner"},
+                                    {"step_key": "code", "role": "coder", "depends_on": ["plan"]},
+                                    {"step_key": "verify", "role": "verifier", "depends_on": ["code"]},
+                                ],
+                            }
+                        },
+                    }
+                )
+            if "from run_steps" in normalized and "payload_json->>'dispatch_id'" in normalized:
+                return Cursor(
+                    row={
+                        "id": "step-code",
+                        "run_id": "run-parent",
+                        "step_key": "code",
+                        "step_kind": "agent",
+                        "status": "running",
+                        "title": "Code",
+                        "role": "coder",
+                        "sequence": 2,
+                        "payload_json": {
+                            "depends_on": ["plan"],
+                            "dispatch_state": "claimed",
+                            "dispatch_id": "dispatch-code",
+                            "dispatch_lease_expires_at": "2999-01-01T00:00:00+00:00",
+                        },
+                    }
+                )
+            if normalized.startswith("select id, run_id, step_key"):
+                return Cursor(
+                    rows=[
+                        {
+                            "id": "step-plan",
+                            "run_id": "run-parent",
+                            "step_key": "plan",
+                            "step_kind": "agent",
+                            "status": "succeeded",
+                            "title": "Plan",
+                            "role": "planner",
+                            "sequence": 1,
+                            "payload_json": {"output": "plan output"},
+                        },
+                    ]
+                )
+            return Cursor()
+
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        return {"executor_type": "claude-agent-worker", "skill_version": "hash-a"}
+
+    async def fake_append_event(conn, **kwargs):
+        return f"evt-{kwargs['event_type']}"
+
+    async def fake_append_audit_log(conn, **kwargs):
+        return "aud-handoff"
+
+    monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+
+    copied = await repositories.create_multi_agent_dispatch_child_run(
+        FakeConnection(),
+        tenant_id="default",
+        parent_run_id="run-parent",
+        dispatch_id="dispatch-code",
+        handed_off_by="admin-a",
+    )
+
+    assert [step["step_key"] for step in copied["input"]["multi_agent_steps"]] == ["code"]
+    assert copied["input"]["multi_agent_steps"][0]["depends_on"] == ["plan"]
+    assert copied["input"]["resume"]["completed_step_outputs"] == {"plan": "plan output"}
+    assert "verify" not in str(copied["input"])
+
+
+@pytest.mark.asyncio
+async def test_create_multi_agent_dispatch_child_run_rejects_malformed_claim_lease_without_insert(monkeypatch):
+    from app import repositories
+
+    calls = []
+
+    class Cursor:
+        def __init__(self, row=None):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+        async def fetchall(self):
+            return []
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append(normalized)
+            if normalized.startswith("select id, tenant_id, workspace_id") and "from runs" in normalized:
+                return Cursor(
+                    row={
+                        "id": "run-parent",
+                        "tenant_id": "default",
+                        "workspace_id": "default",
+                        "session_id": "ses-owner",
+                        "user_id": "user-a",
+                        "agent_id": "general-agent",
+                        "skill_id": "general-chat",
+                        "trace_id": "trace-parent",
+                        "status": "running",
+                        "input_json": {"input": {"execution_mode": "multi_agent"}},
+                    }
+                )
+            if "from run_steps" in normalized and "payload_json->>'dispatch_id'" in normalized:
+                return Cursor(
+                    row={
+                        "id": "step-code",
+                        "run_id": "run-parent",
+                        "step_key": "code",
+                        "step_kind": "agent",
+                        "status": "running",
+                        "title": "Code",
+                        "role": "coder",
+                        "sequence": 2,
+                        "payload_json": {
+                            "dispatch_state": "claimed",
+                            "dispatch_id": "dispatch-code",
+                            "dispatch_lease_expires_at": "2026-99-99Tbad",
+                        },
+                    }
+                )
+            raise AssertionError(f"unexpected sql after malformed lease: {normalized}")
+
+    with pytest.raises(repositories.RepositoryConflictError, match="dispatch_claim_lease_invalid"):
+        await repositories.create_multi_agent_dispatch_child_run(
+            FakeConnection(),
+            tenant_id="default",
+            parent_run_id="run-parent",
+            dispatch_id="dispatch-code",
+            handed_off_by="admin-a",
+        )
+
+    assert not any(sql.startswith("insert into runs") for sql in calls)
 
 
 @pytest.mark.asyncio
