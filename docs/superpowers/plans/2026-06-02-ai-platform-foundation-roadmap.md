@@ -411,9 +411,9 @@ retry scheduling, or new sandbox behavior.
 
 ### P2 Multi-Agent Dependency Readiness Projection
 
-Status: implemented locally on feature branch
-`p2-multi-agent-readiness-projection` and pending 211 deployment
-verification. This extends the existing owner-scoped
+Status: merged on `main` at
+`ad229abf7ab7e793e6431e6aaad77b644963ff8d` and deployed/smoked on 211.
+This extends the existing owner-scoped
 `ai-platform.run-control-readiness.v1` projection with read-only multi-agent
 dependency readiness for explicitly `execution_mode = multi_agent` runs. It
 combines configured `multi_agent_steps` and recorded `run_steps` to expose
@@ -433,6 +433,21 @@ Local verification recorded `python -m compileall -q app tools scripts`,
 focused `tests/test_run_control_routes.py tests/test_routes.py
 tests/test_source_authority_docs.py` with `144 passed`, and full pytest with
 `923 passed, 6 skipped, 2 warnings`.
+
+The 211 deployment uses image
+`sha256:a81f94e07aeea4572905f99fab65460c075a1f2fab1a2fdb5f74fb5835d42f29`
+for both `ai-platform-api` and `ai-platform-worker`, with
+`ai-platform.source-revision=ad229abf7ab7e793e6431e6aaad77b644963ff8d` and
+`ai-platform.source_note=p2-multi-agent-readiness-projection`. The 211 smoke
+verified API health, OpenAPI route exposure for
+`/api/ai/runs/{run_id}/control/readiness`, API/worker label parity, clean
+recent API/worker logs, ordinary-user multi-agent readiness counts for a
+`plan -> code -> verify` dependency chain, fail-closed dispatch reason
+`runtime_dispatch_not_enabled`, hidden dependency blocking/redaction for an
+unsafe `qa-file-reviewer` dependency, redaction of raw skill/resource/sandbox
+runtime fields, and DB/Redis smoke data cleanup. This remains a read-only
+control-plane projection and does not open autonomous subagent dispatch,
+high-risk tool execution, retry scheduling, or new sandbox behavior.
 
 ## 禁止项
 
