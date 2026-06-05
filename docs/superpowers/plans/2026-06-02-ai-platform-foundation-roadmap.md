@@ -707,6 +707,47 @@ migration. It only closes the terminal-state reconciliation gap after controlled
 child handoff so future resume/cancel/retry and multi-agent orchestration can
 read consistent parent dispatch state.
 
+### P2 Multi-Agent Parent Cancel Propagation
+
+Status: implemented locally as the parent-cancel propagation follow-up to
+controlled child handoff and terminal child reconciliation. The slice adds
+same-tenant, server-owned child cancellation when an owner or admin cancels a
+multi-agent parent run. Eligible children must be active `queued` or `running`
+runs with `copied_from_run_id` pointing to the parent, server-owned
+`multi_agent_dispatch.parent_run_id`, and a matching handed-off parent step
+whose payload names the same child run id.
+
+Queued child runs are marked `cancelled`, their open steps are cancelled, and
+their queued Redis payloads are removed by the route after the DB transaction
+commits. Running child runs keep `running` status with
+`cancel_requested_at/by` set so workers observe the child run's own cancel
+flag. Active parent or child sandbox leases returned by DB state are stopped
+and released by route cleanup grouped by each lease's real `run_id`; admin
+cleanup preserves `requested_by_role = admin`. Queue cleanup and sandbox
+cleanup are both attempted before the route reports failure: sandbox failures
+return `sandbox_runtime_cleanup_failed`, while queue-only cleanup failures
+return `queue_cleanup_failed`.
+
+Local verification recorded RED/GREEN coverage for server-owned queued and
+running child propagation, ordinary copied-run exclusion, owner/admin queued
+child Redis removal, owner/admin child sandbox release by child run id, sandbox
+failure after queued child cleanup, queue cleanup failure before child sandbox
+cleanup, and event/audit payload redaction for raw command, runtime path,
+storage key, and secret-like values. Focused route verification passed with
+`109 passed`; `python -m compileall -q app tools scripts` exited 0;
+`git diff --check` exited 0; full local pytest passed with `969 passed, 6
+skipped, 2 warnings`. Inherited-configuration multi-agent review first found
+two Important ordering issues around queued child Redis cleanup versus sandbox
+cleanup. Both were fixed with RED regression tests, and follow-up review found
+no Critical or Important issues. The review tool did not expose explicit model
+or reasoning-effort fields, so this remains recorded as inherited-configuration
+review rather than an explicit model gate.
+
+211 deployment and runtime smoke evidence remain pending for this slice until
+the branch is merged and deployed. This does not start an autonomous scheduler,
+polling subagent dispatcher, new worker process, sandbox/tool privilege
+expansion, frontend entry, or DB migration.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。

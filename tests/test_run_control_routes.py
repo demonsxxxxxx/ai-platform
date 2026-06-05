@@ -11,9 +11,22 @@ def auth_settings():
     return type("S", (), {"trusted_principal_secret": "test-secret", "frontend_poc_auth_enabled": False})()
 
 
+class EmptyPropagationCursor:
+    async def fetchall(self):
+        return []
+
+
+class EmptyPropagationConnection:
+    async def execute(self, sql, params):
+        normalized = " ".join(sql.split())
+        if normalized.startswith("select child.id") and "from runs child" in normalized:
+            return EmptyPropagationCursor()
+        raise AssertionError(f"unexpected fake transaction sql: {normalized}")
+
+
 @asynccontextmanager
 async def fake_transaction():
-    yield object()
+    yield EmptyPropagationConnection()
 
 
 def headers():
@@ -4798,6 +4811,186 @@ async def test_reconcile_multi_agent_child_skips_event_and_audit_when_update_is_
 
 
 @pytest.mark.asyncio
+async def test_propagate_multi_agent_parent_cancel_cancels_server_owned_children(monkeypatch):
+    from app import repositories
+    import json
+
+    calls = []
+    child_rows = [
+        {
+            "id": "run-child-queued",
+            "status": "queued",
+            "trace_id": "trace-child-queued",
+            "cancel_requested_at": None,
+            "input_json": {
+                "input": {
+                    "command": "cat /app/private.py",
+                    "worker_path": "/var/lib/ai-platform/private-worker.py",
+                    "api_key": "sk-test-secret",
+                    "storage_key": "tenant/default/private/object",
+                    "multi_agent_dispatch": {
+                        "parent_run_id": "run-parent",
+                        "parent_step_id": "step-code",
+                        "step_key": "code",
+                        "dispatch_id": "dispatch-code",
+                    }
+                }
+            },
+            "parent_step_id": "step-code",
+            "step_key": "code",
+            "parent_step_payload_json": {
+                "dispatch_state": "handed_off",
+                "dispatch_child_run_id": "run-child-queued",
+                "dispatch_id": "dispatch-code",
+            },
+        },
+        {
+            "id": "run-child-running",
+            "status": "running",
+            "trace_id": "trace-child-running",
+            "cancel_requested_at": None,
+            "input_json": {
+                "input": {
+                    "command": "cat /app/private.py",
+                    "worker_path": "/var/lib/ai-platform/private-worker.py",
+                    "api_key": "sk-test-secret",
+                    "storage_key": "tenant/default/private/object",
+                    "multi_agent_dispatch": {
+                        "parent_run_id": "run-parent",
+                        "parent_step_id": "step-review",
+                        "step_key": "review",
+                        "dispatch_id": "dispatch-review",
+                    }
+                }
+            },
+            "parent_step_id": "step-review",
+            "step_key": "review",
+            "parent_step_payload_json": {
+                "dispatch_state": "handed_off",
+                "dispatch_child_run_id": "run-child-running",
+                "dispatch_id": "dispatch-review",
+            },
+        },
+    ]
+
+    class Cursor:
+        def __init__(self, row=None, rows=None):
+            self.row = row
+            self.rows = rows or []
+
+        async def fetchone(self):
+            return self.row
+
+        async def fetchall(self):
+            return self.rows
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append(("sql", normalized, params))
+            if normalized.startswith("select child.id"):
+                assert "child.copied_from_run_id = %s" in normalized
+                assert "payload_json->>'dispatch_child_run_id'" in normalized
+                assert "payload_json->>'dispatch_state'" in normalized
+                return Cursor(rows=child_rows)
+            if normalized.startswith("update runs"):
+                child_id = params[2]
+                status = "cancelled" if child_id == "run-child-queued" else "running"
+                return Cursor(row={"id": child_id, "status": status, "trace_id": f"trace-{child_id}"})
+            if normalized.startswith("update run_steps"):
+                return Cursor()
+            if normalized.startswith("select * from sandbox_leases"):
+                return Cursor(
+                    rows=[
+                        {
+                            "id": "lease-running",
+                            "run_id": "run-child-running",
+                            "trace_id": "trace-lease",
+                        }
+                    ]
+                    if params[1] == "run-child-running"
+                    else []
+                )
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return f"evt-{kwargs['event_type']}-{kwargs['run_id']}"
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return f"aud-{kwargs['target_id']}"
+
+    async def fake_reconcile(conn, **kwargs):
+        calls.append(("reconcile", kwargs))
+        return {"event_id": "evt-reconcile", "audit_id": "aud-reconcile"}
+
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.repositories.reconcile_multi_agent_child_run_terminal_state", fake_reconcile)
+
+    result = await repositories.propagate_multi_agent_parent_cancel(
+        FakeConnection(),
+        tenant_id="default",
+        parent_run_id="run-parent",
+        requested_by="user-a",
+    )
+
+    assert result["child_run_ids"] == ["run-child-queued", "run-child-running"]
+    assert result["queued_child_run_ids"] == ["run-child-queued"]
+    assert result["running_child_run_ids"] == ["run-child-running"]
+    assert result["active_sandbox_leases"] == [
+        {"id": "lease-running", "run_id": "run-child-running", "trace_id": "trace-lease"}
+    ]
+    assert any(call[0] == "reconcile" and call[1]["child_run_id"] == "run-child-queued" for call in calls)
+    dump = json.dumps([call[1] for call in calls if call[0] in {"event", "audit"}], ensure_ascii=False)
+    assert "private_payload" not in dump
+    assert "storage_key" not in dump
+    assert "cat /app/private.py" not in dump
+    assert "/var/lib/ai-platform" not in dump
+    assert "sk-test-secret" not in dump
+
+
+@pytest.mark.asyncio
+async def test_propagate_multi_agent_parent_cancel_ignores_non_server_owned_copies(monkeypatch):
+    from app import repositories
+
+    class Cursor:
+        async def fetchall(self):
+            return []
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            if normalized.startswith("select child.id"):
+                assert "child.copied_from_run_id = %s" in normalized
+                assert "payload_json->>'dispatch_child_run_id'" in normalized
+                return Cursor()
+            raise AssertionError(f"unexpected write for ordinary copied run: {normalized}")
+
+    async def fail_event(conn, **kwargs):
+        raise AssertionError("ordinary copied runs must not emit cancel propagation events")
+
+    monkeypatch.setattr("app.repositories.append_event", fail_event)
+
+    result = await repositories.propagate_multi_agent_parent_cancel(
+        FakeConnection(),
+        tenant_id="default",
+        parent_run_id="run-parent",
+        requested_by="user-a",
+    )
+
+    assert result == {
+        "child_run_ids": [],
+        "queued_child_run_ids": [],
+        "running_child_run_ids": [],
+        "active_sandbox_leases": [],
+        "event_ids": [],
+        "audit_ids": [],
+    }
+
+
+@pytest.mark.asyncio
 async def test_claim_multi_agent_dispatch_step_writes_step_event_and_audit(monkeypatch):
     from app import repositories
 
@@ -5149,6 +5342,110 @@ def test_cancel_queued_run_removes_queued_payload(monkeypatch):
     assert calls == [("remove", "default", "run_queued")]
 
 
+def test_cancel_run_removes_propagated_queued_child_payloads(monkeypatch):
+    calls = []
+
+    async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
+        return {"run_id": run_id, "status": "cancel_requested"}
+
+    async def fake_propagate(conn, *, tenant_id, parent_run_id, requested_by, requested_by_role=None):
+        assert (tenant_id, parent_run_id, requested_by, requested_by_role) == ("default", "run-parent", "user-a", None)
+        return {"queued_child_run_ids": ["run-child-queued"], "active_sandbox_leases": []}
+
+    async def fake_remove_queued_run(*, tenant_id, run_id):
+        calls.append(("remove", tenant_id, run_id))
+        return 1
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr("app.routes.runs.repositories.propagate_multi_agent_parent_cancel", fake_propagate, raising=False)
+    monkeypatch.setattr("app.routes.runs.remove_queued_run", fake_remove_queued_run, raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run-parent/cancel", headers=headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancel_requested"
+    assert calls == [("remove", "default", "run-child-queued")]
+
+
+def test_cancel_run_removes_propagated_queued_child_payloads_before_sandbox_failure(monkeypatch):
+    calls = []
+
+    async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
+        return {"run_id": run_id, "status": "cancel_requested"}
+
+    async def fake_propagate(conn, *, tenant_id, parent_run_id, requested_by, requested_by_role=None):
+        return {
+            "queued_child_run_ids": ["run-child-queued"],
+            "active_sandbox_leases": [sandbox_lease_row(run_id="run-child-running", user_id="user-a")],
+        }
+
+    async def fake_remove_queued_run(*, tenant_id, run_id):
+        calls.append(("remove", tenant_id, run_id))
+        return 1
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr("app.routes.runs.repositories.propagate_multi_agent_parent_cancel", fake_propagate, raising=False)
+    monkeypatch.setattr("app.routes.runs.remove_queued_run", fake_remove_queued_run, raising=False)
+    monkeypatch.setattr("app.routes.runs.create_container_provider", lambda provider_name=None: FailingSandboxProvider(), raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run-parent/cancel", headers=headers())
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "sandbox_runtime_cleanup_failed"
+    assert calls == [("remove", "default", "run-child-queued")]
+
+
+def test_cancel_run_stops_child_sandbox_when_propagated_queue_cleanup_fails(monkeypatch):
+    calls = []
+    release_calls = []
+
+    async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
+        return {"run_id": run_id, "status": "cancel_requested"}
+
+    async def fake_propagate(conn, *, tenant_id, parent_run_id, requested_by, requested_by_role=None):
+        return {
+            "queued_child_run_ids": ["run-child-queued"],
+            "active_sandbox_leases": [sandbox_lease_row(run_id="run-child-running", user_id="user-a")],
+        }
+
+    async def fail_remove_queued_run(*, tenant_id, run_id):
+        raise RuntimeError(f"redis unavailable for {run_id}")
+
+    async def fake_release_stopped_sandbox_leases_for_cancel(conn, **kwargs):
+        release_calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr("app.routes.runs.repositories.propagate_multi_agent_parent_cancel", fake_propagate, raising=False)
+    monkeypatch.setattr("app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel", fake_release_stopped_sandbox_leases_for_cancel, raising=False)
+    monkeypatch.setattr("app.routes.runs.remove_queued_run", fail_remove_queued_run, raising=False)
+    monkeypatch.setattr("app.routes.runs.create_container_provider", lambda provider_name=None: RecordingSandboxProvider(calls), raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run-parent/cancel", headers=headers())
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "queue_cleanup_failed"
+    assert calls[0][1].run_id == "run-child-running"
+    assert release_calls == [
+        {
+            "tenant_id": "default",
+            "run_id": "run-child-running",
+            "reason": "cancel_requested",
+            "lease_ids": ["lease-run-child-running"],
+            "trace_id": None,
+        }
+    ]
+
+
 def test_admin_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeypatch):
     calls = []
     release_calls = []
@@ -5293,6 +5590,135 @@ def test_admin_cancel_run_releases_successfully_stopped_leases_before_reporting_
             "run_id": "run_active",
             "reason": "admin_cancel_requested",
             "lease_ids": ["lease-admin-stopped"],
+            "trace_id": None,
+            "requested_by_role": "admin",
+        }
+    ]
+
+
+def test_admin_cancel_run_releases_propagated_child_sandbox_lease(monkeypatch):
+    calls = []
+    release_calls = []
+
+    async def fake_request_admin_run_cancel(conn, *, tenant_id, admin_user_id, run_id):
+        return {"run_id": run_id, "status": "cancel_requested"}
+
+    async def fake_propagate(conn, *, tenant_id, parent_run_id, requested_by, requested_by_role=None):
+        assert (tenant_id, parent_run_id, requested_by, requested_by_role) == ("default", "run-parent", "admin-a", "admin")
+        return {
+            "queued_child_run_ids": [],
+            "active_sandbox_leases": [sandbox_lease_row(run_id="run-child-running", user_id="target-user")],
+        }
+
+    async def fake_release_stopped_sandbox_leases_for_cancel(conn, **kwargs):
+        release_calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_runs.repositories.request_admin_run_cancel", fake_request_admin_run_cancel)
+    monkeypatch.setattr("app.routes.admin_runs.repositories.propagate_multi_agent_parent_cancel", fake_propagate, raising=False)
+    monkeypatch.setattr(
+        "app.routes.admin_runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        fake_release_stopped_sandbox_leases_for_cancel,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.admin_runs.create_container_provider", lambda provider_name=None: RecordingSandboxProvider(calls), raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/admin/runs/run-parent/cancel", headers=admin_headers())
+
+    assert response.status_code == 200
+    assert calls[0][1].run_id == "run-child-running"
+    assert release_calls == [
+        {
+            "tenant_id": "default",
+            "run_id": "run-child-running",
+            "reason": "admin_cancel_requested",
+            "lease_ids": ["lease-run-child-running"],
+            "trace_id": None,
+            "requested_by_role": "admin",
+        }
+    ]
+
+
+def test_admin_cancel_run_removes_propagated_queued_child_payloads_before_sandbox_failure(monkeypatch):
+    calls = []
+
+    async def fake_request_admin_run_cancel(conn, *, tenant_id, admin_user_id, run_id):
+        return {"run_id": run_id, "status": "cancel_requested"}
+
+    async def fake_propagate(conn, *, tenant_id, parent_run_id, requested_by, requested_by_role=None):
+        assert requested_by_role == "admin"
+        return {
+            "queued_child_run_ids": ["run-child-queued"],
+            "active_sandbox_leases": [sandbox_lease_row(run_id="run-child-running", user_id="target-user")],
+        }
+
+    async def fake_remove_queued_run(*, tenant_id, run_id):
+        calls.append(("remove", tenant_id, run_id))
+        return 1
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_runs.repositories.request_admin_run_cancel", fake_request_admin_run_cancel)
+    monkeypatch.setattr("app.routes.admin_runs.repositories.propagate_multi_agent_parent_cancel", fake_propagate, raising=False)
+    monkeypatch.setattr("app.routes.admin_runs.remove_queued_run", fake_remove_queued_run, raising=False)
+    monkeypatch.setattr("app.routes.admin_runs.create_container_provider", lambda provider_name=None: FailingSandboxProvider(), raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/admin/runs/run-parent/cancel", headers=admin_headers())
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "sandbox_runtime_cleanup_failed"
+    assert calls == [("remove", "default", "run-child-queued")]
+
+
+def test_admin_cancel_run_stops_child_sandbox_when_propagated_queue_cleanup_fails(monkeypatch):
+    calls = []
+    release_calls = []
+
+    async def fake_request_admin_run_cancel(conn, *, tenant_id, admin_user_id, run_id):
+        return {"run_id": run_id, "status": "cancel_requested"}
+
+    async def fake_propagate(conn, *, tenant_id, parent_run_id, requested_by, requested_by_role=None):
+        assert requested_by_role == "admin"
+        return {
+            "queued_child_run_ids": ["run-child-queued"],
+            "active_sandbox_leases": [sandbox_lease_row(run_id="run-child-running", user_id="target-user")],
+        }
+
+    async def fail_remove_queued_run(*, tenant_id, run_id):
+        raise RuntimeError(f"redis unavailable for {run_id}")
+
+    async def fake_release_stopped_sandbox_leases_for_cancel(conn, **kwargs):
+        release_calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_runs.repositories.request_admin_run_cancel", fake_request_admin_run_cancel)
+    monkeypatch.setattr("app.routes.admin_runs.repositories.propagate_multi_agent_parent_cancel", fake_propagate, raising=False)
+    monkeypatch.setattr(
+        "app.routes.admin_runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        fake_release_stopped_sandbox_leases_for_cancel,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.admin_runs.remove_queued_run", fail_remove_queued_run, raising=False)
+    monkeypatch.setattr("app.routes.admin_runs.create_container_provider", lambda provider_name=None: RecordingSandboxProvider(calls), raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/admin/runs/run-parent/cancel", headers=admin_headers())
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "queue_cleanup_failed"
+    assert calls[0][1].run_id == "run-child-running"
+    assert release_calls == [
+        {
+            "tenant_id": "default",
+            "run_id": "run-child-running",
+            "reason": "admin_cancel_requested",
+            "lease_ids": ["lease-run-child-running"],
             "trace_id": None,
             "requested_by_role": "admin",
         }

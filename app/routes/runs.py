@@ -79,6 +79,55 @@ RUN_CONTROL_RAW_PROJECTION_TERMS = {
 }
 
 
+def _lease_ids_by_run_id(leases: list[dict[str, Any]]) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for lease in leases:
+        run_id = str(lease.get("run_id") or "").strip()
+        lease_id = str(lease.get("id") or "").strip()
+        if not run_id or not lease_id:
+            continue
+        grouped.setdefault(run_id, []).append(lease_id)
+    return grouped
+
+
+async def _release_stopped_cancel_leases(
+    conn,
+    *,
+    tenant_id: str,
+    leases: list[dict[str, Any]],
+    reason: str,
+    trace_id: str | None,
+) -> None:
+    for lease_run_id, lease_ids in _lease_ids_by_run_id(leases).items():
+        await repositories.release_stopped_sandbox_leases_for_cancel(
+            conn,
+            tenant_id=tenant_id,
+            run_id=lease_run_id,
+            reason=reason,
+            lease_ids=lease_ids,
+            trace_id=trace_id,
+        )
+
+
+async def _remove_cancelled_queue_payloads(
+    *,
+    tenant_id: str,
+    parent_run_id: str,
+    result: dict[str, Any],
+) -> list[Exception]:
+    failures: list[Exception] = []
+    run_ids: list[str] = []
+    if result["status"] == "cancelled":
+        run_ids.append(parent_run_id)
+    run_ids.extend(str(child_run_id) for child_run_id in result.get("queued_child_run_ids") or [])
+    for queued_run_id in run_ids:
+        try:
+            await remove_queued_run(tenant_id=tenant_id, run_id=queued_run_id)
+        except Exception as exc:
+            failures.append(exc)
+    return failures
+
+
 def _skill_manifest_pins(skill_id: str, input_payload: dict[str, Any]) -> list[dict[str, Any]]:
     settings = get_settings()
     try:
@@ -2465,8 +2514,27 @@ async def cancel_run(
             user_id=principal.user_id,
             run_id=run_id,
         )
+        if result is not None:
+            propagation = await repositories.propagate_multi_agent_parent_cancel(
+                conn,
+                tenant_id=principal.tenant_id,
+                parent_run_id=run_id,
+                requested_by=principal.user_id,
+            )
+            if propagation.get("queued_child_run_ids"):
+                result["queued_child_run_ids"] = list(propagation["queued_child_run_ids"])
+            if propagation.get("active_sandbox_leases"):
+                result["active_sandbox_leases"] = [
+                    *list(result.get("active_sandbox_leases") or []),
+                    *list(propagation["active_sandbox_leases"]),
+                ]
     if result is None:
         raise HTTPException(status_code=404, detail="active_run_not_found")
+    queue_cleanup_failures = await _remove_cancelled_queue_payloads(
+        tenant_id=principal.tenant_id,
+        parent_run_id=run_id,
+        result=result,
+    )
     try:
         stopped_sandbox_leases = await stop_sandbox_leases(
             result.get("active_sandbox_leases"),
@@ -2476,27 +2544,25 @@ async def cancel_run(
     except SandboxRuntimeCleanupError as exc:
         if exc.stopped_leases:
             async with transaction() as conn:
-                await repositories.release_stopped_sandbox_leases_for_cancel(
+                await _release_stopped_cancel_leases(
                     conn,
                     tenant_id=principal.tenant_id,
-                    run_id=str(result["run_id"]),
                     reason="cancel_requested",
-                    lease_ids=[str(lease["id"]) for lease in exc.stopped_leases],
+                    leases=exc.stopped_leases,
                     trace_id=result.get("trace_id"),
                 )
         raise HTTPException(status_code=502, detail="sandbox_runtime_cleanup_failed") from exc
     if stopped_sandbox_leases:
         async with transaction() as conn:
-            await repositories.release_stopped_sandbox_leases_for_cancel(
+            await _release_stopped_cancel_leases(
                 conn,
                 tenant_id=principal.tenant_id,
-                run_id=str(result["run_id"]),
                 reason="cancel_requested",
-                lease_ids=[str(lease["id"]) for lease in stopped_sandbox_leases],
+                leases=stopped_sandbox_leases,
                 trace_id=result.get("trace_id"),
             )
-    if result["status"] == "cancelled":
-        await remove_queued_run(tenant_id=principal.tenant_id, run_id=run_id)
+    if queue_cleanup_failures:
+        raise HTTPException(status_code=502, detail="queue_cleanup_failed") from queue_cleanup_failures[0]
     return RunControlResponse(run_id=result["run_id"], status=result["status"])
 
 

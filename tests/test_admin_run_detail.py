@@ -9,9 +9,22 @@ def auth_settings():
     return type("S", (), {"trusted_principal_secret": "test-secret", "frontend_poc_auth_enabled": False})()
 
 
+class EmptyPropagationCursor:
+    async def fetchall(self):
+        return []
+
+
+class EmptyPropagationConnection:
+    async def execute(self, sql, params):
+        normalized = " ".join(sql.split())
+        if normalized.startswith("select child.id") and "from runs child" in normalized:
+            return EmptyPropagationCursor()
+        raise AssertionError(f"unexpected fake transaction sql: {normalized}")
+
+
 @asynccontextmanager
 async def fake_transaction():
-    yield object()
+    yield EmptyPropagationConnection()
 
 
 def headers(roles="developer"):
