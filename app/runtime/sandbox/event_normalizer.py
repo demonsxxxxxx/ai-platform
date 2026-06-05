@@ -68,4 +68,5 @@ def callback_event_to_run_events(callback: ExecutorCallbackEvent) -> list[AgentE
             )
         )
 
+    events.extend(callback.events)
     return events

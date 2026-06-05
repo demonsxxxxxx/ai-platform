@@ -206,7 +206,7 @@ def test_executor_callback_persists_callback_status_event(monkeypatch):
     assert calls[1][3]["callback_status"] == "completed"
     assert calls[1][3]["callback_token_id"] == "cbt_run-a"
     assert calls[1][3]["progress"] == 100
-    assert calls[2][0:3] == ("run_completed", "executor", "Executor completed")
+    assert calls[2][0:3] == ("run_completed", "runtime", "Executor completed")
 
 
 def test_executor_callback_does_not_stop_runtime_container_from_callback(monkeypatch):
@@ -320,3 +320,124 @@ def test_executor_callback_rejects_late_callback_for_terminal_run(monkeypatch):
     assert response.status_code == 409
     assert response.json() == {"detail": "run_already_terminal"}
     assert calls == [("identity", "run-a", True)]
+
+
+def test_executor_callback_persists_typed_events_with_standard_stages(monkeypatch):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    calls = []
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    async def fake_get_run_identity(conn, *, run_id, for_update=False):
+        calls.append(("identity", run_id, for_update))
+        return {"tenant_id": "tenant-a", "id": run_id, "session_id": "session-a", "status": "running"}
+
+    async def fake_append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload):
+        calls.append((event_type, stage, message, payload))
+        return f"evt_{len(calls)}"
+
+    import app.routes.runtime_callbacks as runtime_callbacks
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(
+            status="running",
+            progress=50,
+            new_message=None,
+            state_patch={"current_step": "accepted"},
+            events=[
+                {
+                    "type": "checkpoint_created",
+                    "message": "checkpoint saved",
+                    "payload": {"checkpoint_id": "checkpoint-a", "step_key": "code"},
+                },
+                {
+                    "type": "subagent_started",
+                    "message": "reviewer started",
+                    "payload": {"subagent_id": "reviewer-1", "step_key": "review"},
+                },
+                {
+                    "type": "agent_step_completed",
+                    "message": "code agent completed",
+                    "payload": {"step_key": "code", "step_index": 1, "output": "done"},
+                },
+            ],
+        ),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"accepted": True, "event_count": 5}
+    persisted = [call for call in calls if call[0] != "identity"]
+    assert [item[0:3] for item in persisted] == [
+        ("executor_callback", "executor", "Executor callback: running"),
+        ("tool_call_delta", "tool", "accepted"),
+        ("checkpoint_created", "checkpoint", "checkpoint saved"),
+        ("subagent_started", "subagent", "reviewer started"),
+        ("agent_step_completed", "agent", "code agent completed"),
+    ]
+    assert persisted[2][3]["checkpoint_id"] == "checkpoint-a"
+    assert persisted[2][3]["source"] == "executor_callback"
+    assert persisted[4][3]["visible_to_user"] is True
+
+
+def test_executor_callback_typed_admin_only_event_stays_hidden(monkeypatch):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    calls = []
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    async def fake_get_run_identity(conn, *, run_id, for_update=False):
+        return {"tenant_id": "tenant-a", "id": run_id, "session_id": "session-a", "status": "running"}
+
+    async def fake_append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload):
+        calls.append((event_type, stage, message, payload))
+        return f"evt_{len(calls)}"
+
+    import app.routes.runtime_callbacks as runtime_callbacks
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(
+            status="running",
+            progress=50,
+            new_message=None,
+            state_patch={},
+            events=[
+                {
+                    "type": "browser_snapshot",
+                    "message": "browser state captured",
+                    "payload": {"url": "https://example.test", "visible_to_user": True},
+                    "admin_only": True,
+                }
+            ],
+        ),
+    )
+
+    assert response.status_code == 200
+    browser_event = next(call for call in calls if call[0] == "browser_snapshot")
+    assert browser_event[1] == "browser"
+    assert browser_event[3]["visible_to_user"] is False
+    assert browser_event[3]["admin_only"] is True
+    assert browser_event[3]["source"] == "executor_callback"

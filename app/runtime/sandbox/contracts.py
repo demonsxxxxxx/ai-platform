@@ -2,6 +2,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.runtime.kernel_contracts import AgentEvent
 from app.validation import assert_safe_id
 
 
@@ -177,6 +178,7 @@ class ExecutorCallbackEvent(BaseModel):
     state_patch: dict[str, Any] = Field(default_factory=dict)
     sdk_session_id: str | None = None
     error_message: str | None = None
+    events: list[AgentEvent] = Field(default_factory=list)
 
     @field_validator("session_id", "run_id", "callback_token_id")
     @classmethod

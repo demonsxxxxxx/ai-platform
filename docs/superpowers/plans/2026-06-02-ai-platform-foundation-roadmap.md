@@ -449,6 +449,23 @@ runtime fields, and DB/Redis smoke data cleanup. This remains a read-only
 control-plane projection and does not open autonomous subagent dispatch,
 high-risk tool execution, retry scheduling, or new sandbox behavior.
 
+### P2 Runtime Typed Callback Events
+
+Status: started as a P2 runtime auditability slice. This extends the internal
+sandbox executor callback contract so a trusted runtime callback can include
+validated `AgentEvent` entries such as `checkpoint_created`,
+`subagent_started`, `subagent_completed`, and `agent_step_completed`. The
+runtime callback route persists those events through the existing
+`EVENT_STAGE_MAP`, keeping checkpoint, subagent, agent-step, runtime, message,
+and control stages consistent with the worker-side event bridge.
+
+This slice keeps the callback endpoint internal and callback-token protected.
+It preserves existing `new_message`, `state_patch`, and terminal status
+compatibility mapping, keeps `admin_only` events hidden from ordinary users,
+and does not enqueue work, start autonomous subagents, open sandbox/tool
+access, or change worker scheduling. 211 deployment and smoke evidence must be
+recorded after deployment, not before.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。
