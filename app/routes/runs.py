@@ -16,6 +16,7 @@ from app.models import (
     CreateRunResponse,
     MultiAgentDispatchClaimRequest,
     MultiAgentDispatchClaimResponse,
+    MultiAgentDispatchHandoffResponse,
     QueueRunPayload,
     RunControlResponse,
     RunResponse,
@@ -67,6 +68,7 @@ RUN_CONTROL_READINESS_CONTRACT_VERSION = "ai-platform.run-control-readiness.v1"
 RUN_RESUME_MANIFEST_CONTRACT_VERSION = "ai-platform.run-resume-manifest.v1"
 RUN_CHECKPOINT_AUDIT_CONTRACT_VERSION = "ai-platform.run-checkpoint-audit.v1"
 MULTI_AGENT_DISPATCH_CLAIM_CONTRACT_VERSION = "ai-platform.multi-agent-dispatch-claim.v1"
+MULTI_AGENT_DISPATCH_HANDOFF_CONTRACT_VERSION = "ai-platform.multi-agent-dispatch-handoff.v1"
 RUN_CONTROL_ACTIVE_STATUSES = {"queued", "running"}
 RUN_CONTROL_TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 RUN_CONTROL_RETRY_PREVIEW_STATUSES = {"failed", "dead-letter", "dead_letter", "dead-lettered"}
@@ -1843,7 +1845,9 @@ async def prepare_copied_run_for_queue(
     copied: dict[str, Any],
     principal: AuthPrincipal,
     source: str,
+    queue_principal: AuthPrincipal | None = None,
 ) -> dict[str, Any]:
+    effective_principal = queue_principal or principal
     copied_skill_version = str(copied.get("skill_version") or "")
     skill_manifests = await _governed_skill_manifest_pins(
         conn,
@@ -1864,13 +1868,13 @@ async def prepare_copied_run_for_queue(
     )
     await repositories.update_run_input_skill_version(
         conn,
-        tenant_id=principal.tenant_id,
+        tenant_id=effective_principal.tenant_id,
         run_id=copied["run_id"],
         skill_version=copied_skill_version,
     )
     await repositories.append_event(
         conn,
-        tenant_id=principal.tenant_id,
+        tenant_id=effective_principal.tenant_id,
         run_id=copied["run_id"],
         event_type="skill_release_decision",
         stage="control",
@@ -1882,9 +1886,9 @@ async def prepare_copied_run_for_queue(
     )
     context_ref = await record_initial_context_snapshot(
         conn,
-        tenant_id=principal.tenant_id,
+        tenant_id=effective_principal.tenant_id,
         workspace_id=str(copied["workspace_id"]),
-        user_id=principal.user_id,
+        user_id=effective_principal.user_id,
         session_id=str(copied["session_id"]),
         run_id=str(copied["run_id"]),
         trace_id=standard_trace_id(str(copied["run_id"])),
@@ -1905,7 +1909,7 @@ async def prepare_copied_run_for_queue(
     ):
         await repositories.append_event(
             conn,
-            tenant_id=principal.tenant_id,
+            tenant_id=effective_principal.tenant_id,
             run_id=copied["run_id"],
             event_type=event["event_type"],
             stage=event["stage"],
@@ -1914,9 +1918,9 @@ async def prepare_copied_run_for_queue(
         )
     queue_payload = _validate_queue_payload_for_enqueue(
         {
-            "tenant_id": principal.tenant_id,
+            "tenant_id": effective_principal.tenant_id,
             "workspace_id": copied["workspace_id"],
-            "user_id": principal.user_id,
+            "user_id": effective_principal.user_id,
             "session_id": copied["session_id"],
             "run_id": copied["run_id"],
             "agent_id": copied["agent_id"],
@@ -1933,7 +1937,7 @@ async def prepare_copied_run_for_queue(
     )
     await seed_copied_run_steps(
         conn,
-        tenant_id=principal.tenant_id,
+        tenant_id=effective_principal.tenant_id,
         run_id=copied["run_id"],
         copied_input=copied["input"],
         source=source,
@@ -2330,6 +2334,66 @@ async def claim_multi_agent_dispatch(
         event_id=str(result["event_id"]),
         audit_id=str(result["audit_id"]),
         step=run_step_response(result["step"], principal=principal),
+    )
+
+
+@router.post(
+    "/runs/{run_id}/multi-agent/dispatch/claims/{dispatch_id}/handoff",
+    response_model=MultiAgentDispatchHandoffResponse,
+)
+async def handoff_multi_agent_dispatch(
+    run_id: str,
+    dispatch_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> MultiAgentDispatchHandoffResponse:
+    """Create one owner-scoped child run from an admin-claimed dispatch step."""
+
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=403, detail="admin_required")
+    try:
+        async with transaction() as conn:
+            copied = await repositories.create_multi_agent_dispatch_child_run(
+                conn,
+                tenant_id=principal.tenant_id,
+                parent_run_id=run_id,
+                dispatch_id=dispatch_id,
+                handed_off_by=principal.user_id,
+            )
+            owner_principal = AuthPrincipal(
+                user_id=str(copied["user_id"]),
+                display_name=str(copied.get("user_id") or ""),
+                tenant_id=principal.tenant_id,
+                roles=["user"],
+                source="multi_agent_dispatch_handoff",
+            )
+            queue_payload = await prepare_copied_run_for_queue(
+                conn,
+                copied={**copied, "run_id": copied["child_run_id"]},
+                principal=principal,
+                queue_principal=owner_principal,
+                source="multi_agent_dispatch_handoff",
+            )
+    except SkillVersionMaterializationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RepositoryNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RepositoryConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    queue_position = await enqueue_run(queue_payload)
+    return MultiAgentDispatchHandoffResponse(
+        contract_version=MULTI_AGENT_DISPATCH_HANDOFF_CONTRACT_VERSION,
+        parent_run_id=run_id,
+        dispatch_id=dispatch_id,
+        step_key=str(copied["step_key"]),
+        step_id=str(copied["parent_step_id"]),
+        status="queued",
+        child_run_id=str(copied["child_run_id"]),
+        session_id=str(copied["session_id"]),
+        queue_position=queue_position,
+        queue_insight=await get_queue_insight(principal.tenant_id),
+        event_id=str(copied["event_id"]),
+        child_event_id=str(copied["child_event_id"]),
+        audit_id=str(copied["audit_id"]),
     )
 
 

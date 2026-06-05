@@ -91,6 +91,26 @@ class MultiAgentDispatchClaimResponse(BaseModel):
     step: dict[str, Any]
 
 
+class MultiAgentDispatchHandoffResponse(BaseModel):
+    """Admin response for turning a claimed dispatch step into a queued child run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    contract_version: str
+    parent_run_id: str
+    dispatch_id: str
+    step_key: str
+    step_id: str
+    status: Literal["queued"]
+    child_run_id: str
+    session_id: str
+    queue_position: int | None = None
+    queue_insight: dict[str, Any] | None = None
+    event_id: str
+    child_event_id: str
+    audit_id: str
+
+
 class AgentApp(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
