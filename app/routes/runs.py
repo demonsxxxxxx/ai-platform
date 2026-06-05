@@ -11,7 +11,15 @@ from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capabilities import get_capability
 from app.context_builder import record_initial_context_snapshot
 from app.db import transaction
-from app.models import CreateRunRequest, CreateRunResponse, QueueRunPayload, RunControlResponse, RunResponse
+from app.models import (
+    CreateRunRequest,
+    CreateRunResponse,
+    MultiAgentDispatchClaimRequest,
+    MultiAgentDispatchClaimResponse,
+    QueueRunPayload,
+    RunControlResponse,
+    RunResponse,
+)
 from app.product_events import initial_run_event_specs
 from app.control_plane_contracts import (
     ARTIFACT_LINEAGE_ID_PREFIXES,
@@ -58,6 +66,7 @@ RUN_PROVENANCE_CONTRACT_VERSION = "ai-platform.run-provenance.v1"
 RUN_CONTROL_READINESS_CONTRACT_VERSION = "ai-platform.run-control-readiness.v1"
 RUN_RESUME_MANIFEST_CONTRACT_VERSION = "ai-platform.run-resume-manifest.v1"
 RUN_CHECKPOINT_AUDIT_CONTRACT_VERSION = "ai-platform.run-checkpoint-audit.v1"
+MULTI_AGENT_DISPATCH_CLAIM_CONTRACT_VERSION = "ai-platform.multi-agent-dispatch-claim.v1"
 RUN_CONTROL_ACTIVE_STATUSES = {"queued", "running"}
 RUN_CONTROL_TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 RUN_CONTROL_RETRY_PREVIEW_STATUSES = {"failed", "dead-letter", "dead_letter", "dead-lettered"}
@@ -920,6 +929,7 @@ def multi_agent_readiness_snapshot(
     if execution_mode != "multi_agent":
         return None
     public_execution_mode = "multi_agent"
+    run_status = normalize_run_status(str(run.get("status") or ""))
     raw_terms = _readiness_raw_projection_terms(run)
     configured_by_key = {
         str(item.get("step_key") or item.get("stepKey")): item
@@ -933,6 +943,7 @@ def multi_agent_readiness_snapshot(
 
     status_by_key = {key: normalize_step_status(row.get("status")) for key, row in recorded_by_key.items()}
     readiness_steps: list[dict[str, object]] = []
+    safe_ready_count = 0
     for index, step_key in enumerate(ordered_keys, start=1):
         configured = configured_by_key.get(step_key, {})
         row = recorded_by_key.get(step_key)
@@ -1002,6 +1013,12 @@ def multi_agent_readiness_snapshot(
         projected_depends_on = [str(item["step_key"]) for item in dependency_statuses if item.get("step_key")]
         blocked_reason = _multi_agent_blocked_reason(status, dependency_statuses)
         ready = status == "pending" and blocked_reason is None
+        if (
+            ready
+            and not _unsafe_dispatch_reference(step_key, raw_terms=raw_terms)
+            and not any(_unsafe_dispatch_reference(dependency, raw_terms=raw_terms) for dependency in raw_depends_on)
+        ):
+            safe_ready_count += 1
         readiness_steps.append(
             {
                 "step_key": public_step_key,
@@ -1037,6 +1054,22 @@ def multi_agent_readiness_snapshot(
         and not item["ready"]
         and item["blocked_reason"] in {"waiting_on_dependencies", "missing_dependencies", "hidden_dependencies"}
     )
+    ready_count = sum(1 for item in readiness_steps if item["ready"])
+    if run_status not in RUN_CONTROL_ACTIVE_STATUSES:
+        dispatch_gate = _control_action(enabled=False, reason="run_not_dispatchable", method=None, href=None)
+    elif ready_count <= 0:
+        dispatch_gate = _control_action(enabled=False, reason="no_ready_steps", method=None, href=None)
+    elif safe_ready_count <= 0:
+        dispatch_gate = _control_action(enabled=False, reason="no_safe_ready_steps", method=None, href=None)
+    elif is_ai_admin(principal):
+        dispatch_gate = _control_action(
+            enabled=True,
+            reason="ready_steps_available",
+            method="POST",
+            href=f"/api/ai/runs/{run['id']}/multi-agent/dispatch/claims",
+        )
+    else:
+        dispatch_gate = _control_action(enabled=False, reason="admin_only_dispatch", method=None, href=None)
     return {
         "enabled": True,
         "execution_mode": public_execution_mode,
@@ -1045,19 +1078,95 @@ def multi_agent_readiness_snapshot(
             "configured": len(configured_steps),
             "recorded": len(steps),
             "completed": sum(1 for item in readiness_steps if item["status"] == "succeeded"),
-            "ready": sum(1 for item in readiness_steps if item["ready"]),
+            "ready": ready_count,
             "blocked": blocked,
             "missing_dependencies": missing_dependencies,
             "hidden_dependencies": hidden_dependencies,
         },
-        "gates": {
-            "dispatch": _control_action(
-                enabled=False,
-                reason="runtime_dispatch_not_enabled",
-                method=None,
-                href=None,
-            )
-        },
+        "gates": {"dispatch": dispatch_gate},
+    }
+
+
+def _unsafe_dispatch_reference(value: str, *, raw_terms: set[str]) -> bool:
+    return _contains_raw_projection_term(value, raw_terms)
+
+
+def _dispatch_claim_sequence(
+    *,
+    step_key: str,
+    row: dict[str, object] | None,
+    configured_by_key: dict[str, dict[str, object]],
+) -> int:
+    if row is not None:
+        sequence = int(row.get("sequence") or 0)
+        if sequence > 0:
+            return sequence
+    for index, configured_key in enumerate(configured_by_key, start=1):
+        if configured_key == step_key:
+            return index
+    return len(configured_by_key) + 1
+
+
+def _dispatch_claim_candidate(
+    *,
+    run: dict[str, object],
+    steps: list[dict[str, object]],
+    step_key: str,
+    principal: AuthPrincipal,
+) -> dict[str, object]:
+    run_status = normalize_run_status(str(run.get("status") or ""))
+    if run_status not in RUN_CONTROL_ACTIVE_STATUSES:
+        raise HTTPException(status_code=409, detail="run_not_dispatchable")
+    configured_steps = _configured_multi_agent_steps(run)
+    execution_input = _run_execution_input(run)
+    if str(execution_input.get("execution_mode") or "") != "multi_agent":
+        raise HTTPException(status_code=409, detail="multi_agent_not_enabled")
+    raw_terms = _readiness_raw_projection_terms(run)
+    if _unsafe_dispatch_reference(step_key, raw_terms=raw_terms):
+        raise HTTPException(status_code=409, detail="unsafe_step_reference")
+
+    configured_by_key = {str(item.get("step_key") or item.get("stepKey")): item for item in configured_steps}
+    recorded_by_key = {str(row.get("step_key")): row for row in steps if row.get("step_key") is not None}
+    configured = configured_by_key.get(step_key)
+    row = recorded_by_key.get(step_key)
+    if configured is None and row is None:
+        raise HTTPException(status_code=409, detail="step_not_found")
+
+    payload = row.get("payload_json") if row is not None and isinstance(row.get("payload_json"), dict) else {}
+    depends_on = _raw_depends_on(
+        payload.get("depends_on")
+        or (configured or {}).get("depends_on")
+        or (configured or {}).get("dependsOn")
+    )
+    if any(_unsafe_dispatch_reference(dependency, raw_terms=raw_terms) for dependency in depends_on):
+        raise HTTPException(status_code=409, detail="unsafe_step_reference")
+
+    status_by_key = {key: normalize_step_status(item.get("status")) for key, item in recorded_by_key.items()}
+    dependency_statuses = _dependency_statuses(
+        depends_on,
+        status_by_key,
+        raw_terms=raw_terms,
+        principal=principal,
+    )
+    status = normalize_step_status(row.get("status") if row is not None else "pending")
+    blocked_reason = _multi_agent_blocked_reason(status, dependency_statuses)
+    if status != "pending" or blocked_reason is not None:
+        raise HTTPException(status_code=409, detail=blocked_reason or "step_not_pending")
+
+    sequence = _dispatch_claim_sequence(step_key=step_key, row=row, configured_by_key=configured_by_key)
+    title = public_text_or_fallback(
+        (row or {}).get("title") or (configured or {}).get("title"),
+        step_key,
+    ) or step_key
+    role_value = (row or {}).get("role") or (configured or {}).get("role")
+    role = public_text_or_fallback(role_value) if role_value is not None else None
+    return {
+        "step_key": step_key,
+        "step_kind": str((row or {}).get("step_kind") or "agent"),
+        "title": title,
+        "role": role,
+        "sequence": sequence,
+        "depends_on": depends_on,
     }
 
 
@@ -2174,6 +2283,52 @@ async def get_run_control_readiness(
         steps=steps,
         principal=principal,
         queue_insight=queue_insight,
+    )
+
+
+@router.post(
+    "/runs/{run_id}/multi-agent/dispatch/claims",
+    response_model=MultiAgentDispatchClaimResponse,
+)
+async def claim_multi_agent_dispatch(
+    run_id: str,
+    request: MultiAgentDispatchClaimRequest,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> MultiAgentDispatchClaimResponse:
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=403, detail="admin_required")
+    try:
+        async with transaction() as conn:
+            run = await repositories.get_run(conn, tenant_id=principal.tenant_id, run_id=run_id, for_update=True)
+            if run is None:
+                raise HTTPException(status_code=404, detail="run_not_found")
+            steps = await repositories.list_run_steps(conn, tenant_id=principal.tenant_id, run_id=run_id)
+            candidate = _dispatch_claim_candidate(
+                run=run,
+                steps=steps,
+                step_key=request.step_key,
+                principal=principal,
+            )
+            result = await repositories.claim_multi_agent_dispatch_step(
+                conn,
+                tenant_id=principal.tenant_id,
+                run_id=run_id,
+                claimed_by=principal.user_id,
+                trace_id=str(run.get("trace_id") or standard_trace_id(run_id)),
+                **candidate,
+            )
+    except RepositoryConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return MultiAgentDispatchClaimResponse(
+        contract_version=MULTI_AGENT_DISPATCH_CLAIM_CONTRACT_VERSION,
+        run_id=run_id,
+        step_key=request.step_key,
+        step_id=str(result["step"]["id"]),
+        status="claimed",
+        dispatch_id=str(result["dispatch_id"]),
+        event_id=str(result["event_id"]),
+        audit_id=str(result["audit_id"]),
+        step=run_step_response(result["step"], principal=principal),
     )
 
 
