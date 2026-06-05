@@ -275,6 +275,37 @@ visibility, unauthorized user 404, API logs, worker logs, and smoke data
 cleanup. This does not start retry scheduling, autonomous multi-agent dispatch,
 high-risk tool execution, or new sandbox behavior.
 
+### P2 Run Retry Request
+
+Status: first write-side P2 run lifecycle control merged on `main` at
+`49d8b51add842754dc4d46995679d1939bcebb7a`, deployed to 211, and smoked.
+This adds owner-scoped `POST /api/ai/runs/{run_id}/retry` for failed or
+dead-letter runs. It creates a copied queued run through the existing
+copy-run/context/queue path, records `retry_requested`, `run_retry_created`,
+and `run.retry` audit evidence, seeds retry-created steps with
+`seeded_from = retry_run`, and preserves checkpoint reuse intent.
+
+Local verification for the slice recorded focused route/source-authority
+coverage, compile, and full pytest: `904 passed, 6 skipped, 2 warnings`.
+Inherited-configuration reviews found no Critical issues. Important findings
+around active-run/idempotency, stale source capability fail-closed behavior,
+and concurrent same-source retry idempotency were fixed with regression tests,
+including a source-run `FOR UPDATE` lock before active-retry lookup.
+
+The 211 deployment uses image
+`sha256:e4693329919b1b083cd1f24326d58a8b337d8fcf5db493fab63d4a673c2a3456`
+for both `ai-platform-api` and `ai-platform-worker`, with
+`ai-platform.source-revision=49d8b51add842754dc4d46995679d1939bcebb7a` and
+`ai-platform.source_note=p2-run-retry-request`. The 211 smoke verified API
+health, OpenAPI route exposure, owner retry success, repeated active retry
+`409 retry_already_active`, active source `409 status_not_retryable`,
+other-user `404 run_not_found`, retry events/audit, context snapshot
+`source = retry_run`, queue payload context `source = retry_run`,
+checkpoint reuse step seeding, code hash parity with local files, and DB/Redis
+smoke data cleanup. This does not start automatic retry policy scheduling,
+autonomous subagent dispatch, high-risk tool execution, or new sandbox
+behavior.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。

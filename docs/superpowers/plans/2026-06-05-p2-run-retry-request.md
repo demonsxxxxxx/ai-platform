@@ -216,7 +216,7 @@ Result: `4 passed`.
 
 ## Task 4: Verification, Review, and Deployment
 
-- [ ] **Step 1: Run focused tests**
+- [x] **Step 1: Run focused tests**
 
 Run:
 
@@ -224,7 +224,9 @@ Run:
 python -m pytest tests/test_run_control_routes.py tests/test_source_authority_docs.py -q --basetemp .pytest-tmp\p2-run-retry-focused
 ```
 
-- [ ] **Step 2: Run compile and full local verification**
+Result recorded during implementation: `145 passed`.
+
+- [x] **Step 2: Run compile and full local verification**
 
 Run:
 
@@ -232,6 +234,9 @@ Run:
 python -m compileall -q app tools scripts
 python -m pytest -q --basetemp .pytest-tmp\p2-run-retry-full
 ```
+
+Result recorded during implementation: compile exited 0; full pytest
+completed with `904 passed, 6 skipped, 2 warnings`.
 
 - [x] **Step 3: Request inherited-configuration review**
 
@@ -253,13 +258,41 @@ same-source retry idempotency needed a transactional lock, not only a serial
 pre-check. Fixed by locking the authorized source run row with `FOR UPDATE`
 before active-retry lookup and copy.
 
-- [ ] **Step 4: Update roadmap only after review and 211 smoke**
+- [x] **Step 4: Update roadmap only after review and 211 smoke**
 
 Record commit, local tests, review, 211 image label, endpoint smoke, and the
 fact that automatic retry policy scheduling is still not opened.
 
-- [ ] **Step 5: Deploy to 211 and smoke**
+- [x] **Step 5: Deploy to 211 and smoke**
 
 Use 211 Docker-capable host only. Smoke must verify health, OpenAPI route,
 owner retry success, active-run 409, other-user 404, retry events/audit, queue
 payload, image label, and smoke data cleanup.
+
+211 evidence:
+
+- Deployed source revision:
+  `49d8b51add842754dc4d46995679d1939bcebb7a`.
+- API/worker image after source-label correction:
+  `sha256:e4693329919b1b083cd1f24326d58a8b337d8fcf5db493fab63d4a673c2a3456`.
+- Container labels:
+  `ai-platform.source-revision=49d8b51add842754dc4d46995679d1939bcebb7a`,
+  `ai-platform.source_note=p2-run-retry-request`.
+- `ai-platform-api` and `ai-platform-worker` were both running with restart
+  count `0` after recreate.
+- `/api/ai/health` returned `{"status":"ok"}` and `/openapi.json` exposed
+  `"/api/ai/runs/{run_id}/retry"`.
+- Live retry smoke checks were all true: first owner retry returned 200 and a
+  queued copied run; repeated retry returned `409 retry_already_active`;
+  retrying a running source returned `409 status_not_retryable`; another user
+  saw `404 run_not_found`; retry events/audit, seeded retry steps, context
+  snapshot source, queue payload source, and checkpoint reuse seeding were
+  present.
+- DB/Redis cleanup verification after smoke returned zero remaining runs,
+  sessions, users, events, audit rows, and queue hits for the smoke ids.
+- Local and 211 container hashes matched for `app/routes/runs.py`,
+  `app/repositories.py`, `tests/test_run_control_routes.py`, and
+  `tests/test_repositories.py`.
+
+Automatic retry policy scheduling, autonomous subagent dispatch, high-risk
+tool execution, and new sandbox behavior remain unopened.
