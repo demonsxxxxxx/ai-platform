@@ -127,15 +127,53 @@ Result: inherited-configuration reviewer reported no Critical or Important
 findings. The only Minor item was to make sure the two new feature docs are
 tracked before commit; they are intended deliverables for this slice.
 
-- [ ] **Step 3: Commit and deploy**
+- [x] **Step 3: Commit and deploy**
 
 Commit the implementation and docs to `main`, push, sync the current source to
 211, build or runtime-rebase according to `AGENTS.md`, recreate API/worker, and
 verify image labels plus health.
 
-- [ ] **Step 4: 211 smoke**
+Result:
+
+- Commit: `c35c7f0a891062e8f636ba9a834a16ca9e3830f6`
+  (`feat: add multi-agent dispatch tick`), pushed to `origin/main`.
+- 211 image: `ai-platform:c35c7f0a8910`,
+  `sha256:93d40379aadf0276a6690eaf010541a6da78b6c889a7329a12b6d82d825d99a1`.
+- 211 labels:
+  `ai-platform.source-revision=c35c7f0a891062e8f636ba9a834a16ca9e3830f6`,
+  `ai-platform.source_note=p2-multi-agent-dispatch-tick`.
+- 211 containers: `ai-platform-api` and `ai-platform-worker` both running
+  `ai-platform:c35c7f0a8910`.
+- 211 API health: `GET /api/ai/health` returned `{"status":"ok"}`.
+- 211 OpenAPI route exposure:
+  `/api/ai/runs/{run_id}/multi-agent/dispatch/tick` present with `POST`.
+
+- [x] **Step 4: 211 smoke**
 
 In the live container, create a smoke parent with a succeeded dependency and a
 ready child step, call the tick route as admin, verify child enqueue and
 claim/handoff evidence, verify ordinary-user projection redaction, then clean
 all smoke DB/queue rows.
+
+Result:
+
+- Admin HTTP smoke returned
+  `contract_version=ai-platform.multi-agent-dispatch-tick.v1`,
+  `step_key=code`, `status=queued`, and `queue_position=1`.
+- Live DB evidence showed child run status `queued`, child copied from the
+  parent run, parent `code` step status `running`, dispatch state `handed_off`,
+  and `dispatch_child_run_id` matching the child run id.
+- Redis queue evidence showed exactly one queued child payload before cleanup.
+- Run event evidence included `agent_step_started`,
+  `multi_agent_dispatch_handoff`, `run_multi_agent_child_created`,
+  `skill_release_decision`, `context_snapshot_created`, `queued`, and
+  `skill_selected`.
+- Audit evidence included `run.multi_agent.dispatch.claim` and
+  `run.multi_agent.dispatch.handoff`.
+- Ordinary-user event projection returned no hidden `agent_step_started` or
+  `multi_agent_dispatch_handoff` events.
+- Cleanup verification after smoke reported zero remaining smoke rows in
+  `users`, `sessions`, `runs`, `run_steps`, `run_events`,
+  `run_context_snapshots`, `audit_logs`, and zero smoke Redis queue payloads.
+- Recent API and worker logs showed no `error`, `traceback`, or `exception`
+  lines for the smoke window.

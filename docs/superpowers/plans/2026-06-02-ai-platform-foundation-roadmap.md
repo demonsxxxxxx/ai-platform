@@ -852,10 +852,10 @@ migration.
 
 ### P2 Multi-Agent Dispatch Tick
 
-Status: implemented locally as the bounded runtime orchestration follow-up to
+Status: deployed on 211 as the bounded runtime orchestration follow-up to
 dispatch claim, child handoff, child terminal reconciliation, parent cancel
-propagation, and parent terminal rollup. 211 deployment and smoke verification
-remain pending for this slice.
+propagation, and parent terminal rollup via main commit
+`c35c7f0a891062e8f636ba9a834a16ca9e3830f6`.
 
 This slice adds admin-only
 `POST /api/ai/runs/{run_id}/multi-agent/dispatch/tick` for one safe ready
@@ -880,6 +880,24 @@ claim/handoff routes passed with `15 passed`; affected route/source-authority
 tests passed with `194 passed`; full local pytest passed with
 `991 passed, 6 skipped, 2 warnings`; `python -m compileall -q app tools scripts`
 and `git diff --check` both exited 0.
+
+The 211 deployment uses image
+`sha256:93d40379aadf0276a6690eaf010541a6da78b6c889a7329a12b6d82d825d99a1`
+for both `ai-platform-api` and `ai-platform-worker`, tagged
+`ai-platform:c35c7f0a8910`, with
+`ai-platform.source-revision=c35c7f0a891062e8f636ba9a834a16ca9e3830f6` and
+`ai-platform.source_note=p2-multi-agent-dispatch-tick`. 211 verification
+confirmed `GET /api/ai/health` returned `{"status":"ok"}`, OpenAPI exposed
+`POST /api/ai/runs/{run_id}/multi-agent/dispatch/tick`, and both API/worker
+containers were running the new tag.
+
+The 211 smoke created a temporary multi-agent parent with one succeeded
+dependency and one ready `code` step, called the tick route as admin, and
+verified the v1 response contract, queued child run, Redis queue payload,
+handoff state on the parent step, claim/handoff run events, claim/handoff audit
+rows, ordinary-user projection hiding hidden control events, API/worker logs
+without recent error lines, and cleanup with zero remaining smoke DB rows or
+Redis queue payloads.
 
 This does not start an autonomous scheduler, polling subagent dispatcher, new
 worker process, sandbox/tool privilege expansion, frontend entry, or DB
