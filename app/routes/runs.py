@@ -13,9 +13,11 @@ from app.db import transaction
 from app.models import CreateRunRequest, CreateRunResponse, QueueRunPayload, RunControlResponse, RunResponse
 from app.product_events import initial_run_event_specs
 from app.control_plane_contracts import (
+    ARTIFACT_LINEAGE_ID_PREFIXES,
     ARTIFACT_MANIFEST_SCHEMA_VERSION,
     EVENT_ENVELOPE_SCHEMA_VERSION,
     EXECUTOR_RESULT_SCHEMA_VERSION,
+    HASH_LIKE_VALUE_PATTERN,
     RUN_CONTRACT_VERSION,
     artifact_lineage_contract,
     artifact_manifest_contract,
@@ -44,9 +46,11 @@ from app.skills.pinning import (
 from app.skills.release_policy import release_decision_payload_for_locked_version, resolve_rollout_skill_decision
 from app.skills.registry import BuiltinSkillRegistry
 from app.tool_permission_projection import tool_permission_public_event_payload
+from app.validation import assert_safe_id
 
 router = APIRouter()
 RUN_PLAYBACK_CONTRACT_VERSION = "ai-platform.run-playback.v1"
+RUN_PROVENANCE_CONTRACT_VERSION = "ai-platform.run-provenance.v1"
 
 
 def _skill_manifest_pins(skill_id: str, input_payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -365,6 +369,184 @@ def multi_agent_snapshot_from_steps(
         "blocked": sum(1 for item in steps if bool(item["payload"].get("missing_dependencies"))),
     }
     return {"run_id": run_id, "steps": steps, "counts": counts}
+
+
+def _unique_sorted(values: list[object]) -> list[str]:
+    return sorted({str(item) for item in values if item})
+
+
+def _safe_provenance_graph_id(field_name: str, value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    sanitized = sanitize_public_text(raw)
+    if not sanitized or sanitized != raw:
+        return None
+    if HASH_LIKE_VALUE_PATTERN.fullmatch(sanitized):
+        return None
+    try:
+        safe_id = assert_safe_id(sanitized, field_name)
+    except ValueError:
+        return None
+    normalized = safe_id.lower()
+    prefixes = ARTIFACT_LINEAGE_ID_PREFIXES.get(field_name, ())
+    if not any(normalized == prefix or normalized.startswith(f"{prefix}-") or normalized.startswith(f"{prefix}_") for prefix in prefixes):
+        return None
+    return safe_id
+
+
+def _provenance_step_card(row: dict[str, object], principal: AuthPrincipal) -> dict[str, object]:
+    card = run_step_response(row, principal=principal)
+    raw_payload = card.get("payload")
+    if not isinstance(raw_payload, dict):
+        return card
+    payload = dict(raw_payload)
+    checkpoint_id = _safe_provenance_graph_id("checkpoint_id", payload.get("checkpoint_id"))
+    subagent_id = _safe_provenance_graph_id("subagent_id", payload.get("subagent_id"))
+    if checkpoint_id:
+        payload["checkpoint_id"] = checkpoint_id
+        payload["checkpoint_reused"] = bool(payload.get("checkpoint_reused"))
+    else:
+        payload.pop("checkpoint_id", None)
+        payload.pop("checkpoint_reused", None)
+    if subagent_id:
+        payload["subagent_id"] = subagent_id
+    else:
+        payload.pop("subagent_id", None)
+    card["payload"] = payload
+    return card
+
+
+def run_provenance_snapshot(
+    *,
+    run: dict[str, object],
+    steps: list[dict[str, object]],
+    artifacts: list[dict[str, object]],
+    principal: AuthPrincipal,
+) -> dict[str, object]:
+    """Build the public run provenance graph from existing sanitized projections."""
+    step_cards = [_provenance_step_card(row, principal=principal) for row in steps]
+    artifact_cards = [artifact_card(row, principal=principal) for row in artifacts]
+    step_by_id = {str(item["step_id"]): item for item in step_cards}
+    artifacts_by_checkpoint: dict[str, list[str]] = {}
+    artifacts_by_subagent: dict[str, list[str]] = {}
+    artifact_tree: list[dict[str, object]] = []
+    for artifact in artifact_cards:
+        raw_lineage = artifact.get("lineage")
+        lineage = raw_lineage if isinstance(raw_lineage, dict) else {}
+        checkpoint_id = lineage.get("checkpoint_id")
+        subagent_id = lineage.get("subagent_id")
+        source_step_id = lineage.get("source_step_id")
+        artifact_id = str(artifact["artifact_id"])
+        if checkpoint_id:
+            artifacts_by_checkpoint.setdefault(str(checkpoint_id), []).append(artifact_id)
+        if subagent_id:
+            artifacts_by_subagent.setdefault(str(subagent_id), []).append(artifact_id)
+        source_step_key = str(source_step_id) if source_step_id else None
+        artifact_tree.append(
+            {
+                "artifact_id": artifact_id,
+                "artifact_type": artifact.get("artifact_type"),
+                "label": artifact.get("label"),
+                "produced_by_step_id": source_step_key if source_step_key in step_by_id else None,
+                "producer_kind": lineage.get("producer_kind"),
+                "producer_role": lineage.get("producer_role"),
+                "checkpoint_id": str(checkpoint_id) if checkpoint_id else None,
+                "subagent_id": str(subagent_id) if subagent_id else None,
+                "lineage": lineage,
+            }
+        )
+
+    checkpoints: dict[str, dict[str, object]] = {}
+    subagents: dict[str, dict[str, object]] = {}
+    for step in step_cards:
+        raw_payload = step.get("payload")
+        payload = raw_payload if isinstance(raw_payload, dict) else {}
+        step_id = str(step["step_id"])
+        checkpoint_id = payload.get("checkpoint_id")
+        subagent_id = payload.get("subagent_id")
+        if checkpoint_id:
+            checkpoint_key = str(checkpoint_id)
+            checkpoint = checkpoints.setdefault(
+                checkpoint_key,
+                {"checkpoint_id": checkpoint_key, "step_ids": [], "artifact_ids": [], "reused": False},
+            )
+            checkpoint["step_ids"].append(step_id)
+            checkpoint["reused"] = bool(checkpoint["reused"]) or bool(payload.get("checkpoint_reused"))
+        if subagent_id:
+            subagent_key = str(subagent_id)
+            subagent = subagents.setdefault(
+                subagent_key,
+                {
+                    "subagent_id": subagent_key,
+                    "role": step.get("role"),
+                    "step_ids": [],
+                    "statuses": [],
+                    "checkpoint_ids": [],
+                    "artifact_ids": [],
+                },
+            )
+            subagent["step_ids"].append(step_id)
+            subagent["statuses"].append(step.get("status"))
+            if checkpoint_id:
+                subagent["checkpoint_ids"].append(str(checkpoint_id))
+
+    for checkpoint_id, artifact_ids in artifacts_by_checkpoint.items():
+        checkpoint = checkpoints.setdefault(
+            checkpoint_id,
+            {"checkpoint_id": checkpoint_id, "step_ids": [], "artifact_ids": [], "reused": False},
+        )
+        checkpoint["artifact_ids"].extend(artifact_ids)
+    for subagent_id, artifact_ids in artifacts_by_subagent.items():
+        subagent = subagents.setdefault(
+            subagent_id,
+            {
+                "subagent_id": subagent_id,
+                "role": None,
+                "step_ids": [],
+                "statuses": [],
+                "checkpoint_ids": [],
+                "artifact_ids": [],
+            },
+        )
+        subagent["artifact_ids"].extend(artifact_ids)
+
+    checkpoint_items = [
+        {
+            "checkpoint_id": str(item["checkpoint_id"]),
+            "step_ids": _unique_sorted(item["step_ids"]),
+            "artifact_ids": _unique_sorted(item["artifact_ids"]),
+            "reused": bool(item["reused"]),
+        }
+        for item in checkpoints.values()
+    ]
+    subagent_items = [
+        {
+            "subagent_id": str(item["subagent_id"]),
+            "role": item.get("role"),
+            "step_ids": _unique_sorted(item["step_ids"]),
+            "statuses": _unique_sorted(item["statuses"]),
+            "checkpoint_ids": _unique_sorted(item["checkpoint_ids"]),
+            "artifact_ids": _unique_sorted(item["artifact_ids"]),
+        }
+        for item in subagents.values()
+    ]
+    return {
+        "contract_version": RUN_PROVENANCE_CONTRACT_VERSION,
+        "run": run_playback_summary(run, principal),
+        "steps": step_cards,
+        "artifact_tree": artifact_tree,
+        "checkpoints": sorted(checkpoint_items, key=lambda item: item["checkpoint_id"]),
+        "subagents": sorted(subagent_items, key=lambda item: item["subagent_id"]),
+        "graph": {
+            "counts": {
+                "steps": len(step_cards),
+                "artifacts": len(artifact_cards),
+                "checkpoints": len(checkpoint_items),
+                "subagents": len(subagent_items),
+            }
+        },
+    }
 
 
 def run_playback_summary(run: dict[str, object], principal: AuthPrincipal) -> dict[str, object]:
@@ -1082,6 +1264,27 @@ async def get_run_playback(
         "steps": step_cards,
         "multi_agent": multi_agent_snapshot_from_steps(run_id, steps, principal=principal),
     }
+
+
+@router.get("/runs/{run_id}/provenance")
+async def get_run_provenance(
+    run_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    """Return the read-only public provenance graph for an authorized run."""
+    tenant_id = principal.tenant_id
+    async with transaction() as conn:
+        run = await repositories.get_authorized_run(
+            conn,
+            tenant_id=tenant_id,
+            user_id=principal.user_id,
+            run_id=run_id,
+        )
+        if run is None:
+            raise HTTPException(status_code=404, detail="run_not_found")
+        artifacts = await repositories.list_run_artifacts(conn, tenant_id=tenant_id, run_id=run_id)
+        steps = await repositories.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
+    return run_provenance_snapshot(run=run, steps=steps, artifacts=artifacts, principal=principal)
 
 
 @router.get("/runs/{run_id}/events")

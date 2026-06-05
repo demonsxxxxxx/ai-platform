@@ -224,6 +224,14 @@ existing thin-shell frontend root/API health, dist API boundary, and LambChat
 compatibility API gates. This does not open high-risk write tools or start P2
 Long Task / Multi-Agent Runtime.
 
+### P2 Run Provenance Snapshot
+
+Status: started as a read-only P2 foundation slice. This adds the
+`ai-platform.run-provenance.v1` owner-scoped projection for existing run steps,
+checkpoint ids, subagent ids, and artifact lineage. It does not start
+high-risk tool execution, Docker sandbox expansion, or autonomous multi-agent
+scheduling.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。

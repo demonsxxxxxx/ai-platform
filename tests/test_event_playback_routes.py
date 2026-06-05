@@ -340,6 +340,155 @@ def test_run_playback_projection_redacts_ordinary_user_timeline(monkeypatch):
     }
 
 
+def test_run_provenance_snapshot_links_steps_checkpoints_and_artifacts(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("tenant-a", "user-a", "run-a")
+        return run_row()
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return [artifact_row()]
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        row = step_row()
+        row["payload_json"] = {
+            **row["payload_json"],
+            "checkpoint_id": "checkpoint-a",
+            "checkpoint_reused": True,
+            "subagent_id": "subagent-a",
+            "depends_on": ["plan"],
+            "output": "sanitized reviewer output",
+        }
+        row["status"] = "succeeded"
+        return [row]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-a/provenance", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["contract_version"] == "ai-platform.run-provenance.v1"
+    assert body["run"]["run_id"] == "run-a"
+    assert body["run"]["skill_id"] is None
+    assert body["graph"]["counts"] == {
+        "steps": 1,
+        "artifacts": 1,
+        "checkpoints": 1,
+        "subagents": 1,
+    }
+    assert body["subagents"] == [
+        {
+            "subagent_id": "subagent-a",
+            "role": "reviewer",
+            "step_ids": ["step-a"],
+            "statuses": ["succeeded"],
+            "checkpoint_ids": ["checkpoint-a"],
+            "artifact_ids": ["artifact-a"],
+        }
+    ]
+    assert body["checkpoints"] == [
+        {
+            "checkpoint_id": "checkpoint-a",
+            "step_ids": ["step-a"],
+            "artifact_ids": ["artifact-a"],
+            "reused": True,
+        }
+    ]
+    assert body["artifact_tree"][0]["artifact_id"] == "artifact-a"
+    assert body["artifact_tree"][0]["produced_by_step_id"] == "step-a"
+    assert body["artifact_tree"][0]["checkpoint_id"] == "checkpoint-a"
+    assert body["artifact_tree"][0]["subagent_id"] == "subagent-a"
+    public_dump = str(body)
+    assert "storage_key" not in public_dump
+    assert "command_sha256" not in public_dump
+    assert "resource_limits" not in public_dump
+    assert "sandbox_mode" not in public_dump
+    assert "/tmp/" not in public_dump
+    assert "qa-file-reviewer" not in public_dump
+
+
+def test_run_provenance_snapshot_rejects_unsafe_step_graph_ids(monkeypatch):
+    unsafe_hash = "a" * 64
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("tenant-a", "user-a", "run-a")
+        return run_row()
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        row = step_row()
+        row["payload_json"] = {
+            **row["payload_json"],
+            "checkpoint_id": unsafe_hash,
+            "checkpoint_reused": True,
+            "subagent_id": "qa-file-reviewer",
+            "private_payload": {"token": "secret-token"},
+            "runtime_private_payload": {"token": "secret-token"},
+            "executor_payload": {"token": "secret-token"},
+        }
+        row["status"] = "succeeded"
+        return [row]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-a/provenance", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["graph"]["counts"] == {
+        "steps": 1,
+        "artifacts": 0,
+        "checkpoints": 0,
+        "subagents": 0,
+    }
+    assert body["checkpoints"] == []
+    assert body["subagents"] == []
+    assert body["steps"][0]["payload"] == {"public_note": "正在审核"}
+    public_dump = str(body)
+    assert unsafe_hash not in public_dump
+    assert "qa-file-reviewer" not in public_dump
+    assert "private_payload" not in public_dump
+    assert "runtime_private_payload" not in public_dump
+    assert "executor_payload" not in public_dump
+    assert "secret-token" not in public_dump
+
+
+def test_run_provenance_snapshot_returns_not_found_for_unauthorized_run(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("tenant-a", "user-a", "missing-run")
+        return None
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        raise AssertionError("artifacts must not be listed when run is unauthorized")
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        raise AssertionError("steps must not be listed when run is unauthorized")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/missing-run/provenance", headers=headers())
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "run_not_found"}
+
+
 def test_run_playback_projects_tool_permission_card_for_ordinary_user(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         return run_row()
