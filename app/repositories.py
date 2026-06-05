@@ -1,6 +1,7 @@
 import hashlib
 import json
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from psycopg import AsyncConnection
@@ -50,6 +51,21 @@ class RepositoryNotFoundError(ValueError):
 
 def dumps_json(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False)
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _coerce_int(value: Any) -> int:
@@ -2800,9 +2816,12 @@ async def claim_multi_agent_dispatch_step(
     role: str | None,
     sequence: int,
     depends_on: list[str],
+    lease_ttl_seconds: int = 900,
 ) -> dict[str, Any]:
     """Record an admin/runtime claim for a ready multi-agent step."""
     dispatch_id = new_id("dispatch")
+    claimed_at = datetime.now(timezone.utc)
+    lease_expires_at = claimed_at + timedelta(seconds=max(int(lease_ttl_seconds or 0), 1))
     step_id = await upsert_run_step(
         conn,
         tenant_id=tenant_id,
@@ -2817,7 +2836,23 @@ async def claim_multi_agent_dispatch_step(
             "depends_on": depends_on,
             "dispatch_state": "claimed",
             "dispatch_kind": "subagent",
+            "dispatch_id": dispatch_id,
+            "dispatch_claimed_by": claimed_by,
+            "dispatch_claimed_at": claimed_at.isoformat(),
+            "dispatch_lease_expires_at": lease_expires_at.isoformat(),
         },
+    )
+    await conn.execute(
+        """
+        update run_steps
+        set
+          payload_json = payload_json - 'dispatch_expired_at',
+          updated_at = now()
+        where tenant_id = %s
+          and id = %s
+          and payload_json ? 'dispatch_expired_at'
+        """,
+        (tenant_id, step_id),
     )
     event_id = await append_event(
         conn,
@@ -2856,6 +2891,120 @@ async def claim_multi_agent_dispatch_step(
     if step is None:
         raise RepositoryConflictError("dispatch_step_not_persisted")
     return {"dispatch_id": dispatch_id, "event_id": event_id, "audit_id": audit_id, "step": step}
+
+
+async def cleanup_expired_multi_agent_dispatch_claims(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    cleaned_by: str,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    bounded_limit = max(min(int(limit or 100), 500), 1)
+    cleaned: list[dict[str, Any]] = []
+    visited_ids: list[str] = []
+    visited_id_set: set[str] = set()
+    cleanup_at = datetime.now(timezone.utc)
+    expired_at = cleanup_at.isoformat()
+
+    while len(cleaned) < bounded_limit:
+        excluded_ids = list(visited_ids)
+        cursor = await conn.execute(
+            """
+            select
+              rs.id,
+              rs.tenant_id,
+              rs.run_id,
+              r.trace_id,
+              rs.step_key,
+              rs.payload_json
+            from run_steps rs
+            join runs r on r.tenant_id = rs.tenant_id and r.id = rs.run_id
+            where rs.tenant_id = %s
+              and rs.status = 'running'
+              and rs.payload_json->>'dispatch_state' = 'claimed'
+              and rs.payload_json->>'dispatch_lease_expires_at' is not null
+              and (cardinality(%s::text[]) = 0 or rs.id <> all(%s::text[]))
+            order by rs.updated_at asc, rs.created_at asc
+            limit %s
+            for update of rs skip locked
+            """,
+            (tenant_id, excluded_ids, excluded_ids, bounded_limit),
+        )
+        rows = list(await cursor.fetchall())
+        if not rows:
+            break
+
+        new_row_count = 0
+        for row in rows:
+            row_id = str(row["id"])
+            if row_id in visited_id_set:
+                continue
+            visited_id_set.add(row_id)
+            visited_ids.append(row_id)
+            new_row_count += 1
+
+            payload = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
+            lease_expires_at = _parse_iso_datetime(payload.get("dispatch_lease_expires_at"))
+            if lease_expires_at is None or lease_expires_at > cleanup_at:
+                continue
+            dispatch_id = str(payload.get("dispatch_id") or "")
+            await conn.execute(
+                """
+                update run_steps
+                set
+                  status = 'pending',
+                  payload_json = payload_json || %s::jsonb,
+                  started_at = null,
+                  finished_at = null,
+                  updated_at = now()
+                where tenant_id = %s
+                  and id = %s
+                  and status = 'running'
+                  and payload_json->>'dispatch_state' = 'claimed'
+                """,
+                (
+                    dumps_json(
+                        {
+                            "dispatch_state": "expired",
+                            "dispatch_expired_at": expired_at,
+                        }
+                    ),
+                    tenant_id,
+                    row_id,
+                ),
+            )
+            await append_audit_log(
+                conn,
+                tenant_id=tenant_id,
+                user_id=cleaned_by,
+                action="run.multi_agent.dispatch.expire",
+                target_type="run_step",
+                target_id=row_id,
+                trace_id=row.get("trace_id"),
+                payload_json={
+                    "run_id": str(row["run_id"]),
+                    "step_key": str(row["step_key"]),
+                    "dispatch_id": dispatch_id,
+                    "result_status": "expired",
+                },
+            )
+            cleaned.append(
+                {
+                    "step_id": row_id,
+                    "run_id": str(row["run_id"]),
+                    "step_key": str(row["step_key"]),
+                    "dispatch_id": dispatch_id,
+                    "status": "pending",
+                }
+            )
+            if len(cleaned) >= bounded_limit:
+                break
+
+        if new_row_count == 0 or len(rows) < bounded_limit:
+            break
+
+    return cleaned
 
 
 async def list_run_steps(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> list[dict[str, Any]]:

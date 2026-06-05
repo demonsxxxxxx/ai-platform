@@ -118,6 +118,27 @@ async def admin_runtime_queue(
     }
 
 
+@router.post("/admin/runtime/multi-agent/dispatch/cleanup")
+async def admin_runtime_multi_agent_dispatch_cleanup(
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=403, detail="not_ai_admin")
+
+    async with transaction() as conn:
+        expired_claims = await repositories.cleanup_expired_multi_agent_dispatch_claims(
+            conn,
+            tenant_id=principal.tenant_id,
+            cleaned_by=principal.user_id,
+            limit=100,
+        )
+    return {
+        "tenant_id": principal.tenant_id,
+        "expired_count": len(expired_claims),
+        "expired_claims": expired_claims,
+    }
+
+
 @router.get("/admin/runtime/containers")
 async def admin_runtime_containers(
     include_lease_history: bool = False,

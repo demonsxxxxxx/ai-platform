@@ -1621,6 +1621,10 @@ def test_admin_multi_agent_dispatch_claim_records_ledger_event_and_audit(monkeyp
         }
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr(
+        "app.routes.runs.get_settings",
+        lambda: type("S", (), {"multi_agent_dispatch_lease_ttl_seconds": 123})(),
+    )
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.get_run", fake_get_run)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
@@ -1656,6 +1660,7 @@ def test_admin_multi_agent_dispatch_claim_records_ledger_event_and_audit(monkeyp
                 "role": "coder",
                 "sequence": 2,
                 "depends_on": ["plan"],
+                "lease_ttl_seconds": 123,
             },
         )
     ]
@@ -3776,6 +3781,10 @@ async def test_claim_multi_agent_dispatch_step_writes_step_event_and_audit(monke
 
     calls = []
 
+    class FakeConnection:
+        async def execute(self, sql, params):
+            calls.append(("sql", " ".join(sql.split()), params))
+
     async def fake_upsert_run_step(conn, **kwargs):
         calls.append(("step", kwargs))
         return "step-code"
@@ -3818,7 +3827,7 @@ async def test_claim_multi_agent_dispatch_step_writes_step_event_and_audit(monke
     monkeypatch.setattr("app.repositories.list_run_steps", fake_list_run_steps)
 
     result = await repositories.claim_multi_agent_dispatch_step(
-        object(),
+        FakeConnection(),
         tenant_id="default",
         run_id="run-ready",
         claimed_by="admin-a",
@@ -3829,23 +3838,29 @@ async def test_claim_multi_agent_dispatch_step_writes_step_event_and_audit(monke
         role="coder",
         sequence=2,
         depends_on=["plan"],
+        lease_ttl_seconds=900,
     )
 
     assert result["event_id"] == "evt-code"
     assert result["audit_id"] == "aud-code"
     assert result["step"]["payload_json"]["dispatch_state"] == "claimed"
-    step_call = calls[0][1]
+    step_call = next(call[1] for call in calls if call[0] == "step")
     assert step_call["status"] == "running"
-    assert step_call["payload_json"] == {
-        "depends_on": ["plan"],
-        "dispatch_state": "claimed",
-        "dispatch_kind": "subagent",
-    }
-    event_call = calls[1][1]
+    assert step_call["payload_json"]["depends_on"] == ["plan"]
+    assert step_call["payload_json"]["dispatch_state"] == "claimed"
+    assert step_call["payload_json"]["dispatch_kind"] == "subagent"
+    assert step_call["payload_json"]["dispatch_id"].startswith("dispatch")
+    assert step_call["payload_json"]["dispatch_claimed_by"] == "admin-a"
+    assert step_call["payload_json"]["dispatch_claimed_at"]
+    assert step_call["payload_json"]["dispatch_lease_expires_at"]
+    clear_call = next(call for call in calls if call[0] == "sql")
+    assert "payload_json = payload_json - 'dispatch_expired_at'" in clear_call[1]
+    assert clear_call[2] == ("default", "step-code")
+    event_call = next(call[1] for call in calls if call[0] == "event")
     assert event_call["event_type"] == "agent_step_started"
     assert event_call["visible_to_user"] is False
     assert event_call["payload"]["dispatch_state"] == "claimed"
-    audit_call = calls[2][1]
+    audit_call = next(call[1] for call in calls if call[0] == "audit")
     assert audit_call["action"] == "run.multi_agent.dispatch.claim"
     assert audit_call["target_id"] == "step-code"
     assert audit_call["payload_json"]["result_status"] == "claimed"

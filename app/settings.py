@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     max_active_runs_per_user: int = Field(default=3)
     max_active_worker_runs: int = Field(default=3)
     worker_heartbeat_ttl_seconds: float = Field(default=60.0)
+    multi_agent_dispatch_lease_ttl_seconds: int = Field(default=900)
     run_event_stream_max_heartbeats: int = Field(default=3600)
     default_tenant_id: str = Field(default="default")
     default_workspace_id: str = Field(default="default")

@@ -1792,6 +1792,248 @@ async def test_cleanup_expired_sandbox_leases_global_scope_emits_events_for_each
 
 
 @pytest.mark.asyncio
+async def test_cleanup_expired_multi_agent_dispatch_claims_reclaims_steps_and_writes_audit(monkeypatch):
+    calls = []
+
+    class ExpiredClaimCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "id": "step-code",
+                    "tenant_id": "default",
+                    "run_id": "run-ready",
+                    "trace_id": "trace-ready",
+                    "step_key": "code",
+                    "payload_json": {
+                        "dispatch_id": "dispatch-code",
+                        "dispatch_state": "claimed",
+                        "dispatch_lease_expires_at": "2000-01-01T00:00:00+00:00",
+                    },
+                }
+            ]
+
+    class UpdateCursor:
+        async def fetchall(self):
+            return []
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append((normalized, params))
+            if normalized.startswith("select rs.id"):
+                return ExpiredClaimCursor()
+            if normalized.startswith("update run_steps"):
+                return UpdateCursor()
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "aud-expired"
+
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+
+    cleaned = await repositories.cleanup_expired_multi_agent_dispatch_claims(
+        FakeConnection(),
+        tenant_id="default",
+        cleaned_by="admin-a",
+        limit=25,
+    )
+
+    assert cleaned == [
+        {
+            "step_id": "step-code",
+            "run_id": "run-ready",
+            "step_key": "code",
+            "dispatch_id": "dispatch-code",
+            "status": "pending",
+        }
+    ]
+    select_sql, select_params = calls[0]
+    assert "payload_json->>'dispatch_state' = 'claimed'" in select_sql
+    assert "payload_json->>'dispatch_lease_expires_at'" in select_sql
+    assert "::timestamptz" not in select_sql
+    assert "r.status in" not in select_sql
+    assert "skip locked" in select_sql
+    assert select_params[0] == "default"
+    assert select_params[-1] == 25
+    update_sql, update_params = calls[1]
+    assert "status = 'pending'" in update_sql
+    assert "started_at = null" in update_sql
+    assert "finished_at = null" in update_sql
+    assert "dispatch_state" in update_sql
+    assert update_params[1] == "default"
+    assert update_params[2] == "step-code"
+    assert calls[2] == (
+        "audit",
+        {
+            "tenant_id": "default",
+            "user_id": "admin-a",
+            "action": "run.multi_agent.dispatch.expire",
+            "target_type": "run_step",
+            "target_id": "step-code",
+            "trace_id": "trace-ready",
+            "payload_json": {
+                "run_id": "run-ready",
+                "step_key": "code",
+                "dispatch_id": "dispatch-code",
+                "result_status": "expired",
+            },
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_cleanup_expired_multi_agent_dispatch_claims_skips_malformed_timestamp_without_audit(monkeypatch):
+    calls = []
+
+    class ExpiredClaimCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "id": "step-code",
+                    "tenant_id": "default",
+                    "run_id": "run-ready",
+                    "trace_id": "trace-ready",
+                    "step_key": "code",
+                    "payload_json": {
+                        "dispatch_id": "dispatch-code",
+                        "dispatch_state": "claimed",
+                        "dispatch_lease_expires_at": "2026-99-99Tbad",
+                    },
+                }
+            ]
+
+    class UpdateCursor:
+        async def fetchall(self):
+            return []
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append((normalized, params))
+            if normalized.startswith("select rs.id"):
+                return ExpiredClaimCursor()
+            if normalized.startswith("update run_steps"):
+                return UpdateCursor()
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    async def fail_append_audit_log(*args, **kwargs):
+        raise AssertionError("malformed lease timestamps must not write audit rows")
+
+    monkeypatch.setattr("app.repositories.append_audit_log", fail_append_audit_log)
+
+    cleaned = await repositories.cleanup_expired_multi_agent_dispatch_claims(
+        FakeConnection(),
+        tenant_id="default",
+        cleaned_by="admin-a",
+        limit=25,
+    )
+
+    assert cleaned == []
+    assert len(calls) == 1
+    select_sql, select_params = calls[0]
+    assert "::timestamptz" not in select_sql
+    assert "skip locked" in select_sql
+    assert select_params[0] == "default"
+    assert select_params[-1] == 25
+
+
+@pytest.mark.asyncio
+async def test_cleanup_expired_multi_agent_dispatch_claims_scans_past_unreclaimable_candidates(monkeypatch):
+    calls = []
+
+    class CandidateCursor:
+        def __init__(self, rows):
+            self.rows = rows
+
+        async def fetchall(self):
+            return self.rows
+
+    class UpdateCursor:
+        async def fetchall(self):
+            return []
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append((normalized, params))
+            if normalized.startswith("select rs.id"):
+                seen_ids = set(params[1])
+                first_batch = [
+                    {
+                        "id": "step-malformed",
+                        "tenant_id": "default",
+                        "run_id": "run-ready",
+                        "trace_id": "trace-ready",
+                        "step_key": "malformed",
+                        "payload_json": {
+                            "dispatch_id": "dispatch-malformed",
+                            "dispatch_state": "claimed",
+                            "dispatch_lease_expires_at": "2026-99-99Tbad",
+                        },
+                    },
+                    {
+                        "id": "step-future",
+                        "tenant_id": "default",
+                        "run_id": "run-ready",
+                        "trace_id": "trace-ready",
+                        "step_key": "future",
+                        "payload_json": {
+                            "dispatch_id": "dispatch-future",
+                            "dispatch_state": "claimed",
+                            "dispatch_lease_expires_at": "2999-01-01T00:00:00+00:00",
+                        },
+                    },
+                ]
+                second_batch = [
+                    {
+                        "id": "step-expired",
+                        "tenant_id": "default",
+                        "run_id": "run-ready",
+                        "trace_id": "trace-ready",
+                        "step_key": "expired",
+                        "payload_json": {
+                            "dispatch_id": "dispatch-expired",
+                            "dispatch_state": "claimed",
+                            "dispatch_lease_expires_at": "2000-01-01T00:00:00+00:00",
+                        },
+                    }
+                ]
+                rows = [row for row in first_batch + second_batch if row["id"] not in seen_ids]
+                return CandidateCursor(rows[: params[-1]])
+            if normalized.startswith("update run_steps"):
+                return UpdateCursor()
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "aud-expired"
+
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+
+    cleaned = await repositories.cleanup_expired_multi_agent_dispatch_claims(
+        FakeConnection(),
+        tenant_id="default",
+        cleaned_by="admin-a",
+        limit=2,
+    )
+
+    assert cleaned == [
+        {
+            "step_id": "step-expired",
+            "run_id": "run-ready",
+            "step_key": "expired",
+            "dispatch_id": "dispatch-expired",
+            "status": "pending",
+        }
+    ]
+    select_calls = [call for call in calls if call[0].startswith("select rs.id")]
+    assert len(select_calls) == 2
+    assert select_calls[0][1][1] == []
+    assert select_calls[1][1][1] == ["step-malformed", "step-future"]
+
+
+@pytest.mark.asyncio
 async def test_list_expired_active_sandbox_leases_preserves_runtime_stop_targets():
     from app.repositories import list_expired_active_sandbox_leases
 

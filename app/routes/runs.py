@@ -2315,6 +2315,7 @@ async def claim_multi_agent_dispatch(
                 run_id=run_id,
                 claimed_by=principal.user_id,
                 trace_id=str(run.get("trace_id") or standard_trace_id(run_id)),
+                lease_ttl_seconds=int(get_settings().multi_agent_dispatch_lease_ttl_seconds),
                 **candidate,
             )
     except RepositoryConflictError as exc:

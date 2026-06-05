@@ -70,6 +70,71 @@ def test_admin_runtime_containers_requires_admin(monkeypatch):
     assert response.json()["detail"] == "not_ai_admin"
 
 
+def test_admin_runtime_multi_agent_dispatch_cleanup_requires_admin(monkeypatch):
+    async def fail_cleanup(*args, **kwargs):
+        raise AssertionError("ordinary users must fail before cleanup")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr(
+        "app.routes.admin_runtime.repositories.cleanup_expired_multi_agent_dispatch_claims",
+        fail_cleanup,
+        raising=False,
+    )
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/admin/runtime/multi-agent/dispatch/cleanup", headers=user_headers())
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "not_ai_admin"
+
+
+def test_admin_runtime_multi_agent_dispatch_cleanup_returns_same_tenant_expired_claims(monkeypatch):
+    calls = []
+
+    @asynccontextmanager
+    async def cleanup_transaction():
+        yield object()
+
+    async def fake_cleanup(conn, *, tenant_id, cleaned_by, limit=100):
+        calls.append((tenant_id, cleaned_by, limit))
+        return [
+            {
+                "step_id": "step-code",
+                "run_id": "run-ready",
+                "step_key": "code",
+                "dispatch_id": "dispatch-code",
+                "status": "pending",
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", cleanup_transaction)
+    monkeypatch.setattr(
+        "app.routes.admin_runtime.repositories.cleanup_expired_multi_agent_dispatch_claims",
+        fake_cleanup,
+        raising=False,
+    )
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/admin/runtime/multi-agent/dispatch/cleanup", headers=admin_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "tenant_id": "default",
+        "expired_count": 1,
+        "expired_claims": [
+            {
+                "step_id": "step-code",
+                "run_id": "run-ready",
+                "step_key": "code",
+                "dispatch_id": "dispatch-code",
+                "status": "pending",
+            }
+        ],
+    }
+    assert calls == [("default", "dev-admin", 100)]
+
+
 def test_admin_runtime_containers_returns_provider_status(monkeypatch):
     class FakeProvider:
         async def list_runtime_containers(self, filters):
