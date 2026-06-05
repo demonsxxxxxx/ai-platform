@@ -743,10 +743,39 @@ no Critical or Important issues. The review tool did not expose explicit model
 or reasoning-effort fields, so this remains recorded as inherited-configuration
 review rather than an explicit model gate.
 
-211 deployment and runtime smoke evidence remain pending for this slice until
-the branch is merged and deployed. This does not start an autonomous scheduler,
-polling subagent dispatcher, new worker process, sandbox/tool privilege
-expansion, frontend entry, or DB migration.
+Status: deployed on 211 through PR #14 and main commit
+`037ac4d9166cc31c420560e1a584f5a429bb46ac`. The deployed image for both
+`ai-platform-api` and `ai-platform-worker` is
+`sha256:8c4ae14528d6b139954e0e02f8d8e56de4d2e8956197e25c655586a3aca1a5d3`,
+with labels
+`ai-platform.source-revision=037ac4d9166cc31c420560e1a584f5a429bb46ac`,
+`ai-platform.source-branch=main`, and
+`ai-platform.source_note=p2-multi-agent-parent-cancel-propagation`. Remote
+source compile passed with `python3 -m compileall -q app tools scripts`;
+container compile passed for both API and worker with
+`python -m compileall -q app tools scripts`. The runtime-only compose rollout
+used the repo-local compose file and the existing 211 runtime `.env` path
+without printing or copying secret values. Because 211 `sudo` does not preserve
+the leading shell environment assignment, the effective compose command used
+`sudo -n env AI_PLATFORM_IMAGE=ai-platform:037ac4d9166c docker compose ...`.
+
+The 211 smoke verified API and frontend proxy `/api/ai/health`, API/worker label
+parity, owner cancel and admin cancel through the live HTTP routes, same-tenant
+server-owned queued child runs becoming `cancelled`, running child runs keeping
+`running` with `cancel_requested_at` set, forged copied child runs remaining
+untouched, queued Redis payload removal by the route, active fake sandbox lease
+release after cleanup, open child step cancellation, `requested_by_role` evidence
+for both owner and admin propagation, no private marker / `private_payload` /
+`storage_key` / secret-like value leakage in event or audit payloads, clean
+recent API/worker logs, `queued = 0`, `processing = 0`, and smoke tenant cleanup
+with zero remaining tenant rows. The default 211 compose still uses
+`SANDBOX_CONTAINER_PROVIDER=fake` and does not mount the Docker socket, so this
+smoke did not expand sandbox/tool privileges or claim Docker-provider container
+stop evidence.
+
+This does not start an autonomous scheduler, polling subagent dispatcher, new
+worker process, sandbox/tool privilege expansion, frontend entry, or DB
+migration.
 
 ## 禁止项
 
