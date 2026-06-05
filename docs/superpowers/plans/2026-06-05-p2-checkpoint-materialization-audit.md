@@ -8,6 +8,37 @@
 
 **Tech Stack:** FastAPI, Python, pytest, existing `app.routes.runs` projection helpers, existing repository read methods.
 
+## Completion Evidence
+
+Status: completed on `main` at
+`2a268dedcd835d001928b24dc5e1f8fb8782855a`, then deployed and smoked on 211.
+
+- Local focused route verification:
+  `python -m pytest tests/test_run_control_routes.py` -> `49 passed`.
+- Local source-authority verification:
+  `python -m pytest tests/test_run_control_routes.py tests/test_source_authority_docs.py -q --basetemp .pytest-tmp\p2-checkpoint-audit-focused` -> `57 passed`.
+- Local compile:
+  `python -m compileall -q app tools scripts` -> exit 0.
+- Local full verification:
+  `python -m pytest -q --basetemp .pytest-tmp\p2-checkpoint-audit-full` -> `895 passed, 6 skipped, 2 warnings`.
+- Inherited-configuration review:
+  reviewer reported no issues on owner scoping, tenant scoping, ordinary-user
+  redaction, checkpoint/artifact aggregation, and no accidental
+  retry/resume/subagent/sandbox/tool behavior; reviewer focused tests passed
+  with `2 passed`.
+- 211 deployment:
+  `ai-platform-api` and `ai-platform-worker` run image
+  `sha256:32ae0a52d7176745686b2afe75dce497cc20159eb0585b8b05d29a12af1f1720`
+  with label `ai-platform.source-revision=2a268dedcd835d001928b24dc5e1f8fb8782855a`.
+- 211 smoke:
+  `/api/ai/health` returned `{"status":"ok"}`;
+  `/openapi.json` includes `/api/ai/runs/{run_id}/checkpoints/audit`;
+  seeded ordinary-user smoke returned contract
+  `ai-platform.run-checkpoint-audit.v1`, redacted raw skill/private/runtime
+  data, and counted one public materialized checkpoint plus one redacted
+  uncheckpointed reusable step; same-owner admin saw both checkpoints;
+  another user received 404; smoke rows were cleaned up.
+
 ---
 
 ## File Structure
@@ -21,7 +52,7 @@
 **Files:**
 - Modify: `tests/test_run_control_routes.py`
 
-- [ ] **Step 1: Write the failing materialization/redaction test**
+- [x] **Step 1: Write the failing materialization/redaction test**
 
 Add a test near the existing resume manifest route tests:
 
@@ -148,7 +179,7 @@ def test_run_checkpoint_audit_projects_materialization_without_private_payload(m
     assert "qa-file-reviewer" not in public_dump
 ```
 
-- [ ] **Step 2: Run the new test and verify RED**
+- [x] **Step 2: Run the new test and verify RED**
 
 Run:
 
@@ -158,7 +189,7 @@ python -m pytest tests/test_run_control_routes.py::test_run_checkpoint_audit_pro
 
 Expected: fail with `404 Not Found` because the route does not exist yet.
 
-- [ ] **Step 3: Write the failing gap tests**
+- [x] **Step 3: Write the failing gap tests**
 
 Add these tests near the first checkpoint audit test:
 
@@ -251,7 +282,7 @@ python -m pytest tests/test_run_control_routes.py::test_run_checkpoint_audit_rep
 
 Expected: fail with `404 Not Found`.
 
-- [ ] **Step 4: Write the missing-run test**
+- [x] **Step 4: Write the missing-run test**
 
 Add:
 
@@ -293,7 +324,7 @@ Expected: fail with `404 Not Found` for the wrong reason only if the route is mi
 - Modify: `app/routes/runs.py`
 - Test: `tests/test_run_control_routes.py`
 
-- [ ] **Step 1: Add the contract version and helpers**
+- [x] **Step 1: Add the contract version and helpers**
 
 In `app/routes/runs.py`, add:
 
@@ -347,7 +378,7 @@ def _checkpoint_audit_safe_checkpoint_id(
     return checkpoint_id
 ```
 
-- [ ] **Step 2: Add `run_checkpoint_audit_snapshot()`**
+- [x] **Step 2: Add `run_checkpoint_audit_snapshot()`**
 
 Add:
 
@@ -503,7 +534,7 @@ def run_checkpoint_audit_snapshot(
     }
 ```
 
-- [ ] **Step 3: Add the route**
+- [x] **Step 3: Add the route**
 
 Add before `@router.post("/runs/{run_id}/cancel", ...)`:
 
@@ -529,7 +560,7 @@ async def get_run_checkpoint_audit(
     return run_checkpoint_audit_snapshot(run=run, steps=steps, artifacts=artifacts, principal=principal)
 ```
 
-- [ ] **Step 4: Run focused tests and fix only this slice**
+- [x] **Step 4: Run focused tests and fix only this slice**
 
 Run:
 
@@ -544,7 +575,7 @@ Expected: all route tests pass.
 **Files:**
 - Modify after successful implementation: `docs/superpowers/plans/2026-06-02-ai-platform-foundation-roadmap.md`
 
-- [ ] **Step 1: Run focused source-authority tests**
+- [x] **Step 1: Run focused source-authority tests**
 
 Run:
 
@@ -554,7 +585,7 @@ python -m pytest tests/test_run_control_routes.py tests/test_source_authority_do
 
 Expected: all selected tests pass.
 
-- [ ] **Step 2: Run compile and full local verification**
+- [x] **Step 2: Run compile and full local verification**
 
 Run:
 
@@ -565,7 +596,7 @@ python -m pytest -q --basetemp .pytest-tmp\p2-checkpoint-audit-full
 
 Expected: compile exits 0 and full pytest passes.
 
-- [ ] **Step 3: Request inherited-config multi-agent review**
+- [x] **Step 3: Request inherited-config multi-agent review**
 
 Dispatch review only if the available tool inherits current filesystem/network/approval permissions. If no explicit `model` or `reasoning_effort` fields are exposed, do not claim an explicit model gate; record inherited/default configuration review.
 
@@ -578,11 +609,11 @@ checkpoint/artifact aggregation correctness, and whether the slice accidentally
 opens retry, resume scheduler, subagent dispatch, sandbox, or tool behavior.
 ```
 
-- [ ] **Step 4: Update roadmap after review fixes**
+- [x] **Step 4: Update roadmap after review fixes**
 
 Add a P2 section recording the route, contract version, local verification, review, and 211 deployment status. Do not claim 211 deployment before it is done.
 
-- [ ] **Step 5: Commit, push, deploy, and smoke**
+- [x] **Step 5: Commit, push, deploy, and smoke**
 
 Commit the implementation branch after pre-commit verification passes. Deploy to 211 from the current branch/source revision. Smoke with `python3` and `sudo -n docker` as required by `AGENTS.md`.
 

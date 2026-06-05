@@ -262,14 +262,18 @@ behavior.
 
 ### P2 Checkpoint Materialization Audit Snapshot
 
-Status: local implementation and inherited-configuration multi-agent review in
-progress; 211 deployment/smoke is not yet complete. This adds the
+Status: started as a read-only P2 foundation slice and deployed/smoked on 211
+at `2a268dedcd835d001928b24dc5e1f8fb8782855a`. This adds the
 `ai-platform.run-checkpoint-audit.v1` owner-scoped projection for existing
 checkpoint reusable-output state, artifact materialization, producer linkage
 gaps, unsafe checkpoint id redaction, and uncheckpointed reusable step gaps.
-The local verification passed focused route/source-authority tests, compile,
-and full pytest. This does not start retry scheduling, autonomous multi-agent
-dispatch, high-risk tool execution, or new sandbox behavior.
+The local verification passed focused route tests, route/source-authority
+tests, compile, and full pytest with a repository-local pytest temp directory.
+The 211 smoke verified API health, OpenAPI route exposure, image labels,
+ordinary-user public projection counts/redaction, admin same-owner checkpoint
+visibility, unauthorized user 404, API logs, worker logs, and smoke data
+cleanup. This does not start retry scheduling, autonomous multi-agent dispatch,
+high-risk tool execution, or new sandbox behavior.
 
 ## 禁止项
 
