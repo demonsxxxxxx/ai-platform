@@ -8,7 +8,7 @@ from app.control_plane_contracts import sanitize_public_payload, standard_trace_
 from app.db import transaction
 from app.memory_redaction import redact_memory_metadata, redact_memory_text
 from app.models import ContextSnapshotRequest, MemoryPolicyRequest, MemoryRecordRequest
-from app.projection_redaction import public_agent_id_for_projection
+from app.projection_redaction import internal_agent_id_for_request, public_agent_id_for_projection
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.validation import assert_safe_id
 
@@ -125,7 +125,7 @@ def _memory_policy_response(policy: dict[str, Any]) -> dict[str, Any]:
         "long_term_memory_enabled": False,
         "retention_days": int(policy.get("retention_days") or 90),
         "source": str(policy.get("source") or "default"),
-        "reason": str(policy.get("reason") or ""),
+        "reason": _audit_reason(str(policy.get("reason") or "")),
         "updated_by": str(policy.get("updated_by") or ""),
         "updated_at": policy.get("updated_at"),
     }
@@ -421,17 +421,144 @@ async def get_memory_policy(
     agent_id: str | None = None,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
-    workspace_id = assert_safe_id(workspace_id, "workspace_id")
-    agent_id = assert_safe_id(agent_id, "agent_id") if agent_id else None
-    async with transaction() as conn:
-        policy = await repositories.get_effective_memory_policy(
-            conn,
-            tenant_id=principal.tenant_id,
-            workspace_id=workspace_id,
-            user_id=principal.user_id,
-            agent_id=agent_id,
-        )
+    workspace_id = _safe_query_id(workspace_id, "workspace_id")
+    agent_id = _safe_query_id(agent_id, "agent_id") if agent_id else None
+    internal_agent_id = internal_agent_id_for_request(agent_id) if agent_id else None
+    try:
+        async with transaction() as conn:
+            if internal_agent_id:
+                target_agent = await repositories.get_agent(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    agent_id=internal_agent_id,
+                )
+                if target_agent is None:
+                    raise RepositoryNotFoundError("agent_not_found")
+            policy = await repositories.get_effective_memory_policy(
+                conn,
+                tenant_id=principal.tenant_id,
+                workspace_id=workspace_id,
+                user_id=principal.user_id,
+                agent_id=internal_agent_id,
+            )
+    except RepositoryNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"memory_policy": _memory_policy_response(policy)}
+
+
+@router.put("/memory/policy")
+async def update_memory_policy(
+    request: MemoryPolicyRequest,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    """Let the authenticated user manage their own public memory policy."""
+    if request.long_term_memory_enabled:
+        raise HTTPException(status_code=409, detail="long_term_memory_not_available")
+    reason = _audit_reason(request.reason)
+    internal_agent_id = internal_agent_id_for_request(request.agent_id) if request.agent_id else None
+    public_agent_id = public_agent_id_for_projection(internal_agent_id) if internal_agent_id else None
+    try:
+        async with transaction() as conn:
+            await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
+            if internal_agent_id:
+                target_agent = await repositories.get_agent(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    agent_id=internal_agent_id,
+                )
+                if target_agent is None:
+                    raise RepositoryNotFoundError("agent_not_found")
+            await repositories.ensure_user(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                display_name=principal.display_name,
+            )
+            policy = await repositories.set_memory_policy(
+                conn,
+                tenant_id=principal.tenant_id,
+                workspace_id=request.workspace_id,
+                user_id=principal.user_id,
+                agent_id=internal_agent_id,
+                memory_enabled=request.memory_enabled,
+                long_term_memory_enabled=False,
+                retention_days=request.retention_days,
+                reason=reason,
+                updated_by=principal.user_id,
+            )
+            await repositories.append_audit_log(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                action="memory.policy.updated",
+                target_type="memory_policy",
+                target_id=principal.user_id,
+                trace_id=standard_trace_id(principal.user_id),
+                payload_json=sanitize_public_payload(
+                    {
+                        "workspace_id": request.workspace_id,
+                        "target_user_id": principal.user_id,
+                        "agent_id": public_agent_id,
+                        "memory_enabled": request.memory_enabled,
+                        "long_term_memory_enabled": False,
+                        "retention_days": request.retention_days,
+                        "reason": reason,
+                    }
+                ),
+            )
+    except RepositoryNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RepositoryConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"memory_policy": _memory_policy_response(policy)}
+
+
+@router.get("/admin/memory/policies")
+async def admin_list_memory_policies(
+    workspace_id: str = "default",
+    user_id: str | None = None,
+    agent_id: str | None = None,
+    limit: int = Query(default=50, ge=1, le=500),
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    """Return same-tenant memory policy inventory for memory admins."""
+    if not _is_memory_admin(principal):
+        raise HTTPException(status_code=403, detail="not_ai_memory_admin")
+    workspace_id = _safe_query_id(workspace_id, "workspace_id")
+    user_id = _safe_query_id(user_id, "user_id") if user_id else None
+    agent_id = _safe_query_id(agent_id, "agent_id") if agent_id else None
+    internal_agent_id = internal_agent_id_for_request(agent_id) if agent_id else None
+    try:
+        async with transaction() as conn:
+            await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=workspace_id)
+            if internal_agent_id:
+                target_agent = await repositories.get_agent(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    agent_id=internal_agent_id,
+                )
+                if target_agent is None:
+                    raise RepositoryNotFoundError("agent_not_found")
+            rows = await repositories.list_admin_memory_policies(
+                conn,
+                tenant_id=principal.tenant_id,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                agent_id=internal_agent_id,
+                limit=limit,
+            )
+    except RepositoryNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "memory_policies": [_memory_policy_response(row) for row in rows],
+        "summary": {
+            "workspace_id": workspace_id,
+            "user_id": user_id,
+            "agent_id": public_agent_id_for_projection(internal_agent_id) if internal_agent_id else None,
+            "returned_count": len(rows),
+            "limit": limit,
+        },
+    }
 
 
 @router.put("/admin/memory/policies/{target_user_id}")
@@ -446,17 +573,19 @@ async def admin_set_memory_policy(
         raise HTTPException(status_code=409, detail="long_term_memory_not_available")
     target_user_id = assert_safe_id(target_user_id, "target_user_id")
     reason = _audit_reason(request.reason)
+    internal_agent_id = internal_agent_id_for_request(request.agent_id) if request.agent_id else None
+    public_agent_id = public_agent_id_for_projection(internal_agent_id) if internal_agent_id else None
     try:
         async with transaction() as conn:
             await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
             target_user = await repositories.get_user(conn, tenant_id=principal.tenant_id, user_id=target_user_id)
             if target_user is None:
                 raise RepositoryNotFoundError("user_not_found")
-            if request.agent_id:
+            if internal_agent_id:
                 target_agent = await repositories.get_agent(
                     conn,
                     tenant_id=principal.tenant_id,
-                    agent_id=request.agent_id,
+                    agent_id=internal_agent_id,
                 )
                 if target_agent is None:
                     raise RepositoryNotFoundError("agent_not_found")
@@ -465,7 +594,7 @@ async def admin_set_memory_policy(
                 tenant_id=principal.tenant_id,
                 workspace_id=request.workspace_id,
                 user_id=target_user_id,
-                agent_id=request.agent_id,
+                agent_id=internal_agent_id,
                 memory_enabled=request.memory_enabled,
                 long_term_memory_enabled=False,
                 retention_days=request.retention_days,
@@ -484,7 +613,7 @@ async def admin_set_memory_policy(
                     {
                         "workspace_id": request.workspace_id,
                         "target_user_id": target_user_id,
-                        "agent_id": request.agent_id,
+                        "agent_id": public_agent_id,
                         "memory_enabled": request.memory_enabled,
                         "long_term_memory_enabled": False,
                         "retention_days": request.retention_days,

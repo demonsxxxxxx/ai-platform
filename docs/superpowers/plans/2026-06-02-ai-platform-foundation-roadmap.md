@@ -65,6 +65,14 @@
 - configurable redaction policy。
 - 更广业务 payload 覆盖审计。
 
+### P1 Memory / Context Management
+
+P1 management closure adds ordinary-user memory policy update and admin policy
+inventory projections on top of the existing session-bound memory records,
+admin retention cleanup, and redaction pipeline. Cross-session long-term memory
+remains fail-closed; frontend work should consume only these public/admin
+projections.
+
 ## P0.2 MCP / Tool Permission
 
 目标：
@@ -171,12 +179,23 @@
 
 ### P1 Admin Runtime Overview Snapshot
 
-Status: in progress on `codex/p1-admin-runtime-overview`.
+Status: merged on `main` via PR #1 and deployed/smoked on 211.
 
 The first P1 operational slice adds an admin-only overview contract for queue,
 run status, sandbox lease/container state, and basic observability aggregates.
 It is intentionally smaller than the full Observability / Quality dashboard and
 does not start Long Task / Multi-Agent Runtime.
+
+### P1 Memory / Context Management
+
+Status: in progress on `codex/p1-memory-context-management`.
+
+The P1 backend management slice adds ordinary-user memory policy
+self-management and an admin same-tenant memory policy inventory projection.
+Existing session scoping, retention cleanup, redaction, public/admin
+projections, and `long_term_memory_enabled = false` fail-closed behavior remain
+the governing constraints. Remaining Memory / Context work is frontend UI
+wiring, scheduled cleanup, and configurable redaction policy.
 
 ## 禁止项
 

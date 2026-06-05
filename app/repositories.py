@@ -1046,6 +1046,35 @@ async def set_memory_policy(
     return _memory_policy_from_row(dict(row))
 
 
+async def list_admin_memory_policies(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str | None = None,
+    agent_id: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Return stored memory policies for an admin same-tenant operational view."""
+    limit = max(min(int(limit), 500), 1)
+    cursor = await conn.execute(
+        """
+        select id, tenant_id, workspace_id, user_id, agent_id,
+               memory_enabled, long_term_memory_enabled, retention_days,
+               reason, updated_by, updated_at
+        from memory_policies
+        where tenant_id = %s
+          and workspace_id = %s
+          and (%s::text is null or user_id = %s)
+          and (%s::text is null or agent_id = %s)
+        order by updated_at desc, created_at desc
+        limit %s
+        """,
+        (tenant_id, workspace_id, user_id, user_id, agent_id, agent_id, limit),
+    )
+    return [_memory_policy_from_row(dict(row)) for row in await cursor.fetchall()]
+
+
 async def create_memory_record(
     conn: AsyncConnection,
     *,
