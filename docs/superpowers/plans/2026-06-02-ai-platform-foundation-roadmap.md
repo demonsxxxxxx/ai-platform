@@ -249,10 +249,14 @@ behavior.
 
 ### P2 Resume Manifest Snapshot
 
-Status: started as a read-only P2 foundation slice. This adds the
+Status: started as a read-only P2 foundation slice and deployed/smoked on 211
+at `ae575871f4a296d0bf5541e17a08dfde6e37c712`. This adds the
 `ai-platform.run-resume-manifest.v1` owner-scoped projection for copied-run
-checkpoint reuse intent, source run linkage, pending reuse counts, rerun counts,
-and public-safe step dependencies. It does not start retry scheduling,
+checkpoint reuse intent, authorized source run linkage, pending reuse counts,
+rerun counts, and public-safe step dependencies. The 211 smoke verified API
+health, OpenAPI route exposure, image labels, same-tenant ordinary-user
+manifest response, unauthorized source run hiding, raw skill/runtime/private
+marker redaction, and smoke data cleanup. It does not start retry scheduling,
 autonomous multi-agent dispatch, high-risk tool execution, or new sandbox
 behavior.
 
