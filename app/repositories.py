@@ -950,9 +950,10 @@ async def append_event(
     return event_id
 
 
-async def get_run(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> dict[str, Any] | None:
+async def get_run(conn: AsyncConnection, *, tenant_id: str, run_id: str, for_update: bool = False) -> dict[str, Any] | None:
+    lock_clause = "for update" if for_update else ""
     cursor = await conn.execute(
-        "select * from runs where tenant_id = %s and id = %s",
+        f"select * from runs where tenant_id = %s and id = %s {lock_clause}",
         (tenant_id, run_id),
     )
     return await cursor.fetchone()
@@ -2784,6 +2785,77 @@ async def upsert_run_step(
     )
     row = await cursor.fetchone()
     return str(row["id"])
+
+
+async def claim_multi_agent_dispatch_step(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    claimed_by: str,
+    trace_id: str,
+    step_key: str,
+    step_kind: str,
+    title: str,
+    role: str | None,
+    sequence: int,
+    depends_on: list[str],
+) -> dict[str, Any]:
+    """Record an admin/runtime claim for a ready multi-agent step."""
+    dispatch_id = new_id("dispatch")
+    step_id = await upsert_run_step(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        step_key=step_key,
+        step_kind=step_kind,
+        status="running",
+        title=title,
+        role=role,
+        sequence=sequence,
+        payload_json={
+            "depends_on": depends_on,
+            "dispatch_state": "claimed",
+            "dispatch_kind": "subagent",
+        },
+    )
+    event_id = await append_event(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        trace_id=trace_id,
+        event_type="agent_step_started",
+        stage="agent",
+        message="Multi-agent step dispatch claimed",
+        visible_to_user=False,
+        payload={
+            "visible_to_user": False,
+            "step_key": step_key,
+            "step_index": sequence,
+            "dispatch_state": "claimed",
+            "dispatch_id": dispatch_id,
+        },
+    )
+    audit_id = await append_audit_log(
+        conn,
+        tenant_id=tenant_id,
+        user_id=claimed_by,
+        action="run.multi_agent.dispatch.claim",
+        target_type="run_step",
+        target_id=step_id,
+        trace_id=trace_id,
+        payload_json={
+            "run_id": run_id,
+            "step_key": step_key,
+            "dispatch_id": dispatch_id,
+            "result_status": "claimed",
+        },
+    )
+    steps = await list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
+    step = next((item for item in steps if str(item.get("step_key")) == step_key), None)
+    if step is None:
+        raise RepositoryConflictError("dispatch_step_not_persisted")
+    return {"dispatch_id": dispatch_id, "event_id": event_id, "audit_id": audit_id, "step": step}
 
 
 async def list_run_steps(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> list[dict[str, Any]]:

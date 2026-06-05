@@ -66,6 +66,31 @@ class RunControlResponse(BaseModel):
     queue_insight: dict[str, Any] | None = None
 
 
+class MultiAgentDispatchClaimRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    step_key: str
+
+    @field_validator("step_key")
+    @classmethod
+    def validate_step_key(cls, value: str):
+        return assert_safe_id(value, "step_key")
+
+
+class MultiAgentDispatchClaimResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contract_version: str
+    run_id: str
+    step_key: str
+    step_id: str
+    status: Literal["claimed"]
+    dispatch_id: str
+    event_id: str
+    audit_id: str
+    step: dict[str, Any]
+
+
 class AgentApp(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
