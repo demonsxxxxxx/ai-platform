@@ -595,6 +595,390 @@ def test_run_control_readiness_returns_not_found_without_loading_steps(monkeypat
     assert response.json() == {"detail": "run_not_found"}
 
 
+def resume_manifest_run_row(*, status="queued", error_message=None):
+    return {
+        "id": "run-resume",
+        "session_id": "ses-resume",
+        "workspace_id": "default",
+        "agent_id": "qa-word-review",
+        "skill_id": "qa-file-reviewer",
+        "schema_version": "ai-platform.run.v1",
+        "executor_schema_version": "ai-platform.executor-result.v1",
+        "status": status,
+        "trace_id": "trace-resume",
+        "input_json": {"message": "resume", "skill_id": "qa-file-reviewer"},
+        "result_json": {},
+        "error_code": None,
+        "error_message": error_message,
+        "cancel_requested_at": None,
+        "cancel_requested_by": None,
+    }
+
+
+def test_run_resume_manifest_projects_copied_reuse_intent(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id) == ("default", "user-a")
+        if run_id == "run-old":
+            return {**resume_manifest_run_row(status="failed"), "id": "run-old"}
+        assert run_id == "run-resume"
+        return resume_manifest_run_row()
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-code",
+                "run_id": run_id,
+                "step_key": "code",
+                "step_kind": "agent",
+                "status": "pending",
+                "title": "Code",
+                "role": "coding",
+                "sequence": 1,
+                "payload_json": {
+                    "checkpoint_reuse_pending": True,
+                    "copied_from_run_id": "run-old",
+                    "depends_on": [],
+                    "output": "raw source output must not leak",
+                    "skill_ids": ["qa-file-reviewer"],
+                    "resource_limits": {"max_seconds": 60},
+                    "sandbox_mode": "ephemeral",
+                    "private_payload": {"token": "secret-token"},
+                },
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+            {
+                "id": "step-test",
+                "run_id": run_id,
+                "step_key": "test",
+                "step_kind": "agent",
+                "status": "pending",
+                "title": "Test",
+                "role": "verifier",
+                "sequence": 2,
+                "payload_json": {"depends_on": ["code"]},
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-resume/resume/manifest", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["contract_version"] == "ai-platform.run-resume-manifest.v1"
+    assert body["run"]["run_id"] == "run-resume"
+    assert body["run"]["skill_id"] is None
+    assert body["source_run_id"] == "run-old"
+    assert body["resume_enabled"] is True
+    assert body["reason"] == "reuse_pending"
+    assert body["counts"] == {
+        "total": 2,
+        "reuse_pending": 1,
+        "rerun": 1,
+        "pending": 2,
+        "running": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "cancelled": 0,
+    }
+    assert body["steps"] == [
+        {
+            "step_id": "step-code",
+            "step_key": "code",
+            "status": "pending",
+            "title": "Code",
+            "role": "coding",
+            "sequence": 1,
+            "depends_on": [],
+            "reuse_intent": "reuse_pending",
+            "source_run_id": "run-old",
+        },
+        {
+            "step_id": "step-test",
+            "step_key": "test",
+            "status": "pending",
+            "title": "Test",
+            "role": "verifier",
+            "sequence": 2,
+            "depends_on": ["code"],
+            "reuse_intent": "rerun",
+            "source_run_id": None,
+        },
+    ]
+    public_dump = str(body)
+    assert "raw source output" not in public_dump
+    assert "qa-file-reviewer" not in public_dump
+    assert "resource_limits" not in public_dump
+    assert "sandbox_mode" not in public_dump
+    assert "private_payload" not in public_dump
+    assert "secret-token" not in public_dump
+
+
+def test_run_resume_manifest_redacts_raw_skill_ids_from_public_scalars(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        if run_id == "run-old":
+            return {**resume_manifest_run_row(status="failed"), "id": "run-old"}
+        return resume_manifest_run_row(status="failed", error_message="qa-file-reviewer failed in qa-word-review")
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-skill",
+                "run_id": run_id,
+                "step_key": "qa-file-reviewer",
+                "step_kind": "agent",
+                "status": "pending",
+                "title": "qa-file-reviewer",
+                "role": "qa-word-review",
+                "sequence": 1,
+                "payload_json": {
+                    "checkpoint_reuse_pending": True,
+                    "copied_from_run_id": "run-old",
+                    "depends_on": ["qa-file-reviewer"],
+                },
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-resume/resume/manifest", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run"]["error_message"] == "run_failed"
+    assert body["steps"] == [
+        {
+            "step_id": "step-skill",
+            "step_key": "step-skill",
+            "status": "pending",
+            "title": "step-skill",
+            "role": None,
+            "sequence": 1,
+            "depends_on": [],
+            "reuse_intent": "reuse_pending",
+            "source_run_id": "run-old",
+        }
+    ]
+    public_dump = str(body)
+    assert "qa-file-reviewer" not in public_dump
+    assert "qa-word-review" not in public_dump
+
+
+def test_run_resume_manifest_rejects_unsafe_source_run_id_and_public_scalars(monkeypatch):
+    fingerprint = "a" * 64
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return resume_manifest_run_row()
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-unsafe",
+                "run_id": run_id,
+                "step_key": fingerprint,
+                "step_kind": "agent",
+                "status": "pending",
+                "title": "C:/agent-workspaces/run-a/output.txt",
+                "role": "tenants/default/private/storage-key",
+                "sequence": 1,
+                "payload_json": {
+                    "checkpoint_reuse_pending": True,
+                    "copied_from_run_id": "tenants/default/private/run-old",
+                    "depends_on": [fingerprint, "/home/xinlin.jiang/runtime/run-a", "tenants/default/private/file"],
+                },
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-resume/resume/manifest", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source_run_id"] is None
+    assert body["resume_enabled"] is True
+    assert body["steps"] == [
+        {
+            "step_id": "step-unsafe",
+            "step_key": "step-unsafe",
+            "status": "pending",
+            "title": "step-unsafe",
+            "role": None,
+            "sequence": 1,
+            "depends_on": [],
+            "reuse_intent": "reuse_pending",
+            "source_run_id": None,
+        }
+    ]
+    public_dump = str(body)
+    assert fingerprint not in public_dump
+    assert "agent-workspaces" not in public_dump
+    assert "tenants/default" not in public_dump
+    assert "/home/" not in public_dump
+
+
+def test_run_resume_manifest_hides_safe_shaped_unauthorized_source_run_id(monkeypatch):
+    calls = []
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        calls.append((tenant_id, user_id, run_id))
+        if run_id == "run-resume":
+            return resume_manifest_run_row()
+        if run_id == "run-other-user":
+            return None
+        raise AssertionError(f"unexpected authorized run lookup: {run_id}")
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-code",
+                "run_id": run_id,
+                "step_key": "code",
+                "step_kind": "agent",
+                "status": "pending",
+                "title": "Code",
+                "role": "coding",
+                "sequence": 1,
+                "payload_json": {
+                    "checkpoint_reuse_pending": True,
+                    "copied_from_run_id": "run-other-user",
+                    "depends_on": [],
+                },
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-resume/resume/manifest", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert calls == [
+        ("default", "user-a", "run-resume"),
+        ("default", "user-a", "run-other-user"),
+    ]
+    assert body["source_run_id"] is None
+    assert body["steps"][0]["source_run_id"] is None
+    assert "run-other-user" not in str(body)
+
+
+def test_run_resume_manifest_keeps_non_failed_error_message_empty_after_redaction(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return resume_manifest_run_row(status="queued", error_message="qa-file-reviewer queued diagnostic")
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-resume/resume/manifest", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run"]["error_message"] == ""
+    assert "qa-file-reviewer" not in str(body)
+
+
+def test_run_resume_manifest_returns_disabled_state_for_normal_run(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return resume_manifest_run_row(status="running")
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-normal",
+                "run_id": run_id,
+                "step_key": "normal",
+                "step_kind": "agent",
+                "status": "running",
+                "title": "Normal",
+                "role": "worker",
+                "sequence": 1,
+                "payload_json": {"depends_on": []},
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-resume/resume/manifest", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source_run_id"] is None
+    assert body["resume_enabled"] is False
+    assert body["reason"] == "no_reuse_pending"
+    assert body["counts"]["total"] == 1
+    assert body["counts"]["reuse_pending"] == 0
+    assert body["counts"]["rerun"] == 1
+
+
+def test_run_resume_manifest_returns_not_found_without_loading_steps(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("default", "user-a", "missing-run")
+        return None
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        raise AssertionError("steps must not be listed for missing run")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/missing-run/resume/manifest", headers=headers())
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "run_not_found"}
+
+
 def test_copy_run_plan_redacts_runtime_private_step_titles_for_ordinary_user(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         return {

@@ -247,6 +247,15 @@ marker redaction, and smoke data cleanup. It does not start retry scheduling,
 autonomous multi-agent dispatch, high-risk tool execution, or new sandbox
 behavior.
 
+### P2 Resume Manifest Snapshot
+
+Status: started as a read-only P2 foundation slice. This adds the
+`ai-platform.run-resume-manifest.v1` owner-scoped projection for copied-run
+checkpoint reuse intent, source run linkage, pending reuse counts, rerun counts,
+and public-safe step dependencies. It does not start retry scheduling,
+autonomous multi-agent dispatch, high-risk tool execution, or new sandbox
+behavior.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -55,6 +56,7 @@ router = APIRouter()
 RUN_PLAYBACK_CONTRACT_VERSION = "ai-platform.run-playback.v1"
 RUN_PROVENANCE_CONTRACT_VERSION = "ai-platform.run-provenance.v1"
 RUN_CONTROL_READINESS_CONTRACT_VERSION = "ai-platform.run-control-readiness.v1"
+RUN_RESUME_MANIFEST_CONTRACT_VERSION = "ai-platform.run-resume-manifest.v1"
 RUN_CONTROL_ACTIVE_STATUSES = {"queued", "running"}
 RUN_CONTROL_TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 RUN_CONTROL_RETRY_PREVIEW_STATUSES = {"failed", "dead-letter", "dead_letter", "dead-lettered"}
@@ -697,6 +699,140 @@ def run_control_readiness_snapshot(
     }
 
 
+def _resume_manifest_public_depends_on(values: object, *, raw_terms: set[str]) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    result: list[str] = []
+    for value in values:
+        text = _resume_manifest_public_text(value, raw_terms=raw_terms)
+        if text:
+            result.append(text)
+    return result
+
+
+def _resume_manifest_has_fingerprint(text: str) -> bool:
+    if HASH_LIKE_VALUE_PATTERN.fullmatch(text.strip()):
+        return True
+    return any(HASH_LIKE_VALUE_PATTERN.fullmatch(token) for token in re.split(r"[^A-Fa-f0-9]+", text))
+
+
+def _resume_manifest_public_text(value: object, *, fallback: object = "", raw_terms: set[str]) -> str:
+    text = _readiness_public_text(value, raw_terms=raw_terms)
+    if text and not _resume_manifest_has_fingerprint(text):
+        return text
+    fallback_text = _readiness_public_text(fallback, raw_terms=raw_terms)
+    if fallback_text and not _resume_manifest_has_fingerprint(fallback_text):
+        return fallback_text
+    return ""
+
+
+def _resume_manifest_step(
+    row: dict[str, object],
+    principal: AuthPrincipal,
+    *,
+    raw_terms: set[str],
+    authorized_source_run_ids: set[str],
+) -> dict[str, object]:
+    public_step = run_step_response(row, principal=principal)
+    payload = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
+    step_id = str(public_step["step_id"])
+    step_key = str(public_step["step_key"])
+    title = public_step.get("title")
+    role = public_step.get("role")
+    source_run_id = (
+        _safe_provenance_graph_id("source_run_id", payload.get("copied_from_run_id"))
+        if payload.get("checkpoint_reuse_pending")
+        else None
+    )
+    if source_run_id and source_run_id not in authorized_source_run_ids:
+        source_run_id = None
+    depends_on = payload.get("depends_on")
+    public_raw_terms = raw_terms if not is_ai_admin(principal) else set()
+    step_key = _resume_manifest_public_text(step_key, fallback=step_id, raw_terms=public_raw_terms) or step_id
+    title = _resume_manifest_public_text(title, fallback=step_key, raw_terms=public_raw_terms) or step_key
+    role = _resume_manifest_public_text(role, raw_terms=public_raw_terms) if role is not None else None
+    role = role or None
+    depends_on = _resume_manifest_public_depends_on(depends_on, raw_terms=public_raw_terms)
+    return {
+        "step_id": step_id,
+        "step_key": step_key,
+        "status": str(public_step["status"]),
+        "title": title,
+        "role": role,
+        "sequence": int(public_step.get("sequence") or 0),
+        "depends_on": depends_on,
+        "reuse_intent": "reuse_pending" if payload.get("checkpoint_reuse_pending") else "rerun",
+        "source_run_id": str(source_run_id) if source_run_id else None,
+    }
+
+
+def run_resume_manifest_snapshot(
+    *,
+    run: dict[str, object],
+    steps: list[dict[str, object]],
+    principal: AuthPrincipal,
+    authorized_source_run_ids: set[str] | None = None,
+) -> dict[str, object]:
+    """Return read-only checkpoint reuse intent for a copied run."""
+    raw_terms = _readiness_raw_projection_terms(run)
+    manifest_steps = [
+        _resume_manifest_step(
+            row,
+            principal,
+            raw_terms=raw_terms,
+            authorized_source_run_ids=authorized_source_run_ids or set(),
+        )
+        for row in steps
+    ]
+    source_run_ids = sorted({str(item["source_run_id"]) for item in manifest_steps if item.get("source_run_id")})
+    source_run_id = source_run_ids[0] if len(source_run_ids) == 1 else None
+    counts = {
+        "total": len(manifest_steps),
+        "reuse_pending": sum(1 for item in manifest_steps if item["reuse_intent"] == "reuse_pending"),
+        "rerun": sum(1 for item in manifest_steps if item["reuse_intent"] == "rerun"),
+        "pending": sum(1 for item in manifest_steps if item["status"] == "pending"),
+        "running": sum(1 for item in manifest_steps if item["status"] == "running"),
+        "succeeded": sum(1 for item in manifest_steps if item["status"] == "succeeded"),
+        "failed": sum(1 for item in manifest_steps if item["status"] == "failed"),
+        "cancelled": sum(1 for item in manifest_steps if item["status"] == "cancelled"),
+    }
+    run_summary = run_playback_summary(run, principal)
+    if not is_ai_admin(principal):
+        raw_error_message = run_summary.get("error_message")
+        error_fallback = (
+            "run_failed"
+            if raw_error_message and normalize_run_status(str(run["status"])) == "failed"
+            else ""
+        )
+        run_summary["error_message"] = _readiness_public_text(
+            raw_error_message,
+            fallback=error_fallback,
+            raw_terms=raw_terms,
+        )
+    resume_enabled = counts["reuse_pending"] > 0
+    return {
+        "contract_version": RUN_RESUME_MANIFEST_CONTRACT_VERSION,
+        "run": run_summary,
+        "source_run_id": source_run_id,
+        "resume_enabled": resume_enabled,
+        "reason": "reuse_pending" if resume_enabled else "no_reuse_pending",
+        "counts": counts,
+        "steps": manifest_steps,
+    }
+
+
+def _resume_manifest_source_run_candidates(steps: list[dict[str, object]]) -> list[str]:
+    source_run_ids: set[str] = set()
+    for row in steps:
+        payload = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
+        if not payload.get("checkpoint_reuse_pending"):
+            continue
+        source_run_id = _safe_provenance_graph_id("source_run_id", payload.get("copied_from_run_id"))
+        if source_run_id:
+            source_run_ids.add(source_run_id)
+    return sorted(source_run_ids)
+
+
 def run_playback_summary(run: dict[str, object], principal: AuthPrincipal) -> dict[str, object]:
     raw_skill_id = str(run["skill_id"])
     raw_agent_id = str(run["agent_id"])
@@ -1267,6 +1403,41 @@ async def get_run_control_readiness(
         steps=steps,
         principal=principal,
         queue_insight=queue_insight,
+    )
+
+
+@router.get("/runs/{run_id}/resume/manifest")
+async def get_run_resume_manifest(
+    run_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    """Return read-only checkpoint reuse intent for an authorized copied run."""
+    tenant_id = principal.tenant_id
+    async with transaction() as conn:
+        run = await repositories.get_authorized_run(
+            conn,
+            tenant_id=tenant_id,
+            user_id=principal.user_id,
+            run_id=run_id,
+        )
+        if run is None:
+            raise HTTPException(status_code=404, detail="run_not_found")
+        steps = await repositories.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
+        authorized_source_run_ids: set[str] = set()
+        for source_run_id in _resume_manifest_source_run_candidates(steps):
+            source_run = await repositories.get_authorized_run(
+                conn,
+                tenant_id=tenant_id,
+                user_id=principal.user_id,
+                run_id=source_run_id,
+            )
+            if source_run is not None:
+                authorized_source_run_ids.add(source_run_id)
+    return run_resume_manifest_snapshot(
+        run=run,
+        steps=steps,
+        principal=principal,
+        authorized_source_run_ids=authorized_source_run_ids,
     )
 
 
