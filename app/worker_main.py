@@ -1,16 +1,21 @@
 import argparse
 import asyncio
 import socket
+import time
 import uuid
 
 from app import queue
 from app import repositories
+from app.control_plane_contracts import sanitize_public_payload, standard_trace_id
 from app.db import transaction
 from app.executors.registry import AdapterRegistry
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
 from app.settings import get_settings
 from app.worker import WorkerOutcome, process_run_payload
+
+
+_next_memory_cleanup_at = 0.0
 
 
 def default_worker_id() -> str:
@@ -29,6 +34,54 @@ async def cleanup_expired_sandbox_leases() -> None:
         await repositories.cleanup_expired_sandbox_leases(conn)
 
 
+async def cleanup_expired_memory_records_for_worker(settings: object | None = None, *, now: float | None = None) -> list[dict]:
+    """Run bounded expired-memory cleanup for worker maintenance when due."""
+    global _next_memory_cleanup_at
+
+    settings = settings or get_settings()
+    enabled = bool(getattr(settings, "memory_retention_worker_cleanup_enabled", True))
+    interval_seconds = float(getattr(settings, "memory_retention_worker_cleanup_interval_seconds", 300.0))
+    limit = int(getattr(settings, "memory_retention_worker_cleanup_limit", 200))
+    if not enabled or interval_seconds <= 0 or limit <= 0:
+        return []
+
+    current_time = time.monotonic() if now is None else float(now)
+    if current_time < _next_memory_cleanup_at:
+        return []
+
+    tenant_id = str(getattr(settings, "default_tenant_id", "default"))
+    workspace_id = str(getattr(settings, "default_workspace_id", "default"))
+    async with transaction() as conn:
+        rows = await repositories.cleanup_expired_memory_records(
+            conn,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            limit=limit,
+        )
+        if rows:
+            await repositories.append_audit_log(
+                conn,
+                tenant_id=tenant_id,
+                user_id=None,
+                action="worker.memory.retention.cleanup",
+                target_type="memory_retention",
+                target_id=workspace_id,
+                trace_id=standard_trace_id(workspace_id),
+                payload_json=sanitize_public_payload(
+                    {
+                        "workspace_id": workspace_id,
+                        "deleted_count": len(rows),
+                        "memory_record_ids": [str(row.get("id")) for row in rows],
+                        "target_user_ids": sorted({str(row.get("user_id")) for row in rows if row.get("user_id")}),
+                        "reason": "retention_expired",
+                        "source": "worker",
+                    }
+                ),
+            )
+    _next_memory_cleanup_at = current_time + interval_seconds
+    return rows
+
+
 async def run_once(
     registry: AdapterRegistry | None = None,
     timeout_seconds: int = 5,
@@ -37,9 +90,10 @@ async def run_once(
     heartbeat_interval_seconds: float = 10.0,
 ) -> WorkerOutcome:
     resolved_worker_id = worker_id or default_worker_id()
-    await cleanup_expired_sandbox_leases()
-    await queue.reclaim_expired_leases()
     settings = get_settings()
+    await cleanup_expired_sandbox_leases()
+    await cleanup_expired_memory_records_for_worker(settings)
+    await queue.reclaim_expired_leases()
     message = await queue.lease_run(
         timeout_seconds=timeout_seconds,
         worker_id=resolved_worker_id,
