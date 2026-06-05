@@ -226,11 +226,14 @@ Long Task / Multi-Agent Runtime.
 
 ### P2 Run Provenance Snapshot
 
-Status: started as a read-only P2 foundation slice. This adds the
+Status: started as a read-only P2 foundation slice and deployed/smoked on 211
+at `e99c299a726e76840ed66e2a7479ca5bc71ed21c`. This adds the
 `ai-platform.run-provenance.v1` owner-scoped projection for existing run steps,
-checkpoint ids, subagent ids, and artifact lineage. It does not start
-high-risk tool execution, Docker sandbox expansion, or autonomous multi-agent
-scheduling.
+checkpoint ids, subagent ids, and artifact lineage. The 211 smoke verified API
+health, OpenAPI route exposure, owner-scoped ordinary-user provenance
+projection, checkpoint/subagent/artifact linkage, sensitive-field redaction,
+and smoke data cleanup. It does not start high-risk tool execution, Docker
+sandbox expansion, or autonomous multi-agent scheduling.
 
 ## 禁止项
 
