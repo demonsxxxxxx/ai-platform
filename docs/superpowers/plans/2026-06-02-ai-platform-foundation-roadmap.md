@@ -305,6 +305,32 @@ owner DOCX preview 200 with inline/no-store/nosniff headers, non-owner preview
 `preview_url` allowlist projection, no `storage_key` / private payload leakage,
 clean recent API/worker logs, and smoke data cleanup.
 
+The P1 Agent Frontend V1 file-task acceptance gate was hardened on `main` at
+`542eb0c3be835be65bf83a44024b544ed272cf55`. The verifier now checks
+artifact preview owner/cross-user isolation for allowlisted PDF/Office
+artifacts, response `Content-Type`, `Cache-Control: no-store`,
+`Content-Disposition: inline`, and `X-Content-Type-Options: nosniff`. The
+Word review file-task smoke also fetches run playback and requires the
+current `reviewed_docx` artifact card itself to expose exact platform
+download and preview URLs while rejecting `storage_key`, private payload keys,
+tenant-private paths, and runtime-private markers in playback. Local TDD
+covered missing preview security headers, unallowlisted preview response MIME,
+missing preview projection, unrelated artifact preview false positives, and
+private payload marker leakage. Local verification passed `19` POC gate tests,
+`49` focused frontend/playback compatibility tests, compile, and full pytest
+with `1017 passed, 6 skipped, 2 warnings`. On 211 the updated verifier was
+synced as a tool-only source update without Docker rebuild; API and frontend
+proxy health were `ok`, the aggregate POC gate returned `ok: true`, artifact
+preview isolation checked one allowlisted DOCX artifact with owner `200` and
+cross-user `404`, Word review file-task playback returned contract
+`ai-platform.run-playback.v1` with three artifact cards, one preview URL, and
+matched download/preview counts for the produced `reviewed_docx` artifact.
+The smoke-created runs, sessions, files, artifacts, events, messages, context
+snapshots, skill snapshots, permission rows, and recent synthetic audit rows
+were then cleaned by exact ID and verified with zero remaining run/session/file
+/ artifact/event/message rows. Recent API/worker logs showed only expected
+smoke requests and no new exception output.
+
 ### P2 Run Provenance Snapshot
 
 Status: started as a read-only P2 foundation slice and deployed/smoked on 211
