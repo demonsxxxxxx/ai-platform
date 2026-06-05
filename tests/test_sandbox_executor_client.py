@@ -99,6 +99,40 @@ def test_callback_terminal_status_maps_to_run_event(status, expected_type):
     assert events[0].type == expected_type
 
 
+def test_callback_typed_events_are_appended_after_compatibility_events():
+    callback = ExecutorCallbackEvent(
+        session_id="session-a",
+        run_id="run-a",
+        callback_token_id="cbt_run-a",
+        status="running",
+        progress=45,
+        new_message={"type": "assistant", "delta": "hello"},
+        state_patch={},
+        events=[
+            {
+                "type": "checkpoint_created",
+                "message": "checkpoint saved",
+                "payload": {"checkpoint_id": "checkpoint-a", "step_key": "code"},
+            },
+            {
+                "type": "subagent_completed",
+                "message": "reviewer completed",
+                "payload": {"subagent_id": "reviewer-1", "step_key": "review"},
+            },
+        ],
+    )
+
+    events = callback_event_to_run_events(callback)
+
+    assert [event.type for event in events] == [
+        "assistant_delta",
+        "checkpoint_created",
+        "subagent_completed",
+    ]
+    assert events[1].payload["checkpoint_id"] == "checkpoint-a"
+    assert events[2].payload["subagent_id"] == "reviewer-1"
+
+
 @pytest.mark.asyncio
 async def test_executor_client_posts_task_request():
     calls = []

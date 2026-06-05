@@ -111,3 +111,51 @@ def test_callback_event_rejects_unknown_status():
                 "error_message": None,
             }
         )
+
+
+def test_callback_event_accepts_typed_agent_events():
+    event = ExecutorCallbackEvent.model_validate(
+        {
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "callback_token_id": "cbt_run-a",
+            "status": "running",
+            "progress": 40,
+            "new_message": None,
+            "state_patch": {},
+            "events": [
+                {
+                    "type": "subagent_started",
+                    "message": "reviewer started",
+                    "payload": {"subagent_id": "reviewer-1", "step_key": "review", "step_index": 2},
+                    "admin_only": False,
+                }
+            ],
+        }
+    )
+
+    assert len(event.events) == 1
+    assert event.events[0].type == "subagent_started"
+    assert event.events[0].payload["subagent_id"] == "reviewer-1"
+
+
+def test_callback_event_rejects_unknown_typed_agent_event_type():
+    with pytest.raises(ValidationError, match="Unsupported agent event type"):
+        ExecutorCallbackEvent.model_validate(
+            {
+                "session_id": "session-a",
+                "run_id": "run-a",
+                "callback_token_id": "cbt_run-a",
+                "status": "running",
+                "progress": 40,
+                "new_message": None,
+                "state_patch": {},
+                "events": [
+                    {
+                        "type": "subagent_secret_dump",
+                        "message": "bad event",
+                        "payload": {},
+                    }
+                ],
+            }
+        )

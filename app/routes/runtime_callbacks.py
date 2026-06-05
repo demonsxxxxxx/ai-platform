@@ -5,6 +5,7 @@ from app.db import transaction
 from app.runtime.sandbox.callback_tokens import callback_token_id_belongs_to_run, callback_token_matches
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
+from app.runtime.event_bridge import agent_event_to_executor_event
 from app.settings import get_settings
 
 router = APIRouter()
@@ -40,18 +41,17 @@ async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str,
             },
         )
         for event in events:
+            executor_event = agent_event_to_executor_event(event)
+            executor_payload = dict(executor_event["payload"])
+            executor_payload["source"] = "executor_callback"
             await repositories.append_event(
                 conn,
                 tenant_id=tenant_id,
                 run_id=callback.run_id,
-                event_type=event.type,
-                stage="executor",
-                message=event.message,
-                payload={
-                    **event.payload,
-                    "visible_to_user": not event.admin_only,
-                    "source": "executor_callback",
-                },
+                event_type=str(executor_event["event_type"]),
+                stage=str(executor_event["stage"]),
+                message=str(executor_event["message"]),
+                payload=executor_payload,
             )
     return {"accepted": True, "event_count": 1 + len(events)}
 
