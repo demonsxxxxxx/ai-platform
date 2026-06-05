@@ -110,11 +110,18 @@ Update the P1 Memory / Context Management section to record that backend schedul
 **Files:**
 - Review all touched files.
 
-- [ ] **Step 1: Request inherited-configuration review**
+- [x] **Step 1: Request inherited-configuration review**
 
 Dispatch or otherwise request independent review if the available tool inherits the main session permissions. If model and reasoning-effort fields are not exposed, record it as inherited-configuration review.
 
-- [ ] **Step 2: Run pre-commit verification**
+Result: inherited-configuration review reported no Critical worker behavior
+issues. Important follow-ups were to ensure the new spec/plan docs are tracked
+and to avoid claiming roadmap closure before 211 smoke. A Minor follow-up to
+expose the new knobs in deployment templates was accepted, and a further local
+compose check found the settings also had to be forwarded into the worker
+service environment.
+
+- [x] **Step 2: Run pre-commit verification**
 
 Run:
 
@@ -126,14 +133,79 @@ git diff --check
 
 Expected: compile, full pytest, and diff check pass.
 
-- [ ] **Step 3: Commit and push**
+Result:
+
+- RED worker tests failed before implementation with the expected missing
+  cleanup calls.
+- Worker behavior tests passed with `4 passed`.
+- `tests/test_worker_main.py` passed with `12 passed`.
+- Focused memory suite passed with `154 passed`.
+- After compose setting forwarding, launch/source-authority/worker focused
+  tests passed with `33 passed`.
+- `python -m compileall -q app tools scripts` exited 0.
+- `git diff --check` exited 0, with only CRLF normalization warnings.
+- Full pytest passed after the final compose fix with
+  `996 passed, 6 skipped, 2 warnings`.
+
+- [x] **Step 3: Commit and push**
 
 Commit the implementation and docs on `main`, then push to `origin/main`.
 
-- [ ] **Step 4: Deploy to 211**
+Result:
+
+- `fabfc19c1ce802e9058b0043ca4e7f2e8a85f089`
+  (`feat: add memory retention worker cleanup`) added the worker tick,
+  settings, tests, `.env.example` knobs, spec, and plan.
+- `3fbab85ac9005279ccea26943366ca2dfb69b266`
+  (`chore: expose memory cleanup worker settings`) forwarded the knobs into
+  the worker compose environment and added a deployment-template regression
+  test.
+- Both commits were pushed to `origin/main`.
+
+- [x] **Step 4: Deploy to 211**
 
 Sync the current source to `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform`, build or runtime-only rebase on 211 as appropriate, and recreate `ai-platform-api` and `ai-platform-worker` with the repo-local compose file. Do not print or copy real `.env` values.
 
-- [ ] **Step 5: Smoke on 211**
+Result:
+
+- Synced source revision:
+  `3fbab85ac9005279ccea26943366ca2dfb69b266`.
+- Remote source compile passed with `python3 -m compileall -q app tools scripts`.
+- 211 runtime-only image built from the previous healthy image without
+  dependency download:
+  `ai-platform:3fbab85ac900`,
+  `sha256:9e44eb075fdf8f3b226ff9510eea8fa7062d8e0c8eed59ac820bcc0a40cb9c18`.
+- Labels:
+  `ai-platform.source-revision=3fbab85ac9005279ccea26943366ca2dfb69b266`,
+  `ai-platform.source_note=p1-memory-retention-worker-cleanup`.
+- API and worker were recreated with the repo-local compose file at
+  `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/docker-compose.yml`.
+- The existing 211 runtime env path was referenced by compose without printing
+  or copying real env values.
+- Worker container environment includes
+  `MEMORY_RETENTION_WORKER_CLEANUP_ENABLED=true`,
+  `MEMORY_RETENTION_WORKER_CLEANUP_INTERVAL_SECONDS=300`, and
+  `MEMORY_RETENTION_WORKER_CLEANUP_LIMIT=200`.
+- API health and frontend proxy health returned `{"status":"ok"}`.
+
+- [x] **Step 5: Smoke on 211**
 
 Verify `/api/ai/health`, image labels, seeded expired memory soft-delete through the worker maintenance path, `worker.memory.retention.cleanup` audit evidence with no content/private payload, clean API/worker logs, and smoke data cleanup.
+
+Result:
+
+- Seeded one expired `memory_records` row in the default tenant/workspace with
+  unique smoke user, agent, and session ids.
+- Ran the worker maintenance path in the live worker container.
+- Cleanup returned `cleanup_rows = 1`.
+- The memory record became `status = deleted` with `deleted_at` set.
+- Audit action was `worker.memory.retention.cleanup`, `user_id = null`,
+  `target_type = memory_retention`, and `target_id = default`.
+- Audit payload keys were only `deleted_count`, `memory_record_ids`, `reason`,
+  `source`, `target_user_ids`, and `workspace_id`.
+- The smoke asserted no private marker, `private_payload`, or `api_key` leaked
+  into the audit payload.
+- Smoke cleanup left zero rows in `audit_logs`, `memory_records`, `sessions`,
+  `agents`, and `users` for the smoke ids.
+- Recent API and worker logs showed no `Traceback`, `ERROR`, `Exception`, or
+  `permission denied` lines for the smoke window.

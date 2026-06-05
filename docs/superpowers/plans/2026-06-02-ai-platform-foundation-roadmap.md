@@ -201,9 +201,37 @@ smoke verified frontend `/memory`, health, ordinary-user policy get/update,
 public `document-review` memory record create/list/delete routing, user opt-out
 blocking writes with empty record projection, admin inventory access,
 ordinary-user admin denial, and admin retention cleanup. Backend scheduled
-cleanup and configurable redaction policy remain follow-up hardening gates for
-the full Memory / Context PRD gate; they are not claimed complete and do not
-permit cross-session long-term memory.
+cleanup was not part of that baseline. Configurable redaction policy remains a
+follow-up hardening gate for the full Memory / Context PRD gate; cross-session
+long-term memory is not permitted.
+
+Backend scheduled cleanup was later closed as a P1 hardening follow-up on
+`main` at `3fbab85ac9005279ccea26943366ca2dfb69b266`. The slice adds a
+bounded worker-side expired-memory retention tick that runs after sandbox
+cleanup and before queue reclaim/lease, uses default tenant/workspace scope,
+respects enable/interval/limit settings, and writes only operational audit
+evidence when expired records are deleted. Local verification recorded RED
+coverage for missing worker cleanup, focused memory coverage with `154 passed`,
+deployment-template coverage for compose env forwarding, and full pytest with
+`996 passed, 6 skipped, 2 warnings`. Inherited-configuration review found no
+Critical worker behavior issues; accepted feedback ensured docs were tracked
+and worker cleanup settings were exposed through the deployment template and
+worker compose environment.
+
+The 211 deployment uses image `ai-platform:3fbab85ac900`,
+`sha256:9e44eb075fdf8f3b226ff9510eea8fa7062d8e0c8eed59ac820bcc0a40cb9c18`,
+with labels
+`ai-platform.source-revision=3fbab85ac9005279ccea26943366ca2dfb69b266` and
+`ai-platform.source_note=p1-memory-retention-worker-cleanup`. API and worker
+were recreated with the repo-local compose file under
+`/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform`;
+API health and frontend proxy health returned `{"status":"ok"}`. The 211 smoke
+seeded one expired default-tenant memory record, ran the worker maintenance
+path, verified soft-delete and `worker.memory.retention.cleanup` audit evidence
+with no content/private marker leakage, verified the worker cleanup env knobs,
+checked clean recent API/worker logs, and removed all smoke rows. Configurable
+redaction policy remains the remaining Memory / Context hardening follow-up,
+and cross-session long-term memory remains fail-closed.
 
 ### P1 Tool Permission / Agent Frontend V1
 
