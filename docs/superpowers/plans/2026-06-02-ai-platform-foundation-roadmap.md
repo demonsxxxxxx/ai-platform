@@ -201,9 +201,9 @@ smoke verified frontend `/memory`, health, ordinary-user policy get/update,
 public `document-review` memory record create/list/delete routing, user opt-out
 blocking writes with empty record projection, admin inventory access,
 ordinary-user admin denial, and admin retention cleanup. Backend scheduled
-cleanup was not part of that baseline. Configurable redaction policy remains a
-follow-up hardening gate for the full Memory / Context PRD gate; cross-session
-long-term memory is not permitted.
+cleanup was not part of that baseline. That baseline left configurable
+redaction policy as a follow-up hardening gate for the full Memory / Context
+PRD gate; cross-session long-term memory is not permitted.
 
 Backend scheduled cleanup was later closed as a P1 hardening follow-up on
 `main` at `3fbab85ac9005279ccea26943366ca2dfb69b266`. The slice adds a
@@ -230,8 +230,37 @@ seeded one expired default-tenant memory record, ran the worker maintenance
 path, verified soft-delete and `worker.memory.retention.cleanup` audit evidence
 with no content/private marker leakage, verified the worker cleanup env knobs,
 checked clean recent API/worker logs, and removed all smoke rows. Configurable
-redaction policy remains the remaining Memory / Context hardening follow-up,
-and cross-session long-term memory remains fail-closed.
+redaction policy was still the remaining Memory / Context hardening follow-up
+at that point, and cross-session long-term memory remained fail-closed.
+
+Configurable redaction policy was later closed as a P1 Memory / Context
+hardening follow-up on `main` at
+`5d11ea61fbb9d441dc3a5a52545a29430ade83e6`. The slice adds
+`memory_policies.redaction_mode` with `standard` and `strict` modes, preserves
+the default standard behavior, rejects invalid request modes, treats invalid
+stored modes as `strict`, and applies strict write-time redaction to memory
+record content/metadata plus policy reason projection/audit. Local verification
+recorded RED coverage for the missing contract, focused coverage with
+`170 passed`, `python -m compileall -q app tools scripts`, full pytest with
+`1005 passed, 6 skipped, 2 warnings`, and `git diff --check` exit 0.
+Inherited-configuration review found no remaining Critical, Important, or
+Minor findings after the fail-safer stored-mode and strict reason-redaction
+fixes.
+
+The 211 deployment uses image `ai-platform:5d11ea61fbb9`,
+`sha256:bd50bcd53d6553783489b1250beb7f5c7b7ac7e054e35e3ef9e19b6ad97ed012`,
+with labels
+`ai-platform.source-revision=5d11ea61fbb9d441dc3a5a52545a29430ade83e6` and
+`ai-platform.source_note=p1-memory-redaction-policy`. API and worker were
+recreated with the repo-local compose file, while the existing 211 runtime
+environment file was read without printing or copying secret values. API health
+and frontend proxy health returned `{"status":"ok"}`. The 211 smoke applied
+schema, verified invalid `redaction_mode` requests return 422, set user and
+admin strict policies, created and listed a strict memory record, confirmed DB
+storage/audit/projections had zero raw synthetic provider/JWT marker leakage
+and 13 `[redacted-secret]` markers, checked clean recent API/worker logs, and
+removed smoke rows from `audit_logs`, `messages`, `memory_records`,
+`memory_policies`, `sessions`, and `users`.
 
 ### P1 Tool Permission / Agent Frontend V1
 
