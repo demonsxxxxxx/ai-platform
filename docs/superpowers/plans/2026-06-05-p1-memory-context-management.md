@@ -682,7 +682,7 @@ python -m pytest tests/test_context_routes.py tests/test_repositories.py -q --ba
 
 Expected: PASS after fixes.
 
-- [ ] **Step 3: Push branch and create PR**
+- [x] **Step 3: Push branch and create PR**
 
 Run:
 
@@ -691,7 +691,7 @@ git push -u origin codex/p1-memory-context-management
 gh pr create --base main --head codex/p1-memory-context-management --title "Add P1 memory context management projections" --body "Adds ordinary-user memory policy self-management and admin memory policy inventory projections while keeping long-term memory fail-closed."
 ```
 
-- [ ] **Step 4: Merge after review gates pass**
+- [x] **Step 4: Merge after review gates pass**
 
 Run:
 
@@ -701,7 +701,7 @@ git switch main
 git pull --ff-only
 ```
 
-- [ ] **Step 5: Deploy and smoke on 211**
+- [x] **Step 5: Deploy and smoke on 211**
 
 Use the actual 211 Docker-capable deployment path and current compose ports. Verify:
 
@@ -724,3 +724,24 @@ Expected:
   returns `403 memory_policy_disabled` and `GET /memory/records` returns `[]`.
 - Smoke outputs contain no raw secret, raw memory content, runtime private
   payload, storage key, or runtime path.
+
+Evidence from the completed rollout:
+
+- PR #2 merged the main backend policy/admin inventory slice.
+- PR #3 closed the same-tenant workspace guard and user inventory index
+  follow-up.
+- PR #4 closed the 211-discovered public `document-review` memory record
+  routing gap.
+- Local verification on `main` at `7f0a113`:
+  `python -m compileall -q app tools scripts` passed;
+  `python -m pytest tests/test_context_routes.py tests/test_repositories.py tests/test_schema.py -q --basetemp .pytest-tmp\run-p1-memory-main-public-agent-focused`
+  passed with `149 passed`; `python -m pytest -q --basetemp
+  .pytest-tmp\run-p1-memory-main-public-agent-full` passed with `861 passed,
+  6 skipped, 2 warnings`.
+- 211 deployment ran `ai-platform-api` and `ai-platform-worker` with
+  `ai-platform.source-revision=7f0a1133736f509be9d24a3b86eb03b2bbf5ead6`.
+- 211 smoke passed: health `200`, schema apply `200`, enabled
+  public-agent memory create/list/delete `200`, opt-out policy update `200`,
+  admin inventory `200`, ordinary-user admin inventory `403`, opt-out memory
+  create `403 memory_policy_disabled`, opt-out memory list `200` with `0`
+  records, and both user/agent policy inventory indexes existed.
