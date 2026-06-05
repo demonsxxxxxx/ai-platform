@@ -3517,6 +3517,179 @@ async def reconcile_multi_agent_child_run_terminal_state(
     }
 
 
+async def propagate_multi_agent_parent_cancel(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    parent_run_id: str,
+    requested_by: str,
+    requested_by_role: str | None = None,
+) -> dict[str, Any]:
+    """Request cancellation for active server-owned child runs of a multi-agent parent."""
+
+    result: dict[str, Any] = {
+        "child_run_ids": [],
+        "queued_child_run_ids": [],
+        "running_child_run_ids": [],
+        "active_sandbox_leases": [],
+        "event_ids": [],
+        "audit_ids": [],
+    }
+    cursor = await conn.execute(
+        """
+        select
+          child.id,
+          child.status,
+          child.trace_id,
+          child.cancel_requested_at,
+          child.input_json,
+          parent_step.id as parent_step_id,
+          parent_step.step_key,
+          parent_step.payload_json as parent_step_payload_json
+        from runs child
+        join run_steps parent_step
+          on parent_step.tenant_id = child.tenant_id
+         and parent_step.run_id = child.copied_from_run_id
+         and parent_step.payload_json->>'dispatch_child_run_id' = child.id
+        where child.tenant_id = %s
+          and child.copied_from_run_id = %s
+          and child.status in ('queued', 'running')
+          and (
+            child.input_json#>>'{input,multi_agent_dispatch,parent_run_id}' = %s
+            or child.input_json#>>'{multi_agent_dispatch,parent_run_id}' = %s
+          )
+          and parent_step.payload_json->>'dispatch_state' = 'handed_off'
+        for update of child, parent_step
+        """,
+        (tenant_id, parent_run_id, parent_run_id, parent_run_id),
+    )
+    rows = await cursor.fetchall()
+    for row in rows:
+        child_run_id = str(row.get("id") or "")
+        if not child_run_id:
+            continue
+        dispatch = _child_dispatch_metadata(row)
+        parent_step_payload = (
+            row.get("parent_step_payload_json") if isinstance(row.get("parent_step_payload_json"), dict) else {}
+        )
+        parent_step_id = str(dispatch.get("parent_step_id") or "").strip()
+        step_key = str(dispatch.get("step_key") or "").strip()
+        dispatch_id = str(dispatch.get("dispatch_id") or "").strip()
+        if (
+            str(dispatch.get("parent_run_id") or "") != parent_run_id
+            or str(row.get("parent_step_id") or "") != parent_step_id
+            or str(row.get("step_key") or "") != step_key
+            or str(parent_step_payload.get("dispatch_id") or "") != dispatch_id
+            or str(parent_step_payload.get("dispatch_child_run_id") or "") != child_run_id
+            or parent_step_payload.get("dispatch_state") != "handed_off"
+        ):
+            continue
+        update_cursor = await conn.execute(
+            """
+            update runs
+            set
+              cancel_requested_at = coalesce(cancel_requested_at, now()),
+              cancel_requested_by = coalesce(cancel_requested_by, %s),
+              status = case when status = 'queued' then 'cancelled' else status end,
+              finished_at = case when status = 'queued' then now() else finished_at end
+            where tenant_id = %s
+              and id = %s
+              and status in ('queued', 'running')
+            returning id, status, trace_id
+            """,
+            (requested_by, tenant_id, child_run_id),
+        )
+        updated = await update_cursor.fetchone()
+        if updated is None:
+            continue
+        child_status = str(updated.get("status") or "")
+        result["child_run_ids"].append(child_run_id)
+        if child_status == "cancelled":
+            result["queued_child_run_ids"].append(child_run_id)
+            await _cancel_open_run_steps(conn, tenant_id=tenant_id, run_id=child_run_id)
+        else:
+            result["running_child_run_ids"].append(child_run_id)
+
+        active_sandbox_leases = await list_active_sandbox_leases_for_run(
+            conn,
+            tenant_id=tenant_id,
+            run_id=child_run_id,
+        )
+        result["active_sandbox_leases"].extend(active_sandbox_leases)
+
+        if row.get("cancel_requested_at") is None:
+            event_id = await append_event(
+                conn,
+                tenant_id=tenant_id,
+                run_id=child_run_id,
+                trace_id=updated.get("trace_id"),
+                event_type="cancel_requested",
+                stage="control",
+                message="已随父任务请求取消",
+                payload={
+                    "visible_to_user": True,
+                    "severity": "warning",
+                    "requested_by": requested_by,
+                    "requested_by_role": requested_by_role or "owner",
+                    "source": "multi_agent_parent_cancel",
+                    "parent_run_id": parent_run_id,
+                },
+            )
+            result["event_ids"].append(event_id)
+
+        if child_status == "cancelled":
+            cancelled_event_id = await append_event(
+                conn,
+                tenant_id=tenant_id,
+                run_id=child_run_id,
+                trace_id=updated.get("trace_id"),
+                event_type="run_cancelled",
+                stage="control",
+                message="任务已取消",
+                payload={
+                    "visible_to_user": True,
+                    "severity": "warning",
+                    "source": "multi_agent_parent_cancel",
+                },
+            )
+            result["event_ids"].append(cancelled_event_id)
+            reconciled = await reconcile_multi_agent_child_run_terminal_state(
+                conn,
+                tenant_id=tenant_id,
+                child_run_id=child_run_id,
+                child_status="cancelled",
+                result_json={"message": "parent_cancel_requested"},
+                error_code="parent_cancel_requested",
+                error_message="parent_cancel_requested",
+            )
+            if reconciled:
+                if reconciled.get("event_id"):
+                    result["event_ids"].append(reconciled["event_id"])
+                if reconciled.get("audit_id"):
+                    result["audit_ids"].append(reconciled["audit_id"])
+
+        audit_id = await append_audit_log(
+            conn,
+            tenant_id=tenant_id,
+            user_id=requested_by,
+            action="run.multi_agent.dispatch.cancel_propagate",
+            target_type="run",
+            target_id=child_run_id,
+            trace_id=updated.get("trace_id"),
+            payload_json={
+                "parent_run_id": parent_run_id,
+                "parent_step_id": parent_step_id,
+                "step_key": step_key,
+                "dispatch_id": dispatch_id,
+                "child_run_id": child_run_id,
+                "requested_by_role": requested_by_role or "owner",
+                "result_status": "cancelled" if child_status == "cancelled" else "cancel_requested",
+            },
+        )
+        result["audit_ids"].append(audit_id)
+    return result
+
+
 async def list_run_steps(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> list[dict[str, Any]]:
     cursor = await conn.execute(
         """
