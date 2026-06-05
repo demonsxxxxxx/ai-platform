@@ -188,14 +188,20 @@ does not start Long Task / Multi-Agent Runtime.
 
 ### P1 Memory / Context Management
 
-Status: in progress on `codex/p1-memory-context-management`.
+Status: backend management slice merged on `main` via PR #2, PR #3, and
+PR #4, then deployed/smoked on 211 at
+`7f0a1133736f509be9d24a3b86eb03b2bbf5ead6`.
 
 The P1 backend management slice adds ordinary-user memory policy
 self-management and an admin same-tenant memory policy inventory projection.
 Existing session scoping, retention cleanup, redaction, public/admin
 projections, and `long_term_memory_enabled = false` fail-closed behavior remain
-the governing constraints. Remaining Memory / Context work is frontend UI
-wiring, scheduled cleanup, and configurable redaction policy.
+the governing constraints. The 211 smoke verified health, schema application,
+public `document-review` memory record create/list/delete routing, user opt-out
+blocking writes, admin inventory access, ordinary-user admin denial, and
+user/agent inventory indexes. Remaining Memory / Context work before advancing
+past this stage is frontend UI wiring / visible management entry, scheduled
+cleanup operations, and configurable redaction policy.
 
 ## 禁止项
 
