@@ -376,9 +376,8 @@ deployment flattened the current healthy API container with `docker export` /
 
 ### P2 Artifact Tree Operational Projection
 
-Status: implemented locally on feature branch
-`p2-artifact-tree-operational-projection` and pending PR / 211 deployment
-verification. This hardens the existing read-only
+Status: merged on `main` at `99ddbc7c114086bb3a4525941cd9dc844ceaebb2`,
+deployed to 211, and smoked. This hardens the existing read-only
 `ai-platform.run-provenance.v1` projection with deterministic artifact graph
 edges, operational artifact tree parent metadata, and artifact-level lineage
 gaps for frontend/admin visualization. It keeps `/runs/{run_id}/provenance`
@@ -395,9 +394,20 @@ Inherited-configuration review found one Important output-validation issue; it
 was fixed with a regression test.
 
 Local verification recorded `python -m compileall -q app tools scripts`,
-focused `tests/test_event_playback_routes.py tests/test_source_authority_docs.py`,
-and full pytest. This remains read-only and does not start autonomous subagent
-dispatch, high-risk tool execution, retry scheduling, or new sandbox behavior.
+focused `tests/test_event_playback_routes.py tests/test_source_authority_docs.py`
+with `20 passed`, and full pytest with `919 passed, 6 skipped, 2 warnings`.
+
+The 211 deployment uses image
+`sha256:3a73c47dbd86408d8a8cb7bb5a887e37f9a9148fab45711348c34ba67e56f81f`
+for both `ai-platform-api` and `ai-platform-worker`, with
+`ai-platform.source-revision=99ddbc7c114086bb3a4525941cd9dc844ceaebb2` and
+`ai-platform.source_note=p2-artifact-tree-operational-projection`. The 211
+smoke verified API health, OpenAPI route exposure, source hash parity,
+ordinary-user artifact tree parent metadata, deterministic graph edges,
+artifact-only producer gaps, raw skill/storage/runtime/private/hash redaction,
+clean API/worker logs, and DB/Redis smoke data cleanup. This remains read-only
+and does not start autonomous subagent dispatch, high-risk tool execution,
+retry scheduling, or new sandbox behavior.
 
 ## 禁止项
 
