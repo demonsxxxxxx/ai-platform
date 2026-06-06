@@ -37,6 +37,55 @@ DB connection pool 是 issue #16 的第一个可独立闭环前置项：平台�
 
 当前未关闭的 G5 阻塞项仍包括：per-tenant/per-user fair scheduling、active-run quota 并发硬化、bounded queue metadata、tenant-aware worker maintenance、large queue bounded lookup、DB pool saturation/queue throttling 可观测性，以及多 tenant 并发压力测试。G8 Multi-Agent Controlled Beta 不得绕过这些阻塞项。
 
+### G5 Tenant-Aware Queue Lease
+
+Status: implemented locally on `feat/g5-tenant-aware-queue-lease`; pending PR,
+211 deployment, and 211 smoke.
+
+This slice keeps the existing global Redis queue topology but adds bounded,
+tenant/user-aware worker lease behavior when quota settings are enabled.
+`QUEUE_TENANT_PROCESSING_LIMIT`, `QUEUE_USER_PROCESSING_LIMIT`,
+`QUEUE_LEASE_SCAN_LIMIT`, and `QUEUE_INSIGHT_SCAN_LIMIT` are forwarded through
+the non-secret deploy template and compose environment. When quota mode is
+enabled, workers scan only the configured queued window and use a Redis Lua
+script to atomically re-check processing capacity, recompute active
+tenant/user counts from the processing list, validate the candidate index, move
+the matched item into processing, and write processing/retry metadata plus
+worker heartbeat. Invalid queued payload cleanup in quota mode is also
+matched-index and atomic, preventing duplicate dead-letter writes during
+concurrent workers.
+
+Queue insight now reports quota limits, bounded scan sampling, and
+tenant/user throttling pressure. Public queue insight is current-user scoped
+and does not expose other same-tenant user ids; Admin Runtime/Admin Runs request
+admin breakdown explicitly. Quota decisions ignore stale `processing_meta`
+entries that no longer correspond to an item in the processing list, reducing
+the risk of indefinite false throttling after orphan metadata.
+
+Local verification recorded RED/GREEN coverage for tenant quota bypass, user
+quota bypass, scan-bound idle behavior, invalid payload dead-lettering during
+bounded scan, atomic Lua script usage, stale-meta quota immunity, public
+projection user-id redaction, admin user-quota pressure reason, bounded insight
+queued scan, worker setting propagation, compose/env forwarding, invalid-payload
+scan-window shrink recovery, malformed Lua attempt metadata fallback, and
+route-level public/admin projection selector arguments. Review-fix focused
+verification passed with `172 passed`; compile passed with
+`python -m compileall -q app tools scripts`; `git diff --check` exited 0 with
+only CRLF normalization warnings; full local pytest passed with `1061 passed,
+6 skipped, 2 warnings`.
+Inherited-configuration multi-agent review first found quota atomicity,
+duplicate raw/index deletion, invalid dead-letter race, unbounded insight scan,
+public user-id leakage, missing user quota reason, and stale metadata risks.
+Those were fixed with RED regression tests; follow-up review found no Critical
+issues and one Important admin user-quota reason gap, which was fixed with an
+admin projection regression test. Final inherited-configuration review found
+two Important queue edge cases: scan-window index drift after invalid payload
+cleanup and malformed Lua `attempts` metadata. Both were fixed with RED
+regression tests. A projection review found missing route-level selector
+assertions and misleading design wording; tests now pin public `user_id`
+selectors and admin `include_user_breakdown=True`, and the design document
+states that `throttling.users` is admin-only.
+
 ## 当前主链路
 
 - 本地代码：当前 `ai-platform` 仓库根目录

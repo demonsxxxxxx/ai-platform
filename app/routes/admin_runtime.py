@@ -134,7 +134,7 @@ async def admin_runtime_queue(
     return {
         "tenant_id": principal.tenant_id,
         "queue": await get_queue_status(),
-        "tenant_insight": await get_queue_insight(principal.tenant_id),
+        "tenant_insight": await get_queue_insight(principal.tenant_id, include_user_breakdown=True),
     }
 
 
@@ -252,7 +252,7 @@ async def admin_runtime_overview(
         "tenant_id": principal.tenant_id,
         "queue": {
             "status": await get_queue_status(),
-            "tenant_insight": await get_queue_insight(principal.tenant_id),
+            "tenant_insight": await get_queue_insight(principal.tenant_id, include_user_breakdown=True),
         },
         "runs": _sanitize_dict(run_summary),
         "sandbox": _sandbox_overview(containers, visible_leases, visible_lease_history),

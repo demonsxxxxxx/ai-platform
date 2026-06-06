@@ -1747,7 +1747,9 @@ async def test_get_run_includes_queue_insight_while_queued(monkeypatch):
     async def fake_list_run_events(conn, *, tenant_id, run_id):
         return []
 
-    async def fake_get_queue_insight(tenant_id):
+    async def fake_get_queue_insight(tenant_id, **kwargs):
+        assert tenant_id == "tenant-a"
+        assert kwargs == {"user_id": "user-a"}
         return {"tenant_id": tenant_id, "reason": "worker_capacity_full"}
 
     async def fake_get_run_queue_position(*, tenant_id, run_id):
@@ -1790,7 +1792,7 @@ async def test_get_run_omits_queue_insight_after_queue_wait(monkeypatch):
     async def fake_list_run_events(conn, *, tenant_id, run_id):
         return []
 
-    async def fake_get_queue_insight(tenant_id):
+    async def fake_get_queue_insight(tenant_id, **_kwargs):
         raise AssertionError("queue insight should only be read for queued runs")
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
@@ -2418,7 +2420,7 @@ def test_run_event_stream_heartbeat_includes_queue_insight_while_queued(monkeypa
     async def fake_list_run_steps(conn, *, tenant_id, run_id):
         return []
 
-    async def fake_get_queue_insight(tenant_id):
+    async def fake_get_queue_insight(tenant_id, **_kwargs):
         return {"tenant_id": tenant_id, "reason": "worker_capacity_full"}
 
     async def fake_get_run_queue_position(*, tenant_id, run_id):
@@ -2540,7 +2542,7 @@ def test_run_event_stream_uses_configured_long_task_heartbeat_window(monkeypatch
     async def fake_list_run_steps(conn, *, tenant_id, run_id):
         return []
 
-    async def fake_get_queue_insight(tenant_id):
+    async def fake_get_queue_insight(tenant_id, **_kwargs):
         return {"tenant_id": tenant_id, "reason": "workers_busy"}
 
     async def no_sleep(seconds):
@@ -3476,7 +3478,7 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
         calls["queue"] = payload
         return 2
 
-    async def fake_queue_insight_for_status(status, tenant_id):
+    async def fake_queue_insight_for_status(status, tenant_id, **_kwargs):
         return {"status": status, "tenant_id": tenant_id}
 
     def fake_skill_manifest_pins(skill_id, input_payload):
@@ -3629,7 +3631,7 @@ async def test_copy_run_uses_uploaded_release_policy_manifest(monkeypatch):
         calls["queue"] = payload
         return 2
 
-    async def fake_queue_insight_for_status(status, tenant_id):
+    async def fake_queue_insight_for_status(status, tenant_id, **_kwargs):
         return {"status": status, "tenant_id": tenant_id}
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)

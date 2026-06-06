@@ -100,6 +100,9 @@ async def run_once(
         timeout_seconds=timeout_seconds,
         worker_id=resolved_worker_id,
         max_processing_runs=settings.max_active_worker_runs,
+        tenant_processing_limit=getattr(settings, "queue_tenant_processing_limit", 0),
+        user_processing_limit=getattr(settings, "queue_user_processing_limit", 0),
+        lease_scan_limit=getattr(settings, "queue_lease_scan_limit", 50),
     )
     if message is None:
         return WorkerOutcome(status="idle", run_id=None)

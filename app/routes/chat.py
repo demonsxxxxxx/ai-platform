@@ -631,6 +631,6 @@ async def chat_stream(
         run_id=run_id,
         status="queued",
         queue_position=queue_position,
-        queue_insight=await get_queue_insight(principal.tenant_id),
+        queue_insight=await get_queue_insight(principal.tenant_id, user_id=principal.user_id),
         intent_decision=_intent_response(decision_payload, principal),
     )
