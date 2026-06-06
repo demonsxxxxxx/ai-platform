@@ -4468,6 +4468,67 @@ async def get_admin_runtime_run_summary(
     }
 
 
+async def get_admin_runtime_admission_summary(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    limit: int,
+    top_user_limit: int = 10,
+) -> dict[str, Any]:
+    """Return same-tenant active-run admission pressure for Admin Runtime."""
+    active_limit = max(int(limit), 0)
+    top_limit = max(min(int(top_user_limit), 50), 1)
+    totals_cursor = await conn.execute(
+        """
+        with grouped as (
+          select user_id, count(*) as active
+          from runs
+          where tenant_id = %s
+            and status in ('queued', 'running')
+          group by user_id
+        )
+        select
+          coalesce(sum(active), 0) as active_runs,
+          count(*) filter (where user_id is not null) as active_users,
+          count(*) filter (where user_id is not null and %s > 0 and active >= %s) as saturated_users
+        from grouped
+        """,
+        (tenant_id, active_limit, active_limit),
+    )
+    totals = await totals_cursor.fetchone() or {}
+    top_cursor = await conn.execute(
+        """
+        select user_id, count(*) as active
+        from runs
+        where tenant_id = %s
+          and status in ('queued', 'running')
+          and user_id is not null
+        group by user_id
+        order by count(*) desc, user_id asc
+        limit %s
+        """,
+        (tenant_id, top_limit),
+    )
+    top_rows = list(await top_cursor.fetchall())
+    top_users = [
+        {
+            "user_id": str(row["user_id"]),
+            "active": _coerce_int(row["active"]),
+            "saturated": active_limit > 0 and _coerce_int(row["active"]) >= active_limit,
+        }
+        for row in top_rows
+        if row.get("user_id")
+    ]
+    return {
+        "policy_active": active_limit > 0,
+        "max_active_runs_per_user": active_limit,
+        "active_runs": _coerce_int(totals.get("active_runs")),
+        "active_users": _coerce_int(totals.get("active_users")),
+        "saturated_users": _coerce_int(totals.get("saturated_users")),
+        "top_users": top_users,
+    }
+
+
 async def get_admin_runtime_observability_summary(
     conn: AsyncConnection,
     *,

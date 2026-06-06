@@ -4161,6 +4161,98 @@ async def test_get_admin_runtime_run_summary_counts_statuses_and_redacts_failure
 
 
 @pytest.mark.asyncio
+async def test_get_admin_runtime_admission_summary_counts_same_tenant_active_users():
+    class SummaryCursor:
+        def __init__(self, row=None, rows=None):
+            self.row = row
+            self.rows = rows or []
+
+        async def fetchone(self):
+            return self.row
+
+        async def fetchall(self):
+            return self.rows
+
+    class SummaryConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            self.calls.append((normalized, params))
+            assert "where tenant_id = %s" in normalized
+            assert "status in ('queued', 'running')" in normalized
+            assert "input_json" not in normalized
+            assert "skill_id" not in normalized
+            if "sum(active)" in normalized:
+                return SummaryCursor(row={"active_runs": 9, "active_users": 3, "saturated_users": 2})
+            return SummaryCursor(
+                rows=[
+                    {"user_id": "user-a", "active": 3},
+                    {"user_id": "user-b", "active": 2},
+                ]
+            )
+
+    conn = SummaryConnection()
+
+    summary = await repositories.get_admin_runtime_admission_summary(
+        conn,
+        tenant_id="tenant-a",
+        limit=3,
+        top_user_limit=2,
+    )
+
+    assert summary == {
+        "policy_active": True,
+        "max_active_runs_per_user": 3,
+        "active_runs": 9,
+        "active_users": 3,
+        "saturated_users": 2,
+        "top_users": [
+            {"user_id": "user-a", "active": 3, "saturated": True},
+            {"user_id": "user-b", "active": 2, "saturated": False},
+        ],
+    }
+    assert conn.calls[0][1] == ("tenant-a", 3, 3)
+    assert conn.calls[1][1] == ("tenant-a", 2)
+
+
+@pytest.mark.asyncio
+async def test_get_admin_runtime_admission_summary_disables_saturation_when_limit_off():
+    class SummaryCursor:
+        def __init__(self, row=None, rows=None):
+            self.row = row
+            self.rows = rows or []
+
+        async def fetchone(self):
+            return self.row
+
+        async def fetchall(self):
+            return self.rows
+
+    class SummaryConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            if "sum(active)" in normalized:
+                return SummaryCursor(row={"active_runs": 7, "active_users": 1, "saturated_users": 0})
+            return SummaryCursor(rows=[{"user_id": "user-a", "active": 7}])
+
+    summary = await repositories.get_admin_runtime_admission_summary(
+        SummaryConnection(),
+        tenant_id="tenant-a",
+        limit=0,
+        top_user_limit=10,
+    )
+
+    assert summary["policy_active"] is False
+    assert summary["max_active_runs_per_user"] == 0
+    assert summary["active_runs"] == 7
+    assert summary["active_users"] == 1
+    assert summary["saturated_users"] == 0
+    assert summary["top_users"] == [{"user_id": "user-a", "active": 7, "saturated": False}]
+
+
+@pytest.mark.asyncio
 async def test_get_admin_runtime_observability_summary_coerces_nulls_to_defaults():
     class SummaryCursor:
         def __init__(self, row):

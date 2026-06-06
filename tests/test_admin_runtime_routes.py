@@ -1,8 +1,10 @@
 from contextlib import asynccontextmanager
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from app.routes.admin_runtime import _backpressure_snapshot
 from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError
 from app.runtime.sandbox.contracts import ContainerStatus, StopResult
 from app.settings import Settings
@@ -776,7 +778,35 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
     async def fake_get_queue_insight(tenant_id, **kwargs):
         assert kwargs == {"include_user_breakdown": True}
         calls.append(("queue_insight", tenant_id, kwargs))
-        return {"tenant_id": tenant_id, "reason": "workers_busy"}
+        return {
+            "tenant_id": tenant_id,
+            "reason": "workers_busy",
+            "capacity": {
+                "max_active_worker_runs": 3,
+                "processing_saturated": False,
+                "available_worker_slots": 1,
+                "queue_tenant_processing_limit": 2,
+                "queue_user_processing_limit": 1,
+                "queue_lease_scan_limit": 50,
+            },
+            "queue_sample": {
+                "queued_scan_limit": 500,
+                "queued_sampled": 2,
+                "queued_sample_complete": True,
+            },
+            "throttling": {
+                "tenant_processing": 1,
+                "tenant_processing_limit": 2,
+                "tenant_processing_saturated": False,
+                "user_processing_limit": 1,
+                "users": {
+                    "user-a": {"queued": 1, "processing": 1, "processing_saturated": True},
+                    "user-b": {"queued": 0, "processing": 0, "processing_saturated": False},
+                },
+            },
+            "keys": {"queued": "ai-platform:runs:queued"},
+            "raw_queue_payload": {"token": "queue-secret-token"},
+        }
 
     async def fake_run_summary(conn, *, tenant_id, limit=10):
         calls.append(("run_summary", tenant_id, limit))
@@ -798,6 +828,17 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
             "latency_ms": {"avg": 20, "max": 30},
             "token_counts": {"input": 10, "output": 12, "total": 22},
             "estimated_cost_minor": 7,
+        }
+
+    async def fake_admission_summary(conn, *, tenant_id, limit, top_user_limit=10):
+        calls.append(("admission", tenant_id, limit, top_user_limit))
+        return {
+            "policy_active": True,
+            "max_active_runs_per_user": limit,
+            "active_runs": 3,
+            "active_users": 2,
+            "saturated_users": 1,
+            "top_users": [{"user_id": "user-a", "active": 3, "saturated": True}],
         }
 
     def fake_pool_status():
@@ -839,6 +880,11 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
         fake_observability_summary,
         raising=False,
     )
+    monkeypatch.setattr(
+        "app.routes.admin_runtime.repositories.get_admin_runtime_admission_summary",
+        fake_admission_summary,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.admin_runtime.get_pool_status", fake_pool_status, raising=False)
     client = TestClient(create_app())
 
@@ -864,6 +910,36 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
         "history_included": True,
     }
     assert body["observability"]["token_counts"]["total"] == 22
+    assert body["admission"]["saturated_users"] == 1
+    assert body["admission"]["top_users"] == [{"user_id": "user-a", "active": 3, "saturated": True}]
+    assert body["backpressure"]["reasons"] == [
+        "active_run_limit_saturated",
+        "workers_busy",
+        "queue_user_quota_saturated",
+    ]
+    assert body["backpressure"]["queue"] == {
+        "reason": "workers_busy",
+        "worker_capacity": {
+            "max_active_worker_runs": 3,
+            "processing_saturated": False,
+            "available_worker_slots": 1,
+        },
+        "quota": {
+            "tenant_processing_limit": 2,
+            "tenant_processing_saturated": False,
+            "user_processing_limit": 1,
+            "saturated_users": 1,
+        },
+        "sample": {"queued_scan_limit": 500, "queued_sampled": 2, "queued_sample_complete": True},
+    }
+    assert body["backpressure"]["database_pool"] == {
+        "open": True,
+        "requests_waiting": 0,
+        "max_waiting": 100,
+        "waiting_saturated": False,
+    }
+    assert "ai-platform:runs:queued" not in str(body["backpressure"])
+    assert "queue-secret-token" not in str(body["backpressure"])
     assert body["database_pool"] == {
         "configured": {"min_size": 1, "max_size": 10, "timeout_seconds": 10.0, "max_waiting": 100},
         "open": True,
@@ -881,6 +957,7 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
         ("containers", {"tenant_id": "default"}),
         ("run_summary", "default", 10),
         ("observability", "default"),
+        ("admission", "default", 3, 10),
         ("queue_status",),
         ("queue_insight", "default", {"include_user_breakdown": True}),
         ("database_pool",),
@@ -896,7 +973,30 @@ def test_admin_runtime_overview_sanitizes_summary_payloads(monkeypatch):
         return {}
 
     async def fake_queue_insight(tenant_id, **_kwargs):
-        return {"tenant_id": tenant_id}
+        return {
+            "tenant_id": tenant_id,
+            "reason": "tenant_quota_full token=queue-reason-token",
+            "capacity": {
+                "max_active_worker_runs": 2,
+                "processing_saturated": True,
+                "available_worker_slots": 0,
+                "queue_tenant_processing_limit": 1,
+                "queue_user_processing_limit": 1,
+            },
+            "queue_sample": {
+                "queued_scan_limit": 500,
+                "queued_sampled": 1,
+                "queued_sample_complete": True,
+            },
+            "throttling": {
+                "tenant_processing_saturated": True,
+                "user_processing_limit": 1,
+                "users": {"user-secret": {"queued": 1, "processing": 1, "processing_saturated": True}},
+            },
+            "keys": {"queued": "ai-platform:runs:queued"},
+            "raw_queue_payload": "raw_queue_payload token=queue-payload-token",
+            "storage_key": "tenant/default/runs/run-a/private-output.json",
+        }
 
     async def fake_run_summary(conn, *, tenant_id, limit=10):
         return {
@@ -926,6 +1026,30 @@ def test_admin_runtime_overview_sanitizes_summary_payloads(monkeypatch):
             "estimated_cost_minor": 0,
         }
 
+    async def fake_admission_summary(conn, *, tenant_id, limit, top_user_limit=10):
+        return {
+            "policy_active": True,
+            "max_active_runs_per_user": limit,
+            "active_runs": 3,
+            "active_users": 1,
+            "saturated_users": 1,
+            "top_users": [
+                {
+                    "user_id": "user-a",
+                    "active": 3,
+                    "saturated": True,
+                    "runtime_private_payload": {"cwd": "/var/lib/ai-platform/run-a"},
+                }
+            ],
+        }
+
+    def fake_pool_status():
+        return {
+            "configured": {"min_size": 1, "max_size": 10, "timeout_seconds": 10.0, "max_waiting": 1},
+            "open": True,
+            "stats": {"requests_waiting": 1, "token": "pool-secret-token"},
+        }
+
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", fake_transaction)
@@ -937,6 +1061,12 @@ def test_admin_runtime_overview_sanitizes_summary_payloads(monkeypatch):
         fake_observability_summary,
         raising=False,
     )
+    monkeypatch.setattr(
+        "app.routes.admin_runtime.repositories.get_admin_runtime_admission_summary",
+        fake_admission_summary,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.admin_runtime.get_pool_status", fake_pool_status, raising=False)
     patch_empty_leases(monkeypatch)
     client = TestClient(create_app())
 
@@ -951,7 +1081,55 @@ def test_admin_runtime_overview_sanitizes_summary_payloads(monkeypatch):
     assert "route-error-type-token" not in serialized
     assert "/var/lib/ai-platform" not in serialized
     assert "runtime_private_payload" not in serialized
+    backpressure_serialized = str(response.json()["backpressure"])
+    assert "queue-reason-token" not in backpressure_serialized
+    assert "queue-payload-token" not in backpressure_serialized
+    assert "pool-secret-token" not in backpressure_serialized
+    assert "ai-platform:runs:queued" not in backpressure_serialized
+    assert "raw_queue_payload" not in backpressure_serialized
+    assert "storage_key" not in backpressure_serialized
+    assert "private-output.json" not in backpressure_serialized
     assert response.json()["observability"]["latency_ms"] == {"avg": None, "max": None}
+
+
+def test_admin_runtime_backpressure_omits_worker_available_from_reasons():
+    snapshot = _backpressure_snapshot(
+        admission={
+            "policy_active": True,
+            "max_active_runs_per_user": 3,
+            "active_runs": 1,
+            "active_users": 1,
+            "saturated_users": 0,
+            "top_users": [],
+        },
+        queue_insight={
+            "reason": "worker_available",
+            "capacity": {
+                "max_active_worker_runs": 3,
+                "processing_saturated": False,
+                "available_worker_slots": 2,
+            },
+            "throttling": {
+                "tenant_processing_limit": 2,
+                "tenant_processing_saturated": False,
+                "user_processing_limit": 1,
+                "users": {},
+            },
+            "queue_sample": {
+                "queued_scan_limit": 500,
+                "queued_sampled": 0,
+                "queued_sample_complete": True,
+            },
+        },
+        database_pool={
+            "configured": {"max_waiting": 100},
+            "open": True,
+            "stats": {"requests_waiting": 0},
+        },
+    )
+
+    assert snapshot["queue"]["reason"] == "worker_available"
+    assert snapshot["reasons"] == []
 
 
 def test_admin_runtime_overview_fails_closed_when_provider_cleanup_reports_failure(monkeypatch):
@@ -1029,13 +1207,25 @@ def test_admin_runtime_overview_fails_closed_for_dict_provider_cleanup_success(m
     assert calls == [("provider_cleanup", {"tenant_id": "default"}, "admin_runtime")]
 
 
-def test_admin_runtime_overview_does_not_mask_queue_failure(monkeypatch):
+@pytest.mark.parametrize("failing_queue_call", ["status", "insight"])
+def test_admin_runtime_overview_does_not_mask_queue_failure(monkeypatch, failing_queue_call):
+    calls = []
+
     class FakeProvider:
         async def list_runtime_containers(self, filters):
             return []
 
     async def fake_queue_status():
-        raise RuntimeError("redis unavailable")
+        calls.append("queue_status")
+        if failing_queue_call == "status":
+            raise RuntimeError("redis unavailable")
+        return {}
+
+    async def fake_queue_insight(tenant_id, **_kwargs):
+        calls.append("queue_insight")
+        if failing_queue_call == "insight":
+            raise RuntimeError("redis unavailable")
+        return {"tenant_id": tenant_id}
 
     async def fake_run_summary(conn, *, tenant_id, limit=10):
         return {"total": 0, "by_status": {}, "active": 0, "terminal": 0, "recent_failures": []}
@@ -1051,13 +1241,29 @@ def test_admin_runtime_overview_does_not_mask_queue_failure(monkeypatch):
             "estimated_cost_minor": 0,
         }
 
+    async def fake_admission_summary(conn, *, tenant_id, limit, top_user_limit=10):
+        return {
+            "policy_active": True,
+            "max_active_runs_per_user": limit,
+            "active_runs": 0,
+            "active_users": 0,
+            "saturated_users": 0,
+            "top_users": [],
+        }
+
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_status", fake_queue_status)
+    monkeypatch.setattr("app.routes.admin_runtime.get_queue_insight", fake_queue_insight)
     monkeypatch.setattr("app.routes.admin_runtime.repositories.get_admin_runtime_run_summary", fake_run_summary, raising=False)
     monkeypatch.setattr(
         "app.routes.admin_runtime.repositories.get_admin_runtime_observability_summary",
         fake_observability_summary,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.admin_runtime.repositories.get_admin_runtime_admission_summary",
+        fake_admission_summary,
         raising=False,
     )
     patch_empty_leases(monkeypatch)
@@ -1067,6 +1273,10 @@ def test_admin_runtime_overview_does_not_mask_queue_failure(monkeypatch):
 
     assert response.status_code == 500
     assert response.text != ""
+    if failing_queue_call == "status":
+        assert calls == ["queue_status"]
+    else:
+        assert calls == ["queue_status", "queue_insight"]
 
 
 def test_admin_runtime_overview_fails_closed_when_sandbox_cleanup_fails(monkeypatch):
