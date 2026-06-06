@@ -1078,9 +1078,9 @@ migration.
 
 ### P2 Multi-Agent Event Taxonomy Cleanup
 
-Status: implemented locally on branch
-`codex/p2-multi-agent-event-taxonomy-cleanup`; 211 deployment and smoke are
-pending.
+Status: deployed on 211 as the event-contract cleanup follow-up to the
+multi-agent worker dispatcher via main commit
+`ca072c4c9de6ae2cd2e6c3d796adcacc05ceeb37`.
 
 This slice closes the non-blocking event taxonomy follow-up left after parent
 terminal rollup and worker dispatcher. It preserves persisted event names while
@@ -1113,6 +1113,30 @@ worker/dispatch focused coverage. Pre-commit verification passed with
 full pytest attempt used `.pytest-tmp` directly and failed during setup because
 Windows could not remove stale unreadable pytest temp children; the successful
 full run used a fresh child directory under `.pytest-tmp`.
+
+The 211 deployment uses image
+`sha256:10cf326e20d0c9313d924acbecfe6335a60d50ccac1da93c627b06aa3d4ff598` for
+both `ai-platform-api` and `ai-platform-worker`, tagged
+`ai-platform:ca072c4`, with
+`ai-platform.source-revision=ca072c4c9de6ae2cd2e6c3d796adcacc05ceeb37` and
+`ai-platform.source_note=p2-multi-agent-event-taxonomy-cleanup`. The 211 source
+markers match the same revision and note. Because this slice changed only
+runtime source and docs, deployment used a runtime-only rebase from the
+previous healthy image and copied `/app/app`; no dependency layer, sandbox
+provider, or compose default changed.
+
+The 211 smoke verified backend health and frontend proxy health returned
+`{"status":"ok"}`, API and worker label parity, in-container `app` compile for
+both containers, worker import of `app.multi_agent_dispatcher`, and the
+container event taxonomy reporting `True` for
+`multi_agent_dispatch_handoff`, `run_multi_agent_child_created`,
+`multi_agent_dispatch_enqueue_failed`, `multi_agent_dispatch_reconciled`,
+`multi_agent_dispatch_parent_parked`, and `multi_agent_parent_finalized`. The
+in-container projection smoke verified ordinary users see
+`run_child_created`, admin users keep `run_multi_agent_child_created`, and
+ordinary-user payloads strip dispatch id, copied parent run id, root
+`parent_run_id`, and parent step id. Recent API/worker logs had no error
+markers.
 
 This does not rename persisted events, add a DB migration, add a frontend
 entry, expose executor private payload, open sandbox/tool privilege, add a new
