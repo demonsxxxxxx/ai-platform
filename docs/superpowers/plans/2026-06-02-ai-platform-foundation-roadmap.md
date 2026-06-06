@@ -33,7 +33,7 @@ P2 Long Task / Multi-Agent Runtime 不再继续默认前冲。checkpoint、subag
 
 ### G5 Tenant-Aware Concurrency Status
 
-DB connection pool 是 issue #16 的第一个可独立闭环前置项：平台必须先用 bounded async Postgres pool 替代每 transaction 直连，并把 pool status 暴露到 admin-only runtime overview，后续 tenant-aware queue/quota 与 worker maintenance 才有稳定承载基础。
+DB connection pool 是 issue #16 的第一个可独立闭环前置项：平台已在 `main` 建立 bounded async Postgres pool 替代每 transaction 直连，并把 allowlisted pool status 暴露到 admin-only runtime overview。2026-06-06 211 smoke 已验证 API/worker runtime label 与 source marker 匹配、API 与前端代理 health 正常、admin-only overview 返回 `database_pool.open=true` 且未暴露 DSN/password/secret/api key；后续 tenant-aware queue/quota 与 worker maintenance 可以在这个承载基础上推进。
 
 当前未关闭的 G5 阻塞项仍包括：per-tenant/per-user fair scheduling、active-run quota 并发硬化、bounded queue metadata、tenant-aware worker maintenance、large queue bounded lookup、DB pool saturation/queue throttling 可观测性，以及多 tenant 并发压力测试。G8 Multi-Agent Controlled Beta 不得绕过这些阻塞项。
 
