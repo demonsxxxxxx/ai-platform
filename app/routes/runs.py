@@ -2473,35 +2473,43 @@ async def handoff_multi_agent_dispatch(
 
     if not is_ai_admin(principal):
         raise HTTPException(status_code=403, detail="admin_required")
+    conflict_detail: str | None = None
     try:
         async with transaction() as conn:
-            copied = await repositories.create_multi_agent_dispatch_child_run(
-                conn,
-                tenant_id=principal.tenant_id,
-                parent_run_id=run_id,
-                dispatch_id=dispatch_id,
-                handed_off_by=principal.user_id,
-            )
-            owner_principal = AuthPrincipal(
-                user_id=str(copied["user_id"]),
-                display_name=str(copied.get("user_id") or ""),
-                tenant_id=principal.tenant_id,
-                roles=["user"],
-                source="multi_agent_dispatch_handoff",
-            )
-            queue_payload = await prepare_copied_run_for_queue(
-                conn,
-                copied={**copied, "run_id": copied["child_run_id"]},
-                principal=principal,
-                queue_principal=owner_principal,
-                source="multi_agent_dispatch_handoff",
-            )
+            try:
+                copied = await repositories.create_multi_agent_dispatch_child_run(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    parent_run_id=run_id,
+                    dispatch_id=dispatch_id,
+                    handed_off_by=principal.user_id,
+                    active_run_admission_limit=int(get_settings().max_active_runs_per_user),
+                )
+            except RepositoryConflictError as exc:
+                conflict_detail = str(exc)
+            else:
+                owner_principal = AuthPrincipal(
+                    user_id=str(copied["user_id"]),
+                    display_name=str(copied.get("user_id") or ""),
+                    tenant_id=principal.tenant_id,
+                    roles=["user"],
+                    source="multi_agent_dispatch_handoff",
+                )
+                queue_payload = await prepare_copied_run_for_queue(
+                    conn,
+                    copied={**copied, "run_id": copied["child_run_id"]},
+                    principal=principal,
+                    queue_principal=owner_principal,
+                    source="multi_agent_dispatch_handoff",
+                )
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if conflict_detail is not None:
+        raise HTTPException(status_code=409, detail=conflict_detail)
     queue_position = await enqueue_run(queue_payload)
     return MultiAgentDispatchHandoffResponse(
         contract_version=MULTI_AGENT_DISPATCH_HANDOFF_CONTRACT_VERSION,
@@ -2532,6 +2540,7 @@ async def tick_multi_agent_dispatch(
 
     if not is_ai_admin(principal):
         raise HTTPException(status_code=403, detail="admin_required")
+    conflict_detail: str | None = None
     try:
         async with transaction() as conn:
             run = await repositories.get_run(conn, tenant_id=principal.tenant_id, run_id=run_id, for_update=True)
@@ -2549,33 +2558,40 @@ async def tick_multi_agent_dispatch(
                 lease_ttl_seconds=int(get_settings().multi_agent_dispatch_lease_ttl_seconds),
                 **candidate,
             )
-            copied = await repositories.create_multi_agent_dispatch_child_run(
-                conn,
-                tenant_id=principal.tenant_id,
-                parent_run_id=run_id,
-                dispatch_id=str(claim["dispatch_id"]),
-                handed_off_by=principal.user_id,
-            )
-            owner_principal = AuthPrincipal(
-                user_id=str(copied["user_id"]),
-                display_name=str(copied.get("user_id") or ""),
-                tenant_id=principal.tenant_id,
-                roles=["user"],
-                source="multi_agent_dispatch_tick",
-            )
-            queue_payload = await prepare_copied_run_for_queue(
-                conn,
-                copied={**copied, "run_id": copied["child_run_id"]},
-                principal=principal,
-                queue_principal=owner_principal,
-                source="multi_agent_dispatch_tick",
-            )
+            try:
+                copied = await repositories.create_multi_agent_dispatch_child_run(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    parent_run_id=run_id,
+                    dispatch_id=str(claim["dispatch_id"]),
+                    handed_off_by=principal.user_id,
+                    active_run_admission_limit=int(get_settings().max_active_runs_per_user),
+                )
+            except RepositoryConflictError as exc:
+                conflict_detail = str(exc)
+            else:
+                owner_principal = AuthPrincipal(
+                    user_id=str(copied["user_id"]),
+                    display_name=str(copied.get("user_id") or ""),
+                    tenant_id=principal.tenant_id,
+                    roles=["user"],
+                    source="multi_agent_dispatch_tick",
+                )
+                queue_payload = await prepare_copied_run_for_queue(
+                    conn,
+                    copied={**copied, "run_id": copied["child_run_id"]},
+                    principal=principal,
+                    queue_principal=owner_principal,
+                    source="multi_agent_dispatch_tick",
+                )
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if conflict_detail is not None:
+        raise HTTPException(status_code=409, detail=conflict_detail)
     queue_position = await enqueue_run(queue_payload)
     return MultiAgentDispatchTickResponse(
         contract_version=MULTI_AGENT_DISPATCH_TICK_CONTRACT_VERSION,

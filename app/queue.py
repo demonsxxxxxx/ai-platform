@@ -18,17 +18,166 @@ PROCESSING_META_KEY = f"{DEFAULT_QUEUE_KEY_PREFIX}:processing-meta"
 RETRY_META_KEY = f"{DEFAULT_QUEUE_KEY_PREFIX}:retry-meta"
 DEAD_LETTER_KEY = f"{DEFAULT_QUEUE_KEY_PREFIX}:dead-letter"
 WORKER_HEARTBEAT_KEY = f"{DEFAULT_QUEUE_KEY_PREFIX}:worker-heartbeat"
+QUEUED_META_KEY = f"{DEFAULT_QUEUE_KEY_PREFIX}:queued-meta"
+QUEUED_RUN_INDEX_KEY = f"{DEFAULT_QUEUE_KEY_PREFIX}:queued-run-index"
+QUEUED_ORDER_KEY = f"{DEFAULT_QUEUE_KEY_PREFIX}:queued-order"
+QUEUED_SEQUENCE_KEY = f"{DEFAULT_QUEUE_KEY_PREFIX}:queued-sequence"
 DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 900
 DEFAULT_MAX_ATTEMPTS = 3
 
 
+ENQUEUE_WITH_METADATA_SCRIPT = """
+-- ai-platform:enqueue-run-with-metadata:v1
+local queued_key = KEYS[1]
+local queued_meta_key = KEYS[2]
+local queued_run_index_key = KEYS[3]
+local queued_order_key = KEYS[4]
+local queued_sequence_key = KEYS[5]
+
+local raw = ARGV[1]
+local message_id = ARGV[2]
+local run_index_field = ARGV[3]
+local metadata_json = ARGV[4]
+
+local message_ids = {}
+local raw_index = redis.call("hget", queued_run_index_key, run_index_field)
+if raw_index then
+  local ok_index, decoded_index = pcall(cjson.decode, raw_index)
+  if ok_index and type(decoded_index) == "table" then
+    for _, indexed_message_id in ipairs(decoded_index) do
+      local candidate = tostring(indexed_message_id or "")
+      if candidate ~= "" and candidate ~= message_id then
+        table.insert(message_ids, candidate)
+      end
+    end
+  else
+    local candidate = tostring(raw_index or "")
+    if candidate ~= "" and candidate ~= message_id then
+      table.insert(message_ids, candidate)
+    end
+  end
+end
+table.insert(message_ids, message_id)
+
+local sequence = redis.call("incr", queued_sequence_key)
+local position = redis.call("rpush", queued_key, raw)
+local ok, metadata = pcall(cjson.decode, metadata_json)
+if not ok or type(metadata) ~= "table" then
+  metadata = {}
+end
+metadata["sequence"] = sequence
+metadata["raw"] = raw
+
+redis.call("hset", queued_meta_key, message_id, cjson.encode(metadata))
+redis.call("hset", queued_run_index_key, run_index_field, cjson.encode(message_ids))
+redis.call("zadd", queued_order_key, sequence, message_id)
+
+return cjson.encode({
+  status = "enqueued",
+  position = position,
+  sequence = sequence,
+})
+"""
+
+
+REMOVE_QUEUED_WITH_METADATA_SCRIPT = """
+-- ai-platform:remove-queued-with-metadata:v1
+local queued_key = KEYS[1]
+local queued_meta_key = KEYS[2]
+local queued_run_index_key = KEYS[3]
+local queued_order_key = KEYS[4]
+
+local run_index_field = ARGV[1]
+local tenant_id = ARGV[2]
+local run_id = ARGV[3]
+
+local raw_index = redis.call("hget", queued_run_index_key, run_index_field)
+if not raw_index then
+  return cjson.encode({status = "missing_index", removed = 0})
+end
+
+local message_ids = {}
+local ok_index, decoded_index = pcall(cjson.decode, raw_index)
+if ok_index and type(decoded_index) == "table" then
+  for _, indexed_message_id in ipairs(decoded_index) do
+    local candidate = tostring(indexed_message_id or "")
+    if candidate ~= "" then
+      table.insert(message_ids, candidate)
+    end
+  end
+else
+  table.insert(message_ids, tostring(raw_index or ""))
+end
+
+local removed_total = 0
+local matched = 0
+for _, message_id in ipairs(message_ids) do
+  local raw_metadata = redis.call("hget", queued_meta_key, message_id)
+  if raw_metadata then
+    local ok, metadata = pcall(cjson.decode, raw_metadata)
+    if ok and type(metadata) == "table" then
+      if tostring(metadata["tenant_id"] or "") == tenant_id and tostring(metadata["run_id"] or "") == run_id then
+        matched = matched + 1
+        local raw = tostring(metadata["raw"] or "")
+        if raw ~= "" then
+          removed_total = removed_total + redis.call("lrem", queued_key, 0, raw)
+        end
+        redis.call("hdel", queued_meta_key, message_id)
+        redis.call("zrem", queued_order_key, message_id)
+      end
+    else
+      redis.call("hdel", queued_meta_key, message_id)
+      redis.call("zrem", queued_order_key, message_id)
+    end
+  else
+    redis.call("zrem", queued_order_key, message_id)
+  end
+
+end
+
+redis.call("hdel", queued_run_index_key, run_index_field)
+
+if matched == 0 then
+  return cjson.encode({status = "missing_metadata", removed = 0})
+end
+return cjson.encode({status = "removed", removed = removed_total})
+"""
+
+
 LEASE_QUOTA_SCRIPT = """
 -- ai-platform:lease-run-with-quota:v1
+local function remove_run_index_message(queued_run_index_key, run_index_field, message_id)
+  local raw_index = redis.call("hget", queued_run_index_key, run_index_field)
+  if not raw_index then
+    return
+  end
+  local ok_index, decoded_index = pcall(cjson.decode, raw_index)
+  if ok_index and type(decoded_index) == "table" then
+    local remaining = {}
+    for _, indexed_message_id in ipairs(decoded_index) do
+      local candidate = tostring(indexed_message_id or "")
+      if candidate ~= "" and candidate ~= message_id then
+        table.insert(remaining, candidate)
+      end
+    end
+    if #remaining > 0 then
+      redis.call("hset", queued_run_index_key, run_index_field, cjson.encode(remaining))
+    else
+      redis.call("hdel", queued_run_index_key, run_index_field)
+    end
+  elseif tostring(raw_index or "") == message_id then
+    redis.call("hdel", queued_run_index_key, run_index_field)
+  end
+end
+
 local queued_key = KEYS[1]
 local processing_key = KEYS[2]
 local processing_meta_key = KEYS[3]
 local retry_meta_key = KEYS[4]
 local worker_heartbeat_key = KEYS[5]
+local queued_meta_key = KEYS[6]
+local queued_run_index_key = KEYS[7]
+local queued_order_key = KEYS[8]
 
 local raw = ARGV[1]
 local scan_limit = tonumber(ARGV[2])
@@ -108,6 +257,9 @@ end
 local sentinel = "__ai_platform_queue_move__:" .. message_id .. ":" .. tostring(now) .. ":" .. worker_id
 redis.call("lset", queued_key, absolute_index, sentinel)
 redis.call("lrem", queued_key, 1, sentinel)
+redis.call("hdel", queued_meta_key, message_id)
+remove_run_index_message(queued_run_index_key, tenant_id .. ":" .. run_id, message_id)
+redis.call("zrem", queued_order_key, message_id)
 redis.call("lpush", processing_key, raw)
 
 local quota_snapshot = {
@@ -144,10 +296,37 @@ return cjson.encode({
 
 DEAD_LETTER_INVALID_QUOTA_SCRIPT = """
 -- ai-platform:dead-letter-invalid-quota:v1
+local function remove_run_index_message(queued_run_index_key, run_index_field, message_id)
+  local raw_index = redis.call("hget", queued_run_index_key, run_index_field)
+  if not raw_index then
+    return
+  end
+  local ok_index, decoded_index = pcall(cjson.decode, raw_index)
+  if ok_index and type(decoded_index) == "table" then
+    local remaining = {}
+    for _, indexed_message_id in ipairs(decoded_index) do
+      local candidate = tostring(indexed_message_id or "")
+      if candidate ~= "" and candidate ~= message_id then
+        table.insert(remaining, candidate)
+      end
+    end
+    if #remaining > 0 then
+      redis.call("hset", queued_run_index_key, run_index_field, cjson.encode(remaining))
+    else
+      redis.call("hdel", queued_run_index_key, run_index_field)
+    end
+  elseif tostring(raw_index or "") == message_id then
+    redis.call("hdel", queued_run_index_key, run_index_field)
+  end
+end
+
 local queued_key = KEYS[1]
 local processing_meta_key = KEYS[2]
 local retry_meta_key = KEYS[3]
 local dead_letter_key = KEYS[4]
+local queued_meta_key = KEYS[5]
+local queued_run_index_key = KEYS[6]
+local queued_order_key = KEYS[7]
 
 local raw = ARGV[1]
 local scan_limit = tonumber(ARGV[2])
@@ -188,6 +367,19 @@ end
 local sentinel = "__ai_platform_queue_dead_letter__:" .. message_id .. ":" .. tostring(now) .. ":" .. worker_id
 redis.call("lset", queued_key, absolute_index, sentinel)
 redis.call("lrem", queued_key, 1, sentinel)
+local raw_queued_meta = redis.call("hget", queued_meta_key, message_id)
+if raw_queued_meta then
+  local ok_meta, queued_meta = pcall(cjson.decode, raw_queued_meta)
+  if ok_meta and type(queued_meta) == "table" then
+    local indexed_tenant_id = tostring(queued_meta["tenant_id"] or "")
+    local indexed_run_id = tostring(queued_meta["run_id"] or "")
+    if indexed_tenant_id ~= "" and indexed_run_id ~= "" then
+      remove_run_index_message(queued_run_index_key, indexed_tenant_id .. ":" .. indexed_run_id, message_id)
+    end
+  end
+end
+redis.call("hdel", queued_meta_key, message_id)
+redis.call("zrem", queued_order_key, message_id)
 redis.call("rpush", dead_letter_key, cjson.encode({
   schema_version = "ai-platform.dead-letter.v1",
   error_code = "invalid_queue_payload",
@@ -211,6 +403,10 @@ class QueueKeys:
     retry_meta: str
     dead_letter: str
     worker_heartbeat: str
+    queued_meta: str
+    queued_run_index: str
+    queued_order: str
+    queued_sequence: str
 
 
 @dataclass(frozen=True)
@@ -234,11 +430,35 @@ def get_queue_keys() -> QueueKeys:
         retry_meta=f"{prefix}:retry-meta",
         dead_letter=f"{prefix}:dead-letter",
         worker_heartbeat=f"{prefix}:worker-heartbeat",
+        queued_meta=f"{prefix}:queued-meta",
+        queued_run_index=f"{prefix}:queued-run-index",
+        queued_order=f"{prefix}:queued-order",
+        queued_sequence=f"{prefix}:queued-sequence",
     )
 
 
 def message_id_for_raw(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def queued_run_index_field(*, tenant_id: str, run_id: str) -> str:
+    return f"{tenant_id}:{run_id}"
+
+
+def _decode_run_index_message_ids(raw_index: Any) -> list[str]:
+    if not raw_index:
+        return []
+    if isinstance(raw_index, list):
+        return [str(item) for item in raw_index if str(item)]
+    if not isinstance(raw_index, str):
+        return [str(raw_index)]
+    try:
+        decoded = json.loads(raw_index)
+    except json.JSONDecodeError:
+        return [raw_index]
+    if isinstance(decoded, list):
+        return [str(item) for item in decoded if str(item)]
+    return [raw_index]
 
 
 def _now() -> float:
@@ -271,9 +491,32 @@ async def enqueue_run(payload: dict[str, Any]) -> int:
     validated = QueueRunPayload.model_validate(payload)
     keys = get_queue_keys()
     redis = await get_redis()
+    raw = validated.model_dump_json()
+    message_id = message_id_for_raw(raw)
+    metadata = {
+        "run_id": validated.run_id,
+        "tenant_id": validated.tenant_id,
+        "workspace_id": validated.workspace_id,
+        "user_id": validated.user_id,
+        "enqueued_at": _now(),
+    }
     try:
-        position = await redis.rpush(keys.queued, validated.model_dump_json())
-        return int(position or 1)
+        result = _decode_redis_script_result(
+            await redis.eval(
+                ENQUEUE_WITH_METADATA_SCRIPT,
+                5,
+                keys.queued,
+                keys.queued_meta,
+                keys.queued_run_index,
+                keys.queued_order,
+                keys.queued_sequence,
+                raw,
+                message_id,
+                queued_run_index_field(tenant_id=validated.tenant_id, run_id=validated.run_id),
+                json.dumps(metadata, ensure_ascii=False),
+            )
+        )
+        return int(result.get("position") or 1)
     finally:
         await redis.aclose()
 
@@ -281,20 +524,64 @@ async def enqueue_run(payload: dict[str, Any]) -> int:
 async def remove_queued_run(*, tenant_id: str, run_id: str) -> int:
     keys = get_queue_keys()
     redis = await get_redis()
-    removed_total = 0
     try:
-        queued_items = await redis.lrange(keys.queued, 0, -1)
-        for raw in queued_items:
-            try:
-                payload = QueueRunPayload.model_validate_json(raw)
-            except Exception:
-                continue
-            if payload.tenant_id != tenant_id or payload.run_id != run_id:
-                continue
-            removed_total += int(await redis.lrem(keys.queued, 0, raw) or 0)
-        return removed_total
+        result = _decode_redis_script_result(
+            await redis.eval(
+                REMOVE_QUEUED_WITH_METADATA_SCRIPT,
+                4,
+                keys.queued,
+                keys.queued_meta,
+                keys.queued_run_index,
+                keys.queued_order,
+                queued_run_index_field(tenant_id=tenant_id, run_id=run_id),
+                tenant_id,
+                run_id,
+            )
+        )
+        removed = int(result.get("removed") or 0)
+        status = str(result.get("status") or "")
+        if removed > 0 or status not in {"missing_index", "missing_metadata"}:
+            return removed
+        return await _remove_queued_run_bounded_fallback(
+            redis,
+            keys,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            scan_limit=int(getattr(get_settings(), "queue_metadata_fallback_scan_limit", 500)),
+        )
     finally:
         await redis.aclose()
+
+
+async def _remove_queued_run_bounded_fallback(
+    redis: Redis,
+    keys: QueueKeys,
+    *,
+    tenant_id: str,
+    run_id: str,
+    scan_limit: int,
+) -> int:
+    if scan_limit <= 0:
+        return 0
+    queued_items = await redis.lrange(keys.queued, -int(scan_limit), -1)
+    removed_total = 0
+    for raw in queued_items:
+        try:
+            payload = QueueRunPayload.model_validate_json(raw)
+        except Exception:
+            continue
+        if payload.tenant_id != tenant_id or payload.run_id != run_id:
+            continue
+        message_id = message_id_for_raw(raw)
+        removed_total += int(await redis.lrem(keys.queued, 0, raw) or 0)
+        await _delete_queued_metadata_for_payload(
+            redis,
+            keys,
+            message_id=message_id,
+            tenant_id=payload.tenant_id,
+            run_id=payload.run_id,
+        )
+    return removed_total
 
 
 async def get_queue_status() -> dict[str, Any]:
@@ -651,14 +938,39 @@ async def get_run_queue_position(*, tenant_id: str, run_id: str) -> int | None:
     keys = get_queue_keys()
     redis = await get_redis()
     try:
-        queued_items = await redis.lrange(keys.queued, 0, -1)
-        for index, raw in enumerate(queued_items, start=1):
-            try:
-                payload = QueueRunPayload.model_validate_json(raw)
-            except Exception:
+        index_field = queued_run_index_field(tenant_id=tenant_id, run_id=run_id)
+        raw_index = await redis.hget(keys.queued_run_index, index_field)
+        message_ids = _decode_run_index_message_ids(raw_index)
+        if not message_ids:
+            return None
+        valid_message_ids: list[str] = []
+        best_rank: int | None = None
+        for message_id in message_ids:
+            raw_metadata = await redis.hget(keys.queued_meta, message_id)
+            if not raw_metadata:
+                await redis.zrem(keys.queued_order, message_id)
                 continue
-            if payload.tenant_id == tenant_id and payload.run_id == run_id:
-                return index
+            try:
+                metadata = json.loads(raw_metadata)
+            except (TypeError, json.JSONDecodeError):
+                await redis.hdel(keys.queued_meta, message_id)
+                await redis.zrem(keys.queued_order, message_id)
+                continue
+            if metadata.get("tenant_id") != tenant_id or metadata.get("run_id") != run_id:
+                continue
+            rank = await redis.zrank(keys.queued_order, message_id)
+            if rank is None:
+                continue
+            valid_message_ids.append(message_id)
+            rank_int = int(rank)
+            if best_rank is None or rank_int < best_rank:
+                best_rank = rank_int
+        if valid_message_ids:
+            if valid_message_ids != message_ids:
+                await redis.hset(keys.queued_run_index, index_field, json.dumps(valid_message_ids, ensure_ascii=False))
+            return int(best_rank or 0) + 1
+        if raw_index:
+            await redis.hdel(keys.queued_run_index, index_field)
         return None
     finally:
         await redis.aclose()
@@ -695,6 +1007,87 @@ async def _record_leased_payload(
     await redis.hset(keys.worker_heartbeat, worker_id, str(now))
 
 
+async def _write_queued_metadata_for_raw(redis: Redis, keys: QueueKeys, raw: str) -> None:
+    payload = QueueRunPayload.model_validate_json(raw)
+    message_id = message_id_for_raw(raw)
+    sequence = int(await redis.incr(keys.queued_sequence) or 1)
+    metadata = {
+        "run_id": payload.run_id,
+        "tenant_id": payload.tenant_id,
+        "workspace_id": payload.workspace_id,
+        "user_id": payload.user_id,
+        "enqueued_at": _now(),
+        "sequence": sequence,
+        "raw": raw,
+    }
+    await redis.hset(keys.queued_meta, message_id, json.dumps(metadata, ensure_ascii=False))
+    index_field = queued_run_index_field(tenant_id=payload.tenant_id, run_id=payload.run_id)
+    message_ids = _decode_run_index_message_ids(await redis.hget(keys.queued_run_index, index_field))
+    message_ids = [candidate for candidate in message_ids if candidate != message_id]
+    message_ids.append(message_id)
+    await redis.hset(keys.queued_run_index, index_field, json.dumps(message_ids, ensure_ascii=False))
+    await redis.zadd(keys.queued_order, {message_id: sequence})
+
+
+async def _remove_message_id_from_run_index(
+    redis: Redis,
+    keys: QueueKeys,
+    *,
+    tenant_id: str,
+    run_id: str,
+    message_id: str,
+) -> None:
+    index_field = queued_run_index_field(tenant_id=tenant_id, run_id=run_id)
+    message_ids = _decode_run_index_message_ids(await redis.hget(keys.queued_run_index, index_field))
+    if not message_ids:
+        return
+    remaining = [candidate for candidate in message_ids if candidate != message_id]
+    if remaining:
+        await redis.hset(keys.queued_run_index, index_field, json.dumps(remaining, ensure_ascii=False))
+    else:
+        await redis.hdel(keys.queued_run_index, index_field)
+
+
+async def _delete_queued_metadata_for_payload(
+    redis: Redis,
+    keys: QueueKeys,
+    *,
+    message_id: str,
+    tenant_id: str,
+    run_id: str,
+) -> None:
+    await redis.hdel(keys.queued_meta, message_id)
+    await _remove_message_id_from_run_index(
+        redis,
+        keys,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        message_id=message_id,
+    )
+    await redis.zrem(keys.queued_order, message_id)
+
+
+async def _delete_queued_metadata_for_message_id(redis: Redis, keys: QueueKeys, *, message_id: str) -> None:
+    raw_metadata = await redis.hget(keys.queued_meta, message_id)
+    if raw_metadata:
+        try:
+            metadata = json.loads(raw_metadata)
+        except (TypeError, json.JSONDecodeError):
+            metadata = {}
+        tenant_id = str(metadata.get("tenant_id") or "")
+        run_id = str(metadata.get("run_id") or "")
+        if tenant_id and run_id:
+            await _remove_message_id_from_run_index(
+                redis,
+                keys,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                message_id=message_id,
+            )
+    await redis.hdel(keys.queued_meta, message_id)
+    await redis.zrem(keys.queued_order, message_id)
+
+
 async def _dead_letter_invalid_queue_payload(
     redis: Redis,
     keys: QueueKeys,
@@ -718,6 +1111,7 @@ async def _dead_letter_invalid_queue_payload(
         ),
     )
     await redis.hdel(keys.retry_meta, message_id)
+    await _delete_queued_metadata_for_message_id(redis, keys, message_id=message_id)
 
 
 async def _dead_letter_invalid_queued_payload_atomic(
@@ -733,11 +1127,14 @@ async def _dead_letter_invalid_queued_payload_atomic(
 ) -> dict[str, Any]:
     result = await redis.eval(
         DEAD_LETTER_INVALID_QUOTA_SCRIPT,
-        4,
+        7,
         keys.queued,
         keys.processing_meta,
         keys.retry_meta,
         keys.dead_letter,
+        keys.queued_meta,
+        keys.queued_run_index,
+        keys.queued_order,
         raw,
         lease_scan_limit,
         absolute_index,
@@ -771,7 +1168,11 @@ async def _lease_run_legacy(
         processing_depth = int(await redis.llen(keys.processing))
         if processing_depth > max_processing_runs:
             await redis.lrem(keys.processing, 1, raw)
-            await redis.lpush(keys.queued, raw)
+            await redis.rpush(keys.queued, raw)
+            try:
+                await _write_queued_metadata_for_raw(redis, keys, raw)
+            except Exception:
+                pass
             return None
     message_id = message_id_for_raw(raw)
     now = _now()
@@ -792,6 +1193,13 @@ async def _lease_run_legacy(
             error_message=str(exc),
         )
         return None
+    await _delete_queued_metadata_for_payload(
+        redis,
+        keys,
+        message_id=message_id,
+        tenant_id=str(payload["tenant_id"]),
+        run_id=str(payload["run_id"]),
+    )
     await _record_leased_payload(
         redis,
         keys,
@@ -822,61 +1230,75 @@ async def _lease_run_with_quota(
         return None
 
     queued_depth = int(await redis.llen(keys.queued))
-    scan_start = max(queued_depth - lease_scan_limit, 0)
-    queued_items = await redis.lrange(keys.queued, scan_start, -1)
-    if not queued_items:
+    if queued_depth <= 0:
         return None
 
-    for raw_index, raw in reversed(list(enumerate(queued_items))):
-        absolute_index = scan_start + raw_index
-        message_id = message_id_for_raw(raw)
-        try:
-            payload_model = QueueRunPayload.model_validate_json(raw)
-        except Exception as exc:
-            await _dead_letter_invalid_queued_payload_atomic(
-                redis,
-                keys,
-                raw=raw,
-                message_id=message_id,
-                worker_id=worker_id,
-                lease_scan_limit=lease_scan_limit,
-                absolute_index=absolute_index,
-                error_message=str(exc),
-            )
-            continue
+    window_size = max(int(lease_scan_limit), 1)
+    fairness_horizon = min(queued_depth, max(window_size * 4, window_size))
+    scanned = 0
+    while scanned < fairness_horizon:
+        end_index = queued_depth - scanned - 1
+        if end_index < 0:
+            break
+        min_index = max(queued_depth - fairness_horizon, 0)
+        scan_start = max(end_index - window_size + 1, min_index)
+        queued_items = await redis.lrange(keys.queued, scan_start, end_index)
+        if not queued_items:
+            break
+        for raw_index, raw in reversed(list(enumerate(queued_items))):
+            absolute_index = scan_start + raw_index
+            message_id = message_id_for_raw(raw)
+            try:
+                payload_model = QueueRunPayload.model_validate_json(raw)
+            except Exception as exc:
+                await _dead_letter_invalid_queued_payload_atomic(
+                    redis,
+                    keys,
+                    raw=raw,
+                    message_id=message_id,
+                    worker_id=worker_id,
+                    lease_scan_limit=lease_scan_limit,
+                    absolute_index=absolute_index,
+                    error_message=str(exc),
+                )
+                continue
 
-        result = _decode_redis_script_result(
-            await redis.eval(
-                LEASE_QUOTA_SCRIPT,
-                5,
-                keys.queued,
-                keys.processing,
-                keys.processing_meta,
-                keys.retry_meta,
-                keys.worker_heartbeat,
-                raw,
-                lease_scan_limit,
-                absolute_index,
-                message_id,
-                worker_id,
-                _now(),
-                int(max_processing_runs or 0),
-                tenant_processing_limit,
-                user_processing_limit,
-                payload_model.tenant_id,
-                payload_model.user_id,
-                payload_model.run_id,
+            result = _decode_redis_script_result(
+                await redis.eval(
+                    LEASE_QUOTA_SCRIPT,
+                    8,
+                    keys.queued,
+                    keys.processing,
+                    keys.processing_meta,
+                    keys.retry_meta,
+                    keys.worker_heartbeat,
+                    keys.queued_meta,
+                    keys.queued_run_index,
+                    keys.queued_order,
+                    raw,
+                    lease_scan_limit,
+                    absolute_index,
+                    message_id,
+                    worker_id,
+                    _now(),
+                    int(max_processing_runs or 0),
+                    tenant_processing_limit,
+                    user_processing_limit,
+                    payload_model.tenant_id,
+                    payload_model.user_id,
+                    payload_model.run_id,
+                )
             )
-        )
-        status = str(result.get("status") or "")
-        if status == "capacity_full":
-            return None
-        if status in {"conflict", "quota_blocked"}:
-            continue
-        if status != "leased":
-            continue
-        payload = payload_model.model_dump()
-        return QueueMessage(raw=raw, payload=payload, message_id=message_id)
+            status = str(result.get("status") or "")
+            if status == "capacity_full":
+                return None
+            if status in {"conflict", "quota_blocked"}:
+                continue
+            if status != "leased":
+                continue
+            payload = payload_model.model_dump()
+            return QueueMessage(raw=raw, payload=payload, message_id=message_id)
+        scanned += end_index - scan_start + 1
     return None
 
 
@@ -1045,6 +1467,7 @@ async def reclaim_expired_leases(
                         ),
                     )
                     await redis.rpush(keys.queued, raw)
+                    await _write_queued_metadata_for_raw(redis, keys, raw)
                     reclaimed += 1
                 continue
             try:
@@ -1084,6 +1507,7 @@ async def reclaim_expired_leases(
                     ),
                 )
                 await redis.rpush(keys.queued, raw)
+                await _write_queued_metadata_for_raw(redis, keys, raw)
                 reclaimed += 1
         return {"reclaimed": reclaimed, "dead_lettered": dead_lettered}
     finally:

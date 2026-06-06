@@ -3376,6 +3376,78 @@ def _completed_dependency_resume_payload(
     return resume
 
 
+async def release_multi_agent_dispatch_claim(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    parent_run_id: str,
+    parent_step_id: str,
+    dispatch_id: str,
+    reason: str,
+    triggered_by: str,
+) -> dict[str, Any] | None:
+    """Release a claimed dispatch step so fail-closed admission does not strand it."""
+    safe_reason = sanitize_public_text(reason) or "dispatch_claim_released"
+    released_at = datetime.now(timezone.utc).isoformat()
+    step_cursor = await conn.execute(
+        """
+        update run_steps
+        set
+          status = 'pending',
+          started_at = null,
+          finished_at = null,
+          payload_json = (
+            coalesce(payload_json, '{}'::jsonb)
+              - 'dispatch_state'
+              - 'dispatch_kind'
+              - 'dispatch_id'
+              - 'dispatch_claimed_by'
+              - 'dispatch_claimed_at'
+              - 'dispatch_lease_expires_at'
+          ) || %s::jsonb,
+          updated_at = now()
+        where tenant_id = %s
+          and run_id = %s
+          and id = %s
+          and payload_json->>'dispatch_id' = %s
+          and payload_json->>'dispatch_state' = 'claimed'
+        returning id, step_key
+        """,
+        (
+            dumps_json(
+                {
+                    "dispatch_released_at": released_at,
+                    "dispatch_release_reason": safe_reason,
+                }
+            ),
+            tenant_id,
+            parent_run_id,
+            parent_step_id,
+            dispatch_id,
+        ),
+    )
+    step = await step_cursor.fetchone()
+    if step is None:
+        return None
+    audit_id = await append_audit_log(
+        conn,
+        tenant_id=tenant_id,
+        user_id=triggered_by,
+        action="run.multi_agent.dispatch.claim_released",
+        target_type="run_step",
+        target_id=str(step["id"]),
+        payload_json={
+            "parent_run_id": parent_run_id,
+            "parent_step_id": str(step["id"]),
+            "step_key": str(step.get("step_key") or ""),
+            "dispatch_id": dispatch_id,
+            "reason": safe_reason,
+            "result_status": "pending",
+        },
+    )
+    return {"parent_step_id": str(step["id"]), "step_key": str(step.get("step_key") or ""), "audit_id": audit_id}
+
+
 async def create_multi_agent_dispatch_child_run(
     conn: AsyncConnection,
     *,
@@ -3383,8 +3455,14 @@ async def create_multi_agent_dispatch_child_run(
     parent_run_id: str,
     dispatch_id: str,
     handed_off_by: str,
+    active_run_admission_limit: int,
 ) -> dict[str, Any]:
     """Create one queued child run for an admin-claimed multi-agent dispatch step."""
+    try:
+        admission_limit = int(active_run_admission_limit)
+    except (TypeError, ValueError) as exc:
+        raise RepositoryConflictError("active_run_admission_limit_required") from exc
+
     parent_cursor = await conn.execute(
         """
         select id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id,
@@ -3425,6 +3503,24 @@ async def create_multi_agent_dispatch_child_run(
         raise RepositoryConflictError("dispatch_claim_lease_invalid")
     if lease_expires_at <= datetime.now(timezone.utc):
         raise RepositoryConflictError("dispatch_claim_expired")
+    try:
+        await enforce_user_active_run_admission(
+            conn,
+            tenant_id=tenant_id,
+            user_id=str(parent["user_id"]),
+            limit=admission_limit,
+        )
+    except RepositoryConflictError as exc:
+        await release_multi_agent_dispatch_claim(
+            conn,
+            tenant_id=tenant_id,
+            parent_run_id=parent_run_id,
+            parent_step_id=str(step["id"]),
+            dispatch_id=dispatch_id,
+            reason=str(exc),
+            triggered_by=handed_off_by,
+        )
+        raise
 
     steps = await list_run_steps(conn, tenant_id=tenant_id, run_id=parent_run_id)
     depends_on = [str(item) for item in payload.get("depends_on") or [] if str(item)]

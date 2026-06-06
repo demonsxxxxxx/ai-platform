@@ -2028,6 +2028,7 @@ def test_multi_agent_dispatch_tick_claims_handoffs_and_enqueues_next_ready_step(
             "parent_run_id": "run-parent",
             "dispatch_id": "dispatch-code",
             "handed_off_by": "admin-a",
+            "active_run_admission_limit": 3,
         }
         return {
             "child_run_id": "run-child",
@@ -2065,7 +2066,7 @@ def test_multi_agent_dispatch_tick_claims_handoffs_and_enqueues_next_ready_step(
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr(
         "app.routes.runs.get_settings",
-        lambda: type("S", (), {"multi_agent_dispatch_lease_ttl_seconds": 300})(),
+        lambda: type("S", (), {"multi_agent_dispatch_lease_ttl_seconds": 300, "max_active_runs_per_user": 3})(),
     )
     monkeypatch.setattr("app.routes.runs.transaction", tick_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.get_run", fake_get_run, raising=False)
@@ -2262,8 +2263,8 @@ def test_multi_agent_dispatch_handoff_requires_admin(monkeypatch):
 def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues(monkeypatch):
     calls = {"handoff": [], "context": [], "queue": [], "step": []}
 
-    async def fake_handoff(conn, *, tenant_id, parent_run_id, dispatch_id, handed_off_by):
-        calls["handoff"].append((tenant_id, parent_run_id, dispatch_id, handed_off_by))
+    async def fake_handoff(conn, *, tenant_id, parent_run_id, dispatch_id, handed_off_by, active_run_admission_limit):
+        calls["handoff"].append((tenant_id, parent_run_id, dispatch_id, handed_off_by, active_run_admission_limit))
         return {
             "parent_run_id": parent_run_id,
             "parent_step_id": "step-code",
@@ -2372,7 +2373,7 @@ def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues
         "child_event_id": "evt-child",
         "audit_id": "aud-handoff",
     }
-    assert calls["handoff"] == [("default", "run-ready", "dispatch-code", "admin-a")]
+    assert calls["handoff"] == [("default", "run-ready", "dispatch-code", "admin-a", 3)]
     assert calls["context"][0]["source"] == "multi_agent_dispatch_handoff"
     assert calls["context"][0]["user_id"] == "user-a"
     assert calls["context"][0]["run_id"] == "run-child"
@@ -2384,7 +2385,7 @@ def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues
 
 
 def test_admin_multi_agent_dispatch_handoff_rejects_duplicate_without_enqueue(monkeypatch):
-    async def fake_handoff(conn, *, tenant_id, parent_run_id, dispatch_id, handed_off_by):
+    async def fake_handoff(conn, *, tenant_id, parent_run_id, dispatch_id, handed_off_by, active_run_admission_limit):
         raise RepositoryConflictError("dispatch_already_handed_off")
 
     async def fail_enqueue(payload):
@@ -2405,8 +2406,44 @@ def test_admin_multi_agent_dispatch_handoff_rejects_duplicate_without_enqueue(mo
     assert response.json()["detail"] == "dispatch_already_handed_off"
 
 
+def test_admin_multi_agent_dispatch_handoff_commits_release_on_admission_conflict(monkeypatch):
+    tx_clean_exits = []
+
+    class Transaction:
+        async def __aenter__(self):
+            return EmptyPropagationConnection()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            tx_clean_exits.append(exc_type is None)
+            return False
+
+    def transaction_with_exit_probe():
+        return Transaction()
+
+    async def fake_handoff(conn, *, tenant_id, parent_run_id, dispatch_id, handed_off_by, active_run_admission_limit):
+        raise RepositoryConflictError("user_active_run_limit_exceeded")
+
+    async def fail_enqueue(payload):
+        raise AssertionError("admission conflict must not enqueue")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", transaction_with_exit_probe)
+    monkeypatch.setattr("app.routes.runs.repositories.create_multi_agent_dispatch_child_run", fake_handoff, raising=False)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runs/run-ready/multi-agent/dispatch/claims/dispatch-code/handoff",
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "user_active_run_limit_exceeded"
+    assert tx_clean_exits == [True]
+
+
 def test_admin_multi_agent_dispatch_handoff_rejects_expired_claim_without_enqueue(monkeypatch):
-    async def fake_handoff(conn, *, tenant_id, parent_run_id, dispatch_id, handed_off_by):
+    async def fake_handoff(conn, *, tenant_id, parent_run_id, dispatch_id, handed_off_by, active_run_admission_limit):
         raise RepositoryConflictError("dispatch_claim_expired")
 
     async def fail_enqueue(payload):
@@ -4437,9 +4474,14 @@ async def test_create_multi_agent_dispatch_child_run_records_parent_child_events
         calls.append(("audit", kwargs))
         return "aud-handoff"
 
+    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
+        calls.append(("admission", tenant_id, (user_id, limit)))
+        return 0
+
     monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.repositories.enforce_user_active_run_admission", fake_enforce_user_active_run_admission)
 
     copied = await repositories.create_multi_agent_dispatch_child_run(
         FakeConnection(),
@@ -4447,12 +4489,14 @@ async def test_create_multi_agent_dispatch_child_run_records_parent_child_events
         parent_run_id="run-parent",
         dispatch_id="dispatch-code",
         handed_off_by="admin-a",
+        active_run_admission_limit=0,
     )
 
     assert copied["child_run_id"].startswith("run")
     assert copied["run_id"] == copied["child_run_id"]
     assert copied["user_id"] == "user-a"
     assert copied["session_id"] == "ses-owner"
+    assert ("admission", "default", ("user-a", 0)) in calls
     insert_sql, insert_params = next((sql, params) for kind, sql, params in calls if kind == "sql" and sql.startswith("insert into runs"))
     assert "copied_from_run_id" in insert_sql
     persisted_input = json.loads(insert_params[10])
@@ -4479,6 +4523,92 @@ async def test_create_multi_agent_dispatch_child_run_records_parent_child_events
     assert audit["target_id"] == "step-code"
     assert audit["payload_json"]["child_run_id"] == copied["child_run_id"]
     assert audit["payload_json"]["admin_user_id"] == "admin-a"
+
+
+@pytest.mark.asyncio
+async def test_create_multi_agent_dispatch_child_run_enforces_owner_admission(monkeypatch):
+    from app import repositories
+
+    calls = []
+    parent_run = {
+        "id": "run-parent",
+        "tenant_id": "default",
+        "workspace_id": "default",
+        "session_id": "ses-owner",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "trace_id": "trace-parent",
+        "status": "running",
+        "input_json": {"input": {"execution_mode": "multi_agent"}},
+    }
+    claimed_step = {
+        "id": "step-code",
+        "run_id": "run-parent",
+        "step_key": "code",
+        "step_kind": "agent",
+        "status": "running",
+        "title": "Code",
+        "role": "coder",
+        "sequence": 2,
+        "payload_json": {
+            "dispatch_state": "claimed",
+            "dispatch_id": "dispatch-code",
+            "dispatch_lease_expires_at": "2999-01-01T00:00:00+00:00",
+        },
+    }
+
+    class Cursor:
+        def __init__(self, row=None):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+        async def fetchall(self):
+            return []
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append(("sql", normalized, params))
+            if normalized.startswith("select id, tenant_id, workspace_id") and "from runs" in normalized:
+                return Cursor(row=parent_run)
+            if "from run_steps" in normalized and "payload_json->>'dispatch_id'" in normalized:
+                return Cursor(row=claimed_step)
+            if normalized.startswith("update run_steps"):
+                return Cursor(row={"id": "step-code", "step_key": "code"})
+            if normalized.startswith("insert into runs"):
+                raise AssertionError("child run insert must not happen after admission rejection")
+            return Cursor()
+
+    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
+        calls.append(("admission", tenant_id, user_id, limit))
+        raise repositories.RepositoryConflictError("user_active_run_limit_exceeded")
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "aud-release"
+
+    monkeypatch.setattr("app.repositories.enforce_user_active_run_admission", fake_enforce_user_active_run_admission)
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+
+    with pytest.raises(repositories.RepositoryConflictError, match="user_active_run_limit_exceeded"):
+        await repositories.create_multi_agent_dispatch_child_run(
+            FakeConnection(),
+            tenant_id="default",
+            parent_run_id="run-parent",
+            dispatch_id="dispatch-code",
+            handed_off_by="admin-a",
+            active_run_admission_limit=3,
+        )
+
+    assert ("admission", "default", "user-a", 3) in calls
+    release_sql = next(call[1] for call in calls if call[0] == "sql" and call[1].startswith("update run_steps"))
+    assert "status = 'pending'" in release_sql
+    audit = next(call[1] for call in calls if call[0] == "audit")
+    assert audit["action"] == "run.multi_agent.dispatch.claim_released"
+    assert not any(call[0] == "sql" and call[1].startswith("insert into runs") for call in calls)
 
 
 @pytest.mark.asyncio
@@ -4570,9 +4700,13 @@ async def test_create_multi_agent_dispatch_child_run_builds_single_step_resume_i
     async def fake_append_audit_log(conn, **kwargs):
         return "aud-handoff"
 
+    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
+        return 0
+
     monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.repositories.enforce_user_active_run_admission", fake_enforce_user_active_run_admission)
 
     copied = await repositories.create_multi_agent_dispatch_child_run(
         FakeConnection(),
@@ -4580,6 +4714,7 @@ async def test_create_multi_agent_dispatch_child_run_builds_single_step_resume_i
         parent_run_id="run-parent",
         dispatch_id="dispatch-code",
         handed_off_by="admin-a",
+        active_run_admission_limit=3,
     )
 
     assert [step["step_key"] for step in copied["input"]["multi_agent_steps"]] == ["code"]
@@ -4650,6 +4785,7 @@ async def test_create_multi_agent_dispatch_child_run_rejects_malformed_claim_lea
             parent_run_id="run-parent",
             dispatch_id="dispatch-code",
             handed_off_by="admin-a",
+            active_run_admission_limit=3,
         )
 
     assert not any(sql.startswith("insert into runs") for sql in calls)

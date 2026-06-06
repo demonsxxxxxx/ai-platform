@@ -97,6 +97,7 @@ async def _dispatch_one_ready_parent(
         parent_run_id=run_id,
         dispatch_id=str(claim["dispatch_id"]),
         handed_off_by=principal.user_id,
+        active_run_admission_limit=int(getattr(settings, "max_active_runs_per_user")),
     )
     owner_principal = AuthPrincipal(
         user_id=str(copied["user_id"]),
@@ -161,15 +162,22 @@ async def dispatch_multi_agent_ready_steps_for_worker(
     results: list[dict[str, object]] = []
     for run_id in candidate_run_ids:
         run_id = str(run_id)
+        conflict_detail: str | None = None
         try:
             async with transaction() as conn:
-                dispatch = await _dispatch_one_ready_parent(
-                    conn,
-                    tenant_id=tenant_id,
-                    run_id=run_id,
-                    principal=principal,
-                    settings=settings,
-                )
+                try:
+                    dispatch = await _dispatch_one_ready_parent(
+                        conn,
+                        tenant_id=tenant_id,
+                        run_id=run_id,
+                        principal=principal,
+                        settings=settings,
+                    )
+                except RepositoryConflictError as exc:
+                    conflict_detail = str(exc)
+            if conflict_detail is not None:
+                results.append(_skip_result(run_id, conflict_detail))
+                continue
             queue_payload = dispatch.pop("queue_payload")
             try:
                 queue_position = await enqueue_run(queue_payload if isinstance(queue_payload, dict) else {})

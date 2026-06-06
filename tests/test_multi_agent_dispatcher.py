@@ -58,6 +58,7 @@ async def test_worker_dispatcher_dispatches_candidate_parent_and_enqueues_child(
         multi_agent_dispatch_worker_user_id = "system:multi-agent-dispatcher"
         default_tenant_id = "default"
         multi_agent_dispatch_lease_ttl_seconds = 300
+        max_active_runs_per_user = 3
 
     class Transaction:
         async def __aenter__(self):
@@ -148,6 +149,7 @@ async def test_worker_dispatcher_dispatches_candidate_parent_and_enqueues_child(
             "parent_run_id": "run-parent",
             "dispatch_id": "dispatch-code",
             "handed_off_by": "system:multi-agent-dispatcher",
+            "active_run_admission_limit": 3,
         }
         return {
             "child_run_id": "run-child",
@@ -277,6 +279,7 @@ async def test_worker_dispatcher_compensates_child_handoff_when_enqueue_fails(mo
         multi_agent_dispatch_worker_user_id = "system:multi-agent-dispatcher"
         default_tenant_id = "default"
         multi_agent_dispatch_lease_ttl_seconds = 300
+        max_active_runs_per_user = 3
 
     class Transaction:
         async def __aenter__(self):
@@ -415,9 +418,11 @@ async def test_worker_dispatcher_skips_conflicted_candidate_without_enqueue(monk
 
     class Transaction:
         async def __aenter__(self):
+            calls.append(("tx_enter",))
             return "conn"
 
         async def __aexit__(self, exc_type, exc, tb):
+            calls.append(("tx_exit", exc_type is None))
             return False
 
     async def list_candidates(conn, *, tenant_id, limit):
@@ -466,4 +471,4 @@ async def test_worker_dispatcher_skips_conflicted_candidate_without_enqueue(monk
     )
 
     assert result == [{"run_id": "run-parent", "status": "skipped", "reason": "dispatch_step_not_pending"}]
-    assert calls == []
+    assert calls == [("tx_enter",), ("tx_exit", True), ("tx_enter",), ("tx_exit", True)]

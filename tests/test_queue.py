@@ -47,6 +47,10 @@ def queue_payload(**overrides) -> QueueRunPayload:
     return QueueRunPayload(**data)
 
 
+def indexed_message_ids(fake, field: str) -> list[str]:
+    return queue._decode_run_index_message_ids(fake.run_index.get(field))
+
+
 class FakeRedis:
     def __init__(self, raw=None, lengths=None, processing=None, queued=None, meta=None, retry=None, workers=None, lease_timeout=False):
         self.raw = raw
@@ -56,6 +60,10 @@ class FakeRedis:
         self.meta = meta or {}
         self.retry = retry or {}
         self.workers = workers or {}
+        self.metadata_by_message_id = {}
+        self.run_index = {}
+        self.order_scores = {}
+        self.sequence = 0
         self.lease_timeout = lease_timeout
         self.pushed = []
         self.left_pushed = []
@@ -79,6 +87,18 @@ class FakeRedis:
         if key == queue.PROCESSING_KEY:
             return len(self.processing)
         return 0
+
+    def _is_queued_meta_key(self, key):
+        return str(key).endswith(":queued-meta")
+
+    def _is_queued_run_index_key(self, key):
+        return str(key).endswith(":queued-run-index")
+
+    def _is_queued_order_key(self, key):
+        return str(key).endswith(":queued-order")
+
+    def _is_queued_sequence_key(self, key):
+        return str(key).endswith(":queued-sequence")
 
     async def rpush(self, key, value):
         self.pushed.append((key, value))
@@ -145,6 +165,10 @@ class FakeRedis:
             return self.retry.get(field)
         if key == queue.WORKER_HEARTBEAT_KEY:
             return self.workers.get(field)
+        if self._is_queued_meta_key(key):
+            return self.metadata_by_message_id.get(field)
+        if self._is_queued_run_index_key(key):
+            return self.run_index.get(field)
         return None
 
     async def hgetall(self, key):
@@ -154,6 +178,10 @@ class FakeRedis:
             return dict(self.meta)
         if key == queue.RETRY_META_KEY:
             return dict(self.retry)
+        if self._is_queued_meta_key(key):
+            return dict(self.metadata_by_message_id)
+        if self._is_queued_run_index_key(key):
+            return dict(self.run_index)
         return {}
 
     async def hset(self, key, field, value):
@@ -164,6 +192,10 @@ class FakeRedis:
             self.retry[field] = value
         if key == queue.WORKER_HEARTBEAT_KEY:
             self.workers[field] = value
+        if self._is_queued_meta_key(key):
+            self.metadata_by_message_id[field] = value
+        if self._is_queued_run_index_key(key):
+            self.run_index[field] = value
 
     async def hdel(self, key, field):
         self.hdel_calls.append((key, field))
@@ -171,11 +203,97 @@ class FakeRedis:
             self.meta.pop(field, None)
         if key == queue.RETRY_META_KEY:
             self.retry.pop(field, None)
+        if self._is_queued_meta_key(key):
+            self.metadata_by_message_id.pop(field, None)
+        if self._is_queued_run_index_key(key):
+            self.run_index.pop(field, None)
+
+    async def incr(self, key):
+        if self._is_queued_sequence_key(key):
+            self.sequence += 1
+            return self.sequence
+        return 1
+
+    async def zadd(self, key, mapping):
+        if self._is_queued_order_key(key):
+            self.order_scores.update(mapping)
+        return len(mapping)
+
+    async def zrank(self, key, member):
+        if not self._is_queued_order_key(key):
+            return None
+        ordered = sorted(self.order_scores.items(), key=lambda item: (item[1], item[0]))
+        for index, (candidate, _score) in enumerate(ordered):
+            if candidate == member:
+                return index
+        return None
+
+    async def zrem(self, key, member):
+        if self._is_queued_order_key(key):
+            return 1 if self.order_scores.pop(member, None) is not None else 0
+        return 0
 
     async def eval(self, script, numkeys, *keys_and_args):
         self.eval_calls.append((script, numkeys, keys_and_args))
+        if "enqueue-run-with-metadata" in script:
+            queued_key, queued_meta_key, queued_run_index_key, queued_order_key, queued_sequence_key = keys_and_args[:numkeys]
+            raw, message_id, run_index_field, metadata_json = keys_and_args[numkeys:]
+            message_ids = [candidate for candidate in indexed_message_ids(self, run_index_field) if candidate != message_id]
+            message_ids.append(message_id)
+            self.sequence += 1
+            self.queued.append(raw)
+            metadata = json.loads(metadata_json)
+            metadata["sequence"] = self.sequence
+            metadata["raw"] = raw
+            if self._is_queued_meta_key(queued_meta_key):
+                self.metadata_by_message_id[message_id] = json.dumps(metadata, ensure_ascii=False)
+            if self._is_queued_run_index_key(queued_run_index_key):
+                self.run_index[run_index_field] = json.dumps(message_ids, ensure_ascii=False)
+            if self._is_queued_order_key(queued_order_key):
+                self.order_scores[message_id] = self.sequence
+            self.pushed.append((queued_key, raw))
+            return json.dumps({"status": "enqueued", "position": len(self.queued), "sequence": self.sequence})
+        if "remove-queued-with-metadata" in script:
+            queued_key, queued_meta_key, queued_run_index_key, queued_order_key = keys_and_args[:numkeys]
+            run_index_field, tenant_id, run_id = keys_and_args[numkeys:]
+            message_ids = indexed_message_ids(self, run_index_field)
+            if not message_ids:
+                return json.dumps({"status": "missing_index", "removed": 0})
+            removed = 0
+            matched = 0
+            for message_id in message_ids:
+                raw_metadata = self.metadata_by_message_id.get(message_id)
+                if not raw_metadata:
+                    self.order_scores.pop(message_id, None)
+                    continue
+                try:
+                    metadata = json.loads(raw_metadata)
+                except json.JSONDecodeError:
+                    self.metadata_by_message_id.pop(message_id, None)
+                    self.order_scores.pop(message_id, None)
+                    continue
+                if metadata.get("tenant_id") != tenant_id or metadata.get("run_id") != run_id:
+                    continue
+                matched += 1
+                raw = metadata.get("raw") or ""
+                removed += await self.lrem(queued_key, 0, raw) if raw else 0
+                self.metadata_by_message_id.pop(message_id, None)
+                self.order_scores.pop(message_id, None)
+            self.run_index.pop(run_index_field, None)
+            if matched == 0:
+                return json.dumps({"status": "missing_metadata", "removed": 0})
+            return json.dumps({"status": "removed", "removed": removed})
         if "lease-run-with-quota" in script:
-            queued_key, processing_key, processing_meta_key, retry_meta_key, worker_heartbeat_key = keys_and_args[:numkeys]
+            (
+                queued_key,
+                processing_key,
+                processing_meta_key,
+                retry_meta_key,
+                worker_heartbeat_key,
+                queued_meta_key,
+                queued_run_index_key,
+                queued_order_key,
+            ) = keys_and_args[:numkeys]
             (
                 raw,
                 scan_limit,
@@ -236,6 +354,17 @@ class FakeRedis:
                 except (TypeError, ValueError, json.JSONDecodeError):
                     attempts = 1
             self.queued.pop(absolute_index)
+            if self._is_queued_meta_key(queued_meta_key):
+                self.metadata_by_message_id.pop(message_id, None)
+            if self._is_queued_run_index_key(queued_run_index_key):
+                field = f"{tenant_id}:{run_id}"
+                remaining = [candidate for candidate in indexed_message_ids(self, field) if candidate != message_id]
+                if remaining:
+                    self.run_index[field] = json.dumps(remaining, ensure_ascii=False)
+                else:
+                    self.run_index.pop(field, None)
+            if self._is_queued_order_key(queued_order_key):
+                self.order_scores.pop(message_id, None)
             self.processing.insert(0, raw)
             quota_snapshot = {
                 "tenant_processing": tenant_processing,
@@ -271,7 +400,15 @@ class FakeRedis:
                 }
             )
         if "dead-letter-invalid-quota" in script:
-            queued_key, processing_meta_key, retry_meta_key, dead_letter_key = keys_and_args[:numkeys]
+            (
+                queued_key,
+                processing_meta_key,
+                retry_meta_key,
+                dead_letter_key,
+                queued_meta_key,
+                queued_run_index_key,
+                queued_order_key,
+            ) = keys_and_args[:numkeys]
             raw, scan_limit, absolute_index, message_id, worker_id, now, error_message = keys_and_args[numkeys:]
             scan_limit = int(scan_limit)
             absolute_index = int(absolute_index)
@@ -287,6 +424,19 @@ class FakeRedis:
                 except (TypeError, ValueError, json.JSONDecodeError):
                     attempts = 1
             self.queued.pop(absolute_index)
+            raw_queued_meta = self.metadata_by_message_id.pop(message_id, None)
+            if raw_queued_meta:
+                try:
+                    queued_meta = json.loads(raw_queued_meta)
+                    field = f"{queued_meta.get('tenant_id')}:{queued_meta.get('run_id')}"
+                    remaining = [candidate for candidate in indexed_message_ids(self, field) if candidate != message_id]
+                    if remaining:
+                        self.run_index[field] = json.dumps(remaining, ensure_ascii=False)
+                    else:
+                        self.run_index.pop(field, None)
+                except json.JSONDecodeError:
+                    pass
+            self.order_scores.pop(message_id, None)
             self.pushed.append(
                 (
                     dead_letter_key,
@@ -330,6 +480,10 @@ def test_queue_keys_follow_configured_prefix(monkeypatch):
     assert keys.retry_meta == "ai-platform:test:runs:retry-meta"
     assert keys.dead_letter == "ai-platform:test:runs:dead-letter"
     assert keys.worker_heartbeat == "ai-platform:test:runs:worker-heartbeat"
+    assert keys.queued_meta == "ai-platform:test:runs:queued-meta"
+    assert keys.queued_run_index == "ai-platform:test:runs:queued-run-index"
+    assert keys.queued_order == "ai-platform:test:runs:queued-order"
+    assert keys.queued_sequence == "ai-platform:test:runs:queued-sequence"
 
 
 @pytest.mark.asyncio
@@ -349,6 +503,52 @@ async def test_enqueue_run_uses_configured_prefix(monkeypatch):
 
     assert fake.pushed[0][0] == "ai-platform:test:runs:queued"
     assert position == 1
+
+
+@pytest.mark.asyncio
+async def test_enqueue_run_writes_indexed_queue_metadata(monkeypatch):
+    payload = queue_payload(run_id="run-indexed", tenant_id="tenant-a").model_dump()
+    fake = FakeRedis()
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    position = await queue.enqueue_run(payload)
+
+    assert position == 1
+    assert fake.metadata_by_message_id
+    message_id = next(iter(fake.metadata_by_message_id))
+    metadata = json.loads(fake.metadata_by_message_id[message_id])
+    expected_raw = QueueRunPayload.model_validate(payload).model_dump_json()
+    assert metadata["run_id"] == "run-indexed"
+    assert metadata["tenant_id"] == "tenant-a"
+    assert metadata["raw"] == expected_raw
+    assert indexed_message_ids(fake, "tenant-a:run-indexed") == [message_id]
+    assert fake.order_scores[message_id] == 1
+
+
+@pytest.mark.asyncio
+async def test_enqueue_run_preserves_multiple_message_ids_for_same_run(monkeypatch):
+    first_payload = queue_payload(run_id="run-indexed", tenant_id="tenant-a", input={"mode": "first"}).model_dump()
+    second_payload = queue_payload(run_id="run-indexed", tenant_id="tenant-a", input={"mode": "second"}).model_dump()
+    fake = FakeRedis()
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    await queue.enqueue_run(first_payload)
+    await queue.enqueue_run(second_payload)
+
+    first_raw = QueueRunPayload.model_validate(first_payload).model_dump_json()
+    second_raw = QueueRunPayload.model_validate(second_payload).model_dump_json()
+    assert indexed_message_ids(fake, "tenant-a:run-indexed") == [
+        queue.message_id_for_raw(first_raw),
+        queue.message_id_for_raw(second_raw),
+    ]
 
 
 @pytest.mark.asyncio
@@ -389,6 +589,18 @@ async def test_remove_queued_run_removes_matching_tenant_run_payloads(monkeypatc
         executor_type="fake",
     ).model_dump_json()
     fake = FakeRedis(queued=[raw_a, raw_b, "not-json"])
+    message_id = queue.message_id_for_raw(raw_a)
+    fake.metadata_by_message_id[message_id] = json.dumps(
+        {
+            "run_id": "run-a",
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+            "raw": raw_a,
+            "sequence": 1,
+        }
+    )
+    fake.run_index["tenant-a:run-a"] = json.dumps([message_id])
+    fake.order_scores[message_id] = 1
 
     async def get_redis():
         return fake
@@ -399,7 +611,167 @@ async def test_remove_queued_run_removes_matching_tenant_run_payloads(monkeypatc
 
     assert removed == 1
     assert fake.removed == [(queue.QUEUE_KEY, 0, raw_a)]
+    assert message_id not in fake.metadata_by_message_id
     assert fake.closed is True
+
+
+@pytest.mark.asyncio
+async def test_remove_queued_run_uses_indexed_metadata_without_full_lrange(monkeypatch):
+    raw = queue_payload(run_id="run-remove", tenant_id="tenant-a").model_dump_json()
+    message_id = queue.message_id_for_raw(raw)
+    fake = FakeRedis(queued=[raw])
+    fake.metadata_by_message_id[message_id] = json.dumps(
+        {
+            "run_id": "run-remove",
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+            "raw": raw,
+            "sequence": 1,
+        }
+    )
+    fake.run_index["tenant-a:run-remove"] = json.dumps([message_id])
+    fake.order_scores[message_id] = 1
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    removed = await queue.remove_queued_run(tenant_id="tenant-a", run_id="run-remove")
+
+    assert removed == 1
+    assert raw not in fake.queued
+    assert message_id not in fake.metadata_by_message_id
+    assert "tenant-a:run-remove" not in fake.run_index
+    assert message_id not in fake.order_scores
+    assert (queue.QUEUE_KEY, 0, -1) not in fake.lrange_calls
+    assert fake.closed is True
+
+
+def test_remove_queued_script_removes_all_duplicate_raw_payloads():
+    assert 'redis.call("lrem", queued_key, 0, raw)' in queue.REMOVE_QUEUED_WITH_METADATA_SCRIPT
+    assert 'redis.call("lrem", queued_key, 1, raw)' not in queue.REMOVE_QUEUED_WITH_METADATA_SCRIPT
+
+
+@pytest.mark.asyncio
+async def test_remove_queued_run_removes_duplicate_indexed_payloads_without_full_lrange(monkeypatch):
+    raw = queue_payload(run_id="run-duplicate", tenant_id="tenant-a").model_dump_json()
+    message_id = queue.message_id_for_raw(raw)
+    fake = FakeRedis(queued=[raw, raw])
+    fake.metadata_by_message_id[message_id] = json.dumps(
+        {
+            "run_id": "run-duplicate",
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+            "raw": raw,
+            "sequence": 1,
+        }
+    )
+    fake.run_index["tenant-a:run-duplicate"] = json.dumps([message_id])
+    fake.order_scores[message_id] = 1
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    removed = await queue.remove_queued_run(tenant_id="tenant-a", run_id="run-duplicate")
+
+    assert removed == 2
+    assert raw not in fake.queued
+    assert message_id not in fake.metadata_by_message_id
+    assert "tenant-a:run-duplicate" not in fake.run_index
+    assert message_id not in fake.order_scores
+    assert (queue.QUEUE_KEY, 0, -1) not in fake.lrange_calls
+    assert fake.closed is True
+
+
+@pytest.mark.asyncio
+async def test_remove_queued_run_removes_same_run_with_different_raw_payloads(monkeypatch):
+    first = queue_payload(run_id="run-same", tenant_id="tenant-a", input={"mode": "first"}).model_dump_json()
+    second = queue_payload(run_id="run-same", tenant_id="tenant-a", input={"mode": "second"}).model_dump_json()
+    first_message_id = queue.message_id_for_raw(first)
+    second_message_id = queue.message_id_for_raw(second)
+    fake = FakeRedis(queued=[first, second])
+    for sequence, (raw, message_id) in enumerate([(first, first_message_id), (second, second_message_id)], start=1):
+        fake.metadata_by_message_id[message_id] = json.dumps(
+            {
+                "run_id": "run-same",
+                "tenant_id": "tenant-a",
+                "user_id": "user-a",
+                "raw": raw,
+                "sequence": sequence,
+            }
+        )
+        fake.order_scores[message_id] = sequence
+    fake.run_index["tenant-a:run-same"] = json.dumps([first_message_id, second_message_id])
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    removed = await queue.remove_queued_run(tenant_id="tenant-a", run_id="run-same")
+
+    assert removed == 2
+    assert first not in fake.queued
+    assert second not in fake.queued
+    assert first_message_id not in fake.metadata_by_message_id
+    assert second_message_id not in fake.metadata_by_message_id
+    assert "tenant-a:run-same" not in fake.run_index
+    assert not fake.order_scores
+    assert (queue.QUEUE_KEY, 0, -1) not in fake.lrange_calls
+
+
+@pytest.mark.asyncio
+async def test_remove_queued_run_uses_bounded_fallback_for_legacy_unindexed_entries(monkeypatch):
+    raw = queue_payload(run_id="run-legacy", tenant_id="tenant-a").model_dump_json()
+    fake = FakeRedis(queued=[raw])
+
+    class Settings:
+        queue_key_prefix = queue.DEFAULT_QUEUE_KEY_PREFIX
+        queue_metadata_fallback_scan_limit = 25
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+    monkeypatch.setattr("app.queue.get_settings", lambda: Settings())
+
+    removed = await queue.remove_queued_run(tenant_id="tenant-a", run_id="run-legacy")
+
+    assert removed == 1
+    assert raw not in fake.queued
+    assert (queue.QUEUE_KEY, -25, -1) in fake.lrange_calls
+    assert (queue.QUEUE_KEY, 0, -1) not in fake.lrange_calls
+
+
+@pytest.mark.asyncio
+async def test_remove_queued_run_uses_bounded_fallback_when_index_metadata_is_missing(monkeypatch):
+    raw = queue_payload(run_id="run-stale-index", tenant_id="tenant-a").model_dump_json()
+    message_id = queue.message_id_for_raw(raw)
+    fake = FakeRedis(queued=[raw])
+    fake.run_index["tenant-a:run-stale-index"] = json.dumps([message_id])
+    fake.order_scores[message_id] = 1
+
+    class Settings:
+        queue_key_prefix = queue.DEFAULT_QUEUE_KEY_PREFIX
+        queue_metadata_fallback_scan_limit = 25
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+    monkeypatch.setattr("app.queue.get_settings", lambda: Settings())
+
+    removed = await queue.remove_queued_run(tenant_id="tenant-a", run_id="run-stale-index")
+
+    assert removed == 1
+    assert raw not in fake.queued
+    assert "tenant-a:run-stale-index" not in fake.run_index
+    assert message_id not in fake.order_scores
+    assert (queue.QUEUE_KEY, -25, -1) in fake.lrange_calls
+    assert (queue.QUEUE_KEY, 0, -1) not in fake.lrange_calls
 
 
 @pytest.mark.asyncio
@@ -454,8 +826,51 @@ async def test_lease_run_requeues_message_when_processing_capacity_fills_during_
     assert message is None
     assert fake.source == queue.QUEUE_KEY
     assert (queue.PROCESSING_KEY, 1, raw) in fake.removed
-    assert fake.left_pushed == [(queue.QUEUE_KEY, raw)]
-    assert fake.hset_calls == []
+    assert fake.left_pushed == []
+    assert (queue.QUEUE_KEY, raw) in fake.pushed
+    assert all(call[0] not in {queue.PROCESSING_META_KEY, queue.RETRY_META_KEY} for call in fake.hset_calls)
+    message_id = queue.message_id_for_raw(raw)
+    assert indexed_message_ids(fake, "tenant-a:run-a") == [message_id]
+    assert message_id in fake.metadata_by_message_id
+    assert fake.closed is True
+
+
+@pytest.mark.asyncio
+async def test_lease_run_requeues_capacity_race_to_tail_with_matching_metadata_order(monkeypatch):
+    older = queue_payload(run_id="run-older").model_dump_json()
+    raw = queue_payload(run_id="run-race").model_dump_json()
+    older_message_id = queue.message_id_for_raw(older)
+    fake = FakeRedis(
+        queued=[older, raw],
+        lengths={queue.PROCESSING_KEY: [0, 4]},
+        processing=["processing-a", "processing-b", "processing-c"],
+    )
+    fake.sequence = 1
+    fake.metadata_by_message_id[older_message_id] = json.dumps(
+        {
+            "run_id": "run-older",
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+            "raw": older,
+            "sequence": 1,
+        }
+    )
+    fake.run_index["tenant-a:run-older"] = json.dumps([older_message_id])
+    fake.order_scores[older_message_id] = 1
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    message = await queue.lease_run(timeout_seconds=1, worker_id="worker-a", max_processing_runs=3)
+
+    assert message is None
+    assert fake.queued == [older, raw]
+    assert fake.left_pushed == []
+    assert (queue.QUEUE_KEY, raw) in fake.pushed
+    position = await queue.get_run_queue_position(tenant_id="tenant-a", run_id="run-race")
+    assert position == 2
     assert fake.closed is True
 
 
@@ -474,6 +889,37 @@ async def test_lease_run_dead_letters_invalid_payload(monkeypatch):
     assert fake.removed == [(queue.PROCESSING_KEY, 1, '{"run_id": "../bad"}')]
     assert fake.pushed[0][0] == queue.DEAD_LETTER_KEY
     assert json.loads(fake.pushed[0][1])["error_code"] == "invalid_queue_payload"
+
+
+@pytest.mark.asyncio
+async def test_lease_run_legacy_invalid_payload_removes_queued_metadata(monkeypatch):
+    raw = '{"run_id": "../bad"}'
+    message_id = queue.message_id_for_raw(raw)
+    fake = FakeRedis(queued=[raw])
+    fake.metadata_by_message_id[message_id] = json.dumps(
+        {
+            "run_id": "run-bad",
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+            "raw": raw,
+            "sequence": 1,
+        }
+    )
+    fake.run_index["tenant-a:run-bad"] = json.dumps([message_id])
+    fake.order_scores[message_id] = 1
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    message = await queue.lease_run(timeout_seconds=1, worker_id="worker-a")
+
+    assert message is None
+    assert message_id not in fake.metadata_by_message_id
+    assert "tenant-a:run-bad" not in fake.run_index
+    assert message_id not in fake.order_scores
+    assert fake.pushed[0][0] == queue.DEAD_LETTER_KEY
 
 
 @pytest.mark.asyncio
@@ -538,12 +984,50 @@ async def test_lease_run_skips_saturated_user_and_leases_next_candidate(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_lease_run_returns_idle_when_bounded_scan_candidates_are_saturated(monkeypatch):
+async def test_lease_run_scans_next_window_when_tail_candidates_are_saturated(monkeypatch):
     blocked = queue_payload(run_id="run-blocked", tenant_id="tenant-a", user_id="user-a").model_dump_json()
-    later = queue_payload(run_id="run-later", tenant_id="tenant-b", user_id="user-b").model_dump_json()
+    allowed = queue_payload(run_id="run-allowed", tenant_id="tenant-b", user_id="user-b").model_dump_json()
     active = queue_payload(run_id="run-active", tenant_id="tenant-a", user_id="user-active").model_dump_json()
     fake = FakeRedis(
-        queued=[later, blocked],
+        queued=[allowed, blocked],
+        processing=[active],
+    )
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    message = await queue.lease_run(
+        timeout_seconds=1,
+        worker_id="worker-a",
+        max_processing_runs=3,
+        tenant_processing_limit=1,
+        user_processing_limit=0,
+        lease_scan_limit=1,
+    )
+
+    assert message is not None
+    assert message.payload["run_id"] == "run-allowed"
+    assert fake.queued == [blocked]
+    assert allowed in fake.processing
+    assert active in fake.processing
+
+
+@pytest.mark.asyncio
+async def test_lease_run_does_not_scan_beyond_fairness_horizon(monkeypatch):
+    allowed_outside_horizon = queue_payload(
+        run_id="run-outside-horizon",
+        tenant_id="tenant-b",
+        user_id="user-b",
+    ).model_dump_json()
+    blocked_items = [
+        queue_payload(run_id=f"run-blocked-{index}", tenant_id="tenant-a", user_id=f"user-{index}").model_dump_json()
+        for index in range(4)
+    ]
+    active = queue_payload(run_id="run-active", tenant_id="tenant-a", user_id="user-active").model_dump_json()
+    fake = FakeRedis(
+        queued=[allowed_outside_horizon, *blocked_items],
         processing=[active],
     )
 
@@ -562,8 +1046,14 @@ async def test_lease_run_returns_idle_when_bounded_scan_candidates_are_saturated
     )
 
     assert message is None
-    assert fake.queued == [later, blocked]
-    assert fake.processing == [active]
+    assert allowed_outside_horizon in fake.queued
+    assert allowed_outside_horizon not in fake.processing
+    assert fake.lrange_calls == [
+        (queue.QUEUE_KEY, 4, 4),
+        (queue.QUEUE_KEY, 3, 3),
+        (queue.QUEUE_KEY, 2, 2),
+        (queue.QUEUE_KEY, 1, 1),
+    ]
 
 
 @pytest.mark.asyncio
@@ -651,6 +1141,44 @@ async def test_lease_run_quota_path_uses_atomic_redis_script(monkeypatch):
     )
 
     assert fake.eval_calls, "quota lease must use a Redis script for atomic quota check and move"
+
+
+@pytest.mark.asyncio
+async def test_lease_run_quota_removes_queued_metadata_for_leased_run(monkeypatch):
+    raw = queue_payload(run_id="run-indexed", tenant_id="tenant-a", user_id="user-a").model_dump_json()
+    message_id = queue.message_id_for_raw(raw)
+    fake = FakeRedis(queued=[raw])
+    fake.metadata_by_message_id[message_id] = json.dumps(
+        {
+            "run_id": "run-indexed",
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+            "raw": raw,
+            "sequence": 1,
+        }
+    )
+    fake.run_index["tenant-a:run-indexed"] = json.dumps([message_id])
+    fake.order_scores[message_id] = 1
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    message = await queue.lease_run(
+        timeout_seconds=1,
+        worker_id="worker-a",
+        max_processing_runs=3,
+        tenant_processing_limit=1,
+        user_processing_limit=1,
+        lease_scan_limit=1,
+    )
+
+    assert message is not None
+    assert message.payload["run_id"] == "run-indexed"
+    assert message_id not in fake.metadata_by_message_id
+    assert "tenant-a:run-indexed" not in fake.run_index
+    assert message_id not in fake.order_scores
 
 
 @pytest.mark.asyncio
@@ -841,6 +1369,20 @@ async def test_get_run_queue_position_returns_one_based_position(monkeypatch):
         executor_type="fake",
     ).model_dump_json()
     fake = FakeRedis(queued=[run_a_raw, other_tenant_raw, run_b_raw])
+    for sequence, raw in enumerate([run_a_raw, other_tenant_raw, run_b_raw], start=1):
+        payload = QueueRunPayload.model_validate_json(raw)
+        message_id = queue.message_id_for_raw(raw)
+        fake.metadata_by_message_id[message_id] = json.dumps(
+            {
+                "run_id": payload.run_id,
+                "tenant_id": payload.tenant_id,
+                "user_id": payload.user_id,
+                "raw": raw,
+                "sequence": sequence,
+            }
+        )
+        fake.run_index[f"{payload.tenant_id}:{payload.run_id}"] = json.dumps([message_id])
+        fake.order_scores[message_id] = sequence
 
     async def get_redis():
         return fake
@@ -850,6 +1392,55 @@ async def test_get_run_queue_position_returns_one_based_position(monkeypatch):
     position = await queue.get_run_queue_position(tenant_id="tenant-a", run_id="run-b")
 
     assert position == 3
+    assert fake.closed is True
+
+
+@pytest.mark.asyncio
+async def test_get_run_queue_position_uses_index_without_full_lrange(monkeypatch):
+    raw = queue_payload(run_id="run-indexed", tenant_id="tenant-a").model_dump_json()
+    message_id = queue.message_id_for_raw(raw)
+    fake = FakeRedis(queued=[raw])
+    fake.metadata_by_message_id[message_id] = json.dumps(
+        {
+            "run_id": "run-indexed",
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+            "raw": raw,
+            "sequence": 1,
+        }
+    )
+    fake.run_index["tenant-a:run-indexed"] = json.dumps([message_id])
+    fake.order_scores[message_id] = 1
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    position = await queue.get_run_queue_position(tenant_id="tenant-a", run_id="run-indexed")
+
+    assert position == 1
+    assert (queue.QUEUE_KEY, 0, -1) not in fake.lrange_calls
+    assert fake.closed is True
+
+
+@pytest.mark.asyncio
+async def test_get_run_queue_position_cleans_stale_order_when_metadata_missing(monkeypatch):
+    message_id = "stale-message"
+    fake = FakeRedis()
+    fake.run_index["tenant-a:run-stale"] = json.dumps([message_id])
+    fake.order_scores[message_id] = 1
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    position = await queue.get_run_queue_position(tenant_id="tenant-a", run_id="run-stale")
+
+    assert position is None
+    assert "tenant-a:run-stale" not in fake.run_index
+    assert message_id not in fake.order_scores
     assert fake.closed is True
 
 
@@ -1204,6 +1795,10 @@ async def test_reclaim_expired_lease_requeues_before_max_attempts(monkeypatch):
     assert (queue.PROCESSING_KEY, 1, raw) in fake.removed
     assert (queue.QUEUE_KEY, raw) in fake.pushed
     assert (queue.PROCESSING_META_KEY, message_id) in fake.hdel_calls
+    assert indexed_message_ids(fake, "tenant-a:run-a") == [message_id]
+    assert message_id in fake.metadata_by_message_id
+    position = await queue.get_run_queue_position(tenant_id="tenant-a", run_id="run-a")
+    assert position == 1
 
 
 @pytest.mark.asyncio

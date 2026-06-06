@@ -81,6 +81,10 @@ Docker socket in the default stack.
 - Do not claim that a model-specific or reasoning-specific review gate is
   complete unless the model and reasoning level are directly configurable or
   otherwise explicitly confirmed.
+- If a user or goal explicitly requires an explicit model/reasoning gate and the
+  available delegation path cannot expose or confirm those fields, record the
+  review as inherited/default only; do not mark that explicit gate closed until
+  the requirement is revised or a suitable review path is available.
 - Do not delegate write, deployment, remote runtime, or long-running operational tasks unless the delegation path is confirmed to inherit the same filesystem, network, approval, and permission posture as the main session. Keep those tasks in the main session when inheritance cannot be proven.
 - Complex or high-risk coding must use multi-agent collaboration and review
   when the available delegation path is suitable. Lightweight documentation,
