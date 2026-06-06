@@ -668,6 +668,18 @@ def _payload_with_locked_run_input(payload: QueueRunPayload, locked_run: object)
     return payload.model_copy(update=updates)
 
 
+def _is_top_level_multi_agent_parent_for_worker_dispatch(payload: QueueRunPayload) -> bool:
+    if not bool(get_settings().multi_agent_dispatch_worker_enabled):
+        return False
+    if str(payload.input.get("execution_mode") or "") != "multi_agent":
+        return False
+    if payload.input.get("copied_from_run_id"):
+        return False
+    if isinstance(payload.input.get("multi_agent_dispatch"), dict):
+        return False
+    return True
+
+
 def _has_context_snapshot(payload: QueueRunPayload) -> bool:
     return bool(payload.context_snapshot_id and payload.context_snapshot)
 
@@ -888,6 +900,34 @@ async def process_run_payload(
                     reconciled_parent,
                 )
                 return terminal_after_transaction.outcome
+            if _is_top_level_multi_agent_parent_for_worker_dispatch(payload):
+                parked = await repositories.mark_multi_agent_dispatch_parent_awaiting_dispatch(
+                    conn,
+                    tenant_id=run_identity["tenant_id"],
+                    run_id=run_identity["run_id"],
+                    worker_id=worker_id,
+                )
+                if parked:
+                    await repositories.append_event(
+                        conn,
+                        tenant_id=run_identity["tenant_id"],
+                        run_id=run_identity["run_id"],
+                        event_type="multi_agent_dispatch_parent_parked",
+                        stage="control",
+                        message="Multi-agent parent parked for dispatcher",
+                        visible_to_user=False,
+                        payload={
+                            "visible_to_user": False,
+                            "orchestration_state": "awaiting_dispatch",
+                            "source": "worker",
+                        },
+                    )
+                    return WorkerOutcome(
+                        "skipped",
+                        run_identity["run_id"],
+                        "multi_agent_dispatch_parent_parked",
+                        "Multi-agent parent parked for dispatcher",
+                    )
             if payload.executor_type == "runtime211":
                 reconciled_parent = await _fail_run_and_reconcile(
                     conn,

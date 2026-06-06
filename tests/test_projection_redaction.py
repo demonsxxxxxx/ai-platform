@@ -3,6 +3,7 @@ from app.projection_redaction import (
     internal_agent_id_for_request,
     public_agent_id_for_projection,
     redact_raw_skill_references,
+    sanitize_user_control_input,
 )
 
 
@@ -44,3 +45,32 @@ def test_redact_raw_skill_references_sanitizes_nested_agent_ids():
     assert "sop-assistant" not in str(redacted)
     assert "qa-file-reviewer" not in str(redacted)
     assert "ragflow-knowledge-search" not in str(redacted)
+
+
+def test_sanitize_user_control_input_removes_server_owned_multi_agent_dispatch_metadata():
+    payload = {
+        "message": "run",
+        "resume": {"copied_from_run_id": "run-forged"},
+        "multi_agent_dispatch": {
+            "orchestration_state": "awaiting_dispatch",
+            "parent_run_id": "run-parent",
+        },
+        "nested": {
+            "multi_agent_dispatch": {"parent_run_id": "run-nested"},
+            "dispatch_state": "handed_off",
+            "dispatch_child_run_id": "run-child",
+            "copied_from_run_id": "run-parent",
+            "parent_step_id": "step-code",
+        },
+    }
+
+    sanitized = sanitize_user_control_input(payload)
+
+    assert sanitized["message"] == "run"
+    assert "resume" not in sanitized
+    assert "multi_agent_dispatch" not in sanitized
+    assert "multi_agent_dispatch" not in sanitized["nested"]
+    assert "dispatch_state" not in sanitized["nested"]
+    assert "dispatch_child_run_id" not in sanitized["nested"]
+    assert "copied_from_run_id" not in sanitized["nested"]
+    assert "parent_step_id" not in sanitized["nested"]

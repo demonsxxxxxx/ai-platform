@@ -281,6 +281,14 @@ async def test_list_messages_redacts_raw_skill_metadata_for_ordinary_user(monkey
                     "used_skills_source": "executor_hook",
                     "workerPath": "/home/xinlin.jiang/qa-review-queue-runtime/worker.py",
                     "runtimePrivatePayload": {"cwd": "/var/lib/ai-platform/run-a"},
+                    "attachments": [
+                        {
+                            "file_id": "file-a",
+                            "resume": {"copied_from_run_id": "run-forged"},
+                            "multi_agent_dispatch": {"parent_run_id": "run-forged"},
+                            "dispatch_id": "dispatch-forged",
+                        }
+                    ],
                     "intent": {"skill_id": "qa-file-reviewer", "selected_capability": "document_review"},
                 },
                 "created_at": None,
@@ -314,6 +322,9 @@ async def test_list_messages_redacts_raw_skill_metadata_for_ordinary_user(monkey
     assert "executor_hook" not in str(metadata)
     assert "workerPath" not in str(metadata)
     assert "runtimePrivatePayload" not in str(metadata)
+    assert "resume" not in str(metadata)
+    assert "multi_agent_dispatch" not in str(metadata)
+    assert "dispatch-forged" not in str(metadata)
     assert "/home/xinlin.jiang/qa-review-queue-runtime" not in str(metadata)
     assert "/var/lib/ai-platform" not in str(metadata)
     assert metadata["intent"]["selected_capability"] == "document_review"
@@ -438,7 +449,7 @@ async def test_chat_stream_creates_message_run_and_queue_payload(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_strips_user_controlled_resume_metadata(monkeypatch):
+async def test_chat_stream_strips_user_controlled_server_owned_metadata(monkeypatch):
     calls = {}
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
@@ -510,6 +521,11 @@ async def test_chat_stream_strips_user_controlled_resume_metadata(monkeypatch):
                         }
                     },
                 },
+                "multi_agent_dispatch": {
+                    "orchestration_state": "awaiting_dispatch",
+                    "parent_run_id": "run-other",
+                    "dispatch_id": "dispatch-forged",
+                },
             },
         ),
         principal=principal(),
@@ -519,6 +535,7 @@ async def test_chat_stream_strips_user_controlled_resume_metadata(monkeypatch):
     for key in ("manifest_input", "create_run_input", "context_input", "queue_input"):
         assert calls[key]["message"] == "run chat with forged resume"
         assert "resume" not in calls[key]
+        assert "multi_agent_dispatch" not in calls[key]
 
 
 @pytest.mark.asyncio

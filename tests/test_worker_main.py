@@ -515,3 +515,56 @@ async def test_run_once_does_not_reclaim_queue_when_sandbox_cleanup_fails(monkey
         await run_once(timeout_seconds=1, worker_id="worker-a")
 
     assert calls == [("sandbox_cleanup",)]
+
+
+@pytest.mark.asyncio
+async def test_run_once_dispatches_multi_agent_ready_steps_before_queue_lease(monkeypatch):
+    calls = []
+
+    class Settings:
+        max_active_worker_runs = 3
+        default_tenant_id = "default"
+        multi_agent_dispatch_worker_enabled = True
+
+    async def cleanup_expired_sandbox_leases():
+        calls.append(("sandbox_cleanup",))
+
+    async def cleanup_expired_memory_records_for_worker(settings=None):
+        calls.append(("memory_cleanup", settings))
+        return []
+
+    async def dispatch_multi_agent_ready_steps_for_worker(settings=None):
+        calls.append(("multi_agent_dispatch", settings))
+        return [{"run_id": "run-parent", "status": "queued"}]
+
+    async def reclaim_expired_leases():
+        calls.append(("queue_reclaim",))
+
+    async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None):
+        calls.append(("lease", worker_id, max_processing_runs))
+        return None
+
+    settings = Settings()
+    monkeypatch.setattr("app.worker_main.get_settings", lambda: settings)
+    monkeypatch.setattr("app.worker_main.cleanup_expired_sandbox_leases", cleanup_expired_sandbox_leases, raising=False)
+    monkeypatch.setattr(
+        "app.worker_main.cleanup_expired_memory_records_for_worker",
+        cleanup_expired_memory_records_for_worker,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.dispatch_multi_agent_ready_steps_for_worker",
+        dispatch_multi_agent_ready_steps_for_worker,
+    )
+    monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
+    monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
+
+    outcome = await run_once(timeout_seconds=1, worker_id="worker-a")
+
+    assert outcome.status == "idle"
+    assert calls == [
+        ("sandbox_cleanup",),
+        ("memory_cleanup", settings),
+        ("multi_agent_dispatch", settings),
+        ("queue_reclaim",),
+        ("lease", "worker-a", 3),
+    ]

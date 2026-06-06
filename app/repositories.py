@@ -2828,6 +2828,73 @@ async def upsert_run_step(
     return str(row["id"])
 
 
+async def list_multi_agent_dispatch_candidate_run_ids(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    limit: int = 10,
+) -> list[str]:
+    """Return bounded running top-level multi-agent parent run ids for worker dispatch."""
+    bounded_limit = max(min(int(limit or 10), 500), 1)
+    cursor = await conn.execute(
+        """
+        select id
+        from runs
+        where tenant_id = %s
+          and status = 'running'
+          and copied_from_run_id is null
+          and (
+            input_json#>>'{input,execution_mode}' = 'multi_agent'
+            or input_json->>'execution_mode' = 'multi_agent'
+          )
+          and input_json#>>'{multi_agent_dispatch,orchestration_state}' = 'awaiting_dispatch'
+        order by updated_at asc, queued_at asc, created_at asc
+        limit %s
+        """,
+        (tenant_id, bounded_limit),
+    )
+    return [str(row["id"]) for row in await cursor.fetchall()]
+
+
+async def mark_multi_agent_dispatch_parent_awaiting_dispatch(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    worker_id: str | None = None,
+) -> bool:
+    """Mark a running top-level multi-agent parent as parked for worker dispatch."""
+    marker = {
+        "orchestration_state": "awaiting_dispatch",
+        "source": "worker",
+        "worker_id": sanitize_public_text(worker_id) or "worker",
+        "marked_at": datetime.now(timezone.utc).isoformat(),
+    }
+    cursor = await conn.execute(
+        """
+        update runs
+        set input_json = jsonb_set(
+              case when jsonb_typeof(input_json) = 'object' then input_json else '{}'::jsonb end,
+              '{multi_agent_dispatch}',
+              %s::jsonb,
+              true
+            ),
+            updated_at = now()
+        where tenant_id = %s
+          and id = %s
+          and status = 'running'
+          and copied_from_run_id is null
+          and (
+            input_json#>>'{input,execution_mode}' = 'multi_agent'
+            or input_json->>'execution_mode' = 'multi_agent'
+          )
+        returning id
+        """,
+        (dumps_json(marker), tenant_id, run_id),
+    )
+    return await cursor.fetchone() is not None
+
+
 async def claim_multi_agent_dispatch_step(
     conn: AsyncConnection,
     *,
@@ -3347,6 +3414,110 @@ async def create_multi_agent_dispatch_child_run(
         "release_decision": release_decision_payload,
         "event_id": event_id,
         "child_event_id": child_event_id,
+        "audit_id": audit_id,
+    }
+
+
+async def mark_multi_agent_dispatch_enqueue_failed(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    parent_run_id: str,
+    parent_step_id: str,
+    dispatch_id: str,
+    child_run_id: str,
+    reason: str,
+    triggered_by: str,
+) -> dict[str, Any] | None:
+    """Compensate a committed child handoff when Redis enqueue fails."""
+    safe_reason = sanitize_public_text(reason) or "queue_enqueue_failed"
+    step_cursor = await conn.execute(
+        """
+        update run_steps
+        set
+          status = 'pending',
+          started_at = null,
+          finished_at = null,
+          payload_json = coalesce(payload_json, '{}'::jsonb)
+            - 'dispatch_state'
+            - 'dispatch_kind'
+            - 'dispatch_id'
+            - 'dispatch_claimed_by'
+            - 'dispatch_claimed_at'
+            - 'dispatch_lease_expires_at'
+            - 'dispatch_child_run_id'
+            - 'dispatch_handed_off_at',
+          updated_at = now()
+        where tenant_id = %s
+          and run_id = %s
+          and id = %s
+          and payload_json->>'dispatch_id' = %s
+          and payload_json->>'dispatch_child_run_id' = %s
+          and payload_json->>'dispatch_state' = 'handed_off'
+        returning id, step_key
+        """,
+        (tenant_id, parent_run_id, parent_step_id, dispatch_id, child_run_id),
+    )
+    step = await step_cursor.fetchone()
+    if step is None:
+        return None
+    child_cursor = await conn.execute(
+        """
+        update runs
+        set
+          status = 'failed',
+          finished_at = now(),
+          error_code = 'multi_agent_child_enqueue_failed',
+          error_message = %s
+        where tenant_id = %s
+          and id = %s
+          and copied_from_run_id = %s
+          and status = 'queued'
+        returning id
+        """,
+        (safe_reason, tenant_id, child_run_id, parent_run_id),
+    )
+    child = await child_cursor.fetchone()
+    if child is None:
+        raise RepositoryConflictError("dispatch_child_not_queued")
+    event_id = await append_event(
+        conn,
+        tenant_id=tenant_id,
+        run_id=parent_run_id,
+        event_type="multi_agent_dispatch_enqueue_failed",
+        stage="control",
+        message="Multi-agent child enqueue failed; dispatch was reset",
+        visible_to_user=False,
+        payload={
+            "visible_to_user": False,
+            "step_key": str(step["step_key"]),
+            "child_run_id": child_run_id,
+            "reason": safe_reason,
+        },
+    )
+    audit_id = await append_audit_log(
+        conn,
+        tenant_id=tenant_id,
+        user_id=triggered_by,
+        action="run.multi_agent.dispatch.enqueue_failed",
+        target_type="run_step",
+        target_id=parent_step_id,
+        trace_id=standard_trace_id(parent_run_id),
+        payload_json={
+            "parent_run_id": parent_run_id,
+            "parent_step_id": parent_step_id,
+            "step_key": str(step["step_key"]),
+            "dispatch_id": dispatch_id,
+            "child_run_id": child_run_id,
+            "reason": safe_reason,
+        },
+    )
+    return {
+        "parent_run_id": parent_run_id,
+        "parent_step_id": parent_step_id,
+        "step_key": str(step["step_key"]),
+        "child_run_id": child_run_id,
+        "event_id": event_id,
         "audit_id": audit_id,
     }
 

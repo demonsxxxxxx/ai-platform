@@ -27,6 +27,7 @@ from app.projection_redaction import (
     public_agent_id_for_projection,
     redact_raw_skill_references,
     sanitize_user_control_input,
+    strip_server_owned_control_metadata,
 )
 from app.queue import enqueue_run, get_queue_insight
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
@@ -107,12 +108,11 @@ def _validate_queue_payload_for_enqueue(payload: dict[str, Any]) -> dict[str, An
         raise HTTPException(status_code=500, detail="queue_payload_invalid") from exc
 
 
-def _strip_server_owned_resume(input_payload: object) -> object:
+def _strip_server_owned_control_metadata(input_payload: object) -> object:
     if not isinstance(input_payload, dict):
         return input_payload
-    cleaned = dict(input_payload)
-    cleaned.pop("resume", None)
-    return cleaned
+    cleaned = strip_server_owned_control_metadata(input_payload)
+    return cleaned if isinstance(cleaned, dict) else {}
 
 
 def _file_ids_from_request(request: ChatStreamRequest) -> list[str]:
@@ -324,7 +324,7 @@ def _message_metadata(row: dict[str, object], principal: AuthPrincipal) -> dict[
         return {}
     if is_ai_admin(principal):
         return metadata
-    redacted = sanitize_public_payload(redact_raw_skill_references(metadata))
+    redacted = sanitize_user_control_input(metadata)
     return redacted if isinstance(redacted, dict) else {}
 
 
@@ -426,7 +426,7 @@ async def chat_stream(
     explicit_payload = _explicit_intent_payload(requested_agent_id, requested_skill_id)
     resolved_file_ids = _file_ids_from_request(request)
     request_input = request.input if is_ai_admin(principal) else sanitize_user_control_input(request.input)
-    run_input = _strip_server_owned_resume({"message": request.message, **request_input})
+    run_input = _strip_server_owned_control_metadata({"message": request.message, **request_input})
     try:
         async with transaction() as conn:
             if explicit_payload is None:
@@ -524,12 +524,16 @@ async def chat_stream(
                 run_id=run_id,
                 role="user",
                 content=request.message,
-                metadata_json=redact_raw_skill_references({
-                    "skill_id": resolved_skill_id,
-                    "file_ids": resolved_file_ids,
-                    "attachments": request.attachments,
-                    "intent": decision_payload,
-                }) if not is_ai_admin(principal) else {
+                metadata_json=sanitize_user_control_input(
+                    {
+                        "skill_id": resolved_skill_id,
+                        "file_ids": resolved_file_ids,
+                        "attachments": request.attachments,
+                        "intent": decision_payload,
+                    }
+                )
+                if not is_ai_admin(principal)
+                else {
                     "skill_id": resolved_skill_id,
                     "file_ids": resolved_file_ids,
                     "attachments": request.attachments,

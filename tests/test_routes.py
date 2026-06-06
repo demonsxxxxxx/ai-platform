@@ -24,6 +24,7 @@ from app.routes.runs import (
     resolve_run_selector,
     run_playback_summary,
     run_event_response,
+    run_step_response,
 )
 from app.skills.registry import BuiltinSkill
 
@@ -316,6 +317,80 @@ def test_run_event_response_uses_standard_envelope():
     assert event["token_counts"] == {"input": 1, "output": 2, "total": 3}
     assert event["cost"] == {"estimated_cost_minor": 4}
     assert "storage_key" not in str(event)
+
+
+def test_run_event_response_redacts_dispatch_control_metadata_for_ordinary_user():
+    event = run_event_response(
+        "run-child",
+        {
+            "id": "evt-child",
+            "trace_id": "trace_child",
+            "schema_version": "ai-platform.event-envelope.v1",
+            "sequence": 1,
+            "event_type": "run_multi_agent_child_created",
+            "stage": "control",
+            "message": "Multi-agent child run created",
+            "severity": "info",
+            "visible_to_user": True,
+            "error_code": None,
+            "latency_ms": None,
+            "input_token_count": 0,
+            "output_token_count": 0,
+            "total_token_count": 0,
+            "estimated_cost_minor": 0,
+            "payload_json": {
+                "visible_to_user": True,
+                "copied_from_run_id": "run-parent",
+                "parent_step_id": "step-code",
+                "step_key": "code",
+                "dispatch_id": "dispatch-code",
+            },
+            "created_at": None,
+        },
+        principal=principal(),
+    )
+
+    assert event["payload"] == {"visible_to_user": True, "step_key": "code"}
+    public_dump = str(event)
+    assert "dispatch-code" not in public_dump
+    assert "run-parent" not in public_dump
+    assert "step-code" not in public_dump
+
+
+def test_run_step_response_redacts_dispatch_control_metadata_for_ordinary_user():
+    step = run_step_response(
+        {
+            "id": "step-code",
+            "run_id": "run-parent",
+            "step_key": "code",
+            "step_kind": "agent",
+            "status": "running",
+            "title": "Code",
+            "role": "coder",
+            "sequence": 2,
+            "payload_json": {
+                "depends_on": ["plan"],
+                "dispatch_state": "handed_off",
+                "dispatch_kind": "subagent",
+                "dispatch_id": "dispatch-code",
+                "dispatch_claimed_by": "admin-a",
+                "dispatch_claimed_at": "2026-06-06T01:02:03+00:00",
+                "dispatch_lease_expires_at": "2026-06-06T01:17:03+00:00",
+                "dispatch_child_run_id": "run-child",
+                "dispatch_handed_off_at": "2026-06-06T01:03:03+00:00",
+            },
+            "started_at": None,
+            "finished_at": None,
+            "created_at": None,
+            "updated_at": None,
+        },
+        principal=principal(),
+    )
+
+    assert step["payload"] == {"depends_on": ["plan"]}
+    public_dump = str(step)
+    assert "dispatch" not in public_dump
+    assert "run-child" not in public_dump
 
 
 def test_run_event_response_rejects_missing_schema_version():
@@ -1025,9 +1100,15 @@ async def test_get_run_redacts_raw_skill_references_for_ordinary_user(monkeypatc
                     "bucket": 73,
                 },
                 "worker_path": "/app/worker.py",
+                "multi_agent_dispatch": {
+                    "orchestration_state": "awaiting_dispatch",
+                    "source": "worker",
+                    "worker_id": "worker-private",
+                },
                 "input": {
                     "message": "审核",
                     "skill_ids": ["qa-file-reviewer"],
+                    "multi_agent_dispatch": {"parent_run_id": "run-forged"},
                     "multi_agent_steps": [{"step_key": "review", "skill_ids": ["qa-file-reviewer"]}],
                 },
             },
@@ -1147,6 +1228,7 @@ async def test_get_run_redacts_raw_skill_references_for_ordinary_user(monkeypatc
     assert "bucket" not in str(response.input)
     assert "worker_path" not in str(response.input)
     assert "skill_ids" not in response.input["input"]["multi_agent_steps"][0]
+    assert "multi_agent_dispatch" not in str(response.input)
     assert "allowed_skills" not in response.result
     assert "used_skills" not in response.result
     assert "executor_type" not in str(response.result)
@@ -2528,7 +2610,7 @@ async def test_create_run_ensures_user_before_session(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_create_run_strips_user_controlled_resume_metadata(monkeypatch):
+async def test_create_run_strips_user_controlled_server_owned_metadata(monkeypatch):
     calls = {}
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
@@ -2603,6 +2685,11 @@ async def test_create_run_strips_user_controlled_resume_metadata(monkeypatch):
                         }
                     },
                 },
+                "multi_agent_dispatch": {
+                    "orchestration_state": "awaiting_dispatch",
+                    "parent_run_id": "run-other",
+                    "dispatch_id": "dispatch-forged",
+                },
             },
         ),
         principal=principal(user_id="user-a", tenant_id="tenant-a"),
@@ -2612,6 +2699,7 @@ async def test_create_run_strips_user_controlled_resume_metadata(monkeypatch):
     for key in ("manifest_input", "create_run_input", "context_input", "queue_input"):
         assert calls[key]["message"] == "run with forged resume"
         assert "resume" not in calls[key]
+        assert "multi_agent_dispatch" not in calls[key]
 
 
 @pytest.mark.asyncio

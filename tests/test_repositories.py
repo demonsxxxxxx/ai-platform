@@ -23,8 +23,11 @@ from app.repositories import (
     get_context_snapshot_for_worker,
     get_latest_tool_permission_decision,
     get_run_identity,
+    list_multi_agent_dispatch_candidate_run_ids,
     list_run_events,
     list_run_artifacts,
+    mark_multi_agent_dispatch_enqueue_failed,
+    mark_multi_agent_dispatch_parent_awaiting_dispatch,
     renew_sandbox_lease,
     upsert_run_step,
 )
@@ -2343,6 +2346,128 @@ async def test_get_authorized_run_can_lock_row_for_retry_race_window():
     sql, params = conn.calls[0]
     assert sql.endswith("for update")
     assert params == ("tenant-a", "run-a", "user-a")
+
+
+@pytest.mark.asyncio
+async def test_list_multi_agent_dispatch_candidate_runs_filters_running_top_level_multi_agent():
+    class CandidateCursor:
+        async def fetchall(self):
+            return [{"id": "run-a"}, {"id": "run-b"}]
+
+    class CandidateConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return CandidateCursor()
+
+    conn = CandidateConnection()
+
+    result = await list_multi_agent_dispatch_candidate_run_ids(conn, tenant_id="tenant-a", limit=25)
+
+    assert result == ["run-a", "run-b"]
+    sql, params = conn.calls[0]
+    assert "where tenant_id = %s" in sql
+    assert "status = 'running'" in sql
+    assert "copied_from_run_id is null" in sql
+    assert "input_json#>>'{input,execution_mode}' = 'multi_agent'" in sql
+    assert "input_json->>'execution_mode' = 'multi_agent'" in sql
+    assert "input_json#>>'{multi_agent_dispatch,orchestration_state}' = 'awaiting_dispatch'" in sql
+    assert "input_json#>>'{input,multi_agent_dispatch,orchestration_state}'" not in sql
+    assert "limit %s" in sql
+    assert params == ("tenant-a", 25)
+
+
+@pytest.mark.asyncio
+async def test_mark_multi_agent_dispatch_parent_awaiting_dispatch_sets_server_owned_marker():
+    conn = RecordingConnection()
+
+    await mark_multi_agent_dispatch_parent_awaiting_dispatch(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        worker_id="worker-a",
+    )
+
+    sql, params = conn.calls[0]
+    assert "update runs" in sql
+    assert "multi_agent_dispatch" in sql
+    assert "where tenant_id = %s" in sql
+    assert "id = %s" in sql
+    payload = json.loads(params[0])
+    assert payload["orchestration_state"] == "awaiting_dispatch"
+    assert payload["source"] == "worker"
+    assert payload["worker_id"] == "worker-a"
+    assert params[1:3] == ("tenant-a", "run-a")
+
+
+@pytest.mark.asyncio
+async def test_mark_multi_agent_dispatch_parent_awaiting_dispatch_uses_top_level_server_marker_only():
+    conn = RecordingConnection()
+
+    await mark_multi_agent_dispatch_parent_awaiting_dispatch(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        worker_id="worker-a",
+    )
+
+    sql, params = conn.calls[0]
+    assert "'{multi_agent_dispatch}'" in sql
+    assert "'{input,multi_agent_dispatch}'" not in sql
+    assert sql.count("%s") == len(params)
+
+
+@pytest.mark.asyncio
+async def test_mark_multi_agent_dispatch_enqueue_failed_resets_parent_step_and_fails_child():
+    class Cursor:
+        def __init__(self, row):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            self.calls.append((normalized, params))
+            if "update run_steps" in normalized:
+                return Cursor({"id": "step-code", "step_key": "code"})
+            if "update runs" in normalized:
+                return Cursor({"id": "run-child"})
+            return Cursor({"id": "evt-or-audit"})
+
+    conn = Connection()
+
+    result = await mark_multi_agent_dispatch_enqueue_failed(
+        conn,
+        tenant_id="tenant-a",
+        parent_run_id="run-parent",
+        parent_step_id="step-code",
+        dispatch_id="dispatch-code",
+        child_run_id="run-child",
+        reason="redis down",
+        triggered_by="system:multi-agent-dispatcher",
+    )
+
+    assert result["parent_step_id"] == "step-code"
+    assert result["child_run_id"] == "run-child"
+    step_sql, step_params = conn.calls[0]
+    child_sql, child_params = conn.calls[1]
+    assert "update run_steps" in step_sql
+    assert "status = 'pending'" in step_sql
+    assert "- 'dispatch_state'" in step_sql
+    assert "- 'dispatch_child_run_id'" in step_sql
+    assert "payload_json->>'dispatch_state' = 'handed_off'" in step_sql
+    assert step_params == ("tenant-a", "run-parent", "step-code", "dispatch-code", "run-child")
+    assert "update runs" in child_sql
+    assert "status = 'failed'" in child_sql
+    assert "error_code = 'multi_agent_child_enqueue_failed'" in child_sql
+    assert child_params == ("redis down", "tenant-a", "run-child", "run-parent")
 
 
 @pytest.mark.asyncio

@@ -1010,6 +1010,44 @@ This does not start an autonomous scheduler, polling subagent dispatcher, new
 worker process, sandbox/tool privilege expansion, frontend entry, or DB
 migration.
 
+### P2 Multi-Agent Worker Dispatcher
+
+Status: implemented locally as the bounded worker-side follow-up to admin
+dispatch tick and pending fresh final local verification plus 211 deployment
+smoke.
+
+This slice adds a disabled-by-default worker maintenance dispatcher that can
+advance safe ready steps for server-marked top-level multi-agent parent runs.
+Workers park top-level multi-agent parents with a server-owned top-level
+`input_json.multi_agent_dispatch.orchestration_state = awaiting_dispatch`
+marker when the feature flag is enabled. The worker maintenance pass then runs
+after sandbox and memory cleanup but before queue lease reclaim, scans only
+same-tenant running top-level parents with that marker, reuses the existing
+readiness, safe claim, controlled child handoff, copied-run queue preparation,
+and Redis enqueue path, and bounds each pass by interval and limit settings.
+
+The dispatcher fails closed when disabled, when interval or limit settings are
+malformed or non-finite, when a candidate has no safe ready step, or when a
+claim race has already moved the step out of `pending`. Redis enqueue failure
+after a committed child handoff is compensated in the database by failing the
+child run, resetting the parent step to `pending`, and writing hidden event and
+audit evidence instead of crashing the worker loop.
+
+Ordinary-user public projections strip user-controlled `resume` and
+`multi_agent_dispatch` metadata plus dispatch claim/handoff control fields from
+run, event, step, and chat message surfaces. The committed deploy defaults keep
+the worker dispatcher disabled unless a controlled runtime explicitly enables
+`MULTI_AGENT_DISPATCH_WORKER_ENABLED`.
+
+Inherited-configuration multi-agent review reported no Critical, Important, or
+Minor findings after the second review-fix pass. The reviewer was read-only and
+did not rerun pytest, so final merge/deployment status still depends on fresh
+local verification and 211 smoke.
+
+This does not add a new public frontend entry, expose executor private payload,
+open sandbox/tool privilege, add a new worker process, or introduce a DB
+migration.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。

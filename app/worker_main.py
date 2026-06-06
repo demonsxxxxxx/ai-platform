@@ -9,6 +9,7 @@ from app import repositories
 from app.control_plane_contracts import sanitize_public_payload, standard_trace_id
 from app.db import transaction
 from app.executors.registry import AdapterRegistry
+from app.multi_agent_dispatcher import dispatch_multi_agent_ready_steps_for_worker
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
 from app.settings import get_settings
@@ -93,6 +94,7 @@ async def run_once(
     settings = get_settings()
     await cleanup_expired_sandbox_leases()
     await cleanup_expired_memory_records_for_worker(settings)
+    await dispatch_multi_agent_ready_steps_for_worker(settings)
     await queue.reclaim_expired_leases()
     message = await queue.lease_run(
         timeout_seconds=timeout_seconds,

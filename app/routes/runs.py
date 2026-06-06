@@ -47,6 +47,7 @@ from app.projection_redaction import (
     public_agent_id_for_projection,
     redact_raw_skill_references,
     sanitize_user_control_input,
+    strip_server_owned_control_metadata,
 )
 from app.queue import enqueue_run, get_queue_insight, get_run_queue_position, remove_queued_run
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
@@ -361,7 +362,7 @@ def run_event_response(run_id: str, row: dict[str, object], principal: AuthPrinc
     if not isinstance(payload, dict):
         payload = {}
     if principal is not None and not is_ai_admin(principal):
-        payload = redact_raw_skill_references(payload)
+        payload = sanitize_user_control_input(payload)
         if raw_event_type in {"tool_permission_requested", "tool_permission_decided"}:
             payload = tool_permission_public_event_payload(
                 run_id=run_id,
@@ -1888,12 +1889,11 @@ def _resume_checkpoint_lineage(
     return result
 
 
-def _strip_server_owned_resume(input_payload: object) -> object:
+def _strip_server_owned_control_metadata(input_payload: object) -> object:
     if not isinstance(input_payload, dict):
         return input_payload
-    cleaned = dict(input_payload)
-    cleaned.pop("resume", None)
-    return cleaned
+    cleaned = strip_server_owned_control_metadata(input_payload)
+    return cleaned if isinstance(cleaned, dict) else {}
 
 
 async def seed_copied_run_steps(conn, *, tenant_id: str, run_id: str, copied_input: dict[str, Any], source: str) -> None:
@@ -2088,7 +2088,7 @@ async def create_run(
     user_id = principal.user_id
     resolved_agent_id, resolved_skill_id = resolve_run_selector(request, principal)
     run_input = request.input if is_ai_admin(principal) else sanitize_user_control_input(request.input)
-    run_input = _strip_server_owned_resume(run_input)
+    run_input = _strip_server_owned_control_metadata(run_input)
     try:
         async with transaction() as conn:
             skill = await repositories.resolve_agent_skill(
@@ -2758,7 +2758,7 @@ async def get_run(
         input_payload = sanitize_public_payload(input_payload)
         result_payload = sanitize_public_payload(result_payload)
     else:
-        input_payload = sanitize_public_payload(redact_raw_skill_references(input_payload))
+        input_payload = sanitize_user_control_input(input_payload)
         result_payload = sanitize_public_payload(redact_raw_skill_references(result_payload))
     if not isinstance(input_payload, dict):
         input_payload = {}

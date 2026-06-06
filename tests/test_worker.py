@@ -1806,6 +1806,85 @@ async def test_worker_honors_cancel_before_executor_start(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_worker_parks_top_level_multi_agent_parent_for_dispatcher_without_running_adapter(monkeypatch):
+    calls = []
+
+    class Settings:
+        multi_agent_dispatch_worker_enabled = True
+        claude_agent_sdk_enabled = False
+        claude_agent_model = "test-model"
+
+    class ShouldNotRunAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            raise AssertionError("parked multi-agent parent must not execute adapter steps")
+
+    locked_run = {
+        "id": "run-a",
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "trace_id": "trace-run-a",
+        "input_json": {
+            "input": {
+                "message": "build feature",
+                "execution_mode": "multi_agent",
+                "multi_agent_steps": [{"step_key": "code", "depends_on": []}],
+            },
+            "file_ids": [],
+            "executor_type": "fake",
+            "skill_version": "hash-general-chat",
+            "release_decision": release_decision("hash-general-chat"),
+        },
+    }
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        calls.append(("running", tenant_id, run_id))
+        return locked_run
+
+    async def mark_parent_awaiting_dispatch(conn, *, tenant_id, run_id, worker_id):
+        calls.append(("park", tenant_id, run_id, worker_id))
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs["stage"], kwargs.get("payload") or {}))
+        return "evt-a"
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.get_settings", lambda: Settings(), raising=False)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(
+        "app.worker.repositories.mark_multi_agent_dispatch_parent_awaiting_dispatch",
+        mark_parent_awaiting_dispatch,
+        raising=False,
+    )
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+
+    outcome = await process_run_payload(
+        base_payload(
+            file_ids=[],
+            agent_id="general-agent",
+            skill_id="general-chat",
+            input={"message": "build feature"},
+            executor_type="fake",
+            skill_manifests=[primary_manifest("general-chat", "hash-general-chat")],
+        ),
+        AdapterRegistry({"fake": ShouldNotRunAdapter()}),
+        worker_id="worker-a",
+    )
+
+    assert outcome.status == "skipped"
+    assert calls[0] == ("running", "tenant-a", "run-a")
+    assert ("park", "tenant-a", "run-a", "worker-a") in calls
+    parked_events = [item for item in calls if item[0] == "event" and item[1] == "multi_agent_dispatch_parent_parked"]
+    assert parked_events
+    assert parked_events[0][3]["visible_to_user"] is False
+    assert parked_events[0][3]["orchestration_state"] == "awaiting_dispatch"
+
+
+@pytest.mark.asyncio
 async def test_worker_stops_running_executor_after_cancel_requested_on_event_boundary(monkeypatch):
     calls = []
     cancel_checks = 0

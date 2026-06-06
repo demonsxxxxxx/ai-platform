@@ -40,6 +40,20 @@ DEFAULT_SKILL_ID_BY_PUBLIC_AGENT_ID = {
 }
 
 RAW_SKILL_KEYS = {"allowed_skills", "staged_skills", "used_skills"}
+SERVER_OWNED_CONTROL_KEYS = {
+    "copiedfromrunid",
+    "dispatchchildrunid",
+    "dispatchclaimedat",
+    "dispatchclaimedby",
+    "dispatchhandedoffat",
+    "dispatchid",
+    "dispatchkind",
+    "dispatchleaseexpiresat",
+    "dispatchstate",
+    "multiagentdispatch",
+    "parentstepid",
+    "resume",
+}
 RAW_SKILL_ID_ALIASES = {
     "skillid",
     "defaultskillid",
@@ -149,7 +163,22 @@ def redact_raw_skill_references(value: Any, *, preserve_empty_skill_ids: bool = 
     return redacted
 
 
+def strip_server_owned_control_metadata(value: Any) -> Any:
+    """Remove server-owned control metadata from user-controlled/public payloads."""
+    if isinstance(value, list):
+        return [strip_server_owned_control_metadata(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    cleaned: dict[str, Any] = {}
+    for key, item in value.items():
+        if _normalized_key(key) in SERVER_OWNED_CONTROL_KEYS:
+            continue
+        cleaned[key] = strip_server_owned_control_metadata(item)
+    return cleaned
+
+
 def sanitize_user_control_input(value: Any) -> dict[str, Any]:
     """Sanitize user-controlled input before public projection or replay."""
-    sanitized = sanitize_public_payload(redact_raw_skill_references(value))
+    sanitized = sanitize_public_payload(strip_server_owned_control_metadata(redact_raw_skill_references(value)))
     return sanitized if isinstance(sanitized, dict) else {}
