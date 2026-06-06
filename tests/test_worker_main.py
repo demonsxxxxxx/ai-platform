@@ -342,6 +342,117 @@ async def test_run_once_cleans_expired_sandbox_leases_before_leasing_queue(monke
 
 
 @pytest.mark.asyncio
+async def test_run_once_cleans_expired_memory_records_across_tenant_workspaces(monkeypatch):
+    calls = []
+
+    class Settings:
+        max_active_worker_runs = 3
+        memory_retention_worker_cleanup_enabled = True
+        memory_retention_worker_cleanup_interval_seconds = 300.0
+        memory_retention_worker_cleanup_limit = 25
+
+        def __getattr__(self, name):
+            if name in {"default_tenant_id", "default_workspace_id"}:
+                raise AssertionError("worker memory cleanup must not depend on default scope")
+            raise AttributeError(name)
+
+    class Transaction:
+        async def __aenter__(self):
+            return "conn"
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def cleanup_expired_sandbox_leases():
+        calls.append(("sandbox_cleanup",))
+
+    async def cleanup_expired_memory_records(conn, **_kwargs):
+        raise AssertionError("worker must use all-scope memory cleanup")
+
+    async def cleanup_expired_memory_records_across_scopes(conn, *, limit):
+        calls.append(("memory_cleanup_all_scopes", conn, limit))
+        return [
+            {
+                "id": "mem-a",
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "content": "secret content must not be audited",
+                "metadata_json": {"api_key": "hidden"},
+            },
+            {
+                "id": "mem-b",
+                "tenant_id": "tenant-b",
+                "workspace_id": "workspace-b",
+                "user_id": "user-b",
+                "content": "other secret content must not be audited",
+                "metadata_json": {"private_payload": "hidden"},
+            },
+        ]
+
+    async def append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "audit-id"
+
+    async def reclaim_expired_leases():
+        calls.append(("queue_reclaim",))
+
+    async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
+        calls.append(("lease", worker_id, max_processing_runs))
+        return None
+
+    monkeypatch.setattr(
+        "app.worker_main.cleanup_expired_memory_records_for_worker",
+        _ORIGINAL_MEMORY_CLEANUP_FOR_WORKER,
+    )
+    monkeypatch.setattr("app.worker_main._next_memory_cleanup_at", 0.0, raising=False)
+    monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.worker_main.transaction", lambda: Transaction())
+    monkeypatch.setattr("app.worker_main.cleanup_expired_sandbox_leases", cleanup_expired_sandbox_leases, raising=False)
+    monkeypatch.setattr("app.worker_main.repositories.cleanup_expired_memory_records", cleanup_expired_memory_records)
+    monkeypatch.setattr(
+        "app.worker_main.repositories.cleanup_expired_memory_records_across_scopes",
+        cleanup_expired_memory_records_across_scopes,
+        raising=False,
+    )
+    monkeypatch.setattr("app.worker_main.repositories.append_audit_log", append_audit_log)
+    monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
+    monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
+
+    outcome = await run_once(timeout_seconds=1, worker_id="worker-a")
+
+    assert outcome.status == "idle"
+    assert calls[0] == ("sandbox_cleanup",)
+    assert calls[1] == ("memory_cleanup_all_scopes", "conn", 25)
+    audit_calls = [call[1] for call in calls if call[0] == "audit"]
+    assert [audit["tenant_id"] for audit in audit_calls] == ["tenant-a", "tenant-b"]
+    assert [audit["target_id"] for audit in audit_calls] == ["workspace-a", "workspace-b"]
+    assert [audit["action"] for audit in audit_calls] == ["worker.memory.retention.cleanup"] * 2
+    assert [audit["user_id"] for audit in audit_calls] == [None, None]
+    assert [audit["target_type"] for audit in audit_calls] == ["memory_retention", "memory_retention"]
+    assert audit_calls[0]["payload_json"] == {
+        "workspace_id": "workspace-a",
+        "deleted_count": 1,
+        "memory_record_ids": ["mem-a"],
+        "target_user_ids": ["user-a"],
+        "reason": "retention_expired",
+        "source": "worker",
+    }
+    assert audit_calls[1]["payload_json"] == {
+        "workspace_id": "workspace-b",
+        "deleted_count": 1,
+        "memory_record_ids": ["mem-b"],
+        "target_user_ids": ["user-b"],
+        "reason": "retention_expired",
+        "source": "worker",
+    }
+    assert calls[-2:] == [("queue_reclaim",), ("lease", "worker-a", 3)]
+    assert "secret content" not in str(audit_calls)
+    assert "api_key" not in str(audit_calls)
+    assert "private_payload" not in str(audit_calls)
+
+
+@pytest.mark.asyncio
 async def test_run_once_cleans_expired_memory_records_when_due(monkeypatch):
     calls = []
 
@@ -363,13 +474,13 @@ async def test_run_once_cleans_expired_memory_records_when_due(monkeypatch):
     async def cleanup_expired_sandbox_leases():
         calls.append(("sandbox_cleanup",))
 
-    async def cleanup_expired_memory_records(conn, *, tenant_id, workspace_id, limit):
-        calls.append(("memory_cleanup", conn, tenant_id, workspace_id, limit))
+    async def cleanup_expired_memory_records_across_scopes(conn, *, limit):
+        calls.append(("memory_cleanup", conn, limit))
         return [
             {
                 "id": "mem-expired",
-                "tenant_id": tenant_id,
-                "workspace_id": workspace_id,
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
                 "user_id": "user-a",
                 "content": "do not audit this secret content",
                 "metadata_json": {"api_key": "hidden"},
@@ -395,7 +506,10 @@ async def test_run_once_cleans_expired_memory_records_when_due(monkeypatch):
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
     monkeypatch.setattr("app.worker_main.transaction", lambda: Transaction())
     monkeypatch.setattr("app.worker_main.cleanup_expired_sandbox_leases", cleanup_expired_sandbox_leases, raising=False)
-    monkeypatch.setattr("app.worker_main.repositories.cleanup_expired_memory_records", cleanup_expired_memory_records)
+    monkeypatch.setattr(
+        "app.worker_main.repositories.cleanup_expired_memory_records_across_scopes",
+        cleanup_expired_memory_records_across_scopes,
+    )
     monkeypatch.setattr("app.worker_main.repositories.append_audit_log", append_audit_log)
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
@@ -404,7 +518,7 @@ async def test_run_once_cleans_expired_memory_records_when_due(monkeypatch):
 
     assert outcome.status == "idle"
     assert calls[0] == ("sandbox_cleanup",)
-    assert calls[1] == ("memory_cleanup", "conn", "tenant-a", "workspace-a", 25)
+    assert calls[1] == ("memory_cleanup", "conn", 25)
     assert calls[2][0] == "audit"
     assert calls[2][1]["action"] == "worker.memory.retention.cleanup"
     assert calls[2][1]["user_id"] is None
@@ -442,8 +556,8 @@ async def test_run_once_does_not_audit_memory_cleanup_when_no_records_deleted(mo
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-    async def cleanup_expired_memory_records(conn, *, tenant_id, workspace_id, limit):
-        calls.append(("memory_cleanup", tenant_id, workspace_id, limit))
+    async def cleanup_expired_memory_records_across_scopes(conn, *, limit):
+        calls.append(("memory_cleanup", limit))
         return []
 
     async def append_audit_log(conn, **kwargs):
@@ -463,7 +577,10 @@ async def test_run_once_does_not_audit_memory_cleanup_when_no_records_deleted(mo
     monkeypatch.setattr("app.worker_main._next_memory_cleanup_at", 0.0, raising=False)
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
     monkeypatch.setattr("app.worker_main.transaction", lambda: Transaction())
-    monkeypatch.setattr("app.worker_main.repositories.cleanup_expired_memory_records", cleanup_expired_memory_records)
+    monkeypatch.setattr(
+        "app.worker_main.repositories.cleanup_expired_memory_records_across_scopes",
+        cleanup_expired_memory_records_across_scopes,
+    )
     monkeypatch.setattr("app.worker_main.repositories.append_audit_log", append_audit_log)
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
@@ -471,7 +588,7 @@ async def test_run_once_does_not_audit_memory_cleanup_when_no_records_deleted(mo
     outcome = await run_once(timeout_seconds=1, worker_id="worker-a")
 
     assert outcome.status == "idle"
-    assert calls == [("memory_cleanup", "tenant-a", "workspace-a", 25), ("queue_reclaim",), ("lease", "worker-a")]
+    assert calls == [("memory_cleanup", 25), ("queue_reclaim",), ("lease", "worker-a")]
 
 
 @pytest.mark.asyncio
@@ -493,7 +610,7 @@ async def test_run_once_skips_memory_cleanup_until_interval_elapsed(monkeypatch)
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-    async def cleanup_expired_memory_records(conn, *, tenant_id, workspace_id, limit):
+    async def cleanup_expired_memory_records_across_scopes(conn, *, limit):
         calls.append(("memory_cleanup",))
         return []
 
@@ -514,7 +631,10 @@ async def test_run_once_skips_memory_cleanup_until_interval_elapsed(monkeypatch)
     monkeypatch.setattr("app.worker_main._next_memory_cleanup_at", 0.0, raising=False)
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
     monkeypatch.setattr("app.worker_main.transaction", lambda: Transaction())
-    monkeypatch.setattr("app.worker_main.repositories.cleanup_expired_memory_records", cleanup_expired_memory_records)
+    monkeypatch.setattr(
+        "app.worker_main.repositories.cleanup_expired_memory_records_across_scopes",
+        cleanup_expired_memory_records_across_scopes,
+    )
     monkeypatch.setattr("app.worker_main.repositories.append_audit_log", append_audit_log)
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)

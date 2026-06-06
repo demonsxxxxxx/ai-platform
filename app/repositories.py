@@ -31,6 +31,7 @@ DEFAULT_RUN_EXECUTOR_TYPES = {"claude-agent-worker", "ragflow"}
 ACTIVE_RUN_STATUSES = {"queued", "running"}
 TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
 RETRYABLE_RUN_STATUSES = {"failed", "dead-letter", "dead_letter", "dead-lettered"}
+MEMORY_RETENTION_CLEANUP_CURSOR_KEY = "memory_retention_cleanup"
 
 
 def new_id(prefix: str) -> str:
@@ -1621,6 +1622,174 @@ async def cleanup_expired_memory_records(
                   record_type, status, expires_at, deleted_at, created_at, updated_at
         """,
         (tenant_id, workspace_id, limit),
+    )
+    return list(await cursor.fetchall())
+
+
+async def cleanup_expired_memory_records_across_scopes(
+    conn: AsyncConnection,
+    *,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """Soft-delete expired memory records using a bounded rotating scope cursor."""
+    limit = int(limit)
+    if limit <= 0:
+        raise RepositoryConflictError("memory_cleanup_limit_invalid")
+    cursor = await conn.execute(
+        """
+        select tenant_id, workspace_id
+        from worker_maintenance_cursors
+        where cursor_key = %s
+        for update
+        """,
+        (MEMORY_RETENTION_CLEANUP_CURSOR_KEY,),
+    )
+    cursor_row = await cursor.fetchone()
+    last_tenant_id = str(cursor_row["tenant_id"]) if cursor_row and cursor_row.get("tenant_id") else None
+    last_workspace_id = str(cursor_row["workspace_id"]) if cursor_row and cursor_row.get("workspace_id") else None
+
+    scope_rows: list[dict[str, Any]] = []
+    if last_tenant_id is not None and last_workspace_id is not None:
+        scope_rows.extend(
+            await _list_expired_memory_cleanup_scopes(
+                conn,
+                after_tenant_id=last_tenant_id,
+                after_workspace_id=last_workspace_id,
+                limit=limit,
+            )
+        )
+    else:
+        scope_rows.extend(
+            await _list_expired_memory_cleanup_scopes(
+                conn,
+                after_tenant_id=None,
+                after_workspace_id=None,
+                limit=limit,
+            )
+        )
+    if last_tenant_id is not None and last_workspace_id is not None and len(scope_rows) < limit:
+        scope_rows.extend(
+            await _list_expired_memory_cleanup_scopes(
+                conn,
+                before_or_at_tenant_id=last_tenant_id,
+                before_or_at_workspace_id=last_workspace_id,
+                limit=limit - len(scope_rows),
+            )
+        )
+    if not scope_rows:
+        return []
+
+    last_scope = scope_rows[-1]
+    await conn.execute(
+        """
+        insert into worker_maintenance_cursors(cursor_key, tenant_id, workspace_id)
+        values (%s, %s, %s)
+        on conflict (cursor_key) do update
+        set tenant_id = excluded.tenant_id,
+            workspace_id = excluded.workspace_id,
+            updated_at = now()
+        """,
+        (MEMORY_RETENTION_CLEANUP_CURSOR_KEY, str(last_scope["tenant_id"]), str(last_scope["workspace_id"])),
+    )
+    per_scope_limit = max(1, (limit + len(scope_rows) - 1) // len(scope_rows))
+    tenant_ids = [str(row["tenant_id"]) for row in scope_rows]
+    workspace_ids = [str(row["workspace_id"]) for row in scope_rows]
+    cursor = await conn.execute(
+        """
+        with candidate_scopes as (
+          select *
+          from unnest(%s::text[], %s::text[]) as scope(tenant_id, workspace_id)
+        ),
+        candidate_rows as (
+          select selected.id,
+                 selected.expires_at,
+                 selected.created_at,
+                 selected.tenant_id,
+                 selected.workspace_id,
+                 selected.scope_rank
+          from candidate_scopes scope
+          cross join lateral (
+            select locked_rows.id,
+                   locked_rows.expires_at,
+                   locked_rows.created_at,
+                   locked_rows.tenant_id,
+                   locked_rows.workspace_id,
+                   row_number() over (
+                     order by locked_rows.expires_at asc, locked_rows.created_at asc, locked_rows.id asc
+                   ) as scope_rank
+            from (
+              select id, expires_at, created_at, tenant_id, workspace_id
+              from memory_records
+              where memory_records.tenant_id = scope.tenant_id
+                and memory_records.workspace_id = scope.workspace_id
+                and status = 'active'
+                and deleted_at is null
+                and expires_at is not null
+                and expires_at <= now()
+              order by expires_at asc, created_at asc, id asc
+              limit %s
+              for update skip locked
+            ) locked_rows
+          ) selected
+          order by case when selected.scope_rank = 1 then 0 else 1 end,
+                   selected.expires_at asc,
+                   selected.created_at asc,
+                   selected.tenant_id asc,
+                   selected.workspace_id asc,
+                   selected.id asc
+          limit %s
+        )
+        update memory_records
+        set status = 'deleted',
+            deleted_at = now(),
+            updated_at = now()
+        where id in (select id from candidate_rows)
+        returning id, tenant_id, workspace_id, user_id, agent_id, session_id,
+                  record_type, status, expires_at, deleted_at, created_at, updated_at
+        """,
+        (tenant_ids, workspace_ids, per_scope_limit, limit),
+    )
+    return list(await cursor.fetchall())
+
+
+async def _list_expired_memory_cleanup_scopes(
+    conn: AsyncConnection,
+    *,
+    after_tenant_id: str | None = None,
+    after_workspace_id: str | None = None,
+    before_or_at_tenant_id: str | None = None,
+    before_or_at_workspace_id: str | None = None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    cursor = await conn.execute(
+        """
+        select tenant_id, workspace_id
+        from memory_records
+        where status = 'active'
+          and deleted_at is null
+          and expires_at is not null
+          and expires_at <= now()
+          and (
+            %s::text is null
+            or (tenant_id, workspace_id) > (%s, %s)
+          )
+          and (
+            %s::text is null
+            or (tenant_id, workspace_id) <= (%s, %s)
+          )
+        group by tenant_id, workspace_id
+        order by tenant_id asc, workspace_id asc
+        limit %s
+        """,
+        (
+            after_tenant_id,
+            after_tenant_id,
+            after_workspace_id,
+            before_or_at_tenant_id,
+            before_or_at_tenant_id,
+            before_or_at_workspace_id,
+            int(limit),
+        ),
     )
     return list(await cursor.fetchall())
 

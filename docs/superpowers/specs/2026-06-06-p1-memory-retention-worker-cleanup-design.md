@@ -1,5 +1,11 @@
 # P1 Memory Retention Worker Cleanup Design
 
+Superseded note: the default-tenant worker cleanup described in this historical
+slice was replaced by the G5 tenant-aware worker maintenance design in
+`docs/superpowers/specs/2026-06-06-g5-tenant-aware-worker-maintenance-design.md`.
+Do not use this file as the current implementation source for worker retention
+cleanup.
+
 ## Goal
 
 Close the scheduled-cleanup part of the P1 Memory / Context Management hardening gate by letting the existing worker perform bounded expired-memory cleanup on a configurable interval.
