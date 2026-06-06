@@ -299,6 +299,7 @@ PUBLIC_EVENT_TYPE_ALIASES = {
     "mcp_tool_call_completed": "tool_call_completed",
     "mcp_tool_call_started": "tool_call_started",
     "mcp_tool_denied": "tool_denied",
+    "run_multi_agent_child_created": "run_child_created",
     "skill_selected": "capability_selected",
     "tool_permission_decided": "tool_permission_card",
     "tool_permission_requested": "tool_permission_card",

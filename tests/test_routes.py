@@ -357,6 +357,48 @@ def test_run_event_response_redacts_dispatch_control_metadata_for_ordinary_user(
     assert "step-code" not in public_dump
 
 
+def test_run_event_response_aliases_multi_agent_child_created_for_ordinary_user():
+    row = {
+        "id": "evt-child",
+        "trace_id": "trace_child",
+        "schema_version": "ai-platform.event-envelope.v1",
+        "sequence": 1,
+        "event_type": "run_multi_agent_child_created",
+        "stage": "control",
+        "message": "Multi-agent child run created",
+        "severity": "info",
+        "visible_to_user": True,
+        "error_code": None,
+        "latency_ms": None,
+        "input_token_count": 0,
+        "output_token_count": 0,
+        "total_token_count": 0,
+        "estimated_cost_minor": 0,
+        "payload_json": {
+            "visible_to_user": True,
+            "copied_from_run_id": "run-parent",
+            "parent_run_id": "run-parent-root",
+            "parent_step_id": "step-code",
+            "step_key": "code",
+            "dispatch_id": "dispatch-code",
+        },
+        "created_at": None,
+    }
+
+    event = run_event_response("run-child", row, principal=principal())
+    admin_event = run_event_response("run-child", row, principal=principal(roles=["admin"]))
+
+    assert event["event_type"] == "run_child_created"
+    assert event["type"] == "run_child_created"
+    assert admin_event["event_type"] == "run_multi_agent_child_created"
+    assert event["payload"] == {"visible_to_user": True, "step_key": "code"}
+    public_dump = str(event)
+    assert "dispatch-code" not in public_dump
+    assert "run-parent" not in public_dump
+    assert "run-parent-root" not in public_dump
+    assert "step-code" not in public_dump
+
+
 def test_run_step_response_redacts_dispatch_control_metadata_for_ordinary_user():
     step = run_step_response(
         {

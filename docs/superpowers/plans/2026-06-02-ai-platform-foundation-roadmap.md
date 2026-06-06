@@ -1076,6 +1076,48 @@ This does not add a new public frontend entry, expose executor private payload,
 open sandbox/tool privilege, add a new worker process, or introduce a DB
 migration.
 
+### P2 Multi-Agent Event Taxonomy Cleanup
+
+Status: implemented locally on branch
+`codex/p2-multi-agent-event-taxonomy-cleanup`; 211 deployment and smoke are
+pending.
+
+This slice closes the non-blocking event taxonomy follow-up left after parent
+terminal rollup and worker dispatcher. It preserves persisted event names while
+adding the deployed multi-agent runtime events to `STANDARD_EVENT_TYPES`:
+`multi_agent_dispatch_handoff`, `run_multi_agent_child_created`,
+`multi_agent_dispatch_enqueue_failed`, `multi_agent_dispatch_reconciled`, and
+`multi_agent_dispatch_parent_parked`. Ordinary-user projection maps the visible
+child-created event to `run_child_created`; admin projections keep raw
+operational event names.
+
+Review-driven redaction coverage also strips root-level `parent_run_id` from
+ordinary-user payloads, matching existing dispatch id, parent step id, copied
+parent run id, and server-owned dispatch metadata filtering. Hidden dispatch
+control events remain hidden.
+
+Local TDD verification recorded RED failures for the missing taxonomy entries
+and missing ordinary-user event alias, then GREEN coverage for the event
+contract and public projection. Inherited-configuration review found two
+Important gaps: missing `multi_agent_dispatch_parent_parked` taxonomy coverage
+and potential root-level `parent_run_id` leakage in visible child-created
+payloads. Both were fixed with RED regression tests. Follow-up
+inherited-configuration review found no Critical or Important issues; the only
+Minor plan-staging note was fixed.
+
+Focused verification passed with `3 passed` for the review-fix contract tests,
+`19 passed` for control-plane/projection coverage, and `13 passed` for
+worker/dispatch focused coverage. Pre-commit verification passed with
+`python -m compileall -q app tools scripts`, full local pytest at
+`1036 passed, 6 skipped, 2 warnings`, and `git diff --check` exit 0. The first
+full pytest attempt used `.pytest-tmp` directly and failed during setup because
+Windows could not remove stale unreadable pytest temp children; the successful
+full run used a fresh child directory under `.pytest-tmp`.
+
+This does not rename persisted events, add a DB migration, add a frontend
+entry, expose executor private payload, open sandbox/tool privilege, add a new
+worker process, or change dispatcher enablement defaults.
+
 ## 禁止项
 
 - 不得新增与当前主链路并行的本地前端入口。

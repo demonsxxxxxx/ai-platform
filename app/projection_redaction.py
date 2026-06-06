@@ -51,6 +51,7 @@ SERVER_OWNED_CONTROL_KEYS = {
     "dispatchleaseexpiresat",
     "dispatchstate",
     "multiagentdispatch",
+    "parentrunid",
     "parentstepid",
     "resume",
 }
