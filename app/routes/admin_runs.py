@@ -75,7 +75,7 @@ async def attach_live_queue_context(run: dict, *, tenant_id: str, queue_insight:
     if status not in QUEUE_VISIBLE_STATUSES:
         return enriched
     if queue_insight is None:
-        queue_insight = await get_queue_insight(tenant_id)
+        queue_insight = await get_queue_insight(tenant_id, include_user_breakdown=True)
     enriched["queue_insight"] = queue_insight
     if status == "queued":
         enriched["queue_position"] = await get_run_queue_position(
@@ -107,7 +107,7 @@ async def admin_run_list(
             status=status,
             limit=limit,
         )
-    queue_insight = await get_queue_insight(principal.tenant_id) if any(
+    queue_insight = await get_queue_insight(principal.tenant_id, include_user_breakdown=True) if any(
         row.get("status") in QUEUE_VISIBLE_STATUSES for row in rows
     ) else None
     rows = [

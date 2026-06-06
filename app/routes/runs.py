@@ -1854,10 +1854,10 @@ async def enforce_user_active_run_limit(conn, *, tenant_id: str, user_id: str) -
         raise RepositoryConflictError("user_active_run_limit_exceeded")
 
 
-async def queue_insight_for_status(status: str, tenant_id: str) -> dict[str, Any] | None:
+async def queue_insight_for_status(status: str, tenant_id: str, *, user_id: str | None = None) -> dict[str, Any] | None:
     if normalize_run_status(status) != "queued":
         return None
-    return await get_queue_insight(tenant_id)
+    return await get_queue_insight(tenant_id, user_id=user_id)
 
 
 def _resume_checkpoint_lineage(
@@ -2276,7 +2276,7 @@ async def copy_run(
         session_id=copied["session_id"],
         status="queued",
         queue_position=queue_position,
-        queue_insight=await queue_insight_for_status("queued", principal.tenant_id),
+        queue_insight=await queue_insight_for_status("queued", principal.tenant_id, user_id=principal.user_id),
     )
 
 
@@ -2315,7 +2315,7 @@ async def retry_run(
         session_id=copied["session_id"],
         status="queued",
         queue_position=queue_position,
-        queue_insight=await queue_insight_for_status("queued", principal.tenant_id),
+        queue_insight=await queue_insight_for_status("queued", principal.tenant_id, user_id=principal.user_id),
     )
 
 
@@ -2355,7 +2355,7 @@ async def resume_run(
         session_id=copied["session_id"],
         status="queued",
         queue_position=queue_position,
-        queue_insight=await queue_insight_for_status("queued", principal.tenant_id),
+        queue_insight=await queue_insight_for_status("queued", principal.tenant_id, user_id=principal.user_id),
     )
 
 
@@ -2375,7 +2375,7 @@ async def get_copy_run_plan(
             raise HTTPException(status_code=404, detail="run_not_found")
         steps = await repositories.list_run_steps(conn, tenant_id=principal.tenant_id, run_id=run_id)
     plan = copy_recovery_plan(run, steps, include_raw_skill=is_ai_admin(principal))
-    plan["queue_insight"] = await get_queue_insight(principal.tenant_id)
+    plan["queue_insight"] = await get_queue_insight(principal.tenant_id, user_id=principal.user_id)
     return plan
 
 
@@ -2397,7 +2397,7 @@ async def get_run_control_readiness(
         steps = await repositories.list_run_steps(conn, tenant_id=principal.tenant_id, run_id=run_id)
     run_status = normalize_run_status(str(run["status"]))
     queue_insight = (
-        await queue_insight_for_status(run_status, principal.tenant_id)
+        await queue_insight_for_status(run_status, principal.tenant_id, user_id=principal.user_id)
         if run_status == "queued"
         else None
     )
@@ -2509,7 +2509,7 @@ async def handoff_multi_agent_dispatch(
         child_run_id=str(copied["child_run_id"]),
         session_id=str(copied["session_id"]),
         queue_position=queue_position,
-        queue_insight=await get_queue_insight(principal.tenant_id),
+        queue_insight=await get_queue_insight(principal.tenant_id, include_user_breakdown=True),
         event_id=str(copied["event_id"]),
         child_event_id=str(copied["child_event_id"]),
         audit_id=str(copied["audit_id"]),
@@ -2583,7 +2583,7 @@ async def tick_multi_agent_dispatch(
         child_run_id=str(copied["child_run_id"]),
         session_id=str(copied["session_id"]),
         queue_position=queue_position,
-        queue_insight=await get_queue_insight(principal.tenant_id),
+        queue_insight=await get_queue_insight(principal.tenant_id, include_user_breakdown=True),
         claim_event_id=str(claim["event_id"]),
         claim_audit_id=str(claim["audit_id"]),
         handoff_event_id=str(copied["event_id"]),
@@ -2743,7 +2743,7 @@ async def get_run(
         if run_status == "queued"
         else None
     )
-    queue_insight = await queue_insight_for_status(run_status, tenant_id)
+    queue_insight = await queue_insight_for_status(run_status, tenant_id, user_id=principal.user_id)
     contract_version = run_contract_version(run)
     executor_schema_version = executor_result_schema_version(run)
     result = run["result_json"] if isinstance(run["result_json"], dict) else {}
@@ -3015,7 +3015,7 @@ async def stream_run_events(
                 queue_position = await get_run_queue_position(tenant_id=principal.tenant_id, run_id=run_id)
                 if queue_position is not None:
                     heartbeat_payload["queue_position"] = queue_position
-            queue_insight = await queue_insight_for_status(status, principal.tenant_id)
+            queue_insight = await queue_insight_for_status(status, principal.tenant_id, user_id=principal.user_id)
             if queue_insight is not None:
                 heartbeat_payload["queue_insight"] = queue_insight
             yield sse(

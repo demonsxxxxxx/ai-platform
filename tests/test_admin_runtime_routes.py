@@ -773,8 +773,9 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
         calls.append(("queue_status",))
         return {"depths": {"queued": 2}}
 
-    async def fake_get_queue_insight(tenant_id):
-        calls.append(("queue_insight", tenant_id))
+    async def fake_get_queue_insight(tenant_id, **kwargs):
+        assert kwargs == {"include_user_breakdown": True}
+        calls.append(("queue_insight", tenant_id, kwargs))
         return {"tenant_id": tenant_id, "reason": "workers_busy"}
 
     async def fake_run_summary(conn, *, tenant_id, limit=10):
@@ -881,7 +882,7 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
         ("run_summary", "default", 10),
         ("observability", "default"),
         ("queue_status",),
-        ("queue_insight", "default"),
+        ("queue_insight", "default", {"include_user_breakdown": True}),
         ("database_pool",),
     ]
 
@@ -894,7 +895,7 @@ def test_admin_runtime_overview_sanitizes_summary_payloads(monkeypatch):
     async def fake_queue_status():
         return {}
 
-    async def fake_queue_insight(tenant_id):
+    async def fake_queue_insight(tenant_id, **_kwargs):
         return {"tenant_id": tenant_id}
 
     async def fake_run_summary(conn, *, tenant_id, limit=10):

@@ -99,7 +99,7 @@ def default_active_run_count(monkeypatch):
     async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
         return 0
 
-    async def fake_get_queue_insight(tenant_id):
+    async def fake_get_queue_insight(tenant_id, **_kwargs):
         return {
             "tenant_id": tenant_id,
             "reason": "queued_behind_existing_work",
@@ -387,8 +387,9 @@ async def test_chat_stream_creates_message_run_and_queue_payload(monkeypatch):
             "memory_record_count": 0,
         }
 
-    async def fake_get_queue_insight(tenant_id):
+    async def fake_get_queue_insight(tenant_id, **kwargs):
         assert tenant_id == "tenant-a"
+        assert kwargs == {"user_id": "user-a"}
         return {
             "tenant_id": tenant_id,
             "reason": "workers_busy",

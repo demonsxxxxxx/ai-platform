@@ -62,6 +62,8 @@ class FakeRedis:
         self.removed = []
         self.hset_calls = []
         self.hdel_calls = []
+        self.lrange_calls = []
+        self.eval_calls = []
         self.closed = False
 
     async def llen(self, key):
@@ -88,6 +90,10 @@ class FakeRedis:
         self.left_pushed.append((key, value))
         if key == queue.QUEUE_KEY:
             self.queued.insert(0, value)
+            return len(self.queued)
+        if key == queue.PROCESSING_KEY:
+            self.processing.insert(0, value)
+            return len(self.processing)
         return len(self.queued)
 
     async def brpoplpush(self, source, destination, timeout=0):
@@ -104,9 +110,16 @@ class FakeRedis:
         return raw
 
     async def lrange(self, key, start, end):
-        if key == queue.QUEUE_KEY:
-            return list(self.queued)
-        return list(self.processing)
+        self.lrange_calls.append((key, start, end))
+        target = list(self.queued if key == queue.QUEUE_KEY else self.processing)
+        length = len(target)
+        start_index = start if start >= 0 else max(length + start, 0)
+        end_index = end if end >= 0 else length + end
+        if end == -1:
+            end_index = length - 1
+        if start_index >= length or end_index < start_index:
+            return []
+        return target[start_index : end_index + 1]
 
     async def lrem(self, key, count, value):
         self.removed.append((key, count, value))
@@ -158,6 +171,142 @@ class FakeRedis:
             self.meta.pop(field, None)
         if key == queue.RETRY_META_KEY:
             self.retry.pop(field, None)
+
+    async def eval(self, script, numkeys, *keys_and_args):
+        self.eval_calls.append((script, numkeys, keys_and_args))
+        if "lease-run-with-quota" in script:
+            queued_key, processing_key, processing_meta_key, retry_meta_key, worker_heartbeat_key = keys_and_args[:numkeys]
+            (
+                raw,
+                scan_limit,
+                absolute_index,
+                message_id,
+                worker_id,
+                now,
+                max_processing_runs,
+                tenant_processing_limit,
+                user_processing_limit,
+                tenant_id,
+                user_id,
+                run_id,
+            ) = keys_and_args[numkeys:]
+            scan_limit = int(scan_limit)
+            absolute_index = int(absolute_index)
+            max_processing_runs = int(max_processing_runs)
+            tenant_processing_limit = int(tenant_processing_limit)
+            user_processing_limit = int(user_processing_limit)
+            if max_processing_runs > 0 and len(self.processing) >= max_processing_runs:
+                return json.dumps({"status": "capacity_full"})
+            if absolute_index < 0 or absolute_index >= len(self.queued):
+                return json.dumps({"status": "conflict"})
+            if self.queued[absolute_index] != raw:
+                return json.dumps({"status": "conflict"})
+            tenant_processing = 0
+            user_processing = 0
+            for processing_raw in self.processing:
+                try:
+                    payload = QueueRunPayload.model_validate_json(processing_raw)
+                except Exception:
+                    continue
+                if payload.tenant_id == tenant_id:
+                    tenant_processing += 1
+                    if payload.user_id == user_id:
+                        user_processing += 1
+            if tenant_processing_limit > 0 and tenant_processing >= tenant_processing_limit:
+                return json.dumps(
+                    {
+                        "status": "quota_blocked",
+                        "tenant_processing": tenant_processing,
+                        "user_processing": user_processing,
+                    }
+                )
+            if user_processing_limit > 0 and user_processing >= user_processing_limit:
+                return json.dumps(
+                    {
+                        "status": "quota_blocked",
+                        "tenant_processing": tenant_processing,
+                        "user_processing": user_processing,
+                    }
+                )
+            retry_meta = self.retry.get(message_id) or self.meta.get(message_id)
+            attempts = 1
+            if retry_meta:
+                try:
+                    attempts = int(json.loads(retry_meta).get("attempts", 0)) + 1
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    attempts = 1
+            self.queued.pop(absolute_index)
+            self.processing.insert(0, raw)
+            quota_snapshot = {
+                "tenant_processing": tenant_processing,
+                "tenant_processing_limit": tenant_processing_limit,
+                "tenant_processing_saturated": tenant_processing_limit > 0 and tenant_processing >= tenant_processing_limit,
+                "user_processing": user_processing,
+                "user_processing_limit": user_processing_limit,
+                "user_processing_saturated": user_processing_limit > 0 and user_processing >= user_processing_limit,
+            }
+            meta = {
+                "attempts": attempts,
+                "leased_at": float(now),
+                "heartbeat_at": float(now),
+                "worker_id": worker_id,
+                "run_id": run_id,
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "quota_snapshot": quota_snapshot,
+            }
+            encoded = json.dumps(meta, ensure_ascii=False)
+            if processing_meta_key == queue.PROCESSING_META_KEY:
+                self.meta[message_id] = encoded
+            if retry_meta_key == queue.RETRY_META_KEY:
+                self.retry[message_id] = encoded
+            if worker_heartbeat_key == queue.WORKER_HEARTBEAT_KEY:
+                self.workers[worker_id] = str(float(now))
+            return json.dumps(
+                {
+                    "status": "leased",
+                    "attempts": attempts,
+                    "tenant_processing": tenant_processing,
+                    "user_processing": user_processing,
+                }
+            )
+        if "dead-letter-invalid-quota" in script:
+            queued_key, processing_meta_key, retry_meta_key, dead_letter_key = keys_and_args[:numkeys]
+            raw, scan_limit, absolute_index, message_id, worker_id, now, error_message = keys_and_args[numkeys:]
+            scan_limit = int(scan_limit)
+            absolute_index = int(absolute_index)
+            if absolute_index < 0 or absolute_index >= len(self.queued):
+                return json.dumps({"status": "conflict"})
+            if self.queued[absolute_index] != raw:
+                return json.dumps({"status": "conflict"})
+            retry_meta = self.retry.get(message_id) or self.meta.get(message_id)
+            attempts = 1
+            if retry_meta:
+                try:
+                    attempts = int(json.loads(retry_meta).get("attempts", 0)) + 1
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    attempts = 1
+            self.queued.pop(absolute_index)
+            self.pushed.append(
+                (
+                    dead_letter_key,
+                    json.dumps(
+                        {
+                            "schema_version": "ai-platform.dead-letter.v1",
+                            "error_code": "invalid_queue_payload",
+                            "error_message": error_message,
+                            "attempts": attempts,
+                            "worker_id": worker_id,
+                            "raw": raw,
+                            "created_at": float(now),
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            self.retry.pop(message_id, None)
+            return json.dumps({"status": "dead_lettered", "attempts": attempts})
+        return json.dumps({"status": "not_implemented"})
 
     async def aclose(self):
         self.closed = True
@@ -328,6 +477,183 @@ async def test_lease_run_dead_letters_invalid_payload(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_lease_run_skips_saturated_tenant_and_leases_next_candidate(monkeypatch):
+    blocked = queue_payload(run_id="run-blocked", tenant_id="tenant-a", user_id="user-a").model_dump_json()
+    allowed = queue_payload(run_id="run-allowed", tenant_id="tenant-b", user_id="user-b").model_dump_json()
+    active = queue_payload(run_id="run-active", tenant_id="tenant-a", user_id="user-active").model_dump_json()
+    fake = FakeRedis(
+        queued=[allowed, blocked],
+        processing=[active],
+    )
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    message = await queue.lease_run(
+        timeout_seconds=1,
+        worker_id="worker-a",
+        max_processing_runs=3,
+        tenant_processing_limit=1,
+        user_processing_limit=0,
+        lease_scan_limit=2,
+    )
+
+    assert message is not None
+    assert message.payload["run_id"] == "run-allowed"
+    assert blocked in fake.queued
+    assert allowed not in fake.queued
+    assert allowed in fake.processing
+
+
+@pytest.mark.asyncio
+async def test_lease_run_skips_saturated_user_and_leases_next_candidate(monkeypatch):
+    blocked = queue_payload(run_id="run-blocked", tenant_id="tenant-a", user_id="user-a").model_dump_json()
+    allowed = queue_payload(run_id="run-allowed", tenant_id="tenant-a", user_id="user-b").model_dump_json()
+    active = queue_payload(run_id="run-active", tenant_id="tenant-a", user_id="user-a").model_dump_json()
+    fake = FakeRedis(
+        queued=[allowed, blocked],
+        processing=[active],
+    )
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    message = await queue.lease_run(
+        timeout_seconds=1,
+        worker_id="worker-a",
+        max_processing_runs=3,
+        tenant_processing_limit=0,
+        user_processing_limit=1,
+        lease_scan_limit=2,
+    )
+
+    assert message is not None
+    assert message.payload["run_id"] == "run-allowed"
+    assert blocked in fake.queued
+    assert allowed in fake.processing
+
+
+@pytest.mark.asyncio
+async def test_lease_run_returns_idle_when_bounded_scan_candidates_are_saturated(monkeypatch):
+    blocked = queue_payload(run_id="run-blocked", tenant_id="tenant-a", user_id="user-a").model_dump_json()
+    later = queue_payload(run_id="run-later", tenant_id="tenant-b", user_id="user-b").model_dump_json()
+    active = queue_payload(run_id="run-active", tenant_id="tenant-a", user_id="user-active").model_dump_json()
+    fake = FakeRedis(
+        queued=[later, blocked],
+        processing=[active],
+    )
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    message = await queue.lease_run(
+        timeout_seconds=1,
+        worker_id="worker-a",
+        max_processing_runs=3,
+        tenant_processing_limit=1,
+        user_processing_limit=0,
+        lease_scan_limit=1,
+    )
+
+    assert message is None
+    assert fake.queued == [later, blocked]
+    assert fake.processing == [active]
+
+
+@pytest.mark.asyncio
+async def test_lease_run_dead_letters_invalid_payload_during_bounded_scan(monkeypatch):
+    invalid = '{"run_id": "../bad"}'
+    allowed = queue_payload(run_id="run-allowed", tenant_id="tenant-b", user_id="user-b").model_dump_json()
+    fake = FakeRedis(queued=[allowed, invalid])
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    message = await queue.lease_run(
+        timeout_seconds=1,
+        worker_id="worker-a",
+        max_processing_runs=3,
+        tenant_processing_limit=1,
+        user_processing_limit=1,
+        lease_scan_limit=2,
+    )
+
+    assert message is not None
+    assert message.payload["run_id"] == "run-allowed"
+    assert invalid not in fake.queued
+    assert fake.pushed[0][0] == queue.DEAD_LETTER_KEY
+    assert json.loads(fake.pushed[0][1])["error_code"] == "invalid_queue_payload"
+
+
+@pytest.mark.asyncio
+async def test_lease_run_continues_after_invalid_payload_shrinks_scan_window(monkeypatch):
+    older = queue_payload(run_id="run-older", tenant_id="tenant-c", user_id="user-c").model_dump_json()
+    allowed = queue_payload(run_id="run-allowed", tenant_id="tenant-b", user_id="user-b").model_dump_json()
+    invalid = '{"run_id": "../bad"}'
+    fake = FakeRedis(queued=[older, allowed, invalid])
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    message = await queue.lease_run(
+        timeout_seconds=1,
+        worker_id="worker-a",
+        max_processing_runs=3,
+        tenant_processing_limit=1,
+        user_processing_limit=1,
+        lease_scan_limit=2,
+    )
+
+    assert message is not None
+    assert message.payload["run_id"] == "run-allowed"
+    assert invalid not in fake.queued
+    assert allowed not in fake.queued
+    assert older in fake.queued
+    assert allowed in fake.processing
+
+
+def test_quota_lua_attempts_parsing_falls_back_for_malformed_attempts_meta():
+    unsafe_expression = 'tonumber(meta["attempts"] or 0) + 1'
+
+    assert unsafe_expression not in queue.LEASE_QUOTA_SCRIPT
+    assert unsafe_expression not in queue.DEAD_LETTER_INVALID_QUOTA_SCRIPT
+    assert "parsed_attempts" in queue.LEASE_QUOTA_SCRIPT
+    assert "parsed_attempts" in queue.DEAD_LETTER_INVALID_QUOTA_SCRIPT
+
+
+@pytest.mark.asyncio
+async def test_lease_run_quota_path_uses_atomic_redis_script(monkeypatch):
+    raw = queue_payload(run_id="run-a", tenant_id="tenant-a", user_id="user-a").model_dump_json()
+    fake = FakeRedis(queued=[raw])
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    await queue.lease_run(
+        timeout_seconds=1,
+        worker_id="worker-a",
+        max_processing_runs=3,
+        tenant_processing_limit=1,
+        user_processing_limit=1,
+        lease_scan_limit=1,
+    )
+
+    assert fake.eval_calls, "quota lease must use a Redis script for atomic quota check and move"
+
+
+@pytest.mark.asyncio
 async def test_ack_and_fail_remove_from_processing(monkeypatch):
     raw = payload_json()
     message_id = queue.message_id_for_raw(raw)
@@ -436,6 +762,7 @@ async def test_get_queue_insight_counts_tenant_queued_and_processing(monkeypatch
             queue.DEAD_LETTER_KEY: 1,
         },
         queued=[tenant_a_raw, tenant_b_raw],
+        processing=[tenant_a_raw, tenant_b_raw],
         meta={
             tenant_a_message_id: json.dumps({"tenant_id": "tenant-a", "worker_id": "worker-a"}),
             tenant_b_message_id: json.dumps({"tenant_id": "tenant-b", "worker_id": "worker-b"}),
@@ -466,6 +793,21 @@ async def test_get_queue_insight_counts_tenant_queued_and_processing(monkeypatch
             "max_active_worker_runs": 3,
             "processing_saturated": False,
             "available_worker_slots": 1,
+            "queue_tenant_processing_limit": 0,
+            "queue_user_processing_limit": 0,
+            "queue_lease_scan_limit": 50,
+        },
+        "queue_sample": {
+            "queued_scan_limit": 500,
+            "queued_sampled": 2,
+            "queued_sample_complete": True,
+        },
+        "throttling": {
+            "tenant_processing": 1,
+            "tenant_processing_limit": 0,
+            "tenant_processing_saturated": False,
+            "user_processing_limit": 0,
+            "users": {},
         },
     }
     assert fake.closed is True
@@ -526,6 +868,7 @@ async def test_get_queue_insight_uses_only_fresh_worker_heartbeats(monkeypatch):
             queue.DEAD_LETTER_KEY: 0,
         },
         queued=[raw],
+        processing=[raw],
         meta={queue.message_id_for_raw(raw): json.dumps({"tenant_id": "tenant-a", "worker_id": "fresh"})},
         workers={"fresh": "100.0", "stale-a": "10.0", "stale-b": "1.0"},
     )
@@ -556,6 +899,11 @@ async def test_get_queue_insight_reports_worker_capacity_full(monkeypatch):
             queue.DEAD_LETTER_KEY: 0,
         },
         queued=[payload_json()],
+        processing=[
+            queue_payload(run_id="run-processing-a", tenant_id="tenant-a", user_id="user-a").model_dump_json(),
+            queue_payload(run_id="run-processing-b", tenant_id="tenant-b", user_id="user-b").model_dump_json(),
+            queue_payload(run_id="run-processing-c", tenant_id="tenant-c", user_id="user-c").model_dump_json(),
+        ],
         meta={
             "msg-a": json.dumps({"tenant_id": "tenant-a", "worker_id": "worker-a"}),
             "msg-b": json.dumps({"tenant_id": "tenant-b", "worker_id": "worker-b"}),
@@ -577,6 +925,215 @@ async def test_get_queue_insight_reports_worker_capacity_full(monkeypatch):
         "max_active_worker_runs": 3,
         "processing_saturated": True,
         "available_worker_slots": 0,
+        "queue_tenant_processing_limit": 0,
+        "queue_user_processing_limit": 0,
+        "queue_lease_scan_limit": 50,
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_queue_insight_reports_quota_throttling(monkeypatch):
+    class Settings:
+        queue_key_prefix = "ai-platform:runs"
+        max_active_worker_runs = 3
+        worker_heartbeat_ttl_seconds = 30.0
+        queue_tenant_processing_limit = 1
+        queue_user_processing_limit = 1
+        queue_lease_scan_limit = 25
+
+    raw = queue_payload(run_id="run-a", tenant_id="tenant-a", user_id="user-a").model_dump_json()
+    fake = FakeRedis(
+        lengths={queue.QUEUE_KEY: 1, queue.PROCESSING_KEY: 1, queue.DEAD_LETTER_KEY: 0},
+        queued=[raw],
+        processing=[raw],
+        meta={"msg-a": json.dumps({"tenant_id": "tenant-a", "user_id": "user-a", "worker_id": "worker-a"})},
+        workers={"worker-a": "100.0"},
+    )
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+    monkeypatch.setattr("app.queue._now", lambda: 120.0)
+
+    insight = await queue.get_queue_insight("tenant-a", include_user_breakdown=True)
+
+    assert insight["reason"] == "tenant_quota_full"
+    assert insight["capacity"]["queue_tenant_processing_limit"] == 1
+    assert insight["capacity"]["queue_user_processing_limit"] == 1
+    assert insight["capacity"]["queue_lease_scan_limit"] == 25
+    assert insight["throttling"]["tenant_processing"] == 1
+    assert insight["throttling"]["tenant_processing_saturated"] is True
+    assert insight["throttling"]["users"]["user-a"]["processing"] == 1
+    assert insight["throttling"]["users"]["user-a"]["processing_saturated"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_queue_insight_reports_user_quota_reason(monkeypatch):
+    class Settings:
+        queue_key_prefix = "ai-platform:runs"
+        max_active_worker_runs = 3
+        worker_heartbeat_ttl_seconds = 30.0
+        queue_tenant_processing_limit = 0
+        queue_user_processing_limit = 1
+        queue_lease_scan_limit = 25
+        queue_insight_scan_limit = 25
+
+    raw = queue_payload(run_id="run-a", tenant_id="tenant-a", user_id="user-a").model_dump_json()
+    fake = FakeRedis(
+        lengths={queue.QUEUE_KEY: 1, queue.PROCESSING_KEY: 1, queue.DEAD_LETTER_KEY: 0},
+        queued=[raw],
+        processing=[raw],
+        meta={"msg-a": json.dumps({"tenant_id": "tenant-a", "user_id": "user-a", "worker_id": "worker-a"})},
+        workers={"worker-a": "100.0"},
+    )
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+    monkeypatch.setattr("app.queue._now", lambda: 120.0)
+
+    insight = await queue.get_queue_insight("tenant-a", user_id="user-a")
+
+    assert insight["reason"] == "user_quota_full"
+    assert insight["throttling"]["current_user"]["queued"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_queue_insight_admin_reports_user_quota_reason(monkeypatch):
+    class Settings:
+        queue_key_prefix = "ai-platform:runs"
+        max_active_worker_runs = 3
+        worker_heartbeat_ttl_seconds = 30.0
+        queue_tenant_processing_limit = 0
+        queue_user_processing_limit = 1
+        queue_lease_scan_limit = 25
+        queue_insight_scan_limit = 25
+
+    raw = queue_payload(run_id="run-a", tenant_id="tenant-a", user_id="user-a").model_dump_json()
+    fake = FakeRedis(
+        lengths={queue.QUEUE_KEY: 1, queue.PROCESSING_KEY: 1, queue.DEAD_LETTER_KEY: 0},
+        queued=[raw],
+        processing=[raw],
+        workers={"worker-a": "100.0"},
+    )
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+    monkeypatch.setattr("app.queue._now", lambda: 120.0)
+
+    insight = await queue.get_queue_insight("tenant-a", include_user_breakdown=True)
+
+    assert insight["reason"] == "user_quota_full"
+    assert insight["throttling"]["users"]["user-a"]["queued"] == 1
+    assert insight["throttling"]["users"]["user-a"]["processing_saturated"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_queue_insight_public_projection_hides_other_user_ids(monkeypatch):
+    class Settings:
+        queue_key_prefix = "ai-platform:runs"
+        max_active_worker_runs = 3
+        worker_heartbeat_ttl_seconds = 30.0
+        queue_tenant_processing_limit = 0
+        queue_user_processing_limit = 1
+        queue_lease_scan_limit = 25
+        queue_insight_scan_limit = 25
+
+    own_raw = queue_payload(run_id="run-own", tenant_id="tenant-a", user_id="user-a").model_dump_json()
+    other_raw = queue_payload(run_id="run-other", tenant_id="tenant-a", user_id="user-b").model_dump_json()
+    fake = FakeRedis(
+        lengths={queue.QUEUE_KEY: 2, queue.PROCESSING_KEY: 1, queue.DEAD_LETTER_KEY: 0},
+        queued=[own_raw, other_raw],
+        processing=[other_raw],
+        workers={"worker-b": "100.0"},
+    )
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+    monkeypatch.setattr("app.queue._now", lambda: 120.0)
+
+    insight = await queue.get_queue_insight("tenant-a", user_id="user-a")
+
+    assert insight["throttling"]["users"] == {}
+    assert insight["throttling"]["current_user"] == {
+        "queued": 1,
+        "processing": 0,
+        "processing_saturated": False,
+    }
+    assert "user-b" not in json.dumps(insight, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_lease_run_quota_ignores_stale_processing_meta(monkeypatch):
+    raw = queue_payload(run_id="run-a", tenant_id="tenant-a", user_id="user-a").model_dump_json()
+    fake = FakeRedis(
+        queued=[raw],
+        meta={"stale": json.dumps({"tenant_id": "tenant-a", "user_id": "user-a", "worker_id": "gone"})},
+    )
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    message = await queue.lease_run(
+        timeout_seconds=1,
+        worker_id="worker-a",
+        max_processing_runs=3,
+        tenant_processing_limit=1,
+        user_processing_limit=1,
+        lease_scan_limit=1,
+    )
+
+    assert message is not None
+    assert message.payload["run_id"] == "run-a"
+    assert fake.processing == [raw]
+
+
+@pytest.mark.asyncio
+async def test_get_queue_insight_uses_bounded_queued_scan(monkeypatch):
+    class Settings:
+        queue_key_prefix = "ai-platform:runs"
+        max_active_worker_runs = 3
+        worker_heartbeat_ttl_seconds = 30.0
+        queue_tenant_processing_limit = 0
+        queue_user_processing_limit = 0
+        queue_lease_scan_limit = 50
+        queue_insight_scan_limit = 2
+
+    queued = [
+        queue_payload(run_id=f"run-{index}", tenant_id="tenant-a", user_id="user-a").model_dump_json()
+        for index in range(5)
+    ]
+    fake = FakeRedis(
+        lengths={queue.QUEUE_KEY: 5, queue.PROCESSING_KEY: 0, queue.DEAD_LETTER_KEY: 0},
+        queued=queued,
+    )
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    insight = await queue.get_queue_insight("tenant-a")
+
+    queued_lrange_calls = [call for call in fake.lrange_calls if call[0] == queue.QUEUE_KEY]
+    assert queued_lrange_calls == [(queue.QUEUE_KEY, -2, -1)]
+    assert insight["queue_sample"] == {
+        "queued_scan_limit": 2,
+        "queued_sampled": 2,
+        "queued_sample_complete": False,
     }
 
 

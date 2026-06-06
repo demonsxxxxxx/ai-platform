@@ -91,8 +91,9 @@ def test_admin_run_list_returns_tenant_scoped_summaries(monkeypatch):
         assert run_id == "run_a"
         return 2
 
-    async def fake_get_queue_insight(tenant_id):
+    async def fake_get_queue_insight(tenant_id, **kwargs):
         assert tenant_id == "default"
+        assert kwargs == {"include_user_breakdown": True}
         return {
             "tenant_id": tenant_id,
             "reason": "workers_busy",
@@ -254,7 +255,7 @@ def test_admin_run_detail_returns_explainability_contract(monkeypatch):
     async def fake_get_run_queue_position(*, tenant_id, run_id):
         raise AssertionError("succeeded admin run should not query queue position")
 
-    async def fake_get_queue_insight(tenant_id):
+    async def fake_get_queue_insight(tenant_id, **_kwargs):
         raise AssertionError("succeeded admin run should not query queue insight")
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
@@ -305,8 +306,9 @@ def test_admin_run_detail_includes_live_queue_context_for_queued_run(monkeypatch
         assert run_id == "run_queued"
         return 3
 
-    async def fake_get_queue_insight(tenant_id):
+    async def fake_get_queue_insight(tenant_id, **kwargs):
         assert tenant_id == "default"
+        assert kwargs == {"include_user_breakdown": True}
         return {
             "tenant_id": tenant_id,
             "reason": "worker_capacity_full",

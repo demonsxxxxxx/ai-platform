@@ -193,7 +193,7 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
         calls.append(("queue", payload))
         return 1
 
-    async def fake_get_queue_insight(tenant_id):
+    async def fake_get_queue_insight(tenant_id, **_kwargs):
         assert tenant_id == "default"
         return {
             "tenant_id": tenant_id,
@@ -407,7 +407,7 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
         calls["enqueue"].append(payload)
         return 3
 
-    async def fake_get_queue_insight(tenant_id):
+    async def fake_get_queue_insight(tenant_id, **_kwargs):
         return {"tenant_id": tenant_id}
 
     async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
@@ -651,7 +651,7 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
         calls["enqueue"].append(payload)
         return 2
 
-    async def fake_get_queue_insight(tenant_id):
+    async def fake_get_queue_insight(tenant_id, **_kwargs):
         return {"tenant_id": tenant_id, "reason": "workers_busy"}
 
     async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
@@ -772,7 +772,7 @@ def test_copy_run_plan_previews_reused_and_rerun_steps(monkeypatch):
             },
         ]
 
-    async def fake_get_queue_insight(tenant_id):
+    async def fake_get_queue_insight(tenant_id, **_kwargs):
         calls["queue_insight_tenant_id"] = tenant_id
         return {
             "tenant_id": tenant_id,
@@ -886,7 +886,7 @@ def test_run_control_readiness_enables_resume_from_checkpoint_outputs(monkeypatc
             },
         ]
 
-    async def fake_queue_insight(status, tenant_id):
+    async def fake_queue_insight(status, tenant_id, **_kwargs):
         raise AssertionError("queue insight should only be loaded for queued runs")
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
@@ -1006,7 +1006,7 @@ def test_run_control_readiness_enables_cancel_and_includes_queue_insight(monkeyp
     async def fake_list_run_steps(conn, *, tenant_id, run_id):
         return []
 
-    async def fake_queue_insight(status, tenant_id):
+    async def fake_queue_insight(status, tenant_id, **_kwargs):
         assert (status, tenant_id) == ("queued", "default")
         return {"tenant_id": tenant_id, "queued": 2, "running": 1}
 
@@ -1120,7 +1120,7 @@ def test_run_control_readiness_projects_multi_agent_dependency_gates(monkeypatch
             },
         ]
 
-    async def fake_queue_insight(status, tenant_id):
+    async def fake_queue_insight(status, tenant_id, **_kwargs):
         return {"tenant_id": tenant_id, "queued": 0, "running": 1}
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
@@ -1983,7 +1983,7 @@ def test_multi_agent_dispatch_tick_claims_handoffs_and_enqueues_next_ready_step(
         calls.append(("enqueue", payload))
         return 7
 
-    async def fake_queue_insight(tenant_id):
+    async def fake_queue_insight(tenant_id, **_kwargs):
         calls.append(("queue_insight", tenant_id))
         return {"queued": 1}
 
@@ -2260,7 +2260,7 @@ def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues
         calls["queue"].append(payload)
         return 4
 
-    async def fake_get_queue_insight(tenant_id):
+    async def fake_get_queue_insight(tenant_id, **_kwargs):
         return {"tenant_id": tenant_id, "reason": "worker_available"}
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
@@ -3355,7 +3355,7 @@ def test_copy_run_plan_redacts_runtime_private_step_titles_for_ordinary_user(mon
             }
         ]
 
-    async def fake_get_queue_insight(tenant_id):
+    async def fake_get_queue_insight(tenant_id, **_kwargs):
         return {"tenant_id": tenant_id}
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
