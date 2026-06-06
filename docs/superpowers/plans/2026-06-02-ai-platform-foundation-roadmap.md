@@ -35,7 +35,7 @@ P2 Long Task / Multi-Agent Runtime 不再继续默认前冲。checkpoint、subag
 
 DB connection pool 是 issue #16 的第一个可独立闭环前置项：平台已在 `main` 建立 bounded async Postgres pool 替代每 transaction 直连，并把 allowlisted pool status 暴露到 admin-only runtime overview。2026-06-06 211 smoke 已验证 API/worker runtime label 与 source marker 匹配、API 与前端代理 health 正常、admin-only overview 返回 `database_pool.open=true` 且未暴露 DSN/password/secret/api key；后续 tenant-aware queue/quota 与 worker maintenance 可以在这个承载基础上推进。
 
-当前未关闭的 G5 阻塞项仍包括：per-tenant/per-user fair scheduling、active-run quota 并发硬化、bounded queue metadata、large queue bounded lookup、DB pool saturation/queue throttling 可观测性，以及多 tenant 并发压力测试。Tenant-aware worker maintenance 正在本切片收敛，未完成 review、full pytest、PR/merge 和 211 smoke 前仍不得视为关闭。G8 Multi-Agent Controlled Beta 不得绕过这些阻塞项。
+当前未关闭的 G5 阻塞项仍包括：active-run quota 并发硬化、bounded queue metadata 继续产品化、large queue bounded lookup 压力验证、DB pool saturation/queue throttling 可观测性，以及多 tenant 并发压力测试。Tenant-aware queue lease 与 tenant-aware worker maintenance 已作为 G5 子切片通过 review、full pytest、PR/merge 和 211 smoke；G8 Multi-Agent Controlled Beta 仍不得绕过剩余 quota/backpressure/observability 阻塞项。
 
 ### G5 Tenant-Aware Queue Lease
 
@@ -108,8 +108,9 @@ permission-denied, or failed markers.
 
 ### G5 Tenant-Aware Worker Maintenance
 
-Status: local implementation in progress in the current slice; pending
-inherited-configuration review, full local pytest, PR/merge, and 211 smoke.
+Status: merged on `main` via PR #19 and deployed/smoked on 211 at
+`7a9db83eba98c1b7263e3ffbb85ef39fecc5e2a4` with runtime image
+`ai-platform:7a9db83-g5-worker-maint`.
 
 This follow-up replaces the previous default-tenant memory retention worker
 tick with a bounded rotating tenant/workspace scope cursor. The worker keeps
@@ -118,9 +119,11 @@ sandbox cleanup and before multi-agent dispatch and queue reclaim, and writes
 same-tenant operational audit rows for affected scopes.
 
 This slice does not change Memory policy behavior, does not enable
-cross-session long-term memory, and does not add a new scheduler service.
-Closure requires review, full local verification, PR/merge, and 211 smoke with
-multi-scope cleanup evidence.
+cross-session long-term memory, and does not add a new scheduler service. 211
+smoke verified multi-scope cleanup, one-row-per-scope fairness under a bounded
+limit, sanitized per-scope audit evidence, source/label parity, health, clean
+logs, and smoke data cleanup. Detailed execution evidence remains in
+`docs/superpowers/plans/2026-06-06-g5-tenant-aware-worker-maintenance.md`.
 
 ## 当前主链路
 

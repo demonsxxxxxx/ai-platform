@@ -196,3 +196,36 @@ sanitized audit evidence, clean API/worker logs, and smoke data cleanup.
   `reasoning_effort` fields.
 - Final inherited-configuration review reported no Critical or Important
   findings after the scope-cursor and first-row-per-scope fairness fixes.
+- PR #19 was merged to `main` at
+  `7a9db83eba98c1b7263e3ffbb85ef39fecc5e2a4` and deployed to 211 with runtime
+  image `ai-platform:7a9db83-g5-worker-maint`
+  (`sha256:4ad5e33f58fc4fb1677d9021f28feb9f0bf56bc5a1ac5d2207cfc26481db65fa`).
+- 211 API and worker labels matched
+  `ai-platform.source-revision=7a9db83eba98c1b7263e3ffbb85ef39fecc5e2a4`,
+  `ai-platform.source_note=g5-tenant-aware-worker-maintenance`, compose
+  working dir
+  `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform`,
+  and compose file
+  `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/docker-compose.yml`.
+  The 211 source marker files were also set to the same revision and note after
+  an initial marker gap was observed.
+- 211 health verification returned `{"status":"ok"}` for both
+  `http://127.0.0.1:8020/api/ai/health` and the frontend proxy
+  `http://127.0.0.1:18001/api/ai/health`; API and worker restart counts were
+  `0`.
+- 211 live worker-container smoke used prefix
+  `zzzzzz_smoke_g5_worker_1780725607`, first verified that the next three
+  cleanup scopes were exactly the smoke tenant/workspace pairs, then ran
+  `cleanup_expired_memory_records_for_worker` with limit `3`. The worker
+  deleted one expired record in each of three tenant/workspace scopes, left the
+  same-scope backlog expired record and future record active, advanced the
+  cursor to the third smoke scope, and wrote three
+  `worker.memory.retention.cleanup` audit rows.
+- 211 smoke verified audit payloads did not contain `private_payload`,
+  `command_sha256`, `should_not_leak`, or raw smoke memory content markers.
+  Smoke cleanup left `0` rows in smoke `memory_records`, `audit_logs`,
+  `sessions`, `users`, `workspaces`, and `tenants`, and restored the previous
+  worker maintenance cursor state.
+- Recent 211 API and worker logs checked with `docker logs --since 10m` had
+  `no_recent_error_markers` for `traceback`, `exception`, `permission denied`,
+  `error`, or `failed`.
