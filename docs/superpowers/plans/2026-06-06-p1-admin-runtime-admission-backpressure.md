@@ -331,7 +331,7 @@ python -m pytest -q --basetemp .pytest-tmp\p1-admin-backpressure-full
 git diff --check
 ```
 
-- [ ] **Step 4: Merge, push, deploy to 211, and smoke**
+- [x] **Step 4: Merge, push, deploy to 211, and smoke**
 
 Deploy through the current 211 runtime path. Verify:
 
@@ -380,3 +380,45 @@ Deploy through the current 211 runtime path. Verify:
 - Final local verification passed with
   `python -m pytest -q --basetemp .pytest-tmp\p1-admin-backpressure-full-2`
   at `1074 passed, 6 skipped, 2 warnings`.
+- Commit `d8c733e7eeaa6e11786fe13771b84b8f32a95292` was pushed to
+  `origin/main` as `feat: expose admin runtime backpressure`.
+- 211 source path
+  `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform` was synced from
+  a tracked `git archive`, without copying real `.env` files. Source markers
+  were set to `d8c733e7eeaa6e11786fe13771b84b8f32a95292` and
+  `p1-admin-runtime-backpressure`. Remote source compile passed with
+  `python3 -m compileall -q app tools scripts`.
+- 211 deployment used a runtime-only image rebuild from the previous healthy
+  `ai-platform:cb20e30-g5-active-run-admission` image because dependencies did
+  not change. The new image is
+  `ai-platform:d8c733e-p1-admin-runtime-backpressure` with image id
+  `sha256:e2f64abe14a4abdb1a67559acbf74f524d74151cd4e5966159e3273b8e746501`.
+  API and worker were recreated through repo-local compose project
+  `ai-platform-phaseb` with the existing env file referenced but not read or
+  printed.
+- 211 container compile passed for both API and worker with
+  `python -m compileall -q app tools scripts`. API and frontend-proxy
+  `/api/ai/health` returned `{"status":"ok"}`. API and worker labels
+  `org.opencontainers.image.revision`, `ai-platform.source-revision`,
+  `ai-platform.source_revision`, `ai-platform.source-branch`, and
+  `ai-platform.source_note` matched the deployed commit/note.
+- 211 admin smoke for `GET /api/ai/admin/runtime/overview` returned HTTP 200
+  and top-level keys `admission`, `backpressure`, `database_pool`,
+  `observability`, `queue`, `runs`, `sandbox`, and `tenant_id`. The live
+  admission projection returned `policy_active=true`,
+  `max_active_runs_per_user=3`, `active_runs=26`, `active_users=23`,
+  and `saturated_users=0`. The live backpressure projection returned
+  `reasons=["queued_behind_existing_work"]`, queue allowlist fields only, and
+  `database_pool.open=true`, `requests_waiting=0`, `max_waiting=100`,
+  `waiting_saturated=false`.
+- 211 ordinary-user smoke for the same overview route returned HTTP 403 with
+  `{"detail":"not_ai_admin"}`.
+- 211 redaction smoke confirmed the new `backpressure` section did not contain
+  `raw_queue_payload`, `private_payload`, `runtime_private_payload`,
+  `storage_key`, `/var/lib/ai-platform`, `/tmp/ai-platform`,
+  `ai-platform:runs:queued`, `secret`, `password`, `api_key`, or `token=`.
+  The older `queue.tenant_insight` section still contains the legacy raw Redis
+  key string; this slice only introduced the sanitized backpressure projection
+  and did not change the legacy queue contract.
+- Recent 211 API logs showed startup, health checks, admin overview 200, and
+  ordinary overview 403 only; recent worker logs were empty.

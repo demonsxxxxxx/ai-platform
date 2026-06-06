@@ -35,7 +35,40 @@ P2 Long Task / Multi-Agent Runtime 不再继续默认前冲。checkpoint、subag
 
 DB connection pool 是 issue #16 的第一个可独立闭环前置项：平台已在 `main` 建立 bounded async Postgres pool 替代每 transaction 直连，并把 allowlisted pool status 暴露到 admin-only runtime overview。2026-06-06 211 smoke 已验证 API/worker runtime label 与 source marker 匹配、API 与前端代理 health 正常、admin-only overview 返回 `database_pool.open=true` 且未暴露 DSN/password/secret/api key；后续 tenant-aware queue/quota 与 worker maintenance 可以在这个承载基础上推进。
 
-当前未关闭的 G5 阻塞项仍包括：bounded queue metadata 继续产品化、large queue bounded lookup 压力验证、DB pool saturation/queue throttling 可观测性，以及多 tenant 并发压力测试。Tenant-aware queue lease、tenant-aware worker maintenance 与 active-run admission 已作为 G5 子切片通过 review、full pytest、main merge 和 211 smoke；G8 Multi-Agent Controlled Beta 仍不得绕过剩余 quota/backpressure/observability 阻塞项。
+当前未关闭的 G5 阻塞项仍包括：bounded queue metadata 继续产品化、large queue bounded lookup 压力验证，以及多 tenant 并发压力测试。Tenant-aware queue lease、tenant-aware worker maintenance、active-run admission 与 P1 Admin Runtime admission/backpressure 已作为子切片通过 review、full pytest、main merge 和 211 smoke；G8 Multi-Agent Controlled Beta 仍不得绕过剩余 quota/backpressure/observability 阻塞项。
+
+### P1 Admin Runtime Admission / Backpressure
+
+Status: merged on `main` at `d8c733e7eeaa6e11786fe13771b84b8f32a95292` and
+deployed/smoked on 211 with runtime image
+`ai-platform:d8c733e-p1-admin-runtime-backpressure`.
+
+This slice extends the existing admin-only runtime overview with same-tenant
+active-run admission pressure and a sanitized backpressure projection derived
+from admission, queue insight, and the allowlisted DB pool status. It reports
+per-user active-run saturation totals without returning run/session/skill/input
+payload identifiers, and normalizes queue capacity/quota/sample plus DB waiting
+pressure into operational fields for Admin Runtime.
+
+The new `backpressure` projection is allowlisted and does not expose raw Redis
+keys, raw queue payloads, runtime private payload, storage keys, sandbox work
+directories, or secret-like markers. `worker_available` remains visible as a
+queue state but is not emitted as a pressure reason. The route remains
+admin-only, same-tenant, and fail-closed when queue inspection or sandbox
+cleanup fails.
+
+Local verification included focused Admin Runtime/repository/source-authority
+tests at `135 passed`, compile, `git diff --check`, inherited-configuration
+multi-agent review with no Critical or Important issues, and full pytest at
+`1074 passed, 6 skipped, 2 warnings`. 211 verification confirmed API and
+frontend health, API/worker source label parity for the deployed commit,
+container compile, admin overview containing `admission` and `backpressure`,
+ordinary-user overview returning `403`, and clean recent API/worker logs.
+
+This slice does not add a frontend entry, change admission policy, open
+sandbox/tool privilege, add a DB migration, or start Long Task / Multi-Agent
+Runtime work. Detailed execution evidence remains in
+`docs/superpowers/plans/2026-06-06-p1-admin-runtime-admission-backpressure.md`.
 
 ### G5 Tenant-Aware Queue Lease
 
