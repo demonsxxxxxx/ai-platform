@@ -43,6 +43,33 @@ This file applies to the current `ai-platform` repository root.
 - Treat `ai-platform-api` and `ai-platform-worker` as the target backend/worker containers.
 - Do not treat short-term execution notes, old local paths, or historical service layouts as product requirements.
 
+## Current Issue-Driven Priorities
+
+When the active goal names GitHub issues #15/#16/#17, treat them as current
+roadmap/workflow inputs together with the PRD, roadmap, guardrails, current
+code, and fresh 211 runtime evidence.
+
+Current priority is the company-internal Agent platform baseline, not Docker
+compose out-of-the-box delivery. Prioritize, in order:
+
+1. AD/company auth and session behavior, tenant/workspace/user isolation,
+   RBAC/redaction, and source-authority parity between local source, 211 source,
+   repo-local deploy composition, and runtime labels.
+2. Tenant-aware concurrency and fair scheduling: DB connection pool, per-tenant
+   and per-user quota/backpressure, bounded queue metadata, and tenant-aware
+   worker maintenance.
+3. Admin Runtime / Observability: queue depth, run status, sandbox lease state,
+   latency/token/cost/error/artifact/event metrics, worker heartbeat, dead
+   letters, and per-tenant throttling.
+4. Memory / Context management and Tool Permission / Agent Frontend V1 user
+   loop, with frontend consuming only ai-platform public/admin projections.
+5. Long Task / Multi-Agent Runtime only after the earlier gates pass.
+
+Move frontend source into this repository and plan backend/worker/frontend
+multi-image delivery as future roadmap work. Do not make compose one-command
+startup or packaged delivery a current acceptance gate, and do not mount the
+Docker socket in the default stack.
+
 ## Multi-Agent Delegation
 
 - Do not require per-agent `model` or `reasoning_effort` fields for `spawn_agent`.
@@ -55,6 +82,25 @@ This file applies to the current `ai-platform` repository root.
   complete unless the model and reasoning level are directly configurable or
   otherwise explicitly confirmed.
 - Do not delegate write, deployment, remote runtime, or long-running operational tasks unless the delegation path is confirmed to inherit the same filesystem, network, approval, and permission posture as the main session. Keep those tasks in the main session when inheritance cannot be proven.
+- Complex or high-risk coding must use multi-agent collaboration and review
+  when the available delegation path is suitable. Lightweight documentation,
+  wording, and single-point fixes do not require multi-agent review.
+
+## Verification Strategy
+
+Use layered verification during normal coding:
+
+- Small/local changes: run targeted tests for the touched module, contract, or
+  source-authority rule plus `git diff --check` when relevant.
+- Medium changes: run related module tests and key-path tests.
+- High-risk areas require elevated verification: auth/session, tenant
+  isolation, queue, worker maintenance, run lifecycle, sandbox, schema, shared
+  contracts, multi-agent runtime, frontend-backend auth/session contracts, and
+  211 deployment paths.
+- Before PR, deployment, merge, or stage-gate closure: run full local pytest and
+  the relevant smoke checks, then record evidence.
+- Do not claim tests, review, 211 smoke, or deployment passed unless the command
+  was actually run and the result was observed.
 
 ## Large Feature Workflow
 A change is treated as a **large feature** if it meets any of the following:

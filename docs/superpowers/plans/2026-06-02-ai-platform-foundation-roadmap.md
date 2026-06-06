@@ -12,6 +12,25 @@
 
 本路线图不维护已退出范围对象的名称清单。后续执行只按本文“当前主链路”和 P0 交付门槛推进；未列入当前主链路的入口、服务、端口、页面或候选方案，不作为计划依据。
 
+## 2026-06-06 Gate-Based Roadmap Sync
+
+本节按 GitHub issues #15/#16/#17 同步路线图职责：路线图只作为 product gates、当前状态、阻塞项与下一决策的工具；211 image hash、smoke 输出、逐 PR 执行证据后续应进入独立 release evidence 或 slice execution plan。本文后面的历史段落先保留为 legacy accumulated evidence，不再把新的短期执行流水继续追加成产品需求。
+
+当前 gate 顺序：
+
+1. G0-G1 Source Authority / Security Baseline：本地 source、211 source、repo-local deploy composition、runtime labels、公司 AD/auth/session、RBAC、tenant/workspace/user 边界、redaction 与 CI/verification 基线对齐。
+2. G2-G4 Control Plane MVP：session、run、file、artifact、skill、tool、memory、event、audit 合同稳定；executor 只消费 platform payload，不定义平台 schema。
+3. G5 Run Lifecycle / Worker Runtime V1：queue、lease、heartbeat、retry、dead-letter、cancel、resume、checkpoint、idempotency 可审计、可运营。
+4. G6 Tool / Skill / Memory Governance：skill versioning、release policy、dependency policy、tool allow/deny/ask、memory retention、redaction、delete flow 可运营。
+5. G7 Sandbox / Resource Hardening：Docker provider 生产验证、network/egress policy、runtime quota、orphan cleanup job、container security options 与 211 smoke 通过后，才允许扩大高风险 sandbox/tool。
+6. G8 Multi-Agent Controlled Beta：dispatcher、handoff、child reconciliation、parent rollup、parent cancel 与 worker dispatcher 继续 feature-flagged；普通用户曝光前必须先通过 tenant-aware scheduler/quota gate。
+7. G9 Observability / Quality / Ops：Admin runtime、cost/token/latency metrics、error taxonomy、golden-set eval、trace/audit export 与 alert 进入 beta 前 gate。
+8. G10 Internal Beta / Department Rollout：选择 1-2 个真实内网流程（如文档审查、翻译、SOP/RAG、长任务报告）明确运营 owner 后再放量。
+
+当前优先级不是 Docker compose 一键启动或 package delivery，而是公司内网定制化后端 Agent 平台的可运营基础：AD/company auth 与 session、tenant/workspace/user 隔离、多租户高并发、DB connection pool、tenant-aware queue/quota、bounded queue metadata、tenant-aware worker maintenance、Admin Runtime/Observability、Memory/Context、Tool Permission、Agent Frontend 用户闭环。前端源码进入本仓库、backend/worker/frontend 同 commit versioning、monorepo 与多镜像交付进入路线图；compose 一键启动与 packaged delivery 只作为后续 milestone。
+
+P2 Long Task / Multi-Agent Runtime 不再继续默认前冲。checkpoint、subagent、artifact tree、provenance、resume/cancel/retry 与多 agent 调度只能在前置 auth/session、tenant isolation、fair scheduling、quota/backpressure、observability 和 sandbox/tool risk gates 验收后继续扩大。
+
 ## 当前主链路
 
 - 本地代码：当前 `ai-platform` 仓库根目录
@@ -25,7 +44,7 @@
 
 ## 当前决策
 
-真实 Long Task / Multi-Agent Runtime 是最终目标，但不作为当前基础切片的第一落点。
+真实 Long Task / Multi-Agent Runtime 是最终目标，但不作为当前基础切片的第一落点，也不越过 2026-06-06 gate-based sync 中的 tenant-aware scheduler/quota、observability、sandbox/tool risk gates。
 
 当前优先四个基础 P0：
 
@@ -172,9 +191,11 @@ projections.
 
 ## 后续顺序
 
-1. Foundation hardening + Agent Frontend V1。
-2. Long Task / Multi-Agent Runtime。
-3. Observability / Quality。
+1. Source Authority / Security Baseline 与公司内网 auth/session、tenant/workspace/user 隔离。
+2. Tenant-aware concurrency / fair scheduling / DB pool / bounded queue metadata。
+3. Admin Runtime / Observability / Quality / Ops。
+4. Memory / Context Management 与 Tool Permission / Agent Frontend V1 用户闭环。
+5. Long Task / Multi-Agent Runtime controlled beta。
 
 ### P1 Admin Runtime Overview Snapshot
 
