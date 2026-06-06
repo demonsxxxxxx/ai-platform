@@ -379,7 +379,7 @@ Run:
 python -m pytest -q --basetemp .pytest-tmp\g5-full
 ```
 
-- [ ] **Step 6: Commit, push, PR, and 211 smoke**
+- [x] **Step 6: Commit, push, main-line update, and 211 smoke**
 
 After local verification and valid review feedback are resolved:
 
@@ -393,6 +393,17 @@ Run 211 deployment and smoke only on the Docker-capable 211 host. Verify API and
 frontend health, source label parity, queue metadata behavior, child-run
 admission rejection, no Docker socket expansion, and redacted admin/public
 projections.
+
+2026-06-06 result: direct main-line commit `f5da825` was pushed to
+`origin/main` and deployed on 211 as `ai-platform:f5da825-g5-scheduling`.
+Fresh final verification recorded `1090 passed, 6 skipped, 2 warnings`, compile
+success, and clean `git diff --check`. The 211 smoke verified API health,
+frontend proxy health, API/worker label parity for
+`f5da825b06f4779310cc396987f0989342916887`, isolated Redis queue metadata
+position/removal, configured-horizon quota fairness, bounded legacy fallback,
+stale metadata cleanup, multi-agent handoff admission rejection with claim
+release/no child run/no enqueue, admin-only runtime overview redaction, ordinary
+user `403`, and no Docker socket mounts.
 
 ## Plan Self-Review
 

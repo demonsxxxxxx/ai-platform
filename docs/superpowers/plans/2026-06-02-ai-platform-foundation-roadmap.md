@@ -35,9 +35,9 @@ P2 Long Task / Multi-Agent Runtime 不再继续默认前冲。checkpoint、subag
 
 DB connection pool 是 issue #16 的第一个可独立闭环前置项：平台已在 `main` 建立 bounded async Postgres pool 替代每 transaction 直连，并把 allowlisted pool status 暴露到 admin-only runtime overview。2026-06-06 211 smoke 已验证 API/worker runtime label 与 source marker 匹配、API 与前端代理 health 正常、admin-only overview 返回 `database_pool.open=true` 且未暴露 DSN/password/secret/api key；后续 tenant-aware queue/quota 与 worker maintenance 可以在这个承载基础上推进。
 
-当前未关闭的 G5 阻塞项仍包括：bounded queue metadata 继续产品化、large queue bounded lookup 压力验证，以及多 tenant 并发压力测试。Tenant-aware queue lease、tenant-aware worker maintenance、active-run admission 与 P1 Admin Runtime admission/backpressure 已作为子切片通过 review、full pytest、main merge 和 211 smoke；G8 Multi-Agent Controlled Beta 仍不得绕过剩余 quota/backpressure/observability 阻塞项。
+当前未关闭的 G5 后续项仍包括：large queue bounded lookup 压力验证，以及多 tenant 并发压力测试。Tenant-aware queue lease、tenant-aware worker maintenance、active-run admission、bounded queue metadata、multi-agent child-run admission 与 P1 Admin Runtime admission/backpressure 已作为子切片通过 review、full pytest、main merge 和 211 smoke；G8 Multi-Agent Controlled Beta 仍不得绕过剩余 quota/backpressure/observability 阻塞项。
 
-GitHub issue #20 当前作为 G5 多租户高并发 gate 的收敛切片推进：在 configured fairness horizon 内关闭 tail-window quota leasing 造成的可运行租户饥饿、multi-agent child-run fanout 绕过 active-run admission、queue position / queued-run removal / admin enrichment 无界 Redis queued-list 扫描，以及高风险 review/model-reasoning 规则歧义。详细设计与执行计划分别在 `docs/superpowers/specs/2026-06-06-g5-tenant-aware-scheduling-admission-metadata-design.md` 与 `docs/superpowers/plans/2026-06-06-g5-tenant-aware-scheduling-admission-metadata.md`，211 smoke 与 PR 级证据后续进入对应 execution/release evidence，不继续追加为产品路线图流水账。
+GitHub issue #20 已作为 G5 多租户高并发 gate 的收敛切片在 `main` commit `f5da825` 完成：在 configured fairness horizon 内关闭 tail-window quota leasing 造成的可运行租户饥饿、multi-agent child-run fanout 绕过 active-run admission、queue position / queued-run removal / admin enrichment 无界 Redis queued-list 扫描，以及高风险 review/model-reasoning 规则歧义。详细设计与执行计划分别在 `docs/superpowers/specs/2026-06-06-g5-tenant-aware-scheduling-admission-metadata-design.md` 与 `docs/superpowers/plans/2026-06-06-g5-tenant-aware-scheduling-admission-metadata.md`，211 smoke 与 issue closure 证据保留在对应执行计划和 GitHub issue，不继续追加为产品路线图流水账。
 
 ### P1 Admin Runtime Admission / Backpressure
 
