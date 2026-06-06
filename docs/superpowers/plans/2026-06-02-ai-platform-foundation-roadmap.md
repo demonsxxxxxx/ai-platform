@@ -1012,9 +1012,8 @@ migration.
 
 ### P2 Multi-Agent Worker Dispatcher
 
-Status: implemented locally as the bounded worker-side follow-up to admin
-dispatch tick and pending fresh final local verification plus 211 deployment
-smoke.
+Status: deployed on 211 as the bounded worker-side follow-up to admin dispatch
+tick via main commit `92bef5c6e196bcbe4bc563e3ad50d1d96a629d7d`.
 
 This slice adds a disabled-by-default worker maintenance dispatcher that can
 advance safe ready steps for server-marked top-level multi-agent parent runs.
@@ -1040,9 +1039,38 @@ the worker dispatcher disabled unless a controlled runtime explicitly enables
 `MULTI_AGENT_DISPATCH_WORKER_ENABLED`.
 
 Inherited-configuration multi-agent review reported no Critical, Important, or
-Minor findings after the second review-fix pass. The reviewer was read-only and
-did not rerun pytest, so final merge/deployment status still depends on fresh
-local verification and 211 smoke.
+Minor findings after the second review-fix pass. Fresh local verification for
+the final source passed with `python -m compileall -q app tools scripts`,
+affected dispatcher/repository/worker tests at `179 passed`, and full pytest at
+`1035 passed, 6 skipped, 2 warnings`.
+
+The first 211 smoke exposed a real schema compatibility bug: the dispatcher
+candidate and park-marker SQL referenced `runs.updated_at`, but the current
+schema and 211 runtime `runs` table only have `queued_at` and `created_at`.
+That was fixed in `92bef5c6e196bcbe4bc563e3ad50d1d96a629d7d` with a regression
+test that fails if the dispatcher SQL references `runs.updated_at`.
+
+The 211 deployment uses image
+`sha256:31847f637656f0456adcd92a965454cbd05f128ed2e3434cada50162d3af7e9a`
+for both `ai-platform-api` and `ai-platform-worker`, tagged
+`ai-platform:92bef5c`, with
+`ai-platform.source-revision=92bef5c6e196bcbe4bc563e3ad50d1d96a629d7d` and
+`ai-platform.source_note=p2-multi-agent-worker-dispatcher`. The 211 source
+markers match the same revision and note. Because the final fix changed only
+runtime source and not dependencies, the final image was rebuilt as a runtime
+rebase from the earlier dispatcher image by replacing `/app/app`; the container
+entrypoint, dependency layer, and skills layer remained from the already-built
+base image.
+
+The 211 smoke temporarily enabled the dispatcher only for a one-off container
+process, created a temporary parked multi-agent parent with a succeeded `plan`
+dependency and ready `code` step, dispatched the ready step, verified the child
+run was queued, removed one Redis queue payload before worker consumption,
+verified claim and handoff audit rows, verified ordinary step/event projections
+did not expose dispatch control fields, and cleaned all smoke DB rows to zero.
+Final health returned `{"status":"ok"}`, the worker could import
+`app.multi_agent_dispatcher`, the default deployed dispatcher flag remained
+`False`, and recent API/worker logs had no error markers.
 
 This does not add a new public frontend entry, expose executor private payload,
 open sandbox/tool privilege, add a new worker process, or introduce a DB

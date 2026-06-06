@@ -190,10 +190,48 @@ Result: inherited-configuration final review reported no Critical, Important,
 or Minor findings. The reviewer stayed read-only and did not rerun pytest, so
 the fresh local verification above remains the merge evidence.
 
-- [ ] **Step 3: Commit, push, deploy, smoke**
+- [x] **Step 3: Commit, push, deploy, smoke**
 
 Commit to `main`, push, sync source to 211, build or runtime-rebase according
 to `AGENTS.md`, recreate API/worker, then smoke one enabled dispatcher pass
 against a temporary safe ready parent run. Verify API/worker labels or code hash
 parity, ordinary projection redaction, queue payload creation, event/audit
 evidence, logs, and cleanup.
+
+Results:
+
+- Initial feature commit:
+  `4c0a94a75fac3929aacc0cd7222c7a4851b2bcc7`.
+- 211 smoke exposed a runtime schema bug: `runs.updated_at` does not exist in
+  the current schema or on 211. RED target
+  `python -m pytest tests/test_repositories.py::test_list_multi_agent_dispatch_candidate_runs_filters_running_top_level_multi_agent tests/test_repositories.py::test_mark_multi_agent_dispatch_parent_awaiting_dispatch_sets_server_owned_marker -q --basetemp .pytest-tmp\p2-worker-dispatcher-runs-updated-at-red`
+  failed with the expected `updated_at` SQL assertions.
+- Fix commit:
+  `92bef5c6e196bcbe4bc563e3ad50d1d96a629d7d`.
+- GREEN target:
+  `python -m pytest tests/test_repositories.py::test_list_multi_agent_dispatch_candidate_runs_filters_running_top_level_multi_agent tests/test_repositories.py::test_mark_multi_agent_dispatch_parent_awaiting_dispatch_sets_server_owned_marker -q --basetemp .pytest-tmp\p2-worker-dispatcher-runs-updated-at-green`:
+  `2 passed`.
+- Post-fix affected verification:
+  `python -m compileall -q app tools scripts`: exited 0.
+  `python -m pytest tests/test_multi_agent_dispatcher.py tests/test_repositories.py tests/test_worker.py tests/test_worker_main.py -q --basetemp .pytest-tmp\p2-worker-dispatcher-runtime-schema-affected`:
+  `179 passed`.
+  `python -m pytest -q --basetemp .pytest-tmp\p2-worker-dispatcher-runtime-schema-full`:
+  `1035 passed, 6 skipped, 2 warnings`.
+- Final 211 runtime:
+  `ai-platform-api` and `ai-platform-worker` both run
+  `ai-platform:92bef5c` with image id
+  `sha256:31847f637656f0456adcd92a965454cbd05f128ed2e3434cada50162d3af7e9a`,
+  `ai-platform.source-revision=92bef5c6e196bcbe4bc563e3ad50d1d96a629d7d`,
+  and `ai-platform.source_note=p2-multi-agent-worker-dispatcher`.
+- 211 smoke:
+  one temporary parked parent dispatched ready `code` step to child
+  `run_a953bd41a4a54bdc9bcf8f84d055b08f`, Redis queue payload removal count
+  was `1`, audit actions were `run.multi_agent.dispatch.claim` and
+  `run.multi_agent.dispatch.handoff`, ordinary public projection checks passed,
+  and cleanup counts for run/session/user/audit/event/step/context/artifact
+  tables were all `0`.
+- Final health/logs:
+  `GET /api/ai/health` returned `{"status":"ok"}`; worker import of
+  `app.multi_agent_dispatcher` succeeded; deployed default
+  `multi_agent_dispatch_worker_enabled` remained `False`; recent API/worker log
+  scan found no error markers.
