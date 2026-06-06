@@ -127,6 +127,13 @@ def test_schema_declares_p0_memory_tool_event_and_sandbox_contracts():
     assert "fk_memory_records_session" in schema
     assert "fk_memory_records_session_scope" in schema
     assert "create index if not exists idx_memory_records_scope" in schema
+    assert "create index if not exists idx_memory_records_expired_cleanup" in schema
+    assert "on memory_records(expires_at asc, created_at asc, tenant_id, workspace_id, id)" in schema
+    assert "where status = 'active'" in schema
+    assert "and deleted_at is null" in schema
+    assert "and expires_at is not null" in schema
+    assert "create table if not exists worker_maintenance_cursors" in schema
+    assert "cursor_key text primary key" in schema
     assert "create table if not exists memory_policies" in schema
     assert "long_term_memory_enabled boolean not null default false" in schema
     assert "redaction_mode text not null default 'standard'" in schema

@@ -1637,6 +1637,216 @@ async def test_cleanup_expired_memory_records_soft_deletes_only_expired_active_r
 
 
 @pytest.mark.asyncio
+async def test_cleanup_expired_memory_records_across_scopes_rejects_non_positive_limit():
+    class MemoryConnection:
+        async def execute(self, *_args, **_kwargs):
+            raise AssertionError("invalid limit must fail before SQL execution")
+
+    with pytest.raises(repositories.RepositoryConflictError, match="memory_cleanup_limit_invalid"):
+        await repositories.cleanup_expired_memory_records_across_scopes(MemoryConnection(), limit=0)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_expired_memory_records_across_scopes_prioritizes_one_row_per_scope():
+    class EmptyCursor:
+        async def fetchone(self):
+            return None
+
+    class ScopeCursor:
+        async def fetchall(self):
+            return [
+                {"tenant_id": "tenant-a", "workspace_id": "workspace-a"},
+                {"tenant_id": "tenant-b", "workspace_id": "workspace-b"},
+                {"tenant_id": "tenant-c", "workspace_id": "workspace-c"},
+                {"tenant_id": "tenant-d", "workspace_id": "workspace-d"},
+            ]
+
+    class CleanupCursor:
+        async def fetchall(self):
+            return []
+
+    class MemoryConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            self.calls.append((normalized, params))
+            if "from worker_maintenance_cursors" in normalized:
+                return EmptyCursor()
+            if "group by tenant_id, workspace_id" in normalized:
+                return ScopeCursor()
+            return CleanupCursor()
+
+    conn = MemoryConnection()
+
+    await repositories.cleanup_expired_memory_records_across_scopes(conn, limit=5)
+
+    cleanup_sql, cleanup_params = conn.calls[3]
+    assert "row_number() over" in cleanup_sql
+    assert "order by locked_rows.expires_at asc, locked_rows.created_at asc, locked_rows.id asc" in cleanup_sql
+    assert "case when selected.scope_rank = 1 then 0 else 1 end" in cleanup_sql
+    assert cleanup_params == (
+        ["tenant-a", "tenant-b", "tenant-c", "tenant-d"],
+        ["workspace-a", "workspace-b", "workspace-c", "workspace-d"],
+        2,
+        5,
+    )
+
+
+@pytest.mark.asyncio
+async def test_cleanup_expired_memory_records_across_scopes_uses_bounded_scope_cursor():
+    class CursorCursor:
+        async def fetchone(self):
+            return {"tenant_id": "tenant-a", "workspace_id": "workspace-a"}
+
+    class ScopeCursor:
+        async def fetchall(self):
+            return [
+                {"tenant_id": "tenant-b", "workspace_id": "workspace-b"},
+                {"tenant_id": "tenant-c", "workspace_id": "workspace-c"},
+            ]
+
+    class UpdateCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "id": "mem-b",
+                    "tenant_id": "tenant-b",
+                    "workspace_id": "workspace-b",
+                    "user_id": "user-b",
+                    "agent_id": "general-agent",
+                    "session_id": "session-b",
+                    "record_type": "session_summary",
+                    "status": "deleted",
+                    "expires_at": "2026-06-01T12:00:00Z",
+                    "deleted_at": "2026-06-03T12:00:00Z",
+                    "created_at": "2026-05-31T12:00:00Z",
+                    "updated_at": "2026-06-03T12:00:00Z",
+                },
+                {
+                    "id": "mem-c",
+                    "tenant_id": "tenant-c",
+                    "workspace_id": "workspace-c",
+                    "user_id": "user-c",
+                    "agent_id": "general-agent",
+                    "session_id": "session-c",
+                    "record_type": "session_summary",
+                    "status": "deleted",
+                    "expires_at": "2026-06-01T12:05:00Z",
+                    "deleted_at": "2026-06-03T12:00:00Z",
+                    "created_at": "2026-05-31T12:05:00Z",
+                    "updated_at": "2026-06-03T12:00:00Z",
+                },
+            ]
+
+    class MemoryConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            self.calls.append((normalized, params))
+            if "from worker_maintenance_cursors" in normalized:
+                return CursorCursor()
+            if "group by tenant_id, workspace_id" in normalized:
+                return ScopeCursor()
+            return UpdateCursor()
+
+    conn = MemoryConnection()
+
+    rows = await repositories.cleanup_expired_memory_records_across_scopes(conn, limit=2)
+
+    assert [row["tenant_id"] for row in rows] == ["tenant-b", "tenant-c"]
+    cursor_sql, cursor_params = conn.calls[0]
+    scope_sql, scope_params = conn.calls[1]
+    cursor_update_sql, cursor_update_params = conn.calls[2]
+    cleanup_sql, cleanup_params = conn.calls[3]
+    assert "from worker_maintenance_cursors" in cursor_sql
+    assert "for update" in cursor_sql
+    assert cursor_params == ("memory_retention_cleanup",)
+    assert "group by tenant_id, workspace_id" in scope_sql
+    assert "(tenant_id, workspace_id) > (%s, %s)" in scope_sql
+    assert scope_params == ("tenant-a", "tenant-a", "workspace-a", None, None, None, 2)
+    assert "insert into worker_maintenance_cursors" in cursor_update_sql
+    assert "on conflict (cursor_key) do update" in cursor_update_sql
+    assert cursor_update_params == ("memory_retention_cleanup", "tenant-c", "workspace-c")
+    assert "unnest(%s::text[], %s::text[])" in cleanup_sql
+    assert "cross join lateral" in cleanup_sql
+    assert "memory_records.tenant_id = scope.tenant_id" in cleanup_sql
+    assert "memory_records.workspace_id = scope.workspace_id" in cleanup_sql
+    assert "for update skip locked" in cleanup_sql
+    assert "content" not in cleanup_sql
+    assert "metadata_json" not in cleanup_sql
+    assert cleanup_params == (["tenant-b", "tenant-c"], ["workspace-b", "workspace-c"], 1, 2)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_expired_memory_records_across_scopes_soft_deletes_bounded_rows():
+    class EmptyCursor:
+        async def fetchone(self):
+            return None
+
+    class ScopeCursor:
+        async def fetchall(self):
+            return [{"tenant_id": "tenant-a", "workspace_id": "workspace-a"}]
+
+    class CleanupCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "id": "mem-expired",
+                    "tenant_id": "tenant-a",
+                    "workspace_id": "workspace-a",
+                    "user_id": "user-a",
+                    "agent_id": "general-agent",
+                    "session_id": "session-a",
+                    "record_type": "session_summary",
+                    "status": "deleted",
+                    "expires_at": "2026-06-01T12:00:00Z",
+                    "deleted_at": "2026-06-03T12:00:00Z",
+                    "created_at": "2026-05-31T12:00:00Z",
+                    "updated_at": "2026-06-03T12:00:00Z",
+                }
+            ]
+
+    class MemoryConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            self.calls.append((normalized, params))
+            if "from worker_maintenance_cursors" in normalized:
+                return EmptyCursor()
+            if "group by tenant_id, workspace_id" in normalized:
+                return ScopeCursor()
+            return CleanupCursor()
+
+    conn = MemoryConnection()
+
+    rows = await repositories.cleanup_expired_memory_records_across_scopes(conn, limit=25)
+
+    sql, params = conn.calls[3]
+    assert rows[0]["tenant_id"] == "tenant-a"
+    assert rows[0]["workspace_id"] == "workspace-a"
+    assert "update memory_records" in sql
+    assert "status = 'deleted'" in sql
+    assert "expires_at is not null" in sql
+    assert "expires_at <= now()" in sql
+    assert "deleted_at is null" in sql
+    assert "tenant_id = %s" not in sql
+    assert "workspace_id = %s" not in sql
+    assert "cross join lateral" in sql
+    assert "case when selected.scope_rank = 1 then 0 else 1 end" in sql
+    assert "selected.expires_at asc, selected.created_at asc" in sql
+    assert "for update skip locked" in sql
+    assert "content" not in sql
+    assert "metadata_json" not in sql
+    assert params == (["tenant-a"], ["workspace-a"], 25, 25)
+
+
+@pytest.mark.asyncio
 async def test_list_admin_memory_records_projects_operator_fields_without_content_or_metadata():
     class MemoryCursor:
         async def fetchall(self):

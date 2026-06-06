@@ -408,6 +408,18 @@ end $$;
 
 create index if not exists idx_memory_records_scope
   on memory_records(tenant_id, workspace_id, user_id, agent_id, session_id, created_at desc);
+create index if not exists idx_memory_records_expired_cleanup
+  on memory_records(expires_at asc, created_at asc, tenant_id, workspace_id, id)
+  where status = 'active'
+    and deleted_at is null
+    and expires_at is not null;
+
+create table if not exists worker_maintenance_cursors (
+  cursor_key text primary key,
+  tenant_id text,
+  workspace_id text,
+  updated_at timestamptz not null default now()
+);
 
 create table if not exists memory_policies (
   id text primary key,

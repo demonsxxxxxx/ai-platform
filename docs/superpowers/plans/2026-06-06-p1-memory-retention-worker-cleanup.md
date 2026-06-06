@@ -1,5 +1,11 @@
 # P1 Memory Retention Worker Cleanup Implementation Plan
 
+Superseded note: this historical implementation plan used
+`default_tenant_id/default_workspace_id`. Current worker retention cleanup is
+governed by
+`docs/superpowers/plans/2026-06-06-g5-tenant-aware-worker-maintenance.md`.
+Do not execute this plan as the current source of truth.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add bounded worker-side expired-memory cleanup so P1 Memory / Context retention cleanup no longer depends only on the admin manual route.

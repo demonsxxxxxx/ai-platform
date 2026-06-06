@@ -36,7 +36,7 @@ async def cleanup_expired_sandbox_leases() -> None:
 
 
 async def cleanup_expired_memory_records_for_worker(settings: object | None = None, *, now: float | None = None) -> list[dict]:
-    """Run bounded expired-memory cleanup for worker maintenance when due."""
+    """Run bounded rotating-scope expired-memory cleanup for worker maintenance when due."""
     global _next_memory_cleanup_at
 
     settings = settings or get_settings()
@@ -50,16 +50,16 @@ async def cleanup_expired_memory_records_for_worker(settings: object | None = No
     if current_time < _next_memory_cleanup_at:
         return []
 
-    tenant_id = str(getattr(settings, "default_tenant_id", "default"))
-    workspace_id = str(getattr(settings, "default_workspace_id", "default"))
     async with transaction() as conn:
-        rows = await repositories.cleanup_expired_memory_records(
+        rows = await repositories.cleanup_expired_memory_records_across_scopes(
             conn,
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
             limit=limit,
         )
-        if rows:
+        rows_by_scope: dict[tuple[str, str], list[dict]] = {}
+        for row in rows:
+            scope = (str(row["tenant_id"]), str(row["workspace_id"]))
+            rows_by_scope.setdefault(scope, []).append(row)
+        for (tenant_id, workspace_id), scope_rows in rows_by_scope.items():
             await repositories.append_audit_log(
                 conn,
                 tenant_id=tenant_id,
@@ -67,13 +67,13 @@ async def cleanup_expired_memory_records_for_worker(settings: object | None = No
                 action="worker.memory.retention.cleanup",
                 target_type="memory_retention",
                 target_id=workspace_id,
-                trace_id=standard_trace_id(workspace_id),
+                trace_id=standard_trace_id(f"{tenant_id}_{workspace_id}"),
                 payload_json=sanitize_public_payload(
                     {
                         "workspace_id": workspace_id,
-                        "deleted_count": len(rows),
-                        "memory_record_ids": [str(row.get("id")) for row in rows],
-                        "target_user_ids": sorted({str(row.get("user_id")) for row in rows if row.get("user_id")}),
+                        "deleted_count": len(scope_rows),
+                        "memory_record_ids": [str(row.get("id")) for row in scope_rows],
+                        "target_user_ids": sorted({str(row.get("user_id")) for row in scope_rows if row.get("user_id")}),
                         "reason": "retention_expired",
                         "source": "worker",
                     }
