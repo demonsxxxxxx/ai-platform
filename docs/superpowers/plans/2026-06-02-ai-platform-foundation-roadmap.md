@@ -35,7 +35,7 @@ P2 Long Task / Multi-Agent Runtime 不再继续默认前冲。checkpoint、subag
 
 DB connection pool 是 issue #16 的第一个可独立闭环前置项：平台已在 `main` 建立 bounded async Postgres pool 替代每 transaction 直连，并把 allowlisted pool status 暴露到 admin-only runtime overview。2026-06-06 211 smoke 已验证 API/worker runtime label 与 source marker 匹配、API 与前端代理 health 正常、admin-only overview 返回 `database_pool.open=true` 且未暴露 DSN/password/secret/api key；后续 tenant-aware queue/quota 与 worker maintenance 可以在这个承载基础上推进。
 
-当前未关闭的 G5 阻塞项仍包括：active-run quota 并发硬化、bounded queue metadata 继续产品化、large queue bounded lookup 压力验证、DB pool saturation/queue throttling 可观测性，以及多 tenant 并发压力测试。Tenant-aware queue lease 与 tenant-aware worker maintenance 已作为 G5 子切片通过 review、full pytest、PR/merge 和 211 smoke；G8 Multi-Agent Controlled Beta 仍不得绕过剩余 quota/backpressure/observability 阻塞项。
+当前未关闭的 G5 阻塞项仍包括：bounded queue metadata 继续产品化、large queue bounded lookup 压力验证、DB pool saturation/queue throttling 可观测性，以及多 tenant 并发压力测试。Tenant-aware queue lease、tenant-aware worker maintenance 与 active-run admission 已作为 G5 子切片通过 review、full pytest、main merge 和 211 smoke；G8 Multi-Agent Controlled Beta 仍不得绕过剩余 quota/backpressure/observability 阻塞项。
 
 ### G5 Tenant-Aware Queue Lease
 
@@ -124,6 +124,28 @@ smoke verified multi-scope cleanup, one-row-per-scope fairness under a bounded
 limit, sanitized per-scope audit evidence, source/label parity, health, clean
 logs, and smoke data cleanup. Detailed execution evidence remains in
 `docs/superpowers/plans/2026-06-06-g5-tenant-aware-worker-maintenance.md`.
+
+### G5 Active Run Admission
+
+Status: merged on `main` at `cb20e3097f31419e5be5f1c608a20c7b3f7845a5` and
+deployed/smoked on 211 with runtime image
+`ai-platform:cb20e30-g5-active-run-admission`.
+
+This slice serializes user-created active-run admission for create, chat,
+copy, retry, and resume by acquiring a transaction-scoped Postgres advisory
+lock over the structured `(tenant_id, user_id)` scope before counting
+queued/running runs and inserting the next queued run. Copy-run now shares the
+same admission gate and fails closed with HTTP 409 before creating or enqueuing
+a copied run when `max_active_runs_per_user` is reached.
+
+The server-owned multi-agent child handoff remains out of scope for this slice
+and stays behind the later multi-agent runtime gate. 211 smoke proved the real
+Postgres concurrency behavior with two transactions for the same tenant/user:
+the second transaction waited on the advisory lock and then rejected with
+`user_active_run_limit_exceeded` after the first transaction committed its
+queued run. Smoke data cleanup left zero rows, API/frontend health passed, and
+recent API/worker logs were clean. Detailed execution evidence remains in
+`docs/superpowers/plans/2026-06-06-g5-active-run-admission.md`.
 
 ## 当前主链路
 

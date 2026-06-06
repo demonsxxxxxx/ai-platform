@@ -318,7 +318,7 @@ python -m pytest -q --basetemp .pytest-tmp\g5-active-admission-full
 git diff --check
 ```
 
-- [ ] **Step 4: 211 smoke after merge**
+- [x] **Step 4: 211 smoke after merge**
 
 Deploy the merged main commit to 211. In the API or worker container, run a
 temporary Python smoke that:
@@ -376,6 +376,44 @@ no `traceback`, `exception`, `permission denied`, `error`, or `failed` markers.
   lock-before-count order with a fake connection rather than a real concurrent
   Postgres transaction; this remains covered by the required 211 smoke for this
   slice.
+- Final inherited-configuration review after the JSON lock-scope doc sync
+  reported no Critical, Important, or Minor findings. The reviewer accepted
+  server-owned multi-agent child handoff as out of scope for this user-created
+  run admission slice and kept real Postgres concurrency as the 211 deploy gate.
+- Branch `feat/g5-active-run-admission` was pushed to origin. Local `gh` and
+  `hub` CLIs were unavailable, and no GitHub PR tool was exposed in this
+  session, so the branch was fast-forward merged to `main` and pushed at
+  `cb20e3097f31419e5be5f1c608a20c7b3f7845a5`.
+- Fresh verification on merged `main` passed with
+  `python -m compileall -q app tools scripts`,
+  `python -m pytest -q --basetemp .pytest-tmp\g5-active-admission-main-full-fresh`
+  at `1070 passed, 6 skipped, 2 warnings`, and `git diff --check`.
+- 211 source snapshot
+  `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform` was synced to
+  `cb20e3097f31419e5be5f1c608a20c7b3f7845a5` with source note
+  `g5-active-run-admission`. A direct `docker build` attempt was stopped after
+  it stayed idle without producing an image; the deployed runtime image was
+  created by committing the synced API container state and then recreating
+  API/worker through the repo-local compose file with project
+  `ai-platform-phaseb`, `--no-build`, and `--no-deps`.
+- 211 runtime image `ai-platform:cb20e30-g5-active-run-admission` has image id
+  `sha256:52fff2e8b421fd52e6dc746bd31124ae110bd3eda8fe3eb645f67ed70187d16a`
+  with labels `org.opencontainers.image.revision=cb20e3097f31419e5be5f1c608a20c7b3f7845a5`
+  and `ai-platform.source_note=g5-active-run-admission`. API and worker
+  containers both run that image with restart count `0`, matching source
+  markers, and compose project `ai-platform-phaseb`.
+- 211 health checks for `http://127.0.0.1:8020/api/ai/health` and
+  `http://127.0.0.1:18001/api/ai/health` returned `{"status":"ok"}`.
+- Final 211 container-local real Postgres concurrency smoke used prefix
+  `zzzzzz_smoke_g5_active_1780728951`: transaction A observed active count
+  `0`, transaction B waited while A held the advisory lock, then rejected with
+  `user_active_run_limit_exceeded` after A committed. Cleanup confirmed
+  `REMAINING_AFTER_MAIN_CLEANUP=0` and `REMAINING_AFTER_FINAL_CLEANUP=0`, and
+  the script ended with `G5_ACTIVE_ADMISSION_SMOKE=pass`.
+- Recent API and worker logs after deployment showed no `traceback`,
+  `exception`, `permission denied`, `error`, or `failed` markers. Temporary
+  smoke scripts, tarball, and compose env files were removed; no raw `.env` was
+  committed or printed.
 - This plan intentionally leaves Admin Runtime queue/pool observability and
   multi-tenant pressure testing as follow-up G5 slices after admission
   serialization is proven.
