@@ -1847,11 +1847,12 @@ def event_visible_to_principal(row: dict[str, object], principal: AuthPrincipal)
 
 async def enforce_user_active_run_limit(conn, *, tenant_id: str, user_id: str) -> None:
     limit = int(get_settings().max_active_runs_per_user)
-    if limit <= 0:
-        return
-    active_count = await repositories.count_active_runs_for_user(conn, tenant_id=tenant_id, user_id=user_id)
-    if active_count >= limit:
-        raise RepositoryConflictError("user_active_run_limit_exceeded")
+    await repositories.enforce_user_active_run_admission(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        limit=limit,
+    )
 
 
 async def queue_insight_for_status(status: str, tenant_id: str, *, user_id: str | None = None) -> dict[str, Any] | None:
@@ -2253,6 +2254,7 @@ async def copy_run(
 ) -> RunControlResponse:
     try:
         async with transaction() as conn:
+            await enforce_user_active_run_limit(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
             copied = await repositories.copy_run_as_new_task(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -2267,6 +2269,8 @@ async def copy_run(
                     source="copy_run",
                 )
     except SkillVersionMaterializationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if copied is None:
         raise HTTPException(status_code=404, detail="run_not_found")

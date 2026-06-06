@@ -860,6 +860,27 @@ async def count_active_runs_for_user(conn: AsyncConnection, *, tenant_id: str, u
     return int(row["count"] if row else 0)
 
 
+async def enforce_user_active_run_admission(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    limit: int,
+) -> int:
+    limit = int(limit)
+    if limit <= 0:
+        return 0
+    lock_scope = dumps_json({"tenant_id": tenant_id, "user_id": user_id})
+    await conn.execute(
+        "select pg_advisory_xact_lock(hashtextextended(%s::text, 0::bigint))",
+        (lock_scope,),
+    )
+    active_count = await count_active_runs_for_user(conn, tenant_id=tenant_id, user_id=user_id)
+    if active_count >= limit:
+        raise RepositoryConflictError("user_active_run_limit_exceeded")
+    return active_count
+
+
 async def get_active_retry_for_source_run(
     conn: AsyncConnection,
     *,

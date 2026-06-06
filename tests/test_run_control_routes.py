@@ -207,6 +207,10 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
         calls.append(("step", kwargs))
         return f"step-{kwargs['step_key']}"
 
+    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
+        calls.append(("admit", tenant_id, user_id, limit))
+        return 0
+
     async def fake_update_run_input_skill_version(conn, **kwargs):
         calls.append(("skill_version", kwargs))
 
@@ -246,6 +250,11 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.BuiltinSkillRegistry", EmptyBuiltinRegistry)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        fake_enforce_user_active_run_admission,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
     monkeypatch.setattr(
         "app.routes.runs.repositories.get_effective_skill_version_for_policy",
@@ -262,6 +271,7 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
     response = client.post("/api/ai/runs/run_old/copy", headers=headers())
 
     assert response.status_code == 200
+    assert calls[0] == ("admit", "default", "user-a", 3)
     assert response.json()["run_id"] == "run_new"
     assert response.json()["queue_position"] == 1
     assert response.json()["queue_insight"] == {
@@ -314,6 +324,43 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
     assert step_calls[1]["payload_json"]["sandbox_mode"] == "ephemeral"
     assert step_calls[1]["payload_json"]["browser_enabled"] is True
     assert step_calls[1]["payload_json"]["resource_limits"] == {"max_tool_calls": 3}
+
+
+def test_copy_run_rejects_when_user_active_run_limit_is_reached(monkeypatch):
+    calls = []
+
+    class LimitSettings:
+        max_active_runs_per_user = 1
+
+    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
+        calls.append(("admit", tenant_id, user_id, limit))
+        raise RepositoryConflictError("user_active_run_limit_exceeded")
+
+    async def fail_copy_run_as_new_task(*args, **kwargs):
+        calls.append(("copy", kwargs))
+        raise AssertionError("copy must not create a copied run after admission rejection")
+
+    async def fail_enqueue_run(payload):
+        calls.append(("enqueue", payload))
+        raise AssertionError("copy must not enqueue after admission rejection")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.get_settings", lambda: LimitSettings())
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        fake_enforce_user_active_run_admission,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fail_copy_run_as_new_task, raising=False)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue_run)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run-source/copy", headers=headers())
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "user_active_run_limit_exceeded"
+    assert calls == [("admit", "default", "user-a", 1)]
 
 
 @pytest.mark.asyncio
@@ -410,8 +457,8 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
     async def fake_get_queue_insight(tenant_id, **_kwargs):
         return {"tenant_id": tenant_id}
 
-    async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
-        calls["active_limit"] = (tenant_id, user_id)
+    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
+        calls["active_limit"] = (tenant_id, user_id, limit)
         return 0
 
     async def fake_update_run_input_skill_version(conn, **kwargs):
@@ -426,7 +473,11 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.count_active_runs_for_user", fake_count_active_runs_for_user)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        fake_enforce_user_active_run_admission,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.retry_run_as_new_task", fake_retry_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_initial_context_snapshot)
@@ -445,7 +496,7 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
     assert response.json()["status"] == "queued"
     assert response.json()["queue_position"] == 3
     assert calls["retry"] == [("default", "user-a", "run-failed")]
-    assert calls["active_limit"] == ("default", "user-a")
+    assert calls["active_limit"] == ("default", "user-a", 3)
     assert calls["enqueue"][0]["run_id"] == "run-retry"
     assert calls["enqueue"][0]["context_snapshot_id"] == "ctx-retry"
     assert calls["step"][0]["payload_json"]["seeded_from"] == "retry_run"
@@ -460,9 +511,9 @@ def test_retry_run_rejects_when_user_active_run_limit_is_reached(monkeypatch):
     class LimitSettings:
         max_active_runs_per_user = 1
 
-    async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
-        calls.append(("count", tenant_id, user_id))
-        return 1
+    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
+        calls.append(("admit", tenant_id, user_id, limit))
+        raise RepositoryConflictError("user_active_run_limit_exceeded")
 
     async def fail_retry_run_as_new_task(*args, **kwargs):
         calls.append(("retry", kwargs))
@@ -475,7 +526,11 @@ def test_retry_run_rejects_when_user_active_run_limit_is_reached(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.get_settings", lambda: LimitSettings())
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.count_active_runs_for_user", fake_count_active_runs_for_user)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        fake_enforce_user_active_run_admission,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.retry_run_as_new_task", fail_retry_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue_run)
     client = TestClient(create_app())
@@ -484,7 +539,7 @@ def test_retry_run_rejects_when_user_active_run_limit_is_reached(monkeypatch):
 
     assert response.status_code == 409
     assert response.json()["detail"] == "user_active_run_limit_exceeded"
-    assert calls == [("count", "default", "user-a")]
+    assert calls == [("admit", "default", "user-a", 1)]
 
 
 def test_retry_run_returns_not_found_for_stale_source_capability(monkeypatch):
@@ -492,8 +547,8 @@ def test_retry_run_returns_not_found_for_stale_source_capability(monkeypatch):
 
     calls = []
 
-    async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
-        calls.append(("count", tenant_id, user_id))
+    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
+        calls.append(("admit", tenant_id, user_id, limit))
         return 0
 
     async def fake_retry_run_as_new_task(conn, *, tenant_id, user_id, run_id):
@@ -506,7 +561,11 @@ def test_retry_run_returns_not_found_for_stale_source_capability(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.count_active_runs_for_user", fake_count_active_runs_for_user)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        fake_enforce_user_active_run_admission,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.retry_run_as_new_task", fake_retry_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue_run)
     client = TestClient(create_app(), raise_server_exceptions=False)
@@ -515,7 +574,7 @@ def test_retry_run_returns_not_found_for_stale_source_capability(monkeypatch):
 
     assert response.status_code == 404
     assert response.json()["detail"] == "agent_or_skill_not_found"
-    assert calls == [("count", "default", "user-a"), ("retry", "default", "user-a", "run-failed")]
+    assert calls == [("admit", "default", "user-a", 3), ("retry", "default", "user-a", "run-failed")]
 
 
 def test_retry_run_rejects_non_retryable_source_without_enqueue(monkeypatch):
@@ -523,8 +582,8 @@ def test_retry_run_rejects_non_retryable_source_without_enqueue(monkeypatch):
 
     calls = []
 
-    async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
-        calls.append(("count", tenant_id, user_id))
+    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
+        calls.append(("admit", tenant_id, user_id, limit))
         return 0
 
     async def fake_retry_run_as_new_task(conn, *, tenant_id, user_id, run_id):
@@ -537,7 +596,11 @@ def test_retry_run_rejects_non_retryable_source_without_enqueue(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.count_active_runs_for_user", fake_count_active_runs_for_user)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        fake_enforce_user_active_run_admission,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.retry_run_as_new_task", fake_retry_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
     client = TestClient(create_app())
@@ -546,14 +609,14 @@ def test_retry_run_rejects_non_retryable_source_without_enqueue(monkeypatch):
 
     assert response.status_code == 409
     assert response.json()["detail"] == "status_not_retryable"
-    assert calls == [("count", "default", "user-a"), ("retry", "default", "user-a", "run-running")]
+    assert calls == [("admit", "default", "user-a", 3), ("retry", "default", "user-a", "run-running")]
 
 
 def test_retry_run_returns_not_found_without_enqueue(monkeypatch):
     calls = []
 
-    async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
-        calls.append(("count", tenant_id, user_id))
+    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
+        calls.append(("admit", tenant_id, user_id, limit))
         return 0
 
     async def fake_retry_run_as_new_task(conn, *, tenant_id, user_id, run_id):
@@ -566,7 +629,11 @@ def test_retry_run_returns_not_found_without_enqueue(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.count_active_runs_for_user", fake_count_active_runs_for_user)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        fake_enforce_user_active_run_admission,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.retry_run_as_new_task", fake_retry_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
     client = TestClient(create_app())
@@ -575,7 +642,7 @@ def test_retry_run_returns_not_found_without_enqueue(monkeypatch):
 
     assert response.status_code == 404
     assert response.json()["detail"] == "run_not_found"
-    assert calls == [("count", "default", "user-a"), ("retry", "default", "user-a", "missing-run")]
+    assert calls == [("admit", "default", "user-a", 3), ("retry", "default", "user-a", "missing-run")]
 
 
 def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
@@ -654,13 +721,17 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
     async def fake_get_queue_insight(tenant_id, **_kwargs):
         return {"tenant_id": tenant_id, "reason": "workers_busy"}
 
-    async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
-        calls["active_limit"] = (tenant_id, user_id)
+    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
+        calls["active_limit"] = (tenant_id, user_id, limit)
         return 0
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.count_active_runs_for_user", fake_count_active_runs_for_user)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        fake_enforce_user_active_run_admission,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.resume_run_as_new_task", fake_resume_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
     monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
@@ -682,7 +753,7 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
         "queue_insight": {"tenant_id": "default", "reason": "workers_busy"},
     }
     assert calls["resume"] == [("default", "user-a", "run-failed")]
-    assert calls["active_limit"] == ("default", "user-a")
+    assert calls["active_limit"] == ("default", "user-a", 3)
     assert calls["context"][0]["source"] == "resume_run"
     assert calls["enqueue"][0]["context_snapshot_id"] == "ctx_resume_route"
     assert calls["enqueue"][0]["context_snapshot"]["source"] == "resume_run"
@@ -711,13 +782,17 @@ def test_resume_run_rejects_source_without_checkpoint_outputs(monkeypatch):
         calls.append(("enqueue", payload))
         return 1
 
-    async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
-        calls.append(("count", tenant_id, user_id))
+    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
+        calls.append(("admit", tenant_id, user_id, limit))
         return 0
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.count_active_runs_for_user", fake_count_active_runs_for_user)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        fake_enforce_user_active_run_admission,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.resume_run_as_new_task", fake_resume_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
     client = TestClient(create_app())
@@ -727,7 +802,7 @@ def test_resume_run_rejects_source_without_checkpoint_outputs(monkeypatch):
     assert response.status_code == 409
     assert response.json()["detail"] == "no_checkpoint_outputs"
     assert calls == [
-        ("count", "default", "user-a"),
+        ("admit", "default", "user-a", 3),
         ("resume", "default", "user-a", "run-no-checkpoint"),
     ]
 

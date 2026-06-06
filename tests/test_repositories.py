@@ -18,6 +18,7 @@ from app.repositories import (
     create_run,
     admin_delete_memory_record,
     delete_memory_record,
+    enforce_user_active_run_admission,
     fail_run,
     get_admin_run_detail,
     get_context_snapshot_for_worker,
@@ -70,6 +71,78 @@ async def test_count_active_runs_for_user_counts_queued_and_running_only():
     assert count == 2
     assert "status in ('queued', 'running')" in conn.sql
     assert conn.params == ("tenant-a", "user-a")
+
+
+@pytest.mark.asyncio
+async def test_enforce_user_active_run_admission_locks_before_counting():
+    class CountCursor:
+        async def fetchone(self):
+            return {"count": 2}
+
+    class EmptyCursor:
+        async def fetchone(self):
+            return None
+
+    class AdmissionConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            self.calls.append((normalized, params))
+            if "count(*) as count" in normalized:
+                return CountCursor()
+            return EmptyCursor()
+
+    conn = AdmissionConnection()
+
+    observed = await enforce_user_active_run_admission(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        limit=3,
+    )
+
+    assert observed == 2
+    assert "pg_advisory_xact_lock" in conn.calls[0][0]
+    assert conn.calls[0][1] == ('{"tenant_id": "tenant-a", "user_id": "user-a"}',)
+    assert "status in ('queued', 'running')" in conn.calls[1][0]
+    assert conn.calls[1][1] == ("tenant-a", "user-a")
+
+
+@pytest.mark.asyncio
+async def test_enforce_user_active_run_admission_rejects_at_limit():
+    class CountCursor:
+        async def fetchone(self):
+            return {"count": 3}
+
+    class AdmissionConnection:
+        async def execute(self, sql, params):
+            return CountCursor()
+
+    with pytest.raises(RepositoryConflictError, match="user_active_run_limit_exceeded"):
+        await enforce_user_active_run_admission(
+            AdmissionConnection(),
+            tenant_id="tenant-a",
+            user_id="user-a",
+            limit=3,
+        )
+
+
+@pytest.mark.asyncio
+async def test_enforce_user_active_run_admission_skips_disabled_limit():
+    class AdmissionConnection:
+        async def execute(self, sql, params):
+            raise AssertionError("disabled admission must not lock or count")
+
+    observed = await enforce_user_active_run_admission(
+        AdmissionConnection(),
+        tenant_id="tenant-a",
+        user_id="user-a",
+        limit=0,
+    )
+
+    assert observed == 0
 
 
 @pytest.mark.asyncio

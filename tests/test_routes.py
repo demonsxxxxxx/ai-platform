@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from app.auth import AuthPrincipal
 from app.models import CreateRunRequest
+from app.repositories import RepositoryConflictError
 from app.routes.health import admin_status
 from app.routes.files import download_artifact, upload_file
 from app.routes.runs import (
@@ -83,12 +84,12 @@ def snapshot_manifest(skill_id, *, description="Pinned skill", source=None):
 
 @pytest.fixture(autouse=True)
 def default_active_run_count(monkeypatch):
-    async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
+    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
         return 0
 
     monkeypatch.setattr(
-        "app.routes.runs.repositories.count_active_runs_for_user",
-        fake_count_active_runs_for_user,
+        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        fake_enforce_user_active_run_admission,
         raising=False,
     )
 
@@ -2660,7 +2661,7 @@ async def test_create_run_strips_user_controlled_server_owned_metadata(monkeypat
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         return skill(executor_type="claude-agent-worker", skill_version="hash-a")
 
-    async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
+    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
         return 0
 
     async def fake_ensure_user(conn, **kwargs):
@@ -2700,7 +2701,11 @@ async def test_create_run_strips_user_controlled_server_owned_metadata(monkeypat
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.runs.repositories.count_active_runs_for_user", fake_count_active_runs_for_user)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        fake_enforce_user_active_run_admission,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.ensure_user", fake_ensure_user)
     monkeypatch.setattr("app.routes.runs.repositories.create_session", fake_create_session)
     monkeypatch.setattr("app.routes.runs.repositories.create_run", fake_create_run)
@@ -2777,9 +2782,9 @@ async def test_create_run_rejects_when_user_active_run_limit_is_reached(monkeypa
         calls.append("resolve")
         return skill()
 
-    async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
-        calls.append(("count", tenant_id, user_id))
-        return 3
+    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
+        calls.append(("admit", tenant_id, user_id, limit))
+        raise RepositoryConflictError("user_active_run_limit_exceeded")
 
     async def fail_create_session(*args, **kwargs):
         calls.append("create_session")
@@ -2791,7 +2796,11 @@ async def test_create_run_rejects_when_user_active_run_limit_is_reached(monkeypa
     monkeypatch.setattr("app.routes.runs.get_settings", lambda: LimitSettings())
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.runs.repositories.count_active_runs_for_user", fake_count_active_runs_for_user)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        fake_enforce_user_active_run_admission,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.create_session", fail_create_session)
 
     with pytest.raises(Exception) as exc_info:
@@ -2802,7 +2811,7 @@ async def test_create_run_rejects_when_user_active_run_limit_is_reached(monkeypa
 
     assert getattr(exc_info.value, "status_code", None) == 409
     assert getattr(exc_info.value, "detail", None) == "user_active_run_limit_exceeded"
-    assert calls == ["resolve", ("count", "tenant-a", "user-limit")]
+    assert calls == ["resolve", ("admit", "tenant-a", "user-limit", 3)]
 
 
 @pytest.mark.asyncio

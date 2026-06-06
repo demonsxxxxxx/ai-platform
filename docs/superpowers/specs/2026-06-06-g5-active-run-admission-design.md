@@ -43,12 +43,14 @@ Behavior:
 Use a text-derived lock key, for example:
 
 ```sql
-select pg_advisory_xact_lock(hashtextextended(%s, 0))
+select pg_advisory_xact_lock(hashtextextended(%s::text, 0::bigint))
 ```
 
-with lock input `tenant_id || ':' || user_id`. This keeps same-user admission
-serialized until the surrounding transaction commits or rolls back, without
-introducing a new migration table for the first hardening slice.
+with lock input as serialized JSON containing exactly `tenant_id` and
+`user_id`. The structured scope avoids delimiter collisions while keeping
+same-user admission serialized until the surrounding transaction commits or
+rolls back, without introducing a new migration table for the first hardening
+slice.
 
 ## Integration Points
 
@@ -88,4 +90,3 @@ Local:
   inserts a queued run before commit; the second transaction must wait on the
   advisory lock, then reject after observing the first queued run.
 - Verify smoke rows are cleaned and logs have no recent error markers.
-

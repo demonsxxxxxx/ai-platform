@@ -6,6 +6,7 @@ import pytest
 
 from app.auth import AuthPrincipal
 from app.models import ChatSessionRequest, ChatStreamRequest
+from app.repositories import RepositoryConflictError
 from app.routes.chat import chat_stream, create_chat_session, list_messages, list_sessions
 
 
@@ -96,7 +97,7 @@ class PolicyBuiltinRegistry:
 
 @pytest.fixture(autouse=True)
 def default_active_run_count(monkeypatch):
-    async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
+    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
         return 0
 
     async def fake_get_queue_insight(tenant_id, **_kwargs):
@@ -109,8 +110,8 @@ def default_active_run_count(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "app.routes.chat.repositories.count_active_runs_for_user",
-        fake_count_active_runs_for_user,
+        "app.routes.chat.repositories.enforce_user_active_run_admission",
+        fake_enforce_user_active_run_admission,
         raising=False,
     )
     monkeypatch.setattr("app.routes.chat.get_queue_insight", fake_get_queue_insight, raising=False)
@@ -1607,9 +1608,9 @@ async def test_chat_stream_rejects_when_user_active_run_limit_is_reached(monkeyp
         calls.append("resolve")
         return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
 
-    async def fake_count_active_runs_for_user(conn, *, tenant_id, user_id):
-        calls.append(("count", tenant_id, user_id))
-        return 3
+    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
+        calls.append(("admit", tenant_id, user_id, limit))
+        raise RepositoryConflictError("user_active_run_limit_exceeded")
 
     async def fail_create_session(*args, **kwargs):
         calls.append("create_session")
@@ -1621,7 +1622,11 @@ async def test_chat_stream_rejects_when_user_active_run_limit_is_reached(monkeyp
     monkeypatch.setattr("app.routes.chat.get_settings", lambda: LimitSettings())
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.count_active_runs_for_user", fake_count_active_runs_for_user)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.enforce_user_active_run_admission",
+        fake_enforce_user_active_run_admission,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.chat.repositories.create_session", fail_create_session)
 
     with pytest.raises(Exception) as exc_info:
@@ -1632,4 +1637,4 @@ async def test_chat_stream_rejects_when_user_active_run_limit_is_reached(monkeyp
 
     assert getattr(exc_info.value, "status_code", None) == 409
     assert getattr(exc_info.value, "detail", None) == "user_active_run_limit_exceeded"
-    assert calls == ["resolve", ("count", "tenant-a", "user-limit")]
+    assert calls == ["resolve", ("admit", "tenant-a", "user-limit", 3)]

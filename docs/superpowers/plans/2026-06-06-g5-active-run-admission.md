@@ -26,7 +26,7 @@
 **Files:**
 - Modify: `tests/test_repositories.py`
 
-- [ ] **Step 1: Add lock-before-count RED test**
+- [x] **Step 1: Add lock-before-count RED test**
 
 Add this test near `test_count_active_runs_for_user_counts_queued_and_running_only`:
 
@@ -63,12 +63,12 @@ async def test_enforce_user_active_run_admission_locks_before_counting():
 
     assert observed == 2
     assert "pg_advisory_xact_lock" in conn.calls[0][0]
-    assert conn.calls[0][1] == ("tenant-a:user-a",)
+    assert conn.calls[0][1] == ('{"tenant_id": "tenant-a", "user_id": "user-a"}',)
     assert "status in ('queued', 'running')" in conn.calls[1][0]
     assert conn.calls[1][1] == ("tenant-a", "user-a")
 ```
 
-- [ ] **Step 2: Add rejection and disabled-limit RED tests**
+- [x] **Step 2: Add rejection and disabled-limit RED tests**
 
 Add:
 
@@ -108,7 +108,7 @@ async def test_enforce_user_active_run_admission_skips_disabled_limit():
     assert observed == 0
 ```
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 Run:
 
@@ -124,12 +124,12 @@ Expected: fail because `enforce_user_active_run_admission` is not implemented/im
 - Modify: `app/repositories.py`
 - Modify: `tests/test_repositories.py`
 
-- [ ] **Step 1: Import helper in tests**
+- [x] **Step 1: Import helper in tests**
 
 Add `enforce_user_active_run_admission` and `RepositoryConflictError` to the
 existing import list in `tests/test_repositories.py`.
 
-- [ ] **Step 2: Add helper implementation**
+- [x] **Step 2: Add helper implementation**
 
 Add this helper next to `count_active_runs_for_user(...)`:
 
@@ -144,9 +144,9 @@ async def enforce_user_active_run_admission(
     limit = int(limit)
     if limit <= 0:
         return 0
-    lock_scope = f"{tenant_id}:{user_id}"
+    lock_scope = dumps_json({"tenant_id": tenant_id, "user_id": user_id})
     await conn.execute(
-        "select pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        "select pg_advisory_xact_lock(hashtextextended(%s::text, 0::bigint))",
         (lock_scope,),
     )
     active_count = await count_active_runs_for_user(conn, tenant_id=tenant_id, user_id=user_id)
@@ -155,7 +155,7 @@ async def enforce_user_active_run_admission(
     return active_count
 ```
 
-- [ ] **Step 3: Run GREEN repository tests**
+- [x] **Step 3: Run GREEN repository tests**
 
 Run:
 
@@ -174,7 +174,7 @@ Expected: pass.
 - Modify: `tests/test_routes.py`
 - Modify: `tests/test_run_control_routes.py`
 
-- [ ] **Step 1: Update chat route helper**
+- [x] **Step 1: Update chat route helper**
 
 Change `app/routes/chat.py::enforce_user_active_run_limit`:
 
@@ -189,11 +189,11 @@ async def enforce_user_active_run_limit(conn, *, tenant_id: str, user_id: str) -
     )
 ```
 
-- [ ] **Step 2: Update runs route helper**
+- [x] **Step 2: Update runs route helper**
 
 Apply the same change to `app/routes/runs.py::enforce_user_active_run_limit`.
 
-- [ ] **Step 3: Add missing copy-run admission**
+- [x] **Step 3: Add missing copy-run admission**
 
 In `app/routes/runs.py::copy_run`, call:
 
@@ -207,7 +207,7 @@ await enforce_user_active_run_limit(
 
 before `repositories.copy_run_as_new_task(...)`.
 
-- [ ] **Step 4: Update existing route tests**
+- [x] **Step 4: Update existing route tests**
 
 In active-run admission tests, patch
 `repositories.enforce_user_active_run_admission` instead of
@@ -227,7 +227,7 @@ Expected call:
 assert calls == ["resolve", ("admit", "tenant-a", "user-limit", 3)]
 ```
 
-- [ ] **Step 5: Add copy-run active limit route test**
+- [x] **Step 5: Add copy-run active limit route test**
 
 Add to `tests/test_run_control_routes.py`:
 
@@ -269,7 +269,7 @@ def test_copy_run_rejects_when_user_active_run_limit_is_reached(monkeypatch):
     assert calls == [("admit", "default", "user-a", 1)]
 ```
 
-- [ ] **Step 6: Run focused route tests**
+- [x] **Step 6: Run focused route tests**
 
 Run:
 
@@ -285,7 +285,7 @@ Expected: pass.
 - Modify: `docs/superpowers/plans/2026-06-02-ai-platform-foundation-roadmap.md`
 - Modify: `docs/superpowers/plans/2026-06-06-g5-active-run-admission.md`
 
-- [ ] **Step 1: Run focused suites**
+- [x] **Step 1: Run focused suites**
 
 Run:
 
@@ -295,7 +295,7 @@ python -m pytest tests/test_repositories.py tests/test_chat_routes.py tests/test
 
 Expected: affected repository and route suites pass.
 
-- [ ] **Step 2: Inherited-configuration review**
+- [x] **Step 2: Inherited-configuration review**
 
 Use available multi-agent review if the tool inherits the main session
 permissions. Because the current spawn tool does not expose explicit
@@ -308,7 +308,7 @@ Ask reviewers to inspect:
 - whether server-owned multi-agent child handoff should remain out of scope;
 - redaction and queue payload side effects.
 
-- [ ] **Step 3: Final local verification before PR/deploy**
+- [x] **Step 3: Final local verification before PR/deploy**
 
 Run:
 
@@ -342,7 +342,40 @@ no `traceback`, `exception`, `permission denied`, `error`, or `failed` markers.
   run insert.
 - 2026-06-06 code inspection found `copy_run` lacks active-run admission while
   create, chat, retry, and resume already have route-level admission checks.
+- RED repository tests failed with `ImportError` because
+  `enforce_user_active_run_admission` did not exist, proving the new admission
+  helper was absent before implementation.
+- Repository GREEN passed with
+  `python -m pytest tests/test_repositories.py::test_enforce_user_active_run_admission_locks_before_counting tests/test_repositories.py::test_enforce_user_active_run_admission_rejects_at_limit tests/test_repositories.py::test_enforce_user_active_run_admission_skips_disabled_limit tests/test_repositories.py::test_count_active_runs_for_user_counts_queued_and_running_only -q --basetemp .pytest-tmp\g5-active-admission-repo-green`
+  at `4 passed`.
+- Focused route GREEN first failed because copy-run mapped the new admission
+  conflict to an unhandled exception instead of HTTP 409. Copy-run now catches
+  `RepositoryConflictError` consistently with retry/resume.
+- Focused route GREEN then passed with
+  `python -m pytest tests/test_chat_routes.py::test_chat_stream_rejects_when_user_active_run_limit_is_reached tests/test_routes.py::test_create_run_rejects_when_user_active_run_limit_is_reached tests/test_run_control_routes.py::test_copy_run_rejects_when_user_active_run_limit_is_reached tests/test_run_control_routes.py::test_retry_run_rejects_when_user_active_run_limit_is_reached -q --basetemp .pytest-tmp\g5-active-admission-routes-green-2`
+  at `4 passed`.
+- Focused affected-suite verification passed with
+  `python -m pytest tests/test_repositories.py tests/test_chat_routes.py tests/test_routes.py tests/test_run_control_routes.py tests/test_source_authority_docs.py -q --basetemp .pytest-tmp\g5-active-admission-focused`
+  at `330 passed`.
+- After changing the advisory lock scope from `tenant_id:user_id` to serialized
+  JSON to avoid delimiter collisions, repository focused verification passed
+  with
+  `python -m pytest tests/test_repositories.py::test_enforce_user_active_run_admission_locks_before_counting tests/test_repositories.py::test_enforce_user_active_run_admission_rejects_at_limit tests/test_repositories.py::test_enforce_user_active_run_admission_skips_disabled_limit tests/test_repositories.py::test_count_active_runs_for_user_counts_queued_and_running_only -q --basetemp .pytest-tmp\g5-active-admission-repo-green-json-lock`
+  at `4 passed`, and affected-suite verification passed again with
+  `python -m pytest tests/test_repositories.py tests/test_chat_routes.py tests/test_routes.py tests/test_run_control_routes.py tests/test_source_authority_docs.py -q --basetemp .pytest-tmp\g5-active-admission-focused-json-lock`
+  at `330 passed`.
+- Compile and final local checks passed with
+  `python -m compileall -q app tools scripts`,
+  `python -m pytest -q --basetemp .pytest-tmp\g5-active-admission-full` at
+  `1070 passed, 6 skipped, 2 warnings`, and `git diff --check`.
+- Inherited-configuration spec-compliance review reported no Critical,
+  Important, or Minor findings. The current spawn tool did not expose explicit
+  `model` or `reasoning_effort` fields.
+- Inherited-configuration concurrency/security review reported no Critical or
+  Important findings. The only Minor note was that local tests assert
+  lock-before-count order with a fake connection rather than a real concurrent
+  Postgres transaction; this remains covered by the required 211 smoke for this
+  slice.
 - This plan intentionally leaves Admin Runtime queue/pool observability and
   multi-tenant pressure testing as follow-up G5 slices after admission
   serialization is proven.
-

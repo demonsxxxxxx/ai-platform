@@ -337,11 +337,12 @@ def _message_content(row: dict[str, object], principal: AuthPrincipal) -> str:
 
 async def enforce_user_active_run_limit(conn, *, tenant_id: str, user_id: str) -> None:
     limit = int(get_settings().max_active_runs_per_user)
-    if limit <= 0:
-        return
-    active_count = await repositories.count_active_runs_for_user(conn, tenant_id=tenant_id, user_id=user_id)
-    if active_count >= limit:
-        raise RepositoryConflictError("user_active_run_limit_exceeded")
+    await repositories.enforce_user_active_run_admission(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        limit=limit,
+    )
 
 
 @router.get("/chat/sessions", response_model=ChatSessionsResponse)
