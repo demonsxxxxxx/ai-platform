@@ -2848,7 +2848,7 @@ async def list_multi_agent_dispatch_candidate_run_ids(
             or input_json->>'execution_mode' = 'multi_agent'
           )
           and input_json#>>'{multi_agent_dispatch,orchestration_state}' = 'awaiting_dispatch'
-        order by updated_at asc, queued_at asc, created_at asc
+        order by queued_at asc nulls last, created_at asc, id asc
         limit %s
         """,
         (tenant_id, bounded_limit),
@@ -2878,8 +2878,7 @@ async def mark_multi_agent_dispatch_parent_awaiting_dispatch(
               '{multi_agent_dispatch}',
               %s::jsonb,
               true
-            ),
-            updated_at = now()
+            )
         where tenant_id = %s
           and id = %s
           and status = 'running'

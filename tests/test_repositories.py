@@ -2375,6 +2375,10 @@ async def test_list_multi_agent_dispatch_candidate_runs_filters_running_top_leve
     assert "input_json->>'execution_mode' = 'multi_agent'" in sql
     assert "input_json#>>'{multi_agent_dispatch,orchestration_state}' = 'awaiting_dispatch'" in sql
     assert "input_json#>>'{input,multi_agent_dispatch,orchestration_state}'" not in sql
+    assert "updated_at" not in sql
+    assert "order by queued_at asc" in sql
+    assert "created_at asc" in sql
+    assert "id asc" in sql
     assert "limit %s" in sql
     assert params == ("tenant-a", 25)
 
@@ -2393,6 +2397,7 @@ async def test_mark_multi_agent_dispatch_parent_awaiting_dispatch_sets_server_ow
     sql, params = conn.calls[0]
     assert "update runs" in sql
     assert "multi_agent_dispatch" in sql
+    assert "updated_at" not in sql
     assert "where tenant_id = %s" in sql
     assert "id = %s" in sql
     payload = json.loads(params[0])
