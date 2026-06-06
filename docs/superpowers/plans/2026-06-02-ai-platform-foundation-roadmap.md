@@ -31,6 +31,12 @@
 
 P2 Long Task / Multi-Agent Runtime 不再继续默认前冲。checkpoint、subagent、artifact tree、provenance、resume/cancel/retry 与多 agent 调度只能在前置 auth/session、tenant isolation、fair scheduling、quota/backpressure、observability 和 sandbox/tool risk gates 验收后继续扩大。
 
+### G5 Tenant-Aware Concurrency Status
+
+DB connection pool 是 issue #16 的第一个可独立闭环前置项：平台必须先用 bounded async Postgres pool 替代每 transaction 直连，并把 pool status 暴露到 admin-only runtime overview，后续 tenant-aware queue/quota 与 worker maintenance 才有稳定承载基础。
+
+当前未关闭的 G5 阻塞项仍包括：per-tenant/per-user fair scheduling、active-run quota 并发硬化、bounded queue metadata、tenant-aware worker maintenance、large queue bounded lookup、DB pool saturation/queue throttling 可观测性，以及多 tenant 并发压力测试。G8 Multi-Agent Controlled Beta 不得绕过这些阻塞项。
+
 ## 当前主链路
 
 - 本地代码：当前 `ai-platform` 仓库根目录

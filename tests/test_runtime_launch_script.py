@@ -76,6 +76,25 @@ def test_run_api_with_deploy_env_derives_database_and_s3_settings():
     assert "sed -E 's/=.*/=SET/'" in text
 
 
+def test_compose_forwards_database_pool_settings_to_api_and_worker():
+    compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
+    env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+    api_section = compose_text.split("\n  api:", 1)[1].split("\n  worker:", 1)[0]
+    worker_section = compose_text.split("\n  worker:", 1)[1].split("\nvolumes:", 1)[0]
+
+    expected_settings = {
+        "DATABASE_POOL_MIN_SIZE": "1",
+        "DATABASE_POOL_MAX_SIZE": "10",
+        "DATABASE_POOL_TIMEOUT_SECONDS": "10",
+        "DATABASE_POOL_MAX_WAITING": "100",
+        "DATABASE_POOL_CLOSE_TIMEOUT_SECONDS": "5",
+    }
+    for name, default in expected_settings.items():
+        assert f"{name}={default}" in env_example_text
+        assert f"{name}: ${{{name}:-{default}}}" in api_section
+        assert f"{name}: ${{{name}:-{default}}}" in worker_section
+
+
 def test_poc_gate_default_env_path_matches_repo_local_211_deploy():
     text = Path("tools/verify_poc_gate.py").read_text(encoding="utf-8")
 

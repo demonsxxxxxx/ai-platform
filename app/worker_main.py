@@ -7,7 +7,7 @@ import uuid
 from app import queue
 from app import repositories
 from app.control_plane_contracts import sanitize_public_payload, standard_trace_id
-from app.db import transaction
+from app.db import close_pool, transaction
 from app.executors.registry import AdapterRegistry
 from app.multi_agent_dispatcher import dispatch_multi_agent_ready_steps_for_worker
 from app.runtime.sandbox.container_provider import create_container_provider
@@ -139,10 +139,20 @@ async def run_once(
 async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float = 0.5) -> None:
     registry = AdapterRegistry()
     worker_id = default_worker_id()
-    while True:
-        outcome = await run_once(registry=registry, timeout_seconds=poll_timeout_seconds, worker_id=worker_id)
-        if outcome.status == "idle":
-            await asyncio.sleep(idle_sleep_seconds)
+    try:
+        while True:
+            outcome = await run_once(registry=registry, timeout_seconds=poll_timeout_seconds, worker_id=worker_id)
+            if outcome.status == "idle":
+                await asyncio.sleep(idle_sleep_seconds)
+    finally:
+        await close_pool()
+
+
+async def run_once_and_close(timeout_seconds: int) -> WorkerOutcome:
+    try:
+        return await run_once(timeout_seconds=timeout_seconds)
+    finally:
+        await close_pool()
 
 
 def main() -> None:
@@ -152,7 +162,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.once:
-        outcome = asyncio.run(run_once(timeout_seconds=args.timeout))
+        outcome = asyncio.run(run_once_and_close(timeout_seconds=args.timeout))
         print(outcome)
         return
     asyncio.run(run_forever(poll_timeout_seconds=args.timeout))

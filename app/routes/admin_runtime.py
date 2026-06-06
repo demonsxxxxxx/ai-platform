@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app import repositories
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
-from app.db import transaction
+from app.db import get_pool_status, transaction
 from app.queue import get_queue_insight, get_queue_status
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.routes.sandbox_leases import lease_response
@@ -13,6 +13,7 @@ router = APIRouter()
 
 _SUCCESSFUL_PROVIDER_CLEANUP_STATUSES = {"stopped", "not_found"}
 _OVERVIEW_FORBIDDEN_KEYS = {"skillid"}
+_DATABASE_POOL_CONFIG_KEYS = {"min_size", "max_size", "timeout_seconds", "max_waiting"}
 
 
 def _count_by_status(items: list[object]) -> dict[str, int]:
@@ -69,6 +70,25 @@ def _sanitize_observability_summary(value: object) -> dict[str, object]:
         "max": _coerce_int(latency["max"]) if latency.get("max") is not None else None,
     }
     return summary
+
+
+def _sanitize_database_pool_status(value: object) -> dict[str, object]:
+    summary = _sanitize_dict(value)
+    configured = summary.get("configured") if isinstance(summary.get("configured"), dict) else {}
+    stats = summary.get("stats") if isinstance(summary.get("stats"), dict) else {}
+    return {
+        "configured": {
+            key: configured[key]
+            for key in _DATABASE_POOL_CONFIG_KEYS
+            if isinstance(configured.get(key), int | float)
+        },
+        "open": bool(summary.get("open")),
+        "stats": {
+            str(key): item
+            for key, item in stats.items()
+            if isinstance(item, int | float) and not isinstance(item, bool)
+        },
+    }
 
 
 def _provider_cleanup_failed(cleanup_results: object) -> bool:
@@ -237,4 +257,5 @@ async def admin_runtime_overview(
         "runs": _sanitize_dict(run_summary),
         "sandbox": _sandbox_overview(containers, visible_leases, visible_lease_history),
         "observability": _sanitize_observability_summary(observability_summary),
+        "database_pool": _sanitize_database_pool_status(get_pool_status()),
     }

@@ -1,3 +1,6 @@
+import asyncio
+import sys
+
 import pytest
 
 import app.worker_main as worker_main
@@ -227,6 +230,46 @@ async def test_run_once_passes_global_worker_capacity_to_queue(monkeypatch):
 
     assert outcome.status == "idle"
     assert calls == [("reclaim",), ("lease", 1, "worker-a", 3)]
+
+
+@pytest.mark.asyncio
+async def test_run_forever_closes_database_pool_when_cancelled(monkeypatch):
+    calls = []
+
+    async def fake_run_once(registry=None, timeout_seconds=5, worker_id=None):
+        calls.append(("run_once", timeout_seconds, worker_id is not None))
+        raise asyncio.CancelledError()
+
+    async def fake_close_pool():
+        calls.append(("close_pool",))
+
+    monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
+    monkeypatch.setattr("app.worker_main.close_pool", fake_close_pool, raising=False)
+
+    with pytest.raises(asyncio.CancelledError):
+        await worker_main.run_forever(poll_timeout_seconds=2)
+
+    assert calls == [("run_once", 2, True), ("close_pool",)]
+
+
+def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
+    calls = []
+
+    async def fake_run_once(timeout_seconds=5):
+        calls.append(("run_once", timeout_seconds))
+        return WorkerOutcome(status="idle", run_id=None)
+
+    async def fake_close_pool():
+        calls.append(("close_pool",))
+
+    monkeypatch.setattr(sys, "argv", ["worker", "--once", "--timeout", "7"])
+    monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
+    monkeypatch.setattr("app.worker_main.close_pool", fake_close_pool, raising=False)
+
+    worker_main.main()
+
+    assert calls == [("run_once", 7), ("close_pool",)]
+    assert "WorkerOutcome(status='idle'" in capsys.readouterr().out
 
 
 @pytest.mark.asyncio

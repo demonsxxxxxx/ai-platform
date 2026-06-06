@@ -8,6 +8,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = Field(default="postgresql://ai_platform:ai_platform_dev_password@localhost:54329/ai_platform")
+    database_pool_min_size: int = Field(default=1)
+    database_pool_max_size: int = Field(default=10)
+    database_pool_timeout_seconds: float = Field(default=10.0)
+    database_pool_max_waiting: int = Field(default=100)
+    database_pool_close_timeout_seconds: float = Field(default=5.0)
     redis_url: str = Field(default="redis://localhost:63799/0")
     queue_key_prefix: str = Field(default="ai-platform:runs")
 

@@ -1,3 +1,6 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -16,6 +19,7 @@ from app.routes.runtime_callbacks import router as runtime_callbacks_router
 from app.routes.runs import router as runs_router
 from app.routes.sandbox_leases import router as sandbox_leases_router
 from app.routes.tool_permissions import router as tool_permissions_router
+from app.db import close_pool
 from app.settings import get_settings
 
 
@@ -28,8 +32,16 @@ def _cors_origins(raw_value: str) -> list[str]:
     return origins
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    try:
+        yield
+    finally:
+        await close_pool()
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="AI Platform API", version="0.1.0")
+    app = FastAPI(title="AI Platform API", version="0.1.0", lifespan=lifespan)
     settings = get_settings()
     app.add_middleware(
         CORSMiddleware,

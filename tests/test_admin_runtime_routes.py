@@ -799,6 +799,19 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
             "estimated_cost_minor": 7,
         }
 
+    def fake_pool_status():
+        calls.append(("database_pool",))
+        return {
+            "configured": {"min_size": 1, "max_size": 10, "timeout_seconds": 10.0, "max_waiting": 100},
+            "open": True,
+            "stats": {
+                "pool_available": 1,
+                "requests_waiting": 0,
+                "database_url": "postgresql://user:pool-secret-password@db.example/internal",
+                "token": "pool-secret-token",
+            },
+        }
+
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", overview_transaction)
@@ -825,6 +838,7 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
         fake_observability_summary,
         raising=False,
     )
+    monkeypatch.setattr("app.routes.admin_runtime.get_pool_status", fake_pool_status, raising=False)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/admin/runtime/overview", headers=admin_headers())
@@ -849,6 +863,14 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
         "history_included": True,
     }
     assert body["observability"]["token_counts"]["total"] == 22
+    assert body["database_pool"] == {
+        "configured": {"min_size": 1, "max_size": 10, "timeout_seconds": 10.0, "max_waiting": 100},
+        "open": True,
+        "stats": {"pool_available": 1, "requests_waiting": 0},
+    }
+    assert "pool-secret-password" not in str(body["database_pool"])
+    assert "pool-secret-token" not in str(body["database_pool"])
+    assert "db.example" not in str(body["database_pool"])
     assert calls == [
         ("provider_cleanup", {"tenant_id": "default"}, "admin_runtime"),
         ("runtime_cleanup", "default", "expired"),
@@ -860,6 +882,7 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
         ("observability", "default"),
         ("queue_status",),
         ("queue_insight", "default"),
+        ("database_pool",),
     ]
 
 
