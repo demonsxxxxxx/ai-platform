@@ -255,9 +255,10 @@ back to the same git commit as API and worker.
   the hash-matched snapshot but does not clean the upstream LambChat POC repo.
 - #21 capacity/load-test evidence remains open, so no production concurrency
   defaults should be raised from this migration.
-- The Admin Runtime Capacity section has local source tests and build coverage,
-  but 211 frontend visual acceptance remains pending until the next deployment
-  smoke.
+- The Admin Runtime Capacity section has local source tests, build coverage,
+  and 211 frontend acceptance at commit
+  `a4281bee983fff5afd3c68bcb48540bbcfde9f26`; frontend image traceability
+  remains pending until packaged frontend delivery exists.
 - #22 document-centric context/workbench UX remains future work and is not part
   of this source move.
 
