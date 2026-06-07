@@ -125,7 +125,8 @@ Skill version registry, promote/rollback release policy, dependency policy
 materialization, skill snapshot/release-decision locks, session-bound memory
 records, user opt-out, Admin memory policy inventory, retention cleanup,
 redaction, long-term cross-session memory fail-closed behavior,
-delete/retention erasure evidence through `tools/memory_erasure_readiness.py`,
+delete/retention/export erasure evidence through
+`tools/memory_erasure_readiness.py`,
 frontend
 release traceability, static `dist/` release manifest, frontend projection
 audit wired first into `ci:verify`, GitHub Actions frontend CI workflow, active
@@ -135,10 +136,10 @@ source reporting.
 This does not close G6. Remaining blockers are policy enforcement or
 ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel
 surfaces, full allow/deny/ask taxonomy for every MCP tool, signed package or
-SBOM release evidence, dependency vulnerability/license policy, memory export
-erasure evidence, bounded office context-pack product contract,
-redaction-policy preview/audit UX, active env-var profile surface remap,
-quarantined legacy frontend source remap, packaged frontend image
+SBOM release evidence, dependency vulnerability/license policy, bounded office
+context-pack product contract, redaction-policy preview/audit UX, active
+env-var profile surface remap, quarantined legacy frontend source remap,
+packaged frontend image
 traceability, and ordinary-user G9 acceptance. Do
 not use this baseline to expand sandbox privilege, raw Skill selection, or
 multi-agent ordinary-user exposure.

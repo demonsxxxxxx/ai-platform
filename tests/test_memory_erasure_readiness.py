@@ -29,6 +29,8 @@ def test_memory_erasure_readiness_records_delete_retention_evidence_without_priv
     assert "admin_same_tenant_soft_delete" in implemented
     assert "admin_retention_cleanup_soft_delete" in implemented
     assert "worker_retention_cleanup_across_scopes" in implemented
+    assert "ordinary_user_export_excludes_deleted_and_expired_records" in implemented
+    assert "admin_export_operator_projection_without_content_or_metadata" in implemented
     assert "delete_and_cleanup_projection_without_content_or_metadata" in implemented
     assert "delete_and_cleanup_audit_payload_allowlist" in implemented
 
@@ -38,15 +40,19 @@ def test_memory_erasure_readiness_records_delete_retention_evidence_without_priv
         "admin_delete_route",
         "admin_retention_cleanup_route",
         "worker_retention_cleanup",
+        "ordinary_user_export_query",
+        "ordinary_user_export_route_policy",
+        "admin_export_operator_projection",
         "repository_soft_delete_without_content_returning",
+        "repository_export_erasure_tests",
         "route_delete_tests",
+        "route_export_erasure_tests",
         "worker_cleanup_tests",
     }
     assert all(item["status"] == "present" for item in markers.values())
     assert all(item["missing_markers"] == [] for item in markers.values())
 
     assert readiness["open_gaps"] == [
-        "memory_export_erasure_evidence",
         "bounded_context_pack_product_contract_for_office_workflows",
         "memory_redaction_policy_admin_preview_and_audit",
     ]
@@ -63,7 +69,8 @@ def test_render_memory_erasure_readiness_markdown_is_gap_first_and_operator_read
     assert "# ai-platform Memory Erasure Readiness" in markdown
     assert "Status: `partial_blocked`" in markdown
     assert "## Open Gaps" in markdown
-    assert "memory_export_erasure_evidence" in markdown
+    assert "memory_export_erasure_evidence" not in markdown
+    assert "ordinary_user_export_excludes_deleted_and_expired_records" in markdown
     assert "ordinary_user_session_scoped_soft_delete" in markdown
     assert "worker_retention_cleanup_across_scopes" in markdown
     assert "c:\\users" not in markdown.lower()
@@ -80,6 +87,7 @@ def test_memory_erasure_readiness_cli_outputs_json_without_secret_markers():
     payload = json.loads(result.stdout)
     assert payload["schema_version"] == "ai-platform.memory-erasure-readiness.v1"
     assert payload["status"] == "partial_blocked"
-    assert "memory_export_erasure_evidence" in payload["open_gaps"]
+    assert "memory_export_erasure_evidence" not in payload["open_gaps"]
+    assert "ordinary_user_export_excludes_deleted_and_expired_records" in payload["implemented_controls"]
     for marker in FORBIDDEN_PRIVATE_MARKERS[:3]:
         assert marker not in result.stdout

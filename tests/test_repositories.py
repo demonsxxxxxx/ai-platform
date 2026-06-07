@@ -1428,6 +1428,126 @@ async def test_list_memory_records_rejects_missing_session_id_before_query():
 
 
 @pytest.mark.asyncio
+async def test_list_memory_records_exports_only_active_unexpired_session_memory():
+    class MemoryCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "id": "mem-active",
+                    "tenant_id": "tenant-a",
+                    "workspace_id": "workspace-a",
+                    "user_id": "user-a",
+                    "agent_id": "general-agent",
+                    "session_id": "session-a",
+                    "record_type": "session_summary",
+                    "content": "safe summary",
+                    "metadata_json": {"source": "test"},
+                    "status": "active",
+                    "expires_at": "2026-07-03T12:00:00Z",
+                    "deleted_at": None,
+                    "created_at": "2026-06-03T12:00:00Z",
+                    "updated_at": "2026-06-03T12:00:00Z",
+                }
+            ]
+
+    class MemoryConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split()).lower()
+            self.calls.append((normalized, params))
+            return MemoryCursor()
+
+    conn = MemoryConnection()
+
+    rows = await repositories.list_memory_records(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        agent_id="general-agent",
+        session_id="session-a",
+        limit=50,
+    )
+
+    sql, params = conn.calls[0]
+    assert "from memory_records" in sql
+    assert "tenant_id = %s" in sql
+    assert "workspace_id = %s" in sql
+    assert "user_id = %s" in sql
+    assert "status = 'active'" in sql
+    assert "deleted_at is null" in sql
+    assert "expires_at is null or expires_at > now()" in sql
+    assert "session_id = %s" in sql
+    assert params == (
+        "tenant-a",
+        "workspace-a",
+        "user-a",
+        "general-agent",
+        "general-agent",
+        "session-a",
+        "session-a",
+        50,
+    )
+    assert rows[0]["id"] == "mem-active"
+
+
+@pytest.mark.asyncio
+async def test_list_admin_memory_records_operator_export_does_not_select_content_or_metadata():
+    class MemoryCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "id": "mem-active",
+                    "tenant_id": "tenant-a",
+                    "workspace_id": "workspace-a",
+                    "user_id": "user-a",
+                    "agent_id": "general-agent",
+                    "session_id": "session-a",
+                    "record_type": "session_summary",
+                    "status": "active",
+                    "expires_at": "2026-07-03T12:00:00Z",
+                    "deleted_at": None,
+                    "created_at": "2026-06-03T12:00:00Z",
+                    "updated_at": "2026-06-03T12:00:00Z",
+                }
+            ]
+
+    class MemoryConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split()).lower()
+            self.calls.append((normalized, params))
+            return MemoryCursor()
+
+    conn = MemoryConnection()
+
+    rows = await repositories.list_admin_memory_records(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        status="active",
+        limit=25,
+    )
+
+    sql, params = conn.calls[0]
+    selected = sql.split(" from memory_records", 1)[0]
+    assert "content" not in selected
+    assert "metadata_json" not in selected
+    assert "tenant_id = %s" in sql
+    assert "workspace_id = %s" in sql
+    assert "user_id = %s" in sql
+    assert "%s = 'all' or status = %s" in sql
+    assert params == ("tenant-a", "workspace-a", "user-a", "user-a", "active", "active", 25)
+    assert "content" not in rows[0]
+    assert "metadata_json" not in rows[0]
+
+
+@pytest.mark.asyncio
 async def test_create_memory_record_rejects_missing_agent_id_before_insert():
     class MemoryConnection:
         def __init__(self):

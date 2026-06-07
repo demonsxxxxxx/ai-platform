@@ -51,6 +51,38 @@ _EVIDENCE_MARKERS = [
         ],
     },
     {
+        "name": "ordinary_user_export_query",
+        "path": "app/repositories.py",
+        "markers": [
+            "async def list_memory_records(",
+            "and status = 'active'",
+            "and deleted_at is null",
+            "and (expires_at is null or expires_at > now())",
+            "and (%s::text is null or session_id = %s)",
+        ],
+    },
+    {
+        "name": "ordinary_user_export_route_policy",
+        "path": "app/routes/context.py",
+        "markers": [
+            '@router.get("/memory/records")',
+            'raise HTTPException(status_code=400, detail="memory_session_id_required")',
+            'if not bool(policy.get("memory_enabled", True)):',
+            'return {"memory_records": []}',
+            "rows = await repositories.list_memory_records(",
+        ],
+    },
+    {
+        "name": "admin_export_operator_projection",
+        "path": "app/routes/context.py",
+        "markers": [
+            "def _memory_operator_response(row: dict[str, Any]) -> dict[str, Any]:",
+            '@router.get("/admin/memory/records")',
+            "rows = await repositories.list_admin_memory_records(",
+            '"memory_records": [_memory_operator_response(row) for row in rows]',
+        ],
+    },
+    {
         "name": "repository_soft_delete_without_content_returning",
         "path": "tests/test_repositories.py",
         "markers": [
@@ -61,6 +93,18 @@ _EVIDENCE_MARKERS = [
         ],
     },
     {
+        "name": "repository_export_erasure_tests",
+        "path": "tests/test_repositories.py",
+        "markers": [
+            "test_list_memory_records_exports_only_active_unexpired_session_memory",
+            "test_list_admin_memory_records_operator_export_does_not_select_content_or_metadata",
+            'assert "deleted_at is null" in sql',
+            'assert "expires_at is null or expires_at > now()" in sql',
+            'assert "content" not in selected',
+            'assert "metadata_json" not in selected',
+        ],
+    },
+    {
         "name": "route_delete_tests",
         "path": "tests/test_context_routes.py",
         "markers": [
@@ -68,6 +112,18 @@ _EVIDENCE_MARKERS = [
             "test_admin_delete_memory_record_soft_deletes_same_tenant_record_and_writes_audit",
             "test_admin_cleanup_expired_memory_records_soft_deletes_and_audits_without_content",
             'assert "client-secret" not in str(calls)',
+        ],
+    },
+    {
+        "name": "route_export_erasure_tests",
+        "path": "tests/test_context_routes.py",
+        "markers": [
+            "test_list_memory_records_returns_empty_when_memory_policy_disabled",
+            "test_list_memory_records_requires_session_scope",
+            "test_list_memory_records_redacts_legacy_secret_like_content_and_metadata",
+            "test_admin_list_memory_records_returns_operational_projection_without_content",
+            'assert "content" not in response.text',
+            'assert "metadata" not in response.text',
         ],
     },
     {
@@ -112,7 +168,6 @@ def build_memory_erasure_readiness(repo_root: Path | None = None) -> dict[str, A
     evidence = _marker_evidence(root)
     missing = [item["name"] for item in evidence if item["status"] != "present"]
     open_gaps = [
-        "memory_export_erasure_evidence",
         "bounded_context_pack_product_contract_for_office_workflows",
         "memory_redaction_policy_admin_preview_and_audit",
     ]
@@ -126,13 +181,16 @@ def build_memory_erasure_readiness(repo_root: Path | None = None) -> dict[str, A
             "admin_same_tenant_soft_delete",
             "admin_retention_cleanup_soft_delete",
             "worker_retention_cleanup_across_scopes",
+            "ordinary_user_export_excludes_deleted_and_expired_records",
+            "ordinary_user_export_requires_session_scope_and_enabled_policy",
+            "admin_export_operator_projection_without_content_or_metadata",
             "delete_and_cleanup_projection_without_content_or_metadata",
             "delete_and_cleanup_audit_payload_allowlist",
         ],
         "evidence_markers": evidence,
         "missing_evidence_markers": missing,
         "open_gaps": open_gaps,
-        "evidence_policy": "delete_retention_tests_docs_and_211_smoke_required_before_memory_governance_closure",
+        "evidence_policy": "delete_retention_export_tests_docs_and_211_smoke_required_before_memory_governance_closure",
     }
 
 
