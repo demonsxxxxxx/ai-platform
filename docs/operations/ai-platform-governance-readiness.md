@@ -84,6 +84,22 @@ reason without sample content or metadata. This does not close memory
 governance by itself: the bounded office context-pack product contract remains
 open.
 
+On 2026-06-08, commit `f7c6b0d9114748fa249acb88da6584851c48aa96` was synced to
+the 211 repo-local source target and deployed to API/worker with image
+`ai-platform:f7c6b0d-g6-memory-redaction-preview`. API and worker labels both
+reported the same `org.opencontainers.image.revision`, and
+`GET /api/ai/health` returned `{"status":"ok"}`. A 211 route smoke for
+`POST /api/ai/admin/memory/redaction/preview` verified admin HTTP 200,
+ordinary-user HTTP 403, invalid redaction mode HTTP 422, audit action
+`admin.memory.redaction.previewed`, and no response leakage of private payload,
+storage key, sandbox workdir, object-storage URL, skill package key, provider
+token, bearer token, or client-secret markers. The smoke used the existing 211
+runtime `.env` path through compose without printing or copying secret values.
+Local source readiness for the same commit reports no missing memory erasure
+evidence markers and keeps only
+`bounded_context_pack_product_contract_for_office_workflows` open for memory
+governance.
+
 ## Gate Rule
 
 Do not close G6 until the remaining gaps above have code, focused tests,
