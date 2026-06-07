@@ -1,0 +1,153 @@
+/// <reference lib="webworker" />
+
+import { CacheableResponsePlugin } from "workbox-cacheable-response";
+import { clientsClaim } from "workbox-core";
+import { ExpirationPlugin } from "workbox-expiration";
+import { cleanupOutdatedCaches, precacheAndRoute } from "workbox-precaching";
+import { registerRoute } from "workbox-routing";
+import { NetworkFirst, StaleWhileRevalidate } from "workbox-strategies";
+import { isPwaSkipWaitingMessage } from "./pwaGuards";
+import { getPwaRequestKind } from "./pwaRouting";
+
+declare const self: ServiceWorkerGlobalScope & {
+  __WB_MANIFEST: Array<unknown>;
+};
+
+const APP_SHELL_CACHE = "lambchat-app-shell-v2";
+const STATIC_CACHE = "lambchat-static-v2";
+const OFFLINE_URL = "/offline.html";
+
+cleanupOutdatedCaches();
+precacheAndRoute(self.__WB_MANIFEST);
+clientsClaim();
+
+self.addEventListener("message", (event) => {
+  if (!isPwaSkipWaitingMessage(event.data)) return;
+
+  event.waitUntil(self.skipWaiting());
+});
+
+const navigationStrategy = new NetworkFirst({
+  cacheName: APP_SHELL_CACHE,
+  networkTimeoutSeconds: 4,
+  plugins: [
+    new CacheableResponsePlugin({
+      statuses: [200],
+    }),
+  ],
+});
+
+async function getOfflineFallback(): Promise<Response> {
+  const cachedFallback =
+    (await caches.match(OFFLINE_URL)) || (await caches.match("/index.html"));
+
+  return (
+    cachedFallback ||
+    new Response("LambChat is offline.", {
+      status: 503,
+      statusText: "Service Unavailable",
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    })
+  );
+}
+
+registerRoute(
+  ({ request }) =>
+    getPwaRequestKind({
+      method: request.method,
+      mode: request.mode,
+      url: request.url,
+      scopeOrigin: self.location.origin,
+      accept: request.headers.get("accept"),
+    }) === "navigation",
+  async (options) => {
+    try {
+      return (await navigationStrategy.handle(options)) || getOfflineFallback();
+    } catch {
+      return getOfflineFallback();
+    }
+  },
+);
+
+registerRoute(
+  ({ request }) =>
+    getPwaRequestKind({
+      method: request.method,
+      mode: request.mode,
+      url: request.url,
+      scopeOrigin: self.location.origin,
+      accept: request.headers.get("accept"),
+    }) === "static-asset",
+  new StaleWhileRevalidate({
+    cacheName: STATIC_CACHE,
+    plugins: [
+      new CacheableResponsePlugin({
+        statuses: [0, 200],
+      }),
+      new ExpirationPlugin({
+        maxEntries: 220,
+        maxAgeSeconds: 60 * 60 * 24 * 30,
+      }),
+    ],
+  }),
+);
+
+self.addEventListener("push", (event) => {
+  if (!self.registration?.showNotification) return;
+
+  let payload: {
+    title?: string;
+    body?: string;
+    message?: string;
+    icon?: string;
+    badge?: string;
+    url?: string;
+  } = {};
+
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch {
+    payload = { body: event.data?.text() };
+  }
+
+  const title = payload.title || "LambChat";
+  const options: NotificationOptions = {
+    body: payload.body || payload.message || "You have a new LambChat update.",
+    icon: payload.icon || "/icons/icon-192.png",
+    badge: payload.badge || "/icons/icon-192.png",
+    data: {
+      url: payload.url || "/chat",
+    },
+  };
+
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+
+  const targetUrl = new URL(
+    event.notification.data?.url || "/chat",
+    self.location.origin,
+  );
+
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((clients) => {
+        const existingClient = clients.find(
+          (client): client is WindowClient =>
+            "focus" in client &&
+            "navigate" in client &&
+            new URL(client.url).origin === targetUrl.origin,
+        );
+
+        if (existingClient) {
+          existingClient.focus();
+          return existingClient.navigate(targetUrl.href);
+        }
+
+        return self.clients.openWindow(targetUrl.href);
+      }),
+  );
+});

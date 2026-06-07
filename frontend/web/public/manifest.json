@@ -1,0 +1,98 @@
+{
+  "id": "/",
+  "name": "LambChat - AI Agent Platform",
+  "short_name": "LambChat",
+  "description": "A pluggable, multi-tenant AI conversation system. Skills + MCP dual-engine driven, modular by design. SSE streaming, multi-modal document processing, JWT/RBAC auth, and GitHub-synced Skills.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": [
+    "window-controls-overlay",
+    "standalone",
+    "minimal-ui",
+    "browser"
+  ],
+  "orientation": "any",
+  "background_color": "#f5f5f4",
+  "theme_color": "#f5f5f4",
+  "dir": "ltr",
+  "lang": "en",
+  "categories": ["productivity", "utilities"],
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "New Chat",
+      "short_name": "Chat",
+      "description": "Start a new chat session",
+      "url": "/chat",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Skills",
+      "short_name": "Skills",
+      "description": "Open the LambChat skills workspace",
+      "url": "/skills",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Marketplace",
+      "short_name": "Market",
+      "description": "Browse LambChat marketplace skills",
+      "url": "/marketplace",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/images/social-preview.png",
+      "sizes": "1280x640",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "LambChat AI agent workspace"
+    },
+    {
+      "src": "/images/best-practice/mobile-view.webp",
+      "sizes": "750x1624",
+      "type": "image/webp",
+      "form_factor": "narrow",
+      "label": "LambChat mobile chat workspace"
+    }
+  ],
+  "launch_handler": {
+    "client_mode": ["navigate-existing", "auto"]
+  },
+  "related_applications": [],
+  "protocol_handlers": []
+}

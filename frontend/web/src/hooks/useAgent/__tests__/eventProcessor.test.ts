@@ -1,0 +1,752 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { MessagePart } from "../../../types";
+import { processMessageEvent } from "../eventProcessor.ts";
+
+test("merges streamed summary chunks inside a subagent by summary id", () => {
+  let parts: MessagePart[] = [
+    {
+      type: "subagent",
+      agent_id: "agent-1",
+      agent_name: "Research",
+      input: "look this up",
+      depth: 1,
+      isPending: true,
+      status: "running",
+      parts: [],
+    },
+  ];
+
+  const first = processMessageEvent(
+    "summary",
+    { content: "first ", summary_id: "summary-1", agent_id: "agent-1" },
+    parts,
+    "",
+    [],
+    1,
+    [{ agent_id: "agent-1", depth: 1, message_id: "message-1" }],
+    true,
+    "message-1",
+  );
+  parts = first.parts;
+
+  const second = processMessageEvent(
+    "summary",
+    { content: "second", summary_id: "summary-1", agent_id: "agent-1" },
+    parts,
+    "",
+    [],
+    1,
+    [{ agent_id: "agent-1", depth: 1, message_id: "message-1" }],
+    true,
+    "message-1",
+  );
+
+  const subagent = second.parts[0];
+  assert.equal(subagent.type, "subagent");
+  const summaries = subagent.parts?.filter((part) => part.type === "summary");
+
+  assert.equal(summaries?.length, 1);
+  assert.equal(summaries?.[0]?.content, "first second");
+});
+
+test("projects ai-platform run events into a visible run status part", () => {
+  const result = processMessageEvent(
+    "run_event",
+    {
+      event_id: "evt-tool",
+      sequence: 4,
+      event_type: "tool_denied",
+      stage: "policy",
+      message: "tool permission required",
+      severity: "warning",
+      payload: {
+        reason: "requires confirmation",
+        storage_key: "tenants/default/private/tool.json",
+      },
+    } as never,
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+
+  assert.equal(result.parts.length, 1);
+  const part = result.parts[0] as MessagePart & {
+    type: "run_status";
+    event_id: string;
+    event_type: string;
+    stage: string;
+    message: string;
+    severity: string;
+    sequence: number;
+  };
+  assert.equal(part.type, "run_status");
+  assert.equal(part.event_id, "evt-tool");
+  assert.equal(part.event_type, "tool_denied");
+  assert.equal(part.stage, "policy");
+  assert.equal(part.message, "tool permission required");
+  assert.equal(part.severity, "warning");
+  assert.equal(part.sequence, 4);
+  assert.doesNotMatch(JSON.stringify(part), /storage_key|tenants\/default/);
+});
+
+test("projects tool permission request run events into a confirmation part with allowlisted fields", () => {
+  const result = processMessageEvent(
+    "run_event",
+    {
+      event_id: "evt-permission-requested",
+      run_id: "run-a",
+      sequence: 8,
+      event_type: "tool_permission_requested",
+      stage: "tool_policy",
+      message: "工具调用需要权限决策",
+      severity: "warning",
+      payload: {
+        visible_to_user: true,
+        permission_request_id: "tpr-a",
+        tool_id: "ragflow-knowledge-search",
+        tool_call_id: "call-a",
+        risk_level: "high",
+        write_capable: true,
+        request_payload: {
+          storage_key: "tenants/default/private/tool.json",
+        },
+        storage_key: "tenants/default/private/tool.json",
+      },
+    } as never,
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+
+  assert.equal(result.parts.length, 1);
+  const part = result.parts[0] as MessagePart & {
+    type: "tool_permission";
+    event_id: string;
+    run_id: string;
+    permission_request_id: string;
+    tool_id: string;
+    tool_call_id: string;
+    risk_level: string;
+    write_capable: boolean;
+    status: string;
+    sequence: number;
+  };
+  assert.equal(part.type, "tool_permission");
+  assert.equal(part.event_id, "evt-permission-requested");
+  assert.equal(part.run_id, "run-a");
+  assert.equal(part.permission_request_id, "tpr-a");
+  assert.equal(part.tool_id, "ragflow-knowledge-search");
+  assert.equal(part.tool_call_id, "call-a");
+  assert.equal(part.risk_level, "high");
+  assert.equal(part.write_capable, true);
+  assert.equal(part.status, "pending");
+  assert.equal(part.sequence, 8);
+  assert.doesNotMatch(
+    JSON.stringify(part),
+    /request_payload|storage_key|tenants\/default/,
+  );
+});
+
+test("projects public tool permission card run events into a confirmation part", () => {
+  const result = processMessageEvent(
+    "run_event",
+    {
+      event_id: "evt-permission-card",
+      run_id: "run-a",
+      sequence: 10,
+      event_type: "tool_permission_card",
+      stage: "tool_policy",
+      message: "工具调用需要权限决策",
+      payload: {
+        tool_permission_card: {
+          schema_version: "ai-platform.tool-permission-card.v1",
+          permission_request_id: "tpr-card",
+          run_id: "run-a",
+          tool_id: "ragflow-knowledge-search",
+          tool_call_id: "call-card",
+          action: "execute",
+          risk_level: "high",
+          write_capable: true,
+          status: "pending",
+          decision_endpoint:
+            "/api/ai/runs/run-a/tool-permissions/tpr-card/decision",
+          request_payload: {
+            storage_key: "tenants/default/private/tool.json",
+          },
+          command_sha256: "a".repeat(64),
+        },
+      },
+    } as never,
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+
+  assert.equal(result.parts.length, 1);
+  const part = result.parts[0] as MessagePart & {
+    type: "tool_permission";
+    event_id: string;
+    run_id: string;
+    permission_request_id: string;
+    tool_id: string;
+    tool_call_id: string;
+    risk_level: string;
+    write_capable: boolean;
+    status: string;
+    sequence: number;
+  };
+  assert.equal(part.type, "tool_permission");
+  assert.equal(part.event_id, "evt-permission-card");
+  assert.equal(part.run_id, "run-a");
+  assert.equal(part.permission_request_id, "tpr-card");
+  assert.equal(part.tool_id, "ragflow-knowledge-search");
+  assert.equal(part.tool_call_id, "call-card");
+  assert.equal(part.risk_level, "high");
+  assert.equal(part.write_capable, true);
+  assert.equal(part.status, "pending");
+  assert.equal(part.sequence, 10);
+  assert.doesNotMatch(
+    JSON.stringify(part),
+    /request_payload|storage_key|command_sha256|tenants\/default/,
+  );
+});
+
+test("projects top-level public tool permission card events into a confirmation part", () => {
+  const result = processMessageEvent(
+    "tool_permission_card",
+    {
+      event_id: "evt-history-card",
+      run_id: "run-a",
+      sequence: 12,
+      content: "工具调用需要权限决策",
+      status: "tool_policy",
+      tool_permission_card: {
+        schema_version: "ai-platform.tool-permission-card.v1",
+        permission_request_id: "tpr-history",
+        run_id: "run-a",
+        tool_id: "ragflow-knowledge-search",
+        tool_call_id: "call-history",
+        risk_level: "high",
+        write_capable: true,
+        status: "pending",
+        request_payload: {
+          storage_key: "tenants/default/private/tool.json",
+        },
+        command_sha256: "a".repeat(64),
+      },
+    } as never,
+    [],
+    "",
+    [],
+    0,
+    [],
+    false,
+    "message-1",
+  );
+
+  assert.equal(result.parts.length, 1);
+  const part = result.parts[0] as MessagePart & {
+    type: "tool_permission";
+    permission_request_id: string;
+    status: string;
+  };
+  assert.equal(part.type, "tool_permission");
+  assert.equal(part.permission_request_id, "tpr-history");
+  assert.equal(part.status, "pending");
+  assert.doesNotMatch(
+    JSON.stringify(part),
+    /request_payload|storage_key|command_sha256|tenants\/default/,
+  );
+});
+
+test("updates a tool permission confirmation part from decided run events", () => {
+  const parts: MessagePart[] = [
+    {
+      type: "tool_permission",
+      event_id: "evt-permission-requested",
+      run_id: "run-a",
+      permission_request_id: "tpr-a",
+      tool_id: "ragflow-knowledge-search",
+      tool_call_id: "call-a",
+      risk_level: "high",
+      write_capable: true,
+      status: "pending",
+      created_at: "2026-06-02T01:00:00.000Z",
+    } as never,
+  ];
+
+  const result = processMessageEvent(
+    "run_event",
+    {
+      event_id: "evt-permission-decided",
+      run_id: "run-a",
+      sequence: 9,
+      event_type: "tool_permission_decided",
+      stage: "tool_policy",
+      message: "工具权限已决策",
+      payload: {
+        permission_request_id: "tpr-a",
+        tool_id: "ragflow-knowledge-search",
+        tool_call_id: "call-a",
+        decision: "allow_once",
+        decision_payload: {
+          storage_key: "tenants/default/private/decision.json",
+        },
+      },
+    } as never,
+    parts,
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+
+  assert.equal(result.parts.length, 1);
+  const part = result.parts[0] as MessagePart & {
+    type: "tool_permission";
+    status: string;
+    decision: string;
+    decided_event_id: string;
+    sequence: number;
+  };
+  assert.equal(part.type, "tool_permission");
+  assert.equal(part.status, "decided");
+  assert.equal(part.decision, "allow_once");
+  assert.equal(part.decided_event_id, "evt-permission-decided");
+  assert.equal(part.sequence, 9);
+  assert.doesNotMatch(
+    JSON.stringify(part),
+    /decision_payload|storage_key|tenants\/default/,
+  );
+});
+
+test("preserves pending tool risk fields when legacy decision events omit them", () => {
+  const parts: MessagePart[] = [
+    {
+      type: "tool_permission",
+      event_id: "evt-permission-requested",
+      run_id: "run-a",
+      permission_request_id: "tpr-a",
+      tool_id: "ragflow-knowledge-search",
+      tool_call_id: "call-a",
+      risk_level: "high",
+      write_capable: true,
+      status: "pending",
+      created_at: "2026-06-02T01:00:00.000Z",
+    } as never,
+  ];
+
+  const result = processMessageEvent(
+    "run_event",
+    {
+      event_id: "evt-permission-decided",
+      run_id: "run-a",
+      sequence: 9,
+      event_type: "tool_permission_decided",
+      stage: "tool_policy",
+      message: "工具权限已决策",
+      payload: {
+        permission_request_id: "tpr-a",
+        tool_id: "ragflow-knowledge-search",
+        tool_call_id: "call-a",
+        decision: "allow_once",
+      },
+    } as never,
+    parts,
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+
+  const part = result.parts[0] as MessagePart & {
+    type: "tool_permission";
+    risk_level: string;
+    write_capable: boolean;
+    status: string;
+  };
+  assert.equal(part.type, "tool_permission");
+  assert.equal(part.risk_level, "high");
+  assert.equal(part.write_capable, true);
+  assert.equal(part.status, "decided");
+});
+
+test("does not regress a decided tool permission part when pending replay arrives later", () => {
+  const parts: MessagePart[] = [
+    {
+      type: "tool_permission",
+      event_id: "evt-permission-card-decided",
+      decided_event_id: "evt-permission-card-decided",
+      run_id: "run-a",
+      permission_request_id: "tpr-card",
+      tool_id: "ragflow-knowledge-search",
+      tool_call_id: "call-card",
+      risk_level: "high",
+      write_capable: true,
+      status: "decided",
+      decision: "allow_once",
+      decided_at: "2026-06-02T01:00:01.000Z",
+    } as never,
+  ];
+
+  const result = processMessageEvent(
+    "tool_permission_card",
+    {
+      event_id: "evt-permission-card-pending",
+      run_id: "run-a",
+      sequence: 10,
+      tool_permission_card: {
+        schema_version: "ai-platform.tool-permission-card.v1",
+        permission_request_id: "tpr-card",
+        run_id: "run-a",
+        tool_id: "ragflow-knowledge-search",
+        tool_call_id: "call-card",
+        risk_level: "high",
+        write_capable: true,
+        status: "pending",
+      },
+    } as never,
+    parts,
+    "",
+    [],
+    0,
+    [],
+    false,
+    "message-1",
+  );
+
+  assert.equal(result.parts.length, 1);
+  const part = result.parts[0] as MessagePart & {
+    type: "tool_permission";
+    status: string;
+    decision: string;
+  };
+  assert.equal(part.type, "tool_permission");
+  assert.equal(part.status, "decided");
+  assert.equal(part.decision, "allow_once");
+});
+
+test("updates a public tool permission card from decided projection", () => {
+  const parts: MessagePart[] = [
+    {
+      type: "tool_permission",
+      event_id: "evt-permission-card",
+      run_id: "run-a",
+      permission_request_id: "tpr-card",
+      tool_id: "ragflow-knowledge-search",
+      tool_call_id: "call-card",
+      risk_level: "high",
+      write_capable: true,
+      status: "pending",
+      created_at: "2026-06-02T01:00:00.000Z",
+    } as never,
+  ];
+
+  const result = processMessageEvent(
+    "run_event",
+    {
+      event_id: "evt-permission-card-decided",
+      run_id: "run-a",
+      sequence: 11,
+      event_type: "tool_permission_card",
+      stage: "tool_policy",
+      message: "工具权限已决策",
+      payload: {
+        tool_permission_card: {
+          schema_version: "ai-platform.tool-permission-card.v1",
+          permission_request_id: "tpr-card",
+          run_id: "run-a",
+          tool_id: "ragflow-knowledge-search",
+          tool_call_id: "call-card",
+          risk_level: "high",
+          write_capable: true,
+          status: "decided",
+          decision: "allow_once",
+          decision_payload: {
+            storage_key: "tenants/default/private/decision.json",
+          },
+          command_sha256: "b".repeat(64),
+        },
+      },
+    } as never,
+    parts,
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+
+  assert.equal(result.parts.length, 1);
+  const part = result.parts[0] as MessagePart & {
+    type: "tool_permission";
+    status: string;
+    decision: string;
+    decided_event_id: string;
+    sequence: number;
+  };
+  assert.equal(part.type, "tool_permission");
+  assert.equal(part.status, "decided");
+  assert.equal(part.decision, "allow_once");
+  assert.equal(part.decided_event_id, "evt-permission-card-decided");
+  assert.equal(part.sequence, 11);
+  assert.doesNotMatch(
+    JSON.stringify(part),
+    /decision_payload|storage_key|command_sha256|tenants\/default/,
+  );
+});
+
+test("refreshes public safe fields when a decided tool permission card arrives", () => {
+  const parts: MessagePart[] = [
+    {
+      type: "tool_permission",
+      event_id: "evt-permission-card",
+      run_id: "run-a",
+      permission_request_id: "tpr-card",
+      tool_id: "tool",
+      tool_call_id: "call-card",
+      risk_level: "low",
+      write_capable: false,
+      status: "pending",
+    } as never,
+  ];
+
+  const result = processMessageEvent(
+    "tool_permission_card",
+    {
+      event_id: "evt-permission-card-decided",
+      run_id: "run-a",
+      sequence: 11,
+      tool_permission_card: {
+        schema_version: "ai-platform.tool-permission-card.v1",
+        permission_request_id: "tpr-card",
+        run_id: "run-a",
+        tool_id: "ragflow-knowledge-search",
+        tool_call_id: "call-card",
+        risk_level: "high",
+        write_capable: true,
+        status: "decided",
+        decision: "allow_once",
+      },
+    } as never,
+    parts,
+    "",
+    [],
+    0,
+    [],
+    false,
+    "message-1",
+  );
+
+  const part = result.parts[0] as MessagePart & {
+    type: "tool_permission";
+    tool_id: string;
+    risk_level: string;
+    write_capable: boolean;
+    status: string;
+  };
+  assert.equal(part.type, "tool_permission");
+  assert.equal(part.tool_id, "ragflow-knowledge-search");
+  assert.equal(part.risk_level, "high");
+  assert.equal(part.write_capable, true);
+  assert.equal(part.status, "decided");
+});
+
+test("does not persist sandbox runtime work directories in message parts", () => {
+  const result = processMessageEvent(
+    "sandbox:ready",
+    {
+      sandbox_id: "sandbox-a",
+      work_dir: "/tmp/tenants/default/runs/run-a/workspace",
+      timestamp: "2026-06-02T01:00:00.000Z",
+    },
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+
+  assert.equal(result.parts.length, 1);
+  assert.equal(result.parts[0]?.type, "sandbox");
+  assert.doesNotMatch(JSON.stringify(result.parts[0]), /work_dir|workspace/);
+});
+
+test("sanitizes legacy raw tool start events before storing message parts", () => {
+  const result = processMessageEvent(
+    "tool:start",
+    {
+      tool: "reveal_file",
+      tool_call_id: "call-raw",
+      args: {
+        path: "docs/report.docx",
+        storage_key: "tenants/default/private/tool.json",
+        request_payload: {
+          token: "hidden",
+        },
+        nested: {
+          work_dir: "/workspace/.claude/runs/run-a",
+          safe_label: "visible",
+        },
+        files: [
+          {
+            runtime_path: "/tmp/tenants/default/run-a/private.txt",
+          },
+          {
+            label: "public",
+          },
+        ],
+      },
+    },
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+
+  const serializedParts = JSON.stringify(result.parts);
+  const serializedCalls = JSON.stringify(result.toolCalls);
+
+  assert.match(serializedParts, /docs\/report\.docx/);
+  assert.match(serializedParts, /visible/);
+  assert.match(serializedParts, /public/);
+  assert.doesNotMatch(
+    serializedParts,
+    /storage_key|request_payload|work_dir|runtime_path|\.claude|tenants\/default\/private|\/tmp\/tenants/,
+  );
+  assert.doesNotMatch(
+    serializedCalls,
+    /storage_key|request_payload|work_dir|runtime_path|\.claude|tenants\/default\/private|\/tmp\/tenants/,
+  );
+});
+
+test("sanitizes legacy raw tool result events before rendering output", () => {
+  const parts: MessagePart[] = [
+    {
+      type: "tool",
+      id: "call-raw",
+      name: "execute",
+      args: { command: "echo ok" },
+      isPending: true,
+    },
+  ];
+
+  const result = processMessageEvent(
+    "tool:result",
+    {
+      tool: "execute",
+      tool_call_id: "call-raw",
+      success: true,
+      result: {
+        output: "ok",
+        command_sha256: "abc123",
+        storage_key: "tenants/default/private/result.json",
+        nested: {
+          runtime_path: "/tmp/tenants/default/run-a/result.txt",
+          safe_count: 1,
+        },
+      },
+    },
+    parts,
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+
+  const serializedParts = JSON.stringify(result.parts);
+
+  assert.match(serializedParts, /"output":"ok"/);
+  assert.match(serializedParts, /"safe_count":1/);
+  assert.doesNotMatch(
+    serializedParts,
+    /command_sha256|storage_key|runtime_path|tenants\/default\/private|\/tmp\/tenants/,
+  );
+});
+
+test("dedupes ai-platform artifact cards by artifact id", () => {
+  const first = processMessageEvent(
+    "artifact_card",
+    {
+      artifact_id: "art-reviewed",
+      artifact_type: "reviewed_docx",
+      label: "审核 Word",
+      content_type:
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      size_bytes: 123,
+      download_url: "/api/ai/artifacts/art-reviewed/download",
+      status: "available",
+      manifest: {
+        storage_key: "tenants/default/runs/run-a/artifacts/reviewed.docx",
+      },
+    } as never,
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+
+  const second = processMessageEvent(
+    "artifact_card",
+    {
+      artifact_id: "art-reviewed",
+      artifact_type: "reviewed_docx",
+      label: "审核 Word",
+      content_type:
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      size_bytes: 123,
+      download_url: "/api/ai/artifacts/art-reviewed/download",
+      status: "available",
+    } as never,
+    first.parts,
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+
+  assert.equal(second.parts.length, 1);
+  const part = second.parts[0] as MessagePart & {
+    type: "artifact";
+    artifact_id: string;
+    label: string;
+    download_url: string;
+    size_bytes: number;
+  };
+  assert.equal(part.type, "artifact");
+  assert.equal(part.artifact_id, "art-reviewed");
+  assert.equal(part.label, "审核 Word");
+  assert.equal(part.download_url, "/api/ai/artifacts/art-reviewed/download");
+  assert.equal(part.size_bytes, 123);
+  assert.doesNotMatch(JSON.stringify(part), /storage_key|tenants\/default/);
+});

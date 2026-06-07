@@ -10,6 +10,9 @@ COMPOSE = ROOT / "deploy/ai-platform/docker-compose.yml"
 ENV_EXAMPLE = ROOT / "deploy/ai-platform/.env.example"
 DOCKERIGNORE = ROOT / ".dockerignore"
 GITIGNORE = ROOT / ".gitignore"
+FRONTEND_WEB = ROOT / "frontend/web"
+FRONTEND_README = FRONTEND_WEB / "README.md"
+FRONTEND_MIGRATION_DOC = ROOT / "docs/frontend/ai-platform-frontend-migration.md"
 
 AUTHORITY_DOCS = [PRD, ROADMAP, GUARDRAILS, AGENTS]
 TARGET_211_BACKEND = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform"
@@ -67,7 +70,7 @@ def test_env_template_satisfies_required_runtime_defaults_without_real_secrets()
 
 
 def test_docker_build_context_excludes_real_env_files():
-    dockerignore_text = read(DOCKERIGNORE)
+    dockerignore_lines = set(read(DOCKERIGNORE).splitlines())
     required_patterns = {
         ".env",
         ".env.*",
@@ -76,9 +79,14 @@ def test_docker_build_context_excludes_real_env_files():
         ".tmp/",
         "pytest-of-*/",
         "*.egg-info/",
+        "frontend/web/node_modules/",
+        "frontend/web/dist/",
+        "frontend/web/.env",
+        "frontend/web/.env.*",
+        "frontend/web/*.tsbuildinfo",
     }
 
-    assert required_patterns.issubset(set(dockerignore_text.splitlines()))
+    assert required_patterns.issubset(dockerignore_lines)
     assert "repo-local Docker build context" in read(GUARDRAILS)
 
 
@@ -111,6 +119,38 @@ def test_gitignore_excludes_real_env_variants_but_not_templates():
         "deploy/ai-platform/.env",
         "deploy/ai-platform/.env.*",
         "!deploy/ai-platform/.env.example",
+        "frontend/web/node_modules/",
+        "frontend/web/dist/",
+        "frontend/web/.env",
+        "frontend/web/.env.*",
+        "!frontend/web/.env.example",
+        "frontend/web/*.tsbuildinfo",
     }
 
     assert required_patterns.issubset(gitignore_lines)
+
+
+def test_frontend_source_import_is_documented_without_replacing_current_runtime():
+    package_json = FRONTEND_WEB / "package.json"
+    vite_config = read(FRONTEND_WEB / "vite.config.ts")
+    api_config = read(FRONTEND_WEB / "src/services/api/config.ts")
+
+    assert package_json.exists()
+    assert FRONTEND_README.exists()
+    assert FRONTEND_MIGRATION_DOC.exists()
+    assert "VITE_AI_PLATFORM_API_TARGET" in vite_config
+    assert "VITE_API_TARGET" not in vite_config
+    assert "VITE_API_BASE" not in api_config
+
+    combined_text = read(FRONTEND_README) + "\n" + read(FRONTEND_MIGRATION_DOC)
+    assert "same-origin `/api/*`" in combined_text
+    assert "public/admin projections" in combined_text
+    assert "executor private payload" in combined_text
+    assert "Backend scheduling, sandbox, auth/session, DB schema" in combined_text
+    assert "deploy/ai-platform/docker-compose.yml` is not changed" in combined_text
+    assert "ai-platform-frontend" in combined_text
+    assert "current 211 thin-shell deployment remains the active runtime entry" in combined_text
+    assert "G8/G10 Long Task and Multi-Agent work are not implemented" in combined_text
+    assert "Docker compose one-command startup is not a current" in combined_text
+    assert "C:\\Users" not in combined_text
+    assert "/api/ai/workbench" not in combined_text

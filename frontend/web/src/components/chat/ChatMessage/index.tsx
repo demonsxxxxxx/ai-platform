@@ -1,0 +1,484 @@
+import { clsx } from "clsx";
+import { useEffect, useRef, useState, memo } from "react";
+import toast from "react-hot-toast";
+import { Copy, GitBranch, Info, Sparkles } from "lucide-react";
+import type {
+  Message,
+  MessagePart,
+  ToolCall,
+  ToolResult,
+  TokenUsagePart,
+} from "../../../types";
+import { useTranslation } from "react-i18next";
+import { MarkdownContent } from "./MarkdownContent";
+import { ToolCallItem } from "./ToolCallItem";
+import { UserMessageBubble } from "./UserMessageBubble";
+import { MessagePartRenderer } from "./MessagePartRenderer";
+import { RevealArtifactsSummary } from "./RevealArtifactsSummary";
+import { FeedbackButtons } from "./FeedbackButtons";
+import { AssistantAvatar } from "./AssistantAvatar";
+import { ShareButton } from "./ShareButton";
+import { CollapsiblePill } from "../../common/CollapsiblePill";
+import { useSettingsContext } from "../../../contexts/SettingsContext";
+import { useAuth } from "../../../hooks/useAuth";
+import { ModelIconImg } from "../../agent/modelIcon.tsx";
+import { shouldCloseTokenDetailsPopover } from "./tokenDetailsPopoverGuards";
+import { resolveTokenUsageModelDetails } from "./tokenUsageModel";
+import {
+  shouldAllowAutoPreviewForPart,
+  type AutoPreviewTarget,
+} from "./autoPreviewEligibility";
+import type { RevealPreviewRequest } from "./items/revealPreviewData";
+import type { RevealPreviewOpenSource } from "./items/revealPreviewState";
+import { createMessageAnchorId } from "../../layout/AppContent/messageOutline";
+import { formatDateTime, formatDateTimeShort } from "../../../utils/datetime";
+import { copyToClipboard } from "../../../utils/clipboard";
+
+// Skeleton-style loading animation component - refined thin lines
+function ThinkingIndicator() {
+  return (
+    <div className="space-y-2.5 py-1 px-1">
+      {/* First line - long bar */}
+      <div className="skeleton-line w-full h-2 rounded-full" />
+
+      {/* Second line - three medium bars */}
+      <div className="flex gap-3">
+        <div className="skeleton-line flex-1 h-2 rounded-full" />
+        <div className="skeleton-line flex-1 h-2 rounded-full" />
+        <div className="skeleton-line flex-1 h-2 rounded-full" />
+      </div>
+
+      {/* Third line - three medium bars */}
+      <div className="flex gap-3">
+        <div className="skeleton-line flex-1 h-2 rounded-full" />
+        <div className="skeleton-line flex-1 h-2 rounded-full" />
+        <div className="skeleton-line flex-1 h-2 rounded-full" />
+      </div>
+
+      {/* Fourth line */}
+      <div className="flex gap-3">
+        <div className="skeleton-line flex-1 h-2 rounded-full" />
+        <div className="skeleton-line w-2/5 h-2 rounded-full" />
+      </div>
+    </div>
+  );
+}
+
+interface ChatMessageProps {
+  message: Message;
+  sessionId?: string;
+  runId?: string;
+  isLastMessage?: boolean;
+  onStop?: () => void;
+  personaAvatar?: string | null;
+  personaName?: string | null;
+  activePreview?: RevealPreviewRequest | null;
+  latestAutoPreview?: AutoPreviewTarget | null;
+  onOpenPreview?: (
+    preview: RevealPreviewRequest,
+    source?: RevealPreviewOpenSource,
+  ) => boolean;
+  onForkMessage?: (messageId: string) => void | Promise<void>;
+  showFeedbackAndShareActions?: boolean;
+}
+
+// Token usage statistics button component - ChatGPT style
+function TokenDetailsButton({
+  tokenUsage,
+  duration,
+  timestamp,
+  modelDetails,
+  isLastMessage,
+}: {
+  tokenUsage?: TokenUsagePart;
+  duration?: number;
+  timestamp?: Date;
+  modelDetails?: {
+    name: string;
+    value: string;
+    provider?: string;
+  } | null;
+  isLastMessage?: boolean;
+}) {
+  const { t } = useTranslation();
+  const [showDetails, setShowDetails] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
+
+  // Close details when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        shouldCloseTokenDetailsPopover(
+          event.target as Node | null,
+          buttonRef.current,
+          popupRef.current,
+        )
+      ) {
+        setShowDetails(false);
+      }
+    };
+    if (showDetails) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [showDetails]);
+
+  return (
+    <div className="relative">
+      <button
+        ref={buttonRef}
+        onClick={() => setShowDetails(!showDetails)}
+        className={clsx(
+          "p-1.5 rounded-md transition-colors",
+          !isLastMessage && "opacity-0 group-hover:opacity-100",
+          "hover:bg-stone-200 dark:hover:bg-stone-700",
+          "text-stone-400 dark:text-stone-500 hover:text-stone-600 dark:hover:text-stone-300",
+        )}
+        title={t("chat.message.tokenUsage")}
+      >
+        <Info size={16} />
+      </button>
+      {/* ChatGPT style details popup */}
+      {showDetails && (
+        <div
+          ref={popupRef}
+          className={clsx(
+            "absolute bottom-full mb-2 left-0 z-50",
+            "min-w-[150px] w-auto p-3 rounded-lg shadow-lg",
+            "bg-white dark:bg-stone-800",
+            "border border-stone-200 dark:border-stone-700",
+            "whitespace-nowrap",
+          )}
+        >
+          <div className="text-xs space-y-1.5">
+            {tokenUsage && (
+              <>
+                <div className="flex justify-between gap-4 text-sky-600 dark:text-sky-400">
+                  <span className="">{t("chat.message.tokenInput")}</span>
+                  <span className="font-medium">
+                    {tokenUsage.input_tokens?.toLocaleString()} tokens
+                  </span>
+                </div>
+                <div className="flex justify-between gap-4 text-violet-600 dark:text-violet-400">
+                  <span className="">{t("chat.message.tokenOutput")}</span>
+                  <span className="font-medium">
+                    {tokenUsage.output_tokens?.toLocaleString()} tokens
+                  </span>
+                </div>
+                {(tokenUsage.cache_creation_tokens ?? 0) > 0 && (
+                  <div className="flex justify-between gap-4 text-emerald-600 dark:text-emerald-400">
+                    <span className="">
+                      {t("chat.message.tokenCacheCreation")}
+                    </span>
+                    <span className="font-medium">
+                      {(tokenUsage.cache_creation_tokens ?? 0).toLocaleString()}{" "}
+                      tokens
+                    </span>
+                  </div>
+                )}
+                {(tokenUsage.cache_read_tokens ?? 0) > 0 && (
+                  <div className="flex justify-between gap-4 text-pink-600 dark:text-pink-400">
+                    <span className="">{t("chat.message.tokenCacheRead")}</span>
+                    <span className="font-medium">
+                      {(tokenUsage.cache_read_tokens ?? 0).toLocaleString()}{" "}
+                      tokens
+                    </span>
+                  </div>
+                )}
+                <div className="flex justify-between gap-4 border-t border-stone-100 dark:border-stone-700 pt-1.5 mt-1.5 text-amber-600 dark:text-amber-400">
+                  <span className="">{t("chat.message.tokenTotal")}</span>
+                  <span className="font-medium">
+                    {tokenUsage.total_tokens?.toLocaleString()} tokens
+                  </span>
+                </div>
+              </>
+            )}
+            {duration && (
+              <div className="flex justify-between gap-4 border-t border-stone-100 dark:border-stone-700 pt-1.5 mt-1.5">
+                <span className="text-stone-500 dark:text-stone-400">
+                  {t("chat.message.duration")}
+                </span>
+                <span className="text-stone-700 dark:text-stone-200 font-medium">
+                  {(duration / 1000).toFixed(2)}s
+                </span>
+              </div>
+            )}
+            {modelDetails && (
+              <div className="flex justify-between gap-4 border-t border-stone-100 dark:border-stone-700 pt-1.5 mt-1.5">
+                <span className="text-stone-500 dark:text-stone-400">
+                  {t("chat.message.model")}
+                </span>
+                <span className="flex items-center gap-1.5 text-stone-700 dark:text-stone-200 font-medium">
+                  <ModelIconImg
+                    model={modelDetails.value}
+                    provider={modelDetails.provider}
+                    size={16}
+                  />
+                  <span>{modelDetails.name}</span>
+                </span>
+              </div>
+            )}
+            {timestamp && (
+              <div className="flex justify-between gap-4 border-t border-stone-100 dark:border-stone-700 pt-1.5 mt-1.5">
+                <span className="text-stone-500 dark:text-stone-400">
+                  {t("chat.message.startTime")}
+                </span>
+                <span className="text-stone-700 dark:text-stone-200 font-medium tabular-nums">
+                  {formatDateTime(timestamp)}
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export const ChatMessage = memo(function ChatMessage({
+  message,
+  sessionId,
+  runId,
+  isLastMessage,
+  personaAvatar,
+  personaName,
+  activePreview,
+  latestAutoPreview,
+  onOpenPreview,
+  onForkMessage,
+  showFeedbackAndShareActions = true,
+}: ChatMessageProps) {
+  const { t } = useTranslation();
+  const { availableModels } = useSettingsContext();
+  const { isAuthenticated } = useAuth();
+  const isUser = message.role === "user";
+  const isStreaming = message.isStreaming && !message.content;
+  const modelDetails = resolveTokenUsageModelDetails({
+    modelId: message.tokenUsage?.model_id,
+    model: message.tokenUsage?.model,
+    availableModels,
+  });
+
+  // If there are parts, render in order; otherwise fall back to old rendering method
+  const hasParts = message.parts && message.parts.length > 0;
+  // User message: bubble style, right aligned
+  if (isUser) {
+    return (
+      <div
+        id={createMessageAnchorId(message.id)}
+        data-outline-anchor="true"
+        data-outline-id={createMessageAnchorId(message.id)}
+        className="scroll-mt-6 rounded-2xl transition-[box-shadow] duration-300 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/75 data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(245,158,11,0.2)] dark:data-[external-navigation-highlighted=true]:ring-amber-400/55 dark:data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(251,191,36,0.1)] space-y-3 sm:space-y-4"
+      >
+        <UserMessageBubble
+          content={message.content}
+          attachments={message.attachments}
+          isLastMessage={isLastMessage}
+        />
+      </div>
+    );
+  }
+
+  // Get assistant message's plain text content for copying
+  const getAssistantTextContent = (): string => {
+    if (hasParts && message.parts) {
+      // Extract all text content from parts
+      return message.parts
+        .filter(
+          (part): part is Extract<MessagePart, { type: "text" }> =>
+            part.type === "text",
+        )
+        .map((part) => part.content)
+        .join("\n");
+    }
+    return message.content || "";
+  };
+
+  // Assistant message: left layout
+  return (
+    <div
+      id={createMessageAnchorId(message.id)}
+      data-outline-anchor="true"
+      data-outline-id={createMessageAnchorId(message.id)}
+      className="group w-full animate-[fade-in_0.3s_ease-out] scroll-mt-6 rounded-2xl transition-[background-color,box-shadow] duration-300 data-[external-navigation-highlighted=true]:bg-amber-50/85 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/60 dark:data-[external-navigation-highlighted=true]:bg-amber-500/12 dark:data-[external-navigation-highlighted=true]:ring-amber-400/50"
+    >
+      <div className="mx-auto flex flex-col max-w-3xl lg:max-w-4xl xl:max-w-5xl px-4 sm:px-6">
+        {/* Content */}
+        <div className="min-w-0 min-h-0 py-1 sm:py-2">
+          {/* Header: Avatar + Role label + Stop button */}
+          <div className="mb-3 flex items-center gap-2">
+            <AssistantAvatar
+              className="size-6 shrink-0 rounded-full"
+              personaAvatar={personaAvatar}
+            />
+            <span
+              className="text-base sm:text-lg font-semibold tracking-tight font-serif"
+              style={{ color: "var(--theme-text)" }}
+            >
+              {personaName || t("chat.message.assistant")}
+            </span>
+            {message.timestamp && (
+              <span
+                className="text-xs ml-2 mt-0.5 tabular-nums opacity-0 group-hover:opacity-100 transition-opacity duration-200"
+                style={{ color: "var(--theme-text-secondary)" }}
+              >
+                {message.timestamp
+                  ? formatDateTimeShort(message.timestamp)
+                  : ""}
+              </span>
+            )}
+          </div>
+
+          {/* Streaming/Thinking indicator */}
+          {isStreaming && !hasParts && <ThinkingIndicator />}
+
+          {hasParts ? (
+            <div className="space-y-3 px-2 my-2">
+              {message.parts!.map((part: MessagePart, index: number) => (
+                <MessagePartRenderer
+                  key={index}
+                  part={part}
+                  messageId={message.id}
+                  partIndex={index}
+                  isStreaming={message.isStreaming}
+                  isLast={index === message.parts!.length - 1}
+                  activePreview={activePreview}
+                  onOpenPreview={onOpenPreview}
+                  allowAutoPreview={shouldAllowAutoPreviewForPart({
+                    messageId: message.id,
+                    partIndex: index,
+                    latestAutoPreview: latestAutoPreview ?? null,
+                  })}
+                />
+              ))}
+              <RevealArtifactsSummary
+                parts={message.parts}
+                isStreaming={message.isStreaming}
+                onOpenPreview={onOpenPreview}
+              />
+            </div>
+          ) : (
+            <>
+              {message.content && (
+                <MarkdownContent
+                  content={message.content}
+                  isStreaming={message.isStreaming}
+                  headingAnchorContext={{ messageId: message.id, partIndex: 0 }}
+                />
+              )}
+              {message.toolCalls && message.toolCalls.length > 0 && (
+                <div className="mt-4 space-y-2">
+                  <div
+                    className="text-xs font-medium uppercase tracking-wide mb-2"
+                    style={{ color: "var(--theme-text-secondary)" }}
+                  >
+                    {t("chat.message.toolCalls")} ({message.toolCalls.length})
+                  </div>
+                  {message.toolCalls.map((call: ToolCall, index: number) => {
+                    const result = message.toolResults?.find(
+                      (r: ToolResult) => r.name === call.name,
+                    );
+                    return (
+                      <ToolCallItem
+                        key={index}
+                        name={call.name}
+                        args={call.args || {}}
+                        result={result?.result}
+                        success={result?.success}
+                        isPending={!result && message.isStreaming}
+                      />
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          )}
+          {/* Streaming indicator - bottom of message (when not showing thinking indicator) */}
+          {message.isStreaming && !(isStreaming && !hasParts) && (
+            <div className="mt-3 px-2">
+              <CollapsiblePill
+                status="loading"
+                icon={<Sparkles size={12} className="shrink-0 opacity-50" />}
+                label={t("chat.message.generating")}
+                variant="tool"
+                expandable={false}
+                animatedDots
+              />
+            </div>
+          )}
+        </div>
+        {/* Copy button and Token button - same line at bottom, show on message hover (only after message completes) */}
+        {!message.isStreaming && (
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => {
+                const textContent = getAssistantTextContent();
+                if (textContent) {
+                  copyToClipboard(textContent);
+                  toast.success(t("chat.message.copied"));
+                }
+              }}
+              className={clsx(
+                "p-1.5 rounded-md transition-colors",
+                !isLastMessage && "opacity-0 group-hover:opacity-100",
+                "hover:bg-stone-200 dark:hover:bg-stone-700",
+                "text-stone-400 dark:text-stone-500 hover:text-stone-600 dark:hover:text-stone-300",
+              )}
+              title={t("chat.message.copy")}
+            >
+              <Copy size={16} />
+            </button>
+            {sessionId && onForkMessage && (
+              <button
+                onClick={() => void onForkMessage(message.id)}
+                className={clsx(
+                  "p-1.5 rounded-md transition-colors",
+                  !isLastMessage && "opacity-0 group-hover:opacity-100",
+                  "hover:bg-stone-200 dark:hover:bg-stone-700",
+                  "text-stone-400 dark:text-stone-500 hover:text-stone-600 dark:hover:text-stone-300",
+                )}
+                title={t("chat.message.fork")}
+              >
+                <GitBranch size={16} />
+              </button>
+            )}
+            {/* Token usage statistics button */}
+            {(message.tokenUsage || message.duration) && (
+              <TokenDetailsButton
+                tokenUsage={message.tokenUsage}
+                duration={message.duration}
+                timestamp={message.timestamp}
+                modelDetails={modelDetails}
+                isLastMessage={isLastMessage}
+              />
+            )}
+            {showFeedbackAndShareActions && (
+              <>
+                {/* Feedback buttons */}
+                {isAuthenticated && sessionId && (message.runId || runId) && (
+                  <FeedbackButtons
+                    sessionId={sessionId}
+                    runId={message.runId || runId!}
+                    currentFeedback={message.feedback}
+                    isLastMessage={isLastMessage}
+                  />
+                )}
+                {/* Share button */}
+                {sessionId && (
+                  <ShareButton
+                    sessionId={sessionId}
+                    runId={message.runId || runId}
+                    isLastMessage={isLastMessage}
+                  />
+                )}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});

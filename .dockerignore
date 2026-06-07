@@ -12,3 +12,8 @@ __pycache__/
 .env.*
 deploy/ai-platform/.env
 deploy/ai-platform/.env.*
+frontend/web/node_modules/
+frontend/web/dist/
+frontend/web/.env
+frontend/web/.env.*
+frontend/web/*.tsbuildinfo

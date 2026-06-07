@@ -1,0 +1,58 @@
+/* Excel Preview custom scrollbar - light & dark mode */
+
+.excel-preview-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #a8a29e transparent;
+}
+
+.excel-preview-scroll:hover {
+  scrollbar-color: #78716c transparent;
+}
+
+.dark .excel-preview-scroll {
+  scrollbar-color: #57534e transparent;
+}
+
+.dark .excel-preview-scroll:hover {
+  scrollbar-color: #78716c transparent;
+}
+
+/* Webkit browsers */
+.excel-preview-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.excel-preview-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.excel-preview-scroll::-webkit-scrollbar-thumb {
+  background: #a8a29e;
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+  transition: background 0.15s ease;
+}
+
+.excel-preview-scroll:hover::-webkit-scrollbar-thumb {
+  background: #78716c;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.dark .excel-preview-scroll::-webkit-scrollbar-thumb {
+  background: #57534e;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.dark .excel-preview-scroll:hover::-webkit-scrollbar-thumb {
+  background: #78716c;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.excel-preview-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}

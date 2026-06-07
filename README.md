@@ -74,6 +74,12 @@ The platform exposes frontend-compatible `/api/auth/login`, `/api/auth/me`,
 `/api/auth/refresh`, `/api/chat/stream`, `/api/sessions/*`, and `/api/upload/*`
 routes. The documented login flow is company-account login.
 
+Frontend source now lives under `frontend/web` for source ownership and
+backend/worker/frontend same-commit review. This is a source migration step,
+not a new frontend runtime entry and not a Docker compose one-command startup
+gate. See `frontend/web/README.md` and
+`docs/frontend/ai-platform-frontend-migration.md`.
+
 General chat uses the `general-agent` / `general-chat` seed and requires
 `CLAUDE_AGENT_SDK_ENABLED=true` plus server-side new-api credentials. Word
 review/translation still use the controlled migration delegate for artifact

@@ -1,0 +1,56 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  decideToolPermission,
+  type ToolPermissionDecision,
+} from "../toolPermission.ts";
+
+test("posts tool permission decisions to the ai-platform permission API", async () => {
+  const calls: Array<{
+    url: string;
+    method?: string;
+    body?: unknown;
+  }> = [];
+
+  const response = await decideToolPermission(
+    "run-a",
+    "tpr-a",
+    "allow_for_run",
+    "approved for this run",
+    {
+      request: async <T>(url: string, init?: RequestInit): Promise<T> => {
+        calls.push({
+          url,
+          method: init?.method,
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        return {
+          permission_request: {
+            permission_request_id: "tpr-a",
+            run_id: "run-a",
+            tool_id: "ragflow-knowledge-search",
+            tool_call_id: "call-a",
+            risk_level: "high",
+            write_capable: true,
+            status: "decided",
+            decision: "allow_for_run" satisfies ToolPermissionDecision,
+          },
+        } as T;
+      },
+    },
+  );
+
+  assert.deepEqual(calls, [
+    {
+      url: "/api/ai/runs/run-a/tool-permissions/tpr-a/decision",
+      method: "POST",
+      body: {
+        decision: "allow_for_run",
+        reason: "approved for this run",
+      },
+    },
+  ]);
+  assert.equal(response.permission_request.permission_request_id, "tpr-a");
+  assert.equal(response.permission_request.decision, "allow_for_run");
+});

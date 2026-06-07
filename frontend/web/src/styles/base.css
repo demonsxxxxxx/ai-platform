@@ -1,0 +1,327 @@
+/* When DocumentPreview sidebar is open, compress the main app layout */
+@media (min-width: 640px) {
+  #root {
+    transition: max-width 300ms ease-out;
+  }
+  html[data-sidebar-preview="open"] #root {
+    max-width: calc(100% - var(--sidebar-preview-width, 35%)) !important;
+  }
+  /* Fixed/absolute elements inside #root must also yield space for the sidebar panel */
+  html[data-sidebar-preview="open"] #root [data-yields-sidebar] {
+    right: var(--sidebar-preview-width, 35%) !important;
+  }
+  [data-yields-sidebar] {
+    transition: right 300ms ease-out;
+  }
+  .app-toaster {
+    left: calc(var(--app-toast-sidebar-offset, 0px) + 16px) !important;
+    transition:
+      left 300ms ease-out,
+      right 300ms ease-out;
+  }
+  html[data-sidebar-preview="open"] .app-toaster {
+    right: calc(var(--sidebar-preview-width, 35%) + 16px) !important;
+  }
+  /* Sidebar panel uses percentage width on desktop */
+  [data-sidebar-panel] {
+    width: var(--sidebar-preview-width, 35%) !important;
+  }
+}
+
+/* When EditorSidebar is open, compress the main app layout */
+@media (min-width: 640px) {
+  html[data-editor-sidebar="open"] #root {
+    max-width: calc(100% - var(--editor-sidebar-width, 30%)) !important;
+  }
+  html[data-editor-sidebar="open"] #root [data-yields-sidebar] {
+    right: var(--editor-sidebar-width, 30%) !important;
+  }
+  /* Portals rendered outside #root (e.g. PersonaPresetSelector) */
+  html[data-editor-sidebar="open"] body > [data-yields-sidebar] {
+    right: var(--editor-sidebar-width, 30%) !important;
+  }
+  html[data-editor-sidebar="open"] .app-toaster {
+    right: calc(var(--editor-sidebar-width, 30%) + 16px) !important;
+  }
+
+  /* When both sidebars are open, compress #root for the combined width */
+  html[data-sidebar-preview="open"][data-editor-sidebar="open"] #root {
+    max-width: calc(
+      100% - var(--sidebar-preview-width, 35%) -
+        var(--editor-sidebar-width, 30%)
+    ) !important;
+  }
+  html[data-sidebar-preview="open"][data-editor-sidebar="open"]
+    #root
+    [data-yields-sidebar] {
+    right: calc(
+      var(--sidebar-preview-width, 35%) + var(--editor-sidebar-width, 30%)
+    ) !important;
+  }
+  html[data-sidebar-preview="open"][data-editor-sidebar="open"] .app-toaster {
+    right: calc(
+      var(--sidebar-preview-width, 35%) + var(--editor-sidebar-width, 30%) +
+        16px
+    ) !important;
+  }
+}
+
+/* 统一 checkbox / radio 样式 */
+input[type="checkbox"],
+input[type="radio"] {
+  @apply h-4 w-4 rounded border-stone-300 text-stone-900 focus:ring-2 focus:ring-stone-500/30 dark:border-stone-500 dark:bg-stone-800 dark:text-stone-100 dark:focus:ring-stone-400/30;
+  accent-color: var(--theme-primary);
+}
+
+/* 浏览器自动填充适配主题色 */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active,
+textarea:-webkit-autofill,
+textarea:-webkit-autofill:hover,
+textarea:-webkit-autofill:focus,
+textarea:-webkit-autofill:active,
+select:-webkit-autofill,
+select:-webkit-autofill:hover,
+select:-webkit-autofill:focus,
+select:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 30px white inset !important;
+  -webkit-text-fill-color: #1c1917 !important;
+  caret-color: #1c1917 !important;
+  outline: none !important;
+  border-color: #e7e5e4 !important;
+}
+
+.dark input:-webkit-autofill,
+.dark input:-webkit-autofill:hover,
+.dark input:-webkit-autofill:focus,
+.dark input:-webkit-autofill:active,
+.dark textarea:-webkit-autofill,
+.dark textarea:-webkit-autofill:hover,
+.dark textarea:-webkit-autofill:focus,
+.dark textarea:-webkit-autofill:active,
+.dark select:-webkit-autofill,
+.dark select:-webkit-autofill:hover,
+.dark select:-webkit-autofill:focus,
+.dark select:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 30px #292524 inset !important;
+  -webkit-text-fill-color: #f5f5f4 !important;
+  caret-color: #f5f5f4 !important;
+  outline: none !important;
+  border-color: #44403c !important;
+}
+
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  /* Theme color - stone tone */
+  --theme-primary: #78716c; /* stone-500 */
+  --theme-primary-hover: #57534e; /* stone-600 */
+  --theme-primary-light: #f5f5f4; /* stone-100 */
+  --theme-ring: #78716c; /* stone-500 */
+  --theme-bg: #f5f5f4; /* stone-100 */
+  --theme-bg-card: #ffffff;
+  --theme-bg-sidebar: #f5f5f4; /* stone-100 */
+  --theme-border: #e7e5e4; /* stone-200 */
+  --theme-text: #1c1917; /* stone-900 */
+  --theme-text-secondary: #78716c; /* stone-500 */
+  --theme-overlay: rgba(0, 0, 0, 0.4);
+  --theme-overlay-strong: rgba(0, 0, 0, 0.5);
+  --theme-shadow-sm: rgba(0, 0, 0, 0.04);
+  --theme-shadow-md: rgba(0, 0, 0, 0.1);
+  --theme-shadow-lg: rgba(0, 0, 0, 0.2);
+  --sidebar-width: 16rem;
+  --sidebar-rail-width: 3.25rem;
+  --sidebar-transition-duration: 150ms;
+  --app-viewport-offset-top: 0px;
+  --app-keyboard-inset: 0px;
+}
+
+.dark {
+  --theme-primary: #d6d3d1; /* stone-300 */
+  --theme-primary-hover: #e7e5e4; /* stone-200 */
+  --theme-primary-light: #292524; /* stone-800 */
+  --theme-ring: #d6d3d1; /* stone-300 */
+  --theme-bg: #151210; /* closer to sidebar */
+  --theme-bg-card: #1c1917; /* stone-900 */
+  --theme-bg-sidebar: #171412; /* stone-950 variant */
+  --theme-border: #44403c; /* stone-700 */
+  --theme-text: #ffffff; /* pure white */
+  --theme-text-secondary: #d6d3d1; /* stone-300 */
+  --theme-overlay: rgba(0, 0, 0, 0.6);
+  --theme-overlay-strong: rgba(0, 0, 0, 0.7);
+  --theme-shadow-sm: rgba(0, 0, 0, 0.2);
+  --theme-shadow-md: rgba(0, 0, 0, 0.4);
+  --theme-shadow-lg: rgba(0, 0, 0, 0.5);
+}
+
+/* Dark mode text brightness boost — shift stone-400/500/600 one step lighter */
+.dark .dark\:text-stone-400 {
+  color: #d6d3d1;
+}
+.dark .dark\:text-stone-500 {
+  color: #a8a29e;
+}
+.dark .dark\:text-stone-600 {
+  color: #a8a29e;
+}
+
+/* Skeleton shimmer animation */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: pan-y;
+}
+
+html {
+  background: var(--theme-bg);
+}
+
+body {
+  background: var(--theme-bg);
+}
+
+@media (max-width: 639px) {
+  input,
+  textarea,
+  select,
+  button {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* Allow scrolling on full-page public routes (landing, auth, shared, etc.) */
+html.allow-scroll,
+html.allow-scroll body,
+html.allow-scroll #root {
+  overflow-y: scroll;
+  height: auto;
+  overscroll-behavior: auto;
+}
+
+html[data-browser-chrome-nudge],
+html[data-browser-chrome-nudge] body {
+  height: calc(var(--app-viewport-height, 100dvh) + 1px);
+  overflow-y: auto;
+  overscroll-behavior-y: none;
+}
+
+html[data-browser-chrome-nudge] #root {
+  position: fixed;
+  inset: 0;
+  height: var(--app-viewport-height, 100dvh);
+  overflow: hidden;
+}
+
+html[data-mobile-keyboard="true"],
+html[data-mobile-keyboard="true"] body,
+html[data-mobile-keyboard="true"] #root {
+  background: var(--theme-bg);
+}
+
+/* Custom scrollbar - subtle and thin */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+  transition: background 0.3s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.18);
+}
+
+/* Dark mode scrollbar */
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* ── Sidebar scroll effects (disabled — solid-color overlays cause truncation) ── */
+
+/* ── Sidebar transition ── */
+.sidebar-panel {
+  transition:
+    width 150ms steps(1, start),
+    opacity 150ms ease-linear;
+}
+
+.sidebar-panel[data-collapsed="true"] {
+  width: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.sidebar-panel[data-collapsed="false"] {
+  width: var(--sidebar-width);
+  opacity: 1;
+}
+
+/* Sidebar navigation button — theme-aware hover */
+.sidebar-nav-btn {
+  color: var(--theme-text-secondary);
+}
+.sidebar-nav-btn:hover {
+  background-color: var(
+    --glass-bg-subtle,
+    color-mix(in srgb, var(--theme-bg) 80%, white)
+  );
+  color: var(--theme-text);
+}
+
+/* Sidebar rail button — theme-aware hover */
+.sidebar-rail-btn {
+  color: var(--theme-text-secondary);
+}
+.sidebar-rail-btn:hover {
+  background-color: var(
+    --glass-bg-subtle,
+    color-mix(in srgb, var(--theme-bg) 80%, white)
+  );
+  color: var(--theme-text);
+}
+
+/* Mobile bottom-sheet drag handle — touch feedback */
+.mobile-drag-handle {
+  transition:
+    opacity 0.15s,
+    width 0.15s,
+    height 0.15s;
+}
+.mobile-drag-handle:active {
+  opacity: 0.6;
+  width: 2.5rem !important;
+  height: 0.35rem !important;
+}

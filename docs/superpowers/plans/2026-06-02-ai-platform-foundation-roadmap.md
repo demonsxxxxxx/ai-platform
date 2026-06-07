@@ -340,6 +340,25 @@ projections.
 - 普通用户投影中 `agent_id` 也不得作为 raw skill id 旁路。
 - 企业 Agent 前端纳入正式发布编排。
 
+### 2026-06-06 Frontend Source Ownership
+
+Status: source migration landed for the current #17 slice under
+`frontend/web`. The imported React/Vite source is the key-file hash-matched
+LambChat POC frontend snapshot used by the 211 thin-shell entry. The current
+runtime entry remains `http://10.56.0.211:18001/` served by
+`tools/serve_lambchat_thin_shell.py`; no backend scheduling, sandbox,
+auth/session, DB schema, or compose one-command delivery behavior is changed by
+this source import.
+
+This advances G0/G9 source ownership and same-commit reviewability, but it does
+not close full Agent Frontend V1 rollout. Legacy LambChat admin/model/MCP,
+persona, and sandbox-oriented panels remain imported source and require
+ai-platform public/admin projection audit or product gating before ordinary-user
+rollout. Detailed contract, multi-image direction, and remaining risks are
+recorded in `frontend/web/README.md` and
+`docs/frontend/ai-platform-frontend-migration.md`.
+G8/G10 Long Task and Multi-Agent work are not implemented by this migration.
+
 ## 后续顺序
 
 1. Source Authority / Security Baseline 与公司内网 auth/session、tenant/workspace/user 隔离。
