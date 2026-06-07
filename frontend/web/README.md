@@ -30,15 +30,18 @@ files are intentionally excluded from the repository import.
 
 ```powershell
 pnpm install --frozen-lockfile
-pnpm run projection:audit  # currently fails closed until legacy secret-like surfaces are gated
+pnpm run projection:audit
 pnpm run lint
 pnpm run build
 ```
 
 `pnpm run ci:verify` starts with `pnpm run projection:audit` and is the release
-gate. It is expected to fail while the migrated legacy admin/model/envvar/channel
-surfaces still expose secret-like fields outside ai-platform public/admin
-projections.
+gate. The current audit status is `pass_with_policy_gaps`: active browser
+entry files are blocked if they consume executor-private or secret-like
+projection terms, while quarantined legacy source and route-policy gaps stay
+visible for G6/G9 follow-up. This status lets `ci:verify` continue to lint,
+type-check, and build, but it does not close the Agent Frontend V1 rollout
+gate.
 
 For local development, Vite proxies `/api/*` to `VITE_AI_PLATFORM_API_TARGET`,
 defaulting to `http://127.0.0.1:8020`. For the intranet deployment, keep the
@@ -81,7 +84,9 @@ This import is intentionally source-first:
   and require ai-platform projection and policy audit before ordinary-user
   rollout.
 - `pnpm run projection:audit` runs the repository-owned static projection audit
-  and is the first step in `pnpm run ci:verify`.
+  and is the first step in `pnpm run ci:verify`; `pass_with_policy_gaps`
+  continues to lint, type-check, and build while preserving G6/G9 rollout
+  blockers.
 - Issue #22 office-user context continuity and sandbox cold-start UX is not
   implemented here; it should shape later workbench design.
 - G8/G10 Long Task and Multi-Agent work are not implemented by this migration.

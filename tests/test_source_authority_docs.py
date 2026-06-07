@@ -154,3 +154,12 @@ def test_frontend_source_import_is_documented_without_replacing_current_runtime(
     assert "Docker compose one-command startup is not a current" in combined_text
     assert "C:\\Users" not in combined_text
     assert "/api/ai/workbench" not in combined_text
+
+
+def test_frontend_readme_matches_current_projection_audit_gate():
+    readme_text = read(FRONTEND_README)
+
+    assert "pass_with_policy_gaps" in readme_text
+    assert "expected to fail" not in readme_text.lower()
+    assert "continues to lint, type-check, and build" in readme_text
+    assert "G6/G9" in readme_text
