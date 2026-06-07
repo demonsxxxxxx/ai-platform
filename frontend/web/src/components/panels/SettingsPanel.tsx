@@ -21,8 +21,9 @@ import { useSettingsContext } from "../../contexts/SettingsContext";
 import { JsonSchemaEditor } from "./JsonSchemaEditor";
 import { SystemHealthSection } from "./SystemHealthSection";
 import { useAuth } from "../../hooks/useAuth";
-import { roleApi, agentApi, modelApi } from "../../services/api";
-import type { ModelOption } from "../../services/api/model";
+import { agentApi } from "../../services/api/agent";
+import { roleApi } from "../../services/api/role";
+import { modelPublicApi, type ModelOption } from "../../services/api/modelPublic";
 import { Permission, type AgentInfo } from "../../types";
 import { formatDateTime } from "../../utils/datetime";
 import type {
@@ -169,23 +170,7 @@ export function SettingsPanel() {
   useEffect(() => {
     const fetchModels = async () => {
       try {
-        if (hasPermission(Permission.MODEL_ADMIN)) {
-          const data = await modelApi.list(true);
-          setAvailableModels(
-            (data.models || [])
-              .filter((model) => model.enabled && model.id)
-              .map((model) => ({
-                id: model.id || "",
-                value: model.value,
-                provider: model.provider,
-                label: model.label,
-                description: model.description,
-                profile: model.profile,
-              })),
-          );
-          return;
-        }
-        const data = await modelApi.listAvailable();
+        const data = await modelPublicApi.listAvailable();
         setAvailableModels(data.models || []);
       } catch (err) {
         console.error("Failed to fetch models:", err);

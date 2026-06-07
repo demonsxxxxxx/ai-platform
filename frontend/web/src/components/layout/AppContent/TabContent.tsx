@@ -22,11 +22,6 @@ const AgentConfigPanel = lazy(() =>
     default: m.AgentConfigPanel,
   })),
 );
-const ModelPanel = lazy(() =>
-  import("../../panels/ModelPanel").then((m) => ({
-    default: m.ModelPanel,
-  })),
-);
 const MCPPanel = lazy(() =>
   import("../../panels/MCPPanel").then((m) => ({ default: m.MCPPanel })),
 );
@@ -35,8 +30,10 @@ const FeedbackPanel = lazy(() =>
     default: m.FeedbackPanel,
   })),
 );
-const ChannelsPage = lazy(() =>
-  import("../../pages/ChannelsPage").then((m) => ({ default: m.ChannelsPage })),
+const QuarantinedLegacyPanel = lazy(() =>
+  import("./QuarantinedLegacyPanel").then((m) => ({
+    default: m.QuarantinedLegacyPanel,
+  })),
 );
 const RevealedFilesPage = lazy(() =>
   import("../../fileLibrary/RevealedFilesPanel").then((m) => ({
@@ -70,9 +67,9 @@ const panelMap: Record<
   settings: SettingsPanel,
   mcp: MCPPanel,
   feedback: FeedbackPanel,
-  channels: ChannelsPage,
+  channels: QuarantinedLegacyPanel,
   agents: AgentConfigPanel,
-  models: ModelPanel,
+  models: QuarantinedLegacyPanel,
   files: RevealedFilesPage,
   persona: PersonaPlazaPanel,
   notifications: NotificationPanel,

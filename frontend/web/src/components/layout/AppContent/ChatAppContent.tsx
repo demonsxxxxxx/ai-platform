@@ -554,7 +554,7 @@ export function ChatAppContent({
 
     const resolveTargetRunId = async () => {
       try {
-        const { sessionApi } = await import("../../../services/api");
+        const { sessionApi } = await import("../../../services/api/session");
         const response = await sessionApi.getRuns(sessionId, {
           trace_id: targetTraceId,
         });

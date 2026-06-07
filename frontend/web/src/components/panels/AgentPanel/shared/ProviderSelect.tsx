@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from "react";
 import { ChevronDown, Search } from "lucide-react";
 import { ModelIconImg } from "../../../agent/modelIcon.tsx";
-import { modelApi } from "../../../../services/api/model";
+import { modelPublicApi } from "../../../../services/api/modelPublic";
 
 /** 前端显示名映射（后端只有 slug，显示名在前端维护） */
 const PROVIDER_LABELS: Record<string, string> = {
@@ -55,7 +55,7 @@ export const ProviderSelect = React.memo(function ProviderSelect({
 
   // 从后端拉取 provider 列表（只拉一次）
   useEffect(() => {
-    modelApi
+    modelPublicApi
       .listProviders()
       .then((list) => {
         setProviders(list.map((p) => p.value));

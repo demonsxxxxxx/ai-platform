@@ -226,6 +226,23 @@ LEGACY_ROUTE_POLICY_MAP: dict[str, dict[str, str]] = {
     },
 }
 
+IMPORT_FROM_SPECIFIER = re.compile(
+    r"""\bimport\s+(?P<type_only>type\s+)?(?P<clause>[^'";]+?)\s+from\s+["'](?P<specifier>[^"']+)["']""",
+    re.DOTALL,
+)
+SIDE_EFFECT_IMPORT_SPECIFIER = re.compile(r"""\bimport\s+["'](?P<specifier>[^"']+)["']""")
+DYNAMIC_IMPORT_SPECIFIER = re.compile(r"""\bimport\s*\(\s*["'](?P<specifier>[^"']+)["']""")
+EXPORT_FROM_SPECIFIER = re.compile(
+    r"""\bexport\s+(?P<type_only>type\s+)?(?P<clause>[^'";]+?)\s+from\s+["'](?P<specifier>[^"']+)["']""",
+    re.DOTALL,
+)
+ACTIVE_ENTRY_CANDIDATES = [
+    SOURCE_ROOT / "main.tsx",
+    SOURCE_ROOT / "main.ts",
+    SOURCE_ROOT / "App.tsx",
+    SOURCE_ROOT / "App.ts",
+]
+
 
 def _relative_path(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
@@ -247,6 +264,152 @@ def _production_source_files(root: Path) -> list[Path]:
             continue
         files.append(path)
     return sorted(files)
+
+
+def _resolve_relative_module(path: Path, specifier: str) -> Path | None:
+    if not specifier.startswith("."):
+        return None
+    base = (path.parent / specifier).resolve()
+    if base.is_file() and base.suffix in SOURCE_SUFFIXES:
+        return base
+    for suffix in SOURCE_SUFFIXES:
+        candidate = base.with_suffix(suffix)
+        if candidate.is_file():
+            return candidate
+    if base.is_dir():
+        for name in ("index.tsx", "index.ts", "index.jsx", "index.js"):
+            candidate = base / name
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _exported_names_from_named_clause(clause: str) -> set[str]:
+    names: set[str] = set()
+    for raw_part in clause.strip("{} \n\t").split(","):
+        part = raw_part.strip()
+        if not part:
+            continue
+        if part.startswith("type "):
+            part = part.removeprefix("type ").strip()
+        if " as " in part:
+            names.add(part.rsplit(" as ", 1)[1].strip())
+        else:
+            names.add(part)
+    return {name for name in names if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", name)}
+
+
+def _requested_symbols_from_import_clause(clause: str) -> set[str] | None:
+    stripped = clause.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        return _exported_names_from_named_clause(stripped)
+    return None
+
+
+def _exported_symbols_from_export_clause(clause: str) -> set[str] | None:
+    stripped = clause.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        return _exported_names_from_named_clause(stripped)
+    namespace_export = re.match(r"\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)$", stripped)
+    if namespace_export:
+        return {namespace_export.group(1)}
+    if stripped.startswith("*"):
+        return None
+    return None
+
+
+def _merge_requested_symbols(
+    previous: set[str] | None | object,
+    incoming: set[str] | None,
+) -> set[str] | None:
+    if previous is _UNVISITED:
+        return incoming
+    if previous is None or incoming is None:
+        return None
+    return set(previous) | set(incoming)
+
+
+def _should_process_with_request(
+    previous: set[str] | None | object,
+    incoming: set[str] | None,
+) -> bool:
+    if previous is _UNVISITED:
+        return True
+    if previous is None:
+        return False
+    if incoming is None:
+        return True
+    return not incoming.issubset(previous)
+
+
+def _export_satisfies_request(exported: set[str] | None, requested: set[str] | None) -> bool:
+    if requested is None or exported is None:
+        return True
+    return bool(exported & requested)
+
+
+def _dependency_edges(path: Path, text: str, requested: set[str] | None) -> list[tuple[Path, set[str] | None]]:
+    edges: list[tuple[Path, set[str] | None]] = []
+    for match in SIDE_EFFECT_IMPORT_SPECIFIER.finditer(text):
+        resolved = _resolve_relative_module(path, match.group("specifier"))
+        if resolved is not None:
+            edges.append((resolved, None))
+    for match in DYNAMIC_IMPORT_SPECIFIER.finditer(text):
+        resolved = _resolve_relative_module(path, match.group("specifier"))
+        if resolved is not None:
+            edges.append((resolved, None))
+    for match in IMPORT_FROM_SPECIFIER.finditer(text):
+        if match.group("type_only"):
+            continue
+        resolved = _resolve_relative_module(path, match.group("specifier"))
+        if resolved is None:
+            continue
+        edges.append((resolved, _requested_symbols_from_import_clause(match.group("clause"))))
+    for match in EXPORT_FROM_SPECIFIER.finditer(text):
+        if match.group("type_only"):
+            continue
+        exported = _exported_symbols_from_export_clause(match.group("clause"))
+        if not _export_satisfies_request(exported, requested):
+            continue
+        resolved = _resolve_relative_module(path, match.group("specifier"))
+        if resolved is not None:
+            edges.append((resolved, requested if exported is None else exported & requested if requested else None))
+    return edges
+
+
+_UNVISITED = object()
+
+
+def _active_browser_source_files(root: Path, production_files: list[Path]) -> list[Path]:
+    source_root = root / SOURCE_ROOT
+    production_set = {path.resolve() for path in production_files}
+    entries = [
+        (root / candidate).resolve()
+        for candidate in ACTIVE_ENTRY_CANDIDATES
+        if (root / candidate).is_file()
+    ]
+    if not entries and source_root.exists():
+        return sorted(production_set)
+
+    active: set[Path] = set()
+    requested_by_path: dict[Path, set[str] | None] = {}
+    stack: list[tuple[Path, set[str] | None]] = [(entry, None) for entry in entries]
+    while stack:
+        path, requested = stack.pop()
+        if path not in production_set:
+            continue
+        previous = requested_by_path.get(path, _UNVISITED)
+        if not _should_process_with_request(previous, requested):
+            continue
+        requested_by_path[path] = _merge_requested_symbols(previous, requested)
+        active.add(path)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        for resolved, next_requested in _dependency_edges(path, text, requested_by_path[path]):
+            stack.append((resolved, next_requested))
+    return sorted(active)
 
 
 def _line_refs(root: Path, path: Path, line_number: int, term: str, reason: str) -> dict[str, object]:
@@ -431,12 +594,10 @@ def _ci_integration(root: Path) -> dict[str, object]:
     projection_audit_defined = "frontend_projection_audit.py" in projection_audit
     ci_verify_steps = [step.strip() for step in ci_verify.split("&&") if step.strip()]
     first_step = ci_verify_steps[0] if ci_verify_steps else ""
-    audit_in_ci = projection_audit_defined and first_step in {
-        "pnpm run projection:audit",
-        "npm run projection:audit",
-        "yarn projection:audit",
-        "yarn run projection:audit",
-    }
+    audit_in_ci = projection_audit_defined and (
+        first_step in _PROJECTION_AUDIT_SCRIPT_INVOCATIONS
+        or _first_step_directly_launches_projection_audit(first_step)
+    )
     return {
         "ci_verify_includes_projection_audit": audit_in_ci,
         "script": ci_verify,
@@ -444,11 +605,39 @@ def _ci_integration(root: Path) -> dict[str, object]:
     }
 
 
+_PROJECTION_AUDIT_SCRIPT_INVOCATIONS = {
+    "corepack pnpm run projection:audit",
+    "pnpm run projection:audit",
+    "npm run projection:audit",
+    "yarn projection:audit",
+    "yarn run projection:audit",
+}
+
+
+def _first_step_directly_launches_projection_audit(first_step: str) -> bool:
+    tokens = [token.strip("\"'").replace("\\", "/") for token in first_step.split()]
+    if len(tokens) >= 3 and tokens[0] in {"node", "node.exe"}:
+        return tokens[1] == "scripts/run-python-tool.mjs" and any(
+            token.endswith("tools/frontend_projection_audit.py") for token in tokens[2:]
+        )
+    if len(tokens) >= 2 and tokens[0] in {"python", "python3", "py", "py.exe"}:
+        return tokens[1].endswith("tools/frontend_projection_audit.py")
+    return False
+
+
 def build_frontend_projection_audit(repo_root: Path | None = None) -> dict[str, Any]:
     """Build a static audit for frontend public/admin projection boundaries."""
     root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
     files = _production_source_files(root)
+    active_files = _active_browser_source_files(root, files)
     private_terms = _audit_forbidden_private_terms(root, files)
+    active_private_terms = _audit_forbidden_private_terms(root, active_files)
+    active_path_set = {_relative_path(root, path) for path in active_files}
+    quarantined_violations = [
+        item
+        for item in private_terms["violations"]
+        if isinstance(item.get("path"), str) and item["path"] not in active_path_set
+    ]
     ai_routes = _scan_routes(root, files, AI_PLATFORM_ROUTE_PREFIXES)
     compat_routes = _scan_routes(root, files, COMPAT_ROUTE_PREFIXES)
     legacy_routes = _scan_routes(root, files, LEGACY_POLICY_REQUIRED_ROUTE_PREFIXES)
@@ -460,15 +649,18 @@ def build_frontend_projection_audit(repo_root: Path | None = None) -> dict[str, 
         open_gaps.append("legacy_routes_need_route_by_route_ai_platform_policy_mapping")
     elif legacy_routes:
         open_gaps.append("legacy_routes_need_policy_enforcement_or_ai_platform_remap")
+    if quarantined_violations:
+        open_gaps.append("quarantined_legacy_sources_need_ai_platform_projection_remap")
     ci = _ci_integration(root)
     if not ci["ci_verify_includes_projection_audit"]:
         open_gaps.append("frontend_ci_verify_does_not_yet_run_projection_audit")
 
     ci_blocks_release = not ci["ci_verify_includes_projection_audit"]
+    active_violations = active_private_terms["violations"]
 
-    if violations or ci_blocks_release:
+    if active_violations or ci_blocks_release:
         status = "blocked"
-    elif open_gaps:
+    elif open_gaps or violations:
         status = "pass_with_policy_gaps"
     else:
         status = "pass"
@@ -483,6 +675,15 @@ def build_frontend_projection_audit(repo_root: Path | None = None) -> dict[str, 
         },
         "forbidden_private_payload_terms": private_terms,
         "forbidden_projection_terms": private_terms,
+        "active_browser_entry": {
+            "entry_candidates": [candidate.as_posix() for candidate in ACTIVE_ENTRY_CANDIDATES],
+            "files": [_relative_path(root, path) for path in active_files],
+            "forbidden_projection_terms": active_private_terms,
+        },
+        "quarantined_legacy_sources": {
+            "violations": quarantined_violations,
+            "policy": "not_in_active_browser_entry_graph_but_must_be_remapped_or_removed_before_g9_rollout",
+        },
         "route_inventory": {
             "ai_platform_projection_routes": ai_routes,
             "same_origin_compat_routes": compat_routes,
@@ -518,9 +719,19 @@ def render_frontend_projection_audit_markdown(audit: dict[str, Any]) -> str:
     ) or "- none"
     gaps = "\n".join(f"- {gap}" for gap in audit["open_gaps"]) or "- none"
     private_violations = audit["forbidden_private_payload_terms"]["violations"]
+    active_violations = audit["active_browser_entry"]["forbidden_projection_terms"]["violations"]
+    quarantined_violations = audit["quarantined_legacy_sources"]["violations"]
     violation_lines = "\n".join(
         f"- `{item['path']}:{item['line']}` `{item['term']}`"
         for item in private_violations
+    ) or "- none"
+    active_lines = "\n".join(
+        f"- `{item['path']}:{item['line']}` `{item['term']}`"
+        for item in active_violations
+    ) or "- none"
+    quarantined_lines = "\n".join(
+        f"- `{item['path']}:{item['line']}` `{item['term']}`"
+        for item in quarantined_violations[:20]
     ) or "- none"
     return (
         "# ai-platform Frontend Projection Audit\n\n"
@@ -536,6 +747,11 @@ def render_frontend_projection_audit_markdown(audit: dict[str, Any]) -> str:
         f"{legacy_policies}\n\n"
         "## Forbidden Projection Violations\n\n"
         f"{violation_lines}\n\n"
+        "## Active Browser Entry\n\n"
+        f"Active source files: `{len(audit['active_browser_entry']['files'])}`\n\n"
+        f"{active_lines}\n\n"
+        "## Quarantined Legacy Sources\n\n"
+        f"{quarantined_lines}\n\n"
         "## Open Gaps\n\n"
         f"{gaps}\n"
     )

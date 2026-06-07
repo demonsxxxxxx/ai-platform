@@ -5,7 +5,7 @@ import toast from "react-hot-toast";
 import { useTranslation } from "react-i18next";
 import { ModelIconImg } from "./modelIcon.tsx";
 import { shouldCloseModelSelector } from "./modelSelectorGuards";
-import type { ModelOption } from "../../services/api/model";
+import type { ModelOption } from "../../services/api/modelPublic";
 
 const MAX_PINNED = 10;
 

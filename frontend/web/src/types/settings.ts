@@ -105,7 +105,6 @@ export interface AvailableModelConfig {
   provider?: string;
   label: string;
   description?: string;
-  api_key?: string;
   api_base?: string;
   temperature?: number;
   max_tokens?: number;

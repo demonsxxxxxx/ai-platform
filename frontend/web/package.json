@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+    "ci:verify": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json && eslint . && tsc -b && vite build",
     "lint": "eslint .",
     "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
     "preview": "vite preview",

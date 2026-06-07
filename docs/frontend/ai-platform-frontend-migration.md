@@ -13,7 +13,7 @@ auth/session, DB schema, or compose delivery behavior.
 | --- | --- |
 | #15 roadmap governance | Open. The roadmap has a gate-based sync, but release evidence and execution history are still mixed in older sections. |
 | #16 tenant-aware concurrency | Open. #20 closed the current G5 scheduling/admission gaps, but #21 still blocks capacity claims and production default increases. |
-| #17 frontend source ownership | In progress. Source now lives under `frontend/web`, has local install/lint/build evidence, and exposes release traceability plus a fail-closed frontend projection audit. `ci:verify` starts with `projection:audit` and is expected to block until legacy secret-like admin/model/envvar/channel surfaces are mapped or gated. Full closure still needs CI workflow enforcement and later image integration. |
+| #17 frontend source ownership | In progress. Source now lives under `frontend/web`, has local install/lint/build evidence, and exposes release traceability plus a frontend projection audit. `ci:verify` starts with the projection audit launcher; the active browser entry graph is currently clear of forbidden private/secret-like projection terms, while inactive legacy secret-like model/channel sources remain quarantined and must be remapped before G9 rollout. Full closure still needs CI workflow enforcement and later image integration. |
 | #20 G5 scheduling/admission gaps | Closed on 2026-06-06 by `f5da825` and `e203412`, with local full pytest and 211 smoke evidence recorded in the issue. |
 | #21 capacity baseline | Open. Current default active worker execution is still about three runs, and load-test evidence is required before raising concurrency defaults. |
 | #22 office UX/context continuity | Open future product issue. It should inform workbench design but is not implemented in this migration. |
@@ -24,18 +24,20 @@ Gate summary:
   repository as backend and worker code. Frontend release traceability can now
   point to the same commit as backend/worker changes through
   `tools/frontend_release_traceability.py`; frontend `ci:verify` starts with
-  `projection:audit` and fails closed while legacy secret-like routes remain.
+  the projection audit launcher and now records active-entry projection
+  evidence plus quarantined legacy source gaps.
   Repository/remote CI still needs to enforce frontend checks before this is a
   full release gate.
 - G1 Security MVP remains dependent on company auth/session, RBAC, tenant
-  isolation, redaction, and frontend projection audit.
+  isolation, redaction, and frontend projection audit/remap evidence.
 - G2-G7 backend/control-plane foundations have substantial current coverage,
   with sandbox production Docker hardening still blocking high-risk expansion.
 - G8/G10 Long Task and Multi-Agent work are not implemented by this migration
   and must not expand ordinary-user exposure until #16/#21 and
   frontend/user-loop gates pass.
-- G9 Agent Frontend V1 is the active frontend gate. Source migration moves the
-  gate forward, but imported legacy surfaces still need projection audit and
+- G9 Agent Frontend V1 is the active frontend gate. Source migration and
+  active-entry projection audit move the gate forward, but quarantined legacy
+  surfaces still need ai-platform projection remap, policy enforcement, and
   product acceptance before broad trial.
 
 ## Source And Runtime Evidence
@@ -126,8 +128,16 @@ Static audit on 2026-06-07:
 - `tools/frontend_projection_audit.py` now provides a reproducible static
   audit with schema `ai-platform.frontend-projection-audit.v1`; frontend
   `projection:audit` is wired as the first step of `ci:verify` through a
-  cross-platform Python launcher and fails closed on forbidden private or
-  secret-like projection references.
+  cross-platform Python launcher and fails closed when the active browser entry
+  graph consumes forbidden private or secret-like projection terms.
+- The audit now separates the active browser entry graph from quarantined
+  legacy source files. `/channels` and `/models` render a fail-closed
+  quarantine panel until those surfaces are remapped to ai-platform public or
+  same-tenant admin projections.
+- Ordinary model selectors now use `frontend/web/src/services/api/modelPublic.ts`,
+  which exposes only safe model options, provider names, and per-user pinned
+  model preferences. Legacy model administration code remains source-visible
+  but is not part of the active browser entry graph.
 - The audit now emits a machine-readable legacy route policy map for each
   scanned legacy route. It records the required governance gate, ordinary-user
   fail-closed exposure, admin projection boundary, and required remap/hide
@@ -148,11 +158,12 @@ Static audit on 2026-06-07:
 Remaining audit risks:
 
 - Imported legacy LambChat panels still include admin/model/MCP/envvar/channel
-  surfaces that can handle or read user-entered credentials such as model API
-  keys or channel app secrets. The projection audit now reports these as
-  blocking secret-like references; they must be remapped to ai-platform
-  projections, masked, admin/policy-gated, or hidden before ordinary-user Agent
-  Frontend rollout.
+  surfaces that can handle or read user-entered credentials. The projection
+  audit now reports inactive secret-like model/channel sources as quarantined
+  legacy source gaps rather than active browser entry violations. The env-var
+  profile surface is still an active legacy route policy gap and must be
+  remapped to ai-platform projections, masked, admin/policy-gated, or hidden
+  before ordinary-user Agent Frontend rollout.
 - Legacy `/api/memory/*`, `/api/mcp/*`, `/api/env-vars/*`,
   `/api/agent/models/*`, and channel/admin endpoints now have audit-visible
   route policy mappings, but still need actual enforcement, hiding, or remap to
@@ -208,7 +219,7 @@ Current local evidence on 2026-06-07:
 - `frontend/web/package.json` now defines `projection:audit` as
   `node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json`
   and `ci:verify` as
-  `pnpm run projection:audit && eslint . && tsc -b && vite build`, so the
+  `node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json && eslint . && tsc -b && vite build`, so the
   script works even when this Windows workstation can only start pnpm through
   Corepack and 211 needs `python3` instead of bare `python`.
 - `python tools/frontend_release_traceability.py --format json` records the
@@ -216,11 +227,12 @@ Current local evidence on 2026-06-07:
   `dist/` status without printing local absolute paths, `.env` values, or
   secret-like data.
 - `python tools/frontend_projection_audit.py --format json` records the
-  current production-source route inventory, private-payload term scan, CI
-  integration status, forbidden secret-like projection findings, and remaining
-  legacy route policy gaps without printing local absolute paths or secret-like
-  runtime configuration. The current status is `blocked`; this is a release
-  gate signal, not a frontend TypeScript build failure.
+  current production-source route inventory, active browser entry graph,
+  quarantined legacy source findings, CI integration status, forbidden
+  secret-like projection findings, and remaining legacy route policy gaps
+  without printing local absolute paths or secret-like runtime configuration.
+  The current status is `pass_with_policy_gaps`; this allows local
+  `ci:verify` to exercise lint/build while preserving G6/G9 rollout blockers.
 
 These warnings do not block the source migration, but they remain frontend
 hardening work before broader Agent Frontend V1 rollout. Generated `dist/` is
@@ -230,8 +242,10 @@ back to the same git commit as API and worker.
 ## Remaining Risks
 
 - The imported frontend still contains legacy LambChat admin/model/MCP/persona
-  and sandbox-related panels. They must be audited or hidden behind ai-platform
-  policy before ordinary-user rollout.
+  and sandbox-related panels. Secret-like `/channels` and `/models` surfaces
+  are now quarantined from the active browser entry graph; active legacy routes
+  such as env-var profile management and the remaining route inventory still
+  need ai-platform remap/policy acceptance before ordinary-user rollout.
 - The source worktree on 211 was dirty at migration time; this import captures
   the hash-matched snapshot but does not clean the upstream LambChat POC repo.
 - #21 capacity/load-test evidence remains open, so no production concurrency
@@ -246,7 +260,7 @@ Backend/source-authority focused verification:
 ```powershell
 python -m pytest tests/test_source_authority_docs.py tests/test_serve_lambchat_thin_shell.py tests/test_lambchat_frontend_compat.py tests/test_lambchat_projection_contract.py -q --basetemp .pytest-tmp\frontend-migration
 python tools/frontend_release_traceability.py --format json
-python tools/frontend_projection_audit.py --format json  # exits 1 while projection audit is blocked
+python tools/frontend_projection_audit.py --format json
 python tools/governance_readiness.py --format json
 ```
 

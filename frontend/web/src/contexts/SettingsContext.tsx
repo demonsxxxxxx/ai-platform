@@ -9,7 +9,7 @@ import {
 } from "react";
 import { useSettings } from "../hooks/useSettings";
 import { useAuth } from "../hooks/useAuth";
-import { modelApi } from "../services/api";
+import { modelPublicApi } from "../services/api/modelPublic";
 import type { SettingsResponse } from "../types";
 
 export interface AvailableModel {
@@ -73,7 +73,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const [pinnedModelIds, setPinnedModelIds] = useState<string[]>([]);
 
   const fetchModels = useCallback(() => {
-    modelApi
+    modelPublicApi
       .listAvailable()
       .then((data) => {
         setAdminDefaultModelId(data.default_model_id || "");
@@ -98,7 +98,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const fetchPinnedModels = useCallback(() => {
-    modelApi
+    modelPublicApi
       .getPinnedModelIds()
       .then(setPinnedModelIds)
       .catch(() => {});
@@ -116,7 +116,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       const next = prev.includes(modelId)
         ? prev.filter((id) => id !== modelId)
         : [...prev, modelId];
-      modelApi.updatePinnedModelIds(next).catch(() => {});
+      modelPublicApi.updatePinnedModelIds(next).catch(() => {});
       return next;
     });
   }, []);
@@ -132,7 +132,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (cleanedPinnedIds.length === pinnedModelIds.length) return;
     setPinnedModelIds(cleanedPinnedIds);
-    modelApi.updatePinnedModelIds(cleanedPinnedIds).catch(() => {});
+    modelPublicApi.updatePinnedModelIds(cleanedPinnedIds).catch(() => {});
   }, [cleanedPinnedIds, pinnedModelIds.length]);
 
   // 从 DB 读取模型

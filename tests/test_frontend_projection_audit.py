@@ -13,12 +13,22 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
 
     assert audit["schema_version"] == "ai-platform.frontend-projection-audit.v1"
     assert audit["frontend_path"] == "frontend/web"
-    assert audit["status"] == "blocked"
+    assert audit["status"] == "pass_with_policy_gaps"
     assert audit["ci_integration"]["ci_verify_includes_projection_audit"] is True
     violations = audit["forbidden_private_payload_terms"]["violations"]
     assert violations
     violation_terms = {item["term"] for item in violations}
     assert {"api_key", "encrypt_key", "verification_token"}.issubset(violation_terms)
+    active_violations = audit["active_browser_entry"]["forbidden_projection_terms"]["violations"]
+    assert active_violations == []
+    active_paths = set(audit["active_browser_entry"]["files"])
+    assert "frontend/web/src/components/panels/channel/feishu/FeishuPanel.tsx" not in active_paths
+    assert "frontend/web/src/components/panels/ModelPanel/ModelPanel.tsx" not in active_paths
+    quarantined_paths = {
+        item["path"] for item in audit["quarantined_legacy_sources"]["violations"]
+    }
+    assert "frontend/web/src/components/panels/channel/feishu/FeishuPanel.tsx" in quarantined_paths
+    assert "frontend/web/src/services/api/model.ts" in quarantined_paths
     assert not any(
         item["path"] == "frontend/web/src/components/documents/documentUrlSafety.ts"
         for item in violations
@@ -52,6 +62,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     )
     assert policy_routes["/api/mcp"]["governance_gate"] == "G6"
     assert "legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
+    assert "quarantined_legacy_sources_need_ai_platform_projection_remap" in audit["open_gaps"]
 
     serialized = json.dumps(audit, ensure_ascii=False).lower()
     assert "c:\\users" not in serialized
@@ -76,11 +87,111 @@ def test_frontend_projection_audit_detects_private_payload_consumption(tmp_path)
     audit = build_frontend_projection_audit(repo_root=tmp_path)
 
     assert audit["status"] == "blocked"
+    assert audit["active_browser_entry"]["forbidden_projection_terms"]["violations"] == [
+        {
+            "path": "frontend/web/src/bad.ts",
+            "line": 1,
+            "term": "storage_key",
+            "reason": "production_code_references_forbidden_projection_term",
+        }
+    ]
     assert audit["forbidden_private_payload_terms"]["violations"] == [
         {
             "path": "frontend/web/src/bad.ts",
             "line": 1,
             "term": "storage_key",
+            "reason": "production_code_references_forbidden_projection_term",
+        }
+    ]
+
+
+def test_frontend_projection_audit_quarantines_legacy_secret_sources(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src"
+    source_root.mkdir(parents=True)
+    (source_root / "main.tsx").write_text(
+        'import "./safe";\nexport const mounted = true;\n',
+        encoding="utf-8",
+    )
+    (source_root / "safe.ts").write_text(
+        'export const route = "/api/ai/runs/123/playback";\n',
+        encoding="utf-8",
+    )
+    legacy_dir = source_root / "components" / "panels" / "ModelPanel"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "ModelPanel.tsx").write_text(
+        "export function ModelPanel(model: { api_key?: string }) { return model.api_key; }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+
+    assert audit["status"] == "pass_with_policy_gaps"
+    assert audit["active_browser_entry"]["forbidden_projection_terms"]["violations"] == []
+    assert audit["forbidden_private_payload_terms"]["violations"] == [
+        {
+            "path": "frontend/web/src/components/panels/ModelPanel/ModelPanel.tsx",
+            "line": 1,
+            "term": "api_key",
+            "reason": "production_code_references_forbidden_projection_term",
+        }
+    ]
+    assert audit["quarantined_legacy_sources"]["violations"] == [
+        {
+            "path": "frontend/web/src/components/panels/ModelPanel/ModelPanel.tsx",
+            "line": 1,
+            "term": "api_key",
+            "reason": "production_code_references_forbidden_projection_term",
+        }
+    ]
+    assert "quarantined_legacy_sources_need_ai_platform_projection_remap" in audit["open_gaps"]
+
+
+def test_frontend_projection_audit_follows_re_exported_active_modules(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src"
+    source_root.mkdir(parents=True)
+    (source_root / "main.tsx").write_text(
+        'import { leaked } from "./api";\nexport const mounted = leaked;\n',
+        encoding="utf-8",
+    )
+    (source_root / "api.ts").write_text(
+        'export { leaked } from "./legacyModel";\n',
+        encoding="utf-8",
+    )
+    (source_root / "legacyModel.ts").write_text(
+        "export const leaked = (model: { api_key?: string }) => model.api_key;\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+
+    assert audit["status"] == "blocked"
+    assert audit["active_browser_entry"]["forbidden_projection_terms"]["violations"] == [
+        {
+            "path": "frontend/web/src/legacyModel.ts",
+            "line": 1,
+            "term": "api_key",
             "reason": "production_code_references_forbidden_projection_term",
         }
     ]
@@ -401,6 +512,51 @@ def test_frontend_projection_audit_requires_ci_verify_to_start_with_projection_a
     assert "frontend_ci_verify_does_not_yet_run_projection_audit" in audit["open_gaps"]
 
 
+def test_frontend_projection_audit_accepts_direct_node_launcher_ci_step(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src"
+    source_root.mkdir(parents=True)
+    (source_root / "main.tsx").write_text("export const ok = true;\n", encoding="utf-8")
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+
+    assert audit["ci_integration"]["ci_verify_includes_projection_audit"] is True
+    assert audit["status"] == "pass"
+
+
+def test_frontend_projection_audit_rejects_ci_step_that_only_mentions_audit_tool(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src"
+    source_root.mkdir(parents=True)
+    (source_root / "main.tsx").write_text("export const ok = true;\n", encoding="utf-8")
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "echo frontend_projection_audit.py && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+
+    assert audit["ci_integration"]["ci_verify_includes_projection_audit"] is False
+    assert audit["status"] == "blocked"
+    assert "frontend_ci_verify_does_not_yet_run_projection_audit" in audit["open_gaps"]
+
+
 def test_frontend_projection_audit_cli_outputs_json():
     result = subprocess.run(
         [sys.executable, "tools/frontend_projection_audit.py", "--format", "json"],
@@ -409,11 +565,12 @@ def test_frontend_projection_audit_cli_outputs_json():
         text=True,
     )
 
-    assert result.returncode == 1
+    assert result.returncode == 0
     payload = json.loads(result.stdout)
     assert payload["schema_version"] == "ai-platform.frontend-projection-audit.v1"
-    assert payload["status"] == "blocked"
+    assert payload["status"] == "pass_with_policy_gaps"
     assert payload["forbidden_private_payload_terms"]["violations"]
+    assert payload["active_browser_entry"]["forbidden_projection_terms"]["violations"] == []
     assert "c:\\users" not in result.stdout.lower()
 
 
@@ -421,9 +578,10 @@ def test_render_frontend_projection_audit_markdown_is_operator_readable():
     markdown = render_frontend_projection_audit_markdown(build_frontend_projection_audit())
 
     assert "# ai-platform Frontend Projection Audit" in markdown
-    assert "blocked" in markdown
+    assert "pass_with_policy_gaps" in markdown
     assert "/api/ai/admin/" in markdown
     assert "/api/mcp" in markdown
     assert "Legacy Route Policies" in markdown
+    assert "Active Browser Entry" in markdown
     assert "legacy_routes_need_policy_enforcement_or_ai_platform_remap" in markdown
     assert "c:\\users" not in markdown.lower()

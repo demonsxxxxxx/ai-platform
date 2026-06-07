@@ -6,8 +6,7 @@
 import { useState, useEffect } from "react";
 import { Cpu } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { modelApi } from "../../../services/api/model";
-import type { ModelOption } from "../../../services/api/model";
+import { modelPublicApi, type ModelOption } from "../../../services/api/modelPublic";
 import { GlassSelect } from "../../common/GlassSelect";
 
 interface ChannelModelSelectProps {
@@ -24,7 +23,7 @@ export function ChannelModelSelect({
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    modelApi
+    modelPublicApi
       .listAvailable()
       .then((res) => {
         setModels(res.models || []);

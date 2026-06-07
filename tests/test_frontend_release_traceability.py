@@ -8,15 +8,19 @@ from tools.frontend_release_traceability import (
 )
 
 
+EXPECTED_CI_VERIFY = (
+    "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json "
+    "&& eslint . && tsc -b && vite build"
+)
+
+
 def test_frontend_release_traceability_records_ci_contract_without_local_paths():
     trace = build_frontend_release_traceability()
 
     assert trace["schema_version"] == "ai-platform.frontend-release-traceability.v1"
     assert trace["frontend_path"] == "frontend/web"
     assert trace["package_manager"] == "pnpm@10.32.1"
-    assert trace["scripts"]["ci:verify"] == (
-        "pnpm run projection:audit && eslint . && tsc -b && vite build"
-    )
+    assert trace["scripts"]["ci:verify"] == EXPECTED_CI_VERIFY
     assert trace["scripts"]["projection:audit"] == (
         "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json"
     )
@@ -46,9 +50,7 @@ def test_frontend_release_traceability_cli_outputs_json():
 
     payload = json.loads(result.stdout)
     assert payload["schema_version"] == "ai-platform.frontend-release-traceability.v1"
-    assert payload["scripts"]["ci:verify"] == (
-        "pnpm run projection:audit && eslint . && tsc -b && vite build"
-    )
+    assert payload["scripts"]["ci:verify"] == EXPECTED_CI_VERIFY
     assert "corepack pnpm run ci:verify" in payload["commands"]
     assert "c:\\users" not in result.stdout.lower()
 
