@@ -91,10 +91,10 @@ def build_governance_readiness(settings: object | None = None) -> dict[str, Any]
                 "long_term_cross_session_memory_default_fail_closed",
                 "memory_delete_retention_erasure_evidence_snapshot",
                 "memory_export_erasure_evidence_snapshot",
+                "memory_redaction_policy_admin_preview_and_audit",
             ],
             gaps=[
                 "bounded_context_pack_product_contract_for_office_workflows",
-                "memory_redaction_policy_admin_preview_and_audit",
             ],
             next_checks=[
                 "keep delete, retention, and export erasure evidence current through tools/memory_erasure_readiness.py",

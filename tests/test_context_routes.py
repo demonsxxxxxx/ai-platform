@@ -1,10 +1,16 @@
 from contextlib import asynccontextmanager
+from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.repositories import RepositoryNotFoundError
-from app.routes.context import _memory_delete_response, _memory_policy_response, _memory_response
+from app.routes.context import (
+    MEMORY_PREVIEW_URL_DECODE_DEPTH,
+    _memory_delete_response,
+    _memory_policy_response,
+    _memory_response,
+)
 from app.settings import Settings
 
 
@@ -28,6 +34,13 @@ def admin_headers():
     data["X-AI-User-ID"] = "admin-a"
     data["X-AI-User-Name"] = "Admin A"
     return data
+
+
+def url_encode_layers(value: str, layers: int) -> str:
+    encoded = value
+    for _ in range(layers):
+        encoded = quote(encoded, safe="")
+    return encoded
 
 
 def test_memory_public_projections_map_internal_agent_ids():
@@ -2798,6 +2811,758 @@ def test_admin_set_memory_policy_updates_policy_and_writes_audit(monkeypatch):
     assert "id-token" not in str(calls)
     assert raw_openai not in str(calls)
     assert raw_jwt not in str(calls)
+
+
+def test_admin_preview_memory_redaction_returns_safe_projection_and_writes_audit(monkeypatch):
+    calls = []
+    raw_openai = "sk-previewstrict1234567890"
+    raw_jwt = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJwcmV2aWV3In0.signature1234567890"
+    raw_private_marker = "private_payload={raw}"
+    raw_storage_marker = "raw_storage_key=s3://bucket/key storage_key=s3://bucket/key"
+    raw_sandbox_marker = "sandbox_workdir=/tmp/ai-platform-sandbox-workspaces/tenant/run"
+    raw_camel_marker = "rawStorageKey=s3://bucket/key executorPrivatePayload={raw} sandboxWorkdir=workspace/run"
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        calls.append(("workspace", tenant_id, workspace_id))
+
+    async def fake_get_agent(conn, *, tenant_id, agent_id):
+        calls.append(("agent", tenant_id, agent_id))
+        return {"id": agent_id, "tenant_id": tenant_id, "status": "active"}
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "audit-redaction-preview"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.get_agent", fake_get_agent, raising=False)
+    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/memory/redaction/preview",
+        headers=admin_headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "agent_id": "document-review",
+            "redaction_mode": "strict",
+            "content": (
+                f"Draft summary token=hidden {raw_openai} {raw_jwt} "
+                f"{raw_private_marker} {raw_storage_marker} {raw_sandbox_marker} {raw_camel_marker}"
+            ),
+            "metadata": {
+                "api_key": "metadata-secret",
+                "nested": {
+                    "contact": "owner@example.com",
+                    "runtime": f"{raw_private_marker} {raw_storage_marker} {raw_sandbox_marker} {raw_camel_marker}",
+                },
+            },
+            "reason": (
+                f"preview client_secret=client-secret {raw_openai} "
+                f"{raw_storage_marker} {raw_camel_marker}"
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()["memory_redaction_preview"]
+    assert body["schema_version"] == "ai-platform.memory-redaction-preview.v1"
+    assert body["tenant_id"] == "tenant-a"
+    assert body["workspace_id"] == "workspace-a"
+    assert body["agent_id"] == "document-review"
+    assert body["redaction_mode"] == "strict"
+    assert body["content_preview"] == "[redacted-private]"
+    assert body["metadata_preview"] == {
+        "api_key": "[redacted-secret]",
+        "nested": {
+            "contact": "[redacted-email]",
+            "runtime": "[redacted-private]",
+        },
+    }
+    assert body["reason_preview"] == "[redacted-private]"
+    assert body["changes"] == {
+        "content_redacted": True,
+        "metadata_redacted": True,
+        "reason_redacted": True,
+    }
+    assert body["audit"] == {
+        "action": "admin.memory.redaction.previewed",
+        "audit_id": "audit-redaction-preview",
+    }
+    audit_call = next(call for call in calls if call[0] == "audit")
+    assert audit_call[1]["action"] == "admin.memory.redaction.previewed"
+    assert audit_call[1]["target_type"] == "memory_redaction_policy"
+    assert audit_call[1]["target_id"] == "workspace-a"
+    assert audit_call[1]["payload_json"] == {
+        "workspace_id": "workspace-a",
+        "agent_id": "document-review",
+        "redaction_mode": "strict",
+        "content_redacted": True,
+        "metadata_redacted": True,
+        "reason_redacted": True,
+        "reason": "[redacted-private]",
+    }
+    assert calls[0] == ("workspace", "tenant-a", "workspace-a")
+    assert calls[1] == ("agent", "tenant-a", "qa-word-review")
+    serialized = str(response.json()) + str(calls)
+    assert "qa-word-review" not in response.text
+    assert "metadata-secret" not in serialized
+    assert "owner@example.com" not in serialized
+    assert "client-secret" not in serialized
+    assert "hidden" not in serialized
+    assert raw_openai not in serialized
+    assert raw_jwt not in serialized
+    assert raw_private_marker not in serialized
+    assert raw_storage_marker not in serialized
+    assert raw_sandbox_marker not in serialized
+    assert raw_camel_marker not in serialized
+    assert "private_payload" not in serialized
+    assert "raw_storage_key" not in serialized
+    assert "storage_key" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "rawStorageKey" not in serialized
+    assert "executorPrivatePayload" not in serialized
+    assert "sandboxWorkdir" not in serialized
+    assert "/tmp/ai-platform-sandbox-workspaces" not in serialized
+
+
+def test_admin_preview_memory_redaction_standard_mode_still_blocks_provider_secrets_from_projection(monkeypatch):
+    calls = []
+    raw_openai = "sk-standardpreview1234567890"
+    raw_jwt = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJzdGFuZGFyZCJ9.signature1234567890"
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        return None
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "audit-standard-redaction-preview"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/memory/redaction/preview",
+        headers=admin_headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "redaction_mode": "standard",
+            "content": f"standard preview {raw_openai} {raw_jwt}",
+            "reason": f"standard reason {raw_openai} {raw_jwt}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()["memory_redaction_preview"]
+    assert body["redaction_mode"] == "standard"
+    assert body["content_preview"] == "standard preview [redacted-secret] [redacted-secret]"
+    assert body["reason_preview"] == "standard reason [redacted-secret] [redacted-secret]"
+    audit_call = calls[0][1]
+    assert audit_call["payload_json"]["redaction_mode"] == "standard"
+    assert audit_call["payload_json"]["reason"] == "standard reason [redacted-secret] [redacted-secret]"
+    serialized = str(response.json()) + str(calls)
+    assert raw_openai not in serialized
+    assert raw_jwt not in serialized
+
+
+def test_admin_preview_memory_redaction_redacts_camel_case_private_markers_from_text_projection(monkeypatch):
+    calls = []
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        return None
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "audit-camel-marker-redaction-preview"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/memory/redaction/preview",
+        headers=admin_headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "redaction_mode": "standard",
+            "content": "rawStorageKey=s3://bucket/key executorPrivatePayload={raw} sandboxWorkdir=workspace/run",
+            "reason": "storageKey=s3://bucket/key runtimePrivatePayload={raw} privatePayload={raw}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()["memory_redaction_preview"]
+    assert body["content_preview"] == "[redacted-private]"
+    assert body["reason_preview"] == "[redacted-private]"
+    assert calls[0][1]["payload_json"]["reason"] == "[redacted-private]"
+    serialized = str(response.json()) + str(calls)
+    assert "rawStorageKey" not in serialized
+    assert "storageKey" not in serialized
+    assert "executorPrivatePayload" not in serialized
+    assert "runtimePrivatePayload" not in serialized
+    assert "privatePayload" not in serialized
+    assert "sandboxWorkdir" not in serialized
+
+
+def test_admin_preview_memory_redaction_redacts_object_storage_values_from_projection(monkeypatch):
+    calls = []
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        return None
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "audit-storage-value-redaction-preview"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/memory/redaction/preview",
+        headers=admin_headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "redaction_mode": "standard",
+            "content": "raw object key s3://bucket/private/key",
+            "metadata": {"note": "minio://tenant/private/key"},
+            "reason": "storage probe s3://bucket/private/key",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()["memory_redaction_preview"]
+    assert body["content_preview"] == "[redacted-private]"
+    assert body["metadata_preview"] == {"note": "[redacted-private]"}
+    assert body["reason_preview"] == "[redacted-private]"
+    assert calls[0][1]["payload_json"]["reason"] == "[redacted-private]"
+    serialized = str(response.json()) + str(calls)
+    assert "s3://" not in serialized
+    assert "minio://" not in serialized
+    assert "bucket/private/key" not in serialized
+    assert "tenant/private/key" not in serialized
+
+
+def test_admin_preview_memory_redaction_redacts_relative_skill_storage_keys_from_projection(monkeypatch):
+    calls = []
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        return None
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "audit-relative-storage-redaction-preview"
+
+    storage_key = "skills/general-chat/versions/hash123/package.zip"
+    custom_storage_key = "skills/custom-skill/versions/hash456/package.zip"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/memory/redaction/preview",
+        headers=admin_headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "redaction_mode": "standard",
+            "content": f"skill package {storage_key}",
+            "metadata": {"package": custom_storage_key},
+            "reason": f"operator package probe {storage_key}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()["memory_redaction_preview"]
+    assert body["content_preview"] == "[redacted-private]"
+    assert body["metadata_preview"] == {"package": "[redacted-private]"}
+    assert body["reason_preview"] == "[redacted-private]"
+    assert calls[0][1]["payload_json"]["reason"] == "[redacted-private]"
+    serialized = str(response.json()) + str(calls)
+    assert storage_key not in serialized
+    assert custom_storage_key not in serialized
+    assert "skills/general-chat" not in serialized
+    assert "skills/custom-skill" not in serialized
+    assert "package.zip" not in serialized
+
+
+def test_admin_preview_memory_redaction_redacts_url_encoded_storage_values_from_projection(monkeypatch):
+    calls = []
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        return None
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "audit-encoded-storage-redaction-preview"
+
+    encoded_object_key = "s3%3A%2F%2Fbucket%2Fprivate%2Fkey"
+    encoded_package_key = "skills%2Fcustom-skill%2Fversions%2Fhash456%2Fpackage.zip"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/memory/redaction/preview",
+        headers=admin_headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "redaction_mode": "standard",
+            "content": f"encoded object key {encoded_object_key}",
+            "metadata": {"package": encoded_package_key},
+            "reason": f"encoded package probe {encoded_package_key}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()["memory_redaction_preview"]
+    assert body["content_preview"] == "[redacted-private]"
+    assert body["metadata_preview"] == {"package": "[redacted-private]"}
+    assert body["reason_preview"] == "[redacted-private]"
+    assert calls[0][1]["payload_json"]["reason"] == "[redacted-private]"
+    serialized = str(response.json()) + str(calls)
+    assert encoded_object_key not in serialized
+    assert encoded_package_key not in serialized
+    assert "s3://" not in serialized
+    assert "bucket/private/key" not in serialized
+    assert "skills/custom-skill" not in serialized
+
+
+def test_admin_preview_memory_redaction_redacts_deep_url_encoded_storage_values_from_projection(monkeypatch):
+    calls = []
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        return None
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "audit-deep-encoded-storage-redaction-preview"
+
+    deep_encoded_object_key = "s3%25253A%25252F%25252Fbucket%25252Fprivate%25252Fkey"
+    deep_encoded_package_key = "skills%25252Fcustom-skill%25252Fversions%25252Fhash456%25252Fpackage.zip"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/memory/redaction/preview",
+        headers=admin_headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "redaction_mode": "standard",
+            "content": f"deep encoded object key {deep_encoded_object_key}",
+            "metadata": {"package": deep_encoded_package_key},
+            "reason": f"deep encoded package probe {deep_encoded_package_key}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()["memory_redaction_preview"]
+    assert body["content_preview"] == "[redacted-private]"
+    assert body["metadata_preview"] == {"package": "[redacted-private]"}
+    assert body["reason_preview"] == "[redacted-private]"
+    assert calls[0][1]["payload_json"]["reason"] == "[redacted-private]"
+    serialized = str(response.json()) + str(calls)
+    assert deep_encoded_object_key not in serialized
+    assert deep_encoded_package_key not in serialized
+    assert "s3://" not in serialized
+    assert "bucket/private/key" not in serialized
+    assert "skills/custom-skill" not in serialized
+
+
+def test_admin_preview_memory_redaction_redacts_url_encoded_internal_ids_from_projection(monkeypatch):
+    calls = []
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        return None
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "audit-encoded-internal-id-redaction-preview"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/memory/redaction/preview",
+        headers=admin_headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "redaction_mode": "standard",
+            "content": "encoded internal id general%2Dchat",
+            "metadata": {"skill": "qa%2Dfile%2Dreviewer"},
+            "reason": "encoded internal id ragflow%2Dknowledge%2Dsearch",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()["memory_redaction_preview"]
+    assert body["content_preview"] == "[redacted-private]"
+    assert body["metadata_preview"] == {"skill": "[redacted-private]"}
+    assert body["reason_preview"] == "[redacted-private]"
+    assert calls[0][1]["payload_json"]["reason"] == "[redacted-private]"
+    serialized = str(response.json()) + str(calls)
+    assert "general%2Dchat" not in serialized
+    assert "qa%2Dfile%2Dreviewer" not in serialized
+    assert "ragflow%2Dknowledge%2Dsearch" not in serialized
+    assert "general-chat" not in serialized
+    assert "qa-file-reviewer" not in serialized
+    assert "ragflow-knowledge-search" not in serialized
+
+
+def test_admin_preview_memory_redaction_redacts_url_encoded_secret_like_values_from_projection(monkeypatch):
+    calls = []
+    encoded_openai = "sk%2Dencodedsecret1234567890"
+    encoded_jwt = "eyJhbGciOiJIUzI1NiJ9%2EeyJhdWQiOiJ0ZXN0In0%2Esignature1234567890"
+    encoded_bearer = "Bearer%20abc.def.secretToken123456"
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        return None
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "audit-encoded-secret-redaction-preview"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/memory/redaction/preview",
+        headers=admin_headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "redaction_mode": "standard",
+            "content": f"encoded provider key {encoded_openai}",
+            "metadata": {"jwt": encoded_jwt},
+            "reason": f"encoded bearer {encoded_bearer}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()["memory_redaction_preview"]
+    assert body["content_preview"] == "[redacted-private]"
+    assert body["metadata_preview"] == {"jwt": "[redacted-private]"}
+    assert body["reason_preview"] == "[redacted-private]"
+    assert calls[0][1]["payload_json"]["reason"] == "[redacted-private]"
+    serialized = str(response.json()) + str(calls)
+    assert encoded_openai not in serialized
+    assert encoded_jwt not in serialized
+    assert encoded_bearer not in serialized
+    assert "sk-encodedsecret1234567890" not in serialized
+    assert "signature1234567890" not in serialized
+    assert "abc.def.secretToken123456" not in serialized
+
+
+def test_admin_preview_memory_redaction_redacts_form_encoded_secret_like_values_from_projection(monkeypatch):
+    calls = []
+    encoded_bearer = "Bearer+abc.def.secretToken123456"
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        return None
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "audit-form-encoded-secret-redaction-preview"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/memory/redaction/preview",
+        headers=admin_headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "redaction_mode": "standard",
+            "content": f"encoded auth value {encoded_bearer}",
+            "metadata": {"note": encoded_bearer},
+            "reason": f"encoded auth value {encoded_bearer}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()["memory_redaction_preview"]
+    assert body["content_preview"] == "[redacted-private]"
+    assert body["metadata_preview"] == {"note": "[redacted-private]"}
+    assert body["reason_preview"] == "[redacted-private]"
+    assert calls[0][1]["payload_json"]["reason"] == "[redacted-private]"
+    serialized = str(response.json()) + str(calls)
+    assert encoded_bearer not in serialized
+    assert "Bearer abc.def.secretToken123456" not in serialized
+    assert "abc.def.secretToken123456" not in serialized
+
+
+def test_admin_preview_memory_redaction_fails_closed_when_url_decode_budget_exhausts(monkeypatch):
+    calls = []
+    over_budget_layers = MEMORY_PREVIEW_URL_DECODE_DEPTH + 1
+    over_budget_object_key = url_encode_layers("s3://bucket/private/key", over_budget_layers)
+    over_budget_package_key = url_encode_layers("skills/custom-skill/versions/hash456/package.zip", over_budget_layers)
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        return None
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "audit-over-budget-redaction-preview"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/memory/redaction/preview",
+        headers=admin_headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "redaction_mode": "standard",
+            "content": f"over budget storage {over_budget_object_key}",
+            "metadata": {"package": over_budget_package_key},
+            "reason": f"over budget package {over_budget_package_key}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()["memory_redaction_preview"]
+    assert body["content_preview"] == "[redacted-private]"
+    assert body["metadata_preview"] == {"package": "[redacted-private]"}
+    assert body["reason_preview"] == "[redacted-private]"
+    assert calls[0][1]["payload_json"]["reason"] == "[redacted-private]"
+    serialized = str(response.json()) + str(calls)
+    assert over_budget_object_key not in serialized
+    assert over_budget_package_key not in serialized
+    assert "s3://" not in serialized
+    assert "skills/custom-skill" not in serialized
+
+
+def test_admin_preview_memory_redaction_rejects_url_encoded_private_metadata_keys(monkeypatch):
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        return None
+
+    async def fake_append_audit_log(conn, **kwargs):
+        return "audit-encoded-metadata-key-redaction-preview"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/memory/redaction/preview",
+        headers=admin_headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "redaction_mode": "standard",
+            "metadata": {
+                "raw%5Fstorage%5Fkey": "safe",
+                "sandbox%5Fworkdir": "safe",
+                "general%2Dchat": "safe",
+                "public_note": "safe",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    metadata = response.json()["memory_redaction_preview"]["metadata_preview"]
+    assert metadata == {"public_note": "safe"}
+    serialized = str(response.json())
+    assert "raw%5Fstorage%5Fkey" not in serialized
+    assert "sandbox%5Fworkdir" not in serialized
+    assert "general%2Dchat" not in serialized
+    assert "raw_storage_key" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "general-chat" not in serialized
+
+
+def test_admin_preview_memory_redaction_redacts_internal_agent_and_skill_ids_from_text_projection(monkeypatch):
+    calls = []
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        return None
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "audit-internal-id-redaction-preview"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/memory/redaction/preview",
+        headers=admin_headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "redaction_mode": "standard",
+            "content": "uses general-chat qa-word-review qa-file-reviewer baoyu-translate sop-assistant",
+            "reason": "operator note general-chat qa-word-review qa-file-reviewer baoyu-translate sop-assistant",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()["memory_redaction_preview"]
+    assert body["content_preview"] == (
+        "uses [redacted-internal-id] [redacted-internal-id] [redacted-internal-id] "
+        "[redacted-internal-id] [redacted-internal-id]"
+    )
+    assert body["reason_preview"] == (
+        "operator note [redacted-internal-id] [redacted-internal-id] [redacted-internal-id] "
+        "[redacted-internal-id] [redacted-internal-id]"
+    )
+    assert calls[0][1]["payload_json"]["reason"] == body["reason_preview"]
+    serialized = str(response.json()) + str(calls)
+    assert "general-chat" not in serialized
+    assert "qa-word-review" not in serialized
+    assert "qa-file-reviewer" not in serialized
+    assert "baoyu-translate" not in serialized
+    assert "sop-assistant" not in serialized
+
+
+def test_admin_preview_memory_redaction_redacts_metadata_text_projection(monkeypatch):
+    calls = []
+    raw_openai = "sk-metadatapreview1234567890"
+    raw_jwt = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJtZXRhIn0.signature1234567890"
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        return None
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "audit-metadata-redaction-preview"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/memory/redaction/preview",
+        headers=admin_headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "redaction_mode": "standard",
+            "metadata": {
+                "note": f"{raw_openai} {raw_jwt}",
+                "agent": "qa-word-review",
+                "skill": "qa-file-reviewer",
+                "nested": {
+                    "translator": "baoyu-translate",
+                    "knowledge": "sop-assistant ragflow-knowledge-search",
+                    "storage": "raw_storage_key=s3://bucket/key rawStorageKey=s3://bucket/key",
+                    "private": "executorPrivatePayload={raw} executor_payload={raw}",
+                },
+                "raw_storage_key": "s3://bucket/key",
+                "storage_key": "s3://bucket/key",
+                "sandbox_workdir": "/tmp/ai-platform-sandbox-workspaces/t",
+                "rawStorageKey": "s3://bucket/key",
+                "sandboxWorkdir": "/tmp/ai-platform-sandbox-workspaces/t",
+                "executorPrivatePayload": "raw",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    metadata = response.json()["memory_redaction_preview"]["metadata_preview"]
+    assert metadata == {
+        "note": "[redacted-secret] [redacted-secret]",
+        "agent": "[redacted-internal-id]",
+        "skill": "[redacted-internal-id]",
+            "nested": {
+                "translator": "[redacted-internal-id]",
+                "knowledge": "[redacted-internal-id] [redacted-internal-id]",
+                "storage": "[redacted-private]",
+                "private": "[redacted-private]",
+            },
+    }
+    serialized = str(response.json()) + str(calls)
+    assert raw_openai not in serialized
+    assert raw_jwt not in serialized
+    assert "qa-word-review" not in serialized
+    assert "qa-file-reviewer" not in serialized
+    assert "baoyu-translate" not in serialized
+    assert "sop-assistant" not in serialized
+    assert "ragflow-knowledge-search" not in serialized
+    assert "raw_storage_key" not in serialized
+    assert "storage_key" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "rawStorageKey" not in serialized
+    assert "sandboxWorkdir" not in serialized
+    assert "executorPrivatePayload" not in serialized
+    assert "executor_payload" not in serialized
+    assert "/tmp/ai-platform-sandbox-workspaces" not in serialized
+
+
+def test_admin_preview_memory_redaction_denies_ordinary_user_before_side_effects(monkeypatch):
+    async def fail_append_audit_log(conn, **kwargs):
+        raise AssertionError("ordinary users must not write redaction preview audit")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fail_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/memory/redaction/preview",
+        headers=headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "redaction_mode": "strict",
+            "content": "token=hidden",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "not_ai_memory_admin"
+
+
+def test_admin_preview_memory_redaction_rejects_invalid_mode_before_audit(monkeypatch):
+    async def fail_append_audit_log(conn, **kwargs):
+        raise AssertionError("invalid redaction preview mode must fail before audit")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fail_append_audit_log)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/memory/redaction/preview",
+        headers=admin_headers(),
+        json={
+            "workspace_id": "workspace-a",
+            "redaction_mode": "off",
+            "content": "token=hidden",
+        },
+    )
+
+    assert response.status_code == 422
+
 
 def test_admin_list_memory_policies_returns_same_tenant_public_projection(monkeypatch):
     calls = []

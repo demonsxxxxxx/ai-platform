@@ -127,6 +127,28 @@ _EVIDENCE_MARKERS = [
         ],
     },
     {
+        "name": "admin_redaction_preview_audit_route",
+        "path": "app/routes/context.py",
+        "markers": [
+            '@router.post("/admin/memory/redaction/preview")',
+            'action="admin.memory.redaction.previewed"',
+            '"memory_redaction_preview"',
+            '"content_preview": content_preview',
+            '"metadata_preview": metadata_preview',
+        ],
+    },
+    {
+        "name": "route_redaction_preview_audit_tests",
+        "path": "tests/test_context_routes.py",
+        "markers": [
+            "test_admin_preview_memory_redaction_returns_safe_projection_and_writes_audit",
+            "test_admin_preview_memory_redaction_denies_ordinary_user_before_side_effects",
+            "test_admin_preview_memory_redaction_rejects_invalid_mode_before_audit",
+            'assert "metadata-secret" not in serialized',
+            'assert "private_payload" not in serialized',
+        ],
+    },
+    {
         "name": "worker_cleanup_tests",
         "path": "tests/test_worker_main.py",
         "markers": [
@@ -169,7 +191,6 @@ def build_memory_erasure_readiness(repo_root: Path | None = None) -> dict[str, A
     missing = [item["name"] for item in evidence if item["status"] != "present"]
     open_gaps = [
         "bounded_context_pack_product_contract_for_office_workflows",
-        "memory_redaction_policy_admin_preview_and_audit",
     ]
     return {
         "schema_version": SCHEMA_VERSION,
@@ -186,6 +207,7 @@ def build_memory_erasure_readiness(repo_root: Path | None = None) -> dict[str, A
             "admin_export_operator_projection_without_content_or_metadata",
             "delete_and_cleanup_projection_without_content_or_metadata",
             "delete_and_cleanup_audit_payload_allowlist",
+            "memory_redaction_policy_admin_preview_and_audit",
         ],
         "evidence_markers": evidence,
         "missing_evidence_markers": missing,

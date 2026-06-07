@@ -269,6 +269,29 @@ class MemoryPolicyRequest(BaseModel):
         return assert_safe_id(value, "agent_id") if value else value
 
 
+class MemoryRedactionPreviewRequest(BaseModel):
+    """Admin-only request for previewing memory redaction output without persistence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str = "default"
+    agent_id: str | None = None
+    redaction_mode: Literal["standard", "strict"] = "standard"
+    content: str = Field(default="", max_length=16000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    reason: str = Field(default="", max_length=2000)
+
+    @field_validator("workspace_id")
+    @classmethod
+    def validate_preview_workspace_id(cls, value: str):
+        return assert_safe_id(value, "workspace_id")
+
+    @field_validator("agent_id")
+    @classmethod
+    def validate_preview_agent_id(cls, value: str | None):
+        return assert_safe_id(value, "agent_id") if value else value
+
+
 class ToolPermissionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

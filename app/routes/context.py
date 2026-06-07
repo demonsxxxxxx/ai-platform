@@ -1,4 +1,5 @@
 from typing import Any, Literal
+from urllib.parse import unquote, unquote_plus
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -7,7 +8,7 @@ from app.auth import BREAK_GLASS_ADMIN_ROLE, PLATFORM_ADMIN_ROLE, TENANT_ADMIN_R
 from app.control_plane_contracts import sanitize_public_payload, standard_trace_id
 from app.db import transaction
 from app.memory_redaction import redact_memory_metadata, redact_memory_text
-from app.models import ContextSnapshotRequest, MemoryPolicyRequest, MemoryRecordRequest
+from app.models import ContextSnapshotRequest, MemoryPolicyRequest, MemoryRecordRequest, MemoryRedactionPreviewRequest
 from app.projection_redaction import internal_agent_id_for_request, public_agent_id_for_projection
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.validation import assert_safe_id
@@ -16,6 +17,35 @@ router = APIRouter()
 
 MEMORY_ADMIN_ROLES = {"admin", TENANT_ADMIN_ROLE, PLATFORM_ADMIN_ROLE, BREAK_GLASS_ADMIN_ROLE}
 MEMORY_REDACTION_MODES = {"standard", "strict"}
+MEMORY_PREVIEW_FORBIDDEN_TEXT_MARKERS = (
+    "executor_payload",
+    "executor_private_payload",
+    "runtime_private_payload",
+    "private_payload",
+    "raw_storage_key",
+    "storage_key",
+    "sandbox_workdir",
+)
+MEMORY_PREVIEW_INTERNAL_ID_MARKERS = (
+    "general-chat",
+    "qa-word-review",
+    "qa-file-reviewer",
+    "baoyu-translate",
+    "sop-assistant",
+    "ragflow-knowledge-search",
+)
+MEMORY_PREVIEW_FORBIDDEN_VALUE_MARKERS = (
+    "s3://",
+    "minio://",
+    "gs://",
+    "r2://",
+    "oss://",
+    "cos://",
+    "abfs://",
+    "wasbs://",
+)
+MEMORY_PREVIEW_SKILL_PACKAGE_STORAGE_TOKENS = ("skills/", "/versions/", "/package.zip")
+MEMORY_PREVIEW_URL_DECODE_DEPTH = 8
 
 
 def _audit_reason(value: str, *, redaction_mode: str = "standard") -> str:
@@ -137,6 +167,107 @@ def _memory_policy_response(policy: dict[str, Any]) -> dict[str, Any]:
         "updated_by": str(policy.get("updated_by") or ""),
         "updated_at": policy.get("updated_at"),
     }
+
+
+def _redacted_memory_metadata_preview(value: dict[str, Any], *, redaction_mode: str) -> dict[str, Any]:
+    redacted = redact_memory_metadata(value if isinstance(value, dict) else {}, mode=redaction_mode)
+    metadata = _redacted_memory_preview_value(redacted, redaction_mode=redaction_mode)
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _is_allowed_memory_preview_key(key: object) -> bool:
+    key_text = str(key)
+    normalized_candidates, decode_budget_exhausted = _memory_preview_normalized_candidates(key_text)
+    if decode_budget_exhausted:
+        return False
+    compact_candidates = ["".join(ch for ch in candidate if ch.isalnum()) for candidate in normalized_candidates]
+    if any(marker in candidate for candidate in normalized_candidates for marker in MEMORY_PREVIEW_FORBIDDEN_TEXT_MARKERS):
+        return False
+    if any(marker in candidate for candidate in normalized_candidates for marker in MEMORY_PREVIEW_INTERNAL_ID_MARKERS):
+        return False
+    if any(marker in candidate for candidate in normalized_candidates for marker in MEMORY_PREVIEW_FORBIDDEN_VALUE_MARKERS):
+        return False
+    if any(
+        all(token in candidate.replace("\\", "/") for token in MEMORY_PREVIEW_SKILL_PACKAGE_STORAGE_TOKENS)
+        for candidate in normalized_candidates
+    ):
+        return False
+    if any(
+        "".join(ch for ch in marker if ch.isalnum()) in compact_candidate
+        for compact_candidate in compact_candidates
+        for marker in MEMORY_PREVIEW_FORBIDDEN_TEXT_MARKERS
+    ):
+        return False
+    sanitized = sanitize_public_payload({key_text: "__preview_key__"}, preserve_sensitive_keys=True)
+    return isinstance(sanitized, dict) and key_text in sanitized
+
+
+def _redacted_memory_preview_value(value: Any, *, redaction_mode: str) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _redacted_memory_preview_value(item, redaction_mode=redaction_mode)
+            for key, item in value.items()
+            if _is_allowed_memory_preview_key(key)
+        }
+    if isinstance(value, list):
+        return [_redacted_memory_preview_value(item, redaction_mode=redaction_mode) for item in value]
+    if isinstance(value, str):
+        return _redacted_memory_text_preview(value, redaction_mode=redaction_mode)
+    return value
+
+
+def _memory_preview_normalized_candidates(value: str) -> tuple[tuple[str, ...], bool]:
+    candidates: list[str] = []
+    pending: list[tuple[str, int]] = [(value, 0)]
+    decode_budget_exhausted = False
+    while pending:
+        current, depth = pending.pop(0)
+        normalized = current.lower()
+        if normalized in candidates:
+            continue
+        candidates.append(normalized)
+        if depth >= MEMORY_PREVIEW_URL_DECODE_DEPTH:
+            if any(decoded != current for decoded in {unquote(current), unquote_plus(current)}):
+                decode_budget_exhausted = True
+            continue
+        for decoded in {unquote(current), unquote_plus(current)}:
+            if decoded != current:
+                pending.append((decoded, depth + 1))
+    return tuple(candidates), decode_budget_exhausted
+
+
+def _redacted_memory_text_preview(value: str, *, redaction_mode: str) -> str:
+    preview = redact_memory_text(value, mode=redaction_mode)
+    preview = redact_memory_text(preview, mode="strict")
+    for marker in MEMORY_PREVIEW_INTERNAL_ID_MARKERS:
+        preview = preview.replace(marker, "[redacted-internal-id]")
+    sanitized = sanitize_public_payload(preview)
+    if not isinstance(sanitized, str):
+        return "[redacted-private]"
+    normalized_candidates, decode_budget_exhausted = _memory_preview_normalized_candidates(sanitized)
+    if decode_budget_exhausted:
+        return "[redacted-private]"
+    compact_candidates = ["".join(ch for ch in candidate if ch.isalnum()) for candidate in normalized_candidates]
+    if any(marker in candidate for candidate in normalized_candidates for marker in MEMORY_PREVIEW_INTERNAL_ID_MARKERS):
+        return "[redacted-private]"
+    if any(redact_memory_text(candidate, mode="strict") != candidate for candidate in normalized_candidates):
+        return "[redacted-private]"
+    if any(marker in candidate for candidate in normalized_candidates for marker in MEMORY_PREVIEW_FORBIDDEN_TEXT_MARKERS):
+        return "[redacted-private]"
+    if any(marker in candidate for candidate in normalized_candidates for marker in MEMORY_PREVIEW_FORBIDDEN_VALUE_MARKERS):
+        return "[redacted-private]"
+    if any(
+        all(token in candidate.replace("\\", "/") for token in MEMORY_PREVIEW_SKILL_PACKAGE_STORAGE_TOKENS)
+        for candidate in normalized_candidates
+    ):
+        return "[redacted-private]"
+    if any(
+        "".join(ch for ch in marker if ch.isalnum()) in compact_candidate
+        for compact_candidate in compact_candidates
+        for marker in MEMORY_PREVIEW_FORBIDDEN_TEXT_MARKERS
+    ):
+        return "[redacted-private]"
+    return sanitized
 
 
 async def _effective_session_agent_id(
@@ -574,6 +705,74 @@ async def admin_list_memory_policies(
             "returned_count": len(rows),
             "limit": limit,
         },
+    }
+
+
+@router.post("/admin/memory/redaction/preview")
+async def admin_preview_memory_redaction(
+    request: MemoryRedactionPreviewRequest,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    """Preview memory redaction policy output without writing memory content."""
+    if not _is_memory_admin(principal):
+        raise HTTPException(status_code=403, detail="not_ai_memory_admin")
+    internal_agent_id = internal_agent_id_for_request(request.agent_id) if request.agent_id else None
+    public_agent_id = public_agent_id_for_projection(internal_agent_id) if internal_agent_id else None
+    content_preview = _redacted_memory_text_preview(request.content, redaction_mode=request.redaction_mode)
+    metadata_preview = _redacted_memory_metadata_preview(request.metadata, redaction_mode=request.redaction_mode)
+    reason_preview = _redacted_memory_text_preview(request.reason, redaction_mode=request.redaction_mode)
+    changes = {
+        "content_redacted": content_preview != request.content,
+        "metadata_redacted": metadata_preview != (request.metadata if isinstance(request.metadata, dict) else {}),
+        "reason_redacted": reason_preview != request.reason,
+    }
+    try:
+        async with transaction() as conn:
+            await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
+            if internal_agent_id:
+                target_agent = await repositories.get_agent(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    agent_id=internal_agent_id,
+                )
+                if target_agent is None:
+                    raise RepositoryNotFoundError("agent_not_found")
+            audit_id = await repositories.append_audit_log(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                action="admin.memory.redaction.previewed",
+                target_type="memory_redaction_policy",
+                target_id=request.workspace_id,
+                trace_id=standard_trace_id(request.workspace_id),
+                payload_json=sanitize_public_payload(
+                    {
+                        "workspace_id": request.workspace_id,
+                        "agent_id": public_agent_id,
+                        "redaction_mode": request.redaction_mode,
+                        **changes,
+                        "reason": reason_preview,
+                    }
+                ),
+            )
+    except RepositoryNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "memory_redaction_preview": {
+            "schema_version": "ai-platform.memory-redaction-preview.v1",
+            "tenant_id": principal.tenant_id,
+            "workspace_id": request.workspace_id,
+            "agent_id": public_agent_id,
+            "redaction_mode": request.redaction_mode,
+            "content_preview": content_preview,
+            "metadata_preview": metadata_preview,
+            "reason_preview": reason_preview,
+            "changes": changes,
+            "audit": {
+                "action": "admin.memory.redaction.previewed",
+                "audit_id": audit_id,
+            },
+        }
     }
 
 
