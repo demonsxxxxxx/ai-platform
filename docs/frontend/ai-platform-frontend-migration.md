@@ -128,6 +128,11 @@ Static audit on 2026-06-07:
   `projection:audit` is wired as the first step of `ci:verify` through a
   cross-platform Python launcher and fails closed on forbidden private or
   secret-like projection references.
+- The audit now emits a machine-readable legacy route policy map for each
+  scanned legacy route. It records the required governance gate, ordinary-user
+  fail-closed exposure, admin projection boundary, and required remap/hide
+  action. This narrows the G6/G9 gap from missing route mapping to pending
+  policy enforcement or ai-platform projection remap.
 - `frontend/web/src/services/api/runPlayback.ts`,
   `frontend/web/src/services/api/memory.ts`,
   `frontend/web/src/hooks/useAgent/eventProcessor.ts`, and artifact/reveal
@@ -149,9 +154,9 @@ Remaining audit risks:
   projections, masked, admin/policy-gated, or hidden before ordinary-user Agent
   Frontend rollout.
 - Legacy `/api/memory/*`, `/api/mcp/*`, `/api/env-vars/*`,
-  `/api/agent/models/*`, and channel/admin endpoints need route-by-route
-  policy mapping to ai-platform public/admin projections before G9 ordinary-user
-  acceptance.
+  `/api/agent/models/*`, and channel/admin endpoints now have audit-visible
+  route policy mappings, but still need actual enforcement, hiding, or remap to
+  ai-platform public/admin projections before G9 ordinary-user acceptance.
 
 ## Multi-Image Delivery Plan
 

@@ -37,6 +37,21 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         route["route_prefix"] == "/api/env-vars"
         for route in audit["route_inventory"]["legacy_policy_required_routes"]
     )
+    assert "legacy_route_policies" in audit["route_inventory"]
+    policy_routes = {
+        route["route_prefix"]: route
+        for route in audit["route_inventory"]["legacy_route_policies"]
+    }
+    assert set(policy_routes) == {
+        route["route_prefix"]
+        for route in audit["route_inventory"]["legacy_policy_required_routes"]
+    }
+    assert policy_routes["/api/agent/models"]["ordinary_user_exposure"] == "fail_closed"
+    assert policy_routes["/api/agent/models"]["required_action"] == (
+        "remap_to_ai_platform_admin_projection_or_hide"
+    )
+    assert policy_routes["/api/mcp"]["governance_gate"] == "G6"
+    assert "legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
 
     serialized = json.dumps(audit, ensure_ascii=False).lower()
     assert "c:\\users" not in serialized
@@ -409,4 +424,6 @@ def test_render_frontend_projection_audit_markdown_is_operator_readable():
     assert "blocked" in markdown
     assert "/api/ai/admin/" in markdown
     assert "/api/mcp" in markdown
+    assert "Legacy Route Policies" in markdown
+    assert "legacy_routes_need_policy_enforcement_or_ai_platform_remap" in markdown
     assert "c:\\users" not in markdown.lower()

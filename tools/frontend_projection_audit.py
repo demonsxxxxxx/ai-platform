@@ -111,6 +111,120 @@ LEGACY_POLICY_REQUIRED_ROUTE_PREFIXES = [
     "/api/skills",
     "/api/users",
 ]
+LEGACY_ROUTE_POLICY_MAP: dict[str, dict[str, str]] = {
+    "/api/admin/": {
+        "domain": "admin_operations",
+        "governance_gate": "G6",
+        "ordinary_user_exposure": "fail_closed",
+        "admin_exposure": "same_tenant_admin_projection_only",
+        "required_action": "remap_to_ai_platform_admin_projection_or_hide",
+    },
+    "/api/admin/mcp": {
+        "domain": "mcp_tool_governance",
+        "governance_gate": "G6",
+        "ordinary_user_exposure": "fail_closed",
+        "admin_exposure": "same_tenant_admin_policy_projection_only",
+        "required_action": "remap_to_ai_platform_admin_projection_or_hide",
+    },
+    "/api/agent/config": {
+        "domain": "agent_configuration",
+        "governance_gate": "G6",
+        "ordinary_user_exposure": "fail_closed",
+        "admin_exposure": "same_tenant_admin_projection_only",
+        "required_action": "remap_to_ai_platform_admin_projection_or_hide",
+    },
+    "/api/agent/models": {
+        "domain": "model_gateway_secret_policy",
+        "governance_gate": "G6",
+        "ordinary_user_exposure": "fail_closed",
+        "admin_exposure": "same_tenant_admin_masked_projection_only",
+        "required_action": "remap_to_ai_platform_admin_projection_or_hide",
+    },
+    "/api/channels": {
+        "domain": "channel_secret_policy",
+        "governance_gate": "G6",
+        "ordinary_user_exposure": "fail_closed",
+        "admin_exposure": "same_tenant_admin_masked_projection_only",
+        "required_action": "remap_to_ai_platform_admin_projection_or_hide",
+    },
+    "/api/env-vars": {
+        "domain": "runtime_secret_policy",
+        "governance_gate": "G6",
+        "ordinary_user_exposure": "fail_closed",
+        "admin_exposure": "same_tenant_admin_masked_projection_only",
+        "required_action": "remap_to_ai_platform_admin_projection_or_hide",
+    },
+    "/api/github": {
+        "domain": "skill_package_source_policy",
+        "governance_gate": "G6",
+        "ordinary_user_exposure": "fail_closed",
+        "admin_exposure": "same_tenant_admin_projection_only",
+        "required_action": "remap_to_ai_platform_admin_projection_or_hide",
+    },
+    "/api/marketplace": {
+        "domain": "skill_catalog_policy",
+        "governance_gate": "G6",
+        "ordinary_user_exposure": "fail_closed_until_public_projection_exists",
+        "admin_exposure": "same_tenant_admin_projection_only",
+        "required_action": "remap_to_ai_platform_public_or_admin_projection",
+    },
+    "/api/mcp": {
+        "domain": "mcp_tool_governance",
+        "governance_gate": "G6",
+        "ordinary_user_exposure": "fail_closed",
+        "admin_exposure": "same_tenant_admin_policy_projection_only",
+        "required_action": "remap_to_ai_platform_admin_projection_or_hide",
+    },
+    "/api/memory": {
+        "domain": "memory_governance",
+        "governance_gate": "G6",
+        "ordinary_user_exposure": "fail_closed_until_ai_platform_memory_projection",
+        "admin_exposure": "same_tenant_admin_memory_projection_only",
+        "required_action": "remap_to_ai_platform_public_or_admin_projection",
+    },
+    "/api/notifications/admin": {
+        "domain": "admin_notifications",
+        "governance_gate": "G9",
+        "ordinary_user_exposure": "fail_closed",
+        "admin_exposure": "same_tenant_admin_projection_only",
+        "required_action": "remap_to_ai_platform_admin_projection_or_hide",
+    },
+    "/api/persona-presets": {
+        "domain": "agent_frontend_profile_policy",
+        "governance_gate": "G9",
+        "ordinary_user_exposure": "fail_closed_until_public_projection_exists",
+        "admin_exposure": "same_tenant_admin_projection_only",
+        "required_action": "remap_to_ai_platform_public_or_admin_projection",
+    },
+    "/api/roles": {
+        "domain": "rbac_policy",
+        "governance_gate": "G1",
+        "ordinary_user_exposure": "fail_closed",
+        "admin_exposure": "same_tenant_admin_projection_only",
+        "required_action": "remap_to_ai_platform_admin_projection_or_hide",
+    },
+    "/api/settings": {
+        "domain": "runtime_settings_policy",
+        "governance_gate": "G6",
+        "ordinary_user_exposure": "fail_closed_until_public_projection_exists",
+        "admin_exposure": "same_tenant_admin_masked_projection_only",
+        "required_action": "remap_to_ai_platform_public_or_admin_projection",
+    },
+    "/api/skills": {
+        "domain": "skill_governance",
+        "governance_gate": "G6",
+        "ordinary_user_exposure": "fail_closed_until_public_catalog_projection_exists",
+        "admin_exposure": "same_tenant_admin_skill_projection_only",
+        "required_action": "remap_to_ai_platform_public_or_admin_projection",
+    },
+    "/api/users": {
+        "domain": "rbac_user_directory_policy",
+        "governance_gate": "G1",
+        "ordinary_user_exposure": "fail_closed",
+        "admin_exposure": "same_tenant_admin_projection_only",
+        "required_action": "remap_to_ai_platform_admin_projection_or_hide",
+    },
+}
 
 
 def _relative_path(root: Path, path: Path) -> str:
@@ -272,6 +386,37 @@ def _scan_routes(root: Path, files: list[Path], prefixes: list[str]) -> list[dic
     return [hits[prefix] for prefix in prefixes if prefix in hits]
 
 
+def _legacy_route_policies(legacy_routes: list[dict[str, object]]) -> list[dict[str, object]]:
+    policies: list[dict[str, object]] = []
+    for route in legacy_routes:
+        route_prefix = route["route_prefix"]
+        if not isinstance(route_prefix, str):
+            continue
+        policy = LEGACY_ROUTE_POLICY_MAP.get(route_prefix)
+        if policy is None:
+            policies.append(
+                {
+                    "route_prefix": route_prefix,
+                    "mapping_status": "missing_policy_mapping",
+                    "ordinary_user_exposure": "fail_closed",
+                    "admin_exposure": "fail_closed",
+                    "governance_gate": "G6",
+                    "required_action": "define_ai_platform_projection_policy",
+                    "references": route.get("references", []),
+                }
+            )
+            continue
+        policies.append(
+            {
+                "route_prefix": route_prefix,
+                "mapping_status": "mapped_pending_enforcement",
+                **policy,
+                "references": route.get("references", []),
+            }
+        )
+    return policies
+
+
 def _ci_integration(root: Path) -> dict[str, object]:
     package_json_path = root / FRONTEND_PATH / "package.json"
     if not package_json_path.exists():
@@ -307,11 +452,14 @@ def build_frontend_projection_audit(repo_root: Path | None = None) -> dict[str, 
     ai_routes = _scan_routes(root, files, AI_PLATFORM_ROUTE_PREFIXES)
     compat_routes = _scan_routes(root, files, COMPAT_ROUTE_PREFIXES)
     legacy_routes = _scan_routes(root, files, LEGACY_POLICY_REQUIRED_ROUTE_PREFIXES)
+    legacy_route_policies = _legacy_route_policies(legacy_routes)
 
     violations = private_terms["violations"]
     open_gaps: list[str] = []
-    if legacy_routes:
+    if any(route["mapping_status"] == "missing_policy_mapping" for route in legacy_route_policies):
         open_gaps.append("legacy_routes_need_route_by_route_ai_platform_policy_mapping")
+    elif legacy_routes:
+        open_gaps.append("legacy_routes_need_policy_enforcement_or_ai_platform_remap")
     ci = _ci_integration(root)
     if not ci["ci_verify_includes_projection_audit"]:
         open_gaps.append("frontend_ci_verify_does_not_yet_run_projection_audit")
@@ -339,6 +487,7 @@ def build_frontend_projection_audit(repo_root: Path | None = None) -> dict[str, 
             "ai_platform_projection_routes": ai_routes,
             "same_origin_compat_routes": compat_routes,
             "legacy_policy_required_routes": legacy_routes,
+            "legacy_route_policies": legacy_route_policies,
         },
         "ci_integration": ci,
         "open_gaps": open_gaps,
@@ -360,6 +509,13 @@ def render_frontend_projection_audit_markdown(audit: dict[str, Any]) -> str:
         f"- `{route['route_prefix']}` ({len(route['references'])} sampled refs)"
         for route in route_inventory["legacy_policy_required_routes"]
     ) or "- none"
+    legacy_policies = "\n".join(
+        "- "
+        f"`{route['route_prefix']}` gate `{route['governance_gate']}`, "
+        f"ordinary `{route['ordinary_user_exposure']}`, "
+        f"action `{route['required_action']}`"
+        for route in route_inventory["legacy_route_policies"]
+    ) or "- none"
     gaps = "\n".join(f"- {gap}" for gap in audit["open_gaps"]) or "- none"
     private_violations = audit["forbidden_private_payload_terms"]["violations"]
     violation_lines = "\n".join(
@@ -376,6 +532,8 @@ def render_frontend_projection_audit_markdown(audit: dict[str, Any]) -> str:
         f"{ai_routes}\n\n"
         "## Legacy Routes Requiring Policy Mapping\n\n"
         f"{legacy_routes}\n\n"
+        "## Legacy Route Policies\n\n"
+        f"{legacy_policies}\n\n"
         "## Forbidden Projection Violations\n\n"
         f"{violation_lines}\n\n"
         "## Open Gaps\n\n"

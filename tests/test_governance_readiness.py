@@ -37,7 +37,8 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     }
     assert "admin_tool_policy_inventory" in domains["tool_permission"]["implemented"]
     assert "user_tool_permission_request_decision" in domains["tool_permission"]["implemented"]
-    assert "route_by_route_tool_policy_mapping_for_legacy_frontend_surfaces" in domains["tool_permission"]["gaps"]
+    assert "audit_visible_legacy_frontend_route_policy_mapping" in domains["tool_permission"]["implemented"]
+    assert "legacy_frontend_route_policy_enforcement_or_ai_platform_remap" in domains["tool_permission"]["gaps"]
     assert "skill_release_promote_rollback_policy" in domains["skill_governance"]["implemented"]
     assert "skill_dependency_policy_materialization" in domains["skill_governance"]["implemented"]
     assert "signed_skill_package_or_sbom_release_gate" in domains["skill_governance"]["gaps"]
@@ -47,6 +48,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "public_admin_projection_audit_baseline" in domains["frontend_projection"]["implemented"]
     assert "frontend_projection_audit_cli" in domains["frontend_projection"]["implemented"]
     assert "frontend_ci_projection_audit_integration" in domains["frontend_projection"]["implemented"]
+    assert "frontend_legacy_route_policy_mapping" in domains["frontend_projection"]["implemented"]
     assert "ordinary_user_g9_acceptance_for_legacy_admin_mcp_model_envvar_routes" in domains["frontend_projection"]["gaps"]
     assert "frontend_projection_audit_blocks_secret_like_legacy_surfaces" in domains["frontend_projection"]["gaps"]
 
@@ -67,7 +69,7 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     assert "# ai-platform G6 Governance Readiness" in markdown
     assert "Status: `partial_blocked`" in markdown
     assert "## Open Gaps" in markdown
-    assert "route_by_route_tool_policy_mapping_for_legacy_frontend_surfaces" in markdown
+    assert "legacy_frontend_route_policy_enforcement_or_ai_platform_remap" in markdown
     assert "signed_skill_package_or_sbom_release_gate" in markdown
     assert "formal_memory_delete_export_erasure_evidence" in markdown
     assert "callback-secret" not in markdown

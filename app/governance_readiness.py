@@ -50,14 +50,15 @@ def build_governance_readiness(settings: object | None = None) -> dict[str, Any]
                 "user_tool_permission_request_decision",
                 "risk_write_fail_closed_policy_evaluation",
                 "public_tool_permission_card_projection",
+                "audit_visible_legacy_frontend_route_policy_mapping",
             ],
             gaps=[
-                "route_by_route_tool_policy_mapping_for_legacy_frontend_surfaces",
+                "legacy_frontend_route_policy_enforcement_or_ai_platform_remap",
                 "admin_policy_bulk_review_and_change_history_view",
                 "tool_allow_deny_ask_policy_taxonomy_for_all_mcp_tools",
             ],
             next_checks=[
-                "map every frontend MCP/model/env/channel/admin route to public or admin policy",
+                "enforce or remap every legacy frontend MCP/model/env/channel/admin route to ai-platform projections",
                 "add ordinary-user confirmation-card acceptance against migrated frontend",
                 "keep risky or write-capable tools blocked without a current decision",
             ],
@@ -108,6 +109,7 @@ def build_governance_readiness(settings: object | None = None) -> dict[str, Any]
                 "frontend_projection_audit_cli",
                 "frontend_ci_projection_audit_integration",
                 "public_admin_projection_audit_baseline",
+                "frontend_legacy_route_policy_mapping",
             ],
             gaps=[
                 "ordinary_user_g9_acceptance_for_legacy_admin_mcp_model_envvar_routes",

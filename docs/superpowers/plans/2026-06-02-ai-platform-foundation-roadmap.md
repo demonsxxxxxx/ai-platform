@@ -77,12 +77,14 @@ Release traceability records the same git commit, package manager,
 package/lockfile hashes, CI commands, and `dist/` status without printing local
 paths, `.env` values, or secret-like data. The projection audit records the
 current production-source route inventory, private/secret-like projection term
-scan, `ci:verify` integration, and remaining legacy policy gaps. It currently
-blocks on legacy model/envvar/channel secret-like surfaces, so `lint` and
-`build` remain separately reproducible while `ci:verify` is a release blocker.
+scan, `ci:verify` integration, legacy route policy mapping, and remaining
+legacy enforcement/remap gaps. It currently blocks on legacy
+model/envvar/channel secret-like surfaces, so `lint` and `build` remain
+separately reproducible while `ci:verify` is a release blocker.
 This provides the traceability and audit base for backend/worker/frontend
 same-commit review. It does not by itself close remote CI enforcement,
-frontend image delivery, or route-by-route legacy projection policy mapping.
+frontend image delivery, or legacy policy enforcement / ai-platform projection
+remap.
 
 ### G6 Governance Readiness Status
 
@@ -102,14 +104,14 @@ redaction, long-term cross-session memory fail-closed behavior, frontend
 release traceability, and frontend projection audit wired fail-closed into
 `ci:verify`.
 
-This does not close G6. Remaining blockers are route-by-route policy mapping
-for legacy frontend admin/MCP/model/envvar/channel surfaces, full allow/deny/ask
-taxonomy for every MCP tool, signed package or SBOM release evidence,
-dependency vulnerability/license policy, formal memory delete/export/erasure
-evidence, current frontend projection audit blocks for secret-like legacy
-surfaces, Admin Runtime governance visual acceptance, and ordinary-user G9
-acceptance. Do not use this baseline to expand sandbox privilege, raw Skill
-selection, or multi-agent ordinary-user exposure.
+This does not close G6. Remaining blockers are policy enforcement or
+ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel
+surfaces, full allow/deny/ask taxonomy for every MCP tool, signed package or
+SBOM release evidence, dependency vulnerability/license policy, formal memory
+delete/export/erasure evidence, current frontend projection audit blocks for
+secret-like legacy surfaces, Admin Runtime governance visual acceptance, and
+ordinary-user G9 acceptance. Do not use this baseline to expand sandbox
+privilege, raw Skill selection, or multi-agent ordinary-user exposure.
 
 ### P1 Admin Runtime Admission / Backpressure
 
