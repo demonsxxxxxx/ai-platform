@@ -96,9 +96,11 @@ and quarantined legacy model/channel sources are remapped or policy-gated.
 This provides the traceability and audit base for backend/worker/frontend
 same-commit review. `.github/workflows/ai-platform-frontend.yml` now runs
 frontend install, `ci:verify`, and release traceability on relevant source
-changes, so the remaining #17 source-ownership evidence is remote workflow run
-evidence plus later packaged frontend image delivery. It does not close legacy
-policy enforcement / ai-platform projection remap.
+changes, and GitHub Actions run `27104398690` passed on commit
+`11ab56c660385f6790964af3d5bd60e3d4431ff2`. The remaining #17
+source-ownership evidence is later packaged frontend image delivery and release
+acceptance. It does not close legacy policy enforcement / ai-platform
+projection remap.
 
 The first frontend operator visibility loop is now present in `frontend/web`:
 Settings includes an admin-only Admin Runtime Capacity section that consumes

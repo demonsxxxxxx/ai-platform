@@ -64,8 +64,10 @@ records a deterministic static `dist/` manifest for the same git commit; this
 does not close packaged frontend image traceability. The repository now also has
 `.github/workflows/ai-platform-frontend.yml`, which runs frontend dependency
 install, `ci:verify`, and frontend release traceability for relevant source
-changes; remote run evidence should be recorded before treating CI enforcement as
-release evidence.
+changes. GitHub Actions run `27104398690` passed on commit
+`11ab56c660385f6790964af3d5bd60e3d4431ff2`, so remote CI enforcement evidence
+exists for the source workflow; packaged frontend image traceability remains a
+separate release gate.
 
 ## Gate Rule
 

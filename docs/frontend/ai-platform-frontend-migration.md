@@ -13,7 +13,7 @@ auth/session, DB schema, or compose delivery behavior.
 | --- | --- |
 | #15 roadmap governance | Open. The roadmap has a gate-based sync, but release evidence and execution history are still mixed in older sections. |
 | #16 tenant-aware concurrency | Open. #20 closed the current G5 scheduling/admission gaps, but #21 still blocks capacity claims and production default increases. |
-| #17 frontend source ownership | In progress. Source now lives under `frontend/web`, has local install/lint/build evidence, exposes release traceability plus a frontend projection audit, and now has a GitHub Actions frontend workflow. `ci:verify` starts with the projection audit launcher; the active browser entry graph is currently clear of forbidden private/secret-like projection terms, while inactive legacy secret-like model/channel sources remain quarantined and must be remapped before G9 rollout. Full closure still needs remote CI run evidence and later packaged image integration. |
+| #17 frontend source ownership | In progress. Source now lives under `frontend/web`, has local install/lint/build evidence, exposes release traceability plus a frontend projection audit, and now has a GitHub Actions frontend workflow with passing remote run evidence. `ci:verify` starts with the projection audit launcher; the active browser entry graph is currently clear of forbidden private/secret-like projection terms, while inactive legacy secret-like model/channel sources remain quarantined and must be remapped before G9 rollout. Full closure still needs later packaged image integration and release acceptance. |
 | #20 G5 scheduling/admission gaps | Closed on 2026-06-06 by `f5da825` and `e203412`, with local full pytest and 211 smoke evidence recorded in the issue. |
 | #21 capacity baseline | Open. Current default active worker execution is still about three runs, and load-test evidence is required before raising concurrency defaults. |
 | #22 office UX/context continuity | Open future product issue. It should inform workbench design but is not implemented in this migration. |
@@ -27,8 +27,9 @@ Gate summary:
   the projection audit launcher and now records active-entry projection
   evidence plus quarantined legacy source gaps.
   `.github/workflows/ai-platform-frontend.yml` now enforces the frontend checks
-  for source changes; a real remote CI run and packaged image trace still remain
-  before this is a full release gate.
+  for source changes, and GitHub Actions run `27104398690` passed on commit
+  `11ab56c660385f6790964af3d5bd60e3d4431ff2`. Packaged image trace still
+  remains before this is a full release gate.
 - G1 Security MVP remains dependent on company auth/session, RBAC, tenant
   isolation, redaction, and frontend projection audit/remap evidence.
 - G2-G7 backend/control-plane foundations have substantial current coverage,
@@ -195,8 +196,8 @@ Future packaged direction:
 
 Future integration steps:
 
-1. Record GitHub Actions run evidence for the frontend workflow on source
-   changes.
+1. Add a project-owned packaged frontend release trace once frontend image
+   delivery exists.
 2. Add a project-owned frontend Dockerfile or static-server image definition.
 3. Add a compose overlay for frontend image validation on a Docker-capable host.
 4. Record release evidence tying API, worker, and frontend image artifacts to
@@ -249,6 +250,9 @@ Current local and CI-contract evidence on 2026-06-08:
   compose, `.env`, or secret-dependent steps. The release traceability CLI now
   records this workflow path and hash as part of the same-commit traceability
   manifest.
+- GitHub Actions run `27104398690` passed on commit
+  `11ab56c660385f6790964af3d5bd60e3d4431ff2`, providing remote CI evidence for
+  the frontend workflow contract.
 
 These warnings do not block the source migration, but they remain frontend
 hardening work before broader Agent Frontend V1 rollout. Generated `dist/` is
