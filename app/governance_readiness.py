@@ -111,11 +111,13 @@ def build_governance_readiness(settings: object | None = None) -> dict[str, Any]
             ],
             gaps=[
                 "ordinary_user_g9_acceptance_for_legacy_admin_mcp_model_envvar_routes",
+                "frontend_projection_audit_blocks_secret_like_legacy_surfaces",
                 "admin_runtime_governance_visual_acceptance",
                 "frontend_image_release_trace_to_backend_worker_commit",
             ],
             next_checks=[
                 "enforce frontend checks in CI before closing source ownership",
+                "replace or policy-gate legacy secret-like model/envvar/channel responses before release",
                 "hide or policy-gate legacy admin/model/MCP/envvar/channel surfaces for ordinary users",
                 "consume only ai-platform public or same-tenant admin projections",
             ],

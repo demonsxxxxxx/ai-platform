@@ -1,6 +1,7 @@
 import argparse
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
@@ -13,20 +14,58 @@ SOURCE_SUFFIXES = {".ts", ".tsx", ".js", ".jsx"}
 FORBIDDEN_PRIVATE_TERMS = [
     ".claude",
     "command_sha256",
+    "commandSha256",
     "decision_payload",
+    "decisionPayload",
     "executorPrivatePayload",
     "executor_private_payload",
     "fingerprint",
     "private_payload",
+    "privatePayload",
     "raw_payload",
+    "rawPayload",
     "request_payload",
+    "requestPayload",
+    "resource_limits",
+    "resourceLimits",
     "runtime_path",
+    "runtimePath",
     "sandbox_workspace_root",
+    "sandbox_workdir",
+    "sandboxWorkdir",
     "storage_key",
+    "storageKey",
+    "used_skills_source",
+    "usedSkillsSource",
     "work_dir",
+    "workDir",
 ]
+FORBIDDEN_SECRET_LIKE_TERMS = [
+    "API_KEY",
+    "APP_SECRET",
+    "BEARER_TOKEN",
+    "CLIENT_SECRET",
+    "ENCRYPT_KEY",
+    "VERIFICATION_TOKEN",
+    "api_key",
+    "apiKey",
+    "app_secret",
+    "appSecret",
+    "bearer_token",
+    "bearerToken",
+    "client_secret",
+    "clientSecret",
+    "encrypt_key",
+    "encryptKey",
+    "verification_token",
+    "verificationToken",
+]
+FORBIDDEN_PROJECTION_TERMS = sorted(
+    set(FORBIDDEN_PRIVATE_TERMS + FORBIDDEN_SECRET_LIKE_TERMS),
+    key=lambda item: (-len(item), item),
+)
 
-REDACTION_ALLOWLIST = {
+REDACTION_GUARD_PATHS = {
     "frontend/web/src/components/documents/documentUrlSafety.ts",
     "frontend/web/src/hooks/useAgent/eventProcessor.ts",
     "frontend/web/src/services/api/memory.ts",
@@ -35,6 +74,11 @@ REDACTION_ALLOWLIST = {
 TYPE_ONLY_ALLOWLIST = {
     "frontend/web/src/hooks/useAgent/types.ts",
 }
+REDACTION_GUARD_DECLARATION = re.compile(
+    r"\b(?:const|let|var)\s+"
+    r"[A-Z0-9_]*(?:DANGEROUS|FRAGMENT|KEY|KEYS|MARKER|MARKERS|PATTERN|PATTERNS|"
+    r"PRIVATE|REDACT|REDACTED|SENSITIVE|TOKEN|TOKENS|UNSAFE)[A-Z0-9_]*\b"
+)
 
 AI_PLATFORM_ROUTE_PREFIXES = [
     "/api/ai/admin/",
@@ -100,6 +144,57 @@ def _line_refs(root: Path, path: Path, line_number: int, term: str, reason: str)
     }
 
 
+def _quoted_term_pattern(term: str) -> re.Pattern[str]:
+    escaped = re.escape(term)
+    return re.compile(rf"""["']{escaped}["']""")
+
+
+def _term_pattern(term: str) -> re.Pattern[str]:
+    escaped = re.escape(term)
+    if re.fullmatch(r"[A-Za-z0-9_]+", term):
+        return re.compile(rf"(?<![A-Za-z0-9_]){escaped}(?![A-Za-z0-9_])")
+    return re.compile(escaped)
+
+
+def _line_has_term(line: str, term: str) -> bool:
+    return bool(_term_pattern(term).search(line))
+
+
+def _line_has_forbidden_consumption(line: str, term: str) -> bool:
+    escaped = re.escape(term)
+    dot_access = re.compile(rf"\.\s*{escaped}(?![A-Za-z0-9_])")
+    bracket_access = re.compile(
+        rf"\b[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\s*"
+        rf"(?:\?\.)?\[\s*['\"]{escaped}['\"]\s*\]"
+    )
+    return bool(dot_access.search(line) or bracket_access.search(line))
+
+
+def _is_redaction_guard_line(relative: str, line: str, term: str) -> bool:
+    if relative not in REDACTION_GUARD_PATHS:
+        return False
+    stripped = line.strip()
+    if re.fullmatch(rf"""["']{re.escape(term)}["'],?""", stripped):
+        return True
+    if _line_has_forbidden_consumption(line, term):
+        return False
+    quoted_term = _quoted_term_pattern(term).search(line)
+    if not quoted_term and not _line_has_term(line, term):
+        return False
+    if quoted_term and REDACTION_GUARD_DECLARATION.search(line) and ("[" in line or "new Set" in line or "{" in line):
+        return True
+    if relative == "frontend/web/src/components/documents/documentUrlSafety.ts" and ".test(" in line:
+        return True
+    return stripped.startswith("/") and stripped.rstrip(",").endswith(("/", "/i"))
+
+
+def _is_type_only_line(relative: str, line: str, term: str) -> bool:
+    if relative not in TYPE_ONLY_ALLOWLIST:
+        return False
+    stripped = line.strip()
+    return bool(re.match(rf"""^{re.escape(term)}\??\s*:""", stripped))
+
+
 def _audit_forbidden_private_terms(root: Path, files: list[Path]) -> dict[str, object]:
     violations: list[dict[str, object]] = []
     allowed_redaction_refs: list[dict[str, object]] = []
@@ -111,10 +206,10 @@ def _audit_forbidden_private_terms(root: Path, files: list[Path]) -> dict[str, o
         except UnicodeDecodeError:
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         for line_number, line in enumerate(lines, start=1):
-            for term in FORBIDDEN_PRIVATE_TERMS:
-                if term not in line:
+            for term in FORBIDDEN_PROJECTION_TERMS:
+                if not _line_has_term(line, term):
                     continue
-                if relative in REDACTION_ALLOWLIST:
+                if _is_redaction_guard_line(relative, line, term):
                     allowed_redaction_refs.append(
                         _line_refs(
                             root,
@@ -125,7 +220,7 @@ def _audit_forbidden_private_terms(root: Path, files: list[Path]) -> dict[str, o
                         )
                     )
                     continue
-                if relative in TYPE_ONLY_ALLOWLIST:
+                if _is_type_only_line(relative, line, term):
                     type_only_refs.append(
                         _line_refs(root, path, line_number, term, "type_only_executor_payload_shape")
                     )
@@ -136,7 +231,7 @@ def _audit_forbidden_private_terms(root: Path, files: list[Path]) -> dict[str, o
                         path,
                         line_number,
                         term,
-                        "production_code_references_executor_private_projection_term",
+                        "production_code_references_forbidden_projection_term",
                     )
                 )
     return {
@@ -188,9 +283,15 @@ def _ci_integration(root: Path) -> dict[str, object]:
     scripts = package_json.get("scripts") if isinstance(package_json.get("scripts"), dict) else {}
     ci_verify = scripts.get("ci:verify") if isinstance(scripts.get("ci:verify"), str) else ""
     projection_audit = scripts.get("projection:audit") if isinstance(scripts.get("projection:audit"), str) else ""
-    audit_in_ci = "frontend_projection_audit.py" in ci_verify or (
-        "projection:audit" in ci_verify and "frontend_projection_audit.py" in projection_audit
-    )
+    projection_audit_defined = "frontend_projection_audit.py" in projection_audit
+    ci_verify_steps = [step.strip() for step in ci_verify.split("&&") if step.strip()]
+    first_step = ci_verify_steps[0] if ci_verify_steps else ""
+    audit_in_ci = projection_audit_defined and first_step in {
+        "pnpm run projection:audit",
+        "npm run projection:audit",
+        "yarn projection:audit",
+        "yarn run projection:audit",
+    }
     return {
         "ci_verify_includes_projection_audit": audit_in_ci,
         "script": ci_verify,
@@ -215,7 +316,9 @@ def build_frontend_projection_audit(repo_root: Path | None = None) -> dict[str, 
     if not ci["ci_verify_includes_projection_audit"]:
         open_gaps.append("frontend_ci_verify_does_not_yet_run_projection_audit")
 
-    if violations:
+    ci_blocks_release = not ci["ci_verify_includes_projection_audit"]
+
+    if violations or ci_blocks_release:
         status = "blocked"
     elif open_gaps:
         status = "pass_with_policy_gaps"
@@ -231,6 +334,7 @@ def build_frontend_projection_audit(repo_root: Path | None = None) -> dict[str, 
             "production_source_files": len(files),
         },
         "forbidden_private_payload_terms": private_terms,
+        "forbidden_projection_terms": private_terms,
         "route_inventory": {
             "ai_platform_projection_routes": ai_routes,
             "same_origin_compat_routes": compat_routes,
@@ -272,7 +376,7 @@ def render_frontend_projection_audit_markdown(audit: dict[str, Any]) -> str:
         f"{ai_routes}\n\n"
         "## Legacy Routes Requiring Policy Mapping\n\n"
         f"{legacy_routes}\n\n"
-        "## Private Projection Violations\n\n"
+        "## Forbidden Projection Violations\n\n"
         f"{violation_lines}\n\n"
         "## Open Gaps\n\n"
         f"{gaps}\n"

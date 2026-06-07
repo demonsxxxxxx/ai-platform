@@ -13,9 +13,16 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
 
     assert audit["schema_version"] == "ai-platform.frontend-projection-audit.v1"
     assert audit["frontend_path"] == "frontend/web"
-    assert audit["status"] == "pass_with_policy_gaps"
+    assert audit["status"] == "blocked"
     assert audit["ci_integration"]["ci_verify_includes_projection_audit"] is True
-    assert audit["forbidden_private_payload_terms"]["violations"] == []
+    violations = audit["forbidden_private_payload_terms"]["violations"]
+    assert violations
+    violation_terms = {item["term"] for item in violations}
+    assert {"api_key", "encrypt_key", "verification_token"}.issubset(violation_terms)
+    assert not any(
+        item["path"] == "frontend/web/src/components/documents/documentUrlSafety.ts"
+        for item in violations
+    )
     assert "ai_platform_projection_routes" in audit["route_inventory"]
     assert "legacy_policy_required_routes" in audit["route_inventory"]
     assert any(
@@ -59,22 +66,339 @@ def test_frontend_projection_audit_detects_private_payload_consumption(tmp_path)
             "path": "frontend/web/src/bad.ts",
             "line": 1,
             "term": "storage_key",
-            "reason": "production_code_references_executor_private_projection_term",
+            "reason": "production_code_references_forbidden_projection_term",
         }
     ]
+
+
+def test_frontend_projection_audit_does_not_file_allowlist_redaction_paths(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src" / "hooks" / "useAgent"
+    source_root.mkdir(parents=True)
+    (source_root / "eventProcessor.ts").write_text(
+        'const REDACTED_EVENT_KEYS = ["storage_key"];\n'
+        "export function leak(payload: any) { return payload.storage_key; }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+
+    assert audit["status"] == "blocked"
+    assert audit["forbidden_private_payload_terms"]["allowed_redaction_refs"] == [
+        {
+            "path": "frontend/web/src/hooks/useAgent/eventProcessor.ts",
+            "line": 1,
+            "term": "storage_key",
+            "reason": "allowed_redaction_or_url_safety_guard",
+        }
+    ]
+    assert audit["forbidden_private_payload_terms"]["violations"] == [
+        {
+            "path": "frontend/web/src/hooks/useAgent/eventProcessor.ts",
+            "line": 2,
+            "term": "storage_key",
+            "reason": "production_code_references_forbidden_projection_term",
+        }
+    ]
+
+
+def test_frontend_projection_audit_detects_executor_private_resource_and_skill_source(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src"
+    source_root.mkdir(parents=True)
+    (source_root / "run.ts").write_text(
+        "export function leak(step: any) { return step.resource_limits ?? step.used_skills_source; }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+
+    assert audit["status"] == "blocked"
+    violation_terms = {item["term"] for item in audit["forbidden_private_payload_terms"]["violations"]}
+    assert {"resource_limits", "used_skills_source"}.issubset(violation_terms)
+
+
+def test_frontend_projection_audit_guard_declaration_does_not_mask_same_line_consumption(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src" / "services" / "api"
+    source_root.mkdir(parents=True)
+    (source_root / "memory.ts").write_text(
+        "const PRIVATE_MEMORY_KEYS = { storage_key: payload.storage_key };\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+
+    assert audit["status"] == "blocked"
+    assert audit["forbidden_private_payload_terms"]["violations"] == [
+        {
+            "path": "frontend/web/src/services/api/memory.ts",
+            "line": 1,
+            "term": "storage_key",
+            "reason": "production_code_references_forbidden_projection_term",
+        }
+    ]
+
+
+def test_frontend_projection_audit_quoted_guard_declaration_does_not_mask_same_line_consumption(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src" / "services" / "api"
+    source_root.mkdir(parents=True)
+    (source_root / "memory.ts").write_text(
+        'const PRIVATE_MEMORY_KEYS = new Set(["storage_key", payload.storage_key]);\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+
+    assert audit["status"] == "blocked"
+    assert audit["forbidden_private_payload_terms"]["violations"] == [
+        {
+            "path": "frontend/web/src/services/api/memory.ts",
+            "line": 1,
+            "term": "storage_key",
+            "reason": "production_code_references_forbidden_projection_term",
+        }
+    ]
+
+
+def test_frontend_projection_audit_optional_bracket_consumption_is_not_guarded(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src" / "services" / "api"
+    source_root.mkdir(parents=True)
+    (source_root / "memory.ts").write_text(
+        'const PRIVATE_MEMORY_KEYS = new Set(["storage_key", payload?.["storage_key"]]);\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+
+    assert audit["status"] == "blocked"
+    assert audit["forbidden_private_payload_terms"]["violations"] == [
+        {
+            "path": "frontend/web/src/services/api/memory.ts",
+            "line": 1,
+            "term": "storage_key",
+            "reason": "production_code_references_forbidden_projection_term",
+        }
+    ]
+
+
+def test_frontend_projection_audit_does_not_double_count_nested_guard_terms(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src" / "services" / "api"
+    source_root.mkdir(parents=True)
+    (source_root / "memory.ts").write_text(
+        'const PRIVATE_MEMORY_KEYS = new Set(["executor_private_payload"]);\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+
+    assert audit["status"] == "pass"
+    assert audit["forbidden_private_payload_terms"]["violations"] == []
+    assert audit["forbidden_private_payload_terms"]["allowed_redaction_refs"] == [
+        {
+            "path": "frontend/web/src/services/api/memory.ts",
+            "line": 1,
+            "term": "executor_private_payload",
+            "reason": "allowed_redaction_or_url_safety_guard",
+        }
+    ]
+
+
+def test_frontend_projection_audit_guard_markers_do_not_mask_consumption(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src" / "services" / "api"
+    source_root.mkdir(parents=True)
+    (source_root / "memory.ts").write_text(
+        'const PRIVATE_MEMORY_KEYS = new Set(["private_payload", "verification_token"]);\n'
+        "export function leak(payload: any) { return payload.private_payload ?? payload.verification_token; }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+
+    assert audit["status"] == "blocked"
+    violations = audit["forbidden_private_payload_terms"]["violations"]
+    assert {
+        "path": "frontend/web/src/services/api/memory.ts",
+        "line": 2,
+        "term": "private_payload",
+        "reason": "production_code_references_forbidden_projection_term",
+    } in violations
+    assert {
+        "path": "frontend/web/src/services/api/memory.ts",
+        "line": 2,
+        "term": "verification_token",
+        "reason": "production_code_references_forbidden_projection_term",
+    } in violations
+
+
+def test_frontend_projection_audit_detects_secret_like_payload_consumption(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src"
+    source_root.mkdir(parents=True)
+    (source_root / "model.ts").write_text(
+        "export function secret(model: { api_key?: string }) { return model.api_key; }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+
+    assert audit["status"] == "blocked"
+    assert audit["forbidden_private_payload_terms"]["violations"] == [
+        {
+            "path": "frontend/web/src/model.ts",
+            "line": 1,
+            "term": "api_key",
+            "reason": "production_code_references_forbidden_projection_term",
+        }
+    ]
+
+
+def test_frontend_projection_audit_detects_upper_snake_secret_like_payload_consumption(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src"
+    source_root.mkdir(parents=True)
+    (source_root / "env.ts").write_text(
+        "export const leaked = process.env.VERIFICATION_TOKEN || process.env.APP_SECRET || process.env.ENCRYPT_KEY;\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+
+    assert audit["status"] == "blocked"
+    violation_terms = {item["term"] for item in audit["forbidden_private_payload_terms"]["violations"]}
+    assert {"APP_SECRET", "ENCRYPT_KEY", "VERIFICATION_TOKEN"}.issubset(violation_terms)
+
+
+def test_frontend_projection_audit_requires_ci_verify_to_start_with_projection_audit(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src"
+    source_root.mkdir(parents=True)
+    (source_root / "ok.ts").write_text("export const ok = true;\n", encoding="utf-8")
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "eslint . && pnpm run projection:audit && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+
+    assert audit["ci_integration"]["ci_verify_includes_projection_audit"] is False
+    assert audit["status"] == "blocked"
+    assert "frontend_ci_verify_does_not_yet_run_projection_audit" in audit["open_gaps"]
 
 
 def test_frontend_projection_audit_cli_outputs_json():
     result = subprocess.run(
         [sys.executable, "tools/frontend_projection_audit.py", "--format", "json"],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
 
+    assert result.returncode == 1
     payload = json.loads(result.stdout)
     assert payload["schema_version"] == "ai-platform.frontend-projection-audit.v1"
-    assert payload["forbidden_private_payload_terms"]["violations"] == []
+    assert payload["status"] == "blocked"
+    assert payload["forbidden_private_payload_terms"]["violations"]
     assert "c:\\users" not in result.stdout.lower()
 
 
@@ -82,7 +406,7 @@ def test_render_frontend_projection_audit_markdown_is_operator_readable():
     markdown = render_frontend_projection_audit_markdown(build_frontend_projection_audit())
 
     assert "# ai-platform Frontend Projection Audit" in markdown
-    assert "pass_with_policy_gaps" in markdown
+    assert "blocked" in markdown
     assert "/api/ai/admin/" in markdown
     assert "/api/mcp" in markdown
     assert "c:\\users" not in markdown.lower()

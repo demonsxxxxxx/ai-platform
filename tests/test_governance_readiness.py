@@ -48,6 +48,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "frontend_projection_audit_cli" in domains["frontend_projection"]["implemented"]
     assert "frontend_ci_projection_audit_integration" in domains["frontend_projection"]["implemented"]
     assert "ordinary_user_g9_acceptance_for_legacy_admin_mcp_model_envvar_routes" in domains["frontend_projection"]["gaps"]
+    assert "frontend_projection_audit_blocks_secret_like_legacy_surfaces" in domains["frontend_projection"]["gaps"]
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
     assert "callback-secret" not in serialized
