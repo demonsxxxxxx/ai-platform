@@ -14,6 +14,8 @@ Generate the current configured baseline from the repository root:
 ```powershell
 python tools/capacity_baseline.py --format markdown
 python tools/capacity_baseline.py --format json
+python tools/capacity_load_plan.py --format markdown --base-url http://127.0.0.1:8020
+python tools/capacity_load_plan.py --format json --base-url http://127.0.0.1:8020
 ```
 
 The script intentionally does not print DSNs, Redis URLs, model gateway URLs,
@@ -71,6 +73,18 @@ payloads, raw Redis keys, storage keys, sandbox work directories, raw `.env`
 values, or secret-like data.
 
 ## Required Load-Test Gates
+
+Generate the repeatable command manifest for a target deployment profile:
+
+```powershell
+python tools/capacity_load_plan.py --format markdown --base-url http://10.56.0.211:8020 --tenants 3 --users-per-tenant 5 --runs-per-user 2 --duration-seconds 300
+```
+
+The load-plan tool is intentionally dry-run only. It records the scenario
+parameters, evidence fields, stop conditions, and cleanup policy operators must
+follow when they run a real harness on 211 or another Docker-capable/internal
+host. It does not create runs, issue traffic bursts, mutate runtime state, or
+raise production defaults.
 
 Do not raise production concurrency defaults until these gates have recorded
 evidence for the target deployment profile:

@@ -3,7 +3,13 @@ import os
 import subprocess
 import sys
 
-from app.capacity_baseline import build_capacity_baseline, render_capacity_baseline_markdown
+from app.capacity_baseline import (
+    LOAD_TEST_GATES,
+    build_capacity_baseline,
+    build_capacity_load_test_plan,
+    render_capacity_baseline_markdown,
+    render_capacity_load_test_plan_markdown,
+)
 
 
 class SecretBearingSettings:
@@ -112,3 +118,98 @@ def test_capacity_baseline_cli_outputs_json_without_secret_markers():
     assert payload["limits"]["worker"]["max_active_worker_runs"] == 7
     assert "ai_platform_dev_password" not in result.stdout
     assert "database_url" not in result.stdout.lower()
+
+
+def test_capacity_load_test_plan_covers_each_gate_with_dry_run_commands_and_no_default_raise():
+    plan = build_capacity_load_test_plan(
+        SecretBearingSettings(),
+        base_url="https://ai-platform.internal",
+        tenants=3,
+        users_per_tenant=4,
+        runs_per_user=2,
+        duration_seconds=300,
+    )
+
+    assert plan["schema_version"] == "ai-platform.capacity-load-test-plan.v1"
+    assert plan["execution_policy"] == {
+        "default_mode": "dry_run_plan_only",
+        "requires_explicit_operator_execution": True,
+        "production_defaults_policy": "do_not_raise_without_recorded_load_test_evidence",
+    }
+    assert [scenario["gate"] for scenario in plan["scenarios"]] == LOAD_TEST_GATES
+    assert all(scenario["command"].startswith("python tools/capacity_load_plan.py --dry-run") for scenario in plan["scenarios"])
+    assert all("https://ai-platform.internal" in scenario["command"] for scenario in plan["scenarios"])
+    assert "commit_sha" in plan["required_evidence"]
+    assert "api_worker_image_labels" in plan["required_evidence"]
+    assert "cleanup_proof" in plan["required_evidence"]
+    assert "do_not_raise_concurrency_defaults" in plan["stop_conditions"]
+
+    serialized = json.dumps(plan, ensure_ascii=False).lower()
+    assert "super-secret-password" not in serialized
+    assert "redis-secret" not in serialized
+    assert "sk-secret" not in serialized
+    assert "database_url" not in serialized
+    assert "redis_url" not in serialized
+    assert "openai_api_key" not in serialized
+
+
+def test_render_capacity_load_test_plan_markdown_is_repeatable_and_safe():
+    markdown = render_capacity_load_test_plan_markdown(
+        build_capacity_load_test_plan(SecretBearingSettings(), base_url="http://127.0.0.1:8020")
+    )
+
+    assert "# ai-platform Capacity Load-Test Plan" in markdown
+    assert "python tools/capacity_load_plan.py --dry-run --scenario api_read_write_burst" in markdown
+    assert "Do not raise production concurrency defaults" in markdown
+    assert "super-secret-password" not in markdown
+    assert "redis-secret" not in markdown
+    assert "sk-secret" not in markdown
+
+
+def test_capacity_load_plan_cli_outputs_json_without_secret_markers():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_load_plan.py",
+            "--format",
+            "json",
+            "--base-url",
+            "https://ai-platform.internal",
+            "--tenants",
+            "2",
+            "--users-per-tenant",
+            "3",
+            "--runs-per-user",
+            "1",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "ai-platform.capacity-load-test-plan.v1"
+    assert len(payload["scenarios"]) == len(LOAD_TEST_GATES)
+    assert payload["scenarios"][0]["parameters"] == {
+        "tenants": 2,
+        "users_per_tenant": 3,
+        "runs_per_user": 1,
+        "duration_seconds": 300,
+    }
+    assert "database_url" not in result.stdout.lower()
+    assert "openai_api_key" not in result.stdout.lower()
+
+
+def test_capacity_load_test_plan_sanitizes_secret_like_base_url():
+    plan = build_capacity_load_test_plan(
+        SecretBearingSettings(),
+        base_url="https://user:token@ai-platform.internal/api?api_key=secret#fragment",
+    )
+
+    serialized = json.dumps(plan, ensure_ascii=False).lower()
+    assert "user:token" not in serialized
+    assert "api_key" not in serialized
+    assert "secret" not in serialized
+    assert "fragment" not in serialized
+    assert plan["base_url"] == "https://ai-platform.internal/api"
+    assert "https://ai-platform.internal/api" in plan["scenarios"][0]["command"]
