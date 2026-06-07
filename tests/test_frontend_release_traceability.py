@@ -14,7 +14,13 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert trace["schema_version"] == "ai-platform.frontend-release-traceability.v1"
     assert trace["frontend_path"] == "frontend/web"
     assert trace["package_manager"] == "pnpm@10.32.1"
-    assert trace["scripts"]["ci:verify"] == "eslint . && tsc -b && vite build"
+    assert trace["scripts"]["ci:verify"] == (
+        "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json "
+        "&& eslint . && tsc -b && vite build"
+    )
+    assert trace["scripts"]["projection:audit"] == (
+        "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json"
+    )
     assert trace["commands"] == [
         "corepack pnpm install --frozen-lockfile",
         "corepack pnpm run ci:verify",
@@ -41,7 +47,10 @@ def test_frontend_release_traceability_cli_outputs_json():
 
     payload = json.loads(result.stdout)
     assert payload["schema_version"] == "ai-platform.frontend-release-traceability.v1"
-    assert payload["scripts"]["ci:verify"] == "eslint . && tsc -b && vite build"
+    assert payload["scripts"]["ci:verify"] == (
+        "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json "
+        "&& eslint . && tsc -b && vite build"
+    )
     assert "corepack pnpm run ci:verify" in payload["commands"]
     assert "c:\\users" not in result.stdout.lower()
 
@@ -52,5 +61,6 @@ def test_render_frontend_release_traceability_markdown_is_operator_readable():
     assert "# ai-platform Frontend Release Traceability" in markdown
     assert "frontend/web" in markdown
     assert "`corepack pnpm run ci:verify`" in markdown
+    assert "frontend_projection_audit.py" in markdown
     assert "package_json_sha256" in markdown
     assert "c:\\users" not in markdown.lower()

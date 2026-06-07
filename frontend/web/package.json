@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "ci:verify": "eslint . && tsc -b && vite build",
+    "ci:verify": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json && eslint . && tsc -b && vite build",
     "lint": "eslint .",
+    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
     "preview": "vite preview",
     "i18n:extract": "tsx scripts/extract-i18n.ts",
     "find-large-files": "tsx scripts/find-large-files.ts",

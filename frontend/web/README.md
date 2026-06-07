@@ -30,8 +30,8 @@ files are intentionally excluded from the repository import.
 
 ```powershell
 pnpm install --frozen-lockfile
-pnpm lint
-pnpm build
+pnpm run projection:audit
+pnpm run ci:verify
 ```
 
 For local development, Vite proxies `/api/*` to `VITE_AI_PLATFORM_API_TARGET`,
@@ -74,6 +74,8 @@ This import is intentionally source-first:
 - Legacy LambChat admin/model/MCP/persona/sandbox panels remain imported source
   and require ai-platform projection and policy audit before ordinary-user
   rollout.
+- `pnpm run projection:audit` runs the repository-owned static projection audit
+  and is included in `pnpm run ci:verify`.
 - Issue #22 office-user context continuity and sandbox cold-start UX is not
   implemented here; it should shape later workbench design.
 - G8/G10 Long Task and Multi-Agent work are not implemented by this migration.

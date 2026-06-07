@@ -64,13 +64,16 @@ pre-beta blocker.
 ### G0 / G9 Frontend Source Traceability Status
 
 Issue #17 is improved but still open. The migrated frontend source under
-`frontend/web` now has a reusable `ci:verify` script and
-`tools/frontend_release_traceability.py`, which records the same git commit,
-package manager, package/lockfile hashes, CI commands, and `dist/` status
-without printing local paths, `.env` values, or secret-like data. This provides
-the traceability base for backend/worker/frontend same-commit review. It does
-not by itself close CI enforcement, frontend image delivery, or route-by-route
-legacy projection policy mapping.
+`frontend/web` now has a reusable `ci:verify` script,
+`tools/frontend_release_traceability.py`, and
+`tools/frontend_projection_audit.py`. Release traceability records the same git
+commit, package manager, package/lockfile hashes, CI commands, and `dist/`
+status without printing local paths, `.env` values, or secret-like data. The
+projection audit records the current production-source route inventory, private
+payload term scan, `ci:verify` integration, and remaining legacy policy gaps.
+This provides the traceability and audit base for backend/worker/frontend
+same-commit review. It does not by itself close remote CI enforcement,
+frontend image delivery, or route-by-route legacy projection policy mapping.
 
 ### G6 Governance Readiness Status
 
@@ -86,7 +89,8 @@ user tool-permission request/decision flow, public permission-card projection,
 Skill version registry, promote/rollback release policy, dependency policy
 materialization, skill snapshot/release-decision locks, session-bound memory
 records, user opt-out, Admin memory policy inventory, retention cleanup,
-redaction, and long-term cross-session memory fail-closed behavior.
+redaction, long-term cross-session memory fail-closed behavior, frontend
+release traceability, and frontend projection audit wired into `ci:verify`.
 
 This does not close G6. Remaining blockers are route-by-route policy mapping
 for legacy frontend admin/MCP/model/envvar/channel surfaces, full allow/deny/ask

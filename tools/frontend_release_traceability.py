@@ -63,7 +63,7 @@ def build_frontend_release_traceability(repo_root: Path | None = None) -> dict[s
     scripts = package_json.get("scripts") if isinstance(package_json.get("scripts"), dict) else {}
     selected_scripts = {
         name: scripts[name]
-        for name in ("lint", "build", "ci:verify")
+        for name in ("lint", "build", "projection:audit", "ci:verify")
         if isinstance(scripts.get(name), str)
     }
     dist_index = dist_root / "index.html"

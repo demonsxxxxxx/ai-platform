@@ -45,6 +45,8 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "long_term_cross_session_memory_default_fail_closed" in domains["memory_governance"]["implemented"]
     assert "formal_memory_delete_export_erasure_evidence" in domains["memory_governance"]["gaps"]
     assert "public_admin_projection_audit_baseline" in domains["frontend_projection"]["implemented"]
+    assert "frontend_projection_audit_cli" in domains["frontend_projection"]["implemented"]
+    assert "frontend_ci_projection_audit_integration" in domains["frontend_projection"]["implemented"]
     assert "ordinary_user_g9_acceptance_for_legacy_admin_mcp_model_envvar_routes" in domains["frontend_projection"]["gaps"]
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()

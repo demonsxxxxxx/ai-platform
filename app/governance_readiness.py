@@ -105,6 +105,8 @@ def build_governance_readiness(settings: object | None = None) -> dict[str, Any]
                 "frontend_source_migrated_to_repo",
                 "frontend_ci_verify_script",
                 "frontend_release_traceability_cli",
+                "frontend_projection_audit_cli",
+                "frontend_ci_projection_audit_integration",
                 "public_admin_projection_audit_baseline",
             ],
             gaps=[
