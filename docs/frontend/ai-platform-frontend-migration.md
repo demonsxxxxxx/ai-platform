@@ -13,7 +13,7 @@ auth/session, DB schema, or compose delivery behavior.
 | --- | --- |
 | #15 roadmap governance | Open. The roadmap has a gate-based sync, but release evidence and execution history are still mixed in older sections. |
 | #16 tenant-aware concurrency | Open. #20 closed the current G5 scheduling/admission gaps, but #21 still blocks capacity claims and production default increases. |
-| #17 frontend source ownership | In progress. Source now lives under `frontend/web`, has local install/lint/build evidence, and exposes release traceability plus a frontend projection audit. `ci:verify` starts with the projection audit launcher; the active browser entry graph is currently clear of forbidden private/secret-like projection terms, while inactive legacy secret-like model/channel sources remain quarantined and must be remapped before G9 rollout. Full closure still needs CI workflow enforcement and later image integration. |
+| #17 frontend source ownership | In progress. Source now lives under `frontend/web`, has local install/lint/build evidence, exposes release traceability plus a frontend projection audit, and now has a GitHub Actions frontend workflow. `ci:verify` starts with the projection audit launcher; the active browser entry graph is currently clear of forbidden private/secret-like projection terms, while inactive legacy secret-like model/channel sources remain quarantined and must be remapped before G9 rollout. Full closure still needs remote CI run evidence and later packaged image integration. |
 | #20 G5 scheduling/admission gaps | Closed on 2026-06-06 by `f5da825` and `e203412`, with local full pytest and 211 smoke evidence recorded in the issue. |
 | #21 capacity baseline | Open. Current default active worker execution is still about three runs, and load-test evidence is required before raising concurrency defaults. |
 | #22 office UX/context continuity | Open future product issue. It should inform workbench design but is not implemented in this migration. |
@@ -26,8 +26,9 @@ Gate summary:
   `tools/frontend_release_traceability.py`; frontend `ci:verify` starts with
   the projection audit launcher and now records active-entry projection
   evidence plus quarantined legacy source gaps.
-  Repository/remote CI still needs to enforce frontend checks before this is a
-  full release gate.
+  `.github/workflows/ai-platform-frontend.yml` now enforces the frontend checks
+  for source changes; a real remote CI run and packaged image trace still remain
+  before this is a full release gate.
 - G1 Security MVP remains dependent on company auth/session, RBAC, tenant
   isolation, redaction, and frontend projection audit/remap evidence.
 - G2-G7 backend/control-plane foundations have substantial current coverage,
@@ -194,7 +195,8 @@ Future packaged direction:
 
 Future integration steps:
 
-1. Add frontend CI steps for install, lint, tests, and build.
+1. Record GitHub Actions run evidence for the frontend workflow on source
+   changes.
 2. Add a project-owned frontend Dockerfile or static-server image definition.
 3. Add a compose overlay for frontend image validation on a Docker-capable host.
 4. Record release evidence tying API, worker, and frontend image artifacts to
@@ -215,13 +217,11 @@ corepack pnpm run lint
 corepack pnpm run build
 ```
 
-Current local evidence on 2026-06-07:
+Current local and CI-contract evidence on 2026-06-08:
 
 - `corepack pnpm --version` returned `10.32.1`.
 - `corepack pnpm install --frozen-lockfile` exited 0.
-- `corepack pnpm lint` exited 0 with 1 warning in
-  `src/components/chat/ChatMessage/sessionImageGallery.tsx`.
-- `corepack pnpm build` exited 0; Vite reported large chunk warnings.
+- `corepack pnpm run ci:verify` exited 0; Vite reported large chunk warnings.
 - `frontend/web/package.json` now defines `projection:audit` as
   `node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json`
   and `ci:verify` as
@@ -242,6 +242,13 @@ Current local evidence on 2026-06-07:
   without printing local absolute paths or secret-like runtime configuration.
   The current status is `pass_with_policy_gaps`; this allows local
   `ci:verify` to exercise lint/build while preserving G6/G9 rollout blockers.
+- `.github/workflows/ai-platform-frontend.yml` runs on frontend/tool workflow
+  changes and executes `corepack pnpm install --frozen-lockfile`,
+  `corepack pnpm run ci:verify`, and
+  `python tools/frontend_release_traceability.py --format json` without Docker,
+  compose, `.env`, or secret-dependent steps. The release traceability CLI now
+  records this workflow path and hash as part of the same-commit traceability
+  manifest.
 
 These warnings do not block the source migration, but they remain frontend
 hardening work before broader Agent Frontend V1 rollout. Generated `dist/` is

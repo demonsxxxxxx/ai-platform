@@ -48,6 +48,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "public_admin_projection_audit_baseline" in domains["frontend_projection"]["implemented"]
     assert "frontend_projection_audit_cli" in domains["frontend_projection"]["implemented"]
     assert "frontend_ci_projection_audit_integration" in domains["frontend_projection"]["implemented"]
+    assert "frontend_github_actions_ci_workflow" in domains["frontend_projection"]["implemented"]
     assert "frontend_static_dist_release_manifest" in domains["frontend_projection"]["implemented"]
     assert "frontend_legacy_route_policy_mapping" in domains["frontend_projection"]["implemented"]
     assert "frontend_active_browser_projection_audit_clear" in domains["frontend_projection"]["implemented"]
@@ -60,6 +61,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "frontend_packaged_image_release_trace_to_backend_worker_commit" in domains["frontend_projection"]["gaps"]
     assert "admin_runtime_211_visual_acceptance" not in domains["frontend_projection"]["gaps"]
     assert "admin_runtime_governance_visual_acceptance" not in domains["frontend_projection"]["gaps"]
+    assert "enforce frontend checks in CI before closing source ownership" not in domains["frontend_projection"]["next_checks"]
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
     assert "callback-secret" not in serialized

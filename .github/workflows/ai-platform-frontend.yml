@@ -1,0 +1,53 @@
+name: ai-platform frontend
+
+on:
+  pull_request:
+    paths:
+      - "frontend/web/**"
+      - "tools/frontend_projection_audit.py"
+      - "tools/frontend_release_traceability.py"
+      - ".github/workflows/ai-platform-frontend.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "frontend/web/**"
+      - "tools/frontend_projection_audit.py"
+      - "tools/frontend_release_traceability.py"
+      - ".github/workflows/ai-platform-frontend.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: projection audit, lint, build, trace
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install frontend dependencies
+        working-directory: frontend/web
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Verify frontend projection and build
+        working-directory: frontend/web
+        run: corepack pnpm run ci:verify
+
+      - name: Record frontend release traceability
+        run: python tools/frontend_release_traceability.py --format json

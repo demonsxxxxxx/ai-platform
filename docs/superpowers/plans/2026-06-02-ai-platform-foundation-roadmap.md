@@ -94,9 +94,11 @@ clear, so `projection:audit` exits 0 with status `pass_with_policy_gaps`;
 G6/G9 still block ordinary-user expansion until active env-var profile routes
 and quarantined legacy model/channel sources are remapped or policy-gated.
 This provides the traceability and audit base for backend/worker/frontend
-same-commit review. It does not by itself close remote CI enforcement,
-packaged frontend image delivery, or legacy policy enforcement / ai-platform
-projection remap.
+same-commit review. `.github/workflows/ai-platform-frontend.yml` now runs
+frontend install, `ci:verify`, and release traceability on relevant source
+changes, so the remaining #17 source-ownership evidence is remote workflow run
+evidence plus later packaged frontend image delivery. It does not close legacy
+policy enforcement / ai-platform projection remap.
 
 The first frontend operator visibility loop is now present in `frontend/web`:
 Settings includes an admin-only Admin Runtime Capacity section that consumes
@@ -122,8 +124,9 @@ materialization, skill snapshot/release-decision locks, session-bound memory
 records, user opt-out, Admin memory policy inventory, retention cleanup,
 redaction, long-term cross-session memory fail-closed behavior, frontend
 release traceability, static `dist/` release manifest, frontend projection
-audit wired first into `ci:verify`, active browser projection audit clearance,
-and quarantined inactive legacy secret-like source reporting.
+audit wired first into `ci:verify`, GitHub Actions frontend CI workflow, active
+browser projection audit clearance, and quarantined inactive legacy secret-like
+source reporting.
 
 This does not close G6. Remaining blockers are policy enforcement or
 ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel

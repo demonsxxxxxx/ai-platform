@@ -109,6 +109,7 @@ def build_governance_readiness(settings: object | None = None) -> dict[str, Any]
                 "frontend_static_dist_release_manifest",
                 "frontend_projection_audit_cli",
                 "frontend_ci_projection_audit_integration",
+                "frontend_github_actions_ci_workflow",
                 "public_admin_projection_audit_baseline",
                 "frontend_legacy_route_policy_mapping",
                 "frontend_active_browser_projection_audit_clear",
@@ -123,7 +124,6 @@ def build_governance_readiness(settings: object | None = None) -> dict[str, Any]
                 "frontend_packaged_image_release_trace_to_backend_worker_commit",
             ],
             next_checks=[
-                "enforce frontend checks in CI before closing source ownership",
                 "remap quarantined inactive model/channel sources and active envvar profile routes to ai-platform projections before release",
                 "hide or policy-gate legacy admin/model/MCP/envvar/channel surfaces for ordinary users",
                 "promote packaged frontend image traceability after packaged frontend delivery exists",

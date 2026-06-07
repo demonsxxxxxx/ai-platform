@@ -8,9 +8,15 @@ from typing import Any
 
 SCHEMA_VERSION = "ai-platform.frontend-release-traceability.v1"
 FRONTEND_PATH = Path("frontend/web")
+WORKFLOW_PATH = Path(".github/workflows/ai-platform-frontend.yml")
 CI_COMMANDS = [
     "corepack pnpm install --frozen-lockfile",
     "corepack pnpm run ci:verify",
+]
+WORKFLOW_COMMANDS = [
+    "corepack pnpm install --frozen-lockfile",
+    "corepack pnpm run ci:verify",
+    "python tools/frontend_release_traceability.py --format json",
 ]
 
 
@@ -108,6 +114,16 @@ def _dist_manifest(dist_root: Path, *, git_commit: str) -> dict[str, object]:
     return manifest
 
 
+def _workflow_manifest(workflow_path: Path) -> dict[str, object]:
+    manifest: dict[str, object] = {
+        "path": WORKFLOW_PATH.as_posix(),
+        "status": "present" if workflow_path.exists() else "missing",
+        "sha256": _sha256(workflow_path) if workflow_path.exists() else None,
+        "enforced_commands": WORKFLOW_COMMANDS,
+    }
+    return manifest
+
+
 def build_frontend_release_traceability(repo_root: Path | None = None) -> dict[str, Any]:
     """Build a secret-safe same-commit frontend release traceability snapshot."""
     root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
@@ -115,6 +131,7 @@ def build_frontend_release_traceability(repo_root: Path | None = None) -> dict[s
     package_json_path = frontend_root / "package.json"
     pnpm_lock_path = frontend_root / "pnpm-lock.yaml"
     dist_root = frontend_root / "dist"
+    workflow_path = root / WORKFLOW_PATH
 
     package_json = json.loads(package_json_path.read_text(encoding="utf-8"))
     scripts = package_json.get("scripts") if isinstance(package_json.get("scripts"), dict) else {}
@@ -141,6 +158,7 @@ def build_frontend_release_traceability(repo_root: Path | None = None) -> dict[s
         },
         "scripts": selected_scripts,
         "commands": CI_COMMANDS,
+        "workflow": _workflow_manifest(workflow_path),
         "dist": _dist_manifest(dist_root, git_commit=git_commit),
         "release_policy": "tie_frontend_api_worker_artifacts_to_same_git_commit",
     }
@@ -151,6 +169,7 @@ def render_frontend_release_traceability_markdown(trace: dict[str, Any]) -> str:
     hashes = trace["source_hashes"]
     scripts = trace["scripts"]
     commands = "\n".join(f"- `{command}`" for command in trace["commands"])
+    workflow_commands = "\n".join(f"- `{command}`" for command in trace["workflow"]["enforced_commands"])
     script_rows = "\n".join(f"| `{name}` | `{value}` |" for name, value in scripts.items())
     return (
         "# ai-platform Frontend Release Traceability\n\n"
@@ -165,6 +184,12 @@ def render_frontend_release_traceability_markdown(trace: dict[str, Any]) -> str:
         f"- `pnpm_lock_sha256`: `{hashes['pnpm_lock_sha256']}`\n\n"
         "## CI Commands\n\n"
         f"{commands}\n\n"
+        "## Workflow\n\n"
+        f"- path: `{trace['workflow']['path']}`\n"
+        f"- status: `{trace['workflow']['status']}`\n"
+        f"- sha256: `{trace['workflow']['sha256']}`\n\n"
+        "Workflow enforced commands:\n\n"
+        f"{workflow_commands}\n\n"
         "## Scripts\n\n"
         "| Script | Command |\n"
         "| --- | --- |\n"

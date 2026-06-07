@@ -28,6 +28,11 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
         "corepack pnpm install --frozen-lockfile",
         "corepack pnpm run ci:verify",
     ]
+    assert trace["workflow"]["path"] == ".github/workflows/ai-platform-frontend.yml"
+    assert trace["workflow"]["status"] == "present"
+    assert len(trace["workflow"]["sha256"]) == 64
+    assert "corepack pnpm run ci:verify" in trace["workflow"]["enforced_commands"]
+    assert "python tools/frontend_release_traceability.py --format json" in trace["workflow"]["enforced_commands"]
     assert len(trace["source_hashes"]["package_json_sha256"]) == 64
     assert len(trace["source_hashes"]["pnpm_lock_sha256"]) == 64
     assert trace["dist"]["status"] in {"built", "missing"}
@@ -108,4 +113,5 @@ def test_render_frontend_release_traceability_markdown_is_operator_readable():
     assert "package_json_sha256" in markdown
     assert "manifest_sha256" in markdown
     assert "artifact_kind" in markdown
+    assert "ai-platform-frontend.yml" in markdown
     assert "c:\\users" not in markdown.lower()
