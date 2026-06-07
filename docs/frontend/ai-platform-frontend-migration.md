@@ -154,6 +154,11 @@ Static audit on 2026-06-07:
 - Admin Runtime now includes capacity and G6 governance readiness projections
   for operator visibility. Frontend UI work must consume these public/admin
   projections rather than rebuilding state from executor runtime payloads.
+- Settings now includes an admin-only Admin Runtime Capacity section that calls
+  only `GET /api/ai/admin/runtime/overview` and displays capacity,
+  backpressure, governance gaps, and missing load-test evidence. This improves
+  frontend operator visibility but still requires 211 visual acceptance and
+  does not close #21, G6, or G9.
 
 Remaining audit risks:
 
@@ -250,6 +255,9 @@ back to the same git commit as API and worker.
   the hash-matched snapshot but does not clean the upstream LambChat POC repo.
 - #21 capacity/load-test evidence remains open, so no production concurrency
   defaults should be raised from this migration.
+- The Admin Runtime Capacity section has local source tests and build coverage,
+  but 211 frontend visual acceptance remains pending until the next deployment
+  smoke.
 - #22 document-centric context/workbench UX remains future work and is not part
   of this source move.
 

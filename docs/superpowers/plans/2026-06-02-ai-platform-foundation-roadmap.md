@@ -88,6 +88,14 @@ same-commit review. It does not by itself close remote CI enforcement,
 frontend image delivery, or legacy policy enforcement / ai-platform projection
 remap.
 
+The first frontend operator visibility loop is now present in `frontend/web`:
+Settings includes an admin-only Admin Runtime Capacity section that consumes
+only `GET /api/ai/admin/runtime/overview` and renders capacity, backpressure,
+G6 governance gaps, and missing load-test evidence. This reduces the G9 visual
+gap but does not close #21 because no load-test evidence has been recorded, and
+does not close G6 because legacy env-var/model/channel/MCP route remap and 211
+visual acceptance remain open.
+
 ### G6 Governance Readiness Status
 
 G6 is partial and remains blocked for ordinary-user expansion. The current
@@ -112,8 +120,9 @@ ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel
 surfaces, full allow/deny/ask taxonomy for every MCP tool, signed package or
 SBOM release evidence, dependency vulnerability/license policy, formal memory
 delete/export/erasure evidence, active env-var profile surface remap,
-quarantined legacy frontend source remap, Admin Runtime governance visual
-acceptance, frontend image traceability, and ordinary-user G9 acceptance. Do
+quarantined legacy frontend source remap, 211 visual acceptance for the Admin
+Runtime capacity/governance section, frontend image traceability, and
+ordinary-user G9 acceptance. Do
 not use this baseline to expand sandbox privilege, raw Skill selection, or
 multi-agent ordinary-user exposure.
 

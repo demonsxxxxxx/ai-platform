@@ -67,6 +67,11 @@ The overview now exposes:
 - `admission`: same-tenant active-run saturation.
 - `backpressure`: normalized queue, active-run, and DB-pool pressure reasons.
 
+The migrated frontend now has an admin-only Settings section that reads this
+same overview projection and surfaces capacity, backpressure, governance gaps,
+and missing load-test evidence. This is an operator visibility step only; it
+does not provide load-test proof and does not raise any production default.
+
 The projection is admin-only, same-tenant, and sanitized. Frontend capacity and
 backpressure views must consume this projection rather than executor private
 payloads, raw Redis keys, storage keys, sandbox work directories, raw `.env`

@@ -20,6 +20,7 @@ import { useTranslation } from "react-i18next";
 import { useSettingsContext } from "../../contexts/SettingsContext";
 import { JsonSchemaEditor } from "./JsonSchemaEditor";
 import { SystemHealthSection } from "./SystemHealthSection";
+import { AdminRuntimeCapacitySection } from "./AdminRuntimeCapacitySection";
 import { useAuth } from "../../hooks/useAuth";
 import { agentApi } from "../../services/api/agent";
 import { roleApi } from "../../services/api/role";
@@ -650,6 +651,7 @@ export function SettingsPanel() {
           <div className="flex-1 overflow-y-auto py-2 sm:py-4 px-4">
             {/* System Health Monitor */}
             <SystemHealthSection />
+            <AdminRuntimeCapacitySection />
 
             {isLoading && !settings ? (
               <PanelLoadingState text={t("settings.loading")} />
