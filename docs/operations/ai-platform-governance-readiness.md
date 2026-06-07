@@ -1,11 +1,11 @@
 # ai-platform G6 Governance Readiness
 
-Date: 2026-06-07
+Date: 2026-06-08
 
 This document records the current G6 Tool / Skill / Memory Governance baseline.
 It is an operator readiness snapshot, not a gate-closure claim. G6 remains
 partial until frontend route policy enforcement/remap, release governance
-evidence, memory erasure evidence, active env-var profile route remap,
+evidence, memory export erasure evidence, active env-var profile route remap,
 quarantined inactive legacy source remap, packaged frontend image
 traceability, and ordinary-user G9 acceptance are complete.
 
@@ -14,6 +14,8 @@ Generate the current readiness snapshot from the repository root:
 ```powershell
 python tools/governance_readiness.py --format markdown
 python tools/governance_readiness.py --format json
+python tools/memory_erasure_readiness.py --format markdown
+python tools/memory_erasure_readiness.py --format json
 ```
 
 The script intentionally does not print callback tokens, sandbox workspace
@@ -45,7 +47,7 @@ or secret-like runtime configuration.
 | --- | --- | --- |
 | Tool permission | Admin tool policy inventory, tenant-scoped policy update audit, user request/decision flow, fail-closed risk/write policy evaluation, public permission-card projection, audit-visible legacy route policy mapping | Policy enforcement or ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel surfaces, bulk review/history UX, full allow/deny/ask taxonomy for every MCP tool |
 | Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock | Signed package or SBOM release gate, Admin release dashboard acceptance, dependency vulnerability/license policy |
-| Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, long-term memory fail-closed | Formal delete/export/erasure evidence, bounded office context-pack product contract, redaction policy preview and audit UX |
+| Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, long-term memory fail-closed, delete/retention erasure evidence snapshot through `tools/memory_erasure_readiness.py` | Memory export erasure evidence, bounded office context-pack product contract, redaction policy preview and audit UX |
 | Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest tied to the current git commit, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Active env-var profile surface needs policy or projection remap, quarantined inactive legacy model/channel sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image release trace tied to backend/worker commit |
 
 ## 211 Acceptance Evidence
@@ -68,6 +70,13 @@ changes. GitHub Actions run `27104398690` passed on commit
 `11ab56c660385f6790964af3d5bd60e3d4431ff2`, so remote CI enforcement evidence
 exists for the source workflow; packaged frontend image traceability remains a
 separate release gate.
+
+`tools/memory_erasure_readiness.py` now records code/test evidence for
+ordinary-user session-scoped soft delete, admin same-tenant soft delete, admin
+retention cleanup, worker retention cleanup across scopes, no content/metadata
+returning in delete repository tests, and delete/cleanup audit allowlists. This
+does not close memory governance by itself: export erasure evidence, office
+context-pack contract, and redaction-policy preview/audit UX remain open.
 
 ## Gate Rule
 

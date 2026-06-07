@@ -89,14 +89,16 @@ def build_governance_readiness(settings: object | None = None) -> dict[str, Any]
                 "memory_retention_cleanup_admin_and_worker",
                 "memory_content_metadata_redaction",
                 "long_term_cross_session_memory_default_fail_closed",
+                "memory_delete_retention_erasure_evidence_snapshot",
             ],
             gaps=[
-                "formal_memory_delete_export_erasure_evidence",
+                "memory_export_erasure_evidence",
                 "bounded_context_pack_product_contract_for_office_workflows",
                 "memory_redaction_policy_admin_preview_and_audit",
             ],
             next_checks=[
-                "prove delete and retention cleanup evidence across user and admin paths",
+                "keep delete and retention erasure evidence current through tools/memory_erasure_readiness.py",
+                "add export erasure evidence before treating the memory lifecycle as complete",
                 "keep cross-session long-term memory disabled until policy and acceptance are complete",
                 "shape context pack work from issue 22 without enabling broad memory reads",
             ],

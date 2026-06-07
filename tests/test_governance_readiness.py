@@ -44,7 +44,9 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "signed_skill_package_or_sbom_release_gate" in domains["skill_governance"]["gaps"]
     assert "memory_retention_cleanup_admin_and_worker" in domains["memory_governance"]["implemented"]
     assert "long_term_cross_session_memory_default_fail_closed" in domains["memory_governance"]["implemented"]
-    assert "formal_memory_delete_export_erasure_evidence" in domains["memory_governance"]["gaps"]
+    assert "memory_delete_retention_erasure_evidence_snapshot" in domains["memory_governance"]["implemented"]
+    assert "formal_memory_delete_export_erasure_evidence" not in domains["memory_governance"]["gaps"]
+    assert "memory_export_erasure_evidence" in domains["memory_governance"]["gaps"]
     assert "public_admin_projection_audit_baseline" in domains["frontend_projection"]["implemented"]
     assert "frontend_projection_audit_cli" in domains["frontend_projection"]["implemented"]
     assert "frontend_ci_projection_audit_integration" in domains["frontend_projection"]["implemented"]
@@ -82,7 +84,8 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     assert "## Open Gaps" in markdown
     assert "legacy_frontend_route_policy_enforcement_or_ai_platform_remap" in markdown
     assert "signed_skill_package_or_sbom_release_gate" in markdown
-    assert "formal_memory_delete_export_erasure_evidence" in markdown
+    assert "memory_delete_retention_erasure_evidence_snapshot" in markdown
+    assert "memory_export_erasure_evidence" in markdown
     assert "callback-secret" not in markdown
     assert ".claude/skills" not in markdown
 
