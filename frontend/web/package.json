@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "ci:verify": "eslint . && tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "i18n:extract": "tsx scripts/extract-i18n.ts",

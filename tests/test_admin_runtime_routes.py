@@ -137,6 +137,45 @@ def test_admin_runtime_multi_agent_dispatch_cleanup_returns_same_tenant_expired_
     assert calls == [("default", "dev-admin", 100)]
 
 
+def test_admin_runtime_queue_omits_raw_redis_keys(monkeypatch):
+    async def fake_queue_status():
+        return {
+            "depths": {"queued": 2, "processing": 1, "dead_letter": 0},
+            "keys": {"queued": "ai-platform:runs:queued"},
+            "workers": ["worker-a"],
+            "raw_queue_payload": "token=queue-secret",
+        }
+
+    async def fake_queue_insight(tenant_id, **kwargs):
+        assert tenant_id == "default"
+        assert kwargs == {"include_user_breakdown": True}
+        return {
+            "tenant_id": tenant_id,
+            "reason": "worker_available",
+            "keys": {"queued": "ai-platform:runs:queued"},
+            "raw_queue_payload": "token=insight-secret",
+        }
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_runtime.get_queue_status", fake_queue_status)
+    monkeypatch.setattr("app.routes.admin_runtime.get_queue_insight", fake_queue_insight)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/admin/runtime/queue", headers=admin_headers())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["queue"] == {
+        "depths": {"queued": 2, "processing": 1, "dead_letter": 0},
+        "workers": ["worker-a"],
+    }
+    serialized = str(payload)
+    assert "ai-platform:runs:queued" not in serialized
+    assert "raw_queue_payload" not in serialized
+    assert "queue-secret" not in serialized
+    assert "insight-secret" not in serialized
+
+
 def test_admin_runtime_containers_returns_provider_status(monkeypatch):
     class FakeProvider:
         async def list_runtime_containers(self, filters):
@@ -773,7 +812,12 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
 
     async def fake_get_queue_status():
         calls.append(("queue_status",))
-        return {"depths": {"queued": 2}}
+        return {
+            "depths": {"queued": 2},
+            "keys": {"queued": "ai-platform:runs:queued"},
+            "workers": ["worker-a"],
+            "raw_queue_payload": "token=queue-secret-token",
+        }
 
     async def fake_get_queue_insight(tenant_id, **kwargs):
         assert kwargs == {"include_user_breakdown": True}
@@ -893,7 +937,7 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["tenant_id"] == "default"
-    assert body["queue"]["status"]["depths"]["queued"] == 2
+    assert body["queue"]["status"] == {"depths": {"queued": 2}, "workers": ["worker-a"]}
     assert body["queue"]["tenant_insight"]["reason"] == "workers_busy"
     assert body["runs"]["active"] == 2
     assert body["sandbox"]["containers"] == {
@@ -910,6 +954,21 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
         "history_included": True,
     }
     assert body["observability"]["token_counts"]["total"] == 22
+    assert body["capacity"]["schema_version"] == "ai-platform.capacity-baseline.v1"
+    assert body["capacity"]["limits"]["worker"]["max_active_worker_runs"] == 3
+    assert body["capacity"]["limits"]["database_pool"]["max_size"] == 10
+    assert body["capacity"]["limits"]["queue"]["tenant_processing_quota_enabled"] is False
+    assert body["capacity"]["limits"]["sandbox"]["container_provider"] == "fake"
+    assert body["capacity"]["production_default_policy"] == "do_not_raise_without_recorded_load_test_evidence"
+    assert "password" not in str(body["capacity"]).lower()
+    assert "api_key" not in str(body["capacity"]).lower()
+    assert "database_url" not in str(body["capacity"]).lower()
+    assert body["governance"]["schema_version"] == "ai-platform.governance-readiness.v1"
+    assert body["governance"]["status"] == "partial_blocked"
+    assert "tool_permission" in body["governance"]["domains"]
+    assert "callback_token" not in str(body["governance"]).lower()
+    assert "sandbox_workspace_root" not in str(body["governance"]).lower()
+    assert ".claude/skills" not in str(body["governance"])
     assert body["admission"]["saturated_users"] == 1
     assert body["admission"]["top_users"] == [{"user_id": "user-a", "active": 3, "saturated": True}]
     assert body["backpressure"]["reasons"] == [
@@ -948,6 +1007,9 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
     assert "pool-secret-password" not in str(body["database_pool"])
     assert "pool-secret-token" not in str(body["database_pool"])
     assert "db.example" not in str(body["database_pool"])
+    assert "ai-platform:runs:queued" not in str(body)
+    assert "raw_queue_payload" not in str(body)
+    assert "queue-secret-token" not in str(body)
     assert calls == [
         ("provider_cleanup", {"tenant_id": "default"}, "admin_runtime"),
         ("runtime_cleanup", "default", "expired"),
@@ -970,7 +1032,11 @@ def test_admin_runtime_overview_sanitizes_summary_payloads(monkeypatch):
             return []
 
     async def fake_queue_status():
-        return {}
+        return {
+            "depths": {"queued": 1},
+            "keys": {"queued": "ai-platform:runs:queued"},
+            "raw_queue_payload": "token=queue-status-token",
+        }
 
     async def fake_queue_insight(tenant_id, **_kwargs):
         return {
@@ -1081,6 +1147,7 @@ def test_admin_runtime_overview_sanitizes_summary_payloads(monkeypatch):
     assert "route-error-type-token" not in serialized
     assert "/var/lib/ai-platform" not in serialized
     assert "runtime_private_payload" not in serialized
+    assert "queue-status-token" not in serialized
     backpressure_serialized = str(response.json()["backpressure"])
     assert "queue-reason-token" not in backpressure_serialized
     assert "queue-payload-token" not in backpressure_serialized

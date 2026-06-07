@@ -13,7 +13,7 @@ auth/session, DB schema, or compose delivery behavior.
 | --- | --- |
 | #15 roadmap governance | Open. The roadmap has a gate-based sync, but release evidence and execution history are still mixed in older sections. |
 | #16 tenant-aware concurrency | Open. #20 closed the current G5 scheduling/admission gaps, but #21 still blocks capacity claims and production default increases. |
-| #17 frontend source ownership | In progress. Source now lives under `frontend/web`; full closure still needs frontend CI/build evidence, release traceability, and later image integration. |
+| #17 frontend source ownership | In progress. Source now lives under `frontend/web`, has local install/lint/build evidence, and exposes a reusable `ci:verify` plus release traceability CLI; full closure still needs CI enforcement and later image integration. |
 | #20 G5 scheduling/admission gaps | Closed on 2026-06-06 by `f5da825` and `e203412`, with local full pytest and 211 smoke evidence recorded in the issue. |
 | #21 capacity baseline | Open. Current default active worker execution is still about three runs, and load-test evidence is required before raising concurrency defaults. |
 | #22 office UX/context continuity | Open future product issue. It should inform workbench design but is not implemented in this migration. |
@@ -21,8 +21,10 @@ auth/session, DB schema, or compose delivery behavior.
 Gate summary:
 
 - G0 Source Authority is improved because frontend source is now in the same
-  repository as backend and worker code. It is not fully closed for frontend
-  release until frontend build evidence and release traceability are recorded.
+  repository as backend and worker code. Frontend release traceability can now
+  point to the same commit as backend/worker changes through
+  `tools/frontend_release_traceability.py`, but CI still needs to enforce
+  frontend checks before this is a full release gate.
 - G1 Security MVP remains dependent on company auth/session, RBAC, tenant
   isolation, redaction, and frontend projection audit.
 - G2-G7 backend/control-plane foundations have substantial current coverage,
@@ -100,6 +102,7 @@ Required admin/operator contracts must stay admin-only and same-tenant:
 - `/api/admin/*`
 - `/api/ai/admin/*`
 - Admin Runtime overview and backpressure projections.
+- Admin Runtime capacity and governance readiness projections.
 - Admin memory policy/inventory/retention cleanup projections.
 - Admin tool policy projections.
 
@@ -111,6 +114,36 @@ Projection boundary:
   sandbox work directories, command fingerprints, raw runtime paths, secret-like
   values, raw request payloads, raw decision payloads, or raw skill staging
   paths.
+
+## Public/Admin Projection Audit
+
+Static audit on 2026-06-07:
+
+- Core ai-platform playback, memory, event, artifact, and reveal-preview code
+  consumes same-origin `/api/*` and ai-platform `/api/ai/*` projections.
+- `frontend/web/src/services/api/runPlayback.ts`,
+  `frontend/web/src/services/api/memory.ts`,
+  `frontend/web/src/hooks/useAgent/eventProcessor.ts`, and artifact/reveal
+  helpers define forbidden-key lists and strip private payload, storage key,
+  work directory, runtime path, command fingerprint, resource limit, and raw
+  payload fields before rendering.
+- `frontend/web/src/services/api/config.ts` keeps browser API calls
+  same-origin; Vite development proxy remains a dev-time adapter only.
+- Admin Runtime now includes capacity and G6 governance readiness projections
+  for operator visibility. Frontend UI work must consume these public/admin
+  projections rather than rebuilding state from executor runtime payloads.
+
+Remaining audit risks:
+
+- Imported legacy LambChat panels still include admin/model/MCP/envvar/channel
+  surfaces that can handle user-entered credentials such as model API keys or
+  channel app secrets. These are not executor private payload reads, but they
+  must remain admin/policy-gated or hidden before ordinary-user Agent Frontend
+  rollout.
+- Legacy `/api/memory/*`, `/api/mcp/*`, `/api/env-vars/*`,
+  `/api/agent/models/*`, and channel/admin endpoints need route-by-route
+  policy mapping to ai-platform public/admin projections before G9 ordinary-user
+  acceptance.
 
 ## Multi-Image Delivery Plan
 
@@ -137,6 +170,39 @@ Future integration steps:
 4. Record release evidence tying API, worker, and frontend image artifacts to
    the same git commit.
 
+## Build And Release Traceability
+
+Local verification should use the package-manager version pinned in
+`frontend/web/package.json`. On machines where `pnpm` is not on `PATH`, use
+Corepack:
+
+```powershell
+cd frontend/web
+corepack pnpm --version
+corepack pnpm install --frozen-lockfile
+corepack pnpm run ci:verify
+```
+
+Current local evidence on 2026-06-07:
+
+- `corepack pnpm --version` returned `10.32.1`.
+- `corepack pnpm install --frozen-lockfile` exited 0.
+- `corepack pnpm lint` exited 0 with 1 warning in
+  `src/components/chat/ChatMessage/sessionImageGallery.tsx`.
+- `corepack pnpm build` exited 0; Vite reported large chunk warnings.
+- `frontend/web/package.json` now defines `ci:verify` as
+  `eslint . && tsc -b && vite build`, so the script works even when this
+  Windows workstation can only start pnpm through Corepack.
+- `python tools/frontend_release_traceability.py --format json` records the
+  current git commit, dirty flag, package/lockfile hashes, CI commands, and
+  `dist/` status without printing local absolute paths, `.env` values, or
+  secret-like data.
+
+These warnings do not block the source migration, but they remain frontend
+hardening work before broader Agent Frontend V1 rollout. Generated `dist/` is
+not committed; release evidence should tie the built artifact or frontend image
+back to the same git commit as API and worker.
+
 ## Remaining Risks
 
 - The imported frontend still contains legacy LambChat admin/model/MCP/persona
@@ -155,6 +221,8 @@ Backend/source-authority focused verification:
 
 ```powershell
 python -m pytest tests/test_source_authority_docs.py tests/test_serve_lambchat_thin_shell.py tests/test_lambchat_frontend_compat.py tests/test_lambchat_projection_contract.py -q --basetemp .pytest-tmp\frontend-migration
+python tools/frontend_release_traceability.py --format json
+python tools/governance_readiness.py --format json
 ```
 
 Frontend verification:

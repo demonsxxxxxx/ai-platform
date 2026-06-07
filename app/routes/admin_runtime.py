@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
+from app.capacity_baseline import build_capacity_baseline
+from app.governance_readiness import build_governance_readiness
 from app import repositories
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
 from app.db import get_pool_status, transaction
@@ -15,6 +17,23 @@ router = APIRouter()
 _SUCCESSFUL_PROVIDER_CLEANUP_STATUSES = {"stopped", "not_found"}
 _OVERVIEW_FORBIDDEN_KEYS = {"skillid"}
 _DATABASE_POOL_CONFIG_KEYS = {"min_size", "max_size", "timeout_seconds", "max_waiting"}
+_QUEUE_DEPTH_KEYS = {"dead_letter", "processing", "queued", "tenant_processing", "tenant_queued"}
+_QUEUE_CAPACITY_KEYS = {
+    "available_worker_slots",
+    "max_active_worker_runs",
+    "processing_saturated",
+    "queue_lease_scan_limit",
+    "queue_tenant_processing_limit",
+    "queue_user_processing_limit",
+}
+_QUEUE_SAMPLE_KEYS = {"queued_sample_complete", "queued_sampled", "queued_scan_limit"}
+_QUEUE_THROTTLING_KEYS = {
+    "tenant_processing",
+    "tenant_processing_limit",
+    "tenant_processing_saturated",
+    "user_processing_limit",
+}
+_QUEUE_USER_THROTTLING_KEYS = {"processing", "processing_saturated", "queued"}
 _QUEUE_REASON_VALUES = {
     "queued_behind_existing_work",
     "tenant_quota_full",
@@ -64,6 +83,107 @@ def _coerce_int(value: object) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _sanitize_numeric_map(value: object, allowed_keys: set[str]) -> dict[str, int]:
+    source = value if isinstance(value, dict) else {}
+    cleaned: dict[str, int] = {}
+    for key, item in source.items():
+        safe_key = sanitize_public_text(key)
+        if safe_key not in allowed_keys or isinstance(item, bool) or not isinstance(item, int | float):
+            continue
+        cleaned[safe_key] = int(item)
+    return cleaned
+
+
+def _sanitize_numeric_bool_map(value: object, allowed_keys: set[str]) -> dict[str, object]:
+    source = value if isinstance(value, dict) else {}
+    cleaned: dict[str, object] = {}
+    for key, item in source.items():
+        safe_key = sanitize_public_text(key)
+        if safe_key not in allowed_keys:
+            continue
+        if isinstance(item, bool):
+            cleaned[safe_key] = item
+        elif isinstance(item, int | float):
+            cleaned[safe_key] = int(item)
+        elif item is None:
+            cleaned[safe_key] = None
+    return cleaned
+
+
+def _sanitize_queue_workers(value: object) -> object:
+    if isinstance(value, dict):
+        return _sanitize_numeric_map(value, {"active"})
+    if isinstance(value, list):
+        workers: list[str] = []
+        for item in value:
+            worker_id = sanitize_public_text(item)
+            if worker_id:
+                workers.append(worker_id)
+        return workers
+    return []
+
+
+def _sanitize_queue_status(value: object) -> dict[str, object]:
+    status = value if isinstance(value, dict) else {}
+    payload: dict[str, object] = {}
+    depths = _sanitize_numeric_map(status.get("depths"), _QUEUE_DEPTH_KEYS)
+    if depths:
+        payload["depths"] = depths
+    workers = _sanitize_queue_workers(status.get("workers"))
+    if workers:
+        payload["workers"] = workers
+    return payload
+
+
+def _sanitize_user_queue_throttling(value: object) -> dict[str, object]:
+    return _sanitize_numeric_bool_map(value, _QUEUE_USER_THROTTLING_KEYS)
+
+
+def _sanitize_queue_throttling(value: object) -> dict[str, object]:
+    throttling = value if isinstance(value, dict) else {}
+    payload = _sanitize_numeric_bool_map(throttling, _QUEUE_THROTTLING_KEYS)
+    current_user = _sanitize_user_queue_throttling(throttling.get("current_user"))
+    if current_user:
+        payload["current_user"] = current_user
+    users = throttling.get("users") if isinstance(throttling.get("users"), dict) else {}
+    sanitized_users: dict[str, object] = {}
+    for user_id, user_state in users.items():
+        safe_user_id = sanitize_public_text(user_id)
+        safe_state = _sanitize_user_queue_throttling(user_state)
+        if safe_user_id and safe_state:
+            sanitized_users[safe_user_id] = safe_state
+    if sanitized_users:
+        payload["users"] = sanitized_users
+    return payload
+
+
+def _sanitize_queue_insight(value: object) -> dict[str, object]:
+    insight = value if isinstance(value, dict) else {}
+    payload: dict[str, object] = {}
+    tenant_id = sanitize_public_text(insight.get("tenant_id"))
+    if tenant_id:
+        payload["tenant_id"] = tenant_id
+    reason = _safe_queue_reason(insight.get("reason"))
+    if reason:
+        payload["reason"] = reason
+    depths = _sanitize_numeric_map(insight.get("depths"), _QUEUE_DEPTH_KEYS)
+    if depths:
+        payload["depths"] = depths
+    workers = _sanitize_queue_workers(insight.get("workers"))
+    if workers:
+        payload["workers"] = workers
+    capacity = _sanitize_numeric_bool_map(insight.get("capacity"), _QUEUE_CAPACITY_KEYS)
+    if capacity:
+        payload["capacity"] = capacity
+    queue_sample = _sanitize_numeric_bool_map(insight.get("queue_sample"), _QUEUE_SAMPLE_KEYS)
+    if queue_sample:
+        payload["queue_sample"] = queue_sample
+    throttling = _sanitize_queue_throttling(insight.get("throttling"))
+    if throttling:
+        payload["throttling"] = throttling
+    return payload
 
 
 def _sanitize_observability_summary(value: object) -> dict[str, object]:
@@ -263,8 +383,10 @@ async def admin_runtime_queue(
 
     return {
         "tenant_id": principal.tenant_id,
-        "queue": await get_queue_status(),
-        "tenant_insight": await get_queue_insight(principal.tenant_id, include_user_breakdown=True),
+        "queue": _sanitize_queue_status(await get_queue_status()),
+        "tenant_insight": _sanitize_queue_insight(
+            await get_queue_insight(principal.tenant_id, include_user_breakdown=True)
+        ),
     }
 
 
@@ -391,12 +513,14 @@ async def admin_runtime_overview(
     return {
         "tenant_id": principal.tenant_id,
         "queue": {
-            "status": queue_status,
-            "tenant_insight": tenant_queue_insight,
+            "status": _sanitize_queue_status(queue_status),
+            "tenant_insight": _sanitize_queue_insight(tenant_queue_insight),
         },
         "runs": _sanitize_dict(run_summary),
         "sandbox": _sandbox_overview(containers, visible_leases, visible_lease_history),
         "observability": _sanitize_observability_summary(observability_summary),
+        "capacity": build_capacity_baseline(get_settings()),
+        "governance": build_governance_readiness(get_settings()),
         "database_pool": database_pool,
         "admission": admission,
         "backpressure": _backpressure_snapshot(
