@@ -6,8 +6,10 @@ import sys
 from app.capacity_baseline import (
     LOAD_TEST_GATES,
     build_capacity_baseline,
+    build_capacity_evidence_snapshot,
     build_capacity_load_test_plan,
     render_capacity_baseline_markdown,
+    render_capacity_evidence_snapshot_markdown,
     render_capacity_load_test_plan_markdown,
 )
 
@@ -213,3 +215,166 @@ def test_capacity_load_test_plan_sanitizes_secret_like_base_url():
     assert "fragment" not in serialized
     assert plan["base_url"] == "https://ai-platform.internal/api"
     assert "https://ai-platform.internal/api" in plan["scenarios"][0]["command"]
+
+
+def test_capacity_evidence_snapshot_extracts_live_signals_without_private_payloads():
+    capacity = build_capacity_baseline(SecretBearingSettings())
+    capacity["database_url"] = "postgresql://user:capacity-secret@db.internal/platform"
+    capacity["limits"]["database_pool"]["password"] = "capacity-password"
+    capacity["warnings"].append("capacity-secret-warning")
+    overview = {
+        "tenant_id": "default",
+        "capacity": capacity,
+        "queue": {
+            "status": {
+                "depths": {"queued": 8, "processing": 3, "dead_letter": 1},
+                "keys": {"queued": "ai-platform:queued", "raw_storage_key": "storage-secret"},
+                "workers": ["worker-a"],
+            },
+            "tenant_insight": {
+                "reason": "worker_capacity_full",
+                "depths": {"tenant_queued": 5, "tenant_processing": 3},
+                "capacity": {
+                    "max_active_worker_runs": 3,
+                    "available_worker_slots": 0,
+                    "processing_saturated": True,
+                    "queue_lease_scan_limit": 50,
+                },
+                "queue_sample": {
+                    "queued_scan_limit": 500,
+                    "queued_sampled": 8,
+                    "queued_sample_complete": True,
+                },
+                "throttling": {
+                    "tenant_processing_limit": 0,
+                    "tenant_processing_saturated": False,
+                    "user_processing_limit": 0,
+                    "users": {"user-a": {"queued": 2, "processing": 1, "processing_saturated": False}},
+                },
+            },
+        },
+        "database_pool": {
+            "configured": {"min_size": 1, "max_size": 10, "timeout_seconds": 10.0, "max_waiting": 100},
+            "open": True,
+            "stats": {"size": 4, "free": 1, "requests_waiting": 2, "token": "pool-secret"},
+            "database_url": "postgresql://user:pool-secret@db.internal/platform",
+        },
+        "admission": {
+            "policy_active": True,
+            "max_active_runs_per_user": 3,
+            "active_runs": 9,
+            "active_users": 4,
+            "saturated_users": 2,
+            "top_users": [{"user_id": "user-secret", "active_runs": 3}],
+        },
+        "backpressure": {
+            "reasons": ["worker_capacity_full", "database_pool_waiting"],
+            "queue": {"raw_queue_payload": "token=queue-secret"},
+        },
+        "sandbox": {
+            "containers": {"total": 2, "running": 1, "ephemeral_running": 1, "persistent_running": 0},
+            "leases": {"active": 1, "released": 1, "expired": 0, "sandbox_workdir": "/tmp/work-secret"},
+        },
+        "observability": {
+            "event_count": 12,
+            "artifact_count": 3,
+            "error_count": 1,
+            "latency_ms": {"avg": 123, "max": 456},
+            "executor_private_payload": {"api_key": "sk-secret"},
+        },
+    }
+
+    snapshot = build_capacity_evidence_snapshot(overview, commit_sha="abc123")
+
+    assert snapshot["schema_version"] == "ai-platform.capacity-evidence-snapshot.v1"
+    assert snapshot["runtime_identity"]["commit_sha"] == "abc123"
+    assert snapshot["source"] == {
+        "projection": "/api/ai/admin/runtime/overview",
+        "mode": "operator_captured_admin_projection",
+    }
+    assert snapshot["capacity"]["schema_version"] == "ai-platform.capacity-baseline.v1"
+    assert snapshot["live_signals"]["queue"]["depths"]["queued"] == 8
+    assert snapshot["live_signals"]["queue"]["capacity"]["processing_saturated"] is True
+    assert snapshot["live_signals"]["database_pool"]["requests_waiting"] == 2
+    assert snapshot["live_signals"]["admission"]["saturated_users"] == 2
+    assert snapshot["live_signals"]["sandbox"]["active_leases"] == 1
+    assert snapshot["live_signals"]["observability"]["error_count"] == 1
+    assert snapshot["load_test_evidence"]["status"] == "missing"
+    assert snapshot["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
+
+    serialized = json.dumps(snapshot, ensure_ascii=False).lower()
+    assert "pool-secret" not in serialized
+    assert "queue-secret" not in serialized
+    assert "work-secret" not in serialized
+    assert "sk-secret" not in serialized
+    assert "capacity-secret" not in serialized
+    assert "capacity-password" not in serialized
+    assert "raw_storage_key" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "executor_private_payload" not in serialized
+    assert "database_url" not in serialized
+
+
+def test_render_capacity_evidence_snapshot_markdown_is_operator_readable_and_safe():
+    snapshot = build_capacity_evidence_snapshot(
+        {
+            "capacity": build_capacity_baseline(SecretBearingSettings()),
+            "queue": {"status": {"depths": {"queued": 1, "processing": 0, "dead_letter": 0}}},
+            "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+            "admission": {"active_runs": 1, "saturated_users": 0},
+            "backpressure": {"reasons": []},
+        },
+        commit_sha="abc123",
+    )
+
+    markdown = render_capacity_evidence_snapshot_markdown(snapshot)
+
+    assert "# ai-platform Capacity Evidence Snapshot" in markdown
+    assert "Commit: `abc123`" in markdown
+    assert "Load-test evidence: `missing`" in markdown
+    assert "Do not raise production concurrency defaults" in markdown
+    assert "super-secret-password" not in markdown
+    assert "redis-secret" not in markdown
+    assert "sk-secret" not in markdown
+
+
+def test_capacity_evidence_snapshot_cli_outputs_json_from_overview_file(tmp_path):
+    overview_path = tmp_path / "overview.json"
+    overview_path.write_text(
+        json.dumps(
+            {
+                "capacity": build_capacity_baseline(SecretBearingSettings()),
+                "queue": {"status": {"depths": {"queued": 2, "processing": 1, "dead_letter": 0}}},
+                "database_pool": {"open": True, "stats": {"requests_waiting": 0, "token": "pool-secret"}},
+                "admission": {"active_runs": 1, "saturated_users": 0},
+                "backpressure": {"reasons": []},
+                "executor_private_payload": {"api_key": "sk-secret"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_evidence_snapshot.py",
+            "--overview-json",
+            str(overview_path),
+            "--commit-sha",
+            "abc123",
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "ai-platform.capacity-evidence-snapshot.v1"
+    assert payload["runtime_identity"]["commit_sha"] == "abc123"
+    assert payload["live_signals"]["queue"]["depths"]["queued"] == 2
+    assert payload["load_test_evidence"]["status"] == "missing"
+    assert "pool-secret" not in result.stdout
+    assert "sk-secret" not in result.stdout
+    assert "executor_private_payload" not in result.stdout

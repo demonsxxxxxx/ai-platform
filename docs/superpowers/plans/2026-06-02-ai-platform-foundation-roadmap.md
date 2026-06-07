@@ -58,6 +58,13 @@ conditions, and cleanup policy for the seven load-test gates without creating
 runs, sending traffic bursts, mutating runtime state, or raising concurrency
 defaults.
 
+`python tools/capacity_evidence_snapshot.py --overview-json <admin-runtime-overview.json>
+--commit-sha <deployed-commit>` now turns an operator-captured Admin Runtime
+overview into a secret-safe capacity evidence snapshot. The snapshot binds
+allowlisted live queue, admission, backpressure, DB-pool, sandbox, and
+observability signals to a deployed commit while still marking load-test
+evidence as missing until a real harness records the required gates.
+
 This baseline does not claim a safe maximum concurrency number. Before raising
 `MAX_ACTIVE_WORKER_RUNS`, `MAX_ACTIVE_RUNS_PER_USER`, DB pool size,
 tenant/user queue quotas, sandbox container limits, model-gateway concurrency,

@@ -16,9 +16,11 @@ python tools/capacity_baseline.py --format markdown
 python tools/capacity_baseline.py --format json
 python tools/capacity_load_plan.py --format markdown --base-url http://127.0.0.1:8020
 python tools/capacity_load_plan.py --format json --base-url http://127.0.0.1:8020
+python tools/capacity_evidence_snapshot.py --overview-json <admin-runtime-overview.json> --commit-sha <deployed-commit> --format markdown
+python tools/capacity_evidence_snapshot.py --overview-json <admin-runtime-overview.json> --commit-sha <deployed-commit> --format json
 ```
 
-The script intentionally does not print DSNs, Redis URLs, model gateway URLs,
+The scripts intentionally do not print DSNs, Redis URLs, model gateway URLs,
 API keys, callback tokens, real `.env` values, raw queue keys, sandbox work
 directories, storage keys, or executor private payloads.
 
@@ -76,6 +78,23 @@ The projection is admin-only, same-tenant, and sanitized. Frontend capacity and
 backpressure views must consume this projection rather than executor private
 payloads, raw Redis keys, storage keys, sandbox work directories, raw `.env`
 values, or secret-like data.
+
+## Evidence Snapshot
+
+After an operator captures the admin-only overview projection for a target
+runtime, generate a secret-safe evidence snapshot:
+
+```powershell
+python tools/capacity_evidence_snapshot.py --overview-json .\admin-runtime-overview.json --commit-sha <deployed-commit> --format markdown
+python tools/capacity_evidence_snapshot.py --overview-json .\admin-runtime-overview.json --commit-sha <deployed-commit> --format json
+```
+
+This snapshot extracts only allowlisted capacity, queue, admission,
+backpressure, DB-pool, sandbox, and observability fields. It is designed to
+bind live signals to a deployed commit while preserving the #21 rule that
+load-test evidence is still `missing` until a real harness run records the
+required gates. It does not read gateway secrets, send load, create runs, or
+raise any default.
 
 ## Required Load-Test Gates
 
