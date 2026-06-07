@@ -74,9 +74,12 @@ Issue #17 is improved but still open. The migrated frontend source under
 `frontend/web` now has a reusable release traceability CLI and
 `tools/frontend_projection_audit.py` wired as the first `ci:verify` step.
 Release traceability records the same git commit, package manager,
-package/lockfile hashes, CI commands, and `dist/` status without printing local
-paths, `.env` values, or secret-like data. The projection audit records the
-current production-source route inventory, active browser entry graph,
+package/lockfile hashes, CI commands, and a deterministic static `dist/`
+manifest without printing local paths, `.env` values, or secret-like data. The
+static manifest records file count, total bytes, entry hashes, and a manifest
+hash so static frontend artifacts can be tied back to the backend/worker git
+commit while packaged frontend image delivery is still pending. The projection
+audit records the current production-source route inventory, active browser entry graph,
 quarantined inactive legacy source findings, private/secret-like projection
 term scan, `ci:verify` integration, legacy route policy mapping, and remaining
 legacy enforcement/remap gaps. The active browser entry graph is currently
@@ -85,8 +88,8 @@ G6/G9 still block ordinary-user expansion until active env-var profile routes
 and quarantined legacy model/channel sources are remapped or policy-gated.
 This provides the traceability and audit base for backend/worker/frontend
 same-commit review. It does not by itself close remote CI enforcement,
-frontend image delivery, or legacy policy enforcement / ai-platform projection
-remap.
+packaged frontend image delivery, or legacy policy enforcement / ai-platform
+projection remap.
 
 The first frontend operator visibility loop is now present in `frontend/web`:
 Settings includes an admin-only Admin Runtime Capacity section that consumes
@@ -111,18 +114,17 @@ Skill version registry, promote/rollback release policy, dependency policy
 materialization, skill snapshot/release-decision locks, session-bound memory
 records, user opt-out, Admin memory policy inventory, retention cleanup,
 redaction, long-term cross-session memory fail-closed behavior, frontend
-release traceability, frontend projection audit wired first into `ci:verify`,
-active browser projection audit clearance, and quarantined inactive legacy
-secret-like source reporting.
+release traceability, static `dist/` release manifest, frontend projection
+audit wired first into `ci:verify`, active browser projection audit clearance,
+and quarantined inactive legacy secret-like source reporting.
 
 This does not close G6. Remaining blockers are policy enforcement or
 ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel
 surfaces, full allow/deny/ask taxonomy for every MCP tool, signed package or
 SBOM release evidence, dependency vulnerability/license policy, formal memory
 delete/export/erasure evidence, active env-var profile surface remap,
-quarantined legacy frontend source remap, 211 visual acceptance for the Admin
-Runtime capacity/governance section, frontend image traceability, and
-ordinary-user G9 acceptance. Do
+quarantined legacy frontend source remap, packaged frontend image
+traceability, and ordinary-user G9 acceptance. Do
 not use this baseline to expand sandbox privilege, raw Skill selection, or
 multi-agent ordinary-user exposure.
 

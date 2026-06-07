@@ -157,8 +157,9 @@ Static audit on 2026-06-07:
 - Settings now includes an admin-only Admin Runtime Capacity section that calls
   only `GET /api/ai/admin/runtime/overview` and displays capacity,
   backpressure, governance gaps, and missing load-test evidence. This improves
-  frontend operator visibility but still requires 211 visual acceptance and
-  does not close #21, G6, or G9.
+  frontend operator visibility and has 211 frontend acceptance, but still does
+  not close #21, G6, or G9 because load-test evidence, legacy route remap, and
+  packaged frontend image traceability remain open.
 
 Remaining audit risks:
 
@@ -228,9 +229,12 @@ Current local evidence on 2026-06-07:
   script works even when this Windows workstation can only start pnpm through
   Corepack and 211 needs `python3` instead of bare `python`.
 - `python tools/frontend_release_traceability.py --format json` records the
-  current git commit, dirty flag, package/lockfile hashes, CI commands, and
-  `dist/` status without printing local absolute paths, `.env` values, or
-  secret-like data.
+  current git commit, dirty flag, package/lockfile hashes, CI commands, and a
+  deterministic static `dist/` manifest without printing local absolute paths,
+  `.env` values, or secret-like data. The manifest includes file count, total
+  bytes, `index.html` / service-worker entry hashes when present, and a
+  manifest hash that ties the static frontend artifact back to the same git
+  commit as backend and worker artifacts.
 - `python tools/frontend_projection_audit.py --format json` records the
   current production-source route inventory, active browser entry graph,
   quarantined legacy source findings, CI integration status, forbidden
@@ -257,8 +261,9 @@ back to the same git commit as API and worker.
   defaults should be raised from this migration.
 - The Admin Runtime Capacity section has local source tests, build coverage,
   and 211 frontend acceptance at commit
-  `a4281bee983fff5afd3c68bcb48540bbcfde9f26`; frontend image traceability
-  remains pending until packaged frontend delivery exists.
+  `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35`; the release traceability CLI now
+  records a static `dist/` manifest for that same commit. Packaged frontend
+  image traceability remains pending until packaged frontend delivery exists.
 - #22 document-centric context/workbench UX remains future work and is not part
   of this source move.
 

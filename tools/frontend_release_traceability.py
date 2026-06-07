@@ -51,6 +51,63 @@ def _git_dirty(repo_root: Path) -> bool | None:
     return bool(result.stdout.strip())
 
 
+def _dist_manifest(dist_root: Path, *, git_commit: str) -> dict[str, object]:
+    index_html = dist_root / "index.html"
+    status = "built" if index_html.exists() else "missing"
+    manifest: dict[str, object] = {
+        "status": status,
+        "artifact_kind": "static_dist",
+        "index_html_present": index_html.exists(),
+        "file_count": 0,
+        "total_bytes": 0,
+        "manifest_sha256": None,
+        "entrypoints": {},
+        "release_trace": {
+            "frontend_artifact": "static_dist_manifest",
+            "backend_worker_commit": git_commit,
+            "policy": "same_git_commit_for_api_worker_frontend_artifacts",
+        },
+    }
+    if not dist_root.exists():
+        return manifest
+
+    file_records: list[dict[str, object]] = []
+    total_bytes = 0
+    for item in sorted(path for path in dist_root.rglob("*") if path.is_file()):
+        relative_path = item.relative_to(dist_root).as_posix()
+        size = item.stat().st_size
+        total_bytes += size
+        file_records.append(
+            {
+                "path": relative_path,
+                "size": size,
+                "sha256": _sha256(item),
+            }
+        )
+
+    digest = hashlib.sha256()
+    for record in file_records:
+        digest.update(json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+        digest.update(b"\n")
+
+    entrypoints: dict[str, str] = {}
+    if index_html.exists():
+        entrypoints["index_html_sha256"] = _sha256(index_html)
+    service_worker = dist_root / "sw.js"
+    if service_worker.exists():
+        entrypoints["service_worker_sha256"] = _sha256(service_worker)
+
+    manifest.update(
+        {
+            "file_count": len(file_records),
+            "total_bytes": total_bytes,
+            "manifest_sha256": digest.hexdigest(),
+            "entrypoints": entrypoints,
+        }
+    )
+    return manifest
+
+
 def build_frontend_release_traceability(repo_root: Path | None = None) -> dict[str, Any]:
     """Build a secret-safe same-commit frontend release traceability snapshot."""
     root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
@@ -66,13 +123,7 @@ def build_frontend_release_traceability(repo_root: Path | None = None) -> dict[s
         for name in ("lint", "build", "projection:audit", "ci:verify")
         if isinstance(scripts.get(name), str)
     }
-    dist_index = dist_root / "index.html"
-    dist_status: dict[str, object] = {
-        "status": "built" if dist_index.exists() else "missing",
-        "index_html_present": dist_index.exists(),
-    }
-    if dist_root.exists():
-        dist_status["file_count"] = sum(1 for item in dist_root.rglob("*") if item.is_file())
+    git_commit = _git_value(root, "rev-parse", "HEAD") or "unknown"
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -81,7 +132,7 @@ def build_frontend_release_traceability(repo_root: Path | None = None) -> dict[s
         "package_version": str(package_json.get("version") or ""),
         "package_manager": str(package_json.get("packageManager") or ""),
         "git": {
-            "commit": _git_value(root, "rev-parse", "HEAD") or "unknown",
+            "commit": git_commit,
             "dirty": _git_dirty(root),
         },
         "source_hashes": {
@@ -90,7 +141,7 @@ def build_frontend_release_traceability(repo_root: Path | None = None) -> dict[s
         },
         "scripts": selected_scripts,
         "commands": CI_COMMANDS,
-        "dist": dist_status,
+        "dist": _dist_manifest(dist_root, git_commit=git_commit),
         "release_policy": "tie_frontend_api_worker_artifacts_to_same_git_commit",
     }
 
@@ -121,6 +172,10 @@ def render_frontend_release_traceability_markdown(trace: dict[str, Any]) -> str:
         "## Dist Status\n\n"
         f"- status: `{trace['dist']['status']}`\n"
         f"- index_html_present: `{str(trace['dist']['index_html_present']).lower()}`\n"
+        f"- artifact_kind: `{trace['dist']['artifact_kind']}`\n"
+        f"- file_count: `{trace['dist']['file_count']}`\n"
+        f"- total_bytes: `{trace['dist']['total_bytes']}`\n"
+        f"- manifest_sha256: `{trace['dist']['manifest_sha256']}`\n"
     )
 
 
