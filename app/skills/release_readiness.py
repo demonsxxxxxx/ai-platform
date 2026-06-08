@@ -64,6 +64,8 @@ _VULNERABILITY_EVIDENCE_NAMES = {
 _SIGNED_PACKAGE_EVIDENCE_NAMES = {
     "ai-platform-signed-package-evidence.json",
     "signed-package-evidence.json",
+}
+_SIGNED_PACKAGE_ATTESTATION_REFERENCE_EXAMPLES = {
     "package-signature.json",
     "cosign.bundle",
     "in-toto-attestation.jsonl",
@@ -74,28 +76,42 @@ _RELEASE_REVIEW_FILE_NAMES = {
     "skill-release-review.json",
 }
 _RELEASE_REVIEW_SCHEMA_VERSION = "ai-platform.skill-release-review.v1"
+_SIGNED_PACKAGE_REQUIRED_FIELDS = (
+    "package_artifact_ref",
+    "package_digest_sha256",
+    "signature_artifact_ref",
+    "signer_identity",
+    "signing_key_or_certificate_ref",
+    "transparency_log_or_attestation_ref",
+    "verification_status",
+    "review_status",
+)
+_SIGNED_PACKAGE_REFERENCE_FIELDS = {
+    "package_artifact_ref",
+    "signature_artifact_ref",
+    "signing_key_or_certificate_ref",
+    "transparency_log_or_attestation_ref",
+}
+_SIGNED_PACKAGE_VERIFICATION_STATUSES = {"verified", "passed"}
+_SIGNED_PACKAGE_REVIEW_STATUSES = {
+    "reviewed",
+    "accepted",
+    "approved",
+}
 _RELEASE_EVIDENCE_CATEGORIES = {
-    "sbom_or_signed_package": _SBOM_FILE_NAMES,
+    "sbom_or_signed_package": _SBOM_FILE_NAMES | _SIGNED_PACKAGE_EVIDENCE_NAMES,
     "license_policy": _LICENSE_FILE_NAMES,
     "vulnerability_scan": _VULNERABILITY_EVIDENCE_NAMES,
 }
 _SIGNED_PACKAGE_EVIDENCE_CONTRACT = {
     "schema_version": SIGNED_PACKAGE_EVIDENCE_CONTRACT_SCHEMA_VERSION,
-    "status": "contract_only_not_runtime_satisfied",
+    "status": "source_validation_enabled_not_evidence_satisfied",
     "evidence_category": "sbom_or_signed_package",
     "required_review_manifest_schema": _RELEASE_REVIEW_SCHEMA_VERSION,
     "required_review_flag": "sbom_reviewed",
     "candidate_evidence_file_names": sorted(_SIGNED_PACKAGE_EVIDENCE_NAMES),
-    "required_fields": [
-        "package_artifact_ref",
-        "package_digest_sha256",
-        "signature_artifact_ref",
-        "signer_identity",
-        "signing_key_or_certificate_ref",
-        "transparency_log_or_attestation_ref",
-        "verification_status",
-        "review_status",
-    ],
+    "external_attestation_reference_examples": sorted(_SIGNED_PACKAGE_ATTESTATION_REFERENCE_EXAMPLES),
+    "required_fields": list(_SIGNED_PACKAGE_REQUIRED_FIELDS),
     "safe_reference_policy": {
         "relative_or_artifact_refs_only": True,
         "raw_object_storage_refs_forbidden": True,
@@ -103,7 +119,8 @@ _SIGNED_PACKAGE_EVIDENCE_CONTRACT = {
         "sandbox_working_directory_forbidden": True,
         "secret_like_values_forbidden": True,
     },
-    "runtime_validation_gap": "skill_signed_package_evidence_runtime_validation",
+    "runtime_validation": "enabled_for_repository_signed_package_evidence_json",
+    "remaining_acceptance_gap": "real_reviewed_signed_package_evidence_missing",
     "does_not_close_g6": True,
 }
 _DEPENDENCY_REVIEW_POLICY = {
@@ -191,7 +208,7 @@ def build_skill_release_review_template(*, skill_id: str) -> dict[str, Any]:
         "vulnerability_reviewed": False,
         "does_not_close_gate_by_itself": True,
         "required_evidence": {
-            "sbom_or_signed_package": sorted(_SBOM_FILE_NAMES),
+            "sbom_or_signed_package": sorted(_RELEASE_EVIDENCE_CATEGORIES["sbom_or_signed_package"]),
             "license_policy": sorted(_LICENSE_FILE_NAMES),
             "vulnerability_scan": sorted(_VULNERABILITY_EVIDENCE_NAMES),
         },
@@ -204,7 +221,7 @@ def build_skill_release_review_template(*, skill_id: str) -> dict[str, Any]:
             {
                 "id": "sbom_or_signed_package",
                 "passed": False,
-                "notes": "Confirm package provenance and SBOM evidence before setting sbom_reviewed=true. Signed-package evidence has a source contract but still needs runtime validation before it can clear this gate.",
+                "notes": "Confirm package provenance and SBOM or signed-package evidence before setting sbom_reviewed=true. Signed-package evidence is source-validated but still needs real reviewed evidence before it can clear this gate.",
             },
             {
                 "id": "license_policy",
@@ -279,7 +296,79 @@ def _matched_evidence_paths(ref: str, allowed_paths: list[str]) -> list[str]:
     return [path for path in allowed_paths if normalized_ref == _basename(path).lower()]
 
 
-def _review_evidence_file_errors(payload: dict[str, Any], relative_files: list[str]) -> list[str]:
+def _is_signed_package_evidence_path(relative_path: str) -> bool:
+    return _basename(_normalize_relative_path(relative_path)) in _SIGNED_PACKAGE_EVIDENCE_NAMES
+
+
+def _is_safe_signed_package_reference(value: str) -> bool:
+    normalized = value.strip().replace("\\", "/")
+    lowered = normalized.lower()
+    if not normalized:
+        return False
+    if _has_placeholder_marker(normalized) or _has_forbidden_evidence_marker(normalized):
+        return False
+    if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", normalized):
+        if not lowered.startswith("artifact://"):
+            return False
+        artifact_ref = normalized[len("artifact://") :]
+        if not artifact_ref or artifact_ref.startswith("/") or ":" in artifact_ref:
+            return False
+        if not re.fullmatch(r"[A-Za-z0-9._/-]+", artifact_ref):
+            return False
+        return not any(part in {"", ".", ".."} for part in artifact_ref.split("/"))
+    if normalized.startswith("/") or normalized.startswith("//"):
+        return False
+    if re.match(r"^[A-Za-z]:[\\/]", value):
+        return False
+    if ":" in normalized:
+        return False
+    return ".." not in {part for part in normalized.split("/") if part}
+
+
+def _signed_package_evidence_errors(evidence_path: Path) -> list[str]:
+    try:
+        payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return ["signed_package_evidence_invalid_json"]
+    if not isinstance(payload, dict):
+        return ["signed_package_evidence_invalid_json"]
+
+    errors: list[str] = []
+    for field in _SIGNED_PACKAGE_REQUIRED_FIELDS:
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            errors.append("signed_package_evidence_missing_required_fields")
+            continue
+        if _has_placeholder_marker(value):
+            errors.append("signed_package_evidence_placeholder_value")
+        if _has_forbidden_evidence_marker(value):
+            errors.append("signed_package_evidence_forbidden_reference")
+
+    digest = payload.get("package_digest_sha256")
+    if not isinstance(digest, str) or not re.fullmatch(r"[A-Fa-f0-9]{64}", digest.strip()):
+        errors.append("signed_package_evidence_invalid_digest")
+
+    verification_status = str(payload.get("verification_status") or "").strip().lower()
+    if verification_status not in _SIGNED_PACKAGE_VERIFICATION_STATUSES:
+        errors.append("signed_package_evidence_invalid_verification_status")
+
+    review_status = str(payload.get("review_status") or "").strip().lower()
+    if review_status not in _SIGNED_PACKAGE_REVIEW_STATUSES:
+        errors.append("signed_package_evidence_invalid_review_status")
+
+    for field in _SIGNED_PACKAGE_REFERENCE_FIELDS:
+        value = payload.get(field)
+        if not isinstance(value, str) or not _is_safe_signed_package_reference(value):
+            errors.append("signed_package_evidence_forbidden_reference")
+    return sorted(set(errors))
+
+
+def _valid_signed_package_evidence_paths(skill_dir: Path, relative_files: list[str]) -> list[str]:
+    paths = _matching_file_paths(relative_files, _SIGNED_PACKAGE_EVIDENCE_NAMES)
+    return [path for path in paths if not _signed_package_evidence_errors(skill_dir / path)]
+
+
+def _review_evidence_file_errors(payload: dict[str, Any], relative_files: list[str], *, skill_dir: Path) -> list[str]:
     evidence_files = payload.get("evidence_files")
     if not isinstance(evidence_files, dict):
         return ["evidence_files_missing_or_invalid"]
@@ -311,6 +400,11 @@ def _review_evidence_file_errors(payload: dict[str, Any], relative_files: list[s
                 continue
             if any(_has_forbidden_evidence_marker(path) for path in matched_paths):
                 errors.append(f"{category}_evidence_file_forbidden_actual_path")
+                continue
+            if category == "sbom_or_signed_package":
+                for path in matched_paths:
+                    if _is_signed_package_evidence_path(path):
+                        errors.extend(_signed_package_evidence_errors(skill_dir / path))
     return sorted(set(errors))
 
 
@@ -321,11 +415,13 @@ def _review_flag_errors(payload: dict[str, Any]) -> list[str]:
     return ["review_flags_missing_or_invalid"]
 
 
-def _package_evidence(relative_files: list[str]) -> dict[str, list[str]]:
+def _package_evidence(skill_dir: Path, relative_files: list[str]) -> dict[str, list[str]]:
+    signed_package_paths = _valid_signed_package_evidence_paths(skill_dir, relative_files)
     return {
         "metadata_files": _matching_files(relative_files, _PACKAGE_METADATA_FILES),
         "requirements_files": _matching_files(relative_files, _REQUIREMENTS_FILES),
         "sbom_files": _matching_files(relative_files, _SBOM_FILE_NAMES),
+        "signed_package_evidence_files": sorted({_basename(path) for path in signed_package_paths}),
         "license_files": _matching_files(relative_files, _LICENSE_FILE_NAMES),
         "vulnerability_evidence_files": _matching_files(relative_files, _VULNERABILITY_EVIDENCE_NAMES),
     }
@@ -366,7 +462,7 @@ def _release_review(skill_dir: Path, relative_files: list[str], *, skill_id: str
             invalid_files.append(_basename(relative_path))
             continue
         current_review_flag_errors = _review_flag_errors(payload)
-        current_evidence_file_errors = _review_evidence_file_errors(payload, relative_files)
+        current_evidence_file_errors = _review_evidence_file_errors(payload, relative_files, skill_dir=skill_dir)
         if current_review_flag_errors or current_evidence_file_errors:
             invalid_files.append(_basename(relative_path))
             evidence_file_errors.extend(current_evidence_file_errors)
@@ -410,7 +506,7 @@ def _skill_blockers(
         isinstance(item, dict) and item.get("status") != "allowed" for item in dependency_details
     ):
         blockers.append("skill_dependency_policy_blocked")
-    if not evidence["sbom_files"]:
+    if not evidence["sbom_files"] and not evidence["signed_package_evidence_files"]:
         blockers.append("signed_package_or_sbom_evidence_missing")
     elif not release_review.get("sbom_reviewed"):
         blockers.append("signed_package_or_sbom_review_not_verified")
@@ -458,7 +554,7 @@ def build_skill_release_readiness(*, skills_root: str | Path = "skills") -> dict
     skill_items: list[dict[str, Any]] = []
     for skill in builtin_skills:
         relative_files = _relative_file_names(skill.path)
-        evidence = _package_evidence(relative_files)
+        evidence = _package_evidence(skill.path, relative_files)
         release_review = _release_review(skill.path, relative_files, skill_id=skill.name)
         dependency_policy = skill_dependency_policy(skill.name, available_skill_ids)
         blockers = _skill_blockers(evidence, release_review, dependency_policy)
@@ -509,6 +605,9 @@ def build_skill_release_readiness(*, skills_root: str | Path = "skills") -> dict
                 1 for item in skill_items if item["package_evidence"]["requirements_files"]
             ),
             "skills_with_sbom_evidence": sum(1 for item in skill_items if item["package_evidence"]["sbom_files"]),
+            "skills_with_signed_package_evidence": sum(
+                1 for item in skill_items if item["package_evidence"]["signed_package_evidence_files"]
+            ),
             "skills_with_license_evidence": sum(
                 1 for item in skill_items if item["package_evidence"]["license_files"]
             ),
@@ -521,7 +620,7 @@ def build_skill_release_readiness(*, skills_root: str | Path = "skills") -> dict
         "admin_skill_release_dashboard": dashboard_readiness,
         "open_gaps": open_gaps,
         "evidence_policy": (
-            "SBOM evidence plus dependency license and vulnerability review "
+            "SBOM or signed-package evidence plus dependency license and vulnerability review "
             "are required before closing the skill release governance gate"
         ),
     }
@@ -542,7 +641,8 @@ def render_skill_release_readiness_markdown(readiness: dict[str, Any]) -> str:
                 f"\n- Signed package evidence contract: `{signed_contract.get('schema_version')}`"
                 f"\n- Signed package contract status: `{signed_contract.get('status')}`"
                 f"\n- Signed package required fields: `{signed_fields}`"
-                f"\n- Signed package runtime gap: `{signed_contract.get('runtime_validation_gap')}`"
+                f"\n- Signed package runtime validation: `{signed_contract.get('runtime_validation')}`"
+                f"\n- Signed package remaining acceptance gap: `{signed_contract.get('remaining_acceptance_gap')}`"
                 f"\n- Signed package contract does not close G6: `{signed_contract.get('does_not_close_g6')}`"
             )
         policy_lines = (
@@ -592,6 +692,7 @@ def render_skill_release_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"- Skills with package metadata: `{readiness['summary']['skills_with_package_metadata']}`\n"
         f"- Skills with requirements: `{readiness['summary']['skills_with_requirements']}`\n"
         f"- Skills with SBOM evidence: `{readiness['summary']['skills_with_sbom_evidence']}`\n"
+        f"- Skills with signed-package evidence: `{readiness['summary']['skills_with_signed_package_evidence']}`\n"
         f"- Skills with license evidence: `{readiness['summary']['skills_with_license_evidence']}`\n"
         f"- Skills with vulnerability evidence: `{readiness['summary']['skills_with_vulnerability_evidence']}`\n\n"
         "## Dependency Review Policy\n\n"

@@ -459,9 +459,9 @@ This does not close G6. Remaining blockers are policy enforcement or
 ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel
 surfaces, `admin_policy_bulk_review_runtime_acceptance`,
 `admin_policy_bulk_review_visual_acceptance`,
-`admin_policy_bulk_review_211_acceptance`, SBOM release
+`admin_policy_bulk_review_211_acceptance`, SBOM or signed-package release
 evidence plus passed review manifests bound to matching evidence files,
-signed-package runtime validation plus reviewed evidence, dependency vulnerability
+real signed-package reviewed evidence and runtime/Admin acceptance, dependency vulnerability
 and license evidence plus passed review manifests bound to matching evidence
 files, runtime acceptance for the source-level skill dependency review policy,
 `dependency_vulnerability_or_license_policy`,

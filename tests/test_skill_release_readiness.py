@@ -57,6 +57,21 @@ def _passed_review_manifest(
     )
 
 
+def _signed_package_evidence(**overrides):
+    payload = {
+        "package_artifact_ref": "artifacts/general-chat/package.tgz",
+        "package_digest_sha256": "a" * 64,
+        "signature_artifact_ref": "artifacts/general-chat/package.sig",
+        "signer_identity": "release-admin",
+        "signing_key_or_certificate_ref": "artifacts/general-chat/cert.pem",
+        "transparency_log_or_attestation_ref": "artifact://skill-release/general-chat/attestation",
+        "verification_status": "verified",
+        "review_status": "reviewed",
+    }
+    payload.update(overrides)
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def test_skill_release_dashboard_readiness_contract_is_safe_and_does_not_close_g6():
     readiness = build_skill_release_dashboard_readiness()
 
@@ -150,6 +165,7 @@ def test_skill_release_readiness_records_policy_gaps_without_secret_or_absolute_
         "skills_with_package_metadata": 1,
         "skills_with_requirements": 1,
         "skills_with_sbom_evidence": 0,
+        "skills_with_signed_package_evidence": 0,
         "skills_with_license_evidence": 0,
         "skills_with_vulnerability_evidence": 0,
     }
@@ -179,10 +195,16 @@ def test_skill_release_readiness_records_policy_gaps_without_secret_or_absolute_
     assert policy["does_not_close_g6"] is True
     signed_contract = policy["signed_package_evidence_contract"]
     assert signed_contract["schema_version"] == "ai-platform.skill-signed-package-evidence-contract.v1"
-    assert signed_contract["status"] == "contract_only_not_runtime_satisfied"
+    assert signed_contract["status"] == "source_validation_enabled_not_evidence_satisfied"
     assert signed_contract["evidence_category"] == "sbom_or_signed_package"
     assert signed_contract["required_review_manifest_schema"] == "ai-platform.skill-release-review.v1"
     assert signed_contract["required_review_flag"] == "sbom_reviewed"
+    assert signed_contract["candidate_evidence_file_names"] == [
+        "ai-platform-signed-package-evidence.json",
+        "signed-package-evidence.json",
+    ]
+    assert "cosign.bundle" not in signed_contract["candidate_evidence_file_names"]
+    assert "cosign.bundle" in signed_contract["external_attestation_reference_examples"]
     assert signed_contract["required_fields"] == [
         "package_artifact_ref",
         "package_digest_sha256",
@@ -200,6 +222,8 @@ def test_skill_release_readiness_records_policy_gaps_without_secret_or_absolute_
         "sandbox_working_directory_forbidden": True,
         "secret_like_values_forbidden": True,
     }
+    assert signed_contract["runtime_validation"] == "enabled_for_repository_signed_package_evidence_json"
+    assert signed_contract["remaining_acceptance_gap"] == "real_reviewed_signed_package_evidence_missing"
     assert signed_contract["does_not_close_g6"] is True
     dashboard = readiness["admin_skill_release_dashboard"]
     assert dashboard["schema_version"] == "ai-platform.skill-release-dashboard-readiness.v1"
@@ -245,7 +269,8 @@ def test_skill_release_readiness_markdown_is_gap_first_and_operator_readable(tmp
     assert "ai-platform.skill-signed-package-evidence-contract.v1" in markdown
     assert "ai-platform.skill-release-dashboard-contract.v1" in markdown
     assert "admin_skill_release_dashboard_runtime_acceptance" in markdown
-    assert "contract_only_not_runtime_satisfied" in markdown
+    assert "source_validation_enabled_not_evidence_satisfied" in markdown
+    assert "enabled_for_repository_signed_package_evidence_json" in markdown
     assert "general-chat" in markdown
     assert str(tmp_path) not in markdown
     assert "token=secret" not in markdown
@@ -607,6 +632,178 @@ def test_skill_release_review_manifest_clears_review_gate_with_matched_evidence_
     assert skill["release_review"]["status"] == "passed"
     assert skill["release_review"]["evidence_files_verified"] is True
     assert skill["blockers"] == []
+
+
+def test_skill_release_review_manifest_accepts_valid_signed_package_evidence(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(
+        skills_root,
+        "general-chat",
+        "Default chat capability.",
+        {
+            "evidence/ai-platform-signed-package-evidence.json": _signed_package_evidence(),
+            "legal/LICENSE": "reviewed license text",
+            "security/npm-audit.json": "{}",
+            "ai-platform-skill-release-review.json": _passed_review_manifest(
+                "general-chat",
+                {
+                    "sbom_or_signed_package": ["evidence/ai-platform-signed-package-evidence.json"],
+                    "license_policy": ["legal/LICENSE"],
+                    "vulnerability_scan": ["security/npm-audit.json"],
+                },
+            ),
+        },
+    )
+
+    readiness = build_skill_release_readiness(skills_root=skills_root)
+
+    assert readiness["status"] == "partial_blocked"
+    assert readiness["open_gaps"] == [
+        "skill_dependency_review_policy_runtime_acceptance",
+        *_DASHBOARD_GAPS,
+    ]
+    assert readiness["summary"]["skills_with_signed_package_evidence"] == 1
+    skill = readiness["skills"][0]
+    assert skill["package_evidence"]["signed_package_evidence_files"] == [
+        "ai-platform-signed-package-evidence.json"
+    ]
+    assert skill["release_review"]["status"] == "passed"
+    assert skill["release_review"]["evidence_files_verified"] is True
+    assert skill["blockers"] == []
+
+
+def test_skill_release_review_manifest_rejects_invalid_signed_package_evidence(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(
+        skills_root,
+        "general-chat",
+        "Default chat capability.",
+        {
+            "evidence/ai-platform-signed-package-evidence.json": _signed_package_evidence(
+                package_digest_sha256="sha256:placeholder",
+                signature_artifact_ref="raw_storage_key://secret/package.sig",
+            ),
+            "legal/LICENSE": "reviewed license text",
+            "security/npm-audit.json": "{}",
+            "ai-platform-skill-release-review.json": _passed_review_manifest(
+                "general-chat",
+                {
+                    "sbom_or_signed_package": ["evidence/ai-platform-signed-package-evidence.json"],
+                    "license_policy": ["legal/LICENSE"],
+                    "vulnerability_scan": ["security/npm-audit.json"],
+                },
+            ),
+        },
+    )
+
+    readiness = build_skill_release_readiness(skills_root=skills_root)
+
+    skill = readiness["skills"][0]
+    assert readiness["status"] == "partial_blocked"
+    assert skill["package_evidence"]["signed_package_evidence_files"] == []
+    assert skill["release_review"]["status"] == "invalid_or_incomplete"
+    assert skill["release_review"]["evidence_files_verified"] is False
+    assert "signed_package_evidence_invalid_digest" in skill["release_review"]["evidence_file_errors"]
+    assert "signed_package_evidence_forbidden_reference" in skill["release_review"]["evidence_file_errors"]
+    assert "signed_package_or_sbom_evidence_missing" in skill["blockers"]
+    serialized = json.dumps(readiness, ensure_ascii=False)
+    assert "raw_storage_key" not in serialized
+    assert "sha256:placeholder" not in serialized
+
+
+def test_skill_release_review_manifest_rejects_path_like_artifact_signed_package_refs(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(
+        skills_root,
+        "general-chat",
+        "Default chat capability.",
+        {
+            "evidence/ai-platform-signed-package-evidence.json": _signed_package_evidence(
+                package_artifact_ref="artifact://../package.tgz",
+                signature_artifact_ref="artifact://C:/Users/release/package.sig",
+            ),
+            "legal/LICENSE": "reviewed license text",
+            "security/npm-audit.json": "{}",
+            "ai-platform-skill-release-review.json": _passed_review_manifest(
+                "general-chat",
+                {
+                    "sbom_or_signed_package": ["evidence/ai-platform-signed-package-evidence.json"],
+                    "license_policy": ["legal/LICENSE"],
+                    "vulnerability_scan": ["security/npm-audit.json"],
+                },
+            ),
+        },
+    )
+
+    readiness = build_skill_release_readiness(skills_root=skills_root)
+
+    skill = readiness["skills"][0]
+    assert skill["release_review"]["status"] == "invalid_or_incomplete"
+    assert skill["package_evidence"]["signed_package_evidence_files"] == []
+    assert "signed_package_evidence_forbidden_reference" in skill["release_review"]["evidence_file_errors"]
+    serialized = json.dumps(readiness, ensure_ascii=False)
+    assert "../package.tgz" not in serialized
+    assert "C:/Users" not in serialized
+
+
+def test_skill_release_review_manifest_does_not_accept_raw_attestation_as_signed_package_wrapper(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(
+        skills_root,
+        "general-chat",
+        "Default chat capability.",
+        {
+            "evidence/cosign.bundle": "{}",
+            "legal/LICENSE": "reviewed license text",
+            "security/npm-audit.json": "{}",
+            "ai-platform-skill-release-review.json": _passed_review_manifest(
+                "general-chat",
+                {
+                    "sbom_or_signed_package": ["evidence/cosign.bundle"],
+                    "license_policy": ["legal/LICENSE"],
+                    "vulnerability_scan": ["security/npm-audit.json"],
+                },
+            ),
+        },
+    )
+
+    readiness = build_skill_release_readiness(skills_root=skills_root)
+
+    skill = readiness["skills"][0]
+    assert skill["release_review"]["status"] == "invalid_or_incomplete"
+    assert skill["package_evidence"]["signed_package_evidence_files"] == []
+    assert "sbom_or_signed_package_evidence_file_unmatched" in skill["release_review"]["evidence_file_errors"]
+    assert "signed_package_or_sbom_evidence_missing" in skill["blockers"]
+
+
+def test_skill_release_review_manifest_requires_final_signed_package_review_status(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(
+        skills_root,
+        "general-chat",
+        "Default chat capability.",
+        {
+            "evidence/ai-platform-signed-package-evidence.json": _signed_package_evidence(
+                review_status="approved_for_operator_review",
+            ),
+            "legal/LICENSE": "reviewed license text",
+            "security/npm-audit.json": "{}",
+            "ai-platform-skill-release-review.json": _passed_review_manifest(
+                "general-chat",
+                {
+                    "sbom_or_signed_package": ["evidence/ai-platform-signed-package-evidence.json"],
+                    "license_policy": ["legal/LICENSE"],
+                    "vulnerability_scan": ["security/npm-audit.json"],
+                },
+            ),
+        },
+    )
+
+    readiness = build_skill_release_readiness(skills_root=skills_root)
+
+    skill = readiness["skills"][0]
+    assert skill["release_review"]["status"] == "invalid_or_incomplete"
+    assert "signed_package_evidence_invalid_review_status" in skill["release_review"]["evidence_file_errors"]
 
 
 def test_skill_release_review_manifest_uses_later_valid_review_when_earlier_file_is_invalid(tmp_path):

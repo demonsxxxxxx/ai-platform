@@ -178,6 +178,7 @@ def build_governance_readiness(
                 "skill_release_review_template_entrypoint",
                 "skill_dependency_review_policy_contract",
                 "skill_signed_package_evidence_contract",
+                "skill_signed_package_evidence_source_validation",
                 "admin_skill_release_dashboard_contract",
             ],
             gaps=skill_release_readiness["open_gaps"],
