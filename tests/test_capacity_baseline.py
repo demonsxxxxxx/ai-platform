@@ -11,10 +11,12 @@ from app.capacity_baseline import (
     build_capacity_evidence_snapshot,
     build_capacity_gate_readiness,
     build_capacity_load_test_plan,
+    build_capacity_profile_readiness,
     build_capacity_recorded_gate_evidence_contract,
     render_capacity_baseline_markdown,
     render_capacity_evidence_snapshot_markdown,
     render_capacity_gate_readiness_markdown,
+    render_capacity_profile_readiness_markdown,
     render_capacity_load_test_plan_markdown,
 )
 
@@ -63,6 +65,42 @@ class SecretBearingSettings:
     model_gateway_request_concurrency_limit = 0
     openai_base_url = "https://model-gateway.internal/v1"
     openai_api_key = "sk-secret"
+
+
+def _admin_runtime_overview() -> dict[str, object]:
+    return {
+        "capacity": build_capacity_baseline(SecretBearingSettings()),
+        "queue": {"status": {"depths": {"queued": 0, "processing": 0, "dead_letter": 0}}},
+        "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+        "admission": {"active_runs": 0, "saturated_users": 0},
+        "backpressure": {"reasons": []},
+        "sandbox": {"containers": {"running": 0}, "leases": {"active": 0}},
+        "observability": {"event_count": 3, "error_count": 0},
+    }
+
+
+def _snapshot_with_complete_recorded_gates() -> dict[str, object]:
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="abc123",
+        runtime_profile="211-current",
+    )
+    required_evidence = snapshot["load_test_evidence"]["required_evidence"]
+    snapshot["load_test_evidence"] = {
+        "status": "recorded",
+        "required_gates": list(LOAD_TEST_GATES),
+        "recorded_gates": list(LOAD_TEST_GATES),
+        "gate_evidence": {
+            gate: {
+                "evidence": {item: f"capacity-evidence/{gate}/{item}.json" for item in required_evidence},
+                "cleanup_proof_status": "recorded",
+                "stop_condition_status": "passed",
+                "triggered_stop_conditions": [],
+            }
+            for gate in LOAD_TEST_GATES
+        },
+    }
+    return snapshot
 
 
 def test_capacity_baseline_records_defaults_without_secret_like_settings():
@@ -985,6 +1023,185 @@ def test_capacity_gate_readiness_accepts_real_ticket_named_artifact_refs():
 
     assert readiness["status"] == "ready_for_operator_review"
     assert readiness["invalid_load_test_evidence"] == []
+
+
+def test_capacity_profile_readiness_blocks_all_profiles_without_recorded_load_evidence():
+    readiness = build_capacity_gate_readiness(
+        build_capacity_evidence_snapshot(
+            _admin_runtime_overview(),
+            commit_sha="abc123",
+            runtime_profile="211-current",
+        )
+    )
+
+    profile_readiness = build_capacity_profile_readiness(readiness)
+
+    assert profile_readiness["schema_version"] == "ai-platform.capacity-profile-readiness.v1"
+    assert profile_readiness["status"] == "blocked_missing_load_test_evidence"
+    assert profile_readiness["source_gate_readiness"]["status"] == "blocked_missing_load_test_evidence"
+    assert [profile["id"] for profile in profile_readiness["profiles"]] == [
+        "conservative_internal",
+        "medium_team",
+        "high_capacity_1t",
+    ]
+    assert {profile["status"] for profile in profile_readiness["profiles"]} == {
+        "blocked_missing_load_test_evidence"
+    }
+    assert all(
+        profile["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
+        for profile in profile_readiness["profiles"]
+    )
+    assert all(profile["does_not_raise_defaults"] is True for profile in profile_readiness["profiles"])
+    assert all(profile["automatic_default_raise"] is False for profile in profile_readiness["profiles"])
+    assert all(profile["safe_concurrency_claim"] == "not_claimed" for profile in profile_readiness["profiles"])
+    assert all(profile["missing_load_test_gates"] == LOAD_TEST_GATES for profile in profile_readiness["profiles"])
+
+
+def test_capacity_profile_readiness_requires_operator_review_after_complete_gate_evidence():
+    readiness = build_capacity_gate_readiness(_snapshot_with_complete_recorded_gates())
+
+    profile_readiness = build_capacity_profile_readiness(readiness)
+
+    assert readiness["status"] == "ready_for_operator_review"
+    assert profile_readiness["status"] == "operator_review_required"
+    assert profile_readiness["production_default_decision"] == "operator_review_required_before_default_change"
+    assert {profile["status"] for profile in profile_readiness["profiles"]} == {
+        "operator_review_required"
+    }
+    assert all(
+        profile["production_default_decision"] == "operator_review_required_before_default_change"
+        for profile in profile_readiness["profiles"]
+    )
+    assert all(profile["automatic_default_raise"] is False for profile in profile_readiness["profiles"])
+    assert all(profile["safe_concurrency_claim"] == "not_claimed" for profile in profile_readiness["profiles"])
+    assert "operator_review_required_before_default_change" in profile_readiness["blocking_policy"]
+
+
+def test_capacity_profile_readiness_recomputes_inconsistent_gate_readiness_fail_closed():
+    inconsistent_gate_readiness = {
+        "schema_version": "ai-platform.capacity-gate-readiness.v1",
+        "status": "ready_for_operator_review",
+        "runtime_identity": {"commit_sha": "abc123", "profile": "211-current"},
+        "admin_runtime_evidence": {
+            "required_sections": [
+                "capacity",
+                "database_pool",
+                "queue",
+                "admission",
+                "backpressure",
+                "sandbox",
+                "observability",
+            ],
+            "missing_sections": [],
+        },
+        "load_test_gates": [
+            {"gate": gate, "status": "missing_recorded_load_test_evidence"}
+            for gate in LOAD_TEST_GATES
+        ],
+        "missing_load_test_gates": ["api_read_write_burst"],
+        "invalid_load_test_evidence": [],
+        "production_default_decision": "operator_review_required_before_default_change",
+    }
+
+    profile_readiness = build_capacity_profile_readiness(inconsistent_gate_readiness)
+
+    assert profile_readiness["source_gate_readiness"]["status"] == "blocked_missing_load_test_evidence"
+    assert profile_readiness["status"] == "blocked_missing_load_test_evidence"
+    assert profile_readiness["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
+    assert profile_readiness["profiles"][0]["missing_load_test_gates"] == LOAD_TEST_GATES
+
+
+def test_capacity_profile_readiness_blocks_schema_incomplete_gate_readiness_json():
+    incomplete_gate_readiness = {
+        "schema_version": "ai-platform.capacity-gate-readiness.v1",
+        "status": "ready_for_operator_review",
+        "runtime_identity": {"commit_sha": "abc123", "profile": "211-current"},
+        "load_test_gates": [
+            {"gate": gate, "status": "recorded"}
+            for gate in LOAD_TEST_GATES
+        ],
+        "production_default_decision": "operator_review_required_before_default_change",
+    }
+
+    profile_readiness = build_capacity_profile_readiness(incomplete_gate_readiness)
+
+    assert profile_readiness["source_gate_readiness"]["status"] == "blocked_missing_admin_runtime_sections"
+    assert profile_readiness["status"] == "blocked_missing_admin_runtime_sections"
+    assert profile_readiness["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
+    assert profile_readiness["source_gate_readiness"]["missing_admin_runtime_sections"] == [
+        "capacity",
+        "database_pool",
+        "queue",
+        "admission",
+        "backpressure",
+        "sandbox",
+        "observability",
+    ]
+
+
+def test_capacity_profile_readiness_is_secret_safe_and_markdown_gap_first():
+    snapshot = build_capacity_evidence_snapshot(
+        {
+            **_admin_runtime_overview(),
+            "executor_private_payload": {"api_key": "sk-secret"},
+            "raw_storage_key": "tenants/default/private/capacity.json",
+            "sandbox_workdir": "/tmp/tenants/default/work",
+        },
+        commit_sha="token-secret",
+        runtime_profile="profile-with-secret",
+    )
+
+    profile_readiness = build_capacity_profile_readiness(snapshot)
+    markdown = render_capacity_profile_readiness_markdown(profile_readiness)
+
+    assert "Status: `blocked_missing_load_test_evidence`" in markdown
+    assert "conservative_internal" in markdown
+    serialized = json.dumps(profile_readiness, ensure_ascii=False).lower() + markdown.lower()
+    assert "sk-secret" not in serialized
+    assert "tenants/default/private" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "executor_private_payload" not in serialized
+    assert "api_key" not in serialized
+    assert "token-secret" not in serialized
+
+
+def test_capacity_profile_readiness_cli_outputs_json_from_snapshot_file(tmp_path):
+    snapshot_path = tmp_path / "capacity-snapshot.json"
+    snapshot_path.write_text(
+        json.dumps(
+            build_capacity_evidence_snapshot(
+                _admin_runtime_overview(),
+                commit_sha="abc123",
+                runtime_profile="211-current",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_profile_readiness.py",
+            "--snapshot-json",
+            str(snapshot_path),
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "ai-platform.capacity-profile-readiness.v1"
+    assert payload["status"] == "blocked_missing_load_test_evidence"
+    assert [profile["id"] for profile in payload["profiles"]] == [
+        "conservative_internal",
+        "medium_team",
+        "high_capacity_1t",
+    ]
+    assert "executor_private_payload" not in result.stdout
+    assert "storage_key" not in result.stdout
 
 
 def test_render_capacity_gate_readiness_markdown_is_gap_first_and_safe():

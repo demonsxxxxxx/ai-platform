@@ -79,6 +79,15 @@ evidence as missing until a real harness records the required gates.
 then converts that snapshot into a fail-closed gate verdict, listing missing
 Admin Runtime sections and missing recorded load-test gates without sending
 load or changing defaults.
+`python tools/capacity_profile_readiness.py --snapshot-json <capacity-evidence-snapshot.json>`
+or `--readiness-json <capacity-gate-readiness.json>` now maps that fail-closed
+verdict to the requested `conservative_internal`, `medium_team`, and
+`high_capacity_1t` profile classes with schema
+`ai-platform.capacity-profile-readiness.v1`. This profile catalog is an
+operator-review aid only: missing or incomplete load-test evidence keeps every
+profile at `do_not_raise_without_recorded_load_test_evidence`, and complete gate
+evidence can advance only to `operator_review_required_before_default_change`,
+not an automatic production default increase or safe concurrency-number claim.
 `python tools/capacity_runtime_evidence.py --base-url <api-url> --user-id
 <audit-user> --tenant-id <tenant> --roles admin --commit-sha <deployed-commit>
 --runtime-profile <profile> --format json` now wraps the read-only Admin

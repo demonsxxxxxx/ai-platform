@@ -20,6 +20,8 @@ python tools/capacity_evidence_snapshot.py --overview-json <admin-runtime-overvi
 python tools/capacity_evidence_snapshot.py --overview-json <admin-runtime-overview.json> --commit-sha <deployed-commit> --format json
 python tools/capacity_gate_readiness.py --snapshot-json <capacity-evidence-snapshot.json> --format markdown
 python tools/capacity_gate_readiness.py --snapshot-json <capacity-evidence-snapshot.json> --format json
+python tools/capacity_profile_readiness.py --snapshot-json <capacity-evidence-snapshot.json> --format markdown
+python tools/capacity_profile_readiness.py --snapshot-json <capacity-evidence-snapshot.json> --format json
 python tools/capacity_runtime_evidence.py --base-url http://127.0.0.1:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha <deployed-commit> --runtime-profile <profile> --format json
 ```
 
@@ -128,6 +130,32 @@ and whether all seven load-test gates have recorded evidence. It is a
 fail-closed verifier: missing sections or missing recorded gates keep
 `production_default_decision =
 do_not_raise_without_recorded_load_test_evidence`.
+
+Operators can then map the gate verdict to the three requested deployment
+profile classes without inventing concurrency numbers:
+
+```powershell
+python tools/capacity_profile_readiness.py --snapshot-json .\capacity-evidence-snapshot.json --format markdown
+python tools/capacity_profile_readiness.py --snapshot-json .\capacity-evidence-snapshot.json --format json
+python tools/capacity_profile_readiness.py --readiness-json .\capacity-gate-readiness.json --format json
+```
+
+The profile output uses schema
+`ai-platform.capacity-profile-readiness.v1` and covers:
+
+- `conservative_internal`
+- `medium_team`
+- `high_capacity_1t`
+
+This is a fail-closed operator catalog. When load-test evidence is missing or
+incomplete, every profile keeps
+`production_default_decision =
+do_not_raise_without_recorded_load_test_evidence`. If all gate evidence is
+complete, the status advances only to `operator_review_required` and the
+decision advances only to
+`operator_review_required_before_default_change`; it still does not claim a safe
+concurrency number and does not automatically raise API, worker, DB pool, Redis
+queue, sandbox, model-gateway, or multi-agent defaults.
 Recorded gate names alone are not sufficient evidence. For each recorded gate,
 the snapshot must include a per-gate evidence contract with all required
 evidence keys, cleanup proof status, and stop-condition status. If any recorded

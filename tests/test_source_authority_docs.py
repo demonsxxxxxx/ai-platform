@@ -176,6 +176,9 @@ def test_capacity_docs_record_machine_readable_gate_evidence_contract():
     for text in (capacity_text, roadmap_text):
         assert "recorded_gate_evidence_contract" in text
         assert "ai-platform.capacity-recorded-gate-evidence-contract.v1" in text
+        assert "tools/capacity_profile_readiness.py" in text
+        assert "ai-platform.capacity-profile-readiness.v1" in text
+        assert "operator_review_required_before_default_change" in text
         assert "load_test_evidence.gate_evidence.<gate>" in text
         assert "does not raise production concurrency defaults" in text
         assert "C:\\Users" not in text

@@ -16,9 +16,61 @@ LOAD_TEST_GATES = [
     "sandbox_lease_creation_under_load",
     "model_gateway_timeout_and_backpressure",
 ]
+CAPACITY_PROFILE_IDS = [
+    "conservative_internal",
+    "medium_team",
+    "high_capacity_1t",
+]
 
 _SANDBOX_PROVIDER_VALUES = {"docker", "fake"}
 _MODEL_GATEWAY_PROVIDER_VALUES = {"new-api", "openai_compatible"}
+_CAPACITY_GATE_READINESS_STATUSES = {
+    "blocked_missing_admin_runtime_sections",
+    "blocked_incomplete_load_test_evidence",
+    "blocked_missing_load_test_evidence",
+    "ready_for_operator_review",
+}
+_CAPACITY_PROFILE_STATUS_BY_GATE_STATUS = {
+    "ready_for_operator_review": "operator_review_required",
+    "blocked_missing_admin_runtime_sections": "blocked_missing_admin_runtime_sections",
+    "blocked_incomplete_load_test_evidence": "blocked_incomplete_load_test_evidence",
+    "blocked_missing_load_test_evidence": "blocked_missing_load_test_evidence",
+}
+_CAPACITY_PROFILE_CATALOG = [
+    {
+        "id": "conservative_internal",
+        "label": "Conservative internal profile",
+        "intent": "Small internal pilot profile for bounded office-agent usage.",
+        "required_load_test_gates": LOAD_TEST_GATES,
+        "profile_specific_requirements": [
+            "prove current worker, DB pool, queue, sandbox, and model-gateway settings under bounded load",
+            "keep tenant/user queue quota and active-run saturation visible in Admin Runtime",
+            "record cleanup proof before any production-default decision",
+        ],
+    },
+    {
+        "id": "medium_team",
+        "label": "Medium team profile",
+        "intent": "Team-level intranet profile that needs tenant/user fairness and sustained queue evidence.",
+        "required_load_test_gates": LOAD_TEST_GATES,
+        "profile_specific_requirements": [
+            "prove N-tenant and M-user run creation bursts with no noisy-neighbor starvation",
+            "record worker throughput, queue depth, lease latency, DB waiting, and error taxonomy",
+            "require operator review before changing API, worker, DB-pool, Redis, sandbox, or model-gateway settings",
+        ],
+    },
+    {
+        "id": "high_capacity_1t",
+        "label": "High-capacity 1T-memory server profile",
+        "intent": "Large single-server profile; memory size is not accepted as capacity proof.",
+        "required_load_test_gates": LOAD_TEST_GATES,
+        "profile_specific_requirements": [
+            "do not treat 1T memory as evidence of safe concurrency",
+            "prove sandbox lease/container behavior and model-gateway backpressure under target load",
+            "record alert, cleanup, stop-condition, latency percentile, and operator-review evidence before any default increase",
+        ],
+    },
+]
 _LOAD_TEST_GATE_PURPOSES = {
     "api_read_write_burst": "Measure API health and admin projection behavior during bounded read/write bursts.",
     "run_creation_burst_by_tenant_and_user": "Prove serialized admission and queue behavior across tenants and users.",
@@ -956,6 +1008,200 @@ def build_capacity_gate_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _safe_gate_readiness_status(value: object) -> str:
+    text = str(value or "").strip()
+    return text if text in _CAPACITY_GATE_READINESS_STATUSES else "blocked_missing_load_test_evidence"
+
+
+def _safe_gate_status(value: object) -> str:
+    text = str(value or "").strip()
+    allowed = {
+        "missing_recorded_load_test_evidence",
+        "incomplete_recorded_load_test_evidence",
+        "recorded",
+    }
+    return text if text in allowed else "missing_recorded_load_test_evidence"
+
+
+def _safe_capacity_gate_readiness(readiness: dict[str, Any]) -> dict[str, Any]:
+    runtime_identity = _dict(readiness.get("runtime_identity"))
+    admin_runtime_evidence = _dict(readiness.get("admin_runtime_evidence"))
+    required_sections_source = admin_runtime_evidence.get("required_sections")
+    required_sections_complete = (
+        isinstance(required_sections_source, list)
+        and set(required_sections_source) == set(_LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS)
+    )
+    load_test_gates_source = readiness.get("load_test_gates")
+    load_test_gates_complete = isinstance(load_test_gates_source, list)
+    gate_status_by_name: dict[str, str] = {}
+    if isinstance(load_test_gates_source, list):
+        for item in load_test_gates_source:
+            gate_item = _dict(item)
+            gate = str(gate_item.get("gate") or "").strip()
+            if gate in LOAD_TEST_GATES:
+                gate_status_by_name[gate] = _safe_gate_status(gate_item.get("status"))
+    load_test_gates_complete = load_test_gates_complete and set(gate_status_by_name) == set(LOAD_TEST_GATES)
+
+    missing_gates_source = readiness.get("missing_load_test_gates")
+    missing_gates_complete = isinstance(missing_gates_source, list)
+    reported_missing_gates = {
+        gate for gate in missing_gates_source if gate in LOAD_TEST_GATES
+    } if isinstance(missing_gates_source, list) else set()
+    missing_gates = [
+        gate
+        for gate in LOAD_TEST_GATES
+        if gate in reported_missing_gates or gate_status_by_name.get(gate) != "recorded"
+    ]
+
+    missing_sections_source = admin_runtime_evidence.get("missing_sections")
+    missing_sections_complete = isinstance(missing_sections_source, list)
+    missing_sections = [
+        section
+        for section in missing_sections_source
+        if section in _LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS
+    ] if isinstance(missing_sections_source, list) else []
+    if not required_sections_complete or not missing_sections_complete:
+        missing_sections = list(_LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS)
+
+    invalid_source = readiness.get("invalid_load_test_evidence")
+    invalid_load_test_evidence_complete = isinstance(invalid_source, list)
+    invalid_load_test_evidence: list[dict[str, object]] = []
+    if isinstance(invalid_source, list):
+        for item in invalid_source:
+            invalid = _dict(item)
+            gate = str(invalid.get("gate") or "").strip()
+            if gate not in LOAD_TEST_GATES:
+                continue
+            missing_required_source = invalid.get("missing_required_evidence")
+            missing_required = [
+                field for field in missing_required_source if field in _LOAD_TEST_REQUIRED_EVIDENCE
+            ] if isinstance(missing_required_source, list) else []
+            triggered = _safe_triggered_stop_conditions(invalid.get("triggered_stop_conditions"))
+            invalid_load_test_evidence.append(
+                {
+                    "gate": gate,
+                    "missing_required_evidence": missing_required,
+                    "cleanup_proof_status": _safe_status(
+                        invalid.get("cleanup_proof_status"),
+                        set(_CLEANUP_PROOF_STATUS_VALUES),
+                    ),
+                    "stop_condition_status": _safe_status(
+                        invalid.get("stop_condition_status"),
+                        set(_STOP_CONDITION_STATUS_VALUES),
+                    ),
+                    "triggered_stop_conditions": triggered,
+                }
+            )
+    if not missing_gates_complete or not invalid_load_test_evidence_complete or not load_test_gates_complete:
+        missing_gates = list(LOAD_TEST_GATES)
+
+    if missing_sections:
+        status = "blocked_missing_admin_runtime_sections"
+    elif invalid_load_test_evidence:
+        status = "blocked_incomplete_load_test_evidence"
+    elif missing_gates:
+        status = "blocked_missing_load_test_evidence"
+    else:
+        status = "ready_for_operator_review"
+    return {
+        "schema_version": "ai-platform.capacity-gate-readiness.v1",
+        "status": status,
+        "runtime_identity": {
+            "commit_sha": _safe_identity(runtime_identity.get("commit_sha")),
+            "profile": _safe_identity(runtime_identity.get("profile")),
+        },
+        "admin_runtime_evidence": {
+            "required_sections": list(_LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS),
+            "missing_sections": missing_sections,
+        },
+        "load_test_gates": [
+            {
+                "gate": gate,
+                "status": gate_status_by_name.get(gate, "missing_recorded_load_test_evidence"),
+            }
+            for gate in LOAD_TEST_GATES
+        ],
+        "missing_load_test_gates": missing_gates,
+        "invalid_load_test_evidence": invalid_load_test_evidence,
+        "production_default_decision": _safe_identity(
+            readiness.get("production_default_decision") or "do_not_raise_without_recorded_load_test_evidence"
+        ),
+    }
+
+
+def _build_or_normalize_capacity_gate_readiness(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("schema_version") == "ai-platform.capacity-gate-readiness.v1":
+        return _safe_capacity_gate_readiness(payload)
+    return _safe_capacity_gate_readiness(build_capacity_gate_readiness(payload))
+
+
+def build_capacity_profile_readiness(payload: dict[str, Any]) -> dict[str, Any]:
+    """Build fail-closed capacity profile readiness without recommending concurrency numbers."""
+    gate_readiness = _build_or_normalize_capacity_gate_readiness(_dict(payload))
+    gate_status = _safe_gate_readiness_status(gate_readiness.get("status"))
+    profile_status = _CAPACITY_PROFILE_STATUS_BY_GATE_STATUS[gate_status]
+    production_default_decision = (
+        "operator_review_required_before_default_change"
+        if gate_status == "ready_for_operator_review"
+        else "do_not_raise_without_recorded_load_test_evidence"
+    )
+    missing_gates = [
+        gate for gate in gate_readiness.get("missing_load_test_gates", []) if gate in LOAD_TEST_GATES
+    ]
+    invalid_gates = [
+        _dict(item).get("gate")
+        for item in gate_readiness.get("invalid_load_test_evidence", [])
+        if _dict(item).get("gate") in LOAD_TEST_GATES
+    ]
+    missing_sections = [
+        section
+        for section in _dict(gate_readiness.get("admin_runtime_evidence")).get("missing_sections", [])
+        if section in _LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS
+    ]
+    profiles: list[dict[str, Any]] = []
+    for profile in _CAPACITY_PROFILE_CATALOG:
+        profiles.append(
+            {
+                "id": profile["id"],
+                "label": profile["label"],
+                "intent": profile["intent"],
+                "status": profile_status,
+                "required_admin_runtime_sections": list(_LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS),
+                "required_load_test_gates": list(profile["required_load_test_gates"]),
+                "missing_admin_runtime_sections": missing_sections,
+                "missing_load_test_gates": missing_gates,
+                "invalid_load_test_gates": invalid_gates,
+                "profile_specific_requirements": list(profile["profile_specific_requirements"]),
+                "safe_concurrency_claim": "not_claimed",
+                "automatic_default_raise": False,
+                "production_default_decision": production_default_decision,
+                "does_not_raise_defaults": True,
+            }
+        )
+
+    return {
+        "schema_version": "ai-platform.capacity-profile-readiness.v1",
+        "status": profile_status,
+        "source_gate_readiness": {
+            "schema_version": gate_readiness["schema_version"],
+            "status": gate_status,
+            "runtime_identity": gate_readiness["runtime_identity"],
+            "missing_admin_runtime_sections": missing_sections,
+            "missing_load_test_gates": missing_gates,
+            "invalid_load_test_gates": invalid_gates,
+        },
+        "profiles": profiles,
+        "required_evidence": list(_LOAD_TEST_REQUIRED_EVIDENCE),
+        "blocking_policy": (
+            "operator_review_required_before_default_change; no automatic default raise"
+            if gate_status == "ready_for_operator_review"
+            else "do_not_raise_without_recorded_load_test_evidence; no automatic default raise"
+        ),
+        "production_default_decision": production_default_decision,
+        "does_not_raise_defaults": True,
+    }
+
+
 def render_capacity_baseline_markdown(baseline: dict[str, Any]) -> str:
     """Render a capacity baseline snapshot as operator-readable Markdown."""
     limits = baseline["limits"]
@@ -1161,4 +1407,44 @@ def render_capacity_gate_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"{gate_rows}\n\n"
         "## Production Default Decision\n\n"
         "Do not raise production concurrency defaults without recorded load-test evidence.\n"
+    )
+
+
+def render_capacity_profile_readiness_markdown(readiness: dict[str, Any]) -> str:
+    """Render capacity profile readiness as operator-readable Markdown."""
+    source = _dict(readiness.get("source_gate_readiness"))
+    missing_sections = "\n".join(
+        f"- {section}" for section in source.get("missing_admin_runtime_sections", [])
+    ) or "- none"
+    missing_gates = "\n".join(
+        f"- {gate}" for gate in source.get("missing_load_test_gates", [])
+    ) or "- none"
+    rows = []
+    for profile in readiness.get("profiles", []):
+        item = _dict(profile)
+        profile_missing_gates = item.get("missing_load_test_gates")
+        missing_count = len(profile_missing_gates) if isinstance(profile_missing_gates, list) else 0
+        rows.append(
+            (
+                f"| {item.get('id', 'unknown')} | `{item.get('status', 'unknown')}` | "
+                f"`{item.get('production_default_decision', 'unknown')}` | `{missing_count}` |"
+            )
+        )
+    profile_rows = "\n".join(rows)
+    return (
+        "# ai-platform Capacity Profile Readiness\n\n"
+        f"Schema: `{readiness['schema_version']}`\n\n"
+        f"Status: `{readiness['status']}`\n\n"
+        f"Source gate readiness: `{source.get('status', 'unknown')}`\n\n"
+        "## Missing Admin Runtime Sections\n\n"
+        f"{missing_sections}\n\n"
+        "## Missing Load-Test Gates\n\n"
+        f"{missing_gates}\n\n"
+        "## Profiles\n\n"
+        "| Profile | Status | Production default decision | Missing gates |\n"
+        "| --- | --- | --- | --- |\n"
+        f"{profile_rows}\n\n"
+        "## Policy\n\n"
+        "No profile claims a safe concurrency number. Do not raise production "
+        "concurrency defaults without recorded load-test evidence and operator review.\n"
     )
