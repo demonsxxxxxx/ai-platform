@@ -2,6 +2,7 @@ from typing import Any
 
 from app.settings import get_settings
 from app.skills.release_readiness import build_skill_release_readiness
+from app.tool_policy_readiness import build_tool_policy_readiness
 
 
 SCHEMA_VERSION = "ai-platform.governance-readiness.v1"
@@ -52,6 +53,7 @@ def build_governance_readiness(settings: object | None = None) -> dict[str, Any]
     """Build a secret-safe G6 governance readiness baseline for Admin Runtime and CLI use."""
     resolved_settings = settings or get_settings()
     skill_release_readiness = build_skill_release_readiness()
+    tool_policy_readiness = build_tool_policy_readiness()
     domains = {
         "tool_permission": _domain(
             implemented=[
@@ -61,17 +63,25 @@ def build_governance_readiness(settings: object | None = None) -> dict[str, Any]
                 "risk_write_fail_closed_policy_evaluation",
                 "public_tool_permission_card_projection",
                 "audit_visible_legacy_frontend_route_policy_mapping",
+                "tool_allow_deny_ask_policy_taxonomy_evidence",
             ],
             gaps=[
                 "legacy_frontend_route_policy_enforcement_or_ai_platform_remap",
                 "admin_policy_bulk_review_and_change_history_view",
-                "tool_allow_deny_ask_policy_taxonomy_for_all_mcp_tools",
             ],
             next_checks=[
                 "enforce or remap every legacy frontend MCP/model/env/channel/admin route to ai-platform projections",
                 "add ordinary-user confirmation-card acceptance against migrated frontend",
                 "keep risky or write-capable tools blocked without a current decision",
             ],
+            evidence={
+                "tool_policy_taxonomy": {
+                    "schema_version": tool_policy_readiness["schema_version"],
+                    "status": tool_policy_readiness["status"],
+                    "summary": tool_policy_readiness["summary"],
+                    "open_gaps": tool_policy_readiness["open_gaps"],
+                }
+            },
         ),
         "skill_governance": _domain(
             implemented=[

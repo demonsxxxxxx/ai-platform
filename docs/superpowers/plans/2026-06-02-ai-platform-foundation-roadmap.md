@@ -184,11 +184,15 @@ release traceability, static `dist/` release manifest with build-provenance
 gate, frontend projection audit wired first into `ci:verify`, packaged frontend image blocker
 traceability, GitHub Actions frontend CI workflow, active browser projection
 audit clearance, active-browser legacy route policy audit, and quarantined
-inactive legacy secret-like source reporting.
+inactive legacy secret-like source reporting. Tool permission now also has a
+source-level allow/ask/deny taxonomy evidence snapshot through
+`tools/tool_policy_readiness.py`, tied to the current `evaluate_tool_policy()`
+contract for active low/medium/high/write-capable cases and fail-closed
+disabled registry or tenant-policy cases.
 
 This does not close G6. Remaining blockers are policy enforcement or
 ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel
-surfaces, full allow/deny/ask taxonomy for every MCP tool, signed package or
+surfaces, Admin taxonomy/bulk/history dashboard acceptance, signed package or
 SBOM release evidence plus passed review manifests, dependency vulnerability
 and license evidence plus passed review manifests, bounded office context-pack
 product contract, quarantined legacy frontend source remap, packaged frontend
