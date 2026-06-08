@@ -147,6 +147,37 @@ token, or raw storage-key markers. This is live observability evidence, not
 load-test evidence; it does not answer the safe maximum concurrency question
 and must not be used to raise production defaults.
 
+### 211 Gate Readiness Verdict - 2026-06-08
+
+After `tools/capacity_gate_readiness.py` landed, the same 211 Admin Runtime
+overview path was captured through admin trusted headers and converted locally
+with the pushed verifier:
+
+```powershell
+python tools/capacity_evidence_snapshot.py --overview-json <211-admin-runtime-overview.json> --commit-sha f7c6b0d9114748fa249acb88da6584851c48aa96 --runtime-profile 211-current --format json
+python tools/capacity_gate_readiness.py --snapshot-json <211-capacity-evidence-snapshot.json> --format json
+```
+
+The verdict schema was `ai-platform.capacity-gate-readiness.v1` with status
+`blocked_missing_load_test_evidence`. The Admin Runtime overview contained all
+required sections: `capacity`, `database_pool`, `queue`, `admission`,
+`backpressure`, `sandbox`, and `observability`. The missing recorded load-test
+gates remained all seven required gates:
+
+- `api_read_write_burst`
+- `run_creation_burst_by_tenant_and_user`
+- `worker_processing_throughput`
+- `queue_depth_and_lease_latency`
+- `cancel_retry_resume_under_load`
+- `sandbox_lease_creation_under_load`
+- `model_gateway_timeout_and_backpressure`
+
+The gate verdict kept `production_default_decision =
+do_not_raise_without_recorded_load_test_evidence`. The leak scan over the
+generated snapshot and verdict found no DSN, Redis URL, raw storage key,
+sandbox workdir, executor private payload, callback token, bearer token, API
+key, or secret-like marker.
+
 ## Required Load-Test Gates
 
 Generate the repeatable command manifest for a target deployment profile:

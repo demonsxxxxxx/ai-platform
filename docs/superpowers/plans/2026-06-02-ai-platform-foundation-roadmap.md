@@ -70,6 +70,14 @@ then converts that snapshot into a fail-closed gate verdict, listing missing
 Admin Runtime sections and missing recorded load-test gates without sending
 load or changing defaults.
 
+The 2026-06-08 211 gate-readiness pass captured the admin-only runtime overview
+from the deployed `f7c6b0d9114748fa249acb88da6584851c48aa96` image and ran the
+latest local verifier against that snapshot. Required Admin Runtime sections
+were present, but the verdict remained `blocked_missing_load_test_evidence`
+with all seven load-test gates missing recorded evidence and
+`production_default_decision =
+do_not_raise_without_recorded_load_test_evidence`.
+
 This baseline does not claim a safe maximum concurrency number. Before raising
 `MAX_ACTIVE_WORKER_RUNS`, `MAX_ACTIVE_RUNS_PER_USER`, DB pool size,
 tenant/user queue quotas, sandbox container limits, model-gateway concurrency,
