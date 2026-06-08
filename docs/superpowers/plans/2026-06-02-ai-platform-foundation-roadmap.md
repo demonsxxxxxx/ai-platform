@@ -100,8 +100,15 @@ runtime overview field `observability_readiness` with schema
 implemented runtime-metric, error-taxonomy, quality-evaluation, and
 alert/export baselines plus open gaps. It does not close G9 and does not
 replace recorded load-test evidence, latency percentiles, model-gateway
-concurrency controls, formal taxonomy, golden-set evaluation, alert thresholds,
-trace/audit export contracts, or 211 deployment smoke.
+concurrency controls, taxonomy dashboard acceptance, golden-set evaluation,
+alert thresholds, trace/audit export contracts, or 211 deployment smoke.
+
+The source-level error taxonomy contract is now `ai-platform.error-taxonomy.v1`.
+Admin Runtime derives public `error_categories` from allowlisted error-type
+counts for executor, tool, tool permission, sandbox, model gateway, queue,
+database, memory/context, artifact, auth/policy, and unknown failures. This is
+not a G9 closure claim because dashboard acceptance and 211 taxonomy operations
+evidence remain open.
 
 ### G0 / G9 Frontend Source Traceability Status
 

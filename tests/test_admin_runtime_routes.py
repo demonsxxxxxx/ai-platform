@@ -867,8 +867,12 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
         return {
             "event_count": 4,
             "artifact_count": 1,
-            "error_count": 1,
-            "error_types": {"executor_failure": 1},
+            "error_count": 6,
+            "error_types": {
+                "executor_failure": 1,
+                "sandbox_runtime_cleanup_failed": 2,
+                "model_gateway_timeout": 3,
+            },
             "latency_ms": {"avg": 20, "max": 30},
             "token_counts": {"input": 10, "output": 12, "total": 22},
             "estimated_cost_minor": 7,
@@ -954,6 +958,11 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
         "history_included": True,
     }
     assert body["observability"]["token_counts"]["total"] == 22
+    assert body["observability"]["error_categories"] == {
+        "executor": 1,
+        "sandbox": 2,
+        "model_gateway": 3,
+    }
     assert body["capacity"]["schema_version"] == "ai-platform.capacity-baseline.v1"
     assert body["capacity"]["limits"]["worker"]["max_active_worker_runs"] == 3
     assert body["capacity"]["limits"]["database_pool"]["max_size"] == 10
@@ -969,7 +978,11 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
     assert body["observability_readiness"]["schema_version"] == "ai-platform.observability-readiness.v1"
     assert body["observability_readiness"]["status"] == "partial_blocked"
     assert "runtime_metrics" in body["observability_readiness"]["domains"]
-    assert "formal_error_taxonomy_contract" in body["observability_readiness"]["open_gaps"]
+    assert "formal_error_taxonomy_contract" not in body["observability_readiness"]["open_gaps"]
+    assert (
+        "formal_error_taxonomy_contract"
+        in body["observability_readiness"]["domains"]["error_taxonomy"]["implemented"]
+    )
     assert "callback_token" not in str(body["governance"]).lower()
     assert "sandbox_workspace_root" not in str(body["governance"]).lower()
     assert ".claude/skills" not in str(body["governance"])

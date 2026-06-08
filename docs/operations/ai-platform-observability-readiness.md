@@ -5,9 +5,9 @@ Date: 2026-06-08
 This document records the current G9 Observability / Quality / Ops readiness
 baseline. It is an operator readiness snapshot, not a gate-closure claim. G9
 remains partial until latency percentiles, model-gateway pressure controls,
-recorded capacity load-test evidence, formal error taxonomy, golden-set
-evaluation, alert thresholds, and trace/audit export contracts have code,
-tests, docs, review, and runtime evidence.
+recorded capacity load-test evidence, error taxonomy dashboard acceptance,
+golden-set evaluation, alert thresholds, and trace/audit export contracts have
+code, tests, docs, review, and runtime evidence.
 
 Generate the current readiness snapshot from the repository root:
 
@@ -32,7 +32,8 @@ GET /api/ai/admin/runtime/overview
 Current source exposes:
 
 - `observability`: same-tenant token, cost, latency average/max, error count,
-  artifact count, and sanitized recent failure aggregates.
+  artifact count, sanitized error type counts, public error taxonomy category
+  counts, and sanitized recent failure aggregates.
 - `capacity`: configured capacity ceiling and missing load-test gates.
 - `database_pool`, `queue`, `admission`, and `backpressure`: bounded runtime
   pressure signals used by the #21 capacity evidence snapshot.
@@ -50,7 +51,7 @@ or ordinary-user private content.
 | Domain | Implemented baseline | Remaining gap |
 | --- | --- | --- |
 | Runtime metrics | Admin Runtime observability summary, token/cost/latency/error counts, queue/admission/DB-pool backpressure summary, capacity runtime evidence capture | p50/p95/p99 latency for API, queue lease, worker, model, sandbox, artifact, cancel, retry, and resume; model-gateway request concurrency limit; recorded capacity load-test evidence |
-| Error taxonomy | Run event error count projection and redacted recent failure projection | Formal error taxonomy contract, category mapping for executor/tool/sandbox/model-gateway/memory/artifact failures, dashboard acceptance |
+| Error taxonomy | Formal `ai-platform.error-taxonomy.v1` contract, category mapping for executor/tool/sandbox/model-gateway/queue/database/memory/artifact/auth failures, Admin Runtime `error_categories`, run event error count projection, and redacted recent failure projection | Dashboard acceptance and 211/runtime evidence for taxonomy-driven operations |
 | Quality evaluation | Run trace/audit linkage baseline | Golden-set eval run contract, quality score schema, office workflow acceptance dataset |
 | Alerts and exports | Admin Runtime overview projection and fail-closed capacity gate readiness verdict | Alert rules and SLO thresholds, trace/audit export contract, release evidence export location |
 
@@ -59,7 +60,8 @@ or ordinary-user private content.
 Do not close G9 or raise production concurrency defaults from this readiness
 projection alone. It makes missing observability work machine-readable and
 visible in Admin Runtime, but it does not replace recorded load-test evidence,
-golden-set evaluation, alert validation, or 211 deployment smoke.
+golden-set evaluation, alert validation, taxonomy dashboard acceptance, or 211
+deployment smoke.
 
 Do not use this baseline to expand sandbox privilege, expose ordinary users to
 multi-agent beta, or bypass G6/G7 governance gates.

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capacity_baseline import build_capacity_baseline
+from app.error_taxonomy import summarize_error_categories
 from app.governance_readiness import build_governance_readiness
 from app.observability_readiness import build_observability_readiness
 from app import repositories
@@ -195,6 +196,7 @@ def _sanitize_observability_summary(value: object) -> dict[str, object]:
         for key, count in error_types.items()
         if (sanitized_key := sanitize_public_text(key))
     }
+    summary["error_categories"] = summarize_error_categories(summary["error_types"])
     latency = summary.get("latency_ms") if isinstance(summary.get("latency_ms"), dict) else {}
     summary["latency_ms"] = {
         "avg": _coerce_int(latency["avg"]) if latency.get("avg") is not None else None,

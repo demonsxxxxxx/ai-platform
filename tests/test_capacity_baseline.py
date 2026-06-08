@@ -290,6 +290,7 @@ def test_capacity_evidence_snapshot_extracts_live_signals_without_private_payloa
             "event_count": 12,
             "artifact_count": 3,
             "error_count": 1,
+            "error_categories": {"executor": 1, "sandbox": 2, "api_key": 99},
             "latency_ms": {"avg": 123, "max": 456},
             "executor_private_payload": {"api_key": "sk-secret"},
         },
@@ -310,6 +311,10 @@ def test_capacity_evidence_snapshot_extracts_live_signals_without_private_payloa
     assert snapshot["live_signals"]["admission"]["saturated_users"] == 2
     assert snapshot["live_signals"]["sandbox"]["active_leases"] == 1
     assert snapshot["live_signals"]["observability"]["error_count"] == 1
+    assert snapshot["live_signals"]["observability"]["error_categories"] == {
+        "executor": 1,
+        "sandbox": 2,
+    }
     assert snapshot["load_test_evidence"]["status"] == "missing"
     assert snapshot["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
     assert snapshot["admin_runtime_evidence"] == {

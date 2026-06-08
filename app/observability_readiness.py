@@ -1,5 +1,6 @@
 from typing import Any
 
+from app.error_taxonomy import build_error_taxonomy_contract
 from app.settings import get_settings
 
 
@@ -57,12 +58,12 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
         ),
         "error_taxonomy": _domain(
             implemented=[
+                "formal_error_taxonomy_contract",
+                "error_category_mapping_for_executor_tool_sandbox_model_gateway",
                 "run_event_error_count_projection",
                 "recent_failure_projection_redaction",
             ],
             gaps=[
-                "formal_error_taxonomy_contract",
-                "error_category_mapping_for_executor_tool_sandbox_model_gateway",
                 "error_taxonomy_dashboard_acceptance",
             ],
             next_checks=[
@@ -110,6 +111,7 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
         "status": "partial_blocked" if gaps else "ready_for_verification",
         "admin_runtime_projection": "/api/ai/admin/runtime/overview",
         "ordinary_user_policy": "admin_only_operational_projection",
+        "error_taxonomy": build_error_taxonomy_contract(),
         "config_signals": {
             "model_gateway_provider": _enum_setting(
                 resolved_settings,

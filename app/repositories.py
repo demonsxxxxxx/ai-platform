@@ -20,6 +20,7 @@ from app.control_plane_contracts import (
     standard_error_code,
     standard_trace_id,
 )
+from app.error_taxonomy import summarize_error_categories
 from app.memory_redaction import normalize_memory_redaction_mode, redact_memory_metadata, redact_memory_text
 from app.projection_redaction import sanitize_user_control_input
 from app.skills.dependencies import is_workbench_skill_public
@@ -4706,6 +4707,7 @@ async def get_admin_runtime_observability_summary(
         "artifact_count": _coerce_int(row.get("artifact_count")),
         "error_count": _coerce_int(row.get("error_count")),
         "error_types": error_types,
+        "error_categories": summarize_error_categories(error_types),
         "latency_ms": {
             "avg": _coerce_int(avg_latency) if avg_latency is not None else None,
             "max": _coerce_int(max_latency) if max_latency is not None else None,

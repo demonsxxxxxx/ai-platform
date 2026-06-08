@@ -237,7 +237,8 @@ Each run should capture:
 - DB pool waiting and saturation;
 - p50/p95/p99 latency for API create, queue lease, worker execution, model
   call, sandbox start, artifact write, cancel, retry, and resume;
-- error taxonomy counts and dead-letter counts;
+- error taxonomy category counts, raw error-type counts after redaction, and
+  dead-letter counts;
 - cleanup proof for test tenants, runs, queue payloads, sandbox leases, and
   temporary artifacts.
 

@@ -1,6 +1,7 @@
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from app.error_taxonomy import ERROR_CATEGORY_DEFINITIONS, summarize_error_categories
 from app.settings import get_settings
 
 
@@ -257,8 +258,15 @@ def _sandbox_live_signals(overview: dict[str, Any]) -> dict[str, object]:
 
 def _observability_live_signals(overview: dict[str, Any]) -> dict[str, object]:
     observability = _dict(overview.get("observability"))
+    error_categories = _numeric_bool_map(
+        observability.get("error_categories"),
+        set(ERROR_CATEGORY_DEFINITIONS),
+    )
+    if not error_categories:
+        error_categories = summarize_error_categories(observability.get("error_types"))
     return {
         **_numeric_bool_map(observability, _OBSERVABILITY_KEYS),
+        "error_categories": error_categories,
         "latency_ms": _numeric_bool_map(observability.get("latency_ms"), _LATENCY_KEYS),
     }
 
