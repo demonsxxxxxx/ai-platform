@@ -200,6 +200,10 @@ def test_capacity_docs_record_machine_readable_gate_evidence_contract():
         assert "ai-platform.capacity-evidence-bundle.v1" in text
         assert "draft_not_recorded" in text
         assert "assemble_evidence_bundle_draft" in text
+        assert "tools/capacity_recorded_gate_snapshot.py" in text
+        assert "ai-platform.capacity-recorded-gate-snapshot.v1" in text
+        assert "ai-platform.capacity-recorded-gate-evidence.v1" in text
+        assert "assemble_recorded_gate_snapshot" in text
         assert "--start-runtime-evidence-json capacity-runtime-evidence-start.json" in text
         assert "--cleanup-proof-json capacity-cleanup-proof-api-read-write-burst.json" in text
         assert "capacity-cleanup-proof-api-read-write-burst.json" in text

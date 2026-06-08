@@ -152,6 +152,21 @@ Cleanup proof is only accepted when the proof uses a safe relative
 `evidence_ref` and explicitly verifies test-tenant, queue, sandbox lease,
 temporary artifact, and generated document cleanup; raw/private storage paths
 and executor-private payloads remain rejected from the draft bundle.
+`python tools/capacity_recorded_gate_snapshot.py --runtime-evidence-json
+capacity-runtime-evidence-end.json --recorded-gate-evidence-json
+capacity-recorded-gate-evidence-api-read-write-burst.json --gate
+api_read_write_burst --format json` now provides the next fail-closed operator
+step, recorded in the generated workflow as `assemble_recorded_gate_snapshot`.
+The input packet schema is
+`ai-platform.capacity-recorded-gate-evidence.v1`; the output schema is
+`ai-platform.capacity-recorded-gate-snapshot.v1`. The tool accepts only
+operator-reviewed safe artifact refs or scalar measured values for every
+required evidence field, requires `does_not_raise_defaults = true`, accepted
+cleanup and stop-condition statuses, and no triggered stop conditions, then
+returns a sanitized snapshot plus readiness preview. It does not convert the
+`probe_only_not_recorded` bounded probe output into recorded evidence by
+itself, does not raise production concurrency defaults, and still leaves
+unrecorded gates missing until their own reviewed evidence packets are present.
 
 The 2026-06-08 211 gate-readiness pass captured the admin-only runtime overview
 from the deployed `f7c6b0d9114748fa249acb88da6584851c48aa96` image and ran the

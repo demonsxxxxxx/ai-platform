@@ -200,7 +200,9 @@ The workflow is intentionally conservative:
 4. Capture end runtime evidence with `tools/capacity_runtime_evidence.py`.
 5. Record cleanup proof for test tenants, queues, sandbox leases, and generated
    artifacts.
-6. Generate the final fail-closed verdict with
+6. Assemble an operator-reviewed recorded-gate snapshot with
+   `tools/capacity_recorded_gate_snapshot.py`.
+7. Generate the final fail-closed verdict with
    `tools/capacity_gate_readiness.py`.
 
 Every workflow step carries `does_not_raise_defaults = true`. The only step
@@ -490,6 +492,36 @@ recorded. The step is a planning/readiness aid only: it points at
 `capacity-evidence-bundle-api-read-write-burst.md`. Recorded load-test
 artifacts, final gate readiness, and operator review remain separate required
 work.
+
+### Recorded Gate Snapshot Assembly Tool
+
+After an operator has reviewed the measured artifacts and created a compact
+per-gate evidence packet, use:
+
+```powershell
+python tools/capacity_recorded_gate_snapshot.py --runtime-evidence-json capacity-runtime-evidence-end.json --recorded-gate-evidence-json capacity-recorded-gate-evidence-api-read-write-burst.json --gate api_read_write_burst --format json
+```
+
+The input packet schema is `ai-platform.capacity-recorded-gate-evidence.v1`.
+The output schema is `ai-platform.capacity-recorded-gate-snapshot.v1`. This
+step is recorded in the generated operator workflow as
+`assemble_recorded_gate_snapshot`.
+
+The tool only accepts explicit operator-reviewed values for all required
+evidence fields. Each field must be a safe relative artifact reference or a
+scalar measured value, and the packet must carry `does_not_raise_defaults =
+true`, accepted cleanup proof status, accepted stop-condition status, and no
+triggered stop conditions. URLs, absolute paths, path traversal, raw/private
+path segments, secret-like markers, raw storage keys, sandbox workdirs, and
+executor private payloads are rejected without echoing the unsafe value.
+
+This tool does not turn `probe_only_not_recorded` bounded probe output into
+recorded gate evidence by itself. It only merges a reviewed evidence packet
+into a sanitized capacity evidence snapshot and immediately returns a
+fail-closed readiness preview. If only one gate is recorded, the preview still
+keeps the remaining gates missing and preserves
+`production_default_decision =
+do_not_raise_without_recorded_load_test_evidence`.
 
 ## Required Load-Test Gates
 

@@ -13,6 +13,7 @@ from app.capacity_baseline import (
     build_capacity_load_test_plan,
     build_capacity_evidence_bundle,
     build_capacity_profile_readiness,
+    build_capacity_recorded_gate_snapshot,
     build_capacity_recorded_gate_evidence_contract,
     render_capacity_baseline_markdown,
     render_capacity_evidence_bundle_markdown,
@@ -275,6 +276,7 @@ def test_capacity_load_test_plan_covers_each_gate_with_dry_run_commands_and_no_d
         "capture_end_runtime_evidence",
         "record_cleanup_proof",
         "assemble_evidence_bundle_draft",
+        "assemble_recorded_gate_snapshot",
         "generate_gate_readiness_verdict",
     ]
     assert plan["operator_workflow"][0]["command"].startswith("python tools/capacity_runtime_evidence.py")
@@ -294,6 +296,11 @@ def test_capacity_load_test_plan_covers_each_gate_with_dry_run_commands_and_no_d
     assert "capacity-bounded-load-harness-api-read-write-burst.json" in plan["operator_workflow"][5]["command"]
     assert "--cleanup-proof-json capacity-cleanup-proof-api-read-write-burst.json" in plan["operator_workflow"][5]["command"]
     assert "capacity-evidence-bundle-api-read-write-burst.md" in plan["operator_workflow"][5]["command"]
+    assert plan["operator_workflow"][6]["requires_explicit_operator_execution"] is False
+    assert plan["operator_workflow"][6]["does_not_raise_defaults"] is True
+    assert "capacity_recorded_gate_snapshot.py" in plan["operator_workflow"][6]["command"]
+    assert "capacity-recorded-gate-evidence-api-read-write-burst.json" in plan["operator_workflow"][6]["command"]
+    assert "capacity-evidence-snapshot-recorded-api-read-write-burst.json" in plan["operator_workflow"][6]["command"]
     assert "capacity_gate_readiness.py" in plan["operator_workflow"][-1]["command"]
 
     serialized = json.dumps(plan, ensure_ascii=False).lower()
@@ -356,9 +363,11 @@ def test_render_capacity_load_test_plan_markdown_is_repeatable_and_safe():
     assert "capture_start_runtime_evidence" in markdown
     assert "capture_end_runtime_evidence" in markdown
     assert "assemble_evidence_bundle_draft" in markdown
+    assert "assemble_recorded_gate_snapshot" in markdown
     assert "record_cleanup_proof" in markdown
     assert "capacity_bounded_load_harness.py" in markdown
     assert "capacity_evidence_bundle.py" in markdown
+    assert "capacity_recorded_gate_snapshot.py" in markdown
     assert "--start-runtime-evidence-json capacity-runtime-evidence-start.json" in markdown
     assert "--cleanup-proof-json capacity-cleanup-proof-api-read-write-burst.json" in markdown
     assert "probe_only_not_recorded" in markdown
@@ -1942,3 +1951,153 @@ def test_capacity_evidence_bundle_cli_accepts_start_runtime_and_cleanup_proof_js
     assert "raw_storage_key" not in result.stdout
     assert "executor_private_payload" not in result.stdout
     assert "api_key" not in result.stdout
+
+
+def test_capacity_recorded_gate_snapshot_records_only_explicit_complete_gate():
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-end",
+    )
+    runtime_evidence = {
+        "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+        "snapshot": snapshot,
+        "readiness": build_capacity_gate_readiness(snapshot),
+    }
+    evidence_packet = {
+        "schema_version": "ai-platform.capacity-recorded-gate-evidence.v1",
+        "gate": "api_read_write_burst",
+        "does_not_raise_defaults": True,
+        "evidence": {
+            item: f"capacity-evidence/api-read-write-burst/{item}.json"
+            for item in LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST
+        },
+        "cleanup_proof_status": "verified",
+        "stop_condition_status": "passed",
+        "triggered_stop_conditions": [],
+    }
+
+    result = build_capacity_recorded_gate_snapshot(runtime_evidence, evidence_packet)
+
+    assert result["schema_version"] == "ai-platform.capacity-recorded-gate-snapshot.v1"
+    assert result["status"] == "recorded_gate_snapshot_ready"
+    assert result["input_status"] == {
+        "runtime_evidence": "accepted",
+        "recorded_gate_evidence": "accepted",
+    }
+    assert result["recorded_gate"] == "api_read_write_burst"
+    assert result["does_not_raise_defaults"] is True
+    assert result["snapshot"]["load_test_evidence"]["status"] == "recorded"
+    assert result["snapshot"]["load_test_evidence"]["recorded_gates"] == [
+        "api_read_write_burst"
+    ]
+    assert result["readiness"]["status"] == "blocked_missing_load_test_evidence"
+    assert "api_read_write_burst" not in result["readiness"]["missing_load_test_gates"]
+    assert result["readiness"]["production_default_decision"] == (
+        "do_not_raise_without_recorded_load_test_evidence"
+    )
+
+
+def test_capacity_recorded_gate_snapshot_rejects_unsafe_evidence_without_echoing_values():
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-end",
+    )
+    runtime_evidence = {
+        "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+        "snapshot": snapshot,
+        "readiness": build_capacity_gate_readiness(snapshot),
+    }
+    evidence_packet = {
+        "schema_version": "ai-platform.capacity-recorded-gate-evidence.v1",
+        "gate": "api_read_write_burst",
+        "does_not_raise_defaults": True,
+        "evidence": {
+            item: f"capacity-evidence/api-read-write-burst/{item}.json"
+            for item in LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST
+        },
+        "cleanup_proof_status": "verified",
+        "stop_condition_status": "passed",
+        "triggered_stop_conditions": [],
+    }
+    evidence_packet["evidence"]["commit_sha"] = "https://example.invalid/private/commit.json"
+    evidence_packet["evidence"]["api_worker_image_labels"] = {
+        "raw_storage_key": "tenants/default/private/capacity.json"
+    }
+
+    result = build_capacity_recorded_gate_snapshot(runtime_evidence, evidence_packet)
+
+    assert result["status"] == "blocked_incomplete_inputs"
+    assert result["input_status"]["recorded_gate_evidence"] == "not_accepted"
+    assert "recorded_evidence_commit_sha_unsafe" in result["input_errors"]
+    assert "recorded_evidence_api_worker_image_labels_unsafe" in result["input_errors"]
+    assert result["snapshot"]["load_test_evidence"]["status"] == "missing"
+    assert result["does_not_raise_defaults"] is True
+
+    serialized = json.dumps(result, ensure_ascii=False).lower()
+    assert "example.invalid" not in serialized
+    assert "tenants/default/private" not in serialized
+    assert "raw_storage_key" not in serialized
+
+
+def test_capacity_recorded_gate_snapshot_cli_outputs_snapshot_and_verdict(tmp_path):
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-end",
+    )
+    runtime_path = tmp_path / "runtime-evidence-end.json"
+    evidence_path = tmp_path / "recorded-gate-evidence.json"
+    runtime_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+                "snapshot": snapshot,
+                "readiness": build_capacity_gate_readiness(snapshot),
+            }
+        ),
+        encoding="utf-8",
+    )
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.capacity-recorded-gate-evidence.v1",
+                "gate": "api_read_write_burst",
+                "does_not_raise_defaults": True,
+                "evidence": {
+                    item: f"capacity-evidence/api-read-write-burst/{item}.json"
+                    for item in LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST
+                },
+                "cleanup_proof_status": "verified",
+                "stop_condition_status": "passed",
+                "triggered_stop_conditions": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_recorded_gate_snapshot.py",
+            "--runtime-evidence-json",
+            str(runtime_path),
+            "--recorded-gate-evidence-json",
+            str(evidence_path),
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "ai-platform.capacity-recorded-gate-snapshot.v1"
+    assert payload["status"] == "recorded_gate_snapshot_ready"
+    assert payload["readiness"]["status"] == "blocked_missing_load_test_evidence"
+    assert payload["snapshot"]["load_test_evidence"]["recorded_gates"] == [
+        "api_read_write_burst"
+    ]
+    assert "C:\\Users" not in result.stdout

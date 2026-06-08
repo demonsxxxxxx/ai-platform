@@ -17,6 +17,8 @@ LOAD_TEST_GATES = [
     "model_gateway_timeout_and_backpressure",
 ]
 CAPACITY_EVIDENCE_BUNDLE_SCHEMA = "ai-platform.capacity-evidence-bundle.v1"
+CAPACITY_RECORDED_GATE_SNAPSHOT_SCHEMA = "ai-platform.capacity-recorded-gate-snapshot.v1"
+CAPACITY_RECORDED_GATE_EVIDENCE_SCHEMA = "ai-platform.capacity-recorded-gate-evidence.v1"
 CAPACITY_PROFILE_IDS = [
     "conservative_internal",
     "medium_team",
@@ -245,11 +247,31 @@ _LOAD_TEST_OPERATOR_WORKFLOW = [
         "does_not_raise_defaults": True,
     },
     {
+        "id": "assemble_recorded_gate_snapshot",
+        "purpose": (
+            "Merge an operator-reviewed recorded evidence packet into a sanitized "
+            "capacity evidence snapshot for one gate, then produce an immediate "
+            "fail-closed readiness preview."
+        ),
+        "command_template": (
+            "python tools/capacity_recorded_gate_snapshot.py"
+            " --runtime-evidence-json capacity-runtime-evidence-end.json"
+            " --recorded-gate-evidence-json capacity-recorded-gate-evidence-api-read-write-burst.json"
+            " --gate api_read_write_burst"
+            " --format json > capacity-evidence-snapshot-recorded-api-read-write-burst.json;"
+            " only use operator-reviewed artifact refs or measured scalar values;"
+            " bounded probe output alone must not be submitted as recorded evidence"
+        ),
+        "expected_evidence": "capacity-evidence-snapshot-recorded-api-read-write-burst.json",
+        "requires_explicit_operator_execution": False,
+        "does_not_raise_defaults": True,
+    },
+    {
         "id": "generate_gate_readiness_verdict",
         "purpose": "Generate the final fail-closed #21 verdict from the recorded evidence snapshot.",
         "command_template": (
             "python tools/capacity_gate_readiness.py"
-            " --snapshot-json <capacity-evidence-snapshot-with-recorded-load-gates.json>"
+            " --snapshot-json capacity-evidence-snapshot-recorded-api-read-write-burst.json"
             " --format json > capacity-gate-readiness.json"
         ),
         "expected_evidence": "capacity-gate-readiness.json",
@@ -1349,6 +1371,137 @@ def build_capacity_evidence_bundle(
         "does_not_raise_defaults": True,
         "does_not_mark_gate_recorded": True,
     }
+
+
+def _safe_recorded_gate_evidence_value(value: object) -> object | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return int(value) if isinstance(value, int) or float(value).is_integer() else float(value)
+    return _safe_capacity_evidence_ref(value)
+
+
+def _capacity_recorded_gate_evidence_packet(
+    packet: dict[str, Any],
+    gate: str,
+) -> tuple[str, dict[str, Any], list[str]]:
+    source = _dict(packet)
+    errors: list[str] = []
+    if source.get("schema_version") != CAPACITY_RECORDED_GATE_EVIDENCE_SCHEMA:
+        errors.append("recorded_gate_evidence_schema_unsupported")
+    if source.get("gate") != gate:
+        errors.append("recorded_gate_evidence_gate_mismatch")
+    if source.get("does_not_raise_defaults") is not True:
+        errors.append("recorded_gate_evidence_missing_no_default_raise_policy")
+
+    source_evidence = _dict(source.get("evidence"))
+    safe_evidence: dict[str, object] = {}
+    for field in _LOAD_TEST_REQUIRED_EVIDENCE:
+        safe_value = _safe_recorded_gate_evidence_value(source_evidence.get(field))
+        if safe_value is None:
+            errors.append(f"recorded_evidence_{field}_unsafe")
+        else:
+            safe_evidence[field] = safe_value
+
+    cleanup_status = _safe_status(
+        source.get("cleanup_proof_status") or source.get("cleanup_proof"),
+        set(_CLEANUP_PROOF_STATUS_VALUES),
+    )
+    stop_condition_status = _safe_status(
+        source.get("stop_condition_status") or source.get("stop_conditions_status"),
+        set(_STOP_CONDITION_STATUS_VALUES),
+    )
+    triggered_stop_conditions = _safe_triggered_stop_conditions(source.get("triggered_stop_conditions"))
+    if cleanup_status == "missing":
+        errors.append("recorded_gate_evidence_cleanup_proof_status_missing")
+    if stop_condition_status == "missing":
+        errors.append("recorded_gate_evidence_stop_condition_status_missing")
+    if triggered_stop_conditions:
+        errors.append("recorded_gate_evidence_triggered_stop_conditions_present")
+
+    gate_packet = {
+        "evidence": safe_evidence if not errors else {},
+        "cleanup_proof_status": cleanup_status if not errors else "missing",
+        "stop_condition_status": stop_condition_status if not errors else "missing",
+        "triggered_stop_conditions": [] if not errors else triggered_stop_conditions,
+    }
+    return ("accepted" if not errors else "not_accepted"), gate_packet, errors
+
+
+def build_capacity_recorded_gate_snapshot(
+    runtime_evidence: dict[str, Any],
+    recorded_gate_evidence: dict[str, Any],
+    *,
+    gate: str = "api_read_write_burst",
+) -> dict[str, Any]:
+    """Merge one reviewed recorded-evidence packet into a fail-closed capacity snapshot."""
+    normalized_gate = str(gate or "").strip()
+    safe_gate = normalized_gate if normalized_gate in LOAD_TEST_GATES else "unknown"
+    snapshot = _extract_capacity_evidence_snapshot(runtime_evidence)
+    input_errors: list[str] = []
+    if not snapshot:
+        input_errors.append("missing_capacity_evidence_snapshot")
+    if safe_gate == "unknown":
+        input_errors.append("unsupported_gate")
+
+    packet_status, gate_packet, packet_errors = _capacity_recorded_gate_evidence_packet(
+        _dict(recorded_gate_evidence),
+        safe_gate,
+    )
+    input_errors.extend(packet_errors)
+
+    snapshot_output = json.loads(json.dumps(snapshot if snapshot else build_capacity_evidence_snapshot({})))
+    if not input_errors:
+        snapshot_output["load_test_evidence"] = {
+            "status": "recorded",
+            "required_evidence": list(_LOAD_TEST_REQUIRED_EVIDENCE),
+            "required_gates": list(LOAD_TEST_GATES),
+            "recorded_gates": [safe_gate],
+            "gate_evidence": {safe_gate: gate_packet},
+        }
+
+    readiness = build_capacity_gate_readiness(snapshot_output)
+    return {
+        "schema_version": CAPACITY_RECORDED_GATE_SNAPSHOT_SCHEMA,
+        "status": (
+            "recorded_gate_snapshot_ready"
+            if not input_errors
+            else "blocked_incomplete_inputs"
+        ),
+        "gate": safe_gate,
+        "recorded_gate": safe_gate if not input_errors else None,
+        "input_status": {
+            "runtime_evidence": "accepted" if snapshot else "missing_capacity_evidence_snapshot",
+            "recorded_gate_evidence": packet_status,
+        },
+        "input_errors": input_errors,
+        "snapshot": snapshot_output,
+        "readiness": readiness,
+        "capacity_answer": "safe_max_concurrency_unproven_without_recorded_load_test_evidence",
+        "production_default_decision": readiness["production_default_decision"],
+        "does_not_raise_defaults": True,
+    }
+
+
+def render_capacity_recorded_gate_snapshot_markdown(result: dict[str, Any]) -> str:
+    """Render the recorded-gate snapshot assembly result without raw evidence payloads."""
+    readiness = _dict(result.get("readiness"))
+    errors = "\n".join(f"- {item}" for item in result.get("input_errors", [])) or "- none"
+    missing_gates = "\n".join(f"- {gate}" for gate in readiness.get("missing_load_test_gates", [])) or "- none"
+    return (
+        "# ai-platform Capacity Recorded Gate Snapshot\n\n"
+        f"Schema: `{result['schema_version']}`\n\n"
+        f"Status: `{result['status']}`\n\n"
+        f"Gate: `{result['gate']}`\n\n"
+        f"Readiness preview: `{readiness.get('status', 'unknown')}`\n\n"
+        f"Does not raise defaults: `{str(result['does_not_raise_defaults']).lower()}`\n\n"
+        "## Input Errors\n\n"
+        f"{errors}\n\n"
+        "## Missing Load-Test Gates After This Snapshot\n\n"
+        f"{missing_gates}\n\n"
+        "## Production Default Decision\n\n"
+        "Do not raise production concurrency defaults without complete recorded load-test evidence and operator review.\n"
+    )
 
 
 def build_capacity_gate_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
