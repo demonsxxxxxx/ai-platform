@@ -29,6 +29,11 @@ test("admin runtime capacity section consumes only the ai-platform admin overvie
   assert.match(sectionSource, /Capacity/);
   assert.match(sectionSource, /Backpressure/);
   assert.match(sectionSource, /Governance/);
+  assert.match(sectionSource, /model_gateway/);
+  assert.match(sectionSource, /configured_request_concurrency_limit/);
+  assert.match(sectionSource, /config-only/);
+  assert.match(sectionSource, /unbounded/);
+  assert.match(sectionSource, /Model gateway/);
   assert.match(sectionSource, /Load-test evidence/);
 
   const forbiddenTerms = [

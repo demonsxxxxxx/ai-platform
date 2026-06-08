@@ -47,9 +47,15 @@ type-check, and build, but it does not close the Agent Frontend V1 rollout gate.
 From the repository root, `python tools/frontend_release_traceability.py
 --format json` records the frontend package hashes, workflow contract, static
 `dist/` manifest, and packaged frontend image status. The packaged image status
-is expected to stay `not_configured` until a project-owned
-`frontend/web/Dockerfile` and `deploy/ai-platform/docker-compose.frontend.yml`
-are added and verified on a Docker-capable host.
+is expected to be `configured` only when `frontend/web/Dockerfile`,
+`frontend/web/nginx.conf.template`, and
+`deploy/ai-platform/docker-compose.frontend.yml` are present, pass the
+secret/private-payload denylist scan, and keep the required build provenance,
+upload, proxy-timeout, and compose argument contract. Static `dist/` is
+same-commit evidence only when provenance records a known commit, clean dirty
+state, and matching frontend source hashes. Local Windows development does not
+build Docker images; image build/smoke and release acceptance still run only on
+211 or another Docker-capable host.
 
 For local development, Vite proxies `/api/*` to `VITE_AI_PLATFORM_API_TARGET`,
 defaulting to `http://127.0.0.1:8020`. For the intranet deployment, keep the
@@ -108,6 +114,11 @@ Later packaged delivery should use three project-owned images:
   dispatcher maintenance.
 - `ai-platform-frontend` for static files built from `frontend/web/dist`,
   served by nginx or an equivalent static server with `/api/*` proxying.
+
+The optional `deploy/ai-platform/docker-compose.frontend.yml` overlay now
+defines the frontend image boundary for Docker-capable validation. It is not a
+compose one-command acceptance gate and does not pass backend, model-gateway, or
+sandbox secrets into the frontend service.
 
 Postgres, Redis, MinIO, and sandbox executor images remain separate
 infrastructure services. Docker compose one-command startup is not a current

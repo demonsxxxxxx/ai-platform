@@ -4,7 +4,7 @@ Date: 2026-06-08
 
 This document records the current G9 Observability / Quality / Ops readiness
 baseline. It is an operator readiness snapshot, not a gate-closure claim. G9
-remains partial until latency percentiles, model-gateway pressure controls,
+remains partial until latency percentiles, model-gateway pressure controls and
 recorded capacity load-test evidence, error taxonomy dashboard acceptance,
 golden-set evaluation, alert/SLO runtime acceptance, and trace/audit export
 contracts have code, tests, docs, review, and runtime evidence.
@@ -50,7 +50,7 @@ or ordinary-user private content.
 
 | Domain | Implemented baseline | Remaining gap |
 | --- | --- | --- |
-| Runtime metrics | Admin Runtime observability summary, token/cost/latency/error counts, queue/admission/DB-pool backpressure summary, capacity runtime evidence capture | p50/p95/p99 latency for API, queue lease, worker, model, sandbox, artifact, cancel, retry, and resume; model-gateway request concurrency limit; recorded capacity load-test evidence |
+| Runtime metrics | Admin Runtime observability summary, token/cost/latency/error counts, queue/admission/DB-pool backpressure summary, config-visible model-gateway request limit status, capacity runtime evidence capture | p50/p95/p99 latency for API, queue lease, worker, model, sandbox, artifact, cancel, retry, and resume; enforced model-gateway request-limit/backpressure gate plus recorded model-gateway load-test evidence; recorded capacity load-test evidence |
 | Error taxonomy | Formal `ai-platform.error-taxonomy.v1` contract, category mapping for executor/tool/sandbox/model-gateway/queue/database/memory/artifact/auth failures, Admin Runtime `error_categories`, run event error count projection, and redacted recent failure projection | Dashboard acceptance and 211/runtime evidence for taxonomy-driven operations |
 | Quality evaluation | Run trace/audit linkage baseline | Golden-set eval run contract, quality score schema, office workflow acceptance dataset |
 | Alerts and exports | Admin Runtime overview projection, fail-closed capacity gate readiness verdict, and source-level `ai-platform.alert-slo-readiness.v1` rule template evidence for queue, database, worker, model gateway, sandbox, error-taxonomy, and capacity gates | Alert runtime dashboard and 211 acceptance, delivery-channel policy, runtime SLO calibration, trace/audit export contract, release evidence export location |
@@ -165,6 +165,27 @@ not close G9 because latency percentiles, model-gateway concurrency and
 backpressure controls, recorded load-test evidence, dashboard acceptance,
 golden-set evaluation, alert runtime acceptance, and export contracts remain
 open.
+
+## Model Gateway Capacity Control Baseline
+
+Current source now includes `MODEL_GATEWAY_REQUEST_CONCURRENCY_LIMIT` as a
+config-visible model gateway request concurrency setting. The default `0` keeps
+the platform-level limit disabled and keeps
+`model_gateway_request_concurrency_limit` as an open G9 runtime-metrics gap.
+When a target deployment profile sets a positive value, the source-level
+readiness snapshot reports that configured signal but still keeps
+`model_gateway_request_concurrency_limit`,
+`model_gateway_request_concurrency_limit_enforcement`, and
+`model_gateway_capacity_load_test_evidence` open. G9 stays partial until the
+request path actually enforces model-gateway backpressure and the
+timeout/backpressure load-test gate has recorded evidence.
+
+Admin Runtime exposes this as `capacity.limits.model_gateway` and
+`backpressure.model_gateway`. The projection carries only provider identity,
+the configured request limit, explicit `not_implemented` enforcement state, and
+the capacity evidence status. It must not expose model gateway URLs, API keys,
+bearer tokens, executor private payloads, storage keys, sandbox work directories, or
+real `.env` values.
 
 ## Gate Rule
 

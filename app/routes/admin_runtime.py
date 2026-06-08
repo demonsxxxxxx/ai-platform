@@ -310,11 +310,45 @@ def _database_pool_backpressure_snapshot(database_pool: object) -> dict[str, obj
     }
 
 
+def _model_gateway_backpressure_snapshot(capacity: object) -> dict[str, object]:
+    baseline = capacity if isinstance(capacity, dict) else {}
+    limits = baseline.get("limits") if isinstance(baseline.get("limits"), dict) else {}
+    model_gateway = limits.get("model_gateway") if isinstance(limits.get("model_gateway"), dict) else {}
+    request_limit = model_gateway.get("request_concurrency_limit")
+    configured_request_limit = model_gateway.get("configured_request_concurrency_limit")
+    normalized_limit = _coerce_int(request_limit) if request_limit is not None else None
+    normalized_configured_limit = (
+        _coerce_int(configured_request_limit) if configured_request_limit is not None else None
+    )
+    if normalized_limit is not None and normalized_limit <= 0:
+        normalized_limit = None
+    if normalized_configured_limit is not None and normalized_configured_limit <= 0:
+        normalized_configured_limit = None
+    provider = sanitize_public_text(model_gateway.get("provider")) or "unknown"
+    if provider not in {"new-api", "openai_compatible", "unknown"}:
+        provider = "unknown"
+    return {
+        "provider": provider,
+        "request_concurrency_limit": normalized_limit,
+        "configured_request_concurrency_limit": normalized_configured_limit,
+        "limit_enabled": False,
+        "limit_enforced": False,
+        "limit_enforcement": "not_implemented",
+        "config_only": normalized_configured_limit is not None,
+        "capacity_evidence": (
+            "unproven_without_load_test"
+            if model_gateway.get("capacity_evidence") == "unproven_without_load_test"
+            else "unknown"
+        ),
+    }
+
+
 def _backpressure_snapshot(
     *,
     admission: dict[str, object],
     queue_insight: object,
     database_pool: dict[str, object],
+    capacity: dict[str, object] | None = None,
 ) -> dict[str, object]:
     queue = _queue_backpressure_snapshot(queue_insight)
     pool = _database_pool_backpressure_snapshot(database_pool)
@@ -337,11 +371,14 @@ def _backpressure_snapshot(
     if pool.get("waiting_saturated"):
         reasons.append("database_pool_waiting_saturated")
     deduped_reasons = list(dict.fromkeys(reasons))
-    return {
+    snapshot = {
         "reasons": deduped_reasons,
         "queue": queue,
         "database_pool": pool,
     }
+    if capacity is not None:
+        snapshot["model_gateway"] = _model_gateway_backpressure_snapshot(capacity)
+    return snapshot
 
 
 def _provider_cleanup_failed(cleanup_results: object) -> bool:
@@ -360,6 +397,7 @@ def _sandbox_overview(containers: list[object], leases: list[dict[str, object]],
     tenant_leases = [lease for lease in leases if lease.get("tenant_id")]
     tenant_lease_history = [lease for lease in lease_history if lease.get("tenant_id")]
     active_containers = [container for container in containers if getattr(container, "status", None) == "running"]
+
     return {
         "containers": {
             "total": len(containers),
@@ -512,6 +550,7 @@ async def admin_runtime_overview(
     tenant_queue_insight = await get_queue_insight(principal.tenant_id, include_user_breakdown=True)
     database_pool = _sanitize_database_pool_status(get_pool_status())
     admission = _sanitize_admission_summary(admission_summary)
+    capacity = build_capacity_baseline(get_settings())
 
     return {
         "tenant_id": principal.tenant_id,
@@ -522,7 +561,7 @@ async def admin_runtime_overview(
         "runs": _sanitize_dict(run_summary),
         "sandbox": _sandbox_overview(containers, visible_leases, visible_lease_history),
         "observability": _sanitize_observability_summary(observability_summary),
-        "capacity": build_capacity_baseline(get_settings()),
+        "capacity": capacity,
         "governance": build_governance_readiness(get_settings()),
         "observability_readiness": build_observability_readiness(get_settings()),
         "database_pool": database_pool,
@@ -531,5 +570,6 @@ async def admin_runtime_overview(
             admission=admission,
             queue_insight=tenant_queue_insight,
             database_pool=database_pool,
+            capacity=capacity,
         ),
     }

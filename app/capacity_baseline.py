@@ -216,6 +216,11 @@ def _bool_setting(settings: object, name: str) -> bool:
     return _coerce_bool(getattr(settings, name, False))
 
 
+def _positive_int_setting(settings: object, name: str) -> int | None:
+    value = _int_setting(settings, name)
+    return value if value > 0 else None
+
+
 def _string_setting(settings: object, name: str, default: str = "") -> str:
     value = getattr(settings, name, default)
     return str(value or default)
@@ -400,6 +405,17 @@ def _safe_capacity_snapshot(value: object) -> dict[str, Any]:
             key: _safe_capacity_value(source_section.get(key), default)
             for key, default in defaults.items()
         }
+    model_gateway = limits.get("model_gateway", {})
+    model_gateway_limit = model_gateway.get("request_concurrency_limit")
+    configured_model_gateway_limit = model_gateway.get("configured_request_concurrency_limit")
+    if isinstance(model_gateway, dict):
+        model_gateway["request_concurrency_limit"] = None
+        if configured_model_gateway_limit is not None and _coerce_int(configured_model_gateway_limit) <= 0:
+            model_gateway["configured_request_concurrency_limit"] = None
+        if model_gateway.get("limit_enforcement") != "not_implemented":
+            model_gateway["limit_enforcement"] = "not_implemented"
+    if model_gateway_limit is not None and _coerce_int(model_gateway_limit) <= 0:
+        limits["model_gateway"]["request_concurrency_limit"] = None
     source_gates = source.get("load_test_gates")
     load_test_gates = [gate for gate in source_gates if gate in LOAD_TEST_GATES] if isinstance(source_gates, list) else []
     return {
@@ -418,10 +434,11 @@ def _safe_capacity_snapshot(value: object) -> dict[str, Any]:
 
 
 def _warnings_for(limits: dict[str, Any]) -> list[str]:
-    warnings: list[str] = [
-        "api_request_concurrency_unbounded_by_platform",
-        "model_gateway_concurrency_unbounded_by_platform",
-    ]
+    warnings: list[str] = ["api_request_concurrency_unbounded_by_platform"]
+    warnings.append("model_gateway_concurrency_unbounded_by_platform")
+    if limits["model_gateway"].get("configured_request_concurrency_limit") is not None:
+        warnings.append("model_gateway_configured_limit_not_enforced")
+        warnings.append("model_gateway_capacity_unproven_without_load_test")
     if not limits["queue"]["tenant_processing_quota_enabled"]:
         warnings.append("queue_tenant_processing_quota_disabled")
     if not limits["queue"]["user_processing_quota_enabled"]:
@@ -507,6 +524,11 @@ def build_capacity_baseline(settings: object | None = None) -> dict[str, Any]:
                 allowed_values=_MODEL_GATEWAY_PROVIDER_VALUES,
             ),
             "request_concurrency_limit": None,
+            "configured_request_concurrency_limit": _positive_int_setting(
+                resolved_settings,
+                "model_gateway_request_concurrency_limit",
+            ),
+            "limit_enforcement": "not_implemented",
             "capacity_evidence": "unproven_without_load_test",
         },
         "multi_agent": {
@@ -718,6 +740,15 @@ def build_capacity_gate_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
 def render_capacity_baseline_markdown(baseline: dict[str, Any]) -> str:
     """Render a capacity baseline snapshot as operator-readable Markdown."""
     limits = baseline["limits"]
+    model_gateway_limit = limits["model_gateway"].get("request_concurrency_limit")
+    configured_model_gateway_limit = limits["model_gateway"].get("configured_request_concurrency_limit")
+    model_gateway_concurrency = (
+        str(model_gateway_limit)
+        if model_gateway_limit is not None
+        else f"configured={configured_model_gateway_limit}; not enforced; load-test required"
+        if configured_model_gateway_limit is not None
+        else "unbounded by platform; load-test required"
+    )
     rows = [
         ("API request concurrency", "unbounded by platform; load-test required"),
         ("Active worker runs", str(limits["worker"]["max_active_worker_runs"])),
@@ -735,7 +766,7 @@ def render_capacity_baseline_markdown(baseline: dict[str, Any]) -> str:
                 f"persistent={limits['sandbox']['max_active_persistent_containers']}"
             ),
         ),
-        ("Model gateway concurrency", "unbounded by platform; load-test required"),
+        ("Model gateway concurrency", model_gateway_concurrency),
         ("Multi-agent dispatcher enabled", str(limits["multi_agent"]["worker_enabled"]).lower()),
     ]
     table = "\n".join(f"| {name} | {value} |" for name, value in rows)

@@ -42,8 +42,21 @@ Current defaults from `app/settings.py` and `deploy/ai-platform/.env.example`:
 | Queue insight scan limit | 500 |
 | Sandbox provider | `fake` by default |
 | Sandbox active containers | ephemeral 2, persistent 1 |
-| Model gateway concurrency | no platform-level request limit yet |
+| Model gateway concurrency | disabled by default (`MODEL_GATEWAY_REQUEST_CONCURRENCY_LIMIT=0`) |
 | Multi-agent worker dispatcher | disabled by default |
+
+`MODEL_GATEWAY_REQUEST_CONCURRENCY_LIMIT` is a source-level capacity control
+for future model-gateway backpressure profiles. The default `0` keeps the
+platform-level model gateway request limit disabled and preserves the
+`model_gateway_concurrency_unbounded_by_platform` warning. If an operator sets a
+positive value, the Admin Runtime capacity projection reports that configured
+limit as `configured_request_concurrency_limit`, keeps the enforced
+`request_concurrency_limit` empty, and adds
+`model_gateway_configured_limit_not_enforced` plus
+`model_gateway_capacity_unproven_without_load_test`. It still does not answer
+the safe maximum concurrency question, does not enforce model gateway
+backpressure, and does not permit production default increases without recorded
+load-test evidence.
 
 Even if a deployment profile sets `SANDBOX_CONTAINER_PROVIDER=docker`, the
 baseline must still warn that sandbox hardening evidence is missing until G7
@@ -70,14 +83,16 @@ The overview now exposes:
 - `queue.status` and `queue.tenant_insight`: queue depth, processing depth,
   worker heartbeats, queue sampling, and tenant/user throttling.
 - `admission`: same-tenant active-run saturation.
-- `backpressure`: normalized queue, active-run, and DB-pool pressure reasons.
+- `backpressure`: normalized queue, active-run, DB-pool pressure reasons, and
+  config-only model gateway limit/evidence status.
 - `observability_readiness`: G9 runtime metrics, error taxonomy, quality,
   alert/export readiness domains and open gaps.
 
 The migrated frontend now has an admin-only Settings section that reads this
 same overview projection and surfaces capacity, backpressure, governance gaps,
-and missing load-test evidence. This is an operator visibility step only; it
-does not provide load-test proof and does not raise any production default.
+model gateway limit status, and missing load-test evidence. This is an
+operator visibility step only; it does not provide load-test proof and does
+not raise any production default.
 
 The projection is admin-only, same-tenant, and sanitized. Frontend capacity and
 backpressure views must consume this projection rather than executor private

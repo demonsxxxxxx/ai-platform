@@ -83,6 +83,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "admin_runtime_capacity_governance_frontend_section" in domains["frontend_projection"]["implemented"]
     assert "admin_runtime_211_frontend_acceptance" in domains["frontend_projection"]["implemented"]
     assert "frontend_packaged_image_blocker_traceability" in domains["frontend_projection"]["implemented"]
+    assert "frontend_packaged_image_definition_traceability" in domains["frontend_projection"]["implemented"]
     assert "ordinary_user_g9_acceptance_for_legacy_admin_mcp_model_envvar_routes" in domains["frontend_projection"]["gaps"]
     assert "active_envvar_profile_surface_needs_policy_or_projection_remap" not in domains["frontend_projection"]["gaps"]
     assert "quarantined_legacy_frontend_sources_need_projection_remap" in domains["frontend_projection"]["gaps"]
@@ -90,6 +91,8 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "frontend_packaged_image_release_trace_to_backend_worker_commit" not in domains["frontend_projection"]["gaps"]
     assert "admin_runtime_211_visual_acceptance" not in domains["frontend_projection"]["gaps"]
     assert "admin_runtime_governance_visual_acceptance" not in domains["frontend_projection"]["gaps"]
+    assert "add and verify the packaged frontend image definition before release acceptance" not in domains["frontend_projection"]["next_checks"]
+    assert "verify the packaged frontend image on a Docker-capable host before release acceptance" in domains["frontend_projection"]["next_checks"]
     assert "enforce frontend checks in CI before closing source ownership" not in domains["frontend_projection"]["next_checks"]
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()

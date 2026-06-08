@@ -902,7 +902,9 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
             },
         }
 
-    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    runtime_settings = Settings(frontend_poc_auth_enabled=True, model_gateway_request_concurrency_limit=12)
+    monkeypatch.setattr("app.auth.get_settings", lambda: runtime_settings)
+    monkeypatch.setattr("app.routes.admin_runtime.get_settings", lambda: runtime_settings)
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", overview_transaction)
     monkeypatch.setattr(
@@ -968,6 +970,15 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
     assert body["capacity"]["limits"]["database_pool"]["max_size"] == 10
     assert body["capacity"]["limits"]["queue"]["tenant_processing_quota_enabled"] is False
     assert body["capacity"]["limits"]["sandbox"]["container_provider"] == "fake"
+    assert body["capacity"]["limits"]["model_gateway"] == {
+        "provider": "openai_compatible",
+        "request_concurrency_limit": None,
+        "configured_request_concurrency_limit": 12,
+        "limit_enforcement": "not_implemented",
+        "capacity_evidence": "unproven_without_load_test",
+    }
+    assert "model_gateway_concurrency_unbounded_by_platform" in body["capacity"]["warnings"]
+    assert "model_gateway_configured_limit_not_enforced" in body["capacity"]["warnings"]
     assert body["capacity"]["production_default_policy"] == "do_not_raise_without_recorded_load_test_evidence"
     assert "password" not in str(body["capacity"]).lower()
     assert "api_key" not in str(body["capacity"]).lower()
@@ -1015,6 +1026,16 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
         "requests_waiting": 0,
         "max_waiting": 100,
         "waiting_saturated": False,
+    }
+    assert body["backpressure"]["model_gateway"] == {
+        "provider": "openai_compatible",
+        "request_concurrency_limit": None,
+        "configured_request_concurrency_limit": 12,
+        "limit_enabled": False,
+        "limit_enforced": False,
+        "limit_enforcement": "not_implemented",
+        "config_only": True,
+        "capacity_evidence": "unproven_without_load_test",
     }
     assert "ai-platform:runs:queued" not in str(body["backpressure"])
     assert "queue-secret-token" not in str(body["backpressure"])

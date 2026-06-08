@@ -106,9 +106,22 @@ alert/export baselines plus open gaps. The alert/export baseline now embeds
 `ai-platform.alert-slo-readiness.v1` rule-template evidence for queue,
 database, worker, model-gateway, sandbox, error-taxonomy, and capacity-gate
 signals. It does not close G9 and does not replace recorded load-test evidence,
-latency percentiles, model-gateway concurrency controls, taxonomy dashboard
+latency percentiles, model-gateway load-test evidence, taxonomy dashboard
 acceptance, golden-set evaluation, alert runtime/dashboard/211 acceptance,
 trace/audit export contracts, or 211 deployment smoke.
+
+The source-level capacity baseline now includes
+`MODEL_GATEWAY_REQUEST_CONCURRENCY_LIMIT` as a model-gateway pressure-control
+setting. Its default remains `0`, meaning no platform-level model gateway
+request limit is enabled and production concurrency defaults are unchanged. If
+a target profile sets a positive value, Admin Runtime reports it through
+`capacity.limits.model_gateway` and `backpressure.model_gateway` as a
+configured-only signal: enforced `request_concurrency_limit` remains empty and
+`limit_enforcement` remains `not_implemented`. G9 therefore keeps the request
+limit/enforcement gap plus recorded model-gateway load-test evidence open. This
+is a visibility baseline only; it does not close #21 or G9 without actual
+request-path backpressure enforcement, real model-gateway timeout/backpressure
+load evidence, and 211 acceptance.
 
 The source-level error taxonomy contract is now `ai-platform.error-taxonomy.v1`.
 Admin Runtime derives public `error_categories` from allowlisted error-type
@@ -127,12 +140,16 @@ package/lockfile hashes, CI commands, and a deterministic static `dist/`
 manifest without printing local paths, `.env` values, or secret-like data. The
 static manifest records file count, total bytes, entry hashes, and a manifest
 hash. It also requires `dist/ai-platform-build-provenance.json` before treating
-an ignored `dist` directory as same-commit release evidence; missing or stale
-build provenance is reported as `built_unverified` with blockers instead of
-being silently tied to the current backend/worker commit. The same
-traceability CLI now also reports packaged frontend image status and the
-missing Dockerfile / compose-overlay blockers while packaged frontend image
-delivery is still pending. The projection
+an ignored `dist` directory as same-commit release evidence; missing, stale,
+dirty, or unknown-dirty build provenance is reported as `built_unverified` with
+blockers instead of being silently tied to the current backend/worker commit.
+The same traceability CLI now also reports packaged frontend image definition
+traceability through `frontend/web/Dockerfile`,
+`frontend/web/nginx.conf.template`, and
+`deploy/ai-platform/docker-compose.frontend.yml`, and fails closed if required
+build provenance args, nginx upload/proxy controls, compose args, or packaged
+delivery denylist checks regress. Docker-capable build/smoke and release
+acceptance remain pending. The projection
 audit records the current production-source route inventory, active-browser
 route inventory, active browser entry graph, active-browser legacy route policy
 mapping, quarantined inactive legacy source findings, private/secret-like
@@ -156,7 +173,8 @@ not close legacy policy enforcement / ai-platform projection remap.
 The first frontend operator visibility loop is now present in `frontend/web`:
 Settings includes an admin-only Admin Runtime Capacity section that consumes
 only `GET /api/ai/admin/runtime/overview` and renders capacity, backpressure,
-G6 governance gaps, and missing load-test evidence. This reduces the G9 visual
+model gateway limit status, G6 governance gaps, and missing load-test evidence.
+This reduces the G9 visual
 gap but does not close #21 because no load-test evidence has been recorded, and
 does not close G6 because legacy env-var/model/channel/MCP route remap and
 ordinary-user acceptance remain open.
@@ -183,9 +201,9 @@ secret-safe Skill release readiness evidence through
 pending Skill release review-manifest template generation through
 `tools/skill_release_readiness.py --review-template --skill-id <skill-id>`,
 frontend
-release traceability, static `dist/` release manifest with build-provenance
-gate, frontend projection audit wired first into `ci:verify`, packaged frontend image blocker
-traceability, GitHub Actions frontend CI workflow, active browser projection
+release traceability, static `dist` release manifest with build-provenance
+gate, frontend projection audit wired first into `ci:verify`, packaged frontend
+image definition traceability, GitHub Actions frontend CI workflow, active browser projection
 audit clearance, active-browser legacy route policy audit, and quarantined
 inactive legacy secret-like source reporting. Tool permission now also has a
 source-level allow/ask/deny taxonomy evidence snapshot through

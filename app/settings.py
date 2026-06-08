@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     artifact_default_retention_days: int = Field(default=90)
 
     llm_gateway_provider: str = Field(default="openai_compatible")
+    model_gateway_request_concurrency_limit: int = Field(default=0)
     openai_base_url: str = Field(default="")
     openai_api_key: str = Field(default="")
     openai_model: str = Field(default="deepseek-v4-flash")

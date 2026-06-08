@@ -199,12 +199,12 @@ Future packaged direction:
 
 Future integration steps:
 
-1. Add a project-owned packaged frontend release trace once frontend image
-   delivery exists.
-2. Add a project-owned frontend Dockerfile or static-server image definition.
-3. Add a compose overlay for frontend image validation on a Docker-capable host.
-4. Record release evidence tying API, worker, and frontend image artifacts to
+1. Build and smoke the optional packaged frontend image on 211 or another
+   Docker-capable host.
+2. Record release evidence tying API, worker, and frontend image artifacts to
    the same git commit.
+3. Keep compose one-command startup out of scope until the gate explicitly
+   promotes packaged delivery.
 
 ## Build And Release Traceability
 
@@ -241,14 +241,18 @@ Current local and CI-contract evidence on 2026-06-08:
   secret-like data. The manifest includes file count, total bytes,
   `index.html` / service-worker entry hashes when present, and a manifest hash
   plus `dist/ai-platform-build-provenance.json`. The static `dist` artifact is
-  considered same-commit only when build provenance matches the current git
-  commit and frontend source hashes. If provenance is missing or stale, the
-  traceability CLI reports `dist.status = built_unverified` with explicit
-  blockers instead of binding an old ignored `dist` directory to the current
-  backend/worker commit. Until `frontend/web/Dockerfile` and
-  `deploy/ai-platform/docker-compose.frontend.yml` exist and are verified on a
-  Docker-capable host, the packaged image section must remain
-  `not_configured` with explicit blockers.
+  considered same-commit only when build provenance records a known commit,
+  clean dirty state, and matching frontend source hashes. If provenance is
+  missing, stale, dirty, or unable to prove dirty state, the traceability CLI
+  reports `dist.status = built_unverified` with explicit blockers instead of
+  binding an old ignored `dist` directory to the current backend/worker commit.
+  The packaged image section is `configured` only when
+  `frontend/web/Dockerfile`, `frontend/web/nginx.conf.template`, and
+  `deploy/ai-platform/docker-compose.frontend.yml` are present, pass the
+  secret/private-payload denylist scan, and keep the required build
+  provenance, upload-size, proxy-timeout, request-buffering, and compose
+  argument contract. This records the image boundary only; Docker build/smoke
+  and release acceptance still require 211 or another Docker-capable host.
 - `python tools/frontend_projection_audit.py --format json` records the
   current production-source route inventory, active browser entry graph,
   active-browser route inventory,
@@ -290,6 +294,18 @@ Current local and CI-contract evidence on 2026-06-08:
   blockers. The packaged frontend image section intentionally remained
   `not_configured` with blockers until a frontend Dockerfile, compose overlay,
   and image trace are added and verified on a Docker-capable host.
+- The current source now includes `frontend/web/Dockerfile`,
+  `frontend/web/nginx.conf.template`, and
+  `deploy/ai-platform/docker-compose.frontend.yml`. The frontend image builds
+  `frontend/web/dist` through `corepack pnpm run ci:verify`, serves static files
+  through nginx, and proxies `/api/*` to `AI_PLATFORM_API_UPSTREAM`. The compose
+  overlay only defines the frontend image boundary and does not pass database,
+  model-gateway, sandbox, or other secret-bearing backend environment variables
+  into the frontend container. The release traceability CLI verifies this
+  packaged delivery definition fail-closed by checking build commit/dirty args,
+  nginx upload/proxy contracts, compose args, and packaged delivery denylist
+  findings. Release acceptance remains pending until this image is built and
+  smoked on 211 or another Docker-capable host.
 - GitHub Actions run `27114040908` passed on commit
   `be03c953e60489f1d27b8e6d1a0a770f11e48fb8`, covering the frontend workflow
   contract after the build-provenance hardening.
@@ -315,9 +331,9 @@ packaged frontend image trace.
   and 211 frontend acceptance at commit
   `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35`; the release traceability CLI now
   records a static `dist/` manifest for that same commit and reports packaged
-  frontend image delivery blockers. Packaged frontend image delivery and
-  release acceptance remain pending until the image definition and compose
-  overlay exist and are verified on a Docker-capable host.
+  frontend image delivery status. Packaged frontend image delivery and release
+  acceptance remain pending until the image is built and verified with the
+  compose overlay on a Docker-capable host.
 - #22 document-centric context/workbench UX remains future work and is not part
   of this source move.
 

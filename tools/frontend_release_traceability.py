@@ -10,6 +10,7 @@ SCHEMA_VERSION = "ai-platform.frontend-release-traceability.v1"
 FRONTEND_PATH = Path("frontend/web")
 WORKFLOW_PATH = Path(".github/workflows/ai-platform-frontend.yml")
 FRONTEND_DOCKERFILE_PATH = Path("frontend/web/Dockerfile")
+FRONTEND_NGINX_TEMPLATE_PATH = Path("frontend/web/nginx.conf.template")
 FRONTEND_COMPOSE_OVERLAY_PATH = Path("deploy/ai-platform/docker-compose.frontend.yml")
 DIST_BUILD_PROVENANCE_FILENAME = "ai-platform-build-provenance.json"
 CI_COMMANDS = [
@@ -21,6 +22,59 @@ WORKFLOW_COMMANDS = [
     "corepack pnpm run ci:verify",
     "python tools/frontend_release_traceability.py --format json",
 ]
+PACKAGED_DELIVERY_PATHS = [
+    FRONTEND_DOCKERFILE_PATH,
+    FRONTEND_NGINX_TEMPLATE_PATH,
+    FRONTEND_COMPOSE_OVERLAY_PATH,
+]
+PACKAGED_DELIVERY_FORBIDDEN_TERMS = [
+    ".env",
+    "ANTHROPIC_AUTH_TOKEN",
+    "API_KEY",
+    "DATABASE_URL",
+    "OPENAI_API_KEY",
+    "POSTGRES_PASSWORD",
+    "RAGFLOW_API_KEY",
+    "S3_SECRET_ACCESS_KEY",
+    "SANDBOX_CALLBACK_TOKEN",
+    "SANDBOX_WORKSPACE_ROOT",
+    "TRUSTED_PRINCIPAL_SECRET",
+    "env_file",
+    "executor_private_payload",
+    "raw_payload",
+    "sandbox_workdir",
+    "sandbox_workspace_root",
+    "storage_key",
+]
+PACKAGED_DELIVERY_REQUIRED_TERMS = {
+    FRONTEND_DOCKERFILE_PATH: {
+        "dockerfile_build_commit_arg_required": "ARG AI_PLATFORM_BUILD_COMMIT=unknown",
+        "dockerfile_build_dirty_arg_required": "ARG AI_PLATFORM_BUILD_DIRTY=unknown",
+        "dockerfile_build_commit_env_required": "ENV AI_PLATFORM_BUILD_COMMIT=${AI_PLATFORM_BUILD_COMMIT}",
+        "dockerfile_build_dirty_env_required": "ENV AI_PLATFORM_BUILD_DIRTY=${AI_PLATFORM_BUILD_DIRTY}",
+        "dockerfile_revision_label_required": "org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT",
+        "dockerfile_ci_verify_required": "corepack pnpm run ci:verify",
+        "dockerfile_tools_context_required": "COPY tools ./tools",
+        "dockerfile_dist_copy_required": "COPY --from=build /workspace/frontend/web/dist",
+    },
+    FRONTEND_NGINX_TEMPLATE_PATH: {
+        "nginx_api_upstream_required": "proxy_pass ${AI_PLATFORM_API_UPSTREAM}",
+        "nginx_upload_body_size_required": "client_max_body_size ${AI_PLATFORM_FRONTEND_MAX_BODY_SIZE}",
+        "nginx_proxy_read_timeout_required": "proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT}",
+        "nginx_proxy_send_timeout_required": "proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT}",
+        "nginx_proxy_request_buffering_off_required": "proxy_request_buffering off",
+        "nginx_spa_fallback_required": 'try_files $uri $uri/ /index.html',
+    },
+    FRONTEND_COMPOSE_OVERLAY_PATH: {
+        "compose_frontend_dockerfile_required": "dockerfile: frontend/web/Dockerfile",
+        "compose_build_commit_args_required": "AI_PLATFORM_BUILD_COMMIT",
+        "compose_build_dirty_args_required": "AI_PLATFORM_BUILD_DIRTY",
+        "compose_api_upstream_required": "AI_PLATFORM_API_UPSTREAM",
+        "compose_frontend_proxy_limits_required": "AI_PLATFORM_FRONTEND_MAX_BODY_SIZE",
+        "compose_frontend_proxy_read_timeout_required": "AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT",
+        "compose_frontend_proxy_send_timeout_required": "AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT",
+    },
+}
 
 
 def _sha256(path: Path) -> str:
@@ -89,10 +143,15 @@ def _dist_provenance_status(
         provenance.get("source_hashes") if isinstance(provenance.get("source_hashes"), dict) else {}
     )
     build_commit = git.get("commit")
-    if build_commit != git_commit:
+    if not isinstance(build_commit, str) or build_commit == "unknown" or git_commit == "unknown":
+        blockers.append("dist_build_commit_unknown")
+    elif build_commit != git_commit:
         blockers.append("dist_build_commit_mismatch")
-    if git.get("dirty") is True:
+    dirty = git.get("dirty")
+    if dirty is True:
         blockers.append("dist_built_from_dirty_worktree")
+    elif dirty is not False:
+        blockers.append("dist_build_dirty_state_unknown")
     if source_hashes.get("package_json_sha256") != package_json_sha256:
         blockers.append("dist_package_json_hash_mismatch")
     if source_hashes.get("pnpm_lock_sha256") != pnpm_lock_sha256:
@@ -186,13 +245,59 @@ def _dist_manifest(
 
 
 def _workflow_manifest(workflow_path: Path) -> dict[str, object]:
+    missing_commands: list[str] = []
+    if workflow_path.exists():
+        workflow_content = workflow_path.read_text(encoding="utf-8")
+        missing_commands = [command for command in WORKFLOW_COMMANDS if command not in workflow_content]
+    blockers = ["frontend_workflow_enforced_commands_missing"] if missing_commands else []
+    status = "missing"
+    if workflow_path.exists():
+        status = "present_with_policy_gaps" if blockers else "present"
     manifest: dict[str, object] = {
         "path": WORKFLOW_PATH.as_posix(),
-        "status": "present" if workflow_path.exists() else "missing",
+        "status": status,
         "sha256": _sha256(workflow_path) if workflow_path.exists() else None,
         "enforced_commands": WORKFLOW_COMMANDS,
+        "missing_commands": missing_commands,
+        "blockers": blockers,
     }
     return manifest
+
+
+def _packaged_delivery_contract_scan(root: Path) -> dict[str, object]:
+    findings: list[dict[str, str]] = []
+    contract_findings: list[dict[str, str]] = []
+    scanned_files: list[str] = []
+    for relative_path in PACKAGED_DELIVERY_PATHS:
+        path = root / relative_path
+        if not path.exists():
+            continue
+        scanned_files.append(relative_path.as_posix())
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            findings.append({"path": relative_path.as_posix(), "term": "unreadable"})
+            continue
+        normalized_content = content.lower()
+        for term in PACKAGED_DELIVERY_FORBIDDEN_TERMS:
+            if term.lower() in normalized_content:
+                findings.append({"path": relative_path.as_posix(), "term": term})
+        for rule_id, required_term in PACKAGED_DELIVERY_REQUIRED_TERMS.get(relative_path, {}).items():
+            if required_term not in content:
+                contract_findings.append({"path": relative_path.as_posix(), "rule_id": rule_id})
+        if relative_path == FRONTEND_NGINX_TEMPLATE_PATH and (
+            "proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT}" not in content
+            or "proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT}" not in content
+        ):
+            contract_findings.append(
+                {"path": relative_path.as_posix(), "rule_id": "nginx_proxy_timeouts_required"}
+            )
+    return {
+        "status": "fail" if findings or contract_findings else "pass",
+        "scanned_files": scanned_files,
+        "forbidden_findings": findings,
+        "contract_findings": contract_findings,
+    }
 
 
 def _packaged_frontend_image_manifest(root: Path, *, git_commit: str) -> dict[str, object]:
@@ -200,17 +305,23 @@ def _packaged_frontend_image_manifest(root: Path, *, git_commit: str) -> dict[st
     compose_overlay_path = root / FRONTEND_COMPOSE_OVERLAY_PATH
     dockerfile_present = dockerfile_path.exists()
     compose_overlay_present = compose_overlay_path.exists()
+    contract_scan = _packaged_delivery_contract_scan(root)
     blockers: list[str] = []
     if not dockerfile_present:
         blockers.append("packaged_frontend_dockerfile_missing")
     if not compose_overlay_present:
         blockers.append("packaged_frontend_compose_overlay_missing")
+    if contract_scan["status"] != "pass":
+        blockers.append("packaged_frontend_contract_scan_failed")
     if blockers:
         blockers.append("packaged_frontend_image_trace_missing")
+    status = "not_configured"
+    if dockerfile_present and compose_overlay_present:
+        status = "configured_with_policy_gaps" if contract_scan["status"] != "pass" else "configured"
 
     return {
         "artifact_kind": "frontend_static_image",
-        "status": "configured" if dockerfile_present and compose_overlay_present else "not_configured",
+        "status": status,
         "dockerfile": {
             "path": FRONTEND_DOCKERFILE_PATH.as_posix(),
             "status": "present" if dockerfile_present else "missing",
@@ -226,6 +337,7 @@ def _packaged_frontend_image_manifest(root: Path, *, git_commit: str) -> dict[st
             "backend_worker_commit": git_commit,
             "policy": "same_git_commit_for_api_worker_frontend_artifacts",
         },
+        "contract_scan": contract_scan,
         "blockers": blockers,
     }
 

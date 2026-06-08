@@ -21,6 +21,15 @@ def _bool_setting(settings: object, name: str) -> bool:
     return bool(value)
 
 
+def _positive_int_setting(settings: object, name: str) -> int | None:
+    value = getattr(settings, name, 0)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 def _enum_setting(settings: object, name: str, *, default: str, allowed_values: set[str]) -> str:
     value = str(getattr(settings, name, default) or default).strip().lower()
     return value if value in allowed_values else "unknown"
@@ -48,6 +57,18 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
     """Build a secret-safe G9 observability readiness baseline for Admin Runtime and CLI use."""
     resolved_settings = settings or get_settings()
     alert_slo_readiness = build_alert_slo_readiness()
+    model_gateway_request_concurrency_limit = _positive_int_setting(
+        resolved_settings,
+        "model_gateway_request_concurrency_limit",
+    )
+    model_gateway_capacity_gaps = ["model_gateway_request_concurrency_limit"]
+    if model_gateway_request_concurrency_limit is not None:
+        model_gateway_capacity_gaps.extend(
+            [
+                "model_gateway_request_concurrency_limit_enforcement",
+                "model_gateway_capacity_load_test_evidence",
+            ]
+        )
     domains = {
         "runtime_metrics": _domain(
             implemented=[
@@ -58,12 +79,12 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
             ],
             gaps=[
                 "latency_percentiles_p50_p95_p99",
-                "model_gateway_request_concurrency_limit",
+                *model_gateway_capacity_gaps,
                 "recorded_capacity_load_test_evidence",
             ],
             next_checks=[
                 "record p50, p95, and p99 latency for API, queue lease, worker, model, sandbox, artifact, cancel, retry, and resume",
-                "add model-gateway timeout and concurrency pressure signals before raising defaults",
+                "add or prove model-gateway timeout and concurrency pressure signals before raising defaults",
                 "keep capacity gate blocked until real load-test evidence is recorded",
             ],
         ),
@@ -137,6 +158,7 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
                 default="openai_compatible",
                 allowed_values=_MODEL_GATEWAY_PROVIDER_VALUES,
             ),
+            "model_gateway_request_concurrency_limit": model_gateway_request_concurrency_limit,
             "sandbox_provider": _enum_setting(
                 resolved_settings,
                 "sandbox_container_provider",

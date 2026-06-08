@@ -23,14 +23,34 @@ function gitValue(...args) {
   }
 }
 
+function envValue(name) {
+  const value = process.env[name]?.trim();
+  return value ? value : null;
+}
+
+function envDirtyValue() {
+  const value = envValue("AI_PLATFORM_BUILD_DIRTY");
+  if (value === null) {
+    return null;
+  }
+  const normalized = value.toLowerCase();
+  if (["1", "true", "yes", "dirty"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "clean"].includes(normalized)) {
+    return false;
+  }
+  return null;
+}
+
 function sha256(relativePath) {
   const filePath = path.join(frontendRoot, relativePath);
   return createHash("sha256").update(readFileSync(filePath)).digest("hex");
 }
 
-const gitCommit = gitValue("rev-parse", "HEAD") || "unknown";
+const gitCommit = envValue("AI_PLATFORM_BUILD_COMMIT") || gitValue("rev-parse", "HEAD") || "unknown";
 const dirtyOutput = gitValue("status", "--porcelain");
-const dirty = dirtyOutput === null ? null : dirtyOutput.length > 0;
+const dirty = envDirtyValue() ?? (dirtyOutput === null ? null : dirtyOutput.length > 0);
 
 const provenance = {
   schema_version: "ai-platform.frontend-build-provenance.v1",

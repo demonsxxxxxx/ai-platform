@@ -151,6 +151,7 @@ def build_governance_readiness(settings: object | None = None) -> dict[str, Any]
                 "admin_runtime_capacity_governance_frontend_section",
                 "admin_runtime_211_frontend_acceptance",
                 "frontend_packaged_image_blocker_traceability",
+                "frontend_packaged_image_definition_traceability",
             ],
             gaps=[
                 "ordinary_user_g9_acceptance_for_legacy_admin_mcp_model_envvar_routes",
@@ -160,7 +161,7 @@ def build_governance_readiness(settings: object | None = None) -> dict[str, Any]
             next_checks=[
                 "remap quarantined inactive model/channel/envvar sources to ai-platform projections before release",
                 "hide or policy-gate legacy admin/model/MCP/envvar/channel surfaces for ordinary users",
-                "add and verify the packaged frontend image definition before release acceptance",
+                "verify the packaged frontend image on a Docker-capable host before release acceptance",
                 "consume only ai-platform public or same-tenant admin projections",
             ],
         ),

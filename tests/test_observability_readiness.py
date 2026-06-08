@@ -15,6 +15,7 @@ class SecretBearingSettings:
     sandbox_workspace_root = "/tmp/tenant-secret/workspaces"
     anthropic_auth_token = "anthropic-secret"
     llm_gateway_provider = "openai_compatible"
+    model_gateway_request_concurrency_limit = 0
     multi_agent_dispatch_worker_enabled = False
 
 
@@ -46,6 +47,7 @@ def test_observability_readiness_records_g9_domains_and_open_gaps_without_secret
     assert "alert_rules_and_slo_thresholds" not in domains["alerts_and_exports"]["gaps"]
     assert "trace_audit_export_contract" in domains["alerts_and_exports"]["gaps"]
     assert "model_gateway_request_concurrency_limit" in readiness["open_gaps"]
+    assert readiness["config_signals"]["model_gateway_request_concurrency_limit"] is None
     assert "alert_delivery_channel_policy" in readiness["open_gaps"]
     assert "slo_threshold_runtime_calibration" in readiness["open_gaps"]
 
@@ -57,6 +59,21 @@ def test_observability_readiness_records_g9_domains_and_open_gaps_without_secret
     assert "sandbox_workspace_root" not in serialized
     assert "api_key" not in serialized
     assert "authorization" not in serialized
+
+
+def test_observability_readiness_reports_configured_model_gateway_limit_without_closing_g9():
+    class ConfiguredGatewaySettings(SecretBearingSettings):
+        model_gateway_request_concurrency_limit = 8
+
+    readiness = build_observability_readiness(ConfiguredGatewaySettings())
+
+    assert readiness["status"] == "partial_blocked"
+    assert readiness["config_signals"]["model_gateway_request_concurrency_limit"] == 8
+    assert "model_gateway_request_concurrency_limit" in readiness["open_gaps"]
+    assert "model_gateway_request_concurrency_limit_enforcement" in readiness["open_gaps"]
+    assert "model_gateway_capacity_load_test_evidence" in readiness["open_gaps"]
+    assert "recorded_capacity_load_test_evidence" in readiness["open_gaps"]
+    assert readiness["domains"]["runtime_metrics"]["status"] == "partial_blocked"
 
 
 def test_observability_readiness_includes_alert_slo_rule_template_evidence_without_closing_g9():

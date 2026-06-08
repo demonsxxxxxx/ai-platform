@@ -132,6 +132,23 @@ function databasePoolSummary(pool?: RuntimeLimitGroup): string {
   return `${waiting} / ${maxWaiting}`;
 }
 
+function modelGatewaySummary(overview: AdminRuntimeOverview | null): string {
+  const enforcedLimit =
+    overview?.backpressure?.model_gateway?.request_concurrency_limit ??
+    overview?.capacity?.limits?.model_gateway?.request_concurrency_limit;
+  const configuredLimit =
+    overview?.backpressure?.model_gateway?.configured_request_concurrency_limit ??
+    overview?.capacity?.limits?.model_gateway?.configured_request_concurrency_limit;
+
+  if (enforcedLimit !== null && enforcedLimit !== undefined) {
+    return formatValue(enforcedLimit);
+  }
+  if (configuredLimit !== null && configuredLimit !== undefined) {
+    return `${formatValue(configuredLimit)} config-only`;
+  }
+  return "unbounded";
+}
+
 export function AdminRuntimeCapacitySection() {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
@@ -268,7 +285,7 @@ export function AdminRuntimeCapacitySection() {
 
           {overview && (
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+              <div className="grid grid-cols-2 gap-2 lg:grid-cols-5">
                 <MetricCard
                   icon={Activity}
                   label={t("adminRuntime.workerRuns", "Capacity")}
@@ -291,6 +308,11 @@ export function AdminRuntimeCapacitySection() {
                   icon={Database}
                   label={t("adminRuntime.dbPool", "DB waiting")}
                   value={databasePoolSummary(overview.backpressure?.database_pool)}
+                />
+                <MetricCard
+                  icon={Gauge}
+                  label={t("adminRuntime.modelGateway", "Model gateway")}
+                  value={modelGatewaySummary(overview)}
                 />
                 <MetricCard
                   icon={ShieldCheck}

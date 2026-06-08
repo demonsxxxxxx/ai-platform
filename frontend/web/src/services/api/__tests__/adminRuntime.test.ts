@@ -25,6 +25,13 @@ test("fetches admin runtime overview from the ai-platform admin projection", asy
             worker: { max_active_worker_runs: 3 },
             database_pool: { max_size: 10 },
             queue: { tenant_processing_quota_enabled: false },
+            model_gateway: {
+              provider: "openai_compatible",
+              request_concurrency_limit: null,
+              configured_request_concurrency_limit: 12,
+              limit_enforcement: "not_implemented",
+              capacity_evidence: "unproven_without_load_test",
+            },
           },
           warnings: ["queue_tenant_processing_quota_disabled"],
           production_default_policy:
@@ -44,6 +51,16 @@ test("fetches admin runtime overview from the ai-platform admin projection", asy
             requests_waiting: 0,
             max_waiting: 100,
             waiting_saturated: false,
+          },
+          model_gateway: {
+            provider: "openai_compatible",
+            request_concurrency_limit: null,
+            configured_request_concurrency_limit: 12,
+            limit_enabled: false,
+            limit_enforced: false,
+            limit_enforcement: "not_implemented",
+            config_only: true,
+            capacity_evidence: "unproven_without_load_test",
           },
         },
         governance: {
@@ -70,6 +87,16 @@ test("fetches admin runtime overview from the ai-platform admin projection", asy
   assert.equal(overview.capacity?.schema_version, "ai-platform.capacity-baseline.v1");
   assert.equal(overview.governance?.status, "partial_blocked");
   assert.deepEqual(overview.backpressure?.reasons, ["worker_capacity_saturated"]);
+  assert.equal(
+    overview.backpressure?.model_gateway?.capacity_evidence,
+    "unproven_without_load_test",
+  );
+  assert.equal(
+    overview.backpressure?.model_gateway?.configured_request_concurrency_limit,
+    12,
+  );
+  assert.equal(overview.backpressure?.model_gateway?.limit_enabled, false);
+  assert.equal(overview.backpressure?.model_gateway?.config_only, true);
 });
 
 test("admin runtime API source only references public or admin projection fields", () => {

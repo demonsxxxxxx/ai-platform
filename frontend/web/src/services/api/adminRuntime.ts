@@ -25,6 +25,7 @@ export interface AdminRuntimeBackpressureProjection {
     sample?: RuntimeLimitGroup;
   };
   database_pool?: RuntimeLimitGroup;
+  model_gateway?: RuntimeLimitGroup;
 }
 
 export interface AdminRuntimeGovernanceDomain {
