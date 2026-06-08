@@ -240,6 +240,14 @@ def test_observability_docs_record_quality_golden_set_contract_without_closing_g
         assert "latency_percentiles_p50_p95_p99_admin_projection" in text
         assert "latency_percentile_runtime_211_acceptance" not in text
         assert "latency_percentile_per_surface_split_and_dashboard_acceptance" in text
+        assert "tools/error_taxonomy_dashboard_readiness.py" in text
+        assert "ai-platform.error-taxonomy-dashboard-readiness.v1" in text
+        assert "ai-platform.error-taxonomy-dashboard-contract.v1" in text
+        assert "error_taxonomy_dashboard_contract" in text
+        assert "error_taxonomy_dashboard_runtime_acceptance" in text
+        assert "error_taxonomy_dashboard_visual_acceptance" in text
+        assert "error_taxonomy_dashboard_211_acceptance" in text
+        assert "error_taxonomy_dashboard_acceptance" not in text
         assert "ai-platform.model-gateway-backpressure-policy.v1" in text
         assert "model_gateway_backpressure_policy_contract" in text
         assert "model_gateway_timeout_and_backpressure" in text

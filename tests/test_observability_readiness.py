@@ -6,6 +6,7 @@ import sys
 import pytest
 
 import app.quality_golden_set_readiness as quality_golden_set_readiness
+from app.error_taxonomy_dashboard_readiness import build_error_taxonomy_dashboard_readiness
 from app.observability_readiness import (
     build_observability_readiness,
     render_observability_readiness_markdown,
@@ -67,6 +68,11 @@ def test_observability_readiness_records_g9_domains_and_open_gaps_without_secret
     assert "latency_percentile_per_surface_split_and_dashboard_acceptance" in domains["runtime_metrics"]["gaps"]
     assert "formal_error_taxonomy_contract" in domains["error_taxonomy"]["implemented"]
     assert "error_category_mapping_for_executor_tool_sandbox_model_gateway" in domains["error_taxonomy"]["implemented"]
+    assert "error_taxonomy_dashboard_contract" in domains["error_taxonomy"]["implemented"]
+    assert "error_taxonomy_dashboard_acceptance" not in domains["error_taxonomy"]["gaps"]
+    assert "error_taxonomy_dashboard_runtime_acceptance" in domains["error_taxonomy"]["gaps"]
+    assert "error_taxonomy_dashboard_visual_acceptance" in domains["error_taxonomy"]["gaps"]
+    assert "error_taxonomy_dashboard_211_acceptance" in domains["error_taxonomy"]["gaps"]
     assert "quality_golden_set_readiness_contract" in domains["quality_evaluation"]["implemented"]
     assert "golden_set_eval_runtime_and_211_acceptance" in domains["quality_evaluation"]["gaps"]
     assert "alert_rules_runtime_dashboard_and_211_acceptance" in domains["alerts_and_exports"]["gaps"]
@@ -101,6 +107,72 @@ def test_observability_readiness_records_g9_domains_and_open_gaps_without_secret
     assert "sandbox_workspace_root" not in serialized
     assert "api_key" not in serialized
     assert "authorization" not in serialized
+
+
+def test_error_taxonomy_dashboard_readiness_contract_defines_safe_admin_dashboard_without_closing_g9():
+    readiness = build_error_taxonomy_dashboard_readiness()
+
+    assert readiness["schema_version"] == "ai-platform.error-taxonomy-dashboard-readiness.v1"
+    assert readiness["gate"] == "G9 Error Taxonomy Dashboard"
+    assert readiness["status"] == "partial_blocked"
+    assert readiness["active_dashboard_policy"] == "contract_only_not_runtime_dashboard_acceptance"
+    assert readiness["dashboard_contract"] == {
+        "schema_version": "ai-platform.error-taxonomy-dashboard-contract.v1",
+        "required_admin_runtime_fields": [
+            "observability.error_categories",
+            "observability.error_types",
+            "observability.recent_failures",
+            "observability_readiness.error_taxonomy",
+        ],
+        "required_category_ids": [
+            "executor",
+            "tool",
+            "tool_permission",
+            "sandbox",
+            "model_gateway",
+            "queue",
+            "database",
+            "memory_context",
+            "artifact",
+            "auth_policy",
+            "unknown",
+        ],
+        "allowed_display_fields": [
+            "category",
+            "count",
+            "definition",
+            "trend_window",
+            "recent_failure_refs_public",
+            "last_seen_at",
+        ],
+        "unknown_category_policy": "unknown_category_visible_but_raw_payload_hidden",
+        "same_tenant_admin_only": True,
+        "forbidden_payload_classes": [
+            "executor private payload",
+            "raw storage key",
+            "sandbox workdir",
+            "secret material",
+            "API key",
+            "bearer token",
+            "database URL",
+            "Redis URL",
+        ],
+        "does_not_close_g9": True,
+    }
+    assert readiness["open_gaps"] == [
+        "error_taxonomy_dashboard_runtime_acceptance",
+        "error_taxonomy_dashboard_visual_acceptance",
+        "error_taxonomy_dashboard_211_acceptance",
+    ]
+
+    serialized = json.dumps(readiness, ensure_ascii=False).lower()
+    assert "c:\\users" not in serialized
+    assert "executor_private_payload" not in serialized
+    assert "raw_storage_key" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "api_key" not in serialized
+    assert "database_url" not in serialized
+    assert "sk-secret" not in serialized
 
 
 def test_observability_readiness_reports_configured_model_gateway_limit_without_closing_g9():
@@ -496,6 +568,13 @@ def test_render_observability_readiness_markdown_is_operator_readable_and_gap_fi
     assert "Status: `partial_blocked`" in markdown
     assert "## Open Gaps" in markdown
     assert "formal_error_taxonomy_contract" in markdown
+    assert "error_taxonomy_dashboard_contract" in markdown
+    assert "ai-platform.error-taxonomy-dashboard-readiness.v1" in markdown
+    assert "ai-platform.error-taxonomy-dashboard-contract.v1" in markdown
+    assert "error_taxonomy_dashboard_runtime_acceptance" in markdown
+    assert "error_taxonomy_dashboard_visual_acceptance" in markdown
+    assert "error_taxonomy_dashboard_211_acceptance" in markdown
+    assert "error_taxonomy_dashboard_acceptance" not in markdown
     assert "latency_percentiles_p50_p95_p99_admin_projection" in markdown
     assert "model_gateway_backpressure_policy_contract" in markdown
     assert "ai-platform.model-gateway-backpressure-policy.v1" in markdown
@@ -550,6 +629,24 @@ def test_observability_readiness_cli_outputs_json_without_secret_markers():
     assert "runtime_metrics" in payload["domains"]
     assert "anthropic-secret" not in result.stdout
     assert "callback-secret" not in result.stdout
+
+
+def test_error_taxonomy_dashboard_readiness_cli_outputs_json_without_secret_markers():
+    result = subprocess.run(
+        [sys.executable, "tools/error_taxonomy_dashboard_readiness.py", "--format", "json"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "ai-platform.error-taxonomy-dashboard-readiness.v1"
+    assert payload["dashboard_contract"]["schema_version"] == "ai-platform.error-taxonomy-dashboard-contract.v1"
+    assert payload["status"] == "partial_blocked"
+    assert "executor_private_payload" not in result.stdout
+    assert "raw_storage_key" not in result.stdout
+    assert "sandbox_workdir" not in result.stdout
+    assert "api_key" not in result.stdout
 
 
 def test_release_evidence_readiness_cli_outputs_json_without_secret_markers():

@@ -6,11 +6,11 @@ This document records the current G9 Observability / Quality / Ops readiness
 baseline. It is an operator readiness snapshot, not a gate-closure claim. G9
 remains partial until latency percentile per-surface split and dashboard
 acceptance, model-gateway pressure controls and recorded capacity load-test
-evidence, error taxonomy dashboard acceptance, golden-set evaluation runtime
-and 211 acceptance, alert/SLO runtime acceptance, trace/audit export runtime,
-dashboard, and 211 acceptance, release evidence runtime export acceptance, and
-release evidence retention runtime acceptance have code, tests, docs, review,
-and runtime evidence.
+evidence, error taxonomy dashboard runtime, visual, and 211 acceptance,
+golden-set evaluation runtime and 211 acceptance, alert/SLO runtime acceptance,
+trace/audit export runtime, dashboard, and 211 acceptance, release evidence
+runtime export acceptance, and release evidence retention runtime acceptance
+have code, tests, docs, review, and runtime evidence.
 
 Generate the current readiness snapshot from the repository root:
 
@@ -55,7 +55,7 @@ or ordinary-user private content.
 | Domain | Implemented baseline | Remaining gap |
 | --- | --- | --- |
 | Runtime metrics | Admin Runtime observability summary, token/cost/latency/error counts, `latency_percentiles_p50_p95_p99_admin_projection`, queue/admission/DB-pool backpressure summary, config-visible model-gateway request limit status, capacity runtime evidence capture | `latency_percentile_per_surface_split_and_dashboard_acceptance` across API, queue lease, worker, model, sandbox, artifact, cancel, retry, and resume; enforced model-gateway request-limit/backpressure gate plus recorded model-gateway load-test evidence; recorded capacity load-test evidence |
-| Error taxonomy | Formal `ai-platform.error-taxonomy.v1` contract, category mapping for executor/tool/sandbox/model-gateway/queue/database/memory/artifact/auth failures, Admin Runtime `error_categories`, run event error count projection, and redacted recent failure projection | Dashboard acceptance and 211/runtime evidence for taxonomy-driven operations |
+| Error taxonomy | Formal `ai-platform.error-taxonomy.v1` contract, category mapping for executor/tool/sandbox/model-gateway/queue/database/memory/artifact/auth failures, source-level `ai-platform.error-taxonomy-dashboard-readiness.v1` as `error_taxonomy_dashboard_contract`, Admin Runtime `error_categories`, run event error count projection, and redacted recent failure projection | `error_taxonomy_dashboard_runtime_acceptance`, `error_taxonomy_dashboard_visual_acceptance`, and `error_taxonomy_dashboard_211_acceptance` for taxonomy-driven operations |
 | Quality evaluation | Run trace/audit linkage baseline, source-level `ai-platform.quality-golden-set-readiness.v1` contract, and `ai-platform.quality-score.v1` score schema | Golden-set evaluation runtime and 211 acceptance, office workflow acceptance dataset, quality threshold calibration, dashboard acceptance |
 | Alerts and exports | Admin Runtime overview projection, fail-closed capacity gate readiness verdict, source-level `ai-platform.alert-slo-readiness.v1` rule template evidence for queue, database, worker, model gateway, sandbox, error-taxonomy, and capacity gates, source-level `ai-platform.alert-delivery-channel-policy.v1` as `alert_delivery_channel_policy_contract`, source-level `ai-platform.trace-audit-export-readiness.v1` as `trace_audit_export_contract`, plus source-level `ai-platform.release-evidence-readiness.v1` export-location contract and `ai-platform.release-evidence-retention-policy.v1` retention policy contract | Alert runtime dashboard and 211 acceptance, `alert_delivery_channel_runtime_acceptance`, runtime SLO calibration, `trace_audit_export_runtime_acceptance`, `trace_audit_export_dashboard_acceptance`, `trace_audit_export_211_acceptance`, `release_evidence_runtime_export_acceptance`, and `release_evidence_retention_runtime_acceptance` |
 
@@ -90,6 +90,35 @@ The golden-set evaluation runtime and 211 acceptance remain open. The contract
 does not close G9; it only prevents the quality/eval gate from staying vague
 while runtime execution, dataset approval, threshold calibration, dashboard
 acceptance, review, and smoke evidence are still missing.
+
+## Error Taxonomy Dashboard Contract Baseline
+
+The source-level readiness snapshot now embeds
+`ai-platform.error-taxonomy-dashboard-readiness.v1` as
+`observability_readiness.domains.error_taxonomy.evidence.error_taxonomy_dashboard`
+and records `error_taxonomy_dashboard_contract` as implemented. Generate the
+standalone contract from the repository root:
+
+```powershell
+python tools/error_taxonomy_dashboard_readiness.py --format markdown
+python tools/error_taxonomy_dashboard_readiness.py --format json
+```
+
+The nested dashboard contract is
+`ai-platform.error-taxonomy-dashboard-contract.v1`. It requires Admin Runtime
+to expose `observability.error_categories`, `observability.error_types`,
+`observability.recent_failures`, and
+`observability_readiness.error_taxonomy`. Display fields are limited to
+category, count, definition, trend window, public recent-failure references,
+and last-seen timestamp. Unknown categories must remain visible as
+`unknown` while raw error payloads stay hidden.
+
+This is a contract-only baseline. It does not implement dashboard acceptance,
+does not expose raw runtime data, executor-only data, raw storage identifiers,
+sandbox runtime paths, or secret-like values, and does not close G9. Remaining
+blockers are `error_taxonomy_dashboard_runtime_acceptance`,
+`error_taxonomy_dashboard_visual_acceptance`, and
+`error_taxonomy_dashboard_211_acceptance`.
 
 ## Alert / SLO Rule Template Baseline
 
@@ -228,9 +257,9 @@ repo-local services source target with OCI labels:
 This runtime evidence proves the source-level G9 taxonomy/readiness projection
 is deployed on 211. It does not close G9 because latency percentile
 per-surface split and dashboard acceptance, model-gateway
-concurrency/backpressure, recorded load-test evidence, taxonomy dashboard
-acceptance, golden-set evaluation, alert runtime acceptance, and export
-contracts are still open.
+concurrency/backpressure, recorded load-test evidence, error taxonomy
+dashboard runtime/visual/211 acceptance, golden-set evaluation, alert runtime
+acceptance, and export contracts are still open.
 
 ### Follow-up 211 Runtime Evidence - 2026-06-08, commit `be03c95`
 
@@ -358,8 +387,8 @@ and does not close G9.
 Do not close G9 or raise production concurrency defaults from this readiness
 projection alone. It makes missing observability work machine-readable and
 visible in Admin Runtime, but it does not replace recorded load-test evidence,
-golden-set evaluation, alert validation, taxonomy dashboard acceptance, or 211
-deployment smoke.
+golden-set evaluation, alert validation, error taxonomy dashboard
+runtime/visual/211 acceptance, or 211 deployment smoke.
 
 Do not use this baseline to expand sandbox privilege, expose ordinary users to
 multi-agent beta, or bypass G6/G7 governance gates.

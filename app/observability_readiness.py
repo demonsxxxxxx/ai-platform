@@ -3,6 +3,7 @@ from typing import Any
 from app.alert_slo_readiness import build_alert_slo_readiness
 from app.capacity_baseline import build_model_gateway_backpressure_policy
 from app.error_taxonomy import build_error_taxonomy_contract
+from app.error_taxonomy_dashboard_readiness import build_error_taxonomy_dashboard_readiness
 from app.quality_golden_set_readiness import build_quality_golden_set_readiness
 from app.release_evidence_readiness import build_release_evidence_readiness
 from app.settings import get_settings
@@ -61,6 +62,7 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
     """Build a secret-safe G9 observability readiness baseline for Admin Runtime and CLI use."""
     resolved_settings = settings or get_settings()
     alert_slo_readiness = build_alert_slo_readiness()
+    error_taxonomy_dashboard_readiness = build_error_taxonomy_dashboard_readiness()
     quality_golden_set_readiness = build_quality_golden_set_readiness()
     release_evidence_readiness = build_release_evidence_readiness()
     trace_audit_export_readiness = build_trace_audit_export_readiness()
@@ -105,17 +107,21 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
             implemented=[
                 "formal_error_taxonomy_contract",
                 "error_category_mapping_for_executor_tool_sandbox_model_gateway",
+                "error_taxonomy_dashboard_contract",
                 "run_event_error_count_projection",
                 "recent_failure_projection_redaction",
             ],
             gaps=[
-                "error_taxonomy_dashboard_acceptance",
+                *error_taxonomy_dashboard_readiness["open_gaps"],
             ],
             next_checks=[
                 "define stable error categories before beta reporting",
                 "map worker, tool, sandbox, model gateway, memory, and artifact failures to the taxonomy",
                 "keep Admin projections same-tenant and free of private payloads",
             ],
+            evidence={
+                "error_taxonomy_dashboard": error_taxonomy_dashboard_readiness,
+            },
         ),
         "quality_evaluation": _domain(
             implemented=[
@@ -242,6 +248,9 @@ def _render_domain_evidence(evidence: object) -> str:
     quality_golden_set = evidence.get("quality_golden_set")
     if isinstance(quality_golden_set, dict):
         rendered_sections.append(_render_quality_golden_set_evidence(quality_golden_set))
+    error_taxonomy_dashboard = evidence.get("error_taxonomy_dashboard")
+    if isinstance(error_taxonomy_dashboard, dict):
+        rendered_sections.append(_render_error_taxonomy_dashboard(error_taxonomy_dashboard))
     alert_rules = evidence.get("alert_slo_rules")
     if isinstance(alert_rules, dict):
         rendered_sections.append(_render_alert_slo_evidence(alert_rules))
@@ -255,6 +264,29 @@ def _render_domain_evidence(evidence: object) -> str:
     if isinstance(model_gateway_policy, dict):
         rendered_sections.append(_render_model_gateway_backpressure_policy(model_gateway_policy))
     return "".join(section for section in rendered_sections if section)
+
+
+def _render_error_taxonomy_dashboard(readiness: dict[str, Any]) -> str:
+    contract = readiness.get("dashboard_contract") if isinstance(readiness.get("dashboard_contract"), dict) else {}
+    required_fields = contract.get("required_admin_runtime_fields")
+    field_lines = ""
+    if isinstance(required_fields, list):
+        field_lines = "\n".join(f"- `{field}`" for field in required_fields)
+    open_gaps = readiness.get("open_gaps")
+    gap_lines = ""
+    if isinstance(open_gaps, list):
+        gap_lines = "\n".join(f"- `{gap}`" for gap in open_gaps)
+    return (
+        "\nEvidence:\n\n"
+        f"- `{readiness.get('schema_version')}` status `{readiness.get('status')}`\n"
+        f"- dashboard contract `{contract.get('schema_version')}`\n"
+        f"- active dashboard policy `{readiness.get('active_dashboard_policy')}`\n"
+        f"- does not close G9 `{contract.get('does_not_close_g9')}`\n"
+        "Required Admin Runtime fields:\n\n"
+        f"{field_lines}\n\n"
+        "Nested error taxonomy dashboard gaps:\n\n"
+        f"{gap_lines}\n"
+    )
 
 
 def _render_model_gateway_backpressure_policy(policy: dict[str, Any]) -> str:

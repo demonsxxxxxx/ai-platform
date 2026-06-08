@@ -290,9 +290,24 @@ load evidence, and 211 acceptance, and it keeps
 The source-level error taxonomy contract is now `ai-platform.error-taxonomy.v1`.
 Admin Runtime derives public `error_categories` from allowlisted error-type
 counts for executor, tool, tool permission, sandbox, model gateway, queue,
-database, memory/context, artifact, auth/policy, and unknown failures. This is
-not a G9 closure claim because dashboard acceptance and 211 taxonomy operations
-evidence remain open.
+database, memory/context, artifact, auth/policy, and unknown failures. The
+same readiness baseline now embeds
+`ai-platform.error-taxonomy-dashboard-readiness.v1` as
+`error_taxonomy_dashboard_contract`; the standalone operator view is generated
+by `python tools/error_taxonomy_dashboard_readiness.py --format json` or
+`--format markdown`. Its nested
+`ai-platform.error-taxonomy-dashboard-contract.v1` requires
+`observability.error_categories`, `observability.error_types`,
+`observability.recent_failures`, and
+`observability_readiness.error_taxonomy`, with display limited to category
+counts, definitions, trend windows, public recent-failure references, and
+last-seen timestamps. This is contract-only and does not close G9. The
+remaining taxonomy dashboard gaps are
+`error_taxonomy_dashboard_runtime_acceptance`,
+`error_taxonomy_dashboard_visual_acceptance`, and
+`error_taxonomy_dashboard_211_acceptance`, which stay open until runtime
+dashboard behavior, visual acceptance, redaction, review, and 211 evidence are
+proven.
 
 ### G0 / G9 Frontend Source Traceability Status
 
