@@ -59,7 +59,16 @@ _RELEASE_REVIEW_FILE_NAMES = {
     "skill-release-review.json",
 }
 _RELEASE_REVIEW_SCHEMA_VERSION = "ai-platform.skill-release-review.v1"
+_RELEASE_EVIDENCE_CATEGORIES = {
+    "sbom_or_signed_package": _SBOM_FILE_NAMES,
+    "license_policy": _LICENSE_FILE_NAMES,
+    "vulnerability_scan": _VULNERABILITY_EVIDENCE_NAMES,
+}
 _SKILL_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+_PLACEHOLDER_PATTERN = re.compile(
+    r"(<[^>]+>|\$\{[^}]+\}|\b(todo|tbd|placeholder|fill-me|fill_me|replace-me|replace_me)\b)",
+    re.IGNORECASE,
+)
 _FORBIDDEN_SKILL_ID_MARKERS = (
     "/",
     "\\",
@@ -68,6 +77,25 @@ _FORBIDDEN_SKILL_ID_MARKERS = (
     ".claude",
     "secret",
     "token=",
+    "work_dir",
+)
+_FORBIDDEN_EVIDENCE_FILE_MARKERS = (
+    ".env",
+    "api_key",
+    "apikey",
+    "bearer",
+    "callback_token",
+    "client-secret",
+    "client_secret",
+    "database_url",
+    "executor_private_payload",
+    "private_payload",
+    "raw_storage_key",
+    "redis_url",
+    "sandbox_workdir",
+    "secret",
+    "storage_key",
+    "token",
     "work_dir",
 )
 
@@ -110,7 +138,7 @@ def build_skill_release_review_template(*, skill_id: str) -> dict[str, Any]:
             {
                 "id": "sbom_or_signed_package",
                 "passed": False,
-                "notes": "Confirm package provenance and SBOM or signed-package evidence before setting sbom_reviewed=true.",
+                "notes": "Confirm package provenance and SBOM evidence before setting sbom_reviewed=true. Signed-package evidence requires a future contract before it can clear this gate.",
             },
             {
                 "id": "license_policy",
@@ -157,6 +185,76 @@ def _matching_files(relative_files: list[str], allowed_names: set[str]) -> list[
     return sorted({_basename(path) for path in _matching_file_paths(relative_files, allowed_names)})
 
 
+def _normalize_relative_path(value: str) -> str:
+    return value.strip().replace("\\", "/").lower()
+
+
+def _evidence_ref_matches(ref: str, allowed_paths: list[str]) -> bool:
+    normalized_ref = _normalize_relative_path(ref)
+    allowed_normalized = {_normalize_relative_path(path) for path in allowed_paths}
+    if "/" in normalized_ref:
+        return normalized_ref in allowed_normalized
+    return normalized_ref in {_basename(path).lower() for path in allowed_paths}
+
+
+def _has_forbidden_evidence_marker(value: str) -> bool:
+    normalized = _normalize_relative_path(value)
+    return any(marker in normalized for marker in _FORBIDDEN_EVIDENCE_FILE_MARKERS)
+
+
+def _has_placeholder_marker(value: str) -> bool:
+    return bool(_PLACEHOLDER_PATTERN.search(_normalize_relative_path(value)))
+
+
+def _matched_evidence_paths(ref: str, allowed_paths: list[str]) -> list[str]:
+    normalized_ref = _normalize_relative_path(ref)
+    if "/" in normalized_ref:
+        return [path for path in allowed_paths if normalized_ref == _normalize_relative_path(path)]
+    return [path for path in allowed_paths if normalized_ref == _basename(path).lower()]
+
+
+def _review_evidence_file_errors(payload: dict[str, Any], relative_files: list[str]) -> list[str]:
+    evidence_files = payload.get("evidence_files")
+    if not isinstance(evidence_files, dict):
+        return ["evidence_files_missing_or_invalid"]
+
+    errors: list[str] = []
+    for category, allowed_names in _RELEASE_EVIDENCE_CATEGORIES.items():
+        category_refs = evidence_files.get(category)
+        if not isinstance(category_refs, list) or not category_refs:
+            errors.append(f"{category}_evidence_files_missing")
+            continue
+        allowed_paths = _matching_file_paths(relative_files, allowed_names)
+        for item in category_refs:
+            if not isinstance(item, str) or not item.strip():
+                errors.append(f"{category}_evidence_file_invalid")
+                continue
+            normalized = _normalize_relative_path(item)
+            if _has_placeholder_marker(normalized):
+                errors.append(f"{category}_evidence_file_placeholder")
+                continue
+            if _has_forbidden_evidence_marker(item):
+                errors.append(f"{category}_evidence_file_forbidden_marker")
+                continue
+            if not _evidence_ref_matches(item, allowed_paths):
+                errors.append(f"{category}_evidence_file_unmatched")
+                continue
+            matched_paths = _matched_evidence_paths(item, allowed_paths)
+            if any(_has_placeholder_marker(path) for path in matched_paths):
+                errors.append(f"{category}_evidence_file_placeholder_actual_path")
+                continue
+            if any(_has_forbidden_evidence_marker(path) for path in matched_paths):
+                errors.append(f"{category}_evidence_file_forbidden_actual_path")
+    return sorted(set(errors))
+
+
+def _review_flag_errors(payload: dict[str, Any]) -> list[str]:
+    flag_names = ("sbom_reviewed", "license_policy_reviewed", "vulnerability_reviewed")
+    if all(payload.get(flag_name) is True for flag_name in flag_names):
+        return []
+    return ["review_flags_missing_or_invalid"]
+
+
 def _package_evidence(relative_files: list[str]) -> dict[str, list[str]]:
     return {
         "metadata_files": _matching_files(relative_files, _PACKAGE_METADATA_FILES),
@@ -174,12 +272,15 @@ def _release_review(skill_dir: Path, relative_files: list[str], *, skill_id: str
         return {
             "status": "missing",
             "files": [],
+            "evidence_files_verified": False,
             "sbom_reviewed": False,
             "license_policy_reviewed": False,
             "vulnerability_reviewed": False,
         }
 
     invalid_files: list[str] = []
+    evidence_file_errors: list[str] = []
+    review_flag_errors: list[str] = []
     for relative_path in review_paths:
         try:
             payload = json.loads((skill_dir / relative_path).read_text(encoding="utf-8"))
@@ -198,18 +299,30 @@ def _release_review(skill_dir: Path, relative_files: list[str], *, skill_id: str
         if str(payload.get("skill_id") or "") != skill_id:
             invalid_files.append(_basename(relative_path))
             continue
+        current_review_flag_errors = _review_flag_errors(payload)
+        current_evidence_file_errors = _review_evidence_file_errors(payload, relative_files)
+        if current_review_flag_errors or current_evidence_file_errors:
+            invalid_files.append(_basename(relative_path))
+            evidence_file_errors.extend(current_evidence_file_errors)
+            review_flag_errors.extend(current_review_flag_errors)
+            continue
         return {
             "status": "passed",
             "files": review_files,
-            "sbom_reviewed": bool(payload.get("sbom_reviewed")),
-            "license_policy_reviewed": bool(payload.get("license_policy_reviewed")),
-            "vulnerability_reviewed": bool(payload.get("vulnerability_reviewed")),
+            "evidence_files_verified": True,
+            "review_flag_errors": [],
+            "sbom_reviewed": True,
+            "license_policy_reviewed": True,
+            "vulnerability_reviewed": True,
         }
 
     return {
         "status": "invalid_or_incomplete",
         "files": review_files,
         "invalid_files": sorted(set(invalid_files)),
+        "evidence_files_verified": False,
+        "evidence_file_errors": sorted(set(evidence_file_errors)),
+        "review_flag_errors": sorted(set(review_flag_errors)),
         "sbom_reviewed": False,
         "license_policy_reviewed": False,
         "vulnerability_reviewed": False,
@@ -335,7 +448,7 @@ def build_skill_release_readiness(*, skills_root: str | Path = "skills") -> dict
         "skills": skill_items,
         "open_gaps": open_gaps,
         "evidence_policy": (
-            "signed package or SBOM evidence plus dependency license and vulnerability review "
+            "SBOM evidence plus dependency license and vulnerability review "
             "are required before closing the skill release governance gate"
         ),
     }

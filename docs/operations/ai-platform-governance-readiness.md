@@ -63,7 +63,7 @@ or secret-like runtime configuration.
 | Domain | Implemented baseline | Remaining gap |
 | --- | --- | --- |
 | Tool permission | Admin tool policy inventory, tenant-scoped policy update audit, user request/decision flow, fail-closed risk/write policy evaluation, public permission-card projection, audit-visible legacy route policy mapping, secret-safe allow/ask/deny taxonomy evidence through `tools/tool_policy_readiness.py` | Policy enforcement or ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel surfaces, bulk review/history UX, Admin dashboard acceptance for taxonomy evidence |
-| Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock, secret-safe skill release readiness snapshot, pending review-manifest template entrypoint | Signed package or SBOM release gate, Admin release dashboard acceptance, dependency vulnerability/license policy |
+| Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock, secret-safe skill release readiness snapshot, pending review-manifest template entrypoint | SBOM release gate, signed-package evidence contract, Admin release dashboard acceptance, dependency vulnerability/license policy |
 | Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py` | Bounded office context-pack product contract |
 | Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest with build-provenance same-commit gate, packaged frontend image definition traceability, non-push CI packaged-image build/provenance contract, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Profile env-var surface removed from the active browser entry graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Quarantined inactive legacy model/channel/envvar sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image smoke and release acceptance on 211 or another Docker-capable host |
 
@@ -142,7 +142,9 @@ review evidence. A missing or empty Skill inventory fails closed as
 `skill_inventory_missing_or_empty`; blocked dependency-policy details fail
 closed as `skill_dependency_policy_blocked`; and SBOM/license/vulnerability
 filenames do not clear release governance unless an explicit review manifest
-marks the evidence as passed. Therefore G6 remains blocked by
+marks the evidence as passed and its `evidence_files` entries are non-empty,
+non-placeholder, secret-safe, and matched to actual Skill evidence files.
+Therefore G6 remains blocked by
 `signed_skill_package_or_sbom_release_gate` and
 `dependency_vulnerability_or_license_policy`, and ordinary users must still not
 be exposed to raw Skill selection or staging internals.
@@ -155,9 +157,15 @@ file. The template schema is `ai-platform.skill-release-review.v1`, starts with
 `status = pending`, keeps `sbom_reviewed`, `license_policy_reviewed`, and
 `vulnerability_reviewed` false, and includes required evidence/checklist fields.
 This entrypoint does not close the release gate by itself. A Skill remains
-blocked until real SBOM or signed-package evidence, license-policy evidence,
+blocked until real SBOM evidence, license-policy evidence,
 vulnerability-scan evidence, and a completed `passed` review manifest are
-present and reviewed.
+present, reviewed, and explicitly bound to those real evidence files. Empty
+review evidence arrays, copied template placeholders, secret-like evidence
+paths, or references that do not match the Skill evidence inventory keep the
+readiness verdict fail-closed.
+Signed-package evidence remains a separate future contract until the accepted
+file names, signature verification, and review policy are defined in code and
+tests.
 
 `tools/memory_erasure_readiness.py` now records code/test evidence for
 ordinary-user session-scoped soft delete, admin same-tenant soft delete, admin

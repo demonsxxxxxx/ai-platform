@@ -219,6 +219,8 @@ secret-safe Skill release readiness evidence through
 `tools/skill_release_readiness.py`,
 pending Skill release review-manifest template generation through
 `tools/skill_release_readiness.py --review-template --skill-id <skill-id>`,
+fail-closed review-manifest evidence-file validation that rejects empty,
+placeholder, secret-like, or unmatched SBOM/license/vulnerability references,
 frontend
 release traceability, static `dist` release manifest with build-provenance
 gate, frontend projection audit wired first into `ci:verify`, packaged frontend
@@ -233,9 +235,11 @@ disabled registry or tenant-policy cases.
 
 This does not close G6. Remaining blockers are policy enforcement or
 ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel
-surfaces, Admin taxonomy/bulk/history dashboard acceptance, signed package or
-SBOM release evidence plus passed review manifests, dependency vulnerability
-and license evidence plus passed review manifests, bounded office context-pack
+surfaces, Admin taxonomy/bulk/history dashboard acceptance, SBOM release
+evidence plus passed review manifests bound to matching evidence files,
+signed-package evidence contract definition, dependency vulnerability
+and license evidence plus passed review manifests bound to matching evidence
+files, bounded office context-pack
 product contract, quarantined legacy frontend source remap, packaged frontend
 image smoke/release acceptance on 211 or another Docker-capable host, and
 ordinary-user G9 acceptance. Do

@@ -25,6 +25,30 @@ def _write_skill(root, skill_id: str, description: str, extra_files: dict[str, s
         target.write_text(content, encoding="utf-8")
 
 
+def _passed_review_manifest(
+    skill_id: str,
+    evidence_files: dict[str, list[str]],
+    *,
+    sbom_reviewed=True,
+    license_policy_reviewed=True,
+    vulnerability_reviewed=True,
+) -> str:
+    return json.dumps(
+        {
+            "schema_version": "ai-platform.skill-release-review.v1",
+            "status": "passed",
+            "skill_id": skill_id,
+            "reviewer": "release-admin",
+            "reviewed_at": "2026-06-08T10:00:00Z",
+            "sbom_reviewed": sbom_reviewed,
+            "license_policy_reviewed": license_policy_reviewed,
+            "vulnerability_reviewed": vulnerability_reviewed,
+            "evidence_files": evidence_files,
+        },
+        ensure_ascii=False,
+    )
+
+
 def test_skill_release_readiness_records_policy_gaps_without_secret_or_absolute_paths(tmp_path):
     skills_root = tmp_path / "skills"
     _write_skill(skills_root, "qa-file-reviewer", "Review Word documents.")
@@ -289,3 +313,278 @@ def test_skill_release_readiness_cli_can_write_review_template_when_output_is_ex
     assert payload["status"] == "pending"
     assert payload["skill_id"] == "general-chat"
     assert "token=secret" not in output_path.read_text(encoding="utf-8")
+
+
+def test_skill_release_review_manifest_does_not_clear_gate_with_empty_evidence_files(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(
+        skills_root,
+        "general-chat",
+        "Default chat capability.",
+        {
+            "sbom.json": "{}",
+            "LICENSE": "reviewed license text",
+            "npm-audit.json": "{}",
+            "ai-platform-skill-release-review.json": _passed_review_manifest(
+                "general-chat",
+                {
+                    "sbom_or_signed_package": [],
+                    "license_policy": [],
+                    "vulnerability_scan": [],
+                },
+            ),
+        },
+    )
+
+    readiness = build_skill_release_readiness(skills_root=skills_root)
+
+    assert readiness["status"] == "partial_blocked"
+    skill = readiness["skills"][0]
+    assert skill["release_review"]["status"] == "invalid_or_incomplete"
+    assert skill["release_review"]["evidence_files_verified"] is False
+    assert "signed_package_or_sbom_review_not_verified" in skill["blockers"]
+    assert "dependency_license_policy_review_not_verified" in skill["blockers"]
+    assert "dependency_vulnerability_review_not_verified" in skill["blockers"]
+
+
+def test_skill_release_review_manifest_does_not_clear_gate_with_placeholder_evidence_files(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(
+        skills_root,
+        "general-chat",
+        "Default chat capability.",
+        {
+            "sbom.json": "{}",
+            "LICENSE": "reviewed license text",
+            "npm-audit.json": "{}",
+            "ai-platform-skill-release-review.json": _passed_review_manifest(
+                "general-chat",
+                {
+                    "sbom_or_signed_package": ["<sbom.json>"],
+                    "license_policy": ["${license_policy}"],
+                    "vulnerability_scan": ["artifact://skill-review/npm-audit.json=<scan>"],
+                },
+            ),
+        },
+    )
+
+    readiness = build_skill_release_readiness(skills_root=skills_root)
+
+    skill = readiness["skills"][0]
+    assert skill["release_review"]["status"] == "invalid_or_incomplete"
+    assert skill["release_review"]["evidence_files_verified"] is False
+    assert "signed_package_or_sbom_review_not_verified" in skill["blockers"]
+    assert "dependency_vulnerability_or_license_policy" in readiness["open_gaps"]
+    serialized = json.dumps(readiness, ensure_ascii=False)
+    assert "<sbom.json>" not in serialized
+    assert "${license_policy}" not in serialized
+    assert "<scan>" not in serialized
+
+
+def test_skill_release_review_manifest_does_not_clear_gate_with_unmatched_evidence_files(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(
+        skills_root,
+        "general-chat",
+        "Default chat capability.",
+        {
+            "sbom.json": "{}",
+            "LICENSE": "reviewed license text",
+            "npm-audit.json": "{}",
+            "ai-platform-skill-release-review.json": _passed_review_manifest(
+                "general-chat",
+                {
+                    "sbom_or_signed_package": ["release/sbom.json"],
+                    "license_policy": ["docs/LICENSE"],
+                    "vulnerability_scan": ["reports/npm-audit.json"],
+                },
+            ),
+        },
+    )
+
+    readiness = build_skill_release_readiness(skills_root=skills_root)
+
+    skill = readiness["skills"][0]
+    assert skill["release_review"]["status"] == "invalid_or_incomplete"
+    assert skill["release_review"]["evidence_files_verified"] is False
+    assert "dependency_license_policy_review_not_verified" in skill["blockers"]
+    assert readiness["status"] == "partial_blocked"
+
+
+def test_skill_release_review_manifest_clears_review_gate_with_matched_evidence_files(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(
+        skills_root,
+        "general-chat",
+        "Default chat capability.",
+        {
+            "evidence/sbom.json": "{}",
+            "legal/LICENSE": "reviewed license text",
+            "security/npm-audit.json": "{}",
+            "ai-platform-skill-release-review.json": _passed_review_manifest(
+                "general-chat",
+                {
+                    "sbom_or_signed_package": ["evidence/sbom.json"],
+                    "license_policy": ["legal/LICENSE"],
+                    "vulnerability_scan": ["security/npm-audit.json"],
+                },
+            ),
+        },
+    )
+
+    readiness = build_skill_release_readiness(skills_root=skills_root)
+
+    assert readiness["status"] == "ready_for_verification"
+    assert readiness["open_gaps"] == []
+    skill = readiness["skills"][0]
+    assert skill["release_review"]["status"] == "passed"
+    assert skill["release_review"]["evidence_files_verified"] is True
+    assert skill["blockers"] == []
+
+
+def test_skill_release_review_manifest_uses_later_valid_review_when_earlier_file_is_invalid(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(
+        skills_root,
+        "general-chat",
+        "Default chat capability.",
+        {
+            "evidence/sbom.json": "{}",
+            "legal/LICENSE": "reviewed license text",
+            "security/npm-audit.json": "{}",
+            "ai-platform-skill-release-review.json": _passed_review_manifest(
+                "general-chat",
+                {
+                    "sbom_or_signed_package": ["<sbom.json>"],
+                    "license_policy": [],
+                    "vulnerability_scan": [],
+                },
+            ),
+            "skill-release-review.json": _passed_review_manifest(
+                "general-chat",
+                {
+                    "sbom_or_signed_package": ["evidence/sbom.json"],
+                    "license_policy": ["legal/LICENSE"],
+                    "vulnerability_scan": ["security/npm-audit.json"],
+                },
+            ),
+        },
+    )
+
+    readiness = build_skill_release_readiness(skills_root=skills_root)
+
+    assert readiness["status"] == "ready_for_verification"
+    skill = readiness["skills"][0]
+    assert skill["release_review"]["status"] == "passed"
+    assert skill["release_review"]["evidence_files_verified"] is True
+    assert skill["blockers"] == []
+
+
+def test_skill_release_review_manifest_requires_exact_boolean_true_review_flags(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(
+        skills_root,
+        "general-chat",
+        "Default chat capability.",
+        {
+            "evidence/sbom.json": "{}",
+            "legal/LICENSE": "reviewed license text",
+            "security/npm-audit.json": "{}",
+            "ai-platform-skill-release-review.json": _passed_review_manifest(
+                "general-chat",
+                {
+                    "sbom_or_signed_package": ["evidence/sbom.json"],
+                    "license_policy": ["legal/LICENSE"],
+                    "vulnerability_scan": ["security/npm-audit.json"],
+                },
+                sbom_reviewed="false",
+                license_policy_reviewed="yes",
+                vulnerability_reviewed=1,
+            ),
+        },
+    )
+
+    readiness = build_skill_release_readiness(skills_root=skills_root)
+
+    skill = readiness["skills"][0]
+    assert readiness["status"] == "partial_blocked"
+    assert skill["release_review"]["status"] == "invalid_or_incomplete"
+    assert skill["release_review"]["evidence_files_verified"] is False
+    assert "review_flags_missing_or_invalid" in skill["release_review"]["review_flag_errors"]
+    assert "signed_package_or_sbom_review_not_verified" in skill["blockers"]
+    assert "dependency_license_policy_review_not_verified" in skill["blockers"]
+    assert "dependency_vulnerability_review_not_verified" in skill["blockers"]
+
+
+def test_skill_release_review_manifest_rejects_secret_like_actual_evidence_paths(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(
+        skills_root,
+        "general-chat",
+        "Default chat capability.",
+        {
+            "token=secret/sbom.json": "{}",
+            "private/.env/LICENSE": "reviewed license text",
+            "secret-folder/npm-audit.json": "{}",
+            "ai-platform-skill-release-review.json": _passed_review_manifest(
+                "general-chat",
+                {
+                    "sbom_or_signed_package": ["sbom.json"],
+                    "license_policy": ["LICENSE"],
+                    "vulnerability_scan": ["npm-audit.json"],
+                },
+            ),
+        },
+    )
+
+    readiness = build_skill_release_readiness(skills_root=skills_root)
+
+    skill = readiness["skills"][0]
+    assert readiness["status"] == "partial_blocked"
+    assert skill["release_review"]["status"] == "invalid_or_incomplete"
+    assert skill["release_review"]["evidence_files_verified"] is False
+    assert "sbom_or_signed_package_evidence_file_forbidden_actual_path" in skill["release_review"][
+        "evidence_file_errors"
+    ]
+    assert "dependency_license_policy_review_not_verified" in skill["blockers"]
+    serialized = json.dumps(readiness, ensure_ascii=False)
+    assert "token=secret" not in serialized
+    assert "private/.env" not in serialized
+    assert "secret-folder" not in serialized
+
+
+def test_skill_release_review_manifest_rejects_placeholder_actual_evidence_paths(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(
+        skills_root,
+        "general-chat",
+        "Default chat capability.",
+        {
+            "placeholder/sbom.json": "{}",
+            "todo/LICENSE": "reviewed license text",
+            "replace-me/npm-audit.json": "{}",
+            "ai-platform-skill-release-review.json": _passed_review_manifest(
+                "general-chat",
+                {
+                    "sbom_or_signed_package": ["sbom.json"],
+                    "license_policy": ["LICENSE"],
+                    "vulnerability_scan": ["npm-audit.json"],
+                },
+            ),
+        },
+    )
+
+    readiness = build_skill_release_readiness(skills_root=skills_root)
+
+    skill = readiness["skills"][0]
+    assert readiness["status"] == "partial_blocked"
+    assert skill["release_review"]["status"] == "invalid_or_incomplete"
+    assert skill["release_review"]["evidence_files_verified"] is False
+    assert "sbom_or_signed_package_evidence_file_placeholder_actual_path" in skill["release_review"][
+        "evidence_file_errors"
+    ]
+    assert "dependency_vulnerability_review_not_verified" in skill["blockers"]
+    serialized = json.dumps(readiness, ensure_ascii=False)
+    assert "placeholder/sbom.json" not in serialized
+    assert "todo/LICENSE" not in serialized
+    assert "replace-me/npm-audit.json" not in serialized
