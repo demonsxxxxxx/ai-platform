@@ -596,6 +596,119 @@ def _route_inventory(root: Path, files: list[Path], *, route_scope: str) -> dict
     }
 
 
+def _governance_gate_sort_key(gate: object) -> tuple[int, str]:
+    text = str(gate or "")
+    match = re.fullmatch(r"G(\d+)", text)
+    return (int(match.group(1)) if match else 999, text)
+
+
+def _route_policy_summary(route: dict[str, object]) -> dict[str, object]:
+    references = route.get("references")
+    return {
+        "route_prefix": route.get("route_prefix"),
+        "domain": route.get("domain"),
+        "governance_gate": route.get("governance_gate"),
+        "route_scope": route.get("route_scope"),
+        "ordinary_user_exposure": route.get("ordinary_user_exposure"),
+        "admin_exposure": route.get("admin_exposure"),
+        "required_action": route.get("required_action"),
+        "reference_count": len(references) if isinstance(references, list) else 0,
+        "sample_references": references[:8] if isinstance(references, list) else [],
+    }
+
+
+def _route_gap_detail(gap: str, routes: list[dict[str, object]]) -> dict[str, object]:
+    governance_gates = sorted(
+        {str(route.get("governance_gate")) for route in routes if route.get("governance_gate")},
+        key=_governance_gate_sort_key,
+    )
+    return {
+        "gap": gap,
+        "status": "mapped_pending_enforcement",
+        "governance_gates": governance_gates,
+        "count": len(routes),
+        "routes": [_route_policy_summary(route) for route in routes],
+    }
+
+
+def _quarantined_gap_detail(gap: str, violations: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "gap": gap,
+        "status": "quarantined_pending_projection_remap",
+        "governance_gates": ["G6", "G9"],
+        "count": len(violations),
+        "required_action": "remap_to_ai_platform_public_or_admin_projection_or_remove_before_g9_rollout",
+        "sample_violations": [
+            {
+                "path": item.get("path"),
+                "line": item.get("line"),
+                "reason": item.get("reason"),
+                "required_action": "remap_or_remove_before_g9_rollout",
+            }
+            for item in violations[:20]
+        ],
+    }
+
+
+def _ci_gap_detail(gap: str, ci: dict[str, object]) -> dict[str, object]:
+    return {
+        "gap": gap,
+        "status": "missing_ci_projection_audit_gate",
+        "governance_gates": ["G6", "G9"],
+        "count": 1,
+        "required_action": "make_ci_verify_start_with_frontend_projection_audit",
+        "ci_verify_configured": bool(ci.get("script")),
+        "projection_audit_configured": bool(ci.get("projection_audit_script")),
+        "ci_verify_includes_projection_audit": bool(
+            ci.get("ci_verify_includes_projection_audit")
+        ),
+    }
+
+
+def _open_gap_details(
+    *,
+    legacy_route_policies: list[dict[str, object]],
+    active_legacy_route_policies: list[dict[str, object]],
+    quarantined_violations: list[dict[str, object]],
+    ci: dict[str, object],
+) -> list[dict[str, object]]:
+    details: list[dict[str, object]] = []
+    if any(route["mapping_status"] == "missing_policy_mapping" for route in legacy_route_policies):
+        missing_policy_routes = [
+            route for route in legacy_route_policies if route["mapping_status"] == "missing_policy_mapping"
+        ]
+        details.append(
+            _route_gap_detail(
+                "legacy_routes_need_route_by_route_ai_platform_policy_mapping",
+                missing_policy_routes,
+            )
+        )
+    elif legacy_route_policies:
+        details.append(
+            _route_gap_detail(
+                "legacy_routes_need_policy_enforcement_or_ai_platform_remap",
+                legacy_route_policies,
+            )
+        )
+    if active_legacy_route_policies:
+        details.append(
+            _route_gap_detail(
+                "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap",
+                active_legacy_route_policies,
+            )
+        )
+    if quarantined_violations:
+        details.append(
+            _quarantined_gap_detail(
+                "quarantined_legacy_sources_need_ai_platform_projection_remap",
+                quarantined_violations,
+            )
+        )
+    if not ci["ci_verify_includes_projection_audit"]:
+        details.append(_ci_gap_detail("frontend_ci_verify_does_not_yet_run_projection_audit", ci))
+    return details
+
+
 def _ci_integration(root: Path) -> dict[str, object]:
     package_json_path = root / FRONTEND_PATH / "package.json"
     if not package_json_path.exists():
@@ -661,18 +774,14 @@ def build_frontend_projection_audit(repo_root: Path | None = None) -> dict[str, 
     active_legacy_route_policies = active_route_inventory["legacy_route_policies"]
 
     violations = private_terms["violations"]
-    open_gaps: list[str] = []
-    if any(route["mapping_status"] == "missing_policy_mapping" for route in legacy_route_policies):
-        open_gaps.append("legacy_routes_need_route_by_route_ai_platform_policy_mapping")
-    elif legacy_routes:
-        open_gaps.append("legacy_routes_need_policy_enforcement_or_ai_platform_remap")
-    if active_legacy_route_policies:
-        open_gaps.append("active_legacy_routes_need_policy_enforcement_or_ai_platform_remap")
-    if quarantined_violations:
-        open_gaps.append("quarantined_legacy_sources_need_ai_platform_projection_remap")
     ci = _ci_integration(root)
-    if not ci["ci_verify_includes_projection_audit"]:
-        open_gaps.append("frontend_ci_verify_does_not_yet_run_projection_audit")
+    open_gap_details = _open_gap_details(
+        legacy_route_policies=legacy_route_policies,
+        active_legacy_route_policies=active_legacy_route_policies,
+        quarantined_violations=quarantined_violations,
+        ci=ci,
+    )
+    open_gaps = [str(item["gap"]) for item in open_gap_details]
 
     ci_blocks_release = not ci["ci_verify_includes_projection_audit"]
     active_violations = active_private_terms["violations"]
@@ -707,6 +816,7 @@ def build_frontend_projection_audit(repo_root: Path | None = None) -> dict[str, 
         "route_inventory": route_inventory,
         "ci_integration": ci,
         "open_gaps": open_gaps,
+        "open_gap_details": open_gap_details,
         "policy": {
             "ordinary_user": "fail_closed_until_legacy_routes_have_ai_platform_projection_mapping_and_acceptance",
             "admin": "same_tenant_operational_projection_only",
@@ -756,6 +866,28 @@ def render_frontend_projection_audit_markdown(audit: dict[str, Any]) -> str:
         f"- `{item['path']}:{item['line']}` `{item['term']}`"
         for item in quarantined_violations[:20]
     ) or "- none"
+    detail_lines: list[str] = []
+    for detail in audit.get("open_gap_details", []):
+        gap = detail.get("gap")
+        count = detail.get("count", 0)
+        gates = ", ".join(str(gate) for gate in detail.get("governance_gates", [])) or "none"
+        detail_lines.append(f"- `{gap}` count `{count}` gates `{gates}`")
+        routes = detail.get("routes")
+        if isinstance(routes, list):
+            for route in routes[:8]:
+                detail_lines.append(
+                    "  - "
+                    f"`{route.get('route_prefix')}` scope `{route.get('route_scope')}` "
+                    f"action `{route.get('required_action')}`"
+                )
+        violations = detail.get("sample_violations")
+        if isinstance(violations, list):
+            for item in violations[:8]:
+                detail_lines.append(
+                    "  - "
+                    f"`{item.get('path')}:{item.get('line')}` action `{item.get('required_action')}`"
+                )
+    gap_detail_lines = "\n".join(detail_lines) or "- none"
     return (
         "# ai-platform Frontend Projection Audit\n\n"
         f"Schema: `{audit['schema_version']}`\n\n"
@@ -778,7 +910,9 @@ def render_frontend_projection_audit_markdown(audit: dict[str, Any]) -> str:
         "## Quarantined Legacy Sources\n\n"
         f"{quarantined_lines}\n\n"
         "## Open Gaps\n\n"
-        f"{gaps}\n"
+        f"{gaps}\n\n"
+        "## Open Gap Details\n\n"
+        f"{gap_detail_lines}\n"
     )
 
 

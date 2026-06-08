@@ -238,6 +238,16 @@ ordinary-user G9 acceptance. Do
 not use this baseline to expand sandbox privilege, raw Skill selection, or
 multi-agent ordinary-user exposure.
 
+The 2026-06-08 frontend projection audit follow-up makes the remaining frontend
+G6/G9 blockers machine-actionable through
+`tools/frontend_projection_audit.py --format json` and
+`tools/governance_readiness.py --format json`. The audit now emits
+`open_gap_details` for the legacy production route remap/enforcement gap, the
+15 active-browser legacy route policies that must be hidden or policy-gated
+before ordinary-user acceptance, and 40 quarantined legacy source violations
+that must be remapped or removed before rollout. This is visibility and
+operator triage evidence only; it does not close G6 or G9.
+
 ### P1 Admin Runtime Admission / Backpressure
 
 Status: merged on `main` at `d8c733e7eeaa6e11786fe13771b84b8f32a95292` and

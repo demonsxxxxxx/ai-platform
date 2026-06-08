@@ -9,6 +9,11 @@ SCHEMA_VERSION = "ai-platform.governance-readiness.v1"
 GATE_NAME = "G6 Tool / Skill / Memory Governance"
 
 _SANDBOX_PROVIDER_VALUES = {"docker", "fake"}
+_RAW_FRONTEND_GAP_DETAIL_KEYS = {
+    "sample_violations",
+    "ci_verify_script",
+    "projection_audit_script",
+}
 
 
 def _bool_setting(settings: object, name: str) -> bool:
@@ -49,11 +54,76 @@ def _domain(
     return domain
 
 
-def build_governance_readiness(settings: object | None = None) -> dict[str, Any]:
+def _sanitize_frontend_gap_detail(detail: dict[str, Any]) -> dict[str, Any]:
+    sanitized = {
+        key: value
+        for key, value in detail.items()
+        if key not in _RAW_FRONTEND_GAP_DETAIL_KEYS
+    }
+    if "ci_verify_script" in detail:
+        sanitized["ci_verify_configured"] = bool(detail.get("ci_verify_script"))
+    if "projection_audit_script" in detail:
+        sanitized["projection_audit_configured"] = bool(
+            detail.get("projection_audit_script")
+        )
+    violations = detail.get("sample_violations")
+    if isinstance(violations, list):
+        sanitized["sample_violations"] = [
+            {
+                "path": item.get("path"),
+                "line": item.get("line"),
+                "reason": item.get("reason"),
+                "required_action": item.get("required_action"),
+            }
+            for item in violations[:20]
+        ]
+    return sanitized
+
+
+def _frontend_projection_audit_evidence() -> dict[str, Any]:
+    from tools.frontend_projection_audit import build_frontend_projection_audit
+
+    audit = build_frontend_projection_audit()
+    active_terms = audit["active_browser_entry"]["forbidden_projection_terms"]
+    route_inventory = audit["route_inventory"]
+    active_route_inventory = audit["active_browser_entry"]["route_inventory"]
+    sanitized_gap_details = [
+        _sanitize_frontend_gap_detail(detail)
+        for detail in audit.get("open_gap_details", [])
+    ]
+    return {
+        "schema_version": audit["schema_version"],
+        "status": audit["status"],
+        "summary": {
+            "production_source_files": audit["scanned"]["production_source_files"],
+            "active_source_files": len(audit["active_browser_entry"]["files"]),
+            "active_forbidden_projection_violations": len(active_terms["violations"]),
+            "legacy_route_policies": len(route_inventory["legacy_route_policies"]),
+            "active_legacy_route_policies": len(active_route_inventory["legacy_route_policies"]),
+            "quarantined_legacy_source_violations": len(
+                audit["quarantined_legacy_sources"]["violations"]
+            ),
+        },
+        "open_gaps": audit["open_gaps"],
+        "open_gap_details": sanitized_gap_details,
+        "policy": audit["policy"],
+    }
+
+
+def build_governance_readiness(
+    settings: object | None = None,
+    *,
+    include_frontend_projection_audit: bool = False,
+) -> dict[str, Any]:
     """Build a secret-safe G6 governance readiness baseline for Admin Runtime and CLI use."""
     resolved_settings = settings or get_settings()
     skill_release_readiness = build_skill_release_readiness()
     tool_policy_readiness = build_tool_policy_readiness()
+    frontend_projection_evidence = (
+        {"projection_audit": _frontend_projection_audit_evidence()}
+        if include_frontend_projection_audit
+        else None
+    )
     domains = {
         "tool_permission": _domain(
             implemented=[
@@ -165,6 +235,7 @@ def build_governance_readiness(settings: object | None = None) -> dict[str, Any]
                 "verify the packaged frontend image on a Docker-capable host before release acceptance",
                 "consume only ai-platform public or same-tenant admin projections",
             ],
+            evidence=frontend_projection_evidence,
         ),
     }
     warnings = [gap for domain in domains.values() for gap in domain["gaps"]]
@@ -205,6 +276,21 @@ def render_governance_readiness_markdown(readiness: dict[str, Any]) -> str:
         implemented = "\n".join(f"- {item}" for item in domain["implemented"])
         gaps = "\n".join(f"- {item}" for item in domain["gaps"])
         checks = "\n".join(f"- {item}" for item in domain["next_checks"])
+        evidence_lines = ""
+        evidence = domain.get("evidence")
+        projection_audit = evidence.get("projection_audit") if isinstance(evidence, dict) else None
+        if isinstance(projection_audit, dict):
+            detail_lines = []
+            for detail in projection_audit.get("open_gap_details", []):
+                detail_lines.append(
+                    f"- `{detail.get('gap')}` count `{detail.get('count')}`"
+                )
+            evidence_lines = (
+                "\nEvidence:\n\n"
+                f"- projection audit status `{projection_audit.get('status')}`\n"
+                + "\n".join(detail_lines)
+                + "\n"
+            )
         sections.append(
             f"### {name}\n\n"
             f"Status: `{domain['status']}`\n\n"
@@ -214,6 +300,7 @@ def render_governance_readiness_markdown(readiness: dict[str, Any]) -> str:
             f"{gaps}\n\n"
             "Next checks:\n\n"
             f"{checks}\n"
+            f"{evidence_lines}"
         )
     domain_sections = "\n\n".join(sections)
     return (

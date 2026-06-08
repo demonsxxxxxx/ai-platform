@@ -986,6 +986,7 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
     assert body["governance"]["schema_version"] == "ai-platform.governance-readiness.v1"
     assert body["governance"]["status"] == "partial_blocked"
     assert "tool_permission" in body["governance"]["domains"]
+    assert "evidence" not in body["governance"]["domains"]["frontend_projection"]
     assert body["observability_readiness"]["schema_version"] == "ai-platform.observability-readiness.v1"
     assert body["observability_readiness"]["status"] == "partial_blocked"
     assert "runtime_metrics" in body["observability_readiness"]["domains"]

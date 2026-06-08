@@ -81,6 +81,27 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
     assert "legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
     assert "quarantined_legacy_sources_need_ai_platform_projection_remap" in audit["open_gaps"]
+    gap_details = {item["gap"]: item for item in audit["open_gap_details"]}
+    legacy_detail = gap_details["legacy_routes_need_policy_enforcement_or_ai_platform_remap"]
+    assert legacy_detail["count"] == len(audit["route_inventory"]["legacy_route_policies"])
+    assert {"G1", "G6", "G9"}.issubset(set(legacy_detail["governance_gates"]))
+    assert any(
+        route["route_prefix"] == "/api/mcp"
+        and route["required_action"] == "remap_to_ai_platform_admin_projection_or_hide"
+        for route in legacy_detail["routes"]
+    )
+    active_detail = gap_details["active_legacy_routes_need_policy_enforcement_or_ai_platform_remap"]
+    assert active_detail["count"] == len(active_route_inventory["legacy_route_policies"])
+    assert any(route["route_scope"] == "active_browser_entry" for route in active_detail["routes"])
+    quarantined_detail = gap_details["quarantined_legacy_sources_need_ai_platform_projection_remap"]
+    assert quarantined_detail["count"] == len(audit["quarantined_legacy_sources"]["violations"])
+    assert quarantined_detail["sample_violations"]
+    assert all("required_action" in item for item in quarantined_detail["sample_violations"])
+    assert all("term" not in item for item in quarantined_detail["sample_violations"])
+    serialized_gap_details = json.dumps(audit["open_gap_details"], ensure_ascii=False).lower()
+    assert "storage_key" not in serialized_gap_details
+    assert "executor_private_payload" not in serialized_gap_details
+    assert "sandbox_workdir" not in serialized_gap_details
 
     serialized = json.dumps(audit, ensure_ascii=False).lower()
     assert "c:\\users" not in serialized
@@ -516,7 +537,7 @@ def test_frontend_projection_audit_requires_ci_verify_to_start_with_projection_a
             {
                 "scripts": {
                     "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
-                    "ci:verify": "eslint . && pnpm run projection:audit && tsc -b && vite build",
+                    "ci:verify": "TOKEN=secret eslint . && echo storage_key && pnpm run projection:audit && tsc -b && vite build",
                 }
             }
         ),
@@ -528,6 +549,15 @@ def test_frontend_projection_audit_requires_ci_verify_to_start_with_projection_a
     assert audit["ci_integration"]["ci_verify_includes_projection_audit"] is False
     assert audit["status"] == "blocked"
     assert "frontend_ci_verify_does_not_yet_run_projection_audit" in audit["open_gaps"]
+    ci_gap = {
+        item["gap"]: item
+        for item in audit["open_gap_details"]
+    }["frontend_ci_verify_does_not_yet_run_projection_audit"]
+    serialized_ci_gap = json.dumps(ci_gap, ensure_ascii=False).lower()
+    assert "token=secret" not in serialized_ci_gap
+    assert "storage_key" not in serialized_ci_gap
+    assert "ci_verify_configured" in ci_gap
+    assert "projection_audit_configured" in ci_gap
 
 
 def test_frontend_projection_audit_accepts_direct_node_launcher_ci_step(tmp_path):
@@ -602,5 +632,7 @@ def test_render_frontend_projection_audit_markdown_is_operator_readable():
     assert "Legacy Route Policies" in markdown
     assert "Active Browser Entry" in markdown
     assert "Active Legacy Route Policies" in markdown
+    assert "Open Gap Details" in markdown
+    assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in markdown
     assert "legacy_routes_need_policy_enforcement_or_ai_platform_remap" in markdown
     assert "c:\\users" not in markdown.lower()

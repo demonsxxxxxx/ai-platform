@@ -20,7 +20,10 @@ class SecretBearingSettings:
 
 
 def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets():
-    readiness = build_governance_readiness(SecretBearingSettings())
+    readiness = build_governance_readiness(
+        SecretBearingSettings(),
+        include_frontend_projection_audit=True,
+    )
 
     assert readiness["schema_version"] == "ai-platform.governance-readiness.v1"
     assert readiness["gate"] == "G6 Tool / Skill / Memory Governance"
@@ -95,6 +98,20 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "add and verify the packaged frontend image definition before release acceptance" not in domains["frontend_projection"]["next_checks"]
     assert "verify the packaged frontend image on a Docker-capable host before release acceptance" in domains["frontend_projection"]["next_checks"]
     assert "enforce frontend checks in CI before closing source ownership" not in domains["frontend_projection"]["next_checks"]
+    projection_evidence = domains["frontend_projection"]["evidence"]["projection_audit"]
+    assert projection_evidence["schema_version"] == "ai-platform.frontend-projection-audit.v1"
+    assert projection_evidence["status"] == "pass_with_policy_gaps"
+    assert projection_evidence["summary"]["active_forbidden_projection_violations"] == 0
+    assert projection_evidence["summary"]["active_legacy_route_policies"] >= 1
+    assert projection_evidence["summary"]["quarantined_legacy_source_violations"] >= 1
+    gap_details = {item["gap"]: item for item in projection_evidence["open_gap_details"]}
+    assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in gap_details
+    assert any(
+        route["route_prefix"] == "/api/mcp"
+        for route in gap_details["active_legacy_routes_need_policy_enforcement_or_ai_platform_remap"]["routes"]
+    )
+    assert "quarantined_legacy_sources_need_ai_platform_projection_remap" in gap_details
+    assert gap_details["quarantined_legacy_sources_need_ai_platform_projection_remap"]["sample_violations"]
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
     assert "callback-secret" not in serialized
@@ -107,13 +124,80 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert ".claude/skills" not in serialized
 
 
+def test_governance_readiness_sanitizes_frontend_ci_gap_detail(monkeypatch):
+    import tools.frontend_projection_audit as projection_audit
+
+    def fake_projection_audit():
+        return {
+            "schema_version": "ai-platform.frontend-projection-audit.v1",
+            "status": "blocked",
+            "scanned": {"production_source_files": 1},
+            "active_browser_entry": {
+                "files": [],
+                "forbidden_projection_terms": {"violations": []},
+                "route_inventory": {"legacy_route_policies": []},
+            },
+            "route_inventory": {"legacy_route_policies": []},
+            "quarantined_legacy_sources": {"violations": []},
+            "open_gaps": ["frontend_ci_verify_does_not_yet_run_projection_audit"],
+            "open_gap_details": [
+                {
+                    "gap": "frontend_ci_verify_does_not_yet_run_projection_audit",
+                    "status": "missing_ci_projection_audit_gate",
+                    "governance_gates": ["G6", "G9"],
+                    "count": 1,
+                    "required_action": "make_ci_verify_start_with_frontend_projection_audit",
+                    "ci_verify_script": "TOKEN=secret eslint . && echo storage_key",
+                    "projection_audit_script": "client_secret=leak python audit.py",
+                }
+            ],
+            "policy": {},
+        }
+
+    monkeypatch.setattr(
+        projection_audit,
+        "build_frontend_projection_audit",
+        fake_projection_audit,
+    )
+
+    readiness = build_governance_readiness(
+        SecretBearingSettings(),
+        include_frontend_projection_audit=True,
+    )
+
+    detail = readiness["domains"]["frontend_projection"]["evidence"]["projection_audit"][
+        "open_gap_details"
+    ][0]
+    assert detail["ci_verify_configured"] is True
+    assert detail["projection_audit_configured"] is True
+    assert "ci_verify_script" not in detail
+    assert "projection_audit_script" not in detail
+    serialized = json.dumps(readiness, ensure_ascii=False).lower()
+    assert "token=secret" not in serialized
+    assert "client_secret=leak" not in serialized
+    assert "storage_key" not in serialized
+
+
+def test_governance_readiness_default_keeps_frontend_projection_audit_off():
+    readiness = build_governance_readiness(SecretBearingSettings())
+
+    frontend_projection = readiness["domains"]["frontend_projection"]
+    assert "evidence" not in frontend_projection
+
+
 def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first():
-    markdown = render_governance_readiness_markdown(build_governance_readiness(SecretBearingSettings()))
+    markdown = render_governance_readiness_markdown(
+        build_governance_readiness(
+            SecretBearingSettings(),
+            include_frontend_projection_audit=True,
+        )
+    )
 
     assert "# ai-platform G6 Governance Readiness" in markdown
     assert "Status: `partial_blocked`" in markdown
     assert "## Open Gaps" in markdown
     assert "legacy_frontend_route_policy_enforcement_or_ai_platform_remap" in markdown
+    assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in markdown
     assert "signed_skill_package_or_sbom_release_gate" in markdown
     assert "memory_delete_retention_erasure_evidence_snapshot" in markdown
     assert "memory_export_erasure_evidence_snapshot" in markdown

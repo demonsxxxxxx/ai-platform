@@ -20,7 +20,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    readiness = build_governance_readiness()
+    readiness = build_governance_readiness(include_frontend_projection_audit=True)
     if args.format == "json":
         print(json.dumps(readiness, ensure_ascii=False, indent=2, sort_keys=True))
         return

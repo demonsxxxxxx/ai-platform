@@ -28,6 +28,15 @@ The script intentionally does not print callback tokens, sandbox workspace
 roots, raw queue keys, object-storage internal identifiers, executor-private
 data, raw runtime paths, real `.env` values, or Skill staging paths.
 
+As of 2026-06-08, `tools/governance_readiness.py` also embeds a bounded
+frontend projection-audit evidence summary for operator use. The summary keeps
+the Admin Runtime hot path lightweight, but the CLI output includes
+`domains.frontend_projection.evidence.projection_audit.open_gap_details` with
+route counts, route scopes, required remap/hide actions, and quarantined-source
+samples. This makes the G6/G9 frontend blockers actionable without exposing raw
+storage keys, executor-private payload names, sandbox workdirs, secret-like
+values, or local machine paths in the governance readiness JSON.
+
 ## Admin Runtime Signal Path
 
 Admins consume the live operational projection at:
@@ -57,6 +66,13 @@ or secret-like runtime configuration.
 | Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock, secret-safe skill release readiness snapshot, pending review-manifest template entrypoint | Signed package or SBOM release gate, Admin release dashboard acceptance, dependency vulnerability/license policy |
 | Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py` | Bounded office context-pack product contract |
 | Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest with build-provenance same-commit gate, packaged frontend image definition traceability, non-push CI packaged-image build/provenance contract, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Profile env-var surface removed from the active browser entry graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Quarantined inactive legacy model/channel/envvar sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image smoke and release acceptance on 211 or another Docker-capable host |
+
+The frontend projection evidence now records three current structured blockers:
+all legacy production routes still need policy enforcement or ai-platform
+projection remap, the active browser entry graph still references 15 legacy
+route policies that must be hidden or policy-gated before ordinary-user G9
+acceptance, and 40 quarantined legacy source violations remain outside the
+active entry graph but must be remapped or removed before rollout.
 
 ## Source Readiness Evidence
 

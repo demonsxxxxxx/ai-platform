@@ -135,6 +135,12 @@ Static audit on 2026-06-07:
   `projection:audit` is wired as the first step of `ci:verify` through a
   cross-platform Python launcher and fails closed when the active browser entry
   graph consumes forbidden private or secret-like projection terms.
+- The audit now emits `open_gap_details` for each remaining G6/G9 frontend
+  blocker. These details include the affected route scope, route count, sampled
+  route references, required remap/hide action, and quarantined-source samples
+  so operators can see exactly what still blocks ordinary-user rollout without
+  reading executor-private payloads, raw storage keys, sandbox workdirs, or
+  secret-like values.
 - The audit now separates the active browser entry graph from quarantined
   legacy source files. `/channels` and `/models` render a fail-closed
   quarantine panel until those surfaces are remapped to ai-platform public or
@@ -267,6 +273,11 @@ Current local and CI-contract evidence on 2026-06-08:
   without printing local absolute paths or secret-like runtime configuration.
   The current status is `pass_with_policy_gaps`; this allows local
   `ci:verify` to exercise lint/build while preserving G6/G9 rollout blockers.
+- `python tools/governance_readiness.py --format json` now includes a bounded
+  `domains.frontend_projection.evidence.projection_audit` summary with the
+  same structured open-gap details. This CLI evidence is intentionally richer
+  than the lightweight Admin Runtime hot path and does not close the G6/G9
+  gates by itself.
 - `.github/workflows/ai-platform-frontend.yml` runs on frontend source,
   `docs/frontend/**`, `tests/test_frontend_*.py`, frontend audit/traceability
   tools, `deploy/ai-platform/docker-compose.frontend.yml`, and workflow
