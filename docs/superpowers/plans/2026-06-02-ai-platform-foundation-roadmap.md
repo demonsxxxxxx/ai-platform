@@ -116,6 +116,15 @@ not an automatic production default increase or safe concurrency-number claim.
 --runtime-profile <profile> --format json` now wraps the read-only Admin
 Runtime capture, sanitized evidence snapshot, and gate verdict into one
 operator command without printing the raw overview or secret values.
+`python tools/capacity_bounded_load_harness.py --base-url <api-url> --gate
+api_read_write_burst --requests <n> --concurrency <n> --format json` now adds a
+repository-owned bounded harness entrypoint with schema
+`ai-platform.capacity-bounded-load-harness.v1`. It defaults to dry-run and only
+sends the read-only `/api/ai/health` plus `/api/ai/admin/runtime/overview`
+probe when `--execute` is paired with
+`--operator-acknowledgement send-bounded-load-without-default-raise`. Its output
+is `probe_only_not_recorded`, `does_not_raise_defaults = true`, and
+`does_not_mark_gate_recorded = true`; it is not accepted by `tools/capacity_gate_readiness.py` as recorded gate evidence.
 
 The 2026-06-08 211 gate-readiness pass captured the admin-only runtime overview
 from the deployed `f7c6b0d9114748fa249acb88da6584851c48aa96` image and ran the

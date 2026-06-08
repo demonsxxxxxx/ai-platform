@@ -165,10 +165,19 @@ _LOAD_TEST_OPERATOR_WORKFLOW = [
         "id": "execute_bounded_load_scenario",
         "purpose": "Run only an approved bounded load harness for one selected gate and profile.",
         "command_template": (
-            "use the selected scenario command manifest and an operator-approved load harness;"
+            "for api_read_write_burst, run python tools/capacity_bounded_load_harness.py"
+            " --base-url {base_url}"
+            " --gate api_read_write_burst"
+            " --requests <operator-approved-request-count>"
+            " --concurrency <operator-approved-concurrency>"
+            " --execute"
+            " --operator-acknowledgement send-bounded-load-without-default-raise"
+            " --format json > capacity-bounded-load-harness-api-read-write-burst.json;"
+            " output status probe_only_not_recorded is not recorded gate evidence;"
+            " other gates require an approved harness extension;"
             " tools/capacity_load_plan.py remains dry-run-only"
         ),
-        "expected_evidence": "scenario result with latency, errors, queue depth, DB waiting, cleanup, and stop-condition status",
+        "expected_evidence": "probe result plus separately recorded scenario evidence with latency, errors, queue depth, DB waiting, cleanup, and stop-condition status",
         "requires_explicit_operator_execution": True,
         "does_not_raise_defaults": True,
     },

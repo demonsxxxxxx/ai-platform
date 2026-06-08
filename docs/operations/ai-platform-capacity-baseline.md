@@ -23,6 +23,7 @@ python tools/capacity_gate_readiness.py --snapshot-json <capacity-evidence-snaps
 python tools/capacity_profile_readiness.py --snapshot-json <capacity-evidence-snapshot.json> --format markdown
 python tools/capacity_profile_readiness.py --snapshot-json <capacity-evidence-snapshot.json> --format json
 python tools/capacity_runtime_evidence.py --base-url http://127.0.0.1:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha <deployed-commit> --runtime-profile <profile> --format json
+python tools/capacity_bounded_load_harness.py --base-url http://127.0.0.1:8020 --gate api_read_write_burst --requests 10 --concurrency 2 --format json
 ```
 
 The scripts intentionally do not print DSNs, Redis URLs, model gateway URLs,
@@ -206,6 +207,23 @@ Every workflow step carries `does_not_raise_defaults = true`. The only step
 that requires real load is marked `requires_explicit_operator_execution = true`.
 This gives operators a repeatable evidence chain for #21 without implying that
 any current profile has been load-tested.
+
+`tools/capacity_bounded_load_harness.py` is the first repository-owned
+operator harness entrypoint for that real-load step. It emits schema
+`ai-platform.capacity-bounded-load-harness.v1`, defaults to dry-run, and only
+sends requests when `--execute` is paired with
+`--operator-acknowledgement send-bounded-load-without-default-raise`. The
+initial supported gate is `api_read_write_burst`, implemented as a bounded
+read-only probe against `GET /api/ai/health` and
+`GET /api/ai/admin/runtime/overview`.
+
+The harness output is intentionally marked `probe_only_not_recorded`,
+`does_not_raise_defaults = true`, and `does_not_mark_gate_recorded = true`. It
+is not accepted by `tools/capacity_gate_readiness.py` as recorded gate evidence.
+Operators must still convert approved measured results, cleanup proof, and
+stop-condition status into the `load_test_evidence.gate_evidence.<gate>` shape
+below before #21 can advance to operator review.
+
 The final evidence snapshot should use this shape before operator review:
 
 ```json

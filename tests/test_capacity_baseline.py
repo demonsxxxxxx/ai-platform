@@ -279,6 +279,8 @@ def test_capacity_load_test_plan_covers_each_gate_with_dry_run_commands_and_no_d
     assert "blocked_incomplete_load_test_evidence" in plan["operator_workflow"][1]["command"]
     assert plan["operator_workflow"][2]["requires_explicit_operator_execution"] is True
     assert plan["operator_workflow"][2]["does_not_raise_defaults"] is True
+    assert "capacity_bounded_load_harness.py" in plan["operator_workflow"][2]["command"]
+    assert "probe_only_not_recorded" in plan["operator_workflow"][2]["command"]
     assert "capacity_gate_readiness.py" in plan["operator_workflow"][-1]["command"]
 
     serialized = json.dumps(plan, ensure_ascii=False).lower()
@@ -341,6 +343,8 @@ def test_render_capacity_load_test_plan_markdown_is_repeatable_and_safe():
     assert "capture_start_runtime_evidence" in markdown
     assert "capture_end_runtime_evidence" in markdown
     assert "record_cleanup_proof" in markdown
+    assert "capacity_bounded_load_harness.py" in markdown
+    assert "probe_only_not_recorded" in markdown
     assert "capacity_gate_readiness.py" in markdown
     assert "python tools/capacity_load_plan.py --dry-run --scenario api_read_write_burst" in markdown
     assert "Recorded gate evidence path: `load_test_evidence.gate_evidence.api_read_write_burst`" in markdown

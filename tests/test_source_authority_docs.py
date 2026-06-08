@@ -181,6 +181,10 @@ def test_capacity_docs_record_machine_readable_gate_evidence_contract():
         assert "operator_review_required_before_default_change" in text
         assert "load_test_evidence.gate_evidence.<gate>" in text
         assert "does not raise production concurrency defaults" in text
+        assert "tools/capacity_bounded_load_harness.py" in text
+        assert "ai-platform.capacity-bounded-load-harness.v1" in text
+        assert "probe_only_not_recorded" in text
+        assert "not accepted by `tools/capacity_gate_readiness.py` as recorded gate evidence" in text
         assert "C:\\Users" not in text
 
 
