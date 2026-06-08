@@ -21,6 +21,21 @@ WORKFLOW_COMMANDS = [
     "corepack pnpm install --frozen-lockfile",
     "corepack pnpm run ci:verify",
     "python tools/frontend_release_traceability.py --format json",
+    "docker build",
+    "--build-arg AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}",
+    "--build-arg AI_PLATFORM_BUILD_DIRTY=false",
+    "-f frontend/web/Dockerfile",
+    "docker run --rm --entrypoint cat",
+    "ai-platform-build-provenance.json",
+]
+WORKFLOW_PATH_FILTERS = [
+    "frontend/web/**",
+    "docs/frontend/**",
+    "deploy/ai-platform/docker-compose.frontend.yml",
+    "tests/test_frontend_*.py",
+    "tools/frontend_projection_audit.py",
+    "tools/frontend_release_traceability.py",
+    ".github/workflows/ai-platform-frontend.yml",
 ]
 PACKAGED_DELIVERY_PATHS = [
     FRONTEND_DOCKERFILE_PATH,
@@ -246,10 +261,16 @@ def _dist_manifest(
 
 def _workflow_manifest(workflow_path: Path) -> dict[str, object]:
     missing_commands: list[str] = []
+    missing_path_filters: list[str] = []
     if workflow_path.exists():
         workflow_content = workflow_path.read_text(encoding="utf-8")
         missing_commands = [command for command in WORKFLOW_COMMANDS if command not in workflow_content]
-    blockers = ["frontend_workflow_enforced_commands_missing"] if missing_commands else []
+        missing_path_filters = [path_filter for path_filter in WORKFLOW_PATH_FILTERS if path_filter not in workflow_content]
+    blockers = []
+    if missing_commands:
+        blockers.append("frontend_workflow_enforced_commands_missing")
+    if missing_path_filters:
+        blockers.append("frontend_workflow_path_filters_missing")
     status = "missing"
     if workflow_path.exists():
         status = "present_with_policy_gaps" if blockers else "present"
@@ -259,6 +280,8 @@ def _workflow_manifest(workflow_path: Path) -> dict[str, object]:
         "sha256": _sha256(workflow_path) if workflow_path.exists() else None,
         "enforced_commands": WORKFLOW_COMMANDS,
         "missing_commands": missing_commands,
+        "required_path_filters": WORKFLOW_PATH_FILTERS,
+        "missing_path_filters": missing_path_filters,
         "blockers": blockers,
     }
     return manifest

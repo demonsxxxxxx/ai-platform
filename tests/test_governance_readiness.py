@@ -84,6 +84,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "admin_runtime_211_frontend_acceptance" in domains["frontend_projection"]["implemented"]
     assert "frontend_packaged_image_blocker_traceability" in domains["frontend_projection"]["implemented"]
     assert "frontend_packaged_image_definition_traceability" in domains["frontend_projection"]["implemented"]
+    assert "frontend_packaged_image_ci_build_provenance_contract" in domains["frontend_projection"]["implemented"]
     assert "ordinary_user_g9_acceptance_for_legacy_admin_mcp_model_envvar_routes" in domains["frontend_projection"]["gaps"]
     assert "active_envvar_profile_surface_needs_policy_or_projection_remap" not in domains["frontend_projection"]["gaps"]
     assert "quarantined_legacy_frontend_sources_need_projection_remap" in domains["frontend_projection"]["gaps"]

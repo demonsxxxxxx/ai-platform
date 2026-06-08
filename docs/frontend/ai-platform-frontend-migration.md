@@ -13,7 +13,7 @@ auth/session, DB schema, or compose delivery behavior.
 | --- | --- |
 | #15 roadmap governance | Open. The roadmap has a gate-based sync, but release evidence and execution history are still mixed in older sections. |
 | #16 tenant-aware concurrency | Open. #20 closed the current G5 scheduling/admission gaps, but #21 still blocks capacity claims and production default increases. |
-| #17 frontend source ownership | In progress. Source now lives under `frontend/web`, has local install/lint/build evidence, exposes release traceability plus a frontend projection audit, and now has a GitHub Actions frontend workflow with passing remote run evidence. `ci:verify` starts with the projection audit launcher; the active browser entry graph is currently clear of forbidden private/secret-like projection terms, and the Profile env-var surface is no longer active. Inactive legacy secret-like model/channel/envvar sources remain quarantined and must be remapped before G9 rollout. Full closure still needs later packaged image integration and release acceptance. |
+| #17 frontend source ownership | In progress. Source now lives under `frontend/web`, has local install/lint/build evidence, exposes release traceability plus a frontend projection audit, and has a GitHub Actions frontend workflow with source checks plus a packaged-image build/provenance contract. `ci:verify` starts with the projection audit launcher; the active browser entry graph is currently clear of forbidden private/secret-like projection terms, and the Profile env-var surface is no longer active. Inactive legacy secret-like model/channel/envvar sources remain quarantined and must be remapped before G9 rollout. Full closure still needs packaged image smoke/release acceptance on 211 or another Docker-capable host. |
 | #20 G5 scheduling/admission gaps | Closed on 2026-06-06 by `f5da825` and `e203412`, with local full pytest and 211 smoke evidence recorded in the issue. |
 | #21 capacity baseline | Open. Current default active worker execution is still about three runs, and load-test evidence is required before raising concurrency defaults. |
 | #22 office UX/context continuity | Open future product issue. It should inform workbench design but is not implemented in this migration. |
@@ -26,10 +26,12 @@ Gate summary:
   `tools/frontend_release_traceability.py`; frontend `ci:verify` starts with
   the projection audit launcher and now records active-entry projection
   evidence plus quarantined legacy source gaps.
-  `.github/workflows/ai-platform-frontend.yml` now enforces the frontend checks
-  for source changes, and GitHub Actions run `27104398690` passed on commit
-  `11ab56c660385f6790964af3d5bd60e3d4431ff2`. Packaged image trace still
-  remains before this is a full release gate.
+  `.github/workflows/ai-platform-frontend.yml` now enforces the frontend source
+  checks and a non-push packaged image build/provenance check for relevant
+  source changes. GitHub Actions run `27104398690` passed on commit
+  `11ab56c660385f6790964af3d5bd60e3d4431ff2` for the earlier source workflow.
+  Packaged image smoke/release acceptance still remains before this is a full
+  release gate.
 - G1 Security MVP remains dependent on company auth/session, RBAC, tenant
   isolation, redaction, and frontend projection audit/remap evidence.
 - G2-G7 backend/control-plane foundations have substantial current coverage,
@@ -187,6 +189,9 @@ Current state:
 - API and worker still use the existing Python source/image path.
 - The 211 frontend remains a thin-shell static dist served by
   `tools/serve_lambchat_thin_shell.py`.
+- `frontend/web/Dockerfile`, `frontend/web/nginx.conf.template`, and
+  `deploy/ai-platform/docker-compose.frontend.yml` define the optional
+  packaged frontend image boundary.
 - `deploy/ai-platform/docker-compose.yml` is not changed by this migration.
 
 Future packaged direction:
@@ -251,8 +256,9 @@ Current local and CI-contract evidence on 2026-06-08:
   `deploy/ai-platform/docker-compose.frontend.yml` are present, pass the
   secret/private-payload denylist scan, and keep the required build
   provenance, upload-size, proxy-timeout, request-buffering, and compose
-  argument contract. This records the image boundary only; Docker build/smoke
-  and release acceptance still require 211 or another Docker-capable host.
+  argument contract. This records the image boundary and CI build contract only;
+  release acceptance still requires a successful smoke on 211 or another
+  Docker-capable host.
 - `python tools/frontend_projection_audit.py --format json` records the
   current production-source route inventory, active browser entry graph,
   active-browser route inventory,
@@ -263,13 +269,19 @@ Current local and CI-contract evidence on 2026-06-08:
   `ci:verify` to exercise lint/build while preserving G6/G9 rollout blockers.
 - `.github/workflows/ai-platform-frontend.yml` runs on frontend source,
   `docs/frontend/**`, `tests/test_frontend_*.py`, frontend audit/traceability
-  tools, and workflow changes. It executes
+  tools, `deploy/ai-platform/docker-compose.frontend.yml`, and workflow
+  changes. The `frontend` job executes
   `corepack pnpm install --frozen-lockfile`,
   `corepack pnpm run ci:verify`, and
-  `python tools/frontend_release_traceability.py --format json` without Docker,
-  compose, `.env`, or secret-dependent steps. The release traceability CLI now
-  records this workflow path and hash as part of the same-commit traceability
-  manifest.
+  `python tools/frontend_release_traceability.py --format json`. The
+  `frontend-image` job then builds `ai-platform-frontend:${{ github.sha }}`
+  with `AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}` and
+  `AI_PLATFORM_BUILD_DIRTY=false`, and reads
+  `/usr/share/nginx/html/ai-platform-build-provenance.json` from the image to
+  verify same-commit provenance. The workflow does not run Docker compose,
+  consume `.env`, or require secret-dependent steps. The release traceability
+  CLI records this workflow path, hash, and required image-build commands as
+  part of the same-commit traceability manifest.
 - GitHub Actions run `27104398690` passed on commit
   `11ab56c660385f6790964af3d5bd60e3d4431ff2`, providing remote CI evidence for
   the frontend workflow contract.
@@ -306,9 +318,17 @@ Current local and CI-contract evidence on 2026-06-08:
   nginx upload/proxy contracts, compose args, and packaged delivery denylist
   findings. Release acceptance remains pending until this image is built and
   smoked on 211 or another Docker-capable host.
+- A 211 packaged frontend image build attempt for commit
+  `e8dc27f30f5d5302547090a2121923aed88e8201` cloned the current private
+  repository source successfully but failed before the frontend application
+  build because the Docker daemon could not pull required registry/base-image
+  metadata and the required base images were not cached locally. This is
+  recorded as an environment/build-host blocker, not release acceptance.
 - GitHub Actions run `27114040908` passed on commit
   `be03c953e60489f1d27b8e6d1a0a770f11e48fb8`, covering the frontend workflow
-  contract after the build-provenance hardening.
+  contract after the build-provenance hardening and before the later
+  packaged-image CI job was added. It is not evidence that the current image
+  job has passed remotely.
 
 These warnings do not block the source migration, but they remain frontend
 hardening work before broader Agent Frontend V1 rollout. Generated `dist/` is
@@ -331,9 +351,10 @@ packaged frontend image trace.
   and 211 frontend acceptance at commit
   `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35`; the release traceability CLI now
   records a static `dist/` manifest for that same commit and reports packaged
-  frontend image delivery status. Packaged frontend image delivery and release
-  acceptance remain pending until the image is built and verified with the
-  compose overlay on a Docker-capable host.
+  frontend image definition status. The CI workflow now has a non-push
+  packaged image build/provenance contract, but packaged frontend image release
+  acceptance remains pending until the image is smoked with the compose overlay
+  on 211 or another Docker-capable host.
 - #22 document-centric context/workbench UX remains future work and is not part
   of this source move.
 
@@ -358,4 +379,6 @@ pnpm build
 ```
 
 211 smoke evidence should remain limited to current thin-shell health and
-same-origin `/api/*` behavior until a frontend image is explicitly introduced.
+same-origin `/api/*` behavior until a packaged frontend image is explicitly
+promoted for runtime validation. Image build/smoke evidence must be recorded as
+a separate Docker-capable-host release gate.

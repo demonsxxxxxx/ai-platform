@@ -54,8 +54,9 @@ secret/private-payload denylist scan, and keep the required build provenance,
 upload, proxy-timeout, and compose argument contract. Static `dist/` is
 same-commit evidence only when provenance records a known commit, clean dirty
 state, and matching frontend source hashes. Local Windows development does not
-build Docker images; image build/smoke and release acceptance still run only on
-211 or another Docker-capable host.
+build Docker images. GitHub Actions performs a non-push packaged-image
+build/provenance check for relevant frontend changes, but release acceptance
+still requires image smoke on 211 or another Docker-capable host.
 
 For local development, Vite proxies `/api/*` to `VITE_AI_PLATFORM_API_TARGET`,
 defaulting to `http://127.0.0.1:8020`. For the intranet deployment, keep the
@@ -118,7 +119,10 @@ Later packaged delivery should use three project-owned images:
 The optional `deploy/ai-platform/docker-compose.frontend.yml` overlay now
 defines the frontend image boundary for Docker-capable validation. It is not a
 compose one-command acceptance gate and does not pass backend, model-gateway, or
-sandbox secrets into the frontend service.
+sandbox secrets into the frontend service. The CI image gate validates the
+image can be built and that `ai-platform-build-provenance.json` inside the image
+matches the workflow commit; runtime proxy smoke remains a separate release
+gate.
 
 Postgres, Redis, MinIO, and sandbox executor images remain separate
 infrastructure services. Docker compose one-command startup is not a current

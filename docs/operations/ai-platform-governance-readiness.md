@@ -56,7 +56,7 @@ or secret-like runtime configuration.
 | Tool permission | Admin tool policy inventory, tenant-scoped policy update audit, user request/decision flow, fail-closed risk/write policy evaluation, public permission-card projection, audit-visible legacy route policy mapping, secret-safe allow/ask/deny taxonomy evidence through `tools/tool_policy_readiness.py` | Policy enforcement or ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel surfaces, bulk review/history UX, Admin dashboard acceptance for taxonomy evidence |
 | Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock, secret-safe skill release readiness snapshot, pending review-manifest template entrypoint | Signed package or SBOM release gate, Admin release dashboard acceptance, dependency vulnerability/license policy |
 | Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py` | Bounded office context-pack product contract |
-| Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest with build-provenance same-commit gate, packaged frontend image definition traceability, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Profile env-var surface removed from the active browser entry graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Quarantined inactive legacy model/channel/envvar sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image build/smoke and release acceptance on a Docker-capable host |
+| Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest with build-provenance same-commit gate, packaged frontend image definition traceability, non-push CI packaged-image build/provenance contract, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Profile env-var surface removed from the active browser entry graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Quarantined inactive legacy model/channel/envvar sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image smoke and release acceptance on 211 or another Docker-capable host |
 
 ## Source Readiness Evidence
 
@@ -94,16 +94,21 @@ CLI also reports packaged frontend image definition traceability through
 `frontend/web/Dockerfile`, `frontend/web/nginx.conf.template`, and
 `deploy/ai-platform/docker-compose.frontend.yml`, and fails closed if required
 build provenance args, nginx upload/proxy controls, compose args, or packaged
-delivery denylist checks regress. This does not close packaged frontend image
-delivery or release acceptance until the image is built and smoked on 211 or
-another Docker-capable host. The
-repository now also has
+delivery denylist checks regress. The repository also has
 `.github/workflows/ai-platform-frontend.yml`, which runs frontend dependency
-install, `ci:verify`, and frontend release traceability for relevant source
-changes. GitHub Actions run `27104398690` passed on commit
-`11ab56c660385f6790964af3d5bd60e3d4431ff2`, so remote CI enforcement evidence
-exists for the source workflow; packaged frontend image build/smoke and release
-acceptance remain a separate release gate.
+install, `ci:verify`, frontend release traceability, and a non-push packaged
+image build/provenance check for relevant source changes. The image job builds
+with `AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}` and
+`AI_PLATFORM_BUILD_DIRTY=false`, then reads
+`ai-platform-build-provenance.json` from the image to verify same-commit
+frontend provenance without Docker compose or `.env` inputs. GitHub Actions run
+`27104398690` passed on commit
+`11ab56c660385f6790964af3d5bd60e3d4431ff2` for the earlier source workflow.
+A later 211 packaged-image build attempt reached the private repository source
+but failed before application build because the Docker build host could not
+pull required registry/base-image metadata and did not have the required base
+images cached. Therefore packaged frontend image release acceptance remains a
+separate Docker-capable-host release gate and is not closed by this baseline.
 
 `tools/skill_release_readiness.py` now records a secret-safe offline evidence
 snapshot for repository-owned Skills with schema

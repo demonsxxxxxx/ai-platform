@@ -152,6 +152,7 @@ def build_governance_readiness(settings: object | None = None) -> dict[str, Any]
                 "admin_runtime_211_frontend_acceptance",
                 "frontend_packaged_image_blocker_traceability",
                 "frontend_packaged_image_definition_traceability",
+                "frontend_packaged_image_ci_build_provenance_contract",
             ],
             gaps=[
                 "ordinary_user_g9_acceptance_for_legacy_admin_mcp_model_envvar_routes",

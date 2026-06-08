@@ -148,8 +148,12 @@ traceability through `frontend/web/Dockerfile`,
 `frontend/web/nginx.conf.template`, and
 `deploy/ai-platform/docker-compose.frontend.yml`, and fails closed if required
 build provenance args, nginx upload/proxy controls, compose args, or packaged
-delivery denylist checks regress. Docker-capable build/smoke and release
-acceptance remain pending. The projection
+delivery denylist checks regress. The GitHub Actions frontend workflow now also
+contains a non-push packaged-image build/provenance job that builds
+`ai-platform-frontend:${{ github.sha }}` with the current commit and verifies
+`ai-platform-build-provenance.json` from inside the image without running Docker
+compose or reading `.env`. Docker-capable runtime smoke and release acceptance
+remain pending. The projection
 audit records the current production-source route inventory, active-browser
 route inventory, active browser entry graph, active-browser legacy route policy
 mapping, quarantined inactive legacy source findings, private/secret-like
@@ -163,12 +167,18 @@ remapped and quarantined legacy model/channel/envvar sources are remapped or
 policy-gated.
 This provides the traceability and audit base for backend/worker/frontend
 same-commit review. `.github/workflows/ai-platform-frontend.yml` now runs
-frontend install, `ci:verify`, and release traceability on relevant source
-changes, and GitHub Actions run `27116320577` passed on commit
-`d7b02e20968353611fc9813a1302976f28abe650`. The remaining #17
-source-ownership evidence is later packaged frontend image delivery and release
-acceptance; the current trace only records that blocker fail-closed. It does
-not close legacy policy enforcement / ai-platform projection remap.
+frontend install, `ci:verify`, release traceability, and the packaged-image
+build/provenance gate on relevant source changes; GitHub Actions run
+`27116320577` passed on commit
+`d7b02e20968353611fc9813a1302976f28abe650` before the packaged-image job was
+added. A 211 packaged-image build attempt for commit
+`e8dc27f30f5d5302547090a2121923aed88e8201` reached the private repository
+source but failed before the application build because the Docker build host
+could not pull required registry/base-image metadata and lacked cached base
+images. The remaining #17 source-ownership evidence is packaged frontend image
+smoke/release acceptance on a Docker-capable host; the current trace records
+the definition and CI contract fail-closed. It does not close legacy policy
+enforcement / ai-platform projection remap.
 
 The first frontend operator visibility loop is now present in `frontend/web`:
 Settings includes an admin-only Admin Runtime Capacity section that consumes
@@ -203,7 +213,8 @@ pending Skill release review-manifest template generation through
 frontend
 release traceability, static `dist` release manifest with build-provenance
 gate, frontend projection audit wired first into `ci:verify`, packaged frontend
-image definition traceability, GitHub Actions frontend CI workflow, active browser projection
+image definition traceability, GitHub Actions frontend CI workflow with
+non-push packaged-image build/provenance contract, active browser projection
 audit clearance, active-browser legacy route policy audit, and quarantined
 inactive legacy secret-like source reporting. Tool permission now also has a
 source-level allow/ask/deny taxonomy evidence snapshot through
@@ -217,7 +228,8 @@ surfaces, Admin taxonomy/bulk/history dashboard acceptance, signed package or
 SBOM release evidence plus passed review manifests, dependency vulnerability
 and license evidence plus passed review manifests, bounded office context-pack
 product contract, quarantined legacy frontend source remap, packaged frontend
-image delivery/release acceptance, and ordinary-user G9 acceptance. Do
+image smoke/release acceptance on 211 or another Docker-capable host, and
+ordinary-user G9 acceptance. Do
 not use this baseline to expand sandbox privilege, raw Skill selection, or
 multi-agent ordinary-user exposure.
 

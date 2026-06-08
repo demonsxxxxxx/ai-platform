@@ -35,6 +35,8 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert len(trace["workflow"]["sha256"]) == 64
     assert "corepack pnpm run ci:verify" in trace["workflow"]["enforced_commands"]
     assert "python tools/frontend_release_traceability.py --format json" in trace["workflow"]["enforced_commands"]
+    assert "deploy/ai-platform/docker-compose.frontend.yml" in trace["workflow"]["required_path_filters"]
+    assert trace["workflow"]["missing_path_filters"] == []
     assert len(trace["source_hashes"]["package_json_sha256"]) == 64
     assert len(trace["source_hashes"]["pnpm_lock_sha256"]) == 64
     assert trace["dist"]["status"] in {"built", "built_unverified", "missing"}
@@ -278,12 +280,22 @@ def test_frontend_release_traceability_flags_workflow_missing_enforced_commands(
     trace = build_frontend_release_traceability(repo_root=tmp_path)
 
     assert trace["workflow"]["status"] == "present_with_policy_gaps"
-    assert trace["workflow"]["blockers"] == ["frontend_workflow_enforced_commands_missing"]
+    assert trace["workflow"]["blockers"] == [
+        "frontend_workflow_enforced_commands_missing",
+        "frontend_workflow_path_filters_missing",
+    ]
     assert trace["workflow"]["missing_commands"] == [
         "corepack pnpm install --frozen-lockfile",
         "corepack pnpm run ci:verify",
         "python tools/frontend_release_traceability.py --format json",
+        "docker build",
+        "--build-arg AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}",
+        "--build-arg AI_PLATFORM_BUILD_DIRTY=false",
+        "-f frontend/web/Dockerfile",
+        "docker run --rm --entrypoint cat",
+        "ai-platform-build-provenance.json",
     ]
+    assert "deploy/ai-platform/docker-compose.frontend.yml" in trace["workflow"]["missing_path_filters"]
 
 
 def test_frontend_packaged_image_files_define_static_proxy_contract():

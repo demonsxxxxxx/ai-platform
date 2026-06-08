@@ -5,6 +5,7 @@ on:
     paths:
       - "frontend/web/**"
       - "docs/frontend/**"
+      - "deploy/ai-platform/docker-compose.frontend.yml"
       - "tests/test_frontend_*.py"
       - "tools/frontend_projection_audit.py"
       - "tools/frontend_release_traceability.py"
@@ -15,6 +16,7 @@ on:
     paths:
       - "frontend/web/**"
       - "docs/frontend/**"
+      - "deploy/ai-platform/docker-compose.frontend.yml"
       - "tests/test_frontend_*.py"
       - "tools/frontend_projection_audit.py"
       - "tools/frontend_release_traceability.py"
@@ -55,3 +57,34 @@ jobs:
 
       - name: Record frontend release traceability
         run: python tools/frontend_release_traceability.py --format json
+
+  frontend-image:
+    name: packaged image build
+    runs-on: ubuntu-latest
+    needs: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build frontend image
+        run: |
+          docker build \
+            --build-arg AI_PLATFORM_BUILD_COMMIT=${{ github.sha }} \
+            --build-arg AI_PLATFORM_BUILD_DIRTY=false \
+            -t ai-platform-frontend:${{ github.sha }} \
+            -f frontend/web/Dockerfile \
+            .
+
+      - name: Verify image build provenance
+        run: |
+          docker run --rm --entrypoint cat ai-platform-frontend:${{ github.sha }} /usr/share/nginx/html/ai-platform-build-provenance.json > frontend-build-provenance.json
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          provenance = json.loads(Path("frontend-build-provenance.json").read_text(encoding="utf-8"))
+          assert provenance["git"]["commit"] == os.getenv("GITHUB_SHA")
+          assert provenance["git"]["dirty"] is False
+          assert provenance["frontend_path"] == "frontend/web"
+          PY

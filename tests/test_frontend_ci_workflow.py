@@ -11,8 +11,15 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "corepack pnpm install --frozen-lockfile" in workflow
     assert "corepack pnpm run ci:verify" in workflow
     assert "python tools/frontend_release_traceability.py --format json" in workflow
+    assert "docker build" in workflow
+    assert "--build-arg AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}" in workflow
+    assert "--build-arg AI_PLATFORM_BUILD_DIRTY=false" in workflow
+    assert "-f frontend/web/Dockerfile" in workflow
+    assert "docker run --rm --entrypoint cat" in workflow
+    assert "ai-platform-build-provenance.json" in workflow
     assert "frontend/web/**" in workflow
     assert "docs/frontend/**" in workflow
+    assert "deploy/ai-platform/docker-compose.frontend.yml" in workflow
     assert "tests/test_frontend_*.py" in workflow
     assert "tools/frontend_projection_audit.py" in workflow
     assert "tools/frontend_release_traceability.py" in workflow
@@ -22,8 +29,7 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert ci_verify_index < traceability_index
 
     lower = workflow.lower()
-    assert "docker" not in lower
-    assert "compose" not in lower
+    assert "docker compose" not in lower
     assert "secret" not in lower
     assert ".env" not in lower
     assert "c:\\users" not in lower
