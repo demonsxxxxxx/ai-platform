@@ -108,6 +108,7 @@ def build_governance_readiness(settings: object | None = None) -> dict[str, Any]
                 "frontend_ci_verify_script",
                 "frontend_release_traceability_cli",
                 "frontend_static_dist_release_manifest",
+                "frontend_dist_build_provenance_gate",
                 "frontend_projection_audit_cli",
                 "frontend_ci_projection_audit_integration",
                 "frontend_github_actions_ci_workflow",

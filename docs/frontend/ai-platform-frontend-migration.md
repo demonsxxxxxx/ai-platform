@@ -231,17 +231,21 @@ Current local and CI-contract evidence on 2026-06-08:
 - `frontend/web/package.json` now defines `projection:audit` as
   `node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json`
   and `ci:verify` as
-  `node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json && eslint . && tsc -b && vite build`, so the
-  script works even when this Windows workstation can only start pnpm through
-  Corepack and 211 needs `python3` instead of bare `python`.
+  `node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json && eslint . && tsc -b && vite build && node scripts/write-build-provenance.mjs`,
+  so the script works even when this Windows workstation can only start pnpm
+  through Corepack and 211 needs `python3` instead of bare `python`.
 - `python tools/frontend_release_traceability.py --format json` records the
   current git commit, dirty flag, package/lockfile hashes, CI commands, a
   deterministic static `dist/` manifest, and the packaged frontend image
   delivery status without printing local absolute paths, `.env` values, or
   secret-like data. The manifest includes file count, total bytes,
   `index.html` / service-worker entry hashes when present, and a manifest hash
-  that ties the static frontend artifact back to the same git commit as backend
-  and worker artifacts. Until `frontend/web/Dockerfile` and
+  plus `dist/ai-platform-build-provenance.json`. The static `dist` artifact is
+  considered same-commit only when build provenance matches the current git
+  commit and frontend source hashes. If provenance is missing or stale, the
+  traceability CLI reports `dist.status = built_unverified` with explicit
+  blockers instead of binding an old ignored `dist` directory to the current
+  backend/worker commit. Until `frontend/web/Dockerfile` and
   `deploy/ai-platform/docker-compose.frontend.yml` exist and are verified on a
   Docker-capable host, the packaged image section must remain
   `not_configured` with explicit blockers.
@@ -265,7 +269,8 @@ Current local and CI-contract evidence on 2026-06-08:
   the frontend workflow contract.
 - At commit `22dc9e61605d406f10669e4f91f4cb1a87e2094d`,
   `python tools/frontend_release_traceability.py --format json` reported
-  `dirty = false` and kept packaged frontend image delivery
+  `dirty = false` before the later build-provenance hardening and kept packaged
+  frontend image delivery
   `not_configured` with blockers
   `packaged_frontend_dockerfile_missing`,
   `packaged_frontend_compose_overlay_missing`, and
@@ -276,7 +281,8 @@ Current local and CI-contract evidence on 2026-06-08:
 These warnings do not block the source migration, but they remain frontend
 hardening work before broader Agent Frontend V1 rollout. Generated `dist/` is
 not committed; release evidence should tie the built artifact or frontend image
-back to the same git commit as API and worker.
+back to the same git commit as API and worker through build provenance or a
+packaged frontend image trace.
 
 ## Remaining Risks
 

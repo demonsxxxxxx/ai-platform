@@ -11,6 +11,7 @@ FRONTEND_PATH = Path("frontend/web")
 WORKFLOW_PATH = Path(".github/workflows/ai-platform-frontend.yml")
 FRONTEND_DOCKERFILE_PATH = Path("frontend/web/Dockerfile")
 FRONTEND_COMPOSE_OVERLAY_PATH = Path("deploy/ai-platform/docker-compose.frontend.yml")
+DIST_BUILD_PROVENANCE_FILENAME = "ai-platform-build-provenance.json"
 CI_COMMANDS = [
     "corepack pnpm install --frozen-lockfile",
     "corepack pnpm run ci:verify",
@@ -59,9 +60,71 @@ def _git_dirty(repo_root: Path) -> bool | None:
     return bool(result.stdout.strip())
 
 
-def _dist_manifest(dist_root: Path, *, git_commit: str) -> dict[str, object]:
+def _load_json(path: Path) -> dict[str, object] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _dist_provenance_status(
+    provenance: dict[str, object] | None,
+    *,
+    git_commit: str,
+    package_json_sha256: str,
+    pnpm_lock_sha256: str,
+) -> dict[str, object]:
+    blockers: list[str] = []
+    if provenance is None:
+        return {
+            "status": "missing",
+            "verified_same_commit": False,
+            "build_commit": None,
+            "blockers": ["dist_build_provenance_missing"],
+        }
+
+    git = provenance.get("git") if isinstance(provenance.get("git"), dict) else {}
+    source_hashes = (
+        provenance.get("source_hashes") if isinstance(provenance.get("source_hashes"), dict) else {}
+    )
+    build_commit = git.get("commit")
+    if build_commit != git_commit:
+        blockers.append("dist_build_commit_mismatch")
+    if git.get("dirty") is True:
+        blockers.append("dist_built_from_dirty_worktree")
+    if source_hashes.get("package_json_sha256") != package_json_sha256:
+        blockers.append("dist_package_json_hash_mismatch")
+    if source_hashes.get("pnpm_lock_sha256") != pnpm_lock_sha256:
+        blockers.append("dist_pnpm_lock_hash_mismatch")
+
+    return {
+        "status": "verified" if not blockers else "mismatch",
+        "verified_same_commit": not blockers,
+        "build_commit": build_commit if isinstance(build_commit, str) else None,
+        "blockers": blockers,
+    }
+
+
+def _dist_manifest(
+    dist_root: Path,
+    *,
+    git_commit: str,
+    package_json_sha256: str,
+    pnpm_lock_sha256: str,
+) -> dict[str, object]:
     index_html = dist_root / "index.html"
-    status = "built" if index_html.exists() else "missing"
+    provenance_path = dist_root / DIST_BUILD_PROVENANCE_FILENAME
+    provenance = _load_json(provenance_path) if provenance_path.exists() else None
+    provenance_status = _dist_provenance_status(
+        provenance,
+        git_commit=git_commit,
+        package_json_sha256=package_json_sha256,
+        pnpm_lock_sha256=pnpm_lock_sha256,
+    )
+    status = "missing"
+    if index_html.exists():
+        status = "built" if provenance_status["verified_same_commit"] else "built_unverified"
     manifest: dict[str, object] = {
         "status": status,
         "artifact_kind": "static_dist",
@@ -70,11 +133,17 @@ def _dist_manifest(dist_root: Path, *, git_commit: str) -> dict[str, object]:
         "total_bytes": 0,
         "manifest_sha256": None,
         "entrypoints": {},
+        "build_provenance": {
+            "path": f"dist/{DIST_BUILD_PROVENANCE_FILENAME}",
+            **provenance_status,
+        },
         "release_trace": {
             "frontend_artifact": "static_dist_manifest",
             "backend_worker_commit": git_commit,
             "policy": "same_git_commit_for_api_worker_frontend_artifacts",
+            "verified_same_commit": bool(provenance_status["verified_same_commit"]),
         },
+        "blockers": list(provenance_status["blockers"]),
     }
     if not dist_root.exists():
         return manifest
@@ -171,6 +240,8 @@ def build_frontend_release_traceability(repo_root: Path | None = None) -> dict[s
     workflow_path = root / WORKFLOW_PATH
 
     package_json = json.loads(package_json_path.read_text(encoding="utf-8"))
+    package_json_sha256 = _sha256(package_json_path)
+    pnpm_lock_sha256 = _sha256(pnpm_lock_path)
     scripts = package_json.get("scripts") if isinstance(package_json.get("scripts"), dict) else {}
     selected_scripts = {
         name: scripts[name]
@@ -190,13 +261,18 @@ def build_frontend_release_traceability(repo_root: Path | None = None) -> dict[s
             "dirty": _git_dirty(root),
         },
         "source_hashes": {
-            "package_json_sha256": _sha256(package_json_path),
-            "pnpm_lock_sha256": _sha256(pnpm_lock_path),
+            "package_json_sha256": package_json_sha256,
+            "pnpm_lock_sha256": pnpm_lock_sha256,
         },
         "scripts": selected_scripts,
         "commands": CI_COMMANDS,
         "workflow": _workflow_manifest(workflow_path),
-        "dist": _dist_manifest(dist_root, git_commit=git_commit),
+        "dist": _dist_manifest(
+            dist_root,
+            git_commit=git_commit,
+            package_json_sha256=package_json_sha256,
+            pnpm_lock_sha256=pnpm_lock_sha256,
+        ),
         "packaged_frontend_image": _packaged_frontend_image_manifest(root, git_commit=git_commit),
         "release_policy": "tie_frontend_api_worker_artifacts_to_same_git_commit",
     }
@@ -241,6 +317,12 @@ def render_frontend_release_traceability_markdown(trace: dict[str, Any]) -> str:
         f"- file_count: `{trace['dist']['file_count']}`\n"
         f"- total_bytes: `{trace['dist']['total_bytes']}`\n"
         f"- manifest_sha256: `{trace['dist']['manifest_sha256']}`\n\n"
+        "Build provenance:\n\n"
+        f"- path: `{trace['dist']['build_provenance']['path']}`\n"
+        f"- status: `{trace['dist']['build_provenance']['status']}`\n"
+        f"- build_commit: `{trace['dist']['build_provenance']['build_commit']}`\n"
+        f"- verified_same_commit: "
+        f"`{str(trace['dist']['build_provenance']['verified_same_commit']).lower()}`\n\n"
         "## Packaged Frontend Image\n\n"
         f"- status: `{packaged_image['status']}`\n"
         f"- artifact_kind: `{packaged_image['artifact_kind']}`\n"

@@ -50,7 +50,7 @@ or secret-like runtime configuration.
 | Tool permission | Admin tool policy inventory, tenant-scoped policy update audit, user request/decision flow, fail-closed risk/write policy evaluation, public permission-card projection, audit-visible legacy route policy mapping | Policy enforcement or ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel surfaces, bulk review/history UX, full allow/deny/ask taxonomy for every MCP tool |
 | Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock | Signed package or SBOM release gate, Admin release dashboard acceptance, dependency vulnerability/license policy |
 | Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py` | Bounded office context-pack product contract |
-| Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest tied to the current git commit, packaged frontend image blocker traceability, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Profile env-var surface removed from the active browser entry graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Quarantined inactive legacy model/channel/envvar sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image delivery and release acceptance |
+| Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest with build-provenance same-commit gate, packaged frontend image blocker traceability, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Profile env-var surface removed from the active browser entry graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Quarantined inactive legacy model/channel/envvar sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image delivery and release acceptance |
 
 ## 211 Acceptance Evidence
 
@@ -64,9 +64,13 @@ smoke returned admin HTTP 200, ordinary-user HTTP 403, capacity schema
 `ai-platform.capacity-baseline.v1`, governance schema
 `ai-platform.governance-readiness.v1`, seven load-test gates, and no scanned
 forbidden private projection terms. The frontend release traceability CLI now
-records a deterministic static `dist/` manifest for the same git commit and
-reports packaged frontend image blockers while delivery is not configured. This
-does not close packaged frontend image delivery or release acceptance. The
+records a deterministic static `dist/` manifest and build provenance gate:
+`dist` is same-commit only when `dist/ai-platform-build-provenance.json`
+matches the current git commit and package/lockfile hashes; missing or stale
+provenance is reported as `built_unverified` instead of being silently tied to
+the current commit. The CLI also reports packaged frontend image blockers while
+delivery is not configured. This does not close packaged frontend image
+delivery or release acceptance. The
 repository now also has
 `.github/workflows/ai-platform-frontend.yml`, which runs frontend dependency
 install, `ci:verify`, and frontend release traceability for relevant source

@@ -119,10 +119,13 @@ Release traceability records the same git commit, package manager,
 package/lockfile hashes, CI commands, and a deterministic static `dist/`
 manifest without printing local paths, `.env` values, or secret-like data. The
 static manifest records file count, total bytes, entry hashes, and a manifest
-hash so static frontend artifacts can be tied back to the backend/worker git
-commit. The same traceability CLI now also reports packaged frontend image
-status and the missing Dockerfile / compose-overlay blockers while packaged
-frontend image delivery is still pending. The projection
+hash. It also requires `dist/ai-platform-build-provenance.json` before treating
+an ignored `dist` directory as same-commit release evidence; missing or stale
+build provenance is reported as `built_unverified` with blockers instead of
+being silently tied to the current backend/worker commit. The same
+traceability CLI now also reports packaged frontend image status and the
+missing Dockerfile / compose-overlay blockers while packaged frontend image
+delivery is still pending. The projection
 audit records the current production-source route inventory, active-browser
 route inventory, active browser entry graph, active-browser legacy route policy
 mapping, quarantined inactive legacy source findings, private/secret-like
@@ -169,8 +172,8 @@ redaction, Admin redaction preview/audit, long-term cross-session memory fail-cl
 delete/retention/export erasure evidence through
 `tools/memory_erasure_readiness.py`,
 frontend
-release traceability, static `dist/` release manifest, frontend projection
-audit wired first into `ci:verify`, packaged frontend image blocker
+release traceability, static `dist/` release manifest with build-provenance
+gate, frontend projection audit wired first into `ci:verify`, packaged frontend image blocker
 traceability, GitHub Actions frontend CI workflow, active browser projection
 audit clearance, active-browser legacy route policy audit, and quarantined
 inactive legacy secret-like source reporting.
