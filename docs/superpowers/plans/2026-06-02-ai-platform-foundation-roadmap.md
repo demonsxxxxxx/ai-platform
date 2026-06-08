@@ -69,6 +69,11 @@ evidence as missing until a real harness records the required gates.
 then converts that snapshot into a fail-closed gate verdict, listing missing
 Admin Runtime sections and missing recorded load-test gates without sending
 load or changing defaults.
+`python tools/capacity_runtime_evidence.py --base-url <api-url> --user-id
+<audit-user> --tenant-id <tenant> --roles admin --commit-sha <deployed-commit>
+--runtime-profile <profile> --format json` now wraps the read-only Admin
+Runtime capture, sanitized evidence snapshot, and gate verdict into one
+operator command without printing the raw overview or secret values.
 
 The 2026-06-08 211 gate-readiness pass captured the admin-only runtime overview
 from the deployed `f7c6b0d9114748fa249acb88da6584851c48aa96` image and ran the

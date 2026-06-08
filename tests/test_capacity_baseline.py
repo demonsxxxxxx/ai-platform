@@ -2,6 +2,8 @@ import json
 import os
 import subprocess
 import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 
 from app.capacity_baseline import (
     LOAD_TEST_GATES,
@@ -493,5 +495,90 @@ def test_capacity_gate_readiness_cli_outputs_json_from_snapshot_file(tmp_path):
     assert payload["schema_version"] == "ai-platform.capacity-gate-readiness.v1"
     assert payload["status"] == "blocked_missing_load_test_evidence"
     assert payload["missing_load_test_gates"] == LOAD_TEST_GATES
+    assert "sk-secret" not in result.stdout
+    assert "executor_private_payload" not in result.stdout
+
+
+def test_capacity_runtime_evidence_cli_captures_overview_without_printing_raw_private_payloads():
+    requests: list[dict[str, str]] = []
+
+    class OverviewHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # noqa: A002
+            return
+
+        def do_GET(self):  # noqa: N802
+            requests.append(
+                {
+                    "path": self.path,
+                    "user_id": self.headers.get("X-AI-User-ID", ""),
+                    "tenant_id": self.headers.get("X-AI-Tenant-ID", ""),
+                    "roles": self.headers.get("X-AI-Roles", ""),
+                }
+            )
+            payload = {
+                "capacity": build_capacity_baseline(SecretBearingSettings()),
+                "queue": {"status": {"depths": {"queued": 2, "processing": 1, "dead_letter": 0}}},
+                "database_pool": {"open": True, "stats": {"requests_waiting": 0, "token": "pool-secret"}},
+                "admission": {"active_runs": 2, "saturated_users": 0},
+                "backpressure": {"reasons": []},
+                "sandbox": {"containers": {"running": 0}, "leases": {"active": 0, "sandbox_workdir": "/tmp/work-secret"}},
+                "observability": {"event_count": 5, "error_count": 0, "executor_private_payload": {"api_key": "sk-secret"}},
+            }
+            raw = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), OverviewHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_port}"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/capacity_runtime_evidence.py",
+                "--base-url",
+                base_url,
+                "--user-id",
+                "capacity-admin",
+                "--tenant-id",
+                "tenant-a",
+                "--roles",
+                "admin",
+                "--commit-sha",
+                "abc123",
+                "--runtime-profile",
+                "local-test",
+                "--format",
+                "json",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "ai-platform.capacity-runtime-evidence.v1"
+    assert payload["source"]["overview_route"] == "/api/ai/admin/runtime/overview"
+    assert payload["source"]["http_status"] == 200
+    assert payload["snapshot"]["schema_version"] == "ai-platform.capacity-evidence-snapshot.v1"
+    assert payload["readiness"]["status"] == "blocked_missing_load_test_evidence"
+    assert payload["readiness"]["missing_load_test_gates"] == LOAD_TEST_GATES
+    assert requests == [
+        {
+            "path": "/api/ai/admin/runtime/overview",
+            "user_id": "capacity-admin",
+            "tenant_id": "tenant-a",
+            "roles": "admin",
+        }
+    ]
+    assert "pool-secret" not in result.stdout
+    assert "work-secret" not in result.stdout
     assert "sk-secret" not in result.stdout
     assert "executor_private_payload" not in result.stdout

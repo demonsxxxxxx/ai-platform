@@ -20,6 +20,7 @@ python tools/capacity_evidence_snapshot.py --overview-json <admin-runtime-overvi
 python tools/capacity_evidence_snapshot.py --overview-json <admin-runtime-overview.json> --commit-sha <deployed-commit> --format json
 python tools/capacity_gate_readiness.py --snapshot-json <capacity-evidence-snapshot.json> --format markdown
 python tools/capacity_gate_readiness.py --snapshot-json <capacity-evidence-snapshot.json> --format json
+python tools/capacity_runtime_evidence.py --base-url http://127.0.0.1:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha <deployed-commit> --runtime-profile <profile> --format json
 ```
 
 The scripts intentionally do not print DSNs, Redis URLs, model gateway URLs,
@@ -110,6 +111,19 @@ and whether all seven load-test gates have recorded evidence. It is a
 fail-closed verifier: missing sections or missing recorded gates keep
 `production_default_decision =
 do_not_raise_without_recorded_load_test_evidence`.
+
+For a single read-only capture command, use:
+
+```powershell
+python tools/capacity_runtime_evidence.py --base-url http://10.56.0.211:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha <deployed-commit> --runtime-profile 211-current --format json
+```
+
+This command fetches only `GET /api/ai/admin/runtime/overview`, then emits the
+sanitized evidence snapshot and fail-closed gate readiness verdict. It does not
+print the raw overview, send load, create runs, mutate runtime state, or raise
+any default. If a deployment requires `X-AI-Gateway-Secret`, pass only the
+environment variable name with `--gateway-secret-env`; the secret value is read
+from the environment and never printed.
 
 ### 211 Snapshot Evidence - 2026-06-08
 
