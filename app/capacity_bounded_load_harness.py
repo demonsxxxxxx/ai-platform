@@ -9,19 +9,29 @@ from urllib.request import Request, urlopen
 
 CAPACITY_BOUNDED_LOAD_HARNESS_SCHEMA = "ai-platform.capacity-bounded-load-harness.v1"
 OPERATOR_ACKNOWLEDGEMENT = "send-bounded-load-without-default-raise"
-_SUPPORTED_GATE = "api_read_write_burst"
-_READ_ONLY_ENDPOINTS = (
-    {
-        "path": "/api/ai/health",
-        "method": "GET",
-        "purpose": "read-only API health probe",
-    },
-    {
-        "path": "/api/ai/admin/runtime/overview",
-        "method": "GET",
-        "purpose": "read-only Admin Runtime capacity/backpressure projection probe",
-    },
-)
+_DEFAULT_GATE = "api_read_write_burst"
+_GATE_ENDPOINTS = {
+    "api_read_write_burst": (
+        {
+            "path": "/api/ai/health",
+            "method": "GET",
+            "purpose": "read-only API health probe",
+        },
+        {
+            "path": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+            "method": "GET",
+            "purpose": "read-only Admin Runtime capacity/backpressure projection probe with maintenance cleanup disabled",
+        },
+    ),
+    "queue_depth_and_lease_latency": (
+        {
+            "path": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+            "method": "GET",
+            "purpose": "read-only Admin Runtime queue depth, lease, and backpressure projection probe with maintenance cleanup disabled",
+        },
+    ),
+}
+_SUPPORTED_GATES = tuple(_GATE_ENDPOINTS)
 _LOAD_TEST_EVIDENCE_STATUS = "probe_only_not_recorded"
 _SECRET_MARKERS = (
     "secret",
@@ -70,17 +80,20 @@ def _common_payload(
     concurrency: int,
     execute: bool,
 ) -> dict[str, Any]:
-    supported = gate == _SUPPORTED_GATE
+    normalized_gate = str(gate or _DEFAULT_GATE).strip()
+    supported = normalized_gate in _GATE_ENDPOINTS
+    safe_gate = normalized_gate if supported else "unsupported"
     return {
         "schema_version": CAPACITY_BOUNDED_LOAD_HARNESS_SCHEMA,
-        "gate": gate if supported else "unsupported",
-        "supported_gate": _SUPPORTED_GATE,
+        "gate": safe_gate,
+        "supported_gate": _DEFAULT_GATE,
+        "supported_gates": list(_SUPPORTED_GATES),
         "status": "dry_run",
         "base_url": _safe_base_url(base_url),
         "request_count": _bounded_int(request_count, default=10, minimum=1, maximum=200),
         "concurrency": _bounded_int(concurrency, default=2, minimum=1, maximum=20),
         "execute": execute,
-        "endpoints": [dict(item) for item in _READ_ONLY_ENDPOINTS] if supported else [],
+        "endpoints": [dict(item) for item in _GATE_ENDPOINTS.get(safe_gate, ())],
         "operator_acknowledgement_required": True,
         "required_operator_acknowledgement": OPERATOR_ACKNOWLEDGEMENT,
         "load_test_evidence_status": _LOAD_TEST_EVIDENCE_STATUS,
@@ -95,7 +108,7 @@ def _common_payload(
 def build_capacity_bounded_load_harness_plan(
     *,
     base_url: str,
-    gate: str = _SUPPORTED_GATE,
+    gate: str = _DEFAULT_GATE,
     request_count: int = 10,
     concurrency: int = 2,
 ) -> dict[str, Any]:
@@ -239,7 +252,7 @@ def _triggered_stop_conditions(status_counts: dict[str, int], error_counts: dict
 def run_capacity_bounded_load_harness(
     *,
     base_url: str,
-    gate: str = _SUPPORTED_GATE,
+    gate: str = _DEFAULT_GATE,
     request_count: int = 10,
     concurrency: int = 2,
     execute: bool = False,
@@ -257,7 +270,7 @@ def run_capacity_bounded_load_harness(
         concurrency=concurrency,
         execute=execute,
     )
-    if payload["gate"] != _SUPPORTED_GATE:
+    if payload["gate"] not in _SUPPORTED_GATES:
         payload.update({"status": "blocked_unsupported_gate", "sent_requests": 0})
         return payload
     if not execute:

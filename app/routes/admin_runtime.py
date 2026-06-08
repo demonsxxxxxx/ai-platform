@@ -526,6 +526,7 @@ async def admin_runtime_containers(
 
 @router.get("/admin/runtime/overview")
 async def admin_runtime_overview(
+    include_maintenance_cleanup: bool = True,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     """Return an admin-only same-tenant runtime overview snapshot."""
@@ -533,7 +534,11 @@ async def admin_runtime_overview(
         raise HTTPException(status_code=403, detail="not_ai_admin")
 
     provider = create_container_provider()
-    cleanup_orphan_containers = getattr(provider, "cleanup_orphan_containers", None)
+    cleanup_orphan_containers = (
+        getattr(provider, "cleanup_orphan_containers", None)
+        if include_maintenance_cleanup
+        else None
+    )
     if cleanup_orphan_containers is not None:
         try:
             cleanup_results = await cleanup_orphan_containers({"tenant_id": principal.tenant_id}, reason="admin_runtime")
@@ -543,15 +548,16 @@ async def admin_runtime_overview(
             raise HTTPException(status_code=500, detail="sandbox_provider_cleanup_failed")
 
     async with transaction() as conn:
-        try:
-            await cleanup_expired_sandbox_runtime_leases(
-                conn,
-                tenant_id=principal.tenant_id,
-                provider_factory=create_container_provider,
-            )
-            await repositories.cleanup_expired_sandbox_leases(conn, tenant_id=principal.tenant_id)
-        except SandboxRuntimeCleanupError as exc:
-            raise HTTPException(status_code=500, detail="sandbox_runtime_cleanup_failed") from exc
+        if include_maintenance_cleanup:
+            try:
+                await cleanup_expired_sandbox_runtime_leases(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    provider_factory=create_container_provider,
+                )
+                await repositories.cleanup_expired_sandbox_leases(conn, tenant_id=principal.tenant_id)
+            except SandboxRuntimeCleanupError as exc:
+                raise HTTPException(status_code=500, detail="sandbox_runtime_cleanup_failed") from exc
         leases = await repositories.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status="active")
         lease_history = await repositories.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status=None)
 

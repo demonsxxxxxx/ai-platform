@@ -203,16 +203,16 @@ _LOAD_TEST_OPERATOR_WORKFLOW = [
         "id": "execute_bounded_load_scenario",
         "purpose": "Run only an approved bounded load harness for one selected gate and profile.",
         "command_template": (
-            "for api_read_write_burst, run python tools/capacity_bounded_load_harness.py"
+            "python tools/capacity_bounded_load_harness.py"
             " --base-url {base_url}"
-            " --gate api_read_write_burst"
+            " --gate {workflow_gate}"
             " --requests <operator-approved-request-count>"
             " --concurrency <operator-approved-concurrency>"
             " --execute"
             " --operator-acknowledgement send-bounded-load-without-default-raise"
-            " --format json > capacity-bounded-load-harness-api-read-write-burst.json;"
+            " --format json > capacity-bounded-load-harness-{workflow_slug}.json;"
             " output status probe_only_not_recorded is not recorded gate evidence;"
-            " other gates require an approved harness extension;"
+            " unsupported gates require an approved harness extension;"
             " tools/capacity_load_plan.py remains dry-run-only"
         ),
         "expected_evidence": "probe result plus separately recorded scenario evidence with latency, errors, queue depth, DB waiting, cleanup, and stop-condition status",
@@ -781,15 +781,38 @@ def build_capacity_load_test_plan(
         }
         for gate in selected_gates
     ]
+    workflow_gate = selected_gates[0] if len(selected_gates) == 1 else "api_read_write_burst"
+    workflow_slug = workflow_gate.replace("_", "-")
     operator_workflow = [
         {
-            key: (value.format(base_url=safe_base_url) if key == "command_template" else value)
+            key: (
+                value.format(
+                    base_url=safe_base_url,
+                    workflow_gate=workflow_gate,
+                    workflow_slug=workflow_slug,
+                )
+                if key == "command_template"
+                else value
+            )
             for key, value in step.items()
         }
         for step in _LOAD_TEST_OPERATOR_WORKFLOW
     ]
     for step in operator_workflow:
         step["command"] = step.pop("command_template")
+        if workflow_gate != "api_read_write_burst" and step["id"] in {
+            "record_cleanup_proof",
+            "assemble_evidence_bundle_draft",
+            "assemble_recorded_gate_snapshot",
+            "generate_gate_readiness_verdict",
+        }:
+            for key in ("command", "expected_evidence"):
+                value = step.get(key)
+                if isinstance(value, str):
+                    step[key] = (
+                        value.replace("api_read_write_burst", workflow_gate)
+                        .replace("api-read-write-burst", workflow_slug)
+                    )
     return {
         "schema_version": "ai-platform.capacity-load-test-plan.v1",
         "baseline": build_capacity_baseline(settings),

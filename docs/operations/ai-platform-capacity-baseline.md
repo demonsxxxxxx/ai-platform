@@ -24,6 +24,7 @@ python tools/capacity_profile_readiness.py --snapshot-json <capacity-evidence-sn
 python tools/capacity_profile_readiness.py --snapshot-json <capacity-evidence-snapshot.json> --format json
 python tools/capacity_runtime_evidence.py --base-url http://127.0.0.1:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha <deployed-commit> --runtime-profile <profile> --format json
 python tools/capacity_bounded_load_harness.py --base-url http://127.0.0.1:8020 --gate api_read_write_burst --requests 10 --concurrency 2 --format json
+python tools/capacity_bounded_load_harness.py --base-url http://127.0.0.1:8020 --gate queue_depth_and_lease_latency --requests 10 --concurrency 2 --format json
 ```
 
 The scripts intentionally do not print DSNs, Redis URLs, model gateway URLs,
@@ -227,9 +228,17 @@ operator harness entrypoint for that real-load step. It emits schema
 `ai-platform.capacity-bounded-load-harness.v1`, defaults to dry-run, and only
 sends requests when `--execute` is paired with
 `--operator-acknowledgement send-bounded-load-without-default-raise`. The
-initial supported gate is `api_read_write_burst`, implemented as a bounded
-read-only probe against `GET /api/ai/health` and
-`GET /api/ai/admin/runtime/overview`.
+harness currently supports `api_read_write_burst` and
+`queue_depth_and_lease_latency`. The API gate is a bounded read-only probe
+against `GET /api/ai/health` and
+`GET /api/ai/admin/runtime/overview?include_maintenance_cleanup=false`; the
+queue-depth gate is a bounded read-only probe against
+`GET /api/ai/admin/runtime/overview?include_maintenance_cleanup=false` only, so
+it can observe queue, admission, backpressure, DB-pool, sandbox, and
+observability sections without creating runs or triggering Admin Runtime
+sandbox/container maintenance cleanup.
+
+Machine-readable doc check: the harness currently supports `api_read_write_burst` and `queue_depth_and_lease_latency`.
 
 The harness output is intentionally marked `probe_only_not_recorded`,
 `does_not_raise_defaults = true`, and `does_not_mark_gate_recorded = true`. It

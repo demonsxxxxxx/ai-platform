@@ -1086,6 +1086,113 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
     ]
 
 
+def test_admin_runtime_overview_can_skip_maintenance_cleanup_for_probe_snapshots(monkeypatch):
+    calls = []
+
+    class FakeProvider:
+        async def cleanup_orphan_containers(self, filters, *, reason):
+            raise AssertionError("probe snapshot must not run provider cleanup")
+
+        async def list_runtime_containers(self, filters):
+            calls.append(("containers", filters))
+            return []
+
+    @asynccontextmanager
+    async def overview_transaction():
+        yield object()
+
+    async def fail_runtime_cleanup(conn, *, tenant_id=None, reason="expired", **kwargs):
+        raise AssertionError("probe snapshot must not run sandbox runtime cleanup")
+
+    async def fail_db_cleanup(conn, *, tenant_id=None, reason="expired"):
+        raise AssertionError("probe snapshot must not run DB sandbox lease cleanup")
+
+    async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
+        calls.append(("leases", tenant_id, status, limit))
+        return []
+
+    async def fake_get_queue_status():
+        calls.append(("queue_status",))
+        return {"depths": {"queued": 0}, "workers": []}
+
+    async def fake_get_queue_insight(tenant_id, **kwargs):
+        calls.append(("queue_insight", tenant_id, kwargs))
+        return {"tenant_id": tenant_id, "reason": "worker_available"}
+
+    async def fake_run_summary(conn, *, tenant_id, limit=10):
+        calls.append(("run_summary", tenant_id, limit))
+        return {"total": 0, "by_status": {}, "active": 0, "terminal": 0, "recent_failures": []}
+
+    async def fake_observability_summary(conn, *, tenant_id):
+        calls.append(("observability", tenant_id))
+        return {"event_count": 0, "artifact_count": 0, "error_count": 0}
+
+    async def fake_admission_summary(conn, *, tenant_id, limit, top_user_limit=10):
+        calls.append(("admission", tenant_id, limit, top_user_limit))
+        return {"active_runs": 0, "active_users": 0, "saturated_users": 0, "top_users": []}
+
+    def fake_pool_status():
+        calls.append(("database_pool",))
+        return {"configured": {"min_size": 1, "max_size": 10, "timeout_seconds": 10.0, "max_waiting": 100}}
+
+    runtime_settings = Settings(frontend_poc_auth_enabled=True)
+    monkeypatch.setattr("app.auth.get_settings", lambda: runtime_settings)
+    monkeypatch.setattr("app.routes.admin_runtime.get_settings", lambda: runtime_settings)
+    monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", overview_transaction)
+    monkeypatch.setattr(
+        "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
+        fail_runtime_cleanup,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.admin_runtime.repositories.cleanup_expired_sandbox_leases",
+        fail_db_cleanup,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+    monkeypatch.setattr("app.routes.admin_runtime.get_queue_status", fake_get_queue_status)
+    monkeypatch.setattr("app.routes.admin_runtime.get_queue_insight", fake_get_queue_insight)
+    monkeypatch.setattr(
+        "app.routes.admin_runtime.repositories.get_admin_runtime_run_summary",
+        fake_run_summary,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.admin_runtime.repositories.get_admin_runtime_observability_summary",
+        fake_observability_summary,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.admin_runtime.repositories.get_admin_runtime_admission_summary",
+        fake_admission_summary,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.admin_runtime.get_pool_status", fake_pool_status, raising=False)
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["sandbox"]["containers"]["total"] == 0
+    assert body["queue"]["status"]["depths"] == {"queued": 0}
+    assert calls == [
+        ("leases", "default", "active", 100),
+        ("leases", "default", None, 100),
+        ("containers", {"tenant_id": "default"}),
+        ("run_summary", "default", 10),
+        ("observability", "default"),
+        ("admission", "default", 3, 10),
+        ("queue_status",),
+        ("queue_insight", "default", {"include_user_breakdown": True}),
+        ("database_pool",),
+    ]
+
+
 def test_admin_runtime_overview_sanitizes_summary_payloads(monkeypatch):
     class FakeProvider:
         async def list_runtime_containers(self, filters):

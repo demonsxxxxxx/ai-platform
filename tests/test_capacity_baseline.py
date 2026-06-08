@@ -304,7 +304,15 @@ def test_capacity_load_test_plan_covers_each_gate_with_dry_run_commands_and_no_d
     assert plan["operator_workflow"][2]["requires_explicit_operator_execution"] is True
     assert plan["operator_workflow"][2]["does_not_raise_defaults"] is True
     assert "capacity_bounded_load_harness.py" in plan["operator_workflow"][2]["command"]
+    assert "--gate api_read_write_burst" in plan["operator_workflow"][2]["command"]
+    assert "capacity-bounded-load-harness-api-read-write-burst.json" in plan["operator_workflow"][2]["command"]
+    assert "--gate queue_depth_and_lease_latency" not in plan["operator_workflow"][2]["command"]
+    assert (
+        "capacity-bounded-load-harness-queue-depth-and-lease-latency.json"
+        not in plan["operator_workflow"][2]["command"]
+    )
     assert "probe_only_not_recorded" in plan["operator_workflow"][2]["command"]
+    assert "other gates require an approved harness extension" not in plan["operator_workflow"][2]["command"]
     assert plan["operator_workflow"][4]["requires_explicit_operator_execution"] is True
     assert plan["operator_workflow"][4]["expected_evidence"] == "capacity-cleanup-proof-api-read-write-burst.json"
     assert plan["operator_workflow"][5]["requires_explicit_operator_execution"] is False
@@ -370,6 +378,51 @@ def test_capacity_recorded_gate_evidence_contract_is_machine_readable_and_fail_c
     assert "raw_storage_key" not in serialized
     assert "sandbox_workdir" not in serialized
     assert "executor_private_payload" not in serialized
+
+
+def test_capacity_load_test_plan_uses_selected_gate_in_operator_workflow():
+    plan = build_capacity_load_test_plan(
+        SecretBearingSettings(),
+        base_url="https://ai-platform.internal",
+        scenario="queue_depth_and_lease_latency",
+    )
+
+    workflow = {step["id"]: step for step in plan["operator_workflow"]}
+
+    assert [scenario["gate"] for scenario in plan["scenarios"]] == [
+        "queue_depth_and_lease_latency",
+    ]
+    assert "--gate queue_depth_and_lease_latency" in workflow["execute_bounded_load_scenario"]["command"]
+    assert (
+        "capacity-bounded-load-harness-queue-depth-and-lease-latency.json"
+        in workflow["execute_bounded_load_scenario"]["command"]
+    )
+    assert "--gate api_read_write_burst" not in workflow["execute_bounded_load_scenario"]["command"]
+    assert (
+        "capacity-bounded-load-harness-api-read-write-burst.json"
+        not in workflow["execute_bounded_load_scenario"]["command"]
+    )
+    assert workflow["record_cleanup_proof"]["expected_evidence"] == (
+        "capacity-cleanup-proof-queue-depth-and-lease-latency.json"
+    )
+    assert (
+        "capacity-bounded-load-harness-queue-depth-and-lease-latency.json"
+        in workflow["assemble_evidence_bundle_draft"]["command"]
+    )
+    assert "--gate queue_depth_and_lease_latency" in workflow["assemble_evidence_bundle_draft"]["command"]
+    assert (
+        "capacity-evidence-bundle-queue-depth-and-lease-latency.md"
+        in workflow["assemble_evidence_bundle_draft"]["command"]
+    )
+    assert (
+        "capacity-recorded-gate-evidence-queue-depth-and-lease-latency.json"
+        in workflow["assemble_recorded_gate_snapshot"]["command"]
+    )
+    assert "--gate queue_depth_and_lease_latency" in workflow["assemble_recorded_gate_snapshot"]["command"]
+    assert (
+        "capacity-evidence-snapshot-recorded-queue-depth-and-lease-latency.json"
+        in workflow["generate_gate_readiness_verdict"]["command"]
+    )
 
 
 def test_render_capacity_load_test_plan_markdown_is_repeatable_and_safe():

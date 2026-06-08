@@ -53,7 +53,7 @@ def main() -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         print(render_capacity_bounded_load_harness_markdown(payload))
-    if args.execute and payload["status"].startswith("blocked_"):
+    if payload["status"].startswith("blocked_"):
         return 2
     if args.execute and payload["status"] != "probe_completed_not_gate_evidence":
         return 3

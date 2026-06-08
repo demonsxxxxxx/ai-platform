@@ -117,14 +117,23 @@ not an automatic production default increase or safe concurrency-number claim.
 Runtime capture, sanitized evidence snapshot, and gate verdict into one
 operator command without printing the raw overview or secret values.
 `python tools/capacity_bounded_load_harness.py --base-url <api-url> --gate
-api_read_write_burst --requests <n> --concurrency <n> --format json` now adds a
-repository-owned bounded harness entrypoint with schema
-`ai-platform.capacity-bounded-load-harness.v1`. It defaults to dry-run and only
-sends the read-only `/api/ai/health` plus `/api/ai/admin/runtime/overview`
-probe when `--execute` is paired with
-`--operator-acknowledgement send-bounded-load-without-default-raise`. Its output
-is `probe_only_not_recorded`, `does_not_raise_defaults = true`, and
+api_read_write_burst --requests <n> --concurrency <n> --format json` and
+`python tools/capacity_bounded_load_harness.py --base-url <api-url> --gate
+queue_depth_and_lease_latency --requests <n> --concurrency <n> --format json`
+now add repository-owned bounded harness entrypoints with schema
+`ai-platform.capacity-bounded-load-harness.v1`. The harness currently supports
+`api_read_write_burst` and `queue_depth_and_lease_latency`. It defaults to
+dry-run and only sends read-only probe traffic when `--execute` is paired with
+`--operator-acknowledgement send-bounded-load-without-default-raise`. The API
+gate uses `/api/ai/health` plus
+`/api/ai/admin/runtime/overview?include_maintenance_cleanup=false`; the
+queue-depth gate uses
+`/api/ai/admin/runtime/overview?include_maintenance_cleanup=false` only to
+observe queue, admission, backpressure, DB-pool, sandbox, and observability
+sections without triggering Admin Runtime sandbox/container maintenance
+cleanup. Its output is `probe_only_not_recorded`, `does_not_raise_defaults = true`, and
 `does_not_mark_gate_recorded = true`; it is not accepted by `tools/capacity_gate_readiness.py` as recorded gate evidence.
+Machine-readable doc check: the harness currently supports `api_read_write_burst` and `queue_depth_and_lease_latency`.
 `python tools/capacity_evidence_bundle.py --start-runtime-evidence-json
 capacity-runtime-evidence-start.json --runtime-evidence-json
 capacity-runtime-evidence-end.json --bounded-probe-json
