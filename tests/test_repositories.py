@@ -4414,6 +4414,7 @@ async def test_get_admin_runtime_observability_summary_coerces_nulls_to_defaults
         "artifact_count": 0,
         "error_count": 0,
         "error_types": {},
+        "error_categories": {},
         "latency_ms": {"avg": None, "max": None},
         "token_counts": {"input": 0, "output": 0, "total": 0},
         "estimated_cost_minor": 0,
@@ -4459,6 +4460,8 @@ async def test_get_admin_runtime_observability_summary_uses_run_totals_for_termi
 
     assert summary["event_count"] == 2
     assert summary["error_count"] == 2
+    assert summary["error_types"] == {"executor_failure": 2}
+    assert summary["error_categories"] == {"executor": 2}
     assert summary["latency_ms"] == {"avg": 250, "max": 300}
     assert summary["token_counts"] == {"input": 10, "output": 20, "total": 30}
     assert summary["estimated_cost_minor"] == 7
