@@ -134,7 +134,10 @@ evidence keys, cleanup proof status, and stop-condition status. If any recorded
 gate lacks that evidence packet, the verifier returns
 `blocked_incomplete_load_test_evidence`, lists the gate under
 `invalid_load_test_evidence`, and keeps the same fail-closed production
-decision.
+decision. Template placeholders such as `<commit_sha>`, `TODO`, `TBD`,
+`placeholder`, `fill-me`, or `replace-me` are also treated as missing evidence;
+operators must replace them with real artifact references or measured values
+from the approved load run.
 
 For a single read-only capture command, use:
 
@@ -196,7 +199,9 @@ The final evidence snapshot should use this shape before operator review:
 The real gate evidence must include every item emitted by
 `tools/capacity_load_plan.py` under `required_evidence` as non-empty
 `gate_evidence.<gate>.evidence` values or artifact references. The shortened
-JSON above only shows the contract shape.
+JSON above only shows the contract shape. Do not submit the template shape with
+placeholder values as recorded evidence; `tools/capacity_gate_readiness.py`
+will keep that verdict at `blocked_incomplete_load_test_evidence`.
 
 ### 211 Snapshot Evidence - 2026-06-08
 

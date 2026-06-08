@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -725,6 +726,33 @@ def _contains_secret_marker(value: object) -> bool:
     return False
 
 
+def _is_placeholder_evidence_text(value: str) -> bool:
+    text = value.strip()
+    if not text:
+        return True
+    lowered = text.lower()
+    if re.search(r"<[^<>]+>", text) or re.search(r"\$\{[^{}]+\}", text):
+        return True
+    placeholder_tokens = {
+        "todo",
+        "tbd",
+        "placeholder",
+        "fill-me",
+        "fill_me",
+        "fill me",
+        "replace-me",
+        "replace_me",
+        "replace me",
+        "example",
+        "sample",
+    }
+    if lowered in placeholder_tokens:
+        return True
+    return bool(re.fullmatch(r"(?:todo|tbd)[:\s_-].*", lowered)) or bool(
+        re.search(r"\b(?:placeholder|fill[-_ ]?me|replace[-_ ]?me)\b", lowered)
+    )
+
+
 def _has_recorded_evidence_value(value: object) -> bool:
     if value is None or _contains_secret_marker(value):
         return False
@@ -733,11 +761,17 @@ def _has_recorded_evidence_value(value: object) -> bool:
     if isinstance(value, int | float) and not isinstance(value, bool):
         return True
     if isinstance(value, str):
+        if _is_placeholder_evidence_text(value):
+            return False
         return _safe_identity(value) not in {"unknown", "redacted"}
     if isinstance(value, list):
-        return bool(value) and any(_has_recorded_evidence_value(item) for item in value)
+        return bool(value) and all(_has_recorded_evidence_value(item) for item in value)
     if isinstance(value, dict):
-        return bool(value) and any(_has_recorded_evidence_value(item) for item in value.values())
+        return bool(value) and all(
+            not _is_placeholder_evidence_text(str(key))
+            and _has_recorded_evidence_value(item)
+            for key, item in value.items()
+        )
     try:
         serialized = json.dumps(value, ensure_ascii=False)
     except TypeError:

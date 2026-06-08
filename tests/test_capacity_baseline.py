@@ -781,6 +781,132 @@ def test_capacity_gate_readiness_accepts_complete_recorded_gate_evidence_for_ope
     assert readiness["production_default_decision"] == "operator_review_required_before_default_change"
 
 
+def test_capacity_gate_readiness_rejects_placeholder_load_test_evidence():
+    snapshot = build_capacity_evidence_snapshot(
+        {
+            "capacity": build_capacity_baseline(SecretBearingSettings()),
+            "queue": {"status": {"depths": {"queued": 0, "processing": 0, "dead_letter": 0}}},
+            "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+            "admission": {"active_runs": 0, "saturated_users": 0},
+            "backpressure": {"reasons": []},
+            "sandbox": {"containers": {"running": 0}, "leases": {"active": 0}},
+            "observability": {"event_count": 3, "error_count": 0},
+        },
+        commit_sha="abc123",
+        runtime_profile="211-current",
+    )
+    required_evidence = snapshot["load_test_evidence"]["required_evidence"]
+    snapshot["load_test_evidence"] = {
+        "status": "recorded",
+        "required_gates": list(LOAD_TEST_GATES),
+        "recorded_gates": list(LOAD_TEST_GATES),
+        "gate_evidence": {
+            gate: {
+                "evidence": {item: f"<{item}>" for item in required_evidence},
+                "cleanup_proof_status": "recorded",
+                "stop_condition_status": "passed",
+                "triggered_stop_conditions": [],
+            }
+            for gate in LOAD_TEST_GATES
+        },
+    }
+
+    readiness = build_capacity_gate_readiness(snapshot)
+
+    assert readiness["status"] == "blocked_incomplete_load_test_evidence"
+    assert readiness["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
+    assert {gate["status"] for gate in readiness["load_test_gates"]} == {
+        "incomplete_recorded_load_test_evidence"
+    }
+    first_invalid = readiness["invalid_load_test_evidence"][0]
+    assert first_invalid["gate"] == "api_read_write_burst"
+    assert first_invalid["missing_required_evidence"] == required_evidence
+
+
+def test_capacity_gate_readiness_rejects_embedded_placeholder_load_test_evidence():
+    snapshot = build_capacity_evidence_snapshot(
+        {
+            "capacity": build_capacity_baseline(SecretBearingSettings()),
+            "queue": {"status": {"depths": {"queued": 0, "processing": 0, "dead_letter": 0}}},
+            "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+            "admission": {"active_runs": 0, "saturated_users": 0},
+            "backpressure": {"reasons": []},
+            "sandbox": {"containers": {"running": 0}, "leases": {"active": 0}},
+            "observability": {"event_count": 3, "error_count": 0},
+        },
+        commit_sha="abc123",
+        runtime_profile="211-current",
+    )
+    required_evidence = snapshot["load_test_evidence"]["required_evidence"]
+    snapshot["load_test_evidence"] = {
+        "status": "recorded",
+        "required_gates": list(LOAD_TEST_GATES),
+        "recorded_gates": list(LOAD_TEST_GATES),
+        "gate_evidence": {
+            gate: {
+                "evidence": {
+                    item: {
+                        "artifact": f"artifact://capacity/{gate}/{item}=<{item}>",
+                        "notes": [f"${{{item}}}"],
+                    }
+                    for item in required_evidence
+                },
+                "cleanup_proof_status": "recorded",
+                "stop_condition_status": "passed",
+                "triggered_stop_conditions": [],
+            }
+            for gate in LOAD_TEST_GATES
+        },
+    }
+
+    readiness = build_capacity_gate_readiness(snapshot)
+
+    assert readiness["status"] == "blocked_incomplete_load_test_evidence"
+    assert {gate["status"] for gate in readiness["load_test_gates"]} == {
+        "incomplete_recorded_load_test_evidence"
+    }
+    assert readiness["invalid_load_test_evidence"][0]["missing_required_evidence"] == required_evidence
+
+
+def test_capacity_gate_readiness_accepts_real_ticket_named_artifact_refs():
+    snapshot = build_capacity_evidence_snapshot(
+        {
+            "capacity": build_capacity_baseline(SecretBearingSettings()),
+            "queue": {"status": {"depths": {"queued": 0, "processing": 0, "dead_letter": 0}}},
+            "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+            "admission": {"active_runs": 0, "saturated_users": 0},
+            "backpressure": {"reasons": []},
+            "sandbox": {"containers": {"running": 0}, "leases": {"active": 0}},
+            "observability": {"event_count": 3, "error_count": 0},
+        },
+        commit_sha="abc123",
+        runtime_profile="211-current",
+    )
+    required_evidence = snapshot["load_test_evidence"]["required_evidence"]
+    snapshot["load_test_evidence"] = {
+        "status": "recorded",
+        "required_gates": list(LOAD_TEST_GATES),
+        "recorded_gates": list(LOAD_TEST_GATES),
+        "gate_evidence": {
+            gate: {
+                "evidence": {
+                    item: f"capacity-evidence/TODO-123/{gate}/{item}.json"
+                    for item in required_evidence
+                },
+                "cleanup_proof_status": "recorded",
+                "stop_condition_status": "passed",
+                "triggered_stop_conditions": [],
+            }
+            for gate in LOAD_TEST_GATES
+        },
+    }
+
+    readiness = build_capacity_gate_readiness(snapshot)
+
+    assert readiness["status"] == "ready_for_operator_review"
+    assert readiness["invalid_load_test_evidence"] == []
+
+
 def test_render_capacity_gate_readiness_markdown_is_gap_first_and_safe():
     readiness = build_capacity_gate_readiness(
         build_capacity_evidence_snapshot(
