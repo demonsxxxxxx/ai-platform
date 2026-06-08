@@ -214,3 +214,32 @@ def test_frontend_docs_record_packaged_runtime_smoke_contract_and_211_blocker():
         assert "nginx:1.27-alpine" in text
         assert "not release acceptance" in text
         assert "C:\\Users" not in text
+
+
+def test_prd_records_claude_code_deerflow_boundary_without_second_runtime():
+    prd_text = read(PRD)
+    roadmap_text = read(ROADMAP)
+
+    assert "Claude Code / Claude Agent SDK 是当前首选执行内核" in prd_text
+    assert "DeerFlow 只吸收为平台级 long-horizon product contract" in prd_text
+    assert "不是第二套 runtime 或控制面" in prd_text
+    assert "executor-private logs" in prd_text
+    assert "不能成为 platform source of truth" in prd_text
+    assert "不要复制 DeerFlow 作为第二控制面" in prd_text
+    assert "不要把 Claude Code 内部 subagents 等同于平台级 multi-run scheduling" in prd_text
+    assert "Platform Product Contract Gates" in prd_text
+    assert "Long Task Product Contract Gate (DeerFlow pattern)" in prd_text
+    assert "Long Task Product Contract Adapter (DeerFlow pattern)" not in prd_text
+
+    assert "Long Task Product Contract / Office Artifact Flow" in roadmap_text
+    for required in (
+        "parent / child run decomposition and state ledger",
+        "subagent progress stream and concurrency limits",
+        "artifact ledger, preview, download, versioning, and reuse",
+        "context pack, long-task context compression, resume, and replay",
+        "cancel / retry / timeout semantics owned by the platform",
+    ):
+        assert required in roadmap_text
+    assert "DeerFlow is not a second runtime to clone" in roadmap_text
+    assert "C:\\Users" not in prd_text
+    assert "C:\\Users" not in roadmap_text

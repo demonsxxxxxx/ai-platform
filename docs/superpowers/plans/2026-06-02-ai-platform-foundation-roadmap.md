@@ -31,6 +31,29 @@
 
 P2 Long Task / Multi-Agent Runtime 不再继续默认前冲。checkpoint、subagent、artifact tree、provenance、resume/cancel/retry 与多 agent 调度只能在前置 auth/session、tenant isolation、fair scheduling、quota/backpressure、observability 和 sandbox/tool risk gates 验收后继续扩大。
 
+### Claude Code / DeerFlow Boundary And Long Task Product Contract
+
+Issue #23 records the PRD boundary before deeper long-task, office-document,
+artifact, and multi-agent UX work starts. Claude Code / Claude Agent SDK remains
+the preferred execution kernel. DeerFlow is not a second runtime to clone; it is
+absorbed only as a platform-level long-horizon product contract and
+orchestration-pattern reference.
+
+The later `Long Task Product Contract / Office Artifact Flow` gate must be
+defined and reviewed before ordinary-user G8/G10 expansion. That gate covers:
+
+- parent / child run decomposition and state ledger
+- subagent progress stream and concurrency limits
+- artifact ledger, preview, download, versioning, and reuse
+- context pack, long-task context compression, resume, and replay
+- cancel / retry / timeout semantics owned by the platform
+
+This boundary prevents two drift paths: copying DeerFlow as a second control
+plane/runtime, and treating Claude Code executor-private logs, internal
+subagents, or artifact internals as sufficient platform facts. Platform RBAC,
+tool policy, sandbox lease, artifact ACL, audit, redaction, replay, and
+observability remain the source-of-truth contracts.
+
 ### G5 Tenant-Aware Concurrency Status
 
 DB connection pool 是 issue #16 的第一个可独立闭环前置项：平台已在 `main` 建立 bounded async Postgres pool 替代每 transaction 直连，并把 allowlisted pool status 暴露到 admin-only runtime overview。2026-06-06 211 smoke 已验证 API/worker runtime label 与 source marker 匹配、API 与前端代理 health 正常、admin-only overview 返回 `database_pool.open=true` 且未暴露 DSN/password/secret/api key；后续 tenant-aware queue/quota 与 worker maintenance 可以在这个承载基础上推进。

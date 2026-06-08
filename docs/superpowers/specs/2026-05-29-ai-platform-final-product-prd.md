@@ -26,7 +26,7 @@
 - 外部项目只按模块吸收，不接管平台主数据。
 - 普通用户使用 Agent，不直接选择 raw Skill。
 - Admin / Developer 管理 Agent、Skills、MCP、模型、资源、审计和质量。
-- 执行层可插拔，当前优先 Claude Agent SDK，后续可接 AgentScope、OpenAI Agents SDK、DeerFlow-like runtime。
+- 执行层可插拔，Claude Code / Claude Agent SDK 是当前首选执行内核；DeerFlow 只作为长任务产品合同与编排模式参考。
 
 一句话目标：自研 `ai-platform` 做企业底座，吸收成熟项目的优秀模块，去掉不适合企业多租户治理的部分。
 
@@ -67,10 +67,29 @@
 | --- | --- | --- | --- |
 | Poco Claw | 团队空间、run drawer、playback、artifact 产品形态、Claude SDK client pool、container pool、session queue | 企业事实源、未治理的多租户模型、Docker socket 安全半径、single-user fallback | 产品形态和执行工程参考 |
 | AgentScope | Agent Service、Agent Skills、Workspace、Memory/Context、Permission allow/deny/ask、SSE replay、tool schema | 认证事实源、企业 RBAC、artifact ACL、审计主库、最终 Memory policy | runtime 和 Agent Skills 重点参考 |
-| DeerFlow | 长任务 research/report、middleware chain、plan mode、subagents、artifact 输出链、MCP/search 工具链 | 多租户控制面、企业合规事实源、无治理 shell/MCP | 复杂任务 runtime 参考 |
+| DeerFlow | 长任务 research/report、middleware chain、plan mode、subagents、artifact 输出链、MCP/search 工具链 | 多租户控制面、企业合规事实源、无治理 shell/MCP、第二套 runtime/control plane | 长任务产品合同与编排模式参考 |
 | new-api | 统一模型网关、OpenAI-compatible 模型入口、模型路由 | 前端暴露模型 Key、每个应用各自接模型 | 模型网关层 |
 
 外部项目只能进入 `agent frontend UX pattern`、`executor adapter`、`runtime pattern`、`skill package pattern`、`tool/memory design reference`，不能进入事实源核心。
+
+### 3.1 Claude Code 与 DeerFlow 吸收边界
+
+Claude Code / Claude Agent SDK 是当前首选执行内核。平台不复制其代码执行、工具调用、内部 subagent 执行或 artifact 生成能力；这些能力通过 executor adapter 消费。
+
+DeerFlow 只吸收为平台级 long-horizon product contract 和 orchestration pattern，不是第二套 runtime 或控制面。可吸收的合同包括：
+
+- parent / child run decomposition and state ledger。
+- subagent progress stream and concurrency limits。
+- artifact ledger、preview、download、versioning、reuse。
+- context pack、long-task context compression、resume、replay。
+- cancel / retry / timeout semantics owned by the platform。
+
+禁止：
+
+- 不要复制 DeerFlow 作为第二控制面。
+- 不要把 executor-private logs、Claude Code internal logs 或 executor 私有 payload 当成唯一事实源；它们不能成为 platform source of truth。
+- 不要绕过平台 RBAC、tool policy、sandbox lease、artifact ACL、audit 或 redaction。
+- 不要把 Claude Code 内部 subagents 等同于平台级 multi-run scheduling。
 
 ## 4. 总体架构
 
@@ -85,16 +104,18 @@ Enterprise User
         -> ContextBuilder / Memory Policy
         -> Queue / Scheduler / Resource Manager
         -> Executor Adapter
-           -> Claude Agent SDK
+           -> Claude Code / Claude Agent SDK
            -> AgentScope Adapter
-           -> DeerFlow-like Runtime Adapter
            -> RAGFlow Adapter
            -> HTTP LLM Workflow
+        -> Platform Product Contract Gates
+           -> Long Task Product Contract Gate (DeerFlow pattern)
         -> Artifact Store
         -> Audit / Events / Observability
 ```
 
 执行器只消费平台准备好的 payload 和 workspace，不反向定义平台主数据。
+`Platform Product Contract Gates` 是平台验收合同层，不是可执行 adapter 或第二控制面。
 
 ## 5. 用户角色
 
@@ -219,9 +240,10 @@ Enterprise User
 目标合同：
 
 - 所有执行器通过统一 `RunPayload -> ExecutorResult/events/artifacts` 接入。
-- Claude Agent SDK 是当前主执行层。
+- Claude Code / Claude Agent SDK 是当前主执行层。
 - RAGFlow 是 read-only 知识检索执行层。
-- AgentScope、OpenAI Agents SDK、DeerFlow-like runtime 只能通过 adapter 接入。
+- AgentScope、OpenAI Agents SDK 只能通过 adapter 接入。
+- DeerFlow 只能作为 long-horizon product contract / orchestration pattern 被吸收，不能作为第二套 runtime 或控制面接管平台事实。
 
 门禁：
 
