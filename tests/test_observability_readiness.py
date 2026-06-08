@@ -11,6 +11,7 @@ from app.observability_readiness import (
     render_observability_readiness_markdown,
 )
 from app.quality_golden_set_readiness import build_quality_golden_set_readiness
+from app.release_evidence_readiness import build_release_evidence_readiness
 
 
 class SecretBearingSettings:
@@ -54,12 +55,17 @@ def test_observability_readiness_records_g9_domains_and_open_gaps_without_secret
     assert "slo_threshold_runtime_calibration" in domains["alerts_and_exports"]["gaps"]
     assert "alert_rules_and_slo_thresholds" not in domains["alerts_and_exports"]["gaps"]
     assert "trace_audit_export_contract" in domains["alerts_and_exports"]["gaps"]
+    assert "release_evidence_export_location" not in domains["alerts_and_exports"]["gaps"]
+    assert "release_evidence_export_location_contract" in domains["alerts_and_exports"]["implemented"]
+    assert "release_evidence_runtime_export_acceptance" in domains["alerts_and_exports"]["gaps"]
     assert "model_gateway_request_concurrency_limit" in readiness["open_gaps"]
     assert "latency_percentile_runtime_211_acceptance" not in readiness["open_gaps"]
     assert "latency_percentile_per_surface_split_and_dashboard_acceptance" in readiness["open_gaps"]
     assert readiness["config_signals"]["model_gateway_request_concurrency_limit"] is None
     assert "alert_delivery_channel_policy" in readiness["open_gaps"]
     assert "slo_threshold_runtime_calibration" in readiness["open_gaps"]
+    assert "release_evidence_export_location" not in readiness["open_gaps"]
+    assert "release_evidence_runtime_export_acceptance" in readiness["open_gaps"]
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
     assert "callback-secret" not in serialized
@@ -129,6 +135,75 @@ def test_observability_readiness_includes_alert_slo_rule_template_evidence_witho
     assert "sandbox_workdir" not in serialized
     assert "api_key" not in serialized
     assert "token=secret" not in serialized
+
+
+def test_release_evidence_readiness_contract_defines_safe_export_location_without_closing_g9():
+    readiness = build_release_evidence_readiness()
+
+    assert readiness["schema_version"] == "ai-platform.release-evidence-readiness.v1"
+    assert readiness["gate"] == "G9 Release Evidence Export"
+    assert readiness["status"] == "partial_blocked"
+    assert readiness["active_export_policy"] == "location_contract_only_not_runtime_export"
+    assert readiness["export_location"] == {
+        "type": "repository_path",
+        "path": "docs/release-evidence/",
+        "index": "docs/release-evidence/README.md",
+        "write_policy": "append_reviewed_redacted_evidence_entries_only",
+    }
+    assert readiness["evidence_contract"]["schema_version"] == "ai-platform.release-evidence-entry.v1"
+    assert readiness["evidence_contract"]["write_path"] == "docs/release-evidence/<gate>/<commit_sha>/<evidence_id>.json"
+    assert readiness["evidence_contract"]["required_fields"] == [
+        "evidence_id",
+        "commit_sha",
+        "gate",
+        "issue_refs",
+        "artifact_kind",
+        "captured_at",
+        "source_ref",
+        "evidence_ref",
+        "redaction_scan_status",
+        "review_status",
+    ]
+    assert readiness["evidence_contract"]["forbidden_marker_classes"] == [
+        "executor private payload",
+        "raw storage key",
+        "sandbox workdir",
+        "secret material",
+        "API key",
+        "bearer token",
+        "database URL",
+        "Redis URL",
+    ]
+    assert readiness["evidence_contract"]["does_not_close_g9"] is True
+    assert readiness["open_gaps"] == [
+        "release_evidence_runtime_export_acceptance",
+        "release_evidence_retention_policy",
+    ]
+
+    serialized = json.dumps(readiness, ensure_ascii=False).lower()
+    assert "c:\\users" not in serialized
+    assert "executor_private_payload" not in serialized
+    assert "raw_storage_key" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "api_key" not in serialized
+    assert "database_url" not in serialized
+    assert "sk-secret" not in serialized
+
+
+def test_observability_readiness_includes_release_evidence_contract_without_closing_g9():
+    readiness = build_observability_readiness(SecretBearingSettings())
+
+    alerts = readiness["domains"]["alerts_and_exports"]
+    assert "release_evidence_export_location_contract" in alerts["implemented"]
+    assert "release_evidence_export_location" not in alerts["gaps"]
+    assert "release_evidence_runtime_export_acceptance" in alerts["gaps"]
+
+    evidence = alerts["evidence"]["release_evidence"]
+    assert evidence["schema_version"] == "ai-platform.release-evidence-readiness.v1"
+    assert evidence["status"] == "partial_blocked"
+    assert evidence["export_location"]["path"] == "docs/release-evidence/"
+    assert evidence["evidence_contract"]["does_not_close_g9"] is True
+    assert "release_evidence_runtime_export_acceptance" in readiness["open_gaps"]
 
 
 def test_quality_golden_set_readiness_contract_is_source_level_and_fail_closed():
@@ -274,6 +349,10 @@ def test_render_observability_readiness_markdown_is_operator_readable_and_gap_fi
     assert "alert_rules_runtime_dashboard_and_211_acceptance" in markdown
     assert "alert_delivery_channel_policy" in markdown
     assert "slo_threshold_runtime_calibration" in markdown
+    assert "release_evidence_export_location_contract" in markdown
+    assert "ai-platform.release-evidence-readiness.v1" in markdown
+    assert "docs/release-evidence/" in markdown
+    assert "release_evidence_runtime_export_acceptance" in markdown
     assert "template_only_not_enabled" in markdown
     assert "queue_depth_no_lease_progress" in markdown
     assert "## Domains" in markdown
@@ -299,3 +378,21 @@ def test_observability_readiness_cli_outputs_json_without_secret_markers():
     assert "runtime_metrics" in payload["domains"]
     assert "anthropic-secret" not in result.stdout
     assert "callback-secret" not in result.stdout
+
+
+def test_release_evidence_readiness_cli_outputs_json_without_secret_markers():
+    result = subprocess.run(
+        [sys.executable, "tools/release_evidence_readiness.py", "--format", "json"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "ai-platform.release-evidence-readiness.v1"
+    assert payload["export_location"]["path"] == "docs/release-evidence/"
+    assert payload["status"] == "partial_blocked"
+    assert "executor_private_payload" not in result.stdout
+    assert "raw_storage_key" not in result.stdout
+    assert "sandbox_workdir" not in result.stdout
+    assert "api_key" not in result.stdout

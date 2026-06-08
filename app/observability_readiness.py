@@ -3,6 +3,7 @@ from typing import Any
 from app.alert_slo_readiness import build_alert_slo_readiness
 from app.error_taxonomy import build_error_taxonomy_contract
 from app.quality_golden_set_readiness import build_quality_golden_set_readiness
+from app.release_evidence_readiness import build_release_evidence_readiness
 from app.settings import get_settings
 
 
@@ -59,6 +60,7 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
     resolved_settings = settings or get_settings()
     alert_slo_readiness = build_alert_slo_readiness()
     quality_golden_set_readiness = build_quality_golden_set_readiness()
+    release_evidence_readiness = build_release_evidence_readiness()
     model_gateway_request_concurrency_limit = _positive_int_setting(
         resolved_settings,
         "model_gateway_request_concurrency_limit",
@@ -133,13 +135,14 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
                 "admin_runtime_overview_projection",
                 "capacity_gate_readiness_verdict",
                 "alert_slo_rule_template_evidence",
+                "release_evidence_export_location_contract",
             ],
             gaps=[
                 "alert_rules_runtime_dashboard_and_211_acceptance",
                 "alert_delivery_channel_policy",
                 "slo_threshold_runtime_calibration",
                 "trace_audit_export_contract",
-                "release_evidence_export_location",
+                *release_evidence_readiness["open_gaps"],
             ],
             next_checks=[
                 "wire alert/SLO templates into an Admin dashboard and 211 acceptance smoke before enabling alerts",
@@ -149,6 +152,7 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
             ],
             evidence={
                 "alert_slo_rules": alert_slo_readiness,
+                "release_evidence": release_evidence_readiness,
             },
         ),
     }
@@ -231,7 +235,34 @@ def _render_domain_evidence(evidence: object) -> str:
     alert_rules = evidence.get("alert_slo_rules")
     if isinstance(alert_rules, dict):
         rendered_sections.append(_render_alert_slo_evidence(alert_rules))
+    release_evidence = evidence.get("release_evidence")
+    if isinstance(release_evidence, dict):
+        rendered_sections.append(_render_release_evidence(release_evidence))
     return "".join(section for section in rendered_sections if section)
+
+
+def _render_release_evidence(release: dict[str, Any]) -> str:
+    location = release.get("export_location") if isinstance(release.get("export_location"), dict) else {}
+    contract = release.get("evidence_contract") if isinstance(release.get("evidence_contract"), dict) else {}
+    open_gaps = release.get("open_gaps")
+    gap_lines = ""
+    if isinstance(open_gaps, list):
+        gap_lines = "\n".join(f"- `{gap}`" for gap in open_gaps)
+    artifact_kinds = contract.get("accepted_artifact_kinds")
+    artifact_lines = ""
+    if isinstance(artifact_kinds, list):
+        artifact_lines = "\n".join(f"- `{kind}`" for kind in artifact_kinds)
+    return (
+        "\nEvidence:\n\n"
+        f"- `{release.get('schema_version')}` status `{release.get('status')}`\n"
+        f"- export location `{location.get('path')}` index `{location.get('index')}`\n"
+        f"- evidence entry schema `{contract.get('schema_version')}` at `{contract.get('write_path')}`\n"
+        f"- does not close G9 `{contract.get('does_not_close_g9')}`\n"
+        "Nested release-evidence gaps:\n\n"
+        f"{gap_lines}\n\n"
+        "Accepted artifact kinds:\n\n"
+        f"{artifact_lines}\n"
+    )
 
 
 def _render_alert_slo_evidence(alert_rules: dict[str, Any]) -> str:

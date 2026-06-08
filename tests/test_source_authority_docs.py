@@ -15,6 +15,7 @@ FRONTEND_README = FRONTEND_WEB / "README.md"
 FRONTEND_MIGRATION_DOC = ROOT / "docs/frontend/ai-platform-frontend-migration.md"
 CAPACITY_BASELINE_DOC = ROOT / "docs/operations/ai-platform-capacity-baseline.md"
 OBSERVABILITY_READINESS_DOC = ROOT / "docs/operations/ai-platform-observability-readiness.md"
+RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 
 AUTHORITY_DOCS = [PRD, ROADMAP, GUARDRAILS, AGENTS]
 TARGET_211_BACKEND = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform"
@@ -210,6 +211,7 @@ def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
 def test_observability_docs_record_quality_golden_set_contract_without_closing_g9():
     observability_text = read(OBSERVABILITY_READINESS_DOC)
     roadmap_text = read(ROADMAP)
+    release_evidence_text = read(RELEASE_EVIDENCE_INDEX)
 
     for text in (observability_text, roadmap_text):
         assert "latency percentiles p50/p95/p99" in text
@@ -222,6 +224,19 @@ def test_observability_docs_record_quality_golden_set_contract_without_closing_g
         assert "contract-only" in text
         assert "does not close G9" in text
         assert "golden-set evaluation runtime and 211 acceptance remain open" in text
+        assert "C:\\Users" not in text
+
+    for text in (observability_text, roadmap_text, release_evidence_text):
+        assert "tools/release_evidence_readiness.py" in text
+        assert "ai-platform.release-evidence-readiness.v1" in text
+        assert "docs/release-evidence/" in text
+        assert "ai-platform.release-evidence-entry.v1" in text
+        assert "release_evidence_runtime_export_acceptance" in text
+        assert "does not close G9" in text
+        assert "executor_private_payload" not in text
+        assert "raw_storage_key" not in text
+        assert "sandbox_workdir" not in text
+        assert "api_key" not in text
         assert "C:\\Users" not in text
 
 

@@ -7,8 +7,9 @@ baseline. It is an operator readiness snapshot, not a gate-closure claim. G9
 remains partial until latency percentile per-surface split and dashboard
 acceptance, model-gateway pressure controls and recorded capacity load-test
 evidence, error taxonomy dashboard acceptance, golden-set evaluation runtime
-and 211 acceptance, alert/SLO runtime acceptance, and trace/audit export
-contracts have code, tests, docs, review, and runtime evidence.
+and 211 acceptance, alert/SLO runtime acceptance, trace/audit export contracts,
+and release evidence runtime export acceptance have code, tests, docs, review,
+and runtime evidence.
 
 Generate the current readiness snapshot from the repository root:
 
@@ -55,7 +56,7 @@ or ordinary-user private content.
 | Runtime metrics | Admin Runtime observability summary, token/cost/latency/error counts, `latency_percentiles_p50_p95_p99_admin_projection`, queue/admission/DB-pool backpressure summary, config-visible model-gateway request limit status, capacity runtime evidence capture | `latency_percentile_per_surface_split_and_dashboard_acceptance` across API, queue lease, worker, model, sandbox, artifact, cancel, retry, and resume; enforced model-gateway request-limit/backpressure gate plus recorded model-gateway load-test evidence; recorded capacity load-test evidence |
 | Error taxonomy | Formal `ai-platform.error-taxonomy.v1` contract, category mapping for executor/tool/sandbox/model-gateway/queue/database/memory/artifact/auth failures, Admin Runtime `error_categories`, run event error count projection, and redacted recent failure projection | Dashboard acceptance and 211/runtime evidence for taxonomy-driven operations |
 | Quality evaluation | Run trace/audit linkage baseline, source-level `ai-platform.quality-golden-set-readiness.v1` contract, and `ai-platform.quality-score.v1` score schema | Golden-set evaluation runtime and 211 acceptance, office workflow acceptance dataset, quality threshold calibration, dashboard acceptance |
-| Alerts and exports | Admin Runtime overview projection, fail-closed capacity gate readiness verdict, and source-level `ai-platform.alert-slo-readiness.v1` rule template evidence for queue, database, worker, model gateway, sandbox, error-taxonomy, and capacity gates | Alert runtime dashboard and 211 acceptance, delivery-channel policy, runtime SLO calibration, trace/audit export contract, release evidence export location |
+| Alerts and exports | Admin Runtime overview projection, fail-closed capacity gate readiness verdict, source-level `ai-platform.alert-slo-readiness.v1` rule template evidence for queue, database, worker, model gateway, sandbox, error-taxonomy, and capacity gates, plus source-level `ai-platform.release-evidence-readiness.v1` export-location contract | Alert runtime dashboard and 211 acceptance, delivery-channel policy, runtime SLO calibration, trace/audit export contract, `release_evidence_runtime_export_acceptance`, and `release_evidence_retention_policy` |
 
 ## Quality Golden-Set Contract Baseline
 
@@ -109,6 +110,34 @@ Template rules cover:
 
 Remaining alert blockers are runtime dashboard wiring, delivery-channel policy,
 SLO threshold calibration from recorded runtime evidence, review, and 211 smoke.
+
+## Release Evidence Export Contract Baseline
+
+The source-level readiness snapshot now embeds
+`ai-platform.release-evidence-readiness.v1` as
+`observability_readiness.domains.alerts_and_exports.evidence.release_evidence`.
+Generate the standalone contract from the repository root:
+
+```powershell
+python tools/release_evidence_readiness.py --format markdown
+python tools/release_evidence_readiness.py --format json
+```
+
+The export location is `docs/release-evidence/`, with index
+`docs/release-evidence/README.md`. Future reviewed, redacted entries use
+`ai-platform.release-evidence-entry.v1` and the write path:
+
+```text
+docs/release-evidence/<gate>/<commit_sha>/<evidence_id>.json
+```
+
+This is a location and entry-shape contract only. It does not export evidence
+at runtime, does not store executor-only data, raw storage identifiers, sandbox
+runtime paths, or secret-like values, and does not close G9.
+
+Remaining release-evidence blockers are
+`release_evidence_runtime_export_acceptance` and
+`release_evidence_retention_policy`.
 
 ## 211 Runtime Evidence - 2026-06-08
 

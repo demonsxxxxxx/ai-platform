@@ -1,0 +1,74 @@
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any
+
+
+SCHEMA_VERSION = "ai-platform.release-evidence-readiness.v1"
+ENTRY_SCHEMA_VERSION = "ai-platform.release-evidence-entry.v1"
+GATE_NAME = "G9 Release Evidence Export"
+
+_EXPORT_LOCATION = {
+    "type": "repository_path",
+    "path": "docs/release-evidence/",
+    "index": "docs/release-evidence/README.md",
+    "write_policy": "append_reviewed_redacted_evidence_entries_only",
+}
+_REQUIRED_FIELDS = [
+    "evidence_id",
+    "commit_sha",
+    "gate",
+    "issue_refs",
+    "artifact_kind",
+    "captured_at",
+    "source_ref",
+    "evidence_ref",
+    "redaction_scan_status",
+    "review_status",
+]
+_FORBIDDEN_MARKER_CLASSES = [
+    "executor private payload",
+    "raw storage key",
+    "sandbox workdir",
+    "secret material",
+    "API key",
+    "bearer token",
+    "database URL",
+    "Redis URL",
+]
+_ACCEPTED_ARTIFACT_KINDS = [
+    "211_runtime_smoke",
+    "capacity_gate_readiness",
+    "frontend_packaged_runtime_smoke",
+    "frontend_release_traceability",
+    "governance_readiness",
+    "observability_readiness",
+]
+_OPEN_GAPS = [
+    "release_evidence_runtime_export_acceptance",
+    "release_evidence_retention_policy",
+]
+
+
+def build_release_evidence_readiness() -> dict[str, Any]:
+    """Build the source-level G9 release evidence export-location contract."""
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "gate": GATE_NAME,
+        "status": "partial_blocked",
+        "active_export_policy": "location_contract_only_not_runtime_export",
+        "export_location": deepcopy(_EXPORT_LOCATION),
+        "evidence_contract": {
+            "schema_version": ENTRY_SCHEMA_VERSION,
+            "write_path": "docs/release-evidence/<gate>/<commit_sha>/<evidence_id>.json",
+            "required_fields": list(_REQUIRED_FIELDS),
+            "accepted_artifact_kinds": list(_ACCEPTED_ARTIFACT_KINDS),
+            "accepted_redaction_scan_statuses": ["passed"],
+            "accepted_review_statuses": ["reviewed", "accepted"],
+            "forbidden_marker_classes": list(_FORBIDDEN_MARKER_CLASSES),
+            "does_not_export_raw_runtime_payloads": True,
+            "does_not_close_g9": True,
+        },
+        "open_gaps": list(_OPEN_GAPS),
+        "does_not_close_g9": True,
+    }
