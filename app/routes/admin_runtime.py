@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capacity_baseline import build_capacity_baseline
 from app.governance_readiness import build_governance_readiness
+from app.observability_readiness import build_observability_readiness
 from app import repositories
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
 from app.db import get_pool_status, transaction
@@ -521,6 +522,7 @@ async def admin_runtime_overview(
         "observability": _sanitize_observability_summary(observability_summary),
         "capacity": build_capacity_baseline(get_settings()),
         "governance": build_governance_readiness(get_settings()),
+        "observability_readiness": build_observability_readiness(get_settings()),
         "database_pool": database_pool,
         "admission": admission,
         "backpressure": _backpressure_snapshot(

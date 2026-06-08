@@ -44,6 +44,13 @@ inventory so ordinary-user review can distinguish live legacy routes from
 inactive imported source. This status lets `ci:verify` continue to lint,
 type-check, and build, but it does not close the Agent Frontend V1 rollout gate.
 
+From the repository root, `python tools/frontend_release_traceability.py
+--format json` records the frontend package hashes, workflow contract, static
+`dist/` manifest, and packaged frontend image status. The packaged image status
+is expected to stay `not_configured` until a project-owned
+`frontend/web/Dockerfile` and `deploy/ai-platform/docker-compose.frontend.yml`
+are added and verified on a Docker-capable host.
+
 For local development, Vite proxies `/api/*` to `VITE_AI_PLATFORM_API_TARGET`,
 defaulting to `http://127.0.0.1:8020`. For the intranet deployment, keep the
 browser using same-origin `/api/*`; the deployed thin shell proxies those calls

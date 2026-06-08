@@ -6,8 +6,8 @@ This document records the current G6 Tool / Skill / Memory Governance baseline.
 It is an operator readiness snapshot, not a gate-closure claim. G6 remains
 partial until frontend route policy enforcement/remap, release governance
 evidence, bounded office context-pack contract, quarantined inactive legacy
-source remap, packaged frontend image
-traceability, and ordinary-user G9 acceptance are complete.
+source remap, packaged frontend image delivery/release acceptance, and
+ordinary-user G9 acceptance are complete.
 
 Generate the current readiness snapshot from the repository root:
 
@@ -36,8 +36,10 @@ The overview now exposes:
 - `backpressure`: live admission, queue, and DB pool pressure reasons.
 - `governance`: G6 readiness domains, implemented controls, open gaps, and
   next checks.
+- `observability_readiness`: G9 readiness domains, implemented controls, open
+  gaps, and next checks.
 
-All three projections are admin-only, same-tenant, and designed as public/admin
+All projections are admin-only, same-tenant, and designed as public/admin
 operational projections. They must not become a path for executor-private data
 or secret-like runtime configuration.
 
@@ -48,7 +50,7 @@ or secret-like runtime configuration.
 | Tool permission | Admin tool policy inventory, tenant-scoped policy update audit, user request/decision flow, fail-closed risk/write policy evaluation, public permission-card projection, audit-visible legacy route policy mapping | Policy enforcement or ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel surfaces, bulk review/history UX, full allow/deny/ask taxonomy for every MCP tool |
 | Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock | Signed package or SBOM release gate, Admin release dashboard acceptance, dependency vulnerability/license policy |
 | Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py` | Bounded office context-pack product contract |
-| Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest tied to the current git commit, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Profile env-var surface removed from the active browser entry graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Quarantined inactive legacy model/channel/envvar sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image release trace tied to backend/worker commit |
+| Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest tied to the current git commit, packaged frontend image blocker traceability, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Profile env-var surface removed from the active browser entry graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Quarantined inactive legacy model/channel/envvar sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image delivery and release acceptance |
 
 ## 211 Acceptance Evidence
 
@@ -62,13 +64,15 @@ smoke returned admin HTTP 200, ordinary-user HTTP 403, capacity schema
 `ai-platform.capacity-baseline.v1`, governance schema
 `ai-platform.governance-readiness.v1`, seven load-test gates, and no scanned
 forbidden private projection terms. The frontend release traceability CLI now
-records a deterministic static `dist/` manifest for the same git commit; this
-does not close packaged frontend image traceability. The repository now also has
+records a deterministic static `dist/` manifest for the same git commit and
+reports packaged frontend image blockers while delivery is not configured. This
+does not close packaged frontend image delivery or release acceptance. The
+repository now also has
 `.github/workflows/ai-platform-frontend.yml`, which runs frontend dependency
 install, `ci:verify`, and frontend release traceability for relevant source
 changes. GitHub Actions run `27104398690` passed on commit
 `11ab56c660385f6790964af3d5bd60e3d4431ff2`, so remote CI enforcement evidence
-exists for the source workflow; packaged frontend image traceability remains a
+exists for the source workflow; packaged frontend image delivery remains a
 separate release gate.
 
 `tools/memory_erasure_readiness.py` now records code/test evidence for

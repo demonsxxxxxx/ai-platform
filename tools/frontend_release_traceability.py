@@ -9,6 +9,8 @@ from typing import Any
 SCHEMA_VERSION = "ai-platform.frontend-release-traceability.v1"
 FRONTEND_PATH = Path("frontend/web")
 WORKFLOW_PATH = Path(".github/workflows/ai-platform-frontend.yml")
+FRONTEND_DOCKERFILE_PATH = Path("frontend/web/Dockerfile")
+FRONTEND_COMPOSE_OVERLAY_PATH = Path("deploy/ai-platform/docker-compose.frontend.yml")
 CI_COMMANDS = [
     "corepack pnpm install --frozen-lockfile",
     "corepack pnpm run ci:verify",
@@ -124,6 +126,41 @@ def _workflow_manifest(workflow_path: Path) -> dict[str, object]:
     return manifest
 
 
+def _packaged_frontend_image_manifest(root: Path, *, git_commit: str) -> dict[str, object]:
+    dockerfile_path = root / FRONTEND_DOCKERFILE_PATH
+    compose_overlay_path = root / FRONTEND_COMPOSE_OVERLAY_PATH
+    dockerfile_present = dockerfile_path.exists()
+    compose_overlay_present = compose_overlay_path.exists()
+    blockers: list[str] = []
+    if not dockerfile_present:
+        blockers.append("packaged_frontend_dockerfile_missing")
+    if not compose_overlay_present:
+        blockers.append("packaged_frontend_compose_overlay_missing")
+    if blockers:
+        blockers.append("packaged_frontend_image_trace_missing")
+
+    return {
+        "artifact_kind": "frontend_static_image",
+        "status": "configured" if dockerfile_present and compose_overlay_present else "not_configured",
+        "dockerfile": {
+            "path": FRONTEND_DOCKERFILE_PATH.as_posix(),
+            "status": "present" if dockerfile_present else "missing",
+            "sha256": _sha256(dockerfile_path) if dockerfile_present else None,
+        },
+        "compose_overlay": {
+            "path": FRONTEND_COMPOSE_OVERLAY_PATH.as_posix(),
+            "status": "present" if compose_overlay_present else "missing",
+            "sha256": _sha256(compose_overlay_path) if compose_overlay_present else None,
+        },
+        "release_trace": {
+            "frontend_artifact": "frontend_static_image",
+            "backend_worker_commit": git_commit,
+            "policy": "same_git_commit_for_api_worker_frontend_artifacts",
+        },
+        "blockers": blockers,
+    }
+
+
 def build_frontend_release_traceability(repo_root: Path | None = None) -> dict[str, Any]:
     """Build a secret-safe same-commit frontend release traceability snapshot."""
     root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
@@ -160,6 +197,7 @@ def build_frontend_release_traceability(repo_root: Path | None = None) -> dict[s
         "commands": CI_COMMANDS,
         "workflow": _workflow_manifest(workflow_path),
         "dist": _dist_manifest(dist_root, git_commit=git_commit),
+        "packaged_frontend_image": _packaged_frontend_image_manifest(root, git_commit=git_commit),
         "release_policy": "tie_frontend_api_worker_artifacts_to_same_git_commit",
     }
 
@@ -171,6 +209,8 @@ def render_frontend_release_traceability_markdown(trace: dict[str, Any]) -> str:
     commands = "\n".join(f"- `{command}`" for command in trace["commands"])
     workflow_commands = "\n".join(f"- `{command}`" for command in trace["workflow"]["enforced_commands"])
     script_rows = "\n".join(f"| `{name}` | `{value}` |" for name, value in scripts.items())
+    packaged_image = trace["packaged_frontend_image"]
+    blockers = "\n".join(f"- `{blocker}`" for blocker in packaged_image["blockers"]) or "- none"
     return (
         "# ai-platform Frontend Release Traceability\n\n"
         f"Schema: `{trace['schema_version']}`\n\n"
@@ -200,7 +240,17 @@ def render_frontend_release_traceability_markdown(trace: dict[str, Any]) -> str:
         f"- artifact_kind: `{trace['dist']['artifact_kind']}`\n"
         f"- file_count: `{trace['dist']['file_count']}`\n"
         f"- total_bytes: `{trace['dist']['total_bytes']}`\n"
-        f"- manifest_sha256: `{trace['dist']['manifest_sha256']}`\n"
+        f"- manifest_sha256: `{trace['dist']['manifest_sha256']}`\n\n"
+        "## Packaged Frontend Image\n\n"
+        f"- status: `{packaged_image['status']}`\n"
+        f"- artifact_kind: `{packaged_image['artifact_kind']}`\n"
+        f"- dockerfile: `{packaged_image['dockerfile']['path']}` "
+        f"(`{packaged_image['dockerfile']['status']}`)\n"
+        f"- compose_overlay: `{packaged_image['compose_overlay']['path']}` "
+        f"(`{packaged_image['compose_overlay']['status']}`)\n"
+        f"- backend_worker_commit: `{packaged_image['release_trace']['backend_worker_commit']}`\n\n"
+        "Blockers:\n\n"
+        f"{blockers}\n"
     )
 
 

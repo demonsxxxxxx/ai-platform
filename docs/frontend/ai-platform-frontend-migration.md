@@ -108,7 +108,8 @@ Required admin/operator contracts must stay admin-only and same-tenant:
 - `/api/admin/*`
 - `/api/ai/admin/*`
 - Admin Runtime overview and backpressure projections.
-- Admin Runtime capacity and governance readiness projections.
+- Admin Runtime capacity, governance readiness, and observability readiness
+  projections.
 - Admin memory policy/inventory/retention cleanup projections.
 - Admin tool policy projections.
 
@@ -154,15 +155,16 @@ Static audit on 2026-06-07:
   payload fields before rendering.
 - `frontend/web/src/services/api/config.ts` keeps browser API calls
   same-origin; Vite development proxy remains a dev-time adapter only.
-- Admin Runtime now includes capacity and G6 governance readiness projections
-  for operator visibility. Frontend UI work must consume these public/admin
-  projections rather than rebuilding state from executor runtime payloads.
+- Admin Runtime source now includes capacity, G6 governance readiness, and G9
+  observability readiness projections for operator visibility. Frontend UI work
+  must consume these public/admin projections rather than rebuilding state from
+  executor runtime payloads.
 - Settings now includes an admin-only Admin Runtime Capacity section that calls
   only `GET /api/ai/admin/runtime/overview` and displays capacity,
   backpressure, governance gaps, and missing load-test evidence. This improves
   frontend operator visibility and has 211 frontend acceptance, but still does
   not close #21, G6, or G9 because load-test evidence, legacy route remap, and
-  packaged frontend image traceability remain open.
+  packaged frontend image delivery/release acceptance remain open.
 
 Remaining audit risks:
 
@@ -231,12 +233,16 @@ Current local and CI-contract evidence on 2026-06-08:
   script works even when this Windows workstation can only start pnpm through
   Corepack and 211 needs `python3` instead of bare `python`.
 - `python tools/frontend_release_traceability.py --format json` records the
-  current git commit, dirty flag, package/lockfile hashes, CI commands, and a
-  deterministic static `dist/` manifest without printing local absolute paths,
-  `.env` values, or secret-like data. The manifest includes file count, total
-  bytes, `index.html` / service-worker entry hashes when present, and a
-  manifest hash that ties the static frontend artifact back to the same git
-  commit as backend and worker artifacts.
+  current git commit, dirty flag, package/lockfile hashes, CI commands, a
+  deterministic static `dist/` manifest, and the packaged frontend image
+  delivery status without printing local absolute paths, `.env` values, or
+  secret-like data. The manifest includes file count, total bytes,
+  `index.html` / service-worker entry hashes when present, and a manifest hash
+  that ties the static frontend artifact back to the same git commit as backend
+  and worker artifacts. Until `frontend/web/Dockerfile` and
+  `deploy/ai-platform/docker-compose.frontend.yml` exist and are verified on a
+  Docker-capable host, the packaged image section must remain
+  `not_configured` with explicit blockers.
 - `python tools/frontend_projection_audit.py --format json` records the
   current production-source route inventory, active browser entry graph,
   active-browser route inventory,
@@ -275,8 +281,10 @@ back to the same git commit as API and worker.
 - The Admin Runtime Capacity section has local source tests, build coverage,
   and 211 frontend acceptance at commit
   `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35`; the release traceability CLI now
-  records a static `dist/` manifest for that same commit. Packaged frontend
-  image traceability remains pending until packaged frontend delivery exists.
+  records a static `dist/` manifest for that same commit and reports packaged
+  frontend image delivery blockers. Packaged frontend image delivery and
+  release acceptance remain pending until the image definition and compose
+  overlay exist and are verified on a Docker-capable host.
 - #22 document-centric context/workbench UX remains future work and is not part
   of this source move.
 

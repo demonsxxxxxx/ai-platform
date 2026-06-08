@@ -36,6 +36,14 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert len(trace["source_hashes"]["package_json_sha256"]) == 64
     assert len(trace["source_hashes"]["pnpm_lock_sha256"]) == 64
     assert trace["dist"]["status"] in {"built", "missing"}
+    assert trace["packaged_frontend_image"]["artifact_kind"] == "frontend_static_image"
+    assert trace["packaged_frontend_image"]["status"] == "not_configured"
+    assert trace["packaged_frontend_image"]["dockerfile"]["path"] == "frontend/web/Dockerfile"
+    assert trace["packaged_frontend_image"]["dockerfile"]["status"] == "missing"
+    assert trace["packaged_frontend_image"]["compose_overlay"]["path"] == "deploy/ai-platform/docker-compose.frontend.yml"
+    assert trace["packaged_frontend_image"]["compose_overlay"]["status"] == "missing"
+    assert trace["packaged_frontend_image"]["release_trace"]["backend_worker_commit"] == trace["git"]["commit"]
+    assert "packaged_frontend_dockerfile_missing" in trace["packaged_frontend_image"]["blockers"]
 
     serialized = json.dumps(trace, ensure_ascii=False).lower()
     assert "c:\\users" not in serialized
@@ -83,6 +91,8 @@ def test_frontend_release_traceability_records_static_dist_manifest(tmp_path):
         "backend_worker_commit": trace["git"]["commit"],
         "policy": "same_git_commit_for_api_worker_frontend_artifacts",
     }
+    assert trace["packaged_frontend_image"]["status"] == "not_configured"
+    assert "packaged_frontend_image_trace_missing" in trace["packaged_frontend_image"]["blockers"]
     serialized = json.dumps(trace, ensure_ascii=False).lower()
     assert str(tmp_path).lower() not in serialized
     assert "secret" not in serialized
@@ -100,6 +110,7 @@ def test_frontend_release_traceability_cli_outputs_json():
     assert payload["schema_version"] == "ai-platform.frontend-release-traceability.v1"
     assert payload["scripts"]["ci:verify"] == EXPECTED_CI_VERIFY
     assert "corepack pnpm run ci:verify" in payload["commands"]
+    assert payload["packaged_frontend_image"]["status"] == "not_configured"
     assert "c:\\users" not in result.stdout.lower()
 
 
@@ -113,5 +124,8 @@ def test_render_frontend_release_traceability_markdown_is_operator_readable():
     assert "package_json_sha256" in markdown
     assert "manifest_sha256" in markdown
     assert "artifact_kind" in markdown
+    assert "## Packaged Frontend Image" in markdown
+    assert "not_configured" in markdown
+    assert "packaged_frontend_dockerfile_missing" in markdown
     assert "ai-platform-frontend.yml" in markdown
     assert "c:\\users" not in markdown.lower()

@@ -966,9 +966,15 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
     assert body["governance"]["schema_version"] == "ai-platform.governance-readiness.v1"
     assert body["governance"]["status"] == "partial_blocked"
     assert "tool_permission" in body["governance"]["domains"]
+    assert body["observability_readiness"]["schema_version"] == "ai-platform.observability-readiness.v1"
+    assert body["observability_readiness"]["status"] == "partial_blocked"
+    assert "runtime_metrics" in body["observability_readiness"]["domains"]
+    assert "formal_error_taxonomy_contract" in body["observability_readiness"]["open_gaps"]
     assert "callback_token" not in str(body["governance"]).lower()
     assert "sandbox_workspace_root" not in str(body["governance"]).lower()
     assert ".claude/skills" not in str(body["governance"])
+    assert "callback_token" not in str(body["observability_readiness"]).lower()
+    assert "sandbox_workspace_root" not in str(body["observability_readiness"]).lower()
     assert body["admission"]["saturated_users"] == 1
     assert body["admission"]["top_users"] == [{"user_id": "user-a", "active": 3, "saturated": True}]
     assert body["backpressure"]["reasons"] == [

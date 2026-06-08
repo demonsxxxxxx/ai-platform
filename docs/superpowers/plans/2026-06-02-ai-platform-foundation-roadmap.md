@@ -93,6 +93,16 @@ start, model-gateway timeout/backpressure, and cleanup. Until then, G5 stays
 basic-operational but capacity-unproven, and G9 Observability/Ops remains a
 pre-beta blocker.
 
+Current source also exposes a machine-readable G9 readiness baseline through
+`python tools/observability_readiness.py --format json` and the admin-only
+runtime overview field `observability_readiness` with schema
+`ai-platform.observability-readiness.v1`. This source-level projection records
+implemented runtime-metric, error-taxonomy, quality-evaluation, and
+alert/export baselines plus open gaps. It does not close G9 and does not
+replace recorded load-test evidence, latency percentiles, model-gateway
+concurrency controls, formal taxonomy, golden-set evaluation, alert thresholds,
+trace/audit export contracts, or 211 deployment smoke.
+
 ### G0 / G9 Frontend Source Traceability Status
 
 Issue #17 is improved but still open. The migrated frontend source under
@@ -103,7 +113,9 @@ package/lockfile hashes, CI commands, and a deterministic static `dist/`
 manifest without printing local paths, `.env` values, or secret-like data. The
 static manifest records file count, total bytes, entry hashes, and a manifest
 hash so static frontend artifacts can be tied back to the backend/worker git
-commit while packaged frontend image delivery is still pending. The projection
+commit. The same traceability CLI now also reports packaged frontend image
+status and the missing Dockerfile / compose-overlay blockers while packaged
+frontend image delivery is still pending. The projection
 audit records the current production-source route inventory, active-browser
 route inventory, active browser entry graph, active-browser legacy route policy
 mapping, quarantined inactive legacy source findings, private/secret-like
@@ -121,8 +133,8 @@ frontend install, `ci:verify`, and release traceability on relevant source
 changes, and GitHub Actions run `27104398690` passed on commit
 `11ab56c660385f6790964af3d5bd60e3d4431ff2`. The remaining #17
 source-ownership evidence is later packaged frontend image delivery and release
-acceptance. It does not close legacy policy enforcement / ai-platform
-projection remap.
+acceptance; the current trace only records that blocker fail-closed. It does
+not close legacy policy enforcement / ai-platform projection remap.
 
 The first frontend operator visibility loop is now present in `frontend/web`:
 Settings includes an admin-only Admin Runtime Capacity section that consumes
@@ -151,17 +163,18 @@ delete/retention/export erasure evidence through
 `tools/memory_erasure_readiness.py`,
 frontend
 release traceability, static `dist/` release manifest, frontend projection
-audit wired first into `ci:verify`, GitHub Actions frontend CI workflow, active
-browser projection audit clearance, active-browser legacy route policy audit,
-and quarantined inactive legacy secret-like source reporting.
+audit wired first into `ci:verify`, packaged frontend image blocker
+traceability, GitHub Actions frontend CI workflow, active browser projection
+audit clearance, active-browser legacy route policy audit, and quarantined
+inactive legacy secret-like source reporting.
 
 This does not close G6. Remaining blockers are policy enforcement or
 ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel
 surfaces, full allow/deny/ask taxonomy for every MCP tool, signed package or
 SBOM release evidence, dependency vulnerability/license policy, bounded office
 context-pack product contract, quarantined legacy frontend source remap,
-packaged frontend image
-traceability, and ordinary-user G9 acceptance. Do
+packaged frontend image delivery/release acceptance, and ordinary-user G9
+acceptance. Do
 not use this baseline to expand sandbox privilege, raw Skill selection, or
 multi-agent ordinary-user exposure.
 

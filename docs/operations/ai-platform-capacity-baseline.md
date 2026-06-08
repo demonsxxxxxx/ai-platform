@@ -71,6 +71,8 @@ The overview now exposes:
   worker heartbeats, queue sampling, and tenant/user throttling.
 - `admission`: same-tenant active-run saturation.
 - `backpressure`: normalized queue, active-run, and DB-pool pressure reasons.
+- `observability_readiness`: G9 runtime metrics, error taxonomy, quality,
+  alert/export readiness domains and open gaps.
 
 The migrated frontend now has an admin-only Settings section that reads this
 same overview projection and surfaces capacity, backpressure, governance gaps,
