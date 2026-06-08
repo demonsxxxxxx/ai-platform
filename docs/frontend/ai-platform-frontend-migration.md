@@ -225,7 +225,9 @@ Current local and CI-contract evidence on 2026-06-08:
 
 - `corepack pnpm --version` returned `10.32.1`.
 - `corepack pnpm install --frozen-lockfile` exited 0.
-- `corepack pnpm run ci:verify` exited 0; Vite reported large chunk warnings.
+- `corepack pnpm run ci:verify` exited 0 at commit
+  `22dc9e61605d406f10669e4f91f4cb1a87e2094d`; Vite reported the existing
+  large chunk warnings.
 - `frontend/web/package.json` now defines `projection:audit` as
   `node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json`
   and `ci:verify` as
@@ -261,6 +263,15 @@ Current local and CI-contract evidence on 2026-06-08:
 - GitHub Actions run `27104398690` passed on commit
   `11ab56c660385f6790964af3d5bd60e3d4431ff2`, providing remote CI evidence for
   the frontend workflow contract.
+- At commit `22dc9e61605d406f10669e4f91f4cb1a87e2094d`,
+  `python tools/frontend_release_traceability.py --format json` reported
+  `dirty = false` and kept packaged frontend image delivery
+  `not_configured` with blockers
+  `packaged_frontend_dockerfile_missing`,
+  `packaged_frontend_compose_overlay_missing`, and
+  `packaged_frontend_image_trace_missing`. The latest pushed change after the
+  previous frontend workflow run touched only backend tests, so no newer
+  frontend GitHub Actions run was required by the workflow filters.
 
 These warnings do not block the source migration, but they remain frontend
 hardening work before broader Agent Frontend V1 rollout. Generated `dist/` is

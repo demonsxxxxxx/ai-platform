@@ -55,6 +55,50 @@ or ordinary-user private content.
 | Quality evaluation | Run trace/audit linkage baseline | Golden-set eval run contract, quality score schema, office workflow acceptance dataset |
 | Alerts and exports | Admin Runtime overview projection and fail-closed capacity gate readiness verdict | Alert rules and SLO thresholds, trace/audit export contract, release evidence export location |
 
+## 211 Runtime Evidence - 2026-06-08
+
+Commit `22dc9e61605d406f10669e4f91f4cb1a87e2094d` was synced to the 211
+repo-local source target and deployed to API/worker with image
+`ai-platform:22dc9e6-g9-readiness-taxonomy`. The image was built from the
+repo-local services source target with OCI labels:
+
+- `org.opencontainers.image.revision =
+  22dc9e61605d406f10669e4f91f4cb1a87e2094d`
+- `org.opencontainers.image.source = ai-platform/services/ai-platform`
+- `ai-platform.source_target = services/ai-platform`
+
+211 smoke evidence after deployment:
+
+- `GET /api/ai/health` returned `{"status":"ok"}` from the API container.
+- The 211 frontend proxy health path returned `{"status":"ok"}`.
+- API and worker containers both ran
+  `ai-platform:22dc9e6-g9-readiness-taxonomy` with matching revision labels.
+- Container-local `python -m compileall -q app` passed for both API and worker.
+- Admin Runtime overview returned the required operational sections:
+  `capacity`, `database_pool`, `queue`, `admission`, `backpressure`,
+  `sandbox`, `governance`, `observability`, and
+  `observability_readiness`.
+- `observability_readiness.schema_version` was
+  `ai-platform.observability-readiness.v1`.
+- `observability_readiness.error_taxonomy.schema_version` was
+  `ai-platform.error-taxonomy.v1`.
+- `observability.error_categories` was present as a dictionary.
+- Ordinary-user access to `GET /api/ai/admin/runtime/overview` returned
+  HTTP 403.
+- A refined projection leak scan found no forbidden runtime markers for DSNs,
+  Redis URLs, bearer/API tokens, raw storage keys, sandbox work directories,
+  executor private payloads, callback tokens, provider tokens, client secrets,
+  or object-storage keys. Guardrail text that says not to expose raw storage
+  keys or private payloads was treated as documentation, not runtime data.
+- Recent API/worker logs since deployment had no startup traceback, exception,
+  error, failed import, pydantic, or syntax-error markers.
+
+This runtime evidence proves the source-level G9 taxonomy/readiness projection
+is deployed on 211. It does not close G9 because the remaining latency
+percentiles, model-gateway concurrency/backpressure, recorded load-test
+evidence, taxonomy dashboard acceptance, golden-set evaluation, alerts, and
+export contracts are still open.
+
 ## Gate Rule
 
 Do not close G9 or raise production concurrency defaults from this readiness
