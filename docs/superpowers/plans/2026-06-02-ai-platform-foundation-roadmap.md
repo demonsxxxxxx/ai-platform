@@ -125,6 +125,17 @@ probe when `--execute` is paired with
 `--operator-acknowledgement send-bounded-load-without-default-raise`. Its output
 is `probe_only_not_recorded`, `does_not_raise_defaults = true`, and
 `does_not_mark_gate_recorded = true`; it is not accepted by `tools/capacity_gate_readiness.py` as recorded gate evidence.
+`python tools/capacity_evidence_bundle.py --runtime-evidence-json
+<capacity-runtime-evidence.json> --bounded-probe-json
+<capacity-bounded-load-harness.json> --format markdown` now assembles those
+captures into a gap-first operator draft with schema
+`ai-platform.capacity-evidence-bundle.v1`, target path
+`load_test_evidence.gate_evidence.api_read_write_burst`, missing required
+fields, and a readiness preview. The draft keeps
+`recorded_gate_evidence_draft.status = draft_not_recorded`,
+`probe_only_not_recorded`, and `does_not_mark_gate_recorded = true`; it is not
+accepted by `tools/capacity_gate_readiness.py` as recorded gate evidence and
+does not raise production concurrency defaults.
 
 The 2026-06-08 211 gate-readiness pass captured the admin-only runtime overview
 from the deployed `f7c6b0d9114748fa249acb88da6584851c48aa96` image and ran the

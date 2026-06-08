@@ -454,6 +454,24 @@ read-only probe path is operational. It still does not close #21, does not
 claim a safe maximum concurrency number, and must not be used to raise
 production defaults.
 
+### Evidence Bundle Draft Tool
+
+After operators capture `capacity-runtime-evidence-*.json` and a bounded probe
+JSON, they can assemble a gap-first draft with:
+
+```powershell
+python tools/capacity_evidence_bundle.py --runtime-evidence-json capacity-runtime-evidence-start.json --bounded-probe-json capacity-bounded-load-harness-api-read-write-burst.json --format markdown
+```
+
+The output schema is `ai-platform.capacity-evidence-bundle.v1`. It records the
+target path `load_test_evidence.gate_evidence.api_read_write_burst`, observed
+candidate fields, missing required fields, and a final readiness preview. The
+draft uses `recorded_gate_evidence_draft.status = draft_not_recorded`,
+preserves `probe_only_not_recorded`, and keeps
+`does_not_mark_gate_recorded = true`; it is not accepted by
+`tools/capacity_gate_readiness.py` as recorded gate evidence and does not raise
+production concurrency defaults.
+
 ## Required Load-Test Gates
 
 Generate the repeatable command manifest for a target deployment profile:

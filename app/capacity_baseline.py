@@ -16,6 +16,7 @@ LOAD_TEST_GATES = [
     "sandbox_lease_creation_under_load",
     "model_gateway_timeout_and_backpressure",
 ]
+CAPACITY_EVIDENCE_BUNDLE_SCHEMA = "ai-platform.capacity-evidence-bundle.v1"
 CAPACITY_PROFILE_IDS = [
     "conservative_internal",
     "medium_team",
@@ -970,6 +971,248 @@ def _load_gate_evidence_summary(
     }
 
 
+def _extract_capacity_evidence_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
+    source = _dict(payload)
+    if source.get("schema_version") == "ai-platform.capacity-evidence-snapshot.v1":
+        return source
+    snapshot = _dict(source.get("snapshot"))
+    if snapshot.get("schema_version") == "ai-platform.capacity-evidence-snapshot.v1":
+        return snapshot
+    return {}
+
+
+def _compact_evidence_value(value: object) -> object | None:
+    if value is None or _contains_secret_marker(value):
+        return None
+    if isinstance(value, dict):
+        cleaned: dict[str, object] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if _contains_secret_marker(key_text):
+                continue
+            compact = _compact_evidence_value(item)
+            if compact is not None:
+                cleaned[key_text] = compact
+        return cleaned if _has_recorded_evidence_value(cleaned) else None
+    if isinstance(value, list):
+        cleaned_items = [
+            compact for item in value if (compact := _compact_evidence_value(item)) is not None
+        ]
+        return cleaned_items if _has_recorded_evidence_value(cleaned_items) else None
+    return value if _has_recorded_evidence_value(value) else None
+
+
+def _add_candidate_evidence(target: dict[str, object], key: str, value: object) -> None:
+    compact = _compact_evidence_value(value)
+    if compact is not None:
+        target[key] = compact
+
+
+def _capacity_bundle_candidate_evidence(
+    snapshot: dict[str, Any],
+    probe_output: dict[str, Any],
+) -> dict[str, object]:
+    runtime_identity = _dict(snapshot.get("runtime_identity"))
+    live_signals = _dict(snapshot.get("live_signals"))
+    capacity = _dict(snapshot.get("capacity"))
+    limits = _dict(capacity.get("limits"))
+    queue = _dict(live_signals.get("queue"))
+    database_pool = _dict(live_signals.get("database_pool"))
+    admission = _dict(live_signals.get("admission"))
+    sandbox = _dict(live_signals.get("sandbox"))
+    observability = _dict(live_signals.get("observability"))
+    latency = _dict(probe_output.get("latency_ms"))
+
+    candidate: dict[str, object] = {}
+    _add_candidate_evidence(candidate, "commit_sha", runtime_identity.get("commit_sha"))
+    _add_candidate_evidence(candidate, "runtime_profile", runtime_identity.get("profile"))
+    _add_candidate_evidence(candidate, "database_pool_settings", _dict(limits.get("database_pool")))
+    _add_candidate_evidence(candidate, "redis_queue_settings", _dict(limits.get("queue")))
+    _add_candidate_evidence(
+        candidate,
+        "admission_worker_queue_sandbox_model_settings",
+        {
+            "admission": _dict(limits.get("admission")),
+            "worker": _dict(limits.get("worker")),
+            "queue": _dict(limits.get("queue")),
+            "sandbox": _dict(limits.get("sandbox")),
+            "model_gateway": _dict(limits.get("model_gateway")),
+        },
+    )
+    _add_candidate_evidence(
+        candidate,
+        "peak_and_sustained_queue_depths",
+        {"snapshot": _dict(queue.get("depths"))},
+    )
+    _add_candidate_evidence(
+        candidate,
+        "active_worker_runs_users_and_tenants",
+        {
+            "active_runs": admission.get("active_runs"),
+            "active_users": admission.get("active_users"),
+            "saturated_users": admission.get("saturated_users"),
+            "active_sandbox_leases": sandbox.get("active_leases"),
+        },
+    )
+    _add_candidate_evidence(
+        candidate,
+        "database_pool_waiting_and_saturation",
+        {
+            "requests_waiting": database_pool.get("requests_waiting"),
+            "max_waiting": database_pool.get("max_waiting"),
+            "stats": _dict(database_pool.get("stats")),
+        },
+    )
+    _add_candidate_evidence(
+        candidate,
+        "latency_p50_p95_p99",
+        {
+            "count": latency.get("count"),
+            "p50": latency.get("p50"),
+            "p95": latency.get("p95"),
+            "p99": latency.get("p99"),
+        },
+    )
+    _add_candidate_evidence(
+        candidate,
+        "error_taxonomy_counts",
+        {
+            "error_count": observability.get("error_count"),
+            "error_categories": _dict(observability.get("error_categories")),
+            "probe_error_types": _dict(probe_output.get("error_type_counts")),
+        },
+    )
+    _add_candidate_evidence(
+        candidate,
+        "dead_letter_counts",
+        _dict(queue.get("depths")).get("dead_letter"),
+    )
+    return candidate
+
+
+def build_capacity_evidence_bundle(
+    runtime_evidence: dict[str, Any],
+    bounded_probe: dict[str, Any],
+    *,
+    gate: str = "api_read_write_burst",
+) -> dict[str, Any]:
+    """Bundle #21 runtime evidence and bounded-probe output without recording a gate."""
+    normalized_gate = str(gate or "").strip()
+    safe_gate = normalized_gate if normalized_gate in LOAD_TEST_GATES else "unknown"
+    snapshot = _extract_capacity_evidence_snapshot(runtime_evidence)
+    probe_output = _dict(bounded_probe)
+    input_errors: list[str] = []
+    if not snapshot:
+        input_errors.append("missing_capacity_evidence_snapshot")
+    if safe_gate == "unknown":
+        input_errors.append("unsupported_gate")
+    probe_base_compatible = (
+        probe_output.get("schema_version") == "ai-platform.capacity-bounded-load-harness.v1"
+        and probe_output.get("gate") == safe_gate
+        and probe_output.get("status") == "probe_completed_not_gate_evidence"
+        and probe_output.get("load_test_evidence_status") == "probe_only_not_recorded"
+        and probe_output.get("does_not_mark_gate_recorded") is True
+    )
+    probe_no_default_raise = probe_output.get("does_not_raise_defaults") is True
+    probe_compatible = probe_base_compatible and probe_no_default_raise
+    if not probe_base_compatible:
+        input_errors.append("bounded_probe_not_completed_or_not_probe_only")
+    if probe_base_compatible and not probe_no_default_raise:
+        input_errors.append("bounded_probe_missing_no_default_raise_policy")
+
+    candidate_observed_evidence = (
+        _capacity_bundle_candidate_evidence(snapshot, probe_output)
+        if snapshot and probe_compatible
+        else {}
+    )
+    missing_required_evidence = [
+        item for item in _LOAD_TEST_REQUIRED_EVIDENCE if item not in candidate_observed_evidence
+    ]
+    gate_evidence_path = f"load_test_evidence.gate_evidence.{safe_gate}"
+    recorded_gate_evidence_draft = {
+        "status": "draft_not_recorded",
+        "gate": safe_gate,
+        "gate_evidence_path": gate_evidence_path,
+        "load_test_evidence_status": "probe_only_not_recorded",
+        "evidence": candidate_observed_evidence,
+        "cleanup_proof_status": _safe_status(
+            probe_output.get("cleanup_proof_status"),
+            set(_CLEANUP_PROOF_STATUS_VALUES),
+        ),
+        "stop_condition_status": _safe_status(
+            probe_output.get("stop_condition_status"),
+            set(_STOP_CONDITION_STATUS_VALUES),
+        ),
+        "triggered_stop_conditions": _safe_triggered_stop_conditions(
+            probe_output.get("triggered_stop_conditions")
+        ),
+        "does_not_raise_defaults": True,
+        "does_not_mark_gate_recorded": True,
+    }
+
+    if not candidate_observed_evidence:
+        candidate_gate_status = "draft_not_available"
+    elif (
+        missing_required_evidence
+        or recorded_gate_evidence_draft["cleanup_proof_status"] == "missing"
+        or recorded_gate_evidence_draft["stop_condition_status"] == "missing"
+        or recorded_gate_evidence_draft["triggered_stop_conditions"]
+    ):
+        candidate_gate_status = "draft_incomplete_not_recorded"
+    else:
+        candidate_gate_status = "draft_complete_not_recorded"
+    candidate_gate_summary = {
+        "gate": safe_gate,
+        "status": candidate_gate_status,
+        "observed_required_evidence": sorted(candidate_observed_evidence),
+        "missing_required_evidence": missing_required_evidence,
+        "cleanup_proof_status": recorded_gate_evidence_draft["cleanup_proof_status"],
+        "stop_condition_status": recorded_gate_evidence_draft["stop_condition_status"],
+        "triggered_stop_conditions": recorded_gate_evidence_draft["triggered_stop_conditions"],
+        "does_not_mark_gate_recorded": True,
+    }
+
+    preview_snapshot = dict(snapshot) if snapshot else build_capacity_evidence_snapshot({})
+    readiness_preview = build_capacity_gate_readiness(preview_snapshot)
+    status = (
+        "blocked_incomplete_inputs"
+        if input_errors
+        else "draft_ready_not_recorded"
+        if candidate_gate_status == "draft_complete_not_recorded"
+        else "blocked_incomplete_load_test_evidence"
+    )
+    return {
+        "schema_version": CAPACITY_EVIDENCE_BUNDLE_SCHEMA,
+        "status": status,
+        "gate": safe_gate,
+        "gate_evidence_path": gate_evidence_path,
+        "input_status": {
+            "runtime_evidence": "accepted" if snapshot else "missing_capacity_evidence_snapshot",
+            "bounded_probe": (
+                "probe_only_not_recorded" if probe_compatible else "not_accepted"
+            ),
+        },
+        "input_errors": input_errors,
+        "runtime_identity": readiness_preview["runtime_identity"],
+        "candidate_observed_evidence": candidate_observed_evidence,
+        "missing_required_evidence": missing_required_evidence,
+        "candidate_gate_summary": candidate_gate_summary,
+        "recorded_gate_evidence_draft": recorded_gate_evidence_draft,
+        "readiness_preview": readiness_preview,
+        "remaining_actions": [
+            "collect missing measured evidence and artifact references",
+            "record cleanup proof from the target runtime",
+            "capture final runtime evidence after load and cooldown",
+            "run tools/capacity_gate_readiness.py on the final recorded snapshot",
+            "require operator review before any production default change",
+        ],
+        "capacity_answer": "safe_max_concurrency_unproven_without_recorded_load_test_evidence",
+        "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+        "does_not_raise_defaults": True,
+        "does_not_mark_gate_recorded": True,
+    }
+
+
 def build_capacity_gate_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Build a secret-safe #21 readiness verdict from a capacity evidence snapshot."""
     safe_snapshot = _dict(snapshot)
@@ -1414,6 +1657,41 @@ def render_capacity_gate_readiness_markdown(readiness: dict[str, Any]) -> str:
         "| Gate | Status |\n"
         "| --- | --- |\n"
         f"{gate_rows}\n\n"
+        "## Production Default Decision\n\n"
+        "Do not raise production concurrency defaults without recorded load-test evidence.\n"
+    )
+
+
+def render_capacity_evidence_bundle_markdown(bundle: dict[str, Any]) -> str:
+    """Render a #21 capacity evidence bundle draft as operator-readable Markdown."""
+    missing = "\n".join(
+        f"- {item}" for item in bundle.get("missing_required_evidence", [])
+    ) or "- none"
+    actions = "\n".join(f"- {item}" for item in bundle.get("remaining_actions", [])) or "- none"
+    candidate = _dict(bundle.get("candidate_observed_evidence"))
+    candidate_rows = "\n".join(
+        f"| {key} | `present` |" for key in sorted(candidate)
+    ) or "| none | `missing` |"
+    preview = _dict(bundle.get("readiness_preview"))
+    return (
+        "# ai-platform Capacity Evidence Bundle\n\n"
+        f"Schema: `{bundle['schema_version']}`\n\n"
+        f"Status: `{bundle['status']}`\n\n"
+        f"Gate: `{bundle['gate']}`\n\n"
+        f"Gate evidence path: `{bundle['gate_evidence_path']}`\n\n"
+        f"Readiness preview: `{preview.get('status', 'unknown')}`\n\n"
+        f"Does not mark gate recorded: `{str(bundle['does_not_mark_gate_recorded']).lower()}`\n\n"
+        "This bundle is an operator draft assembled from runtime evidence and a "
+        "bounded probe. It is not recorded gate evidence and must not raise "
+        "production concurrency defaults.\n\n"
+        "## Candidate Observed Evidence\n\n"
+        "| Field | Status |\n"
+        "| --- | --- |\n"
+        f"{candidate_rows}\n\n"
+        "## Missing Required Evidence\n\n"
+        f"{missing}\n\n"
+        "## Remaining Actions\n\n"
+        f"{actions}\n\n"
         "## Production Default Decision\n\n"
         "Do not raise production concurrency defaults without recorded load-test evidence.\n"
     )
