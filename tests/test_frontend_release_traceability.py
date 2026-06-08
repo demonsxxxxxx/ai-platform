@@ -327,6 +327,7 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "POSTGRES_PASSWORD" not in compose_overlay
     assert "OPENAI_API_KEY" not in compose_overlay
     assert "SANDBOX_CALLBACK_TOKEN" not in compose_overlay
+    assert missing_plain_dockerfile_copy_sources(dockerfile) == []
 
 
 def test_frontend_release_traceability_flags_packaged_delivery_missing_required_contract(tmp_path):
@@ -418,6 +419,22 @@ def trace_pnpm_lock_sha256(frontend_root):
     import hashlib
 
     return hashlib.sha256((frontend_root / "pnpm-lock.yaml").read_bytes()).hexdigest()
+
+
+def missing_plain_dockerfile_copy_sources(dockerfile: str, repo_root: Path | None = None) -> list[str]:
+    root = repo_root or Path(".")
+    missing_sources: list[str] = []
+    for raw_line in dockerfile.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("COPY ") or "--from=" in line:
+            continue
+        tokens = line.split()
+        for source in tokens[1:-1]:
+            if source.startswith("--"):
+                continue
+            if not (root / source).exists():
+                missing_sources.append(source)
+    return missing_sources
 
 
 def initialize_git_repo(repo_root):
