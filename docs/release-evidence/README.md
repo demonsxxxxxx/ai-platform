@@ -17,6 +17,16 @@ The readiness schema is `ai-platform.release-evidence-readiness.v1`. The entry
 schema is `ai-platform.release-evidence-entry.v1`. The retention policy schema
 is `ai-platform.release-evidence-retention-policy.v1`.
 
+The G9 trace/audit export contract is generated separately:
+
+```powershell
+python tools/trace_audit_export_readiness.py --format markdown
+python tools/trace_audit_export_readiness.py --format json
+```
+
+It uses schema `ai-platform.trace-audit-export-readiness.v1` and nested
+contract schema `ai-platform.trace-audit-export-contract.v1`.
+
 ## Export Location
 
 Release evidence entries belong under:
@@ -59,6 +69,29 @@ Accepted artifact kinds currently include:
 - `frontend_release_traceability`
 - `governance_readiness`
 - `observability_readiness`
+
+## Trace / Audit Export Contract
+
+Future reviewed trace/audit export evidence belongs to the platform audit
+domain path:
+
+```text
+audit.trace_exports.<export_id>
+```
+
+The `trace_audit_export_contract` allows only public/admin projection sources:
+
+- `run_event_public_projection`
+- `audit_event_public_projection`
+- `admin_runtime_observability_summary`
+- `release_evidence_entry`
+
+This is a contract-only baseline. It does not export runtime data and does not
+close G9. Remaining blockers are:
+
+- `trace_audit_export_runtime_acceptance`
+- `trace_audit_export_dashboard_acceptance`
+- `trace_audit_export_211_acceptance`
 
 ## Retention Policy Contract
 

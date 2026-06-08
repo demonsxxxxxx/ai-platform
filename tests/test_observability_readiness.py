@@ -12,6 +12,7 @@ from app.observability_readiness import (
 )
 from app.quality_golden_set_readiness import build_quality_golden_set_readiness
 from app.release_evidence_readiness import build_release_evidence_readiness
+from app.trace_audit_export_readiness import build_trace_audit_export_readiness
 
 
 class SecretBearingSettings:
@@ -74,7 +75,11 @@ def test_observability_readiness_records_g9_domains_and_open_gaps_without_secret
     assert "alert_delivery_channel_runtime_acceptance" in domains["alerts_and_exports"]["gaps"]
     assert "slo_threshold_runtime_calibration" in domains["alerts_and_exports"]["gaps"]
     assert "alert_rules_and_slo_thresholds" not in domains["alerts_and_exports"]["gaps"]
-    assert "trace_audit_export_contract" in domains["alerts_and_exports"]["gaps"]
+    assert "trace_audit_export_contract" in domains["alerts_and_exports"]["implemented"]
+    assert "trace_audit_export_contract" not in domains["alerts_and_exports"]["gaps"]
+    assert "trace_audit_export_runtime_acceptance" in domains["alerts_and_exports"]["gaps"]
+    assert "trace_audit_export_dashboard_acceptance" in domains["alerts_and_exports"]["gaps"]
+    assert "trace_audit_export_211_acceptance" in domains["alerts_and_exports"]["gaps"]
     assert "release_evidence_export_location" not in domains["alerts_and_exports"]["gaps"]
     assert "release_evidence_export_location_contract" in domains["alerts_and_exports"]["implemented"]
     assert "release_evidence_runtime_export_acceptance" in domains["alerts_and_exports"]["gaps"]
@@ -250,6 +255,65 @@ def test_release_evidence_readiness_contract_defines_safe_export_location_withou
     assert "sk-secret" not in serialized
 
 
+def test_trace_audit_export_readiness_contract_defines_safe_public_export_without_closing_g9():
+    readiness = build_trace_audit_export_readiness()
+
+    assert readiness["schema_version"] == "ai-platform.trace-audit-export-readiness.v1"
+    assert readiness["gate"] == "G9 Trace / Audit Export"
+    assert readiness["status"] == "partial_blocked"
+    assert readiness["active_export_policy"] == "contract_only_not_runtime_export"
+    assert readiness["export_contract"] == {
+        "schema_version": "ai-platform.trace-audit-export-contract.v1",
+        "write_path": "audit.trace_exports.<export_id>",
+        "required_fields": [
+            "export_id",
+            "commit_sha",
+            "tenant_id",
+            "requested_by",
+            "requested_at",
+            "time_range",
+            "filters",
+            "artifact_refs_public",
+            "redaction_scan_status",
+            "review_status",
+        ],
+        "allowed_event_sources": [
+            "run_event_public_projection",
+            "audit_event_public_projection",
+            "admin_runtime_observability_summary",
+            "release_evidence_entry",
+        ],
+        "accepted_redaction_scan_statuses": ["passed"],
+        "accepted_review_statuses": ["reviewed", "accepted"],
+        "forbidden_marker_classes": [
+            "executor private payload",
+            "raw storage key",
+            "sandbox workdir",
+            "secret material",
+            "API key",
+            "bearer token",
+            "database URL",
+            "Redis URL",
+        ],
+        "does_not_export_raw_runtime_payloads": True,
+        "does_not_close_g9": True,
+    }
+    assert readiness["open_gaps"] == [
+        "trace_audit_export_runtime_acceptance",
+        "trace_audit_export_dashboard_acceptance",
+        "trace_audit_export_211_acceptance",
+    ]
+
+    serialized = json.dumps(readiness, ensure_ascii=False).lower()
+    assert "c:\\users" not in serialized
+    assert "executor_private_payload" not in serialized
+    assert "raw_storage_key" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "api_key" not in serialized
+    assert "database_url" not in serialized
+    assert "sk-secret" not in serialized
+
+
 def test_observability_readiness_includes_release_evidence_contract_without_closing_g9():
     readiness = build_observability_readiness(SecretBearingSettings())
 
@@ -277,6 +341,27 @@ def test_observability_readiness_includes_release_evidence_contract_without_clos
     ]
     assert "release_evidence_runtime_export_acceptance" in readiness["open_gaps"]
     assert "release_evidence_retention_runtime_acceptance" in readiness["open_gaps"]
+
+
+def test_observability_readiness_includes_trace_audit_export_contract_without_closing_g9():
+    readiness = build_observability_readiness(SecretBearingSettings())
+
+    alerts = readiness["domains"]["alerts_and_exports"]
+    assert "trace_audit_export_contract" in alerts["implemented"]
+    assert "trace_audit_export_contract" not in alerts["gaps"]
+    assert "trace_audit_export_runtime_acceptance" in alerts["gaps"]
+    assert "trace_audit_export_dashboard_acceptance" in alerts["gaps"]
+    assert "trace_audit_export_211_acceptance" in alerts["gaps"]
+
+    evidence = alerts["evidence"]["trace_audit_export"]
+    assert evidence["schema_version"] == "ai-platform.trace-audit-export-readiness.v1"
+    assert evidence["status"] == "partial_blocked"
+    assert evidence["export_contract"]["schema_version"] == "ai-platform.trace-audit-export-contract.v1"
+    assert evidence["export_contract"]["write_path"] == "audit.trace_exports.<export_id>"
+    assert evidence["export_contract"]["does_not_close_g9"] is True
+    assert "trace_audit_export_runtime_acceptance" in readiness["open_gaps"]
+    assert "trace_audit_export_dashboard_acceptance" in readiness["open_gaps"]
+    assert "trace_audit_export_211_acceptance" in readiness["open_gaps"]
 
 
 def test_quality_golden_set_readiness_contract_is_source_level_and_fail_closed():
@@ -426,6 +511,13 @@ def test_render_observability_readiness_markdown_is_operator_readable_and_gap_fi
     assert "ai-platform.alert-delivery-channel-policy.v1" in markdown
     assert "alert_delivery_channel_runtime_acceptance" in markdown
     assert "slo_threshold_runtime_calibration" in markdown
+    assert "trace_audit_export_contract" in markdown
+    assert "ai-platform.trace-audit-export-readiness.v1" in markdown
+    assert "ai-platform.trace-audit-export-contract.v1" in markdown
+    assert "audit.trace_exports.<export_id>" in markdown
+    assert "trace_audit_export_runtime_acceptance" in markdown
+    assert "trace_audit_export_dashboard_acceptance" in markdown
+    assert "trace_audit_export_211_acceptance" in markdown
     assert "release_evidence_export_location_contract" in markdown
     assert "release_evidence_retention_policy_contract" in markdown
     assert "ai-platform.release-evidence-readiness.v1" in markdown
@@ -471,6 +563,24 @@ def test_release_evidence_readiness_cli_outputs_json_without_secret_markers():
     payload = json.loads(result.stdout)
     assert payload["schema_version"] == "ai-platform.release-evidence-readiness.v1"
     assert payload["export_location"]["path"] == "docs/release-evidence/"
+    assert payload["status"] == "partial_blocked"
+    assert "executor_private_payload" not in result.stdout
+    assert "raw_storage_key" not in result.stdout
+    assert "sandbox_workdir" not in result.stdout
+    assert "api_key" not in result.stdout
+
+
+def test_trace_audit_export_readiness_cli_outputs_json_without_secret_markers():
+    result = subprocess.run(
+        [sys.executable, "tools/trace_audit_export_readiness.py", "--format", "json"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "ai-platform.trace-audit-export-readiness.v1"
+    assert payload["export_contract"]["write_path"] == "audit.trace_exports.<export_id>"
     assert payload["status"] == "partial_blocked"
     assert "executor_private_payload" not in result.stdout
     assert "raw_storage_key" not in result.stdout

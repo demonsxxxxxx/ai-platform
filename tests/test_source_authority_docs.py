@@ -272,6 +272,24 @@ def test_observability_docs_record_quality_golden_set_contract_without_closing_g
         assert "api_key" not in text
         assert "C:\\Users" not in text
 
+    for text in (observability_text, roadmap_text, release_evidence_text):
+        assert "tools/trace_audit_export_readiness.py" in text
+        assert "ai-platform.trace-audit-export-readiness.v1" in text
+        assert "ai-platform.trace-audit-export-contract.v1" in text
+        assert "audit.trace_exports.<export_id>" in text
+        assert "trace_audit_export_contract" in text
+        assert "trace_audit_export_runtime_acceptance" in text
+        assert "trace_audit_export_dashboard_acceptance" in text
+        assert "trace_audit_export_211_acceptance" in text
+        assert "run_event_public_projection" in text
+        assert "audit_event_public_projection" in text
+        assert "does not close G9" in text
+        assert "executor_private_payload" not in text
+        assert "raw_storage_key" not in text
+        assert "sandbox_workdir" not in text
+        assert "api_key" not in text
+        assert "C:\\Users" not in text
+
 
 def test_governance_docs_record_skill_dependency_review_policy_without_closing_g6():
     governance_text = read(GOVERNANCE_READINESS_DOC)

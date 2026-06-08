@@ -6,6 +6,7 @@ from app.error_taxonomy import build_error_taxonomy_contract
 from app.quality_golden_set_readiness import build_quality_golden_set_readiness
 from app.release_evidence_readiness import build_release_evidence_readiness
 from app.settings import get_settings
+from app.trace_audit_export_readiness import build_trace_audit_export_readiness
 
 
 SCHEMA_VERSION = "ai-platform.observability-readiness.v1"
@@ -62,6 +63,7 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
     alert_slo_readiness = build_alert_slo_readiness()
     quality_golden_set_readiness = build_quality_golden_set_readiness()
     release_evidence_readiness = build_release_evidence_readiness()
+    trace_audit_export_readiness = build_trace_audit_export_readiness()
     model_gateway_backpressure_policy = build_model_gateway_backpressure_policy()
     model_gateway_request_concurrency_limit = _positive_int_setting(
         resolved_settings,
@@ -142,12 +144,13 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
                 "capacity_gate_readiness_verdict",
                 "alert_slo_rule_template_evidence",
                 "alert_delivery_channel_policy_contract",
+                "trace_audit_export_contract",
                 "release_evidence_export_location_contract",
                 "release_evidence_retention_policy_contract",
             ],
             gaps=[
                 *alert_slo_readiness["open_gaps"],
-                "trace_audit_export_contract",
+                *trace_audit_export_readiness["open_gaps"],
                 *release_evidence_readiness["open_gaps"],
             ],
             next_checks=[
@@ -158,6 +161,7 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
             ],
             evidence={
                 "alert_slo_rules": alert_slo_readiness,
+                "trace_audit_export": trace_audit_export_readiness,
                 "release_evidence": release_evidence_readiness,
             },
         ),
@@ -244,6 +248,9 @@ def _render_domain_evidence(evidence: object) -> str:
     release_evidence = evidence.get("release_evidence")
     if isinstance(release_evidence, dict):
         rendered_sections.append(_render_release_evidence(release_evidence))
+    trace_audit_export = evidence.get("trace_audit_export")
+    if isinstance(trace_audit_export, dict):
+        rendered_sections.append(_render_trace_audit_export(trace_audit_export))
     model_gateway_policy = evidence.get("model_gateway_backpressure_policy")
     if isinstance(model_gateway_policy, dict):
         rendered_sections.append(_render_model_gateway_backpressure_policy(model_gateway_policy))
@@ -297,6 +304,29 @@ def _render_release_evidence(release: dict[str, Any]) -> str:
         f"{artifact_lines}\n\n"
         "Forbidden retention delete targets:\n\n"
         f"{delete_target_lines}\n"
+    )
+
+
+def _render_trace_audit_export(trace_export: dict[str, Any]) -> str:
+    contract = trace_export.get("export_contract") if isinstance(trace_export.get("export_contract"), dict) else {}
+    open_gaps = trace_export.get("open_gaps")
+    gap_lines = ""
+    if isinstance(open_gaps, list):
+        gap_lines = "\n".join(f"- `{gap}`" for gap in open_gaps)
+    event_sources = contract.get("allowed_event_sources")
+    source_lines = ""
+    if isinstance(event_sources, list):
+        source_lines = "\n".join(f"- `{source}`" for source in event_sources)
+    return (
+        "\nEvidence:\n\n"
+        f"- `{trace_export.get('schema_version')}` status `{trace_export.get('status')}`\n"
+        f"- export contract `{contract.get('schema_version')}` at `{contract.get('write_path')}`\n"
+        f"- active export policy `{trace_export.get('active_export_policy')}`\n"
+        f"- does not close G9 `{contract.get('does_not_close_g9')}`\n"
+        "Allowed event sources:\n\n"
+        f"{source_lines}\n\n"
+        "Nested trace/audit export gaps:\n\n"
+        f"{gap_lines}\n"
     )
 
 

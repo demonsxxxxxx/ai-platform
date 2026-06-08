@@ -1,15 +1,16 @@
 # ai-platform G9 Observability Readiness
 
-Date: 2026-06-08
+Date: 2026-06-09
 
 This document records the current G9 Observability / Quality / Ops readiness
 baseline. It is an operator readiness snapshot, not a gate-closure claim. G9
 remains partial until latency percentile per-surface split and dashboard
 acceptance, model-gateway pressure controls and recorded capacity load-test
 evidence, error taxonomy dashboard acceptance, golden-set evaluation runtime
-and 211 acceptance, alert/SLO runtime acceptance, trace/audit export contracts,
-release evidence runtime export acceptance, and release evidence retention
-runtime acceptance have code, tests, docs, review, and runtime evidence.
+and 211 acceptance, alert/SLO runtime acceptance, trace/audit export runtime,
+dashboard, and 211 acceptance, release evidence runtime export acceptance, and
+release evidence retention runtime acceptance have code, tests, docs, review,
+and runtime evidence.
 
 Generate the current readiness snapshot from the repository root:
 
@@ -56,7 +57,7 @@ or ordinary-user private content.
 | Runtime metrics | Admin Runtime observability summary, token/cost/latency/error counts, `latency_percentiles_p50_p95_p99_admin_projection`, queue/admission/DB-pool backpressure summary, config-visible model-gateway request limit status, capacity runtime evidence capture | `latency_percentile_per_surface_split_and_dashboard_acceptance` across API, queue lease, worker, model, sandbox, artifact, cancel, retry, and resume; enforced model-gateway request-limit/backpressure gate plus recorded model-gateway load-test evidence; recorded capacity load-test evidence |
 | Error taxonomy | Formal `ai-platform.error-taxonomy.v1` contract, category mapping for executor/tool/sandbox/model-gateway/queue/database/memory/artifact/auth failures, Admin Runtime `error_categories`, run event error count projection, and redacted recent failure projection | Dashboard acceptance and 211/runtime evidence for taxonomy-driven operations |
 | Quality evaluation | Run trace/audit linkage baseline, source-level `ai-platform.quality-golden-set-readiness.v1` contract, and `ai-platform.quality-score.v1` score schema | Golden-set evaluation runtime and 211 acceptance, office workflow acceptance dataset, quality threshold calibration, dashboard acceptance |
-| Alerts and exports | Admin Runtime overview projection, fail-closed capacity gate readiness verdict, source-level `ai-platform.alert-slo-readiness.v1` rule template evidence for queue, database, worker, model gateway, sandbox, error-taxonomy, and capacity gates, source-level `ai-platform.alert-delivery-channel-policy.v1` as `alert_delivery_channel_policy_contract`, plus source-level `ai-platform.release-evidence-readiness.v1` export-location contract and `ai-platform.release-evidence-retention-policy.v1` retention policy contract | Alert runtime dashboard and 211 acceptance, `alert_delivery_channel_runtime_acceptance`, runtime SLO calibration, trace/audit export contract, `release_evidence_runtime_export_acceptance`, and `release_evidence_retention_runtime_acceptance` |
+| Alerts and exports | Admin Runtime overview projection, fail-closed capacity gate readiness verdict, source-level `ai-platform.alert-slo-readiness.v1` rule template evidence for queue, database, worker, model gateway, sandbox, error-taxonomy, and capacity gates, source-level `ai-platform.alert-delivery-channel-policy.v1` as `alert_delivery_channel_policy_contract`, source-level `ai-platform.trace-audit-export-readiness.v1` as `trace_audit_export_contract`, plus source-level `ai-platform.release-evidence-readiness.v1` export-location contract and `ai-platform.release-evidence-retention-policy.v1` retention policy contract | Alert runtime dashboard and 211 acceptance, `alert_delivery_channel_runtime_acceptance`, runtime SLO calibration, `trace_audit_export_runtime_acceptance`, `trace_audit_export_dashboard_acceptance`, `trace_audit_export_211_acceptance`, `release_evidence_runtime_export_acceptance`, and `release_evidence_retention_runtime_acceptance` |
 
 ## Quality Golden-Set Contract Baseline
 
@@ -120,6 +121,39 @@ storage identifiers, sandbox runtime paths, or secret-like values.
 Remaining alert blockers are runtime dashboard wiring,
 `alert_delivery_channel_runtime_acceptance`, SLO threshold calibration from
 recorded runtime evidence, review, and 211 smoke.
+
+## Trace / Audit Export Contract Baseline
+
+The source-level readiness snapshot now embeds
+`ai-platform.trace-audit-export-readiness.v1` as
+`observability_readiness.domains.alerts_and_exports.evidence.trace_audit_export`.
+Generate the standalone contract from the repository root:
+
+```powershell
+python tools/trace_audit_export_readiness.py --format markdown
+python tools/trace_audit_export_readiness.py --format json
+```
+
+The nested export contract is
+`ai-platform.trace-audit-export-contract.v1` and records future reviewed export
+evidence at:
+
+```text
+audit.trace_exports.<export_id>
+```
+
+Allowed event sources are `run_event_public_projection`,
+`audit_event_public_projection`, `admin_runtime_observability_summary`, and
+`release_evidence_entry`. Required fields include export ID, commit, tenant,
+requester, request time, time range, filters, public artifact references,
+redaction scan status, and review status.
+
+This is a contract-only baseline. It does not export runtime data, does not
+read executor-only data, raw storage identifiers, sandbox runtime paths, or
+secret-like values, and does not close G9. Remaining blockers are
+`trace_audit_export_runtime_acceptance`,
+`trace_audit_export_dashboard_acceptance`, and
+`trace_audit_export_211_acceptance`.
 
 ## Release Evidence Export Contract Baseline
 
