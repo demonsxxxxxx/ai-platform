@@ -49,6 +49,22 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         for route in audit["route_inventory"]["legacy_policy_required_routes"]
     )
     assert "legacy_route_policies" in audit["route_inventory"]
+    assert "route_inventory" in audit["active_browser_entry"]
+    active_route_inventory = audit["active_browser_entry"]["route_inventory"]
+    assert set(active_route_inventory) == {
+        "ai_platform_projection_routes",
+        "same_origin_compat_routes",
+        "legacy_policy_required_routes",
+        "legacy_route_policies",
+    }
+    active_policy_routes = {
+        route["route_prefix"]: route
+        for route in active_route_inventory["legacy_route_policies"]
+    }
+    assert "/api/mcp" in active_policy_routes
+    assert "/api/env-vars" in active_policy_routes
+    assert "/api/channels" not in active_policy_routes
+    assert active_policy_routes["/api/mcp"]["route_scope"] == "active_browser_entry"
     policy_routes = {
         route["route_prefix"]: route
         for route in audit["route_inventory"]["legacy_route_policies"]
@@ -62,6 +78,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         "remap_to_ai_platform_admin_projection_or_hide"
     )
     assert policy_routes["/api/mcp"]["governance_gate"] == "G6"
+    assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
     assert "legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
     assert "quarantined_legacy_sources_need_ai_platform_projection_remap" in audit["open_gaps"]
 
@@ -584,5 +601,6 @@ def test_render_frontend_projection_audit_markdown_is_operator_readable():
     assert "/api/mcp" in markdown
     assert "Legacy Route Policies" in markdown
     assert "Active Browser Entry" in markdown
+    assert "Active Legacy Route Policies" in markdown
     assert "legacy_routes_need_policy_enforcement_or_ai_platform_remap" in markdown
     assert "c:\\users" not in markdown.lower()

@@ -549,7 +549,11 @@ def _scan_routes(root: Path, files: list[Path], prefixes: list[str]) -> list[dic
     return [hits[prefix] for prefix in prefixes if prefix in hits]
 
 
-def _legacy_route_policies(legacy_routes: list[dict[str, object]]) -> list[dict[str, object]]:
+def _legacy_route_policies(
+    legacy_routes: list[dict[str, object]],
+    *,
+    route_scope: str,
+) -> list[dict[str, object]]:
     policies: list[dict[str, object]] = []
     for route in legacy_routes:
         route_prefix = route["route_prefix"]
@@ -565,6 +569,7 @@ def _legacy_route_policies(legacy_routes: list[dict[str, object]]) -> list[dict[
                     "admin_exposure": "fail_closed",
                     "governance_gate": "G6",
                     "required_action": "define_ai_platform_projection_policy",
+                    "route_scope": route_scope,
                     "references": route.get("references", []),
                 }
             )
@@ -574,10 +579,21 @@ def _legacy_route_policies(legacy_routes: list[dict[str, object]]) -> list[dict[
                 "route_prefix": route_prefix,
                 "mapping_status": "mapped_pending_enforcement",
                 **policy,
+                "route_scope": route_scope,
                 "references": route.get("references", []),
             }
         )
     return policies
+
+
+def _route_inventory(root: Path, files: list[Path], *, route_scope: str) -> dict[str, object]:
+    legacy_routes = _scan_routes(root, files, LEGACY_POLICY_REQUIRED_ROUTE_PREFIXES)
+    return {
+        "ai_platform_projection_routes": _scan_routes(root, files, AI_PLATFORM_ROUTE_PREFIXES),
+        "same_origin_compat_routes": _scan_routes(root, files, COMPAT_ROUTE_PREFIXES),
+        "legacy_policy_required_routes": legacy_routes,
+        "legacy_route_policies": _legacy_route_policies(legacy_routes, route_scope=route_scope),
+    }
 
 
 def _ci_integration(root: Path) -> dict[str, object]:
@@ -638,10 +654,11 @@ def build_frontend_projection_audit(repo_root: Path | None = None) -> dict[str, 
         for item in private_terms["violations"]
         if isinstance(item.get("path"), str) and item["path"] not in active_path_set
     ]
-    ai_routes = _scan_routes(root, files, AI_PLATFORM_ROUTE_PREFIXES)
-    compat_routes = _scan_routes(root, files, COMPAT_ROUTE_PREFIXES)
-    legacy_routes = _scan_routes(root, files, LEGACY_POLICY_REQUIRED_ROUTE_PREFIXES)
-    legacy_route_policies = _legacy_route_policies(legacy_routes)
+    route_inventory = _route_inventory(root, files, route_scope="production_source")
+    active_route_inventory = _route_inventory(root, active_files, route_scope="active_browser_entry")
+    legacy_routes = route_inventory["legacy_policy_required_routes"]
+    legacy_route_policies = route_inventory["legacy_route_policies"]
+    active_legacy_route_policies = active_route_inventory["legacy_route_policies"]
 
     violations = private_terms["violations"]
     open_gaps: list[str] = []
@@ -649,6 +666,8 @@ def build_frontend_projection_audit(repo_root: Path | None = None) -> dict[str, 
         open_gaps.append("legacy_routes_need_route_by_route_ai_platform_policy_mapping")
     elif legacy_routes:
         open_gaps.append("legacy_routes_need_policy_enforcement_or_ai_platform_remap")
+    if active_legacy_route_policies:
+        open_gaps.append("active_legacy_routes_need_policy_enforcement_or_ai_platform_remap")
     if quarantined_violations:
         open_gaps.append("quarantined_legacy_sources_need_ai_platform_projection_remap")
     ci = _ci_integration(root)
@@ -679,17 +698,13 @@ def build_frontend_projection_audit(repo_root: Path | None = None) -> dict[str, 
             "entry_candidates": [candidate.as_posix() for candidate in ACTIVE_ENTRY_CANDIDATES],
             "files": [_relative_path(root, path) for path in active_files],
             "forbidden_projection_terms": active_private_terms,
+            "route_inventory": active_route_inventory,
         },
         "quarantined_legacy_sources": {
             "violations": quarantined_violations,
             "policy": "not_in_active_browser_entry_graph_but_must_be_remapped_or_removed_before_g9_rollout",
         },
-        "route_inventory": {
-            "ai_platform_projection_routes": ai_routes,
-            "same_origin_compat_routes": compat_routes,
-            "legacy_policy_required_routes": legacy_routes,
-            "legacy_route_policies": legacy_route_policies,
-        },
+        "route_inventory": route_inventory,
         "ci_integration": ci,
         "open_gaps": open_gaps,
         "policy": {
@@ -716,6 +731,14 @@ def render_frontend_projection_audit_markdown(audit: dict[str, Any]) -> str:
         f"ordinary `{route['ordinary_user_exposure']}`, "
         f"action `{route['required_action']}`"
         for route in route_inventory["legacy_route_policies"]
+    ) or "- none"
+    active_route_inventory = audit["active_browser_entry"]["route_inventory"]
+    active_legacy_policies = "\n".join(
+        "- "
+        f"`{route['route_prefix']}` gate `{route['governance_gate']}`, "
+        f"ordinary `{route['ordinary_user_exposure']}`, "
+        f"action `{route['required_action']}`"
+        for route in active_route_inventory["legacy_route_policies"]
     ) or "- none"
     gaps = "\n".join(f"- {gap}" for gap in audit["open_gaps"]) or "- none"
     private_violations = audit["forbidden_private_payload_terms"]["violations"]
@@ -750,6 +773,8 @@ def render_frontend_projection_audit_markdown(audit: dict[str, Any]) -> str:
         "## Active Browser Entry\n\n"
         f"Active source files: `{len(audit['active_browser_entry']['files'])}`\n\n"
         f"{active_lines}\n\n"
+        "## Active Legacy Route Policies\n\n"
+        f"{active_legacy_policies}\n\n"
         "## Quarantined Legacy Sources\n\n"
         f"{quarantined_lines}\n\n"
         "## Open Gaps\n\n"

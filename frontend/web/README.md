@@ -39,9 +39,10 @@ pnpm run build
 gate. The current audit status is `pass_with_policy_gaps`: active browser
 entry files are blocked if they consume executor-private or secret-like
 projection terms, while quarantined legacy source and route-policy gaps stay
-visible for G6/G9 follow-up. This status lets `ci:verify` continue to lint,
-type-check, and build, but it does not close the Agent Frontend V1 rollout
-gate.
+visible for G6/G9 follow-up. The audit also emits an active-browser route
+inventory so ordinary-user review can distinguish live legacy routes from
+inactive imported source. This status lets `ci:verify` continue to lint,
+type-check, and build, but it does not close the Agent Frontend V1 rollout gate.
 
 For local development, Vite proxies `/api/*` to `VITE_AI_PLATFORM_API_TARGET`,
 defaulting to `http://127.0.0.1:8020`. For the intranet deployment, keep the

@@ -86,13 +86,17 @@ manifest without printing local paths, `.env` values, or secret-like data. The
 static manifest records file count, total bytes, entry hashes, and a manifest
 hash so static frontend artifacts can be tied back to the backend/worker git
 commit while packaged frontend image delivery is still pending. The projection
-audit records the current production-source route inventory, active browser entry graph,
-quarantined inactive legacy source findings, private/secret-like projection
-term scan, `ci:verify` integration, legacy route policy mapping, and remaining
-legacy enforcement/remap gaps. The active browser entry graph is currently
-clear, so `projection:audit` exits 0 with status `pass_with_policy_gaps`;
-G6/G9 still block ordinary-user expansion until quarantined legacy
-model/channel/envvar sources are remapped or policy-gated.
+audit records the current production-source route inventory, active-browser
+route inventory, active browser entry graph, active-browser legacy route policy
+mapping, quarantined inactive legacy source findings, private/secret-like
+projection term scan, `ci:verify` integration, legacy route policy mapping, and
+remaining legacy enforcement/remap gaps. The active browser entry graph is
+currently clear of forbidden private/secret-like projection terms, but active
+legacy routes still require policy enforcement or ai-platform projection remap;
+`projection:audit` exits 0 with status `pass_with_policy_gaps`. G6/G9 still
+block ordinary-user expansion until active legacy routes are policy-gated or
+remapped and quarantined legacy model/channel/envvar sources are remapped or
+policy-gated.
 This provides the traceability and audit base for backend/worker/frontend
 same-commit review. `.github/workflows/ai-platform-frontend.yml` now runs
 frontend install, `ci:verify`, and release traceability on relevant source
@@ -130,8 +134,8 @@ delete/retention/export erasure evidence through
 frontend
 release traceability, static `dist/` release manifest, frontend projection
 audit wired first into `ci:verify`, GitHub Actions frontend CI workflow, active
-browser projection audit clearance, and quarantined inactive legacy secret-like
-source reporting.
+browser projection audit clearance, active-browser legacy route policy audit,
+and quarantined inactive legacy secret-like source reporting.
 
 This does not close G6. Remaining blockers are policy enforcement or
 ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel

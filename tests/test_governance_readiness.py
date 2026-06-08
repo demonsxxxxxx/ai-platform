@@ -56,6 +56,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "frontend_github_actions_ci_workflow" in domains["frontend_projection"]["implemented"]
     assert "frontend_static_dist_release_manifest" in domains["frontend_projection"]["implemented"]
     assert "frontend_legacy_route_policy_mapping" in domains["frontend_projection"]["implemented"]
+    assert "frontend_active_legacy_route_policy_audit" in domains["frontend_projection"]["implemented"]
     assert "frontend_active_browser_projection_audit_clear" in domains["frontend_projection"]["implemented"]
     assert "inactive_legacy_secret_like_frontend_sources_quarantined" in domains["frontend_projection"]["implemented"]
     assert "frontend_profile_envvar_surface_fail_closed" in domains["frontend_projection"]["implemented"]

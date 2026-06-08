@@ -113,6 +113,7 @@ def build_governance_readiness(settings: object | None = None) -> dict[str, Any]
                 "frontend_github_actions_ci_workflow",
                 "public_admin_projection_audit_baseline",
                 "frontend_legacy_route_policy_mapping",
+                "frontend_active_legacy_route_policy_audit",
                 "frontend_active_browser_projection_audit_clear",
                 "inactive_legacy_secret_like_frontend_sources_quarantined",
                 "frontend_profile_envvar_surface_fail_closed",

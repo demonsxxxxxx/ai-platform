@@ -141,10 +141,11 @@ Static audit on 2026-06-07:
   model preferences. Legacy model administration code remains source-visible
   but is not part of the active browser entry graph.
 - The audit now emits a machine-readable legacy route policy map for each
-  scanned legacy route. It records the required governance gate, ordinary-user
-  fail-closed exposure, admin projection boundary, and required remap/hide
-  action. This narrows the G6/G9 gap from missing route mapping to pending
-  policy enforcement or ai-platform projection remap.
+  scanned legacy route and a separate active-browser legacy route policy map.
+  It records the required governance gate, ordinary-user fail-closed exposure,
+  admin projection boundary, route scope, and required remap/hide action. This
+  narrows the G6/G9 gap from missing route mapping to active route enforcement
+  plus inactive legacy source remap.
 - `frontend/web/src/services/api/runPlayback.ts`,
   `frontend/web/src/services/api/memory.ts`,
   `frontend/web/src/hooks/useAgent/eventProcessor.ts`, and artifact/reveal
@@ -238,6 +239,7 @@ Current local and CI-contract evidence on 2026-06-08:
   commit as backend and worker artifacts.
 - `python tools/frontend_projection_audit.py --format json` records the
   current production-source route inventory, active browser entry graph,
+  active-browser route inventory,
   quarantined legacy source findings, CI integration status, forbidden
   secret-like projection findings, and remaining legacy route policy gaps
   without printing local absolute paths or secret-like runtime configuration.
