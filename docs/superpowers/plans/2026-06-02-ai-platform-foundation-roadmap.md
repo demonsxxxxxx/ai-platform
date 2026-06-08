@@ -86,6 +86,10 @@ were present, but the verdict remained `blocked_missing_load_test_evidence`
 with all seven load-test gates missing recorded evidence and
 `production_default_decision =
 do_not_raise_without_recorded_load_test_evidence`.
+The verifier now also rejects superficial `recorded_gates` claims that do not
+carry per-gate required evidence, cleanup proof, and stop-condition status. Such
+snapshots return `blocked_incomplete_load_test_evidence` and remain fail-closed
+for production defaults.
 
 This baseline does not claim a safe maximum concurrency number. Before raising
 `MAX_ACTIVE_WORKER_RUNS`, `MAX_ACTIVE_RUNS_PER_USER`, DB pool size,

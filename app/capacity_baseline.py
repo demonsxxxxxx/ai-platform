@@ -1,3 +1,4 @@
+import json
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -61,6 +62,20 @@ _LOAD_TEST_STOP_CONDITIONS = [
     "sandbox_cleanup_or_orphan_detection_fails",
     "model_gateway_timeout_or_retry_storm_detected",
 ]
+_SECRET_EVIDENCE_MARKERS = (
+    "secret",
+    "token",
+    "password",
+    "api_key",
+    "authorization",
+    "bearer",
+    "database_url",
+    "redis_url",
+    "storage_key",
+    "raw_storage_key",
+    "sandbox_workdir",
+    "executor_private_payload",
+)
 _LOAD_TEST_OPERATOR_WORKFLOW = [
     {
         "id": "capture_start_runtime_evidence",
@@ -84,7 +99,8 @@ _LOAD_TEST_OPERATOR_WORKFLOW = [
         "purpose": "Confirm the start verdict is fail-closed before applying load.",
         "command_template": (
             "verify capacity-runtime-evidence-start.json readiness.status is"
-            " blocked_missing_load_test_evidence or ready_for_operator_review"
+            " blocked_missing_load_test_evidence,"
+            " blocked_incomplete_load_test_evidence, or ready_for_operator_review"
         ),
         "expected_evidence": "recorded start readiness status and missing gates",
         "requires_explicit_operator_execution": False,
@@ -689,28 +705,155 @@ def _snapshot_admin_runtime_evidence(snapshot: dict[str, Any]) -> dict[str, obje
     }
 
 
+def _safe_status(value: object, allowed: set[str], default: str = "missing") -> str:
+    text = str(value or "").strip()
+    return text if text in allowed else default
+
+
+def _contains_secret_marker(value: object) -> bool:
+    if isinstance(value, dict):
+        return any(
+            any(marker in str(key).lower() for marker in _SECRET_EVIDENCE_MARKERS)
+            or _contains_secret_marker(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_contains_secret_marker(item) for item in value)
+    if isinstance(value, str):
+        lowered = value.lower()
+        return any(marker in lowered for marker in _SECRET_EVIDENCE_MARKERS)
+    return False
+
+
+def _has_recorded_evidence_value(value: object) -> bool:
+    if value is None or _contains_secret_marker(value):
+        return False
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return True
+    if isinstance(value, str):
+        return _safe_identity(value) not in {"unknown", "redacted"}
+    if isinstance(value, list):
+        return bool(value) and any(_has_recorded_evidence_value(item) for item in value)
+    if isinstance(value, dict):
+        return bool(value) and any(_has_recorded_evidence_value(item) for item in value.values())
+    try:
+        serialized = json.dumps(value, ensure_ascii=False)
+    except TypeError:
+        return False
+    return bool(serialized.strip()) and not _contains_secret_marker(serialized)
+
+
+def _safe_triggered_stop_conditions(value: object) -> list[str]:
+    if value is None:
+        return []
+    source = value if isinstance(value, list) else [value]
+    triggered: list[str] = []
+    for item in source:
+        if item in (None, "", [], {}):
+            continue
+        if isinstance(item, str) and not item.strip():
+            continue
+        safe_item = (
+            "redacted"
+            if _contains_secret_marker(item)
+            or isinstance(item, (dict, list, tuple, set))
+            or not isinstance(item, (str, int, float, bool))
+            else _safe_identity(item)
+        )
+        if safe_item not in triggered:
+            triggered.append(safe_item)
+    return triggered
+
+
+def _load_gate_evidence_summary(
+    load_test_evidence: dict[str, Any],
+    required_gates: list[str],
+) -> dict[str, Any]:
+    recorded_gates_source = load_test_evidence.get("recorded_gates")
+    recorded_gates = (
+        [gate for gate in recorded_gates_source if gate in required_gates]
+        if load_test_evidence.get("status") == "recorded" and isinstance(recorded_gates_source, list)
+        else []
+    )
+    gate_evidence = _dict(load_test_evidence.get("gate_evidence"))
+    statuses: dict[str, str] = {}
+    invalid: list[dict[str, object]] = []
+
+    for gate in required_gates:
+        if gate not in recorded_gates:
+            statuses[gate] = "missing_recorded_load_test_evidence"
+            continue
+
+        evidence = _dict(gate_evidence.get(gate))
+        evidence_payload = _dict(evidence.get("evidence"))
+        evidence_names = {
+            key
+            for key, value in evidence_payload.items()
+            if key in _LOAD_TEST_REQUIRED_EVIDENCE and _has_recorded_evidence_value(value)
+        }
+
+        missing_required_evidence = [
+            item for item in _LOAD_TEST_REQUIRED_EVIDENCE if item not in evidence_names
+        ]
+        cleanup_proof_status = _safe_status(
+            evidence.get("cleanup_proof_status") or evidence.get("cleanup_proof"),
+            {"recorded", "passed", "verified", "complete"},
+        )
+        stop_condition_status = _safe_status(
+            evidence.get("stop_condition_status") or evidence.get("stop_conditions_status"),
+            {"passed", "not_triggered", "verified", "clear"},
+        )
+        triggered_stop_conditions = _safe_triggered_stop_conditions(evidence.get("triggered_stop_conditions"))
+
+        if (
+            missing_required_evidence
+            or cleanup_proof_status == "missing"
+            or stop_condition_status == "missing"
+            or triggered_stop_conditions
+        ):
+            statuses[gate] = "incomplete_recorded_load_test_evidence"
+            invalid.append(
+                {
+                    "gate": gate,
+                    "missing_required_evidence": missing_required_evidence,
+                    "cleanup_proof_status": cleanup_proof_status,
+                    "stop_condition_status": stop_condition_status,
+                    "triggered_stop_conditions": triggered_stop_conditions,
+                }
+            )
+        else:
+            statuses[gate] = "recorded"
+
+    missing_gates = [gate for gate in required_gates if statuses.get(gate) != "recorded"]
+    return {
+        "statuses": statuses,
+        "invalid_load_test_evidence": invalid,
+        "missing_load_test_gates": missing_gates,
+    }
+
+
 def build_capacity_gate_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Build a secret-safe #21 readiness verdict from a capacity evidence snapshot."""
     safe_snapshot = _dict(snapshot)
     runtime_identity = _dict(safe_snapshot.get("runtime_identity"))
     admin_runtime_evidence = _snapshot_admin_runtime_evidence(safe_snapshot)
     load_test_evidence = _dict(safe_snapshot.get("load_test_evidence"))
-    required_gates_source = load_test_evidence.get("required_gates")
-    required_gates = [
-        gate for gate in required_gates_source if gate in LOAD_TEST_GATES
-    ] if isinstance(required_gates_source, list) else list(LOAD_TEST_GATES)
-    recorded_gates_source = load_test_evidence.get("recorded_gates")
-    recorded_gates = [
-        gate for gate in recorded_gates_source if gate in required_gates
-    ] if load_test_evidence.get("status") == "recorded" and isinstance(recorded_gates_source, list) else []
-    missing_gates = [gate for gate in required_gates if gate not in recorded_gates]
+    required_gates = list(LOAD_TEST_GATES)
+    gate_evidence_summary = _load_gate_evidence_summary(load_test_evidence, required_gates)
+    missing_gates = gate_evidence_summary["missing_load_test_gates"]
+    invalid_load_test_evidence = gate_evidence_summary["invalid_load_test_evidence"]
     missing_sections = list(admin_runtime_evidence["missing_sections"])
     if missing_sections:
         status = "blocked_missing_admin_runtime_sections"
+    elif invalid_load_test_evidence:
+        status = "blocked_incomplete_load_test_evidence"
     elif missing_gates:
         status = "blocked_missing_load_test_evidence"
     else:
         status = "ready_for_operator_review"
+    production_defaults_blocked = bool(missing_gates or invalid_load_test_evidence or missing_sections)
     return {
         "schema_version": "ai-platform.capacity-gate-readiness.v1",
         "status": status,
@@ -723,16 +866,17 @@ def build_capacity_gate_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
         "load_test_gates": [
             {
                 "gate": gate,
-                "status": "recorded" if gate in recorded_gates else "missing_recorded_load_test_evidence",
+                "status": gate_evidence_summary["statuses"][gate],
             }
             for gate in required_gates
         ],
         "missing_load_test_gates": missing_gates,
+        "invalid_load_test_evidence": invalid_load_test_evidence,
         "capacity_answer": "safe_max_concurrency_unproven_without_recorded_load_test_evidence"
-        if missing_gates or missing_sections
+        if production_defaults_blocked
         else "operator_review_required_before_default_change",
         "production_default_decision": "do_not_raise_without_recorded_load_test_evidence"
-        if missing_gates or missing_sections
+        if production_defaults_blocked
         else "operator_review_required_before_default_change",
     }
 
@@ -892,6 +1036,23 @@ def render_capacity_gate_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"- {section}" for section in readiness["admin_runtime_evidence"]["missing_sections"]
     ) or "- none"
     missing_gates = "\n".join(f"- {gate}" for gate in readiness["missing_load_test_gates"]) or "- none"
+    invalid_items = []
+    for item in readiness.get("invalid_load_test_evidence", []):
+        invalid = _dict(item)
+        gate = invalid.get("gate")
+        missing_required = invalid.get("missing_required_evidence")
+        first_missing = missing_required[0] if isinstance(missing_required, list) and missing_required else "none"
+        triggered = invalid.get("triggered_stop_conditions")
+        triggered_text = ", ".join(triggered) if isinstance(triggered, list) and triggered else "none"
+        invalid_items.append(
+            (
+                f"- `{gate}` missing `{first_missing}`; "
+                f"cleanup=`{invalid.get('cleanup_proof_status', 'missing')}`; "
+                f"stop_conditions=`{invalid.get('stop_condition_status', 'missing')}`; "
+                f"triggered=`{triggered_text}`"
+            )
+        )
+    incomplete_evidence = "\n".join(invalid_items) or "- none"
     gate_rows = "\n".join(
         f"| {item['gate']} | `{item['status']}` |"
         for item in readiness["load_test_gates"]
@@ -906,6 +1067,8 @@ def render_capacity_gate_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"{missing_sections}\n\n"
         "## Missing Load-Test Gates\n\n"
         f"{missing_gates}\n\n"
+        "## Incomplete Load-Test Evidence\n\n"
+        f"{incomplete_evidence}\n\n"
         "## Gate Status\n\n"
         "| Gate | Status |\n"
         "| --- | --- |\n"

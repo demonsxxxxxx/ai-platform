@@ -201,6 +201,7 @@ def test_capacity_load_test_plan_covers_each_gate_with_dry_run_commands_and_no_d
     ]
     assert plan["operator_workflow"][0]["command"].startswith("python tools/capacity_runtime_evidence.py")
     assert "https://ai-platform.internal" in plan["operator_workflow"][0]["command"]
+    assert "blocked_incomplete_load_test_evidence" in plan["operator_workflow"][1]["command"]
     assert plan["operator_workflow"][2]["requires_explicit_operator_execution"] is True
     assert plan["operator_workflow"][2]["does_not_raise_defaults"] is True
     assert "capacity_gate_readiness.py" in plan["operator_workflow"][-1]["command"]
@@ -489,6 +490,297 @@ def test_capacity_gate_readiness_blocks_default_raise_until_load_gates_are_recor
     assert "executor_private_payload" not in serialized
 
 
+def test_capacity_gate_readiness_rejects_recorded_gates_without_evidence_contract():
+    snapshot = build_capacity_evidence_snapshot(
+        {
+            "capacity": build_capacity_baseline(SecretBearingSettings()),
+            "queue": {"status": {"depths": {"queued": 0, "processing": 0, "dead_letter": 0}}},
+            "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+            "admission": {"active_runs": 0, "saturated_users": 0},
+            "backpressure": {"reasons": []},
+            "sandbox": {"containers": {"running": 0}, "leases": {"active": 0}},
+            "observability": {"event_count": 3, "error_count": 0},
+        },
+        commit_sha="abc123",
+        runtime_profile="211-current",
+    )
+    snapshot["load_test_evidence"] = {
+        "status": "recorded",
+        "required_gates": list(LOAD_TEST_GATES),
+        "recorded_gates": list(LOAD_TEST_GATES),
+    }
+
+    readiness = build_capacity_gate_readiness(snapshot)
+
+    assert readiness["status"] == "blocked_incomplete_load_test_evidence"
+    assert readiness["missing_load_test_gates"] == LOAD_TEST_GATES
+    assert readiness["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
+    assert {gate["gate"]: gate["status"] for gate in readiness["load_test_gates"]} == {
+        gate: "incomplete_recorded_load_test_evidence" for gate in LOAD_TEST_GATES
+    }
+    assert [item["gate"] for item in readiness["invalid_load_test_evidence"]] == LOAD_TEST_GATES
+    assert "commit_sha" in readiness["invalid_load_test_evidence"][0]["missing_required_evidence"]
+    assert readiness["invalid_load_test_evidence"][0]["cleanup_proof_status"] == "missing"
+
+
+def test_capacity_gate_readiness_does_not_trust_empty_or_partial_required_gates():
+    snapshot = build_capacity_evidence_snapshot(
+        {
+            "capacity": build_capacity_baseline(SecretBearingSettings()),
+            "queue": {"status": {"depths": {"queued": 0, "processing": 0, "dead_letter": 0}}},
+            "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+            "admission": {"active_runs": 0, "saturated_users": 0},
+            "backpressure": {"reasons": []},
+            "sandbox": {"containers": {"running": 0}, "leases": {"active": 0}},
+            "observability": {"event_count": 3, "error_count": 0},
+        },
+        commit_sha="abc123",
+        runtime_profile="211-current",
+    )
+    required_evidence = snapshot["load_test_evidence"]["required_evidence"]
+    snapshot["load_test_evidence"] = {
+        "status": "recorded",
+        "required_gates": [],
+        "recorded_gates": [],
+        "gate_evidence": {},
+    }
+
+    readiness = build_capacity_gate_readiness(snapshot)
+
+    assert readiness["status"] == "blocked_missing_load_test_evidence"
+    assert [item["gate"] for item in readiness["load_test_gates"]] == LOAD_TEST_GATES
+    assert readiness["missing_load_test_gates"] == LOAD_TEST_GATES
+    assert readiness["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
+
+    snapshot["load_test_evidence"]["required_gates"] = ["api_read_write_burst", "unknown_gate"]
+    snapshot["load_test_evidence"]["recorded_gates"] = ["api_read_write_burst"]
+    snapshot["load_test_evidence"]["gate_evidence"] = {
+        "api_read_write_burst": {
+            "evidence": {item: f"recorded-{item}" for item in required_evidence},
+            "cleanup_proof_status": "recorded",
+            "stop_condition_status": "passed",
+            "triggered_stop_conditions": [],
+        }
+    }
+
+    readiness = build_capacity_gate_readiness(snapshot)
+
+    assert readiness["status"] == "blocked_missing_load_test_evidence"
+    assert [item["gate"] for item in readiness["load_test_gates"]] == LOAD_TEST_GATES
+    assert "run_creation_burst_by_tenant_and_user" in readiness["missing_load_test_gates"]
+
+
+def test_capacity_gate_readiness_requires_actual_evidence_payload_not_only_names():
+    snapshot = build_capacity_evidence_snapshot(
+        {
+            "capacity": build_capacity_baseline(SecretBearingSettings()),
+            "queue": {"status": {"depths": {"queued": 0, "processing": 0, "dead_letter": 0}}},
+            "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+            "admission": {"active_runs": 0, "saturated_users": 0},
+            "backpressure": {"reasons": []},
+            "sandbox": {"containers": {"running": 0}, "leases": {"active": 0}},
+            "observability": {"event_count": 3, "error_count": 0},
+        },
+        commit_sha="abc123",
+        runtime_profile="211-current",
+    )
+    required_evidence = snapshot["load_test_evidence"]["required_evidence"]
+    snapshot["load_test_evidence"] = {
+        "status": "recorded",
+        "required_gates": list(LOAD_TEST_GATES),
+        "recorded_gates": list(LOAD_TEST_GATES),
+        "gate_evidence": {
+            gate: {
+                "required_evidence": list(required_evidence),
+                "cleanup_proof_status": "recorded",
+                "stop_condition_status": "passed",
+                "triggered_stop_conditions": [],
+            }
+            for gate in LOAD_TEST_GATES
+        },
+    }
+
+    readiness = build_capacity_gate_readiness(snapshot)
+
+    assert readiness["status"] == "blocked_incomplete_load_test_evidence"
+    assert readiness["invalid_load_test_evidence"][0]["missing_required_evidence"] == required_evidence
+
+
+def test_capacity_gate_readiness_blocks_unknown_triggered_stop_conditions():
+    snapshot = build_capacity_evidence_snapshot(
+        {
+            "capacity": build_capacity_baseline(SecretBearingSettings()),
+            "queue": {"status": {"depths": {"queued": 0, "processing": 0, "dead_letter": 0}}},
+            "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+            "admission": {"active_runs": 0, "saturated_users": 0},
+            "backpressure": {"reasons": []},
+            "sandbox": {"containers": {"running": 0}, "leases": {"active": 0}},
+            "observability": {"event_count": 3, "error_count": 0},
+        },
+        commit_sha="abc123",
+        runtime_profile="211-current",
+    )
+    required_evidence = snapshot["load_test_evidence"]["required_evidence"]
+    snapshot["load_test_evidence"] = {
+        "status": "recorded",
+        "required_gates": list(LOAD_TEST_GATES),
+        "recorded_gates": list(LOAD_TEST_GATES),
+        "gate_evidence": {
+            gate: {
+                "evidence": {item: f"recorded-{item}" for item in required_evidence},
+                "cleanup_proof_status": "recorded",
+                "stop_condition_status": "passed",
+                "triggered_stop_conditions": ["unexpected_operator_abort"],
+            }
+            for gate in LOAD_TEST_GATES
+        },
+    }
+
+    readiness = build_capacity_gate_readiness(snapshot)
+
+    assert readiness["status"] == "blocked_incomplete_load_test_evidence"
+    assert readiness["invalid_load_test_evidence"][0]["triggered_stop_conditions"] == [
+        "unexpected_operator_abort"
+    ]
+
+    snapshot["load_test_evidence"]["gate_evidence"] = {
+        gate: {
+            "evidence": {item: f"recorded-{item}" for item in required_evidence},
+            "cleanup_proof_status": "recorded",
+            "stop_condition_status": "passed",
+            "triggered_stop_conditions": "unexpected_operator_abort",
+        }
+        for gate in LOAD_TEST_GATES
+    }
+
+    readiness = build_capacity_gate_readiness(snapshot)
+
+    assert readiness["status"] == "blocked_incomplete_load_test_evidence"
+    assert readiness["invalid_load_test_evidence"][0]["triggered_stop_conditions"] == [
+        "unexpected_operator_abort"
+    ]
+
+    snapshot["load_test_evidence"]["gate_evidence"] = {
+        gate: {
+            "evidence": {item: f"recorded-{item}" for item in required_evidence},
+            "cleanup_proof_status": "recorded",
+            "stop_condition_status": "passed",
+            "triggered_stop_conditions": "unknown",
+        }
+        for gate in LOAD_TEST_GATES
+    }
+
+    readiness = build_capacity_gate_readiness(snapshot)
+
+    assert readiness["status"] == "blocked_incomplete_load_test_evidence"
+    assert readiness["invalid_load_test_evidence"][0]["triggered_stop_conditions"] == ["unknown"]
+
+
+def test_capacity_gate_readiness_redacts_storage_key_stop_conditions_in_json_and_markdown():
+    snapshot = build_capacity_evidence_snapshot(
+        {
+            "capacity": build_capacity_baseline(SecretBearingSettings()),
+            "queue": {"status": {"depths": {"queued": 0, "processing": 0, "dead_letter": 0}}},
+            "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+            "admission": {"active_runs": 0, "saturated_users": 0},
+            "backpressure": {"reasons": []},
+            "sandbox": {"containers": {"running": 0}, "leases": {"active": 0}},
+            "observability": {"event_count": 3, "error_count": 0},
+        },
+        commit_sha="abc123",
+        runtime_profile="211-current",
+    )
+    required_evidence = snapshot["load_test_evidence"]["required_evidence"]
+    snapshot["load_test_evidence"]["gate_evidence"] = {
+        gate: {
+            "evidence": {item: f"recorded-{item}" for item in required_evidence},
+            "cleanup_proof_status": "recorded",
+            "stop_condition_status": "passed",
+            "triggered_stop_conditions": ["storage_key=tenants/default/private/object"],
+        }
+        for gate in LOAD_TEST_GATES
+    }
+    snapshot["load_test_evidence"]["status"] = "recorded"
+    snapshot["load_test_evidence"]["recorded_gates"] = list(LOAD_TEST_GATES)
+
+    readiness = build_capacity_gate_readiness(snapshot)
+    serialized = json.dumps(readiness, ensure_ascii=False).lower()
+    markdown = render_capacity_gate_readiness_markdown(readiness).lower()
+
+    assert readiness["status"] == "blocked_incomplete_load_test_evidence"
+    assert readiness["invalid_load_test_evidence"][0]["triggered_stop_conditions"] == ["redacted"]
+    assert "storage_key" not in serialized
+    assert "tenants/default/private/object" not in serialized
+    assert "storage_key" not in markdown
+    assert "tenants/default/private/object" not in markdown
+    assert "triggered=`redacted`" in markdown
+
+    snapshot["load_test_evidence"]["gate_evidence"] = {
+        gate: {
+            "evidence": {item: f"recorded-{item}" for item in required_evidence},
+            "cleanup_proof_status": "recorded",
+            "stop_condition_status": "passed",
+            "triggered_stop_conditions": [
+                {"type": "object_storage", "key": "tenants/default/private/object"}
+            ],
+        }
+        for gate in LOAD_TEST_GATES
+    }
+
+    readiness = build_capacity_gate_readiness(snapshot)
+    serialized = json.dumps(readiness, ensure_ascii=False).lower()
+    markdown = render_capacity_gate_readiness_markdown(readiness).lower()
+
+    assert readiness["status"] == "blocked_incomplete_load_test_evidence"
+    assert readiness["invalid_load_test_evidence"][0]["triggered_stop_conditions"] == ["redacted"]
+    assert "object_storage" not in serialized
+    assert "tenants/default/private/object" not in serialized
+    assert "object_storage" not in markdown
+    assert "tenants/default/private/object" not in markdown
+    assert "triggered=`redacted`" in markdown
+
+
+def test_capacity_gate_readiness_accepts_complete_recorded_gate_evidence_for_operator_review():
+    snapshot = build_capacity_evidence_snapshot(
+        {
+            "capacity": build_capacity_baseline(SecretBearingSettings()),
+            "queue": {"status": {"depths": {"queued": 0, "processing": 0, "dead_letter": 0}}},
+            "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+            "admission": {"active_runs": 0, "saturated_users": 0},
+            "backpressure": {"reasons": []},
+            "sandbox": {"containers": {"running": 0}, "leases": {"active": 0}},
+            "observability": {"event_count": 3, "error_count": 0},
+        },
+        commit_sha="abc123",
+        runtime_profile="211-current",
+    )
+    required_evidence = snapshot["load_test_evidence"]["required_evidence"]
+    snapshot["load_test_evidence"] = {
+        "status": "recorded",
+        "required_gates": list(LOAD_TEST_GATES),
+        "recorded_gates": list(LOAD_TEST_GATES),
+        "gate_evidence": {
+            gate: {
+                "evidence": {item: f"recorded-{item}" for item in required_evidence},
+                "cleanup_proof_status": "recorded",
+                "stop_condition_status": "passed",
+                "triggered_stop_conditions": [],
+            }
+            for gate in LOAD_TEST_GATES
+        },
+    }
+
+    readiness = build_capacity_gate_readiness(snapshot)
+
+    assert readiness["status"] == "ready_for_operator_review"
+    assert readiness["missing_load_test_gates"] == []
+    assert readiness["invalid_load_test_evidence"] == []
+    assert {gate["gate"]: gate["status"] for gate in readiness["load_test_gates"]} == {
+        gate: "recorded" for gate in LOAD_TEST_GATES
+    }
+    assert readiness["production_default_decision"] == "operator_review_required_before_default_change"
+
+
 def test_render_capacity_gate_readiness_markdown_is_gap_first_and_safe():
     readiness = build_capacity_gate_readiness(
         build_capacity_evidence_snapshot(
@@ -513,6 +805,34 @@ def test_render_capacity_gate_readiness_markdown_is_gap_first_and_safe():
     assert "Do not raise production concurrency defaults" in markdown
     assert "super-secret-password" not in markdown
     assert "sk-secret" not in markdown
+
+
+def test_render_capacity_gate_readiness_markdown_lists_incomplete_recorded_evidence():
+    snapshot = build_capacity_evidence_snapshot(
+        {
+            "capacity": build_capacity_baseline(SecretBearingSettings()),
+            "queue": {"status": {"depths": {"queued": 0, "processing": 0, "dead_letter": 0}}},
+            "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+            "admission": {"active_runs": 0, "saturated_users": 0},
+            "backpressure": {"reasons": []},
+            "sandbox": {"containers": {"running": 0}, "leases": {"active": 0}},
+            "observability": {"event_count": 3, "error_count": 0},
+        },
+        commit_sha="abc123",
+    )
+    snapshot["load_test_evidence"] = {
+        "status": "recorded",
+        "required_gates": list(LOAD_TEST_GATES),
+        "recorded_gates": list(LOAD_TEST_GATES),
+    }
+
+    markdown = render_capacity_gate_readiness_markdown(build_capacity_gate_readiness(snapshot))
+
+    assert "Status: `blocked_incomplete_load_test_evidence`" in markdown
+    assert "## Incomplete Load-Test Evidence" in markdown
+    assert "`api_read_write_burst` missing `commit_sha`" in markdown
+    assert "cleanup=`missing`" in markdown
+    assert "stop_conditions=`missing`" in markdown
 
 
 def test_capacity_gate_readiness_cli_outputs_json_from_snapshot_file(tmp_path):

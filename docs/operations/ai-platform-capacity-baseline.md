@@ -128,6 +128,13 @@ and whether all seven load-test gates have recorded evidence. It is a
 fail-closed verifier: missing sections or missing recorded gates keep
 `production_default_decision =
 do_not_raise_without_recorded_load_test_evidence`.
+Recorded gate names alone are not sufficient evidence. For each recorded gate,
+the snapshot must include a per-gate evidence contract with all required
+evidence keys, cleanup proof status, and stop-condition status. If any recorded
+gate lacks that evidence packet, the verifier returns
+`blocked_incomplete_load_test_evidence`, lists the gate under
+`invalid_load_test_evidence`, and keeps the same fail-closed production
+decision.
 
 For a single read-only capture command, use:
 
@@ -162,6 +169,34 @@ Every workflow step carries `does_not_raise_defaults = true`. The only step
 that requires real load is marked `requires_explicit_operator_execution = true`.
 This gives operators a repeatable evidence chain for #21 without implying that
 any current profile has been load-tested.
+The final evidence snapshot should use this shape before operator review:
+
+```json
+{
+  "load_test_evidence": {
+    "status": "recorded",
+    "required_gates": ["api_read_write_burst"],
+    "recorded_gates": ["api_read_write_burst"],
+    "gate_evidence": {
+      "api_read_write_burst": {
+        "evidence": {
+          "commit_sha": "22dc9e61605d406f10669e4f91f4cb1a87e2094d",
+          "api_worker_image_labels": "capacity-evidence/api-worker-labels.json",
+          "cleanup_proof": "capacity-evidence/api-burst-cleanup.json"
+        },
+        "cleanup_proof_status": "recorded",
+        "stop_condition_status": "passed",
+        "triggered_stop_conditions": []
+      }
+    }
+  }
+}
+```
+
+The real gate evidence must include every item emitted by
+`tools/capacity_load_plan.py` under `required_evidence` as non-empty
+`gate_evidence.<gate>.evidence` values or artifact references. The shortened
+JSON above only shows the contract shape.
 
 ### 211 Snapshot Evidence - 2026-06-08
 
