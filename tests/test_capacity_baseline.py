@@ -273,8 +273,8 @@ def test_capacity_load_test_plan_covers_each_gate_with_dry_run_commands_and_no_d
         "confirm_start_gate_status",
         "execute_bounded_load_scenario",
         "capture_end_runtime_evidence",
-        "assemble_evidence_bundle_draft",
         "record_cleanup_proof",
+        "assemble_evidence_bundle_draft",
         "generate_gate_readiness_verdict",
     ]
     assert plan["operator_workflow"][0]["command"].startswith("python tools/capacity_runtime_evidence.py")
@@ -284,12 +284,16 @@ def test_capacity_load_test_plan_covers_each_gate_with_dry_run_commands_and_no_d
     assert plan["operator_workflow"][2]["does_not_raise_defaults"] is True
     assert "capacity_bounded_load_harness.py" in plan["operator_workflow"][2]["command"]
     assert "probe_only_not_recorded" in plan["operator_workflow"][2]["command"]
-    assert plan["operator_workflow"][4]["requires_explicit_operator_execution"] is False
-    assert plan["operator_workflow"][4]["does_not_raise_defaults"] is True
-    assert "capacity_evidence_bundle.py" in plan["operator_workflow"][4]["command"]
-    assert "capacity-runtime-evidence-end.json" in plan["operator_workflow"][4]["command"]
-    assert "capacity-bounded-load-harness-api-read-write-burst.json" in plan["operator_workflow"][4]["command"]
-    assert "capacity-evidence-bundle-api-read-write-burst.md" in plan["operator_workflow"][4]["command"]
+    assert plan["operator_workflow"][4]["requires_explicit_operator_execution"] is True
+    assert plan["operator_workflow"][4]["expected_evidence"] == "capacity-cleanup-proof-api-read-write-burst.json"
+    assert plan["operator_workflow"][5]["requires_explicit_operator_execution"] is False
+    assert plan["operator_workflow"][5]["does_not_raise_defaults"] is True
+    assert "capacity_evidence_bundle.py" in plan["operator_workflow"][5]["command"]
+    assert "--start-runtime-evidence-json capacity-runtime-evidence-start.json" in plan["operator_workflow"][5]["command"]
+    assert "capacity-runtime-evidence-end.json" in plan["operator_workflow"][5]["command"]
+    assert "capacity-bounded-load-harness-api-read-write-burst.json" in plan["operator_workflow"][5]["command"]
+    assert "--cleanup-proof-json capacity-cleanup-proof-api-read-write-burst.json" in plan["operator_workflow"][5]["command"]
+    assert "capacity-evidence-bundle-api-read-write-burst.md" in plan["operator_workflow"][5]["command"]
     assert "capacity_gate_readiness.py" in plan["operator_workflow"][-1]["command"]
 
     serialized = json.dumps(plan, ensure_ascii=False).lower()
@@ -355,6 +359,8 @@ def test_render_capacity_load_test_plan_markdown_is_repeatable_and_safe():
     assert "record_cleanup_proof" in markdown
     assert "capacity_bounded_load_harness.py" in markdown
     assert "capacity_evidence_bundle.py" in markdown
+    assert "--start-runtime-evidence-json capacity-runtime-evidence-start.json" in markdown
+    assert "--cleanup-proof-json capacity-cleanup-proof-api-read-write-burst.json" in markdown
     assert "probe_only_not_recorded" in markdown
     assert "capacity_gate_readiness.py" in markdown
     assert "python tools/capacity_load_plan.py --dry-run --scenario api_read_write_burst" in markdown
@@ -1475,6 +1481,265 @@ def test_capacity_evidence_bundle_drafts_probe_evidence_without_marking_gate_rec
     assert "api_key" not in serialized
 
 
+def test_capacity_evidence_bundle_accepts_start_end_runtime_and_cleanup_proof_without_recording_gate():
+    start_snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-start",
+    )
+    end_overview = _admin_runtime_overview()
+    end_overview["queue"] = {"status": {"depths": {"queued": 1, "processing": 0, "dead_letter": 0}}}
+    end_snapshot = build_capacity_evidence_snapshot(
+        end_overview,
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-end",
+    )
+    start_runtime_evidence = {
+        "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+        "snapshot": start_snapshot,
+        "readiness": build_capacity_gate_readiness(start_snapshot),
+    }
+    end_runtime_evidence = {
+        "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+        "snapshot": end_snapshot,
+        "readiness": build_capacity_gate_readiness(end_snapshot),
+    }
+    probe_output = {
+        "schema_version": "ai-platform.capacity-bounded-load-harness.v1",
+        "gate": "api_read_write_burst",
+        "status": "probe_completed_not_gate_evidence",
+        "load_test_evidence_status": "probe_only_not_recorded",
+        "does_not_mark_gate_recorded": True,
+        "does_not_raise_defaults": True,
+        "sent_requests": 20,
+        "http_status_counts": {"200": 20},
+        "latency_ms": {"count": 20, "p50": 72.864, "p95": 252.748, "p99": 283.726},
+        "cleanup_proof_status": "not_applicable_read_only_probe",
+        "stop_condition_status": "passed",
+        "triggered_stop_conditions": [],
+    }
+    cleanup_proof = {
+        "schema_version": "ai-platform.capacity-cleanup-proof.v1",
+        "gate": "api_read_write_burst",
+        "status": "verified",
+        "evidence_ref": "capacity-evidence/api-burst-cleanup.json",
+        "test_tenants_removed": True,
+        "queued_payloads_removed": True,
+        "sandbox_leases_released": True,
+        "temporary_artifacts_removed": True,
+        "generated_documents_removed": True,
+        "raw_storage_key": "tenants/default/private/capacity-cleanup.json",
+        "executor_private_payload": {"api_key": "sk-secret"},
+    }
+
+    bundle = build_capacity_evidence_bundle(
+        end_runtime_evidence,
+        probe_output,
+        start_runtime_evidence=start_runtime_evidence,
+        cleanup_proof=cleanup_proof,
+    )
+
+    assert bundle["input_status"]["start_runtime_evidence"] == "accepted"
+    assert bundle["input_status"]["runtime_evidence"] == "accepted"
+    assert bundle["input_status"]["cleanup_proof"] == "accepted"
+    assert bundle["runtime_window"] == {
+        "start_commit_sha": "3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        "end_commit_sha": "3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        "start_profile": "211-current-start",
+        "end_profile": "211-current-end",
+    }
+    assert bundle["candidate_observed_evidence"]["runtime_profile"] == "211-current-end"
+    assert bundle["candidate_observed_evidence"]["cleanup_proof"] == {
+        "schema_version": "ai-platform.capacity-cleanup-proof.v1",
+        "status": "verified",
+        "evidence_ref": "capacity-evidence/api-burst-cleanup.json",
+        "test_tenants_removed": True,
+        "queued_payloads_removed": True,
+        "sandbox_leases_released": True,
+        "temporary_artifacts_removed": True,
+        "generated_documents_removed": True,
+    }
+    assert "cleanup_proof" not in bundle["missing_required_evidence"]
+    assert bundle["recorded_gate_evidence_draft"]["cleanup_proof_status"] == "verified"
+    assert bundle["recorded_gate_evidence_draft"]["status"] == "draft_not_recorded"
+    assert bundle["recorded_gate_evidence_draft"]["does_not_mark_gate_recorded"] is True
+    assert bundle["candidate_gate_summary"]["status"] == "draft_incomplete_not_recorded"
+    assert bundle["readiness_preview"]["status"] == "blocked_missing_load_test_evidence"
+    assert bundle["readiness_preview"]["load_test_evidence_status"] == "missing"
+    assert bundle["does_not_mark_gate_recorded"] is True
+    assert bundle["does_not_raise_defaults"] is True
+
+    serialized = json.dumps(bundle, ensure_ascii=False).lower()
+    assert "sk-secret" not in serialized
+    assert "raw_storage_key" not in serialized
+    assert "executor_private_payload" not in serialized
+    assert "api_key" not in serialized
+
+
+def test_capacity_evidence_bundle_rejects_cleanup_proof_with_private_evidence_ref():
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-end",
+    )
+    runtime_evidence = {
+        "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+        "snapshot": snapshot,
+        "readiness": build_capacity_gate_readiness(snapshot),
+    }
+    probe_output = {
+        "schema_version": "ai-platform.capacity-bounded-load-harness.v1",
+        "gate": "api_read_write_burst",
+        "status": "probe_completed_not_gate_evidence",
+        "load_test_evidence_status": "probe_only_not_recorded",
+        "does_not_mark_gate_recorded": True,
+        "does_not_raise_defaults": True,
+        "sent_requests": 20,
+        "http_status_counts": {"200": 20},
+        "latency_ms": {"count": 20, "p50": 72.864, "p95": 252.748, "p99": 283.726},
+        "cleanup_proof_status": "not_applicable_read_only_probe",
+        "stop_condition_status": "passed",
+        "triggered_stop_conditions": [],
+    }
+    cleanup_proof = {
+        "schema_version": "ai-platform.capacity-cleanup-proof.v1",
+        "gate": "api_read_write_burst",
+        "status": "verified",
+        "evidence_ref": "tenants/default/private/capacity-cleanup.json",
+        "test_tenants_removed": True,
+        "queued_payloads_removed": True,
+        "sandbox_leases_released": True,
+        "temporary_artifacts_removed": True,
+        "generated_documents_removed": True,
+    }
+
+    bundle = build_capacity_evidence_bundle(
+        runtime_evidence,
+        probe_output,
+        cleanup_proof=cleanup_proof,
+    )
+
+    assert bundle["status"] == "blocked_incomplete_inputs"
+    assert bundle["input_status"]["cleanup_proof"] == "not_accepted"
+    assert "cleanup_proof_evidence_ref_unsafe" in bundle["input_errors"]
+    assert "cleanup_proof" in bundle["missing_required_evidence"]
+    assert "cleanup_proof" not in bundle["candidate_observed_evidence"]
+    assert bundle["recorded_gate_evidence_draft"]["cleanup_proof_status"] == "missing"
+    assert bundle["recorded_gate_evidence_draft"]["does_not_mark_gate_recorded"] is True
+    assert bundle["does_not_raise_defaults"] is True
+
+    serialized = json.dumps(bundle, ensure_ascii=False).lower()
+    assert "tenants/default/private" not in serialized
+    assert "private/capacity-cleanup" not in serialized
+
+
+def test_capacity_evidence_bundle_rejects_cleanup_proof_with_raw_evidence_ref_segment():
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-end",
+    )
+    runtime_evidence = {
+        "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+        "snapshot": snapshot,
+        "readiness": build_capacity_gate_readiness(snapshot),
+    }
+    probe_output = {
+        "schema_version": "ai-platform.capacity-bounded-load-harness.v1",
+        "gate": "api_read_write_burst",
+        "status": "probe_completed_not_gate_evidence",
+        "load_test_evidence_status": "probe_only_not_recorded",
+        "does_not_mark_gate_recorded": True,
+        "does_not_raise_defaults": True,
+        "sent_requests": 20,
+        "http_status_counts": {"200": 20},
+        "latency_ms": {"count": 20, "p50": 72.864, "p95": 252.748, "p99": 283.726},
+        "cleanup_proof_status": "not_applicable_read_only_probe",
+        "stop_condition_status": "passed",
+        "triggered_stop_conditions": [],
+    }
+    cleanup_proof = {
+        "schema_version": "ai-platform.capacity-cleanup-proof.v1",
+        "gate": "api_read_write_burst",
+        "status": "verified",
+        "evidence_ref": "capacity-evidence/raw/capacity-cleanup.json",
+        "test_tenants_removed": True,
+        "queued_payloads_removed": True,
+        "sandbox_leases_released": True,
+        "temporary_artifacts_removed": True,
+        "generated_documents_removed": True,
+    }
+
+    bundle = build_capacity_evidence_bundle(
+        runtime_evidence,
+        probe_output,
+        cleanup_proof=cleanup_proof,
+    )
+
+    assert bundle["status"] == "blocked_incomplete_inputs"
+    assert bundle["input_status"]["cleanup_proof"] == "not_accepted"
+    assert "cleanup_proof_evidence_ref_unsafe" in bundle["input_errors"]
+    assert "cleanup_proof" in bundle["missing_required_evidence"]
+    assert "cleanup_proof" not in bundle["candidate_observed_evidence"]
+    assert bundle["recorded_gate_evidence_draft"]["does_not_mark_gate_recorded"] is True
+    assert bundle["does_not_raise_defaults"] is True
+
+    serialized = json.dumps(bundle, ensure_ascii=False).lower()
+    assert "capacity-evidence/raw" not in serialized
+
+
+def test_capacity_evidence_bundle_rejects_incomplete_cleanup_proof():
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-end",
+    )
+    runtime_evidence = {
+        "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+        "snapshot": snapshot,
+        "readiness": build_capacity_gate_readiness(snapshot),
+    }
+    probe_output = {
+        "schema_version": "ai-platform.capacity-bounded-load-harness.v1",
+        "gate": "api_read_write_burst",
+        "status": "probe_completed_not_gate_evidence",
+        "load_test_evidence_status": "probe_only_not_recorded",
+        "does_not_mark_gate_recorded": True,
+        "does_not_raise_defaults": True,
+        "sent_requests": 20,
+        "http_status_counts": {"200": 20},
+        "latency_ms": {"count": 20, "p50": 72.864, "p95": 252.748, "p99": 283.726},
+        "cleanup_proof_status": "not_applicable_read_only_probe",
+        "stop_condition_status": "passed",
+        "triggered_stop_conditions": [],
+    }
+    cleanup_proof = {
+        "schema_version": "ai-platform.capacity-cleanup-proof.v1",
+        "gate": "api_read_write_burst",
+        "status": "verified",
+        "evidence_ref": "capacity-evidence/api-burst-cleanup.json",
+        "test_tenants_removed": True,
+        "queued_payloads_removed": True,
+        "sandbox_leases_released": True,
+        "temporary_artifacts_removed": True,
+    }
+
+    bundle = build_capacity_evidence_bundle(
+        runtime_evidence,
+        probe_output,
+        cleanup_proof=cleanup_proof,
+    )
+
+    assert bundle["status"] == "blocked_incomplete_inputs"
+    assert bundle["input_status"]["cleanup_proof"] == "not_accepted"
+    assert "cleanup_proof_generated_documents_removed_not_verified" in bundle["input_errors"]
+    assert "cleanup_proof" in bundle["missing_required_evidence"]
+    assert "cleanup_proof" not in bundle["candidate_observed_evidence"]
+    assert bundle["recorded_gate_evidence_draft"]["cleanup_proof_status"] == "missing"
+    assert bundle["recorded_gate_evidence_draft"]["does_not_mark_gate_recorded"] is True
+    assert bundle["does_not_raise_defaults"] is True
+
+
 def test_capacity_evidence_bundle_rejects_probe_without_no_default_raise_policy():
     snapshot = build_capacity_evidence_snapshot(
         _admin_runtime_overview(),
@@ -1573,3 +1838,107 @@ def test_capacity_evidence_bundle_cli_outputs_gap_first_markdown(tmp_path):
     assert "cleanup_proof" in result.stdout
     assert "Do not raise production concurrency defaults" in result.stdout
     assert "C:\\Users" not in result.stdout
+
+
+def test_capacity_evidence_bundle_cli_accepts_start_runtime_and_cleanup_proof_json(tmp_path):
+    start_snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-start",
+    )
+    end_snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-end",
+    )
+    start_path = tmp_path / "runtime-evidence-start.json"
+    end_path = tmp_path / "runtime-evidence-end.json"
+    probe_path = tmp_path / "bounded-probe.json"
+    cleanup_path = tmp_path / "cleanup-proof.json"
+    start_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+                "snapshot": start_snapshot,
+                "readiness": build_capacity_gate_readiness(start_snapshot),
+            }
+        ),
+        encoding="utf-8",
+    )
+    end_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+                "snapshot": end_snapshot,
+                "readiness": build_capacity_gate_readiness(end_snapshot),
+            }
+        ),
+        encoding="utf-8",
+    )
+    probe_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.capacity-bounded-load-harness.v1",
+                "gate": "api_read_write_burst",
+                "status": "probe_completed_not_gate_evidence",
+                "load_test_evidence_status": "probe_only_not_recorded",
+                "does_not_mark_gate_recorded": True,
+                "does_not_raise_defaults": True,
+                "sent_requests": 20,
+                "http_status_counts": {"200": 20},
+                "latency_ms": {"count": 20, "p50": 72.864, "p95": 252.748, "p99": 283.726},
+                "cleanup_proof_status": "not_applicable_read_only_probe",
+                "stop_condition_status": "passed",
+                "triggered_stop_conditions": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    cleanup_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.capacity-cleanup-proof.v1",
+                "gate": "api_read_write_burst",
+                "status": "verified",
+                "evidence_ref": "capacity-evidence/api-burst-cleanup.json",
+                "test_tenants_removed": True,
+                "queued_payloads_removed": True,
+                "sandbox_leases_released": True,
+                "temporary_artifacts_removed": True,
+                "generated_documents_removed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_evidence_bundle.py",
+            "--start-runtime-evidence-json",
+            str(start_path),
+            "--runtime-evidence-json",
+            str(end_path),
+            "--bounded-probe-json",
+            str(probe_path),
+            "--cleanup-proof-json",
+            str(cleanup_path),
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "ai-platform.capacity-evidence-bundle.v1"
+    assert payload["input_status"]["start_runtime_evidence"] == "accepted"
+    assert payload["input_status"]["cleanup_proof"] == "accepted"
+    assert payload["runtime_window"]["start_profile"] == "211-current-start"
+    assert payload["runtime_window"]["end_profile"] == "211-current-end"
+    assert payload["recorded_gate_evidence_draft"]["cleanup_proof_status"] == "verified"
+    assert payload["readiness_preview"]["status"] == "blocked_missing_load_test_evidence"
+    assert "raw_storage_key" not in result.stdout
+    assert "executor_private_payload" not in result.stdout
+    assert "api_key" not in result.stdout

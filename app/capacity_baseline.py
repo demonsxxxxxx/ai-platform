@@ -117,6 +117,13 @@ _LOAD_TEST_STOP_CONDITIONS = [
     "model_gateway_timeout_or_retry_storm_detected",
 ]
 _CLEANUP_PROOF_STATUS_VALUES = ["recorded", "passed", "verified", "complete"]
+_CLEANUP_PROOF_REQUIRED_FLAGS = (
+    "test_tenants_removed",
+    "queued_payloads_removed",
+    "sandbox_leases_released",
+    "temporary_artifacts_removed",
+    "generated_documents_removed",
+)
 _STOP_CONDITION_STATUS_VALUES = ["passed", "not_triggered", "verified", "clear"]
 _SECRET_EVIDENCE_MARKERS = (
     "secret",
@@ -132,6 +139,15 @@ _SECRET_EVIDENCE_MARKERS = (
     "sandbox_workdir",
     "executor_private_payload",
 )
+_EVIDENCE_REF_UNSAFE_SEGMENTS = {
+    ".env",
+    "private",
+    "raw",
+    "secret",
+    "secrets",
+    "token",
+    "tokens",
+}
 _LOAD_TEST_OPERATOR_WORKFLOW = [
     {
         "id": "capture_start_runtime_evidence",
@@ -200,27 +216,32 @@ _LOAD_TEST_OPERATOR_WORKFLOW = [
         "does_not_raise_defaults": True,
     },
     {
-        "id": "assemble_evidence_bundle_draft",
-        "purpose": "Assemble a gap-first draft from post-load runtime evidence and the bounded probe without marking the gate recorded.",
+        "id": "record_cleanup_proof",
+        "purpose": "Record test-tenant, queue, sandbox lease, and generated artifact cleanup proof.",
         "command_template": (
-            "python tools/capacity_evidence_bundle.py"
-            " --runtime-evidence-json capacity-runtime-evidence-end.json"
-            " --bounded-probe-json capacity-bounded-load-harness-api-read-write-burst.json"
-            " --gate api_read_write_burst"
-            " --format markdown > capacity-evidence-bundle-api-read-write-burst.md;"
-            " output status draft_not_recorded is not recorded gate evidence;"
-            " use this bundle only to identify missing measured evidence and cleanup proof"
+            "record cleanup_proof in capacity-cleanup-proof-api-read-write-burst.json"
+            " before assembling the evidence bundle or marking the gate recorded"
         ),
-        "expected_evidence": "capacity-evidence-bundle-api-read-write-burst.md",
-        "requires_explicit_operator_execution": False,
+        "expected_evidence": "capacity-cleanup-proof-api-read-write-burst.json",
+        "requires_explicit_operator_execution": True,
         "does_not_raise_defaults": True,
     },
     {
-        "id": "record_cleanup_proof",
-        "purpose": "Record test-tenant, queue, sandbox lease, and generated artifact cleanup proof.",
-        "command_template": "record cleanup_proof in the scenario evidence before marking the gate recorded",
-        "expected_evidence": "cleanup_proof",
-        "requires_explicit_operator_execution": True,
+        "id": "assemble_evidence_bundle_draft",
+        "purpose": "Assemble a gap-first draft from start/end runtime evidence, the bounded probe, and cleanup proof without marking the gate recorded.",
+        "command_template": (
+            "python tools/capacity_evidence_bundle.py"
+            " --start-runtime-evidence-json capacity-runtime-evidence-start.json"
+            " --runtime-evidence-json capacity-runtime-evidence-end.json"
+            " --bounded-probe-json capacity-bounded-load-harness-api-read-write-burst.json"
+            " --cleanup-proof-json capacity-cleanup-proof-api-read-write-burst.json"
+            " --gate api_read_write_burst"
+            " --format markdown > capacity-evidence-bundle-api-read-write-burst.md;"
+            " output status draft_not_recorded is not recorded gate evidence;"
+            " use this bundle only to identify missing measured evidence"
+        ),
+        "expected_evidence": "capacity-evidence-bundle-api-read-write-burst.md",
+        "requires_explicit_operator_execution": False,
         "does_not_raise_defaults": True,
     },
     {
@@ -920,6 +941,29 @@ def _safe_triggered_stop_conditions(value: object) -> list[str]:
     return triggered
 
 
+def _safe_capacity_evidence_ref(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if (
+        not text
+        or "\\" in text
+        or "://" in text
+        or text.startswith("/")
+        or re.match(r"^[A-Za-z]:", text)
+        or _is_placeholder_evidence_text(text)
+        or _contains_secret_marker(text)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", text)
+    ):
+        return None
+    parts = text.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return None
+    if any(part.lower() in _EVIDENCE_REF_UNSAFE_SEGMENTS for part in parts):
+        return None
+    return text
+
+
 def _load_gate_evidence_summary(
     load_test_evidence: dict[str, Any],
     required_gates: list[str],
@@ -1106,20 +1150,78 @@ def _capacity_bundle_candidate_evidence(
     return candidate
 
 
+def _capacity_bundle_runtime_window(
+    start_snapshot: dict[str, Any] | None,
+    end_snapshot: dict[str, Any],
+) -> dict[str, object]:
+    start_identity = _dict(start_snapshot.get("runtime_identity")) if start_snapshot else {}
+    end_identity = _dict(end_snapshot.get("runtime_identity"))
+    return {
+        "start_commit_sha": _safe_identity(start_identity.get("commit_sha")) if start_snapshot else None,
+        "end_commit_sha": _safe_identity(end_identity.get("commit_sha")),
+        "start_profile": _safe_identity(start_identity.get("profile")) if start_snapshot else None,
+        "end_profile": _safe_identity(end_identity.get("profile")),
+    }
+
+
+def _capacity_bundle_cleanup_proof(
+    cleanup_proof: dict[str, Any] | None,
+    gate: str,
+) -> tuple[str, dict[str, object], list[str]]:
+    if cleanup_proof is None:
+        return "not_provided", {}, []
+    proof = _dict(cleanup_proof)
+    status = _safe_status(
+        proof.get("status") or proof.get("cleanup_proof_status"),
+        set(_CLEANUP_PROOF_STATUS_VALUES),
+    )
+    errors: list[str] = []
+    if proof.get("schema_version") != "ai-platform.capacity-cleanup-proof.v1":
+        errors.append("cleanup_proof_schema_unsupported")
+    if proof.get("gate") != gate:
+        errors.append("cleanup_proof_gate_mismatch")
+    if status == "missing":
+        errors.append("cleanup_proof_status_missing")
+    evidence_ref = _safe_capacity_evidence_ref(proof.get("evidence_ref"))
+    if evidence_ref is None:
+        errors.append("cleanup_proof_evidence_ref_unsafe")
+    for key in _CLEANUP_PROOF_REQUIRED_FLAGS:
+        if proof.get(key) is not True:
+            errors.append(f"cleanup_proof_{key}_not_verified")
+
+    evidence: dict[str, object] = {}
+    if not errors:
+        _add_candidate_evidence(evidence, "schema_version", proof.get("schema_version"))
+        _add_candidate_evidence(evidence, "status", status)
+        _add_candidate_evidence(evidence, "evidence_ref", evidence_ref)
+        for key in _CLEANUP_PROOF_REQUIRED_FLAGS:
+            evidence[key] = True
+    return ("accepted" if not errors else "not_accepted"), evidence, errors
+
+
 def build_capacity_evidence_bundle(
     runtime_evidence: dict[str, Any],
     bounded_probe: dict[str, Any],
     *,
     gate: str = "api_read_write_burst",
+    start_runtime_evidence: dict[str, Any] | None = None,
+    cleanup_proof: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Bundle #21 runtime evidence and bounded-probe output without recording a gate."""
     normalized_gate = str(gate or "").strip()
     safe_gate = normalized_gate if normalized_gate in LOAD_TEST_GATES else "unknown"
     snapshot = _extract_capacity_evidence_snapshot(runtime_evidence)
+    start_snapshot = (
+        _extract_capacity_evidence_snapshot(start_runtime_evidence)
+        if start_runtime_evidence is not None
+        else None
+    )
     probe_output = _dict(bounded_probe)
     input_errors: list[str] = []
     if not snapshot:
         input_errors.append("missing_capacity_evidence_snapshot")
+    if start_runtime_evidence is not None and not start_snapshot:
+        input_errors.append("missing_start_capacity_evidence_snapshot")
     if safe_gate == "unknown":
         input_errors.append("unsupported_gate")
     probe_base_compatible = (
@@ -1135,12 +1237,19 @@ def build_capacity_evidence_bundle(
         input_errors.append("bounded_probe_not_completed_or_not_probe_only")
     if probe_base_compatible and not probe_no_default_raise:
         input_errors.append("bounded_probe_missing_no_default_raise_policy")
+    cleanup_status, cleanup_evidence, cleanup_errors = _capacity_bundle_cleanup_proof(
+        _dict(cleanup_proof) if cleanup_proof is not None else None,
+        safe_gate,
+    )
+    input_errors.extend(cleanup_errors)
 
     candidate_observed_evidence = (
         _capacity_bundle_candidate_evidence(snapshot, probe_output)
         if snapshot and probe_compatible
         else {}
     )
+    if candidate_observed_evidence and cleanup_evidence:
+        candidate_observed_evidence["cleanup_proof"] = cleanup_evidence
     missing_required_evidence = [
         item for item in _LOAD_TEST_REQUIRED_EVIDENCE if item not in candidate_observed_evidence
     ]
@@ -1151,9 +1260,13 @@ def build_capacity_evidence_bundle(
         "gate_evidence_path": gate_evidence_path,
         "load_test_evidence_status": "probe_only_not_recorded",
         "evidence": candidate_observed_evidence,
-        "cleanup_proof_status": _safe_status(
-            probe_output.get("cleanup_proof_status"),
-            set(_CLEANUP_PROOF_STATUS_VALUES),
+        "cleanup_proof_status": (
+            _safe_status(cleanup_evidence.get("status"), set(_CLEANUP_PROOF_STATUS_VALUES))
+            if cleanup_evidence
+            else _safe_status(
+                probe_output.get("cleanup_proof_status"),
+                set(_CLEANUP_PROOF_STATUS_VALUES),
+            )
         ),
         "stop_condition_status": _safe_status(
             probe_output.get("stop_condition_status"),
@@ -1203,13 +1316,22 @@ def build_capacity_evidence_bundle(
         "gate": safe_gate,
         "gate_evidence_path": gate_evidence_path,
         "input_status": {
+            "start_runtime_evidence": (
+                "accepted"
+                if start_snapshot
+                else "not_provided"
+                if start_runtime_evidence is None
+                else "missing_capacity_evidence_snapshot"
+            ),
             "runtime_evidence": "accepted" if snapshot else "missing_capacity_evidence_snapshot",
             "bounded_probe": (
                 "probe_only_not_recorded" if probe_compatible else "not_accepted"
             ),
+            "cleanup_proof": cleanup_status,
         },
         "input_errors": input_errors,
         "runtime_identity": readiness_preview["runtime_identity"],
+        "runtime_window": _capacity_bundle_runtime_window(start_snapshot, preview_snapshot),
         "candidate_observed_evidence": candidate_observed_evidence,
         "missing_required_evidence": missing_required_evidence,
         "candidate_gate_summary": candidate_gate_summary,

@@ -32,8 +32,10 @@ def main() -> int:
             "capacity evidence draft without marking a load-test gate recorded."
         ),
     )
+    parser.add_argument("--start-runtime-evidence-json")
     parser.add_argument("--runtime-evidence-json", required=True)
     parser.add_argument("--bounded-probe-json", required=True)
+    parser.add_argument("--cleanup-proof-json")
     parser.add_argument("--gate", default="api_read_write_burst")
     parser.add_argument("--format", choices=("json", "markdown"), default="markdown")
     args = parser.parse_args()
@@ -42,6 +44,16 @@ def main() -> int:
         _read_json(args.runtime_evidence_json),
         _read_json(args.bounded_probe_json),
         gate=args.gate,
+        start_runtime_evidence=(
+            _read_json(args.start_runtime_evidence_json)
+            if args.start_runtime_evidence_json
+            else None
+        ),
+        cleanup_proof=(
+            _read_json(args.cleanup_proof_json)
+            if args.cleanup_proof_json
+            else None
+        ),
     )
     if args.format == "json":
         print(json.dumps(bundle, ensure_ascii=False, indent=2, sort_keys=True))

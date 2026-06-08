@@ -125,22 +125,33 @@ probe when `--execute` is paired with
 `--operator-acknowledgement send-bounded-load-without-default-raise`. Its output
 is `probe_only_not_recorded`, `does_not_raise_defaults = true`, and
 `does_not_mark_gate_recorded = true`; it is not accepted by `tools/capacity_gate_readiness.py` as recorded gate evidence.
-`python tools/capacity_evidence_bundle.py --runtime-evidence-json
-<capacity-runtime-evidence.json> --bounded-probe-json
-<capacity-bounded-load-harness.json> --format markdown` now assembles those
-captures into a gap-first operator draft with schema
+`python tools/capacity_evidence_bundle.py --start-runtime-evidence-json
+capacity-runtime-evidence-start.json --runtime-evidence-json
+capacity-runtime-evidence-end.json --bounded-probe-json
+capacity-bounded-load-harness-api-read-write-burst.json --cleanup-proof-json
+capacity-cleanup-proof-api-read-write-burst.json --format markdown` now
+assembles start/end runtime captures, the bounded probe, and cleanup proof into
+a gap-first operator draft with schema
 `ai-platform.capacity-evidence-bundle.v1`, target path
 `load_test_evidence.gate_evidence.api_read_write_burst`, missing required
-fields, and a readiness preview. The draft keeps
+fields, a runtime window, cleanup proof status, and a readiness preview. The draft keeps
 `recorded_gate_evidence_draft.status = draft_not_recorded`,
 `probe_only_not_recorded`, and `does_not_mark_gate_recorded = true`; it is not
 accepted by `tools/capacity_gate_readiness.py` as recorded gate evidence and
 does not raise production concurrency defaults.
 `tools/capacity_load_plan.py` includes that command as the
-`assemble_evidence_bundle_draft` operator workflow step after post-load runtime
-evidence capture, so the machine-readable #21 plan now points operators from
-bounded probe output to a draft missing-evidence bundle before cleanup proof and
-the final fail-closed gate verdict.
+`assemble_evidence_bundle_draft` operator workflow step after cleanup proof is
+recorded, so the machine-readable #21 plan now points operators from bounded
+probe output to a draft missing-evidence bundle before the final fail-closed
+gate verdict.
+For release traceability, that generated command includes
+`--start-runtime-evidence-json capacity-runtime-evidence-start.json` and
+`--cleanup-proof-json capacity-cleanup-proof-api-read-write-burst.json` without
+changing the draft-only, not-recorded gate status.
+Cleanup proof is only accepted when the proof uses a safe relative
+`evidence_ref` and explicitly verifies test-tenant, queue, sandbox lease,
+temporary artifact, and generated document cleanup; raw/private storage paths
+and executor-private payloads remain rejected from the draft bundle.
 
 The 2026-06-08 211 gate-readiness pass captured the admin-only runtime overview
 from the deployed `f7c6b0d9114748fa249acb88da6584851c48aa96` image and ran the

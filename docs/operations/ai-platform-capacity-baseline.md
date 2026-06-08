@@ -456,29 +456,40 @@ production defaults.
 
 ### Evidence Bundle Draft Tool
 
-After operators capture `capacity-runtime-evidence-*.json` and a bounded probe
-JSON, they can assemble a gap-first draft with:
+After operators capture start/end runtime evidence, the bounded probe JSON, and
+cleanup proof, they can assemble a gap-first draft with:
 
 ```powershell
-python tools/capacity_evidence_bundle.py --runtime-evidence-json capacity-runtime-evidence-start.json --bounded-probe-json capacity-bounded-load-harness-api-read-write-burst.json --format markdown
+python tools/capacity_evidence_bundle.py --start-runtime-evidence-json capacity-runtime-evidence-start.json --runtime-evidence-json capacity-runtime-evidence-end.json --bounded-probe-json capacity-bounded-load-harness-api-read-write-burst.json --cleanup-proof-json capacity-cleanup-proof-api-read-write-burst.json --format markdown
 ```
 
 The output schema is `ai-platform.capacity-evidence-bundle.v1`. It records the
 target path `load_test_evidence.gate_evidence.api_read_write_burst`, observed
-candidate fields, missing required fields, and a final readiness preview. The
-draft uses `recorded_gate_evidence_draft.status = draft_not_recorded`,
-preserves `probe_only_not_recorded`, and keeps
-`does_not_mark_gate_recorded = true`; it is not accepted by
-`tools/capacity_gate_readiness.py` as recorded gate evidence and does not raise
-production concurrency defaults.
+candidate fields, missing required fields, a start/end runtime window, cleanup
+proof status, and a final readiness preview. The draft uses
+`recorded_gate_evidence_draft.status = draft_not_recorded`, preserves
+`probe_only_not_recorded`, and keeps `does_not_mark_gate_recorded = true`; it is
+not accepted by `tools/capacity_gate_readiness.py` as recorded gate evidence
+and does not raise production concurrency defaults.
+
+The optional cleanup proof input is only accepted when it uses schema
+`ai-platform.capacity-cleanup-proof.v1`, matches the selected gate, includes a
+safe relative `evidence_ref`, and explicitly verifies
+`test_tenants_removed`, `queued_payloads_removed`, `sandbox_leases_released`,
+`temporary_artifacts_removed`, and `generated_documents_removed`. Raw storage
+keys, executor private payloads, sandbox workdirs, secret-like values, URLs,
+absolute paths, path traversal, and raw/private path segments are rejected from
+the bundle.
 
 `tools/capacity_load_plan.py` now includes this as the
-`assemble_evidence_bundle_draft` operator workflow step after post-load runtime
-evidence capture. The step is a planning/readiness aid only: it points at
-`capacity-runtime-evidence-end.json` and the bounded probe JSON, produces
-`capacity-evidence-bundle-api-read-write-burst.md`, and leaves cleanup proof,
-recorded load-test artifacts, final gate readiness, and operator review as
-separate required work.
+`assemble_evidence_bundle_draft` operator workflow step after cleanup proof is
+recorded. The step is a planning/readiness aid only: it points at
+`capacity-runtime-evidence-start.json`, `capacity-runtime-evidence-end.json`,
+`capacity-bounded-load-harness-api-read-write-burst.json`, and
+`capacity-cleanup-proof-api-read-write-burst.json`, then produces
+`capacity-evidence-bundle-api-read-write-burst.md`. Recorded load-test
+artifacts, final gate readiness, and operator review remain separate required
+work.
 
 ## Required Load-Test Gates
 
