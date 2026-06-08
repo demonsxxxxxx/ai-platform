@@ -89,7 +89,9 @@ def test_tool_policy_readiness_records_allow_ask_deny_taxonomy_without_closing_g
     ]
     assert "tool_allow_deny_ask_policy_taxonomy_for_all_mcp_tools" not in readiness["open_gaps"]
     assert "legacy_frontend_route_policy_enforcement_or_ai_platform_remap" in readiness["open_gaps"]
-    assert "admin_policy_bulk_review_and_change_history_view" in readiness["open_gaps"]
+    assert "admin_policy_change_history_projection" in readiness["implemented_controls"]
+    assert "admin_policy_bulk_review_and_change_history_view" not in readiness["open_gaps"]
+    assert "admin_policy_bulk_review_and_dashboard_acceptance" in readiness["open_gaps"]
 
 
 def test_tool_policy_readiness_markdown_is_gap_first_and_secret_safe():
@@ -100,6 +102,7 @@ def test_tool_policy_readiness_markdown_is_gap_first_and_secret_safe():
     assert "## Open Gaps" in markdown
     assert "active_low_read_only" in markdown
     assert "active_low_write_capable" in markdown
+    assert "admin_policy_change_history_projection" in markdown
     assert "token=secret" not in markdown
     assert ".env" not in markdown
     assert "work_dir" not in markdown

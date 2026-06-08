@@ -16,6 +16,7 @@ FRONTEND_MIGRATION_DOC = ROOT / "docs/frontend/ai-platform-frontend-migration.md
 CAPACITY_BASELINE_DOC = ROOT / "docs/operations/ai-platform-capacity-baseline.md"
 OBSERVABILITY_READINESS_DOC = ROOT / "docs/operations/ai-platform-observability-readiness.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
+SCHEMA = ROOT / "app/schema.sql"
 
 AUTHORITY_DOCS = [PRD, ROADMAP, GUARDRAILS, AGENTS]
 TARGET_211_BACKEND = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform"
@@ -29,6 +30,15 @@ STALE_LOCAL_PATHS = [
 
 def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def test_schema_indexes_admin_tool_policy_history_audit_projection():
+    schema_text = read(SCHEMA)
+
+    assert "idx_audit_logs_tool_policy_history" in schema_text
+    assert "on audit_logs(tenant_id, target_type, action, target_id, created_at desc, id desc)" in schema_text
+    assert "idx_audit_logs_tool_policy_history_latest" in schema_text
+    assert "on audit_logs(tenant_id, target_type, action, created_at desc, id desc)" in schema_text
 
 
 def test_guardrails_document_exists_and_is_named_by_authority_docs():

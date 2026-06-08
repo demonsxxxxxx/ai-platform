@@ -693,6 +693,10 @@ create table if not exists audit_logs (
 
 alter table audit_logs add column if not exists trace_id text;
 alter table audit_logs add column if not exists schema_version text not null default 'ai-platform.audit-event.v1';
+create index if not exists idx_audit_logs_tool_policy_history
+  on audit_logs(tenant_id, target_type, action, target_id, created_at desc, id desc);
+create index if not exists idx_audit_logs_tool_policy_history_latest
+  on audit_logs(tenant_id, target_type, action, created_at desc, id desc);
 
 insert into tenants(id, name)
 values ('default', 'Default Tenant')

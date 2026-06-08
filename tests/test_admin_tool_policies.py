@@ -117,6 +117,150 @@ def test_admin_list_tool_policies_returns_same_tenant_operational_projection(mon
     assert "rm -rf" not in response.text
 
 
+def test_admin_tool_policy_history_requires_admin(monkeypatch):
+    async def fail_history(conn, **kwargs):
+        raise AssertionError("ordinary users must not reach tool policy audit history")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr(
+        "app.routes.admin_tool_policies.repositories.list_admin_tool_policy_history",
+        fail_history,
+        raising=False,
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/admin/tool-policies/history", headers=user_headers())
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "not_ai_admin"
+
+
+def test_admin_tool_policy_history_returns_bounded_same_tenant_secret_safe_projection(monkeypatch):
+    calls = []
+
+    async def fake_history(conn, *, tenant_id, tool_id, limit):
+        calls.append(("history", tenant_id, tool_id, limit))
+        return [
+            {
+                "id": "aud-policy-2",
+                "user_id": "tool-admin",
+                "action": "admin.tool_policy.updated",
+                "target_id": "ragflow-knowledge-search",
+                "trace_id": "trace_policy",
+                "schema_version": "ai-platform.audit-event.v1",
+                "payload_json": {
+                    "tool_id": "ragflow-knowledge-search",
+                    "status": "active",
+                    "risk_level": "high",
+                    "write_capable": True,
+                    "visible_to_user": True,
+                    "reason": "controlled approval token=tool-secret",
+                    "sandbox_workdir": "/tmp/private-workdir",
+                    "raw_storage_key": "tenant-a/private/object",
+                },
+                "created_at": "2026-06-05T00:10:00Z",
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_tool_policies.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.admin_tool_policies.repositories.list_admin_tool_policy_history",
+        fake_history,
+        raising=False,
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/ai/admin/tool-policies/history?tool_id=ragflow-knowledge-search&limit=10",
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["contract_version"] == "ai-platform.admin-tool-policies.v1"
+    assert body["tenant_id"] == "tenant-a"
+    assert body["summary"] == {"returned_count": 1, "limit": 10, "tool_id": "ragflow-knowledge-search"}
+    assert body["history"] == [
+        {
+            "audit_id": "aud-policy-2",
+            "action": "admin.tool_policy.updated",
+            "tool_id": "ragflow-knowledge-search",
+            "updated_by": "tool-admin",
+            "trace_id": "trace_policy",
+            "schema_version": "ai-platform.audit-event.v1",
+            "created_at": "2026-06-05T00:10:00Z",
+            "payload": {
+                "tool_id": "ragflow-knowledge-search",
+                "status": "active",
+                "risk_level": "high",
+                "write_capable": True,
+                "visible_to_user": True,
+                "reason": "controlled approval token=[redacted-secret]",
+            },
+        }
+    ]
+    assert calls == [("history", "tenant-a", "ragflow-knowledge-search", 10)]
+    assert "tool-secret" not in response.text
+    assert "sandbox_workdir" not in response.text
+    assert "private-workdir" not in response.text
+    assert "raw_storage_key" not in response.text
+    assert "tenant-a/private/object" not in response.text
+
+
+def test_admin_tool_policy_history_drops_dirty_scalars_and_nested_allowed_payloads(monkeypatch):
+    async def fake_history(conn, *, tenant_id, tool_id, limit):
+        return [
+            {
+                "id": "C:/agent-workspaces/audit-id",
+                "user_id": "/tmp/private-user",
+                "action": "admin.tool_policy.updated",
+                "target_id": "C:/agent-workspaces/tool-id",
+                "trace_id": "/tmp/private-trace",
+                "schema_version": "/tmp/private-schema",
+                "payload_json": {
+                    "tool_id": {"raw_storage_key": "tenant-a/private/object"},
+                    "status": ["active"],
+                    "risk_level": {"level": "high"},
+                    "write_capable": "true",
+                    "visible_to_user": 1,
+                    "reason": {"sandbox_workdir": "/tmp/private-workdir"},
+                },
+                "created_at": "2026-06-05T00:10:00Z",
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_tool_policies.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.admin_tool_policies.repositories.list_admin_tool_policy_history",
+        fake_history,
+        raising=False,
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/admin/tool-policies/history", headers=admin_headers())
+
+    assert response.status_code == 200
+    assert response.json()["history"] == [
+        {
+            "audit_id": "",
+            "action": "admin.tool_policy.updated",
+            "tool_id": "",
+            "updated_by": "",
+            "trace_id": "",
+            "schema_version": "",
+            "created_at": "2026-06-05T00:10:00Z",
+            "payload": {},
+        }
+    ]
+    assert "agent-workspaces" not in response.text
+    assert "private-user" not in response.text
+    assert "raw_storage_key" not in response.text
+    assert "sandbox_workdir" not in response.text
+    assert "private-workdir" not in response.text
+
+
 def test_admin_update_tool_policy_audits_and_keeps_risky_tools_fail_closed(monkeypatch):
     calls = []
 

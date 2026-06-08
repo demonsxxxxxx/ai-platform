@@ -532,6 +532,38 @@ async def list_admin_tool_policies(
     return [_tool_policy_projection(dict(row), tenant_id=tenant_id) for row in await cursor.fetchall()]
 
 
+async def list_admin_tool_policy_history(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    tool_id: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Return bounded tenant-scoped audit history for admin tool policy updates."""
+    bounded_limit = max(min(int(100 if limit is None else limit), 500), 1)
+    clauses = [
+        "tenant_id = %s",
+        "target_type = %s",
+        "action = %s",
+    ]
+    params: list[Any] = [tenant_id, "tool_policy", "admin.tool_policy.updated"]
+    if tool_id:
+        clauses.append("target_id = %s")
+        params.append(tool_id)
+    params.append(bounded_limit)
+    cursor = await conn.execute(
+        f"""
+        select id, user_id, action, target_type, target_id, trace_id, schema_version, payload_json, created_at
+        from audit_logs
+        where {" and ".join(clauses)}
+        order by created_at desc, id desc
+        limit %s
+        """,
+        tuple(params),
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
 async def upsert_admin_tool_policy(
     conn: AsyncConnection,
     *,

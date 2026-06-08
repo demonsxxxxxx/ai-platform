@@ -64,7 +64,7 @@ or secret-like runtime configuration.
 
 | Domain | Implemented baseline | Remaining gap |
 | --- | --- | --- |
-| Tool permission | Admin tool policy inventory, tenant-scoped policy update audit, user request/decision flow, fail-closed risk/write policy evaluation, public permission-card projection, audit-visible legacy route policy mapping, secret-safe allow/ask/deny taxonomy evidence through `tools/tool_policy_readiness.py` | Policy enforcement or ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel surfaces, bulk review/history UX, Admin dashboard acceptance for taxonomy evidence |
+| Tool permission | Admin tool policy inventory, tenant-scoped policy update audit, bounded admin change-history projection through `GET /api/ai/admin/tool-policies/history`, user request/decision flow, fail-closed risk/write policy evaluation, public permission-card projection, audit-visible legacy route policy mapping, secret-safe allow/ask/deny taxonomy evidence through `tools/tool_policy_readiness.py` | Policy enforcement or ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel surfaces, Admin bulk-review/dashboard acceptance for policy history and taxonomy evidence |
 | Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock, secret-safe skill release readiness snapshot, pending review-manifest template entrypoint | SBOM release gate, signed-package evidence contract, Admin release dashboard acceptance, dependency vulnerability/license policy |
 | Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py`, source-level office context-pack architecture readiness through `tools/office_context_readiness.py` | Runtime context-pack persistence/injection, document-centric follow-up state, sandbox cold-start latency split, and frontend context provenance acceptance |
 | Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest with build-provenance same-commit gate, packaged frontend image definition traceability, non-push CI packaged-image build/provenance contract, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Profile env-var surface removed from the active browser entry graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Quarantined inactive legacy model/channel/envvar sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image smoke and release acceptance on 211 or another Docker-capable host |
@@ -86,10 +86,14 @@ auto-allow case, three ask cases for medium/high risk or write-capable tools,
 and two deny cases for disabled registry or disabled tenant policy. It also
 records decision options `allow_once`, `allow_for_run`, and `deny`, plus the
 policy contract that disabled tools, missing tenant policy, expired decisions,
-or explicit deny fail closed. This removes the previous taxonomy-evidence gap
-from the G6 source baseline. It does not close G6: route enforcement/remap for
-legacy frontend surfaces, admin policy bulk/history UX, dashboard acceptance,
-and 211 runtime smoke remain required before gate closure.
+or explicit deny fail closed. The admin-only
+`GET /api/ai/admin/tool-policies/history` projection now reads the existing
+same-tenant audit log for `admin.tool_policy.updated`, applies a bounded limit,
+and returns only allowlisted public policy fields. This removes the previous
+taxonomy-evidence gap and narrows the history-view gap from the G6 source
+baseline. It does not close G6: route enforcement/remap for legacy frontend
+surfaces, admin policy bulk review, dashboard acceptance, and 211 runtime smoke
+remain required before gate closure.
 
 ## 211 Acceptance Evidence
 

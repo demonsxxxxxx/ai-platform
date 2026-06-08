@@ -136,10 +136,11 @@ def build_governance_readiness(
                 "public_tool_permission_card_projection",
                 "audit_visible_legacy_frontend_route_policy_mapping",
                 "tool_allow_deny_ask_policy_taxonomy_evidence",
+                "admin_policy_change_history_projection",
             ],
             gaps=[
                 "legacy_frontend_route_policy_enforcement_or_ai_platform_remap",
-                "admin_policy_bulk_review_and_change_history_view",
+                "admin_policy_bulk_review_and_dashboard_acceptance",
             ],
             next_checks=[
                 "enforce or remap every legacy frontend MCP/model/env/channel/admin route to ai-platform projections",
@@ -151,6 +152,7 @@ def build_governance_readiness(
                     "schema_version": tool_policy_readiness["schema_version"],
                     "status": tool_policy_readiness["status"],
                     "summary": tool_policy_readiness["summary"],
+                    "implemented_controls": tool_policy_readiness["implemented_controls"],
                     "open_gaps": tool_policy_readiness["open_gaps"],
                 }
             },

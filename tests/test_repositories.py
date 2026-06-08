@@ -3041,6 +3041,86 @@ async def test_append_audit_log_accepts_trace_context():
 
 
 @pytest.mark.asyncio
+async def test_list_admin_tool_policy_history_uses_bounded_tenant_scoped_audit_query():
+    class HistoryCursor:
+        async def fetchall(self):
+            return [{"id": "aud-policy", "target_id": "ragflow-knowledge-search"}]
+
+    class HistoryConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return HistoryCursor()
+
+    conn = HistoryConnection()
+
+    rows = await repositories.list_admin_tool_policy_history(
+        conn,
+        tenant_id="tenant-a",
+        tool_id="ragflow-knowledge-search",
+        limit=25,
+    )
+
+    assert rows == [{"id": "aud-policy", "target_id": "ragflow-knowledge-search"}]
+    sql, params = conn.calls[0]
+    assert "from audit_logs" in sql
+    assert "tenant_id = %s" in sql
+    assert "target_type = %s" in sql
+    assert "action = %s" in sql
+    assert "target_id = %s" in sql
+    assert "limit %s" in sql.lower()
+    assert params == (
+        "tenant-a",
+        "tool_policy",
+        "admin.tool_policy.updated",
+        "ragflow-knowledge-search",
+        25,
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_admin_tool_policy_history_clamps_limit_for_direct_callers():
+    class HistoryCursor:
+        async def fetchall(self):
+            return []
+
+    class HistoryConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return HistoryCursor()
+
+    conn = HistoryConnection()
+
+    await repositories.list_admin_tool_policy_history(
+        conn,
+        tenant_id="tenant-a",
+        tool_id=None,
+        limit=9999,
+    )
+    await repositories.list_admin_tool_policy_history(
+        conn,
+        tenant_id="tenant-a",
+        tool_id=None,
+        limit=-5,
+    )
+    await repositories.list_admin_tool_policy_history(
+        conn,
+        tenant_id="tenant-a",
+        tool_id=None,
+        limit=0,
+    )
+
+    assert conn.calls[0][1] == ("tenant-a", "tool_policy", "admin.tool_policy.updated", 500)
+    assert conn.calls[1][1] == ("tenant-a", "tool_policy", "admin.tool_policy.updated", 1)
+    assert conn.calls[2][1] == ("tenant-a", "tool_policy", "admin.tool_policy.updated", 1)
+
+
+@pytest.mark.asyncio
 async def test_resolve_agent_skill_uses_tenant_stable_release_policy():
     class ResolveCursor:
         async def fetchone(self):

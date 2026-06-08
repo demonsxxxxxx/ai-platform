@@ -351,11 +351,14 @@ inactive legacy secret-like source reporting. Tool permission now also has a
 source-level allow/ask/deny taxonomy evidence snapshot through
 `tools/tool_policy_readiness.py`, tied to the current `evaluate_tool_policy()`
 contract for active low/medium/high/write-capable cases and fail-closed
-disabled registry or tenant-policy cases.
+disabled registry or tenant-policy cases. Admin tool policy governance now also
+has a bounded same-tenant change-history projection through
+`GET /api/ai/admin/tool-policies/history`, backed by the existing
+`admin.tool_policy.updated` audit log and allowlisted public policy fields.
 
 This does not close G6. Remaining blockers are policy enforcement or
 ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel
-surfaces, Admin taxonomy/bulk/history dashboard acceptance, SBOM release
+surfaces, Admin bulk-review and taxonomy/history dashboard acceptance, SBOM release
 evidence plus passed review manifests bound to matching evidence files,
 signed-package evidence contract definition, dependency vulnerability
 and license evidence plus passed review manifests bound to matching evidence

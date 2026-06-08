@@ -42,11 +42,16 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "user_tool_permission_request_decision" in domains["tool_permission"]["implemented"]
     assert "audit_visible_legacy_frontend_route_policy_mapping" in domains["tool_permission"]["implemented"]
     assert "tool_allow_deny_ask_policy_taxonomy_evidence" in domains["tool_permission"]["implemented"]
+    assert "admin_policy_change_history_projection" in domains["tool_permission"]["implemented"]
     assert "legacy_frontend_route_policy_enforcement_or_ai_platform_remap" in domains["tool_permission"]["gaps"]
+    assert "admin_policy_bulk_review_and_dashboard_acceptance" in domains["tool_permission"]["gaps"]
+    assert "admin_policy_bulk_review_and_change_history_view" not in domains["tool_permission"]["gaps"]
+    assert "admin_policy_bulk_review_and_change_history_view" not in readiness["open_gaps"]
     assert "tool_allow_deny_ask_policy_taxonomy_for_all_mcp_tools" not in domains["tool_permission"]["gaps"]
     tool_evidence = domains["tool_permission"]["evidence"]["tool_policy_taxonomy"]
     assert tool_evidence["schema_version"] == "ai-platform.tool-policy-readiness.v1"
     assert tool_evidence["status"] == "partial_blocked"
+    assert "admin_policy_change_history_projection" in tool_evidence["implemented_controls"]
     assert tool_evidence["summary"] == {
         "taxonomy_cases": 6,
         "auto_allow_cases": 1,

@@ -78,9 +78,13 @@ def build_tool_policy_readiness() -> dict[str, Any]:
     """Build a secret-safe offline G6 tool permission taxonomy readiness snapshot."""
     taxonomy_cases = _taxonomy_cases()
     _validate_taxonomy_cases(taxonomy_cases)
+    implemented_controls = [
+        "tool_allow_deny_ask_policy_taxonomy_for_all_mcp_tools",
+        "admin_policy_change_history_projection",
+    ]
     open_gaps = [
         "legacy_frontend_route_policy_enforcement_or_ai_platform_remap",
-        "admin_policy_bulk_review_and_change_history_view",
+        "admin_policy_bulk_review_and_dashboard_acceptance",
         "tool_policy_taxonomy_admin_dashboard_acceptance",
     ]
     return {
@@ -101,9 +105,10 @@ def build_tool_policy_readiness() -> dict[str, Any]:
             "ask_cases": sum(1 for item in taxonomy_cases if item["classification"] == "ask"),
             "deny_cases": sum(1 for item in taxonomy_cases if item["classification"] == "deny"),
         },
+        "implemented_controls": implemented_controls,
         "open_gaps": open_gaps,
         "evidence_policy": (
-            "taxonomy evidence documents policy behavior only; route enforcement, admin UX acceptance, "
+            "taxonomy and change-history evidence document policy behavior only; route enforcement, admin UX acceptance, "
             "and 211 smoke are still required before G6 closure"
         ),
     }
@@ -122,11 +127,14 @@ def render_tool_policy_readiness_markdown(readiness: dict[str, Any]) -> str:
     contract_lines = "\n".join(
         f"- `{name}`: {description}" for name, description in readiness["policy_contract"].items()
     )
+    implemented_lines = "\n".join(f"- {item}" for item in readiness.get("implemented_controls", [])) or "- none"
     return (
         "# ai-platform Tool Policy Readiness\n\n"
         f"Schema: `{readiness['schema_version']}`\n\n"
         f"Gate: `{readiness['gate']}`\n\n"
         f"Status: `{readiness['status']}`\n\n"
+        "## Implemented Controls\n\n"
+        f"{implemented_lines}\n\n"
         "## Open Gaps\n\n"
         f"{gap_lines}\n\n"
         "## Policy Contract\n\n"
