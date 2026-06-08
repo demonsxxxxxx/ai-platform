@@ -3,10 +3,14 @@ import os
 import subprocess
 import sys
 
+import pytest
+
+import app.quality_golden_set_readiness as quality_golden_set_readiness
 from app.observability_readiness import (
     build_observability_readiness,
     render_observability_readiness_markdown,
 )
+from app.quality_golden_set_readiness import build_quality_golden_set_readiness
 
 
 class SecretBearingSettings:
@@ -40,7 +44,8 @@ def test_observability_readiness_records_g9_domains_and_open_gaps_without_secret
     assert "latency_percentiles_p50_p95_p99" in domains["runtime_metrics"]["gaps"]
     assert "formal_error_taxonomy_contract" in domains["error_taxonomy"]["implemented"]
     assert "error_category_mapping_for_executor_tool_sandbox_model_gateway" in domains["error_taxonomy"]["implemented"]
-    assert "golden_set_eval_run_contract" in domains["quality_evaluation"]["gaps"]
+    assert "quality_golden_set_readiness_contract" in domains["quality_evaluation"]["implemented"]
+    assert "golden_set_eval_runtime_and_211_acceptance" in domains["quality_evaluation"]["gaps"]
     assert "alert_rules_runtime_dashboard_and_211_acceptance" in domains["alerts_and_exports"]["gaps"]
     assert "alert_delivery_channel_policy" in domains["alerts_and_exports"]["gaps"]
     assert "slo_threshold_runtime_calibration" in domains["alerts_and_exports"]["gaps"]
@@ -121,6 +126,129 @@ def test_observability_readiness_includes_alert_slo_rule_template_evidence_witho
     assert "token=secret" not in serialized
 
 
+def test_quality_golden_set_readiness_contract_is_source_level_and_fail_closed():
+    readiness = build_quality_golden_set_readiness()
+
+    assert readiness["schema_version"] == "ai-platform.quality-golden-set-readiness.v1"
+    assert readiness["gate"] == "G9 Quality Golden-Set Evaluation"
+    assert readiness["status"] == "partial_blocked"
+    assert readiness["active_eval_policy"] == "contract_only_not_enabled"
+    assert readiness["summary"] == {
+        "scenario_count": 5,
+        "required_score_dimensions": [
+            "task_success",
+            "instruction_following",
+            "context_grounding",
+            "artifact_quality",
+            "safety_and_redaction",
+        ],
+    }
+    assert [scenario["id"] for scenario in readiness["scenario_catalog"]] == [
+        "office_document_revision",
+        "meeting_summary_followup",
+        "translation_terminology_consistency",
+        "sop_rag_answer_grounding",
+        "file_task_artifact_review",
+    ]
+
+    score_schema = readiness["score_schema"]
+    assert score_schema["schema_version"] == "ai-platform.quality-score.v1"
+    assert score_schema["scale"] == {"min": 0.0, "max": 1.0, "higher_is_better": True}
+    assert [dimension["id"] for dimension in score_schema["dimensions"]] == readiness["summary"][
+        "required_score_dimensions"
+    ]
+    assert score_schema["blocking_rule"] == "privacy_or_context_provenance_violation_blocks_release"
+
+    evidence_contract = readiness["evidence_contract"]
+    assert evidence_contract["schema_version"] == "ai-platform.golden-set-eval-evidence-contract.v1"
+    assert evidence_contract["write_path"] == "quality_evaluation.golden_set_runs.<eval_run_id>"
+    assert evidence_contract["does_not_enable_eval_runtime"] is True
+    assert evidence_contract["does_not_close_g9"] is True
+    assert evidence_contract["accepted_redaction_scan_statuses"] == ["passed"]
+    assert evidence_contract["required_fields"] == [
+        "commit_sha",
+        "dataset_version",
+        "scenario_id",
+        "eval_run_id",
+        "evaluator_version",
+        "sample_count",
+        "passed_count",
+        "failed_count",
+        "score_summary",
+        "dimension_scores",
+        "context_provenance_public",
+        "artifact_refs_public",
+        "redaction_scan_status",
+        "review_status",
+        "reviewed_at",
+    ]
+    assert "golden_set_eval_runtime_and_211_acceptance" in readiness["open_gaps"]
+    assert "office_workflow_acceptance_dataset" in readiness["open_gaps"]
+
+    serialized = json.dumps(readiness, ensure_ascii=False).lower()
+    for marker in (
+        "private_payload",
+        "executor_private_payload",
+        "raw_storage_key",
+        "sandbox_workdir",
+        "api_key",
+        "bearer",
+        "callback-secret",
+    ):
+        assert marker not in serialized
+
+
+def test_quality_golden_set_readiness_returns_isolated_nested_lists():
+    first = build_quality_golden_set_readiness()
+    first["scenario_catalog"][0]["required_public_inputs"].append("mutated-by-caller")
+    first["score_schema"]["dimensions"][0]["id"] = "mutated_dimension"
+    first["evidence_contract"]["required_fields"].append("mutated_field")
+
+    second = build_quality_golden_set_readiness()
+
+    assert "mutated-by-caller" not in second["scenario_catalog"][0]["required_public_inputs"]
+    assert second["score_schema"]["dimensions"][0]["id"] == "task_success"
+    assert "mutated_field" not in second["evidence_contract"]["required_fields"]
+
+
+def test_quality_golden_set_readiness_fails_closed_on_duplicate_scenario_ids(monkeypatch):
+    scenarios = [dict(scenario) for scenario in quality_golden_set_readiness._SCENARIOS]
+    scenarios[1]["id"] = scenarios[0]["id"]
+    monkeypatch.setattr(quality_golden_set_readiness, "_SCENARIOS", scenarios)
+
+    with pytest.raises(RuntimeError, match="quality_golden_set_scenario_duplicate"):
+        build_quality_golden_set_readiness()
+
+
+def test_quality_golden_set_readiness_fails_closed_on_unknown_evaluator_signal(monkeypatch):
+    scenarios = [dict(scenario) for scenario in quality_golden_set_readiness._SCENARIOS]
+    scenarios[0]["evaluator_signals"] = [*scenarios[0]["evaluator_signals"], "unknown_dimension"]
+    monkeypatch.setattr(quality_golden_set_readiness, "_SCENARIOS", scenarios)
+
+    with pytest.raises(RuntimeError, match="quality_golden_set_signal_drift"):
+        build_quality_golden_set_readiness()
+
+
+def test_observability_readiness_includes_quality_golden_set_contract_without_closing_g9():
+    readiness = build_observability_readiness(SecretBearingSettings())
+
+    quality = readiness["domains"]["quality_evaluation"]
+    assert "quality_golden_set_readiness_contract" in quality["implemented"]
+    assert "quality_score_schema_contract" in quality["implemented"]
+    assert "golden_set_eval_run_contract" not in quality["gaps"]
+    assert "quality_score_schema" not in quality["gaps"]
+    assert "golden_set_eval_runtime_and_211_acceptance" in quality["gaps"]
+    assert "quality_threshold_calibration" in quality["gaps"]
+
+    evidence = quality["evidence"]["quality_golden_set"]
+    assert evidence["schema_version"] == "ai-platform.quality-golden-set-readiness.v1"
+    assert evidence["evidence_contract"]["schema_version"] == "ai-platform.golden-set-eval-evidence-contract.v1"
+    assert evidence["status"] == "partial_blocked"
+    assert evidence["active_eval_policy"] == "contract_only_not_enabled"
+    assert evidence["evidence_contract"]["does_not_close_g9"] is True
+    assert "golden_set_eval_runtime_and_211_acceptance" in readiness["open_gaps"]
+
+
 def test_render_observability_readiness_markdown_is_operator_readable_and_gap_first():
     markdown = render_observability_readiness_markdown(
         build_observability_readiness(SecretBearingSettings())
@@ -130,7 +258,10 @@ def test_render_observability_readiness_markdown_is_operator_readable_and_gap_fi
     assert "Status: `partial_blocked`" in markdown
     assert "## Open Gaps" in markdown
     assert "formal_error_taxonomy_contract" in markdown
-    assert "golden_set_eval_run_contract" in markdown
+    assert "quality_golden_set_readiness_contract" in markdown
+    assert "ai-platform.quality-golden-set-readiness.v1" in markdown
+    assert "ai-platform.golden-set-eval-evidence-contract.v1" in markdown
+    assert "golden_set_eval_runtime_and_211_acceptance" in markdown
     assert "alert_slo_rule_template_evidence" in markdown
     assert "alert_rules_runtime_dashboard_and_211_acceptance" in markdown
     assert "alert_delivery_channel_policy" in markdown

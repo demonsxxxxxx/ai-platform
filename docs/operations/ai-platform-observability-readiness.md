@@ -6,8 +6,9 @@ This document records the current G9 Observability / Quality / Ops readiness
 baseline. It is an operator readiness snapshot, not a gate-closure claim. G9
 remains partial until latency percentiles, model-gateway pressure controls and
 recorded capacity load-test evidence, error taxonomy dashboard acceptance,
-golden-set evaluation, alert/SLO runtime acceptance, and trace/audit export
-contracts have code, tests, docs, review, and runtime evidence.
+golden-set evaluation runtime and 211 acceptance, alert/SLO runtime acceptance,
+and trace/audit export contracts have code, tests, docs, review, and runtime
+evidence.
 
 Generate the current readiness snapshot from the repository root:
 
@@ -52,8 +53,40 @@ or ordinary-user private content.
 | --- | --- | --- |
 | Runtime metrics | Admin Runtime observability summary, token/cost/latency/error counts, queue/admission/DB-pool backpressure summary, config-visible model-gateway request limit status, capacity runtime evidence capture | p50/p95/p99 latency for API, queue lease, worker, model, sandbox, artifact, cancel, retry, and resume; enforced model-gateway request-limit/backpressure gate plus recorded model-gateway load-test evidence; recorded capacity load-test evidence |
 | Error taxonomy | Formal `ai-platform.error-taxonomy.v1` contract, category mapping for executor/tool/sandbox/model-gateway/queue/database/memory/artifact/auth failures, Admin Runtime `error_categories`, run event error count projection, and redacted recent failure projection | Dashboard acceptance and 211/runtime evidence for taxonomy-driven operations |
-| Quality evaluation | Run trace/audit linkage baseline | Golden-set eval run contract, quality score schema, office workflow acceptance dataset |
+| Quality evaluation | Run trace/audit linkage baseline, source-level `ai-platform.quality-golden-set-readiness.v1` contract, and `ai-platform.quality-score.v1` score schema | Golden-set evaluation runtime and 211 acceptance, office workflow acceptance dataset, quality threshold calibration, dashboard acceptance |
 | Alerts and exports | Admin Runtime overview projection, fail-closed capacity gate readiness verdict, and source-level `ai-platform.alert-slo-readiness.v1` rule template evidence for queue, database, worker, model gateway, sandbox, error-taxonomy, and capacity gates | Alert runtime dashboard and 211 acceptance, delivery-channel policy, runtime SLO calibration, trace/audit export contract, release evidence export location |
+
+## Quality Golden-Set Contract Baseline
+
+The source-level readiness snapshot now embeds
+`ai-platform.quality-golden-set-readiness.v1` as
+`observability_readiness.domains.quality_evaluation.evidence.quality_golden_set`.
+This is a contract-only baseline. It does not enable eval runtime, does not read
+ordinary-user private content, does not expose executor-only data, and does not
+close G9.
+
+The nested evidence contract is
+`ai-platform.golden-set-eval-evidence-contract.v1` and records eval evidence at:
+
+```text
+quality_evaluation.golden_set_runs.<eval_run_id>
+```
+
+It defines five source-level scenario categories for office document revision,
+meeting follow-up, terminology-preserving translation, SOP/RAG grounded answer,
+and file-task artifact review. It also defines required score dimensions:
+`task_success`, `instruction_following`, `context_grounding`,
+`artifact_quality`, and `safety_and_redaction`.
+
+Required eval evidence fields include commit and dataset version, scenario ID,
+eval run ID, evaluator version, sample/pass/fail counts, score summaries,
+dimension scores, public context provenance, public artifact references,
+redaction scan status, review status, and review timestamp.
+
+The golden-set evaluation runtime and 211 acceptance remain open. The contract
+does not close G9; it only prevents the quality/eval gate from staying vague
+while runtime execution, dataset approval, threshold calibration, dashboard
+acceptance, review, and smoke evidence are still missing.
 
 ## Alert / SLO Rule Template Baseline
 

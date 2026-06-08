@@ -14,6 +14,7 @@ FRONTEND_WEB = ROOT / "frontend/web"
 FRONTEND_README = FRONTEND_WEB / "README.md"
 FRONTEND_MIGRATION_DOC = ROOT / "docs/frontend/ai-platform-frontend-migration.md"
 CAPACITY_BASELINE_DOC = ROOT / "docs/operations/ai-platform-capacity-baseline.md"
+OBSERVABILITY_READINESS_DOC = ROOT / "docs/operations/ai-platform-observability-readiness.md"
 
 AUTHORITY_DOCS = [PRD, ROADMAP, GUARDRAILS, AGENTS]
 TARGET_211_BACKEND = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform"
@@ -177,4 +178,18 @@ def test_capacity_docs_record_machine_readable_gate_evidence_contract():
         assert "ai-platform.capacity-recorded-gate-evidence-contract.v1" in text
         assert "load_test_evidence.gate_evidence.<gate>" in text
         assert "does not raise production concurrency defaults" in text
+        assert "C:\\Users" not in text
+
+
+def test_observability_docs_record_quality_golden_set_contract_without_closing_g9():
+    observability_text = read(OBSERVABILITY_READINESS_DOC)
+    roadmap_text = read(ROADMAP)
+
+    for text in (observability_text, roadmap_text):
+        assert "ai-platform.quality-golden-set-readiness.v1" in text
+        assert "ai-platform.golden-set-eval-evidence-contract.v1" in text
+        assert "quality_evaluation.golden_set_runs.<eval_run_id>" in text
+        assert "contract-only" in text
+        assert "does not close G9" in text
+        assert "golden-set evaluation runtime and 211 acceptance remain open" in text
         assert "C:\\Users" not in text

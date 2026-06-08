@@ -121,8 +121,20 @@ alert/export baselines plus open gaps. The alert/export baseline now embeds
 database, worker, model-gateway, sandbox, error-taxonomy, and capacity-gate
 signals. It does not close G9 and does not replace recorded load-test evidence,
 latency percentiles, model-gateway load-test evidence, taxonomy dashboard
-acceptance, golden-set evaluation, alert runtime/dashboard/211 acceptance,
-trace/audit export contracts, or 211 deployment smoke.
+acceptance, golden-set evaluation runtime and 211 acceptance, alert
+runtime/dashboard/211 acceptance, trace/audit export contracts, or 211
+deployment smoke.
+
+The quality-evaluation baseline now embeds
+`ai-platform.quality-golden-set-readiness.v1` as a contract-only source-level
+readiness contract under `observability_readiness.domains.quality_evaluation`.
+Its nested `ai-platform.golden-set-eval-evidence-contract.v1` records the
+future evidence write path `quality_evaluation.golden_set_runs.<eval_run_id>`,
+required eval fields, public context provenance, public artifact references,
+redaction scan status, and operator review status. This does not close G9:
+golden-set evaluation runtime and 211 acceptance remain open, along with office
+workflow acceptance dataset approval, threshold calibration, dashboard
+acceptance, review, and smoke evidence.
 
 The source-level capacity baseline now includes
 `MODEL_GATEWAY_REQUEST_CONCURRENCY_LIMIT` as a model-gateway pressure-control

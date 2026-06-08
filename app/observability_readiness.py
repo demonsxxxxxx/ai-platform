@@ -2,6 +2,7 @@ from typing import Any
 
 from app.alert_slo_readiness import build_alert_slo_readiness
 from app.error_taxonomy import build_error_taxonomy_contract
+from app.quality_golden_set_readiness import build_quality_golden_set_readiness
 from app.settings import get_settings
 
 
@@ -57,6 +58,7 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
     """Build a secret-safe G9 observability readiness baseline for Admin Runtime and CLI use."""
     resolved_settings = settings or get_settings()
     alert_slo_readiness = build_alert_slo_readiness()
+    quality_golden_set_readiness = build_quality_golden_set_readiness()
     model_gateway_request_concurrency_limit = _positive_int_setting(
         resolved_settings,
         "model_gateway_request_concurrency_limit",
@@ -107,17 +109,23 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
         "quality_evaluation": _domain(
             implemented=[
                 "run_trace_audit_linkage_baseline",
+                "quality_golden_set_readiness_contract",
+                "quality_score_schema_contract",
             ],
             gaps=[
-                "golden_set_eval_run_contract",
-                "quality_score_schema",
+                "golden_set_eval_runtime_and_211_acceptance",
                 "office_workflow_acceptance_dataset",
+                "quality_threshold_calibration",
+                "quality_dashboard_acceptance",
             ],
             next_checks=[
-                "define golden-set scenarios before department rollout",
+                "run golden-set evals through a reviewed harness before department rollout",
                 "separate office document quality signals from coding-task runtime metrics",
                 "avoid reading ordinary-user private payloads for quality scoring",
             ],
+            evidence={
+                "quality_golden_set": quality_golden_set_readiness,
+            },
         ),
         "alerts_and_exports": _domain(
             implemented=[
@@ -215,9 +223,17 @@ def render_observability_readiness_markdown(readiness: dict[str, Any]) -> str:
 def _render_domain_evidence(evidence: object) -> str:
     if not isinstance(evidence, dict) or not evidence:
         return ""
+    rendered_sections: list[str] = []
+    quality_golden_set = evidence.get("quality_golden_set")
+    if isinstance(quality_golden_set, dict):
+        rendered_sections.append(_render_quality_golden_set_evidence(quality_golden_set))
     alert_rules = evidence.get("alert_slo_rules")
-    if not isinstance(alert_rules, dict):
-        return ""
+    if isinstance(alert_rules, dict):
+        rendered_sections.append(_render_alert_slo_evidence(alert_rules))
+    return "".join(section for section in rendered_sections if section)
+
+
+def _render_alert_slo_evidence(alert_rules: dict[str, Any]) -> str:
     rules = alert_rules.get("rules")
     if not isinstance(rules, list):
         return ""
@@ -238,4 +254,35 @@ def _render_domain_evidence(evidence: object) -> str:
         f"{gap_lines}\n\n"
         "Template rules:\n\n"
         f"{rule_lines}\n"
+    )
+
+
+def _render_quality_golden_set_evidence(quality: dict[str, Any]) -> str:
+    scenarios = quality.get("scenario_catalog")
+    scenario_lines = ""
+    if isinstance(scenarios, list):
+        scenario_lines = "\n".join(
+            f"- `{scenario.get('id')}`: {scenario.get('workflow')}"
+            for scenario in scenarios
+            if isinstance(scenario, dict)
+        )
+    contract = quality.get("evidence_contract") if isinstance(quality.get("evidence_contract"), dict) else {}
+    required_fields = contract.get("required_fields") if isinstance(contract.get("required_fields"), list) else []
+    field_lines = "\n".join(f"- `{field}`" for field in required_fields)
+    open_gaps = quality.get("open_gaps")
+    gap_lines = ""
+    if isinstance(open_gaps, list):
+        gap_lines = "\n".join(f"- `{gap}`" for gap in open_gaps)
+    return (
+        "\nEvidence:\n\n"
+        f"- `{quality.get('schema_version')}` status `{quality.get('status')}`\n"
+        f"- active eval policy `{quality.get('active_eval_policy')}`\n"
+        f"- evidence contract `{contract.get('schema_version')}` at `{contract.get('write_path')}`\n"
+        f"- does not close G9 `{contract.get('does_not_close_g9')}`\n"
+        "Nested quality gaps:\n\n"
+        f"{gap_lines}\n\n"
+        "Golden-set scenarios:\n\n"
+        f"{scenario_lines}\n\n"
+        "Required eval evidence fields:\n\n"
+        f"{field_lines}\n"
     )
