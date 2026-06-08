@@ -1,5 +1,6 @@
 from typing import Any
 
+from app.alert_slo_readiness import build_alert_slo_readiness
 from app.error_taxonomy import build_error_taxonomy_contract
 from app.settings import get_settings
 
@@ -25,18 +26,28 @@ def _enum_setting(settings: object, name: str, *, default: str, allowed_values: 
     return value if value in allowed_values else "unknown"
 
 
-def _domain(implemented: list[str], gaps: list[str], next_checks: list[str]) -> dict[str, Any]:
-    return {
+def _domain(
+    implemented: list[str],
+    gaps: list[str],
+    next_checks: list[str],
+    *,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    domain = {
         "status": "partial_blocked" if gaps else "ready_for_verification",
         "implemented": implemented,
         "gaps": gaps,
         "next_checks": next_checks,
     }
+    if evidence is not None:
+        domain["evidence"] = evidence
+    return domain
 
 
 def build_observability_readiness(settings: object | None = None) -> dict[str, Any]:
     """Build a secret-safe G9 observability readiness baseline for Admin Runtime and CLI use."""
     resolved_settings = settings or get_settings()
+    alert_slo_readiness = build_alert_slo_readiness()
     domains = {
         "runtime_metrics": _domain(
             implemented=[
@@ -91,17 +102,24 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
             implemented=[
                 "admin_runtime_overview_projection",
                 "capacity_gate_readiness_verdict",
+                "alert_slo_rule_template_evidence",
             ],
             gaps=[
-                "alert_rules_and_slo_thresholds",
+                "alert_rules_runtime_dashboard_and_211_acceptance",
+                "alert_delivery_channel_policy",
+                "slo_threshold_runtime_calibration",
                 "trace_audit_export_contract",
                 "release_evidence_export_location",
             ],
             next_checks=[
-                "define alert thresholds for queue depth, DB waiting, worker saturation, model timeouts, sandbox cleanup, and error spikes",
+                "wire alert/SLO templates into an Admin dashboard and 211 acceptance smoke before enabling alerts",
+                "calibrate thresholds from recorded runtime and capacity evidence instead of raising defaults",
                 "add trace and audit export without exposing raw storage keys or executor private payloads",
                 "keep release evidence separate from the product roadmap",
             ],
+            evidence={
+                "alert_slo_rules": alert_slo_readiness,
+            },
         ),
     }
     gaps = [gap for domain in domains.values() for gap in domain["gaps"]]
@@ -144,6 +162,7 @@ def render_observability_readiness_markdown(readiness: dict[str, Any]) -> str:
         implemented = "\n".join(f"- {item}" for item in domain["implemented"])
         gaps = "\n".join(f"- {item}" for item in domain["gaps"])
         checks = "\n".join(f"- {item}" for item in domain["next_checks"])
+        evidence_lines = _render_domain_evidence(domain.get("evidence"))
         sections.append(
             f"### {name}\n\n"
             f"Status: `{domain['status']}`\n\n"
@@ -153,6 +172,7 @@ def render_observability_readiness_markdown(readiness: dict[str, Any]) -> str:
             f"{gaps}\n\n"
             "Next checks:\n\n"
             f"{checks}\n"
+            f"{evidence_lines}"
         )
     domain_sections = "\n\n".join(sections)
     return (
@@ -167,4 +187,33 @@ def render_observability_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"{domain_sections}\n\n"
         "## Evidence Policy\n\n"
         f"{readiness['evidence_policy']}\n"
+    )
+
+
+def _render_domain_evidence(evidence: object) -> str:
+    if not isinstance(evidence, dict) or not evidence:
+        return ""
+    alert_rules = evidence.get("alert_slo_rules")
+    if not isinstance(alert_rules, dict):
+        return ""
+    rules = alert_rules.get("rules")
+    if not isinstance(rules, list):
+        return ""
+    rule_lines = "\n".join(
+        f"- `{rule.get('id')}`: `{rule.get('category')}`"
+        for rule in rules
+        if isinstance(rule, dict)
+    )
+    open_gaps = alert_rules.get("open_gaps")
+    gap_lines = ""
+    if isinstance(open_gaps, list):
+        gap_lines = "\n".join(f"- `{gap}`" for gap in open_gaps)
+    return (
+        "\nEvidence:\n\n"
+        f"- `{alert_rules.get('schema_version')}` status `{alert_rules.get('status')}`\n"
+        f"- active alerting policy `{alert_rules.get('active_alerting_policy')}`\n"
+        "Nested alert gaps:\n\n"
+        f"{gap_lines}\n\n"
+        "Template rules:\n\n"
+        f"{rule_lines}\n"
     )

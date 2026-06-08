@@ -102,10 +102,13 @@ Current source also exposes a machine-readable G9 readiness baseline through
 runtime overview field `observability_readiness` with schema
 `ai-platform.observability-readiness.v1`. This source-level projection records
 implemented runtime-metric, error-taxonomy, quality-evaluation, and
-alert/export baselines plus open gaps. It does not close G9 and does not
-replace recorded load-test evidence, latency percentiles, model-gateway
-concurrency controls, taxonomy dashboard acceptance, golden-set evaluation,
-alert thresholds, trace/audit export contracts, or 211 deployment smoke.
+alert/export baselines plus open gaps. The alert/export baseline now embeds
+`ai-platform.alert-slo-readiness.v1` rule-template evidence for queue,
+database, worker, model-gateway, sandbox, error-taxonomy, and capacity-gate
+signals. It does not close G9 and does not replace recorded load-test evidence,
+latency percentiles, model-gateway concurrency controls, taxonomy dashboard
+acceptance, golden-set evaluation, alert runtime/dashboard/211 acceptance,
+trace/audit export contracts, or 211 deployment smoke.
 
 The source-level error taxonomy contract is now `ai-platform.error-taxonomy.v1`.
 Admin Runtime derives public `error_categories` from allowlisted error-type

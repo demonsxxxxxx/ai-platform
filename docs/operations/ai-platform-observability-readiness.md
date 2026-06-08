@@ -6,8 +6,8 @@ This document records the current G9 Observability / Quality / Ops readiness
 baseline. It is an operator readiness snapshot, not a gate-closure claim. G9
 remains partial until latency percentiles, model-gateway pressure controls,
 recorded capacity load-test evidence, error taxonomy dashboard acceptance,
-golden-set evaluation, alert thresholds, and trace/audit export contracts have
-code, tests, docs, review, and runtime evidence.
+golden-set evaluation, alert/SLO runtime acceptance, and trace/audit export
+contracts have code, tests, docs, review, and runtime evidence.
 
 Generate the current readiness snapshot from the repository root:
 
@@ -53,7 +53,28 @@ or ordinary-user private content.
 | Runtime metrics | Admin Runtime observability summary, token/cost/latency/error counts, queue/admission/DB-pool backpressure summary, capacity runtime evidence capture | p50/p95/p99 latency for API, queue lease, worker, model, sandbox, artifact, cancel, retry, and resume; model-gateway request concurrency limit; recorded capacity load-test evidence |
 | Error taxonomy | Formal `ai-platform.error-taxonomy.v1` contract, category mapping for executor/tool/sandbox/model-gateway/queue/database/memory/artifact/auth failures, Admin Runtime `error_categories`, run event error count projection, and redacted recent failure projection | Dashboard acceptance and 211/runtime evidence for taxonomy-driven operations |
 | Quality evaluation | Run trace/audit linkage baseline | Golden-set eval run contract, quality score schema, office workflow acceptance dataset |
-| Alerts and exports | Admin Runtime overview projection and fail-closed capacity gate readiness verdict | Alert rules and SLO thresholds, trace/audit export contract, release evidence export location |
+| Alerts and exports | Admin Runtime overview projection, fail-closed capacity gate readiness verdict, and source-level `ai-platform.alert-slo-readiness.v1` rule template evidence for queue, database, worker, model gateway, sandbox, error-taxonomy, and capacity gates | Alert runtime dashboard and 211 acceptance, delivery-channel policy, runtime SLO calibration, trace/audit export contract, release evidence export location |
+
+## Alert / SLO Rule Template Baseline
+
+The source-level readiness snapshot now embeds
+`ai-platform.alert-slo-readiness.v1` as
+`observability_readiness.domains.alerts_and_exports.evidence.alert_slo_rules`.
+This is a template-only baseline. It does not enable alert delivery, does not
+raise production concurrency defaults, and does not close G9.
+
+Template rules cover:
+
+- `queue_depth_no_lease_progress`
+- `database_pool_waiting_pressure`
+- `worker_active_run_saturation`
+- `model_gateway_timeout_spike`
+- `sandbox_orphan_cleanup_regression`
+- `error_taxonomy_spike`
+- `capacity_load_evidence_missing`
+
+Remaining alert blockers are runtime dashboard wiring, delivery-channel policy,
+SLO threshold calibration from recorded runtime evidence, review, and 211 smoke.
 
 ## 211 Runtime Evidence - 2026-06-08
 
@@ -96,8 +117,8 @@ repo-local services source target with OCI labels:
 This runtime evidence proves the source-level G9 taxonomy/readiness projection
 is deployed on 211. It does not close G9 because the remaining latency
 percentiles, model-gateway concurrency/backpressure, recorded load-test
-evidence, taxonomy dashboard acceptance, golden-set evaluation, alerts, and
-export contracts are still open.
+evidence, taxonomy dashboard acceptance, golden-set evaluation, alert runtime
+acceptance, and export contracts are still open.
 
 ### Follow-up 211 Runtime Evidence - 2026-06-08, commit `be03c95`
 
@@ -142,7 +163,8 @@ This follow-up evidence proves the latest deployed main commit still exposes
 the G9 readiness and error-taxonomy projections safely on 211. It still does
 not close G9 because latency percentiles, model-gateway concurrency and
 backpressure controls, recorded load-test evidence, dashboard acceptance,
-golden-set evaluation, alerts, and export contracts remain open.
+golden-set evaluation, alert runtime acceptance, and export contracts remain
+open.
 
 ## Gate Rule
 

@@ -40,9 +40,14 @@ def test_observability_readiness_records_g9_domains_and_open_gaps_without_secret
     assert "formal_error_taxonomy_contract" in domains["error_taxonomy"]["implemented"]
     assert "error_category_mapping_for_executor_tool_sandbox_model_gateway" in domains["error_taxonomy"]["implemented"]
     assert "golden_set_eval_run_contract" in domains["quality_evaluation"]["gaps"]
-    assert "alert_rules_and_slo_thresholds" in domains["alerts_and_exports"]["gaps"]
+    assert "alert_rules_runtime_dashboard_and_211_acceptance" in domains["alerts_and_exports"]["gaps"]
+    assert "alert_delivery_channel_policy" in domains["alerts_and_exports"]["gaps"]
+    assert "slo_threshold_runtime_calibration" in domains["alerts_and_exports"]["gaps"]
+    assert "alert_rules_and_slo_thresholds" not in domains["alerts_and_exports"]["gaps"]
     assert "trace_audit_export_contract" in domains["alerts_and_exports"]["gaps"]
     assert "model_gateway_request_concurrency_limit" in readiness["open_gaps"]
+    assert "alert_delivery_channel_policy" in readiness["open_gaps"]
+    assert "slo_threshold_runtime_calibration" in readiness["open_gaps"]
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
     assert "callback-secret" not in serialized
@@ -52,6 +57,51 @@ def test_observability_readiness_records_g9_domains_and_open_gaps_without_secret
     assert "sandbox_workspace_root" not in serialized
     assert "api_key" not in serialized
     assert "authorization" not in serialized
+
+
+def test_observability_readiness_includes_alert_slo_rule_template_evidence_without_closing_g9():
+    readiness = build_observability_readiness(SecretBearingSettings())
+
+    alerts = readiness["domains"]["alerts_and_exports"]
+    assert "alert_slo_rule_template_evidence" in alerts["implemented"]
+
+    evidence = alerts["evidence"]["alert_slo_rules"]
+    assert evidence["schema_version"] == "ai-platform.alert-slo-readiness.v1"
+    assert evidence["status"] == "partial_blocked"
+    assert evidence["active_alerting_policy"] == "template_only_not_enabled"
+    assert evidence["summary"] == {
+        "rule_count": 7,
+        "categories": [
+            "queue",
+            "database",
+            "worker",
+            "model_gateway",
+            "sandbox",
+            "error_taxonomy",
+            "capacity_gate",
+        ],
+    }
+    assert [rule["id"] for rule in evidence["rules"]] == [
+        "queue_depth_no_lease_progress",
+        "database_pool_waiting_pressure",
+        "worker_active_run_saturation",
+        "model_gateway_timeout_spike",
+        "sandbox_orphan_cleanup_regression",
+        "error_taxonomy_spike",
+        "capacity_load_evidence_missing",
+    ]
+    assert evidence["open_gaps"] == [
+        "alert_rules_runtime_dashboard_and_211_acceptance",
+        "alert_delivery_channel_policy",
+        "slo_threshold_runtime_calibration",
+    ]
+
+    serialized = json.dumps(evidence, ensure_ascii=False).lower()
+    assert "private_payload" not in serialized
+    assert "storage_key" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "api_key" not in serialized
+    assert "token=secret" not in serialized
 
 
 def test_render_observability_readiness_markdown_is_operator_readable_and_gap_first():
@@ -64,7 +114,12 @@ def test_render_observability_readiness_markdown_is_operator_readable_and_gap_fi
     assert "## Open Gaps" in markdown
     assert "formal_error_taxonomy_contract" in markdown
     assert "golden_set_eval_run_contract" in markdown
-    assert "alert_rules_and_slo_thresholds" in markdown
+    assert "alert_slo_rule_template_evidence" in markdown
+    assert "alert_rules_runtime_dashboard_and_211_acceptance" in markdown
+    assert "alert_delivery_channel_policy" in markdown
+    assert "slo_threshold_runtime_calibration" in markdown
+    assert "template_only_not_enabled" in markdown
+    assert "queue_depth_no_lease_progress" in markdown
     assert "## Domains" in markdown
     assert "callback-secret" not in markdown
     assert "anthropic-secret" not in markdown
