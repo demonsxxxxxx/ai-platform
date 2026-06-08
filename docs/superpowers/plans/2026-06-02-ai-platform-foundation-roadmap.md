@@ -424,7 +424,12 @@ source-level `ai-platform.skill-dependency-review-policy.v1` contract
 evidence for the required SBOM/signed-package, license-policy, and
 vulnerability-scan categories and the `ai-platform.skill-release-review.v1`
 review manifest schema fields `sbom_reviewed`, `license_policy_reviewed`, and
-`vulnerability_reviewed`,
+`vulnerability_reviewed`, source-level
+`ai-platform.skill-signed-package-evidence-contract.v1` /
+`skill_signed_package_evidence_contract` evidence for package artifact
+reference, package digest, signature artifact reference, signer identity,
+signing certificate or key reference, transparency log or attestation
+reference, verification status, and review status,
 frontend
 release traceability, static `dist` release manifest with build-provenance
 gate, frontend projection audit wired first into `ci:verify`, packaged frontend
@@ -456,7 +461,7 @@ surfaces, `admin_policy_bulk_review_runtime_acceptance`,
 `admin_policy_bulk_review_visual_acceptance`,
 `admin_policy_bulk_review_211_acceptance`, SBOM release
 evidence plus passed review manifests bound to matching evidence files,
-signed-package evidence contract definition, dependency vulnerability
+signed-package runtime validation plus reviewed evidence, dependency vulnerability
 and license evidence plus passed review manifests bound to matching evidence
 files, runtime acceptance for the source-level skill dependency review policy,
 `dependency_vulnerability_or_license_policy`,

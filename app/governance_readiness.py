@@ -177,6 +177,7 @@ def build_governance_readiness(
                 "skill_release_readiness_evidence_snapshot",
                 "skill_release_review_template_entrypoint",
                 "skill_dependency_review_policy_contract",
+                "skill_signed_package_evidence_contract",
                 "admin_skill_release_dashboard_contract",
             ],
             gaps=skill_release_readiness["open_gaps"],
@@ -352,12 +353,20 @@ def render_governance_readiness_markdown(readiness: dict[str, Any]) -> str:
         if isinstance(release_readiness, dict):
             policy = release_readiness.get("dependency_review_policy")
             if isinstance(policy, dict):
+                signed_contract = policy.get("signed_package_evidence_contract")
+                signed_contract_line = ""
+                if isinstance(signed_contract, dict):
+                    signed_contract_line = (
+                        f"- signed package evidence contract `{signed_contract.get('schema_version')}` status "
+                        f"`{signed_contract.get('status')}`\n"
+                    )
                 evidence_lines += (
                     "\nEvidence:\n\n"
                     f"- skill release readiness `{release_readiness.get('schema_version')}` status "
                     f"`{release_readiness.get('status')}`\n"
                     f"- dependency review policy `{policy.get('schema_version')}` status "
                     f"`{policy.get('status')}`\n"
+                    f"{signed_contract_line}"
                 )
         skill_dashboard = (
             evidence.get("admin_skill_release_dashboard")

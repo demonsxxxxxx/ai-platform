@@ -313,6 +313,8 @@ def test_governance_docs_record_skill_dependency_review_policy_without_closing_g
         assert "ai-platform.skill-release-dashboard-readiness.v1" in text
         assert "ai-platform.skill-release-dashboard-contract.v1" in text
         assert "ai-platform.skill-dependency-review-policy.v1" in text
+        assert "ai-platform.skill-signed-package-evidence-contract.v1" in text
+        assert "skill_signed_package_evidence_contract" in text
         assert "ai-platform.skill-release-review.v1" in text
         assert "sbom_reviewed" in text
         assert "license_policy_reviewed" in text

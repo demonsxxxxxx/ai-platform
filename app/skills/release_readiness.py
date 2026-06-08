@@ -19,6 +19,7 @@ from app.skills.registry import BuiltinSkillRegistry
 
 SCHEMA_VERSION = "ai-platform.skill-release-readiness.v1"
 DEPENDENCY_REVIEW_POLICY_SCHEMA_VERSION = "ai-platform.skill-dependency-review-policy.v1"
+SIGNED_PACKAGE_EVIDENCE_CONTRACT_SCHEMA_VERSION = "ai-platform.skill-signed-package-evidence-contract.v1"
 GATE_NAME = "G6 Skill Release / Dependency Governance"
 DEPENDENCY_REVIEW_POLICY_RUNTIME_GAP = "skill_dependency_review_policy_runtime_acceptance"
 
@@ -60,6 +61,14 @@ _VULNERABILITY_EVIDENCE_NAMES = {
     "osv-scanner.json",
     "vulnerability-report.json",
 }
+_SIGNED_PACKAGE_EVIDENCE_NAMES = {
+    "ai-platform-signed-package-evidence.json",
+    "signed-package-evidence.json",
+    "package-signature.json",
+    "cosign.bundle",
+    "in-toto-attestation.jsonl",
+    "slsa-provenance.intoto.jsonl",
+}
 _RELEASE_REVIEW_FILE_NAMES = {
     "ai-platform-skill-release-review.json",
     "skill-release-review.json",
@@ -69,6 +78,33 @@ _RELEASE_EVIDENCE_CATEGORIES = {
     "sbom_or_signed_package": _SBOM_FILE_NAMES,
     "license_policy": _LICENSE_FILE_NAMES,
     "vulnerability_scan": _VULNERABILITY_EVIDENCE_NAMES,
+}
+_SIGNED_PACKAGE_EVIDENCE_CONTRACT = {
+    "schema_version": SIGNED_PACKAGE_EVIDENCE_CONTRACT_SCHEMA_VERSION,
+    "status": "contract_only_not_runtime_satisfied",
+    "evidence_category": "sbom_or_signed_package",
+    "required_review_manifest_schema": _RELEASE_REVIEW_SCHEMA_VERSION,
+    "required_review_flag": "sbom_reviewed",
+    "candidate_evidence_file_names": sorted(_SIGNED_PACKAGE_EVIDENCE_NAMES),
+    "required_fields": [
+        "package_artifact_ref",
+        "package_digest_sha256",
+        "signature_artifact_ref",
+        "signer_identity",
+        "signing_key_or_certificate_ref",
+        "transparency_log_or_attestation_ref",
+        "verification_status",
+        "review_status",
+    ],
+    "safe_reference_policy": {
+        "relative_or_artifact_refs_only": True,
+        "raw_object_storage_refs_forbidden": True,
+        "executor_private_runtime_payload_forbidden": True,
+        "sandbox_working_directory_forbidden": True,
+        "secret_like_values_forbidden": True,
+    },
+    "runtime_validation_gap": "skill_signed_package_evidence_runtime_validation",
+    "does_not_close_g6": True,
 }
 _DEPENDENCY_REVIEW_POLICY = {
     "schema_version": DEPENDENCY_REVIEW_POLICY_SCHEMA_VERSION,
@@ -91,6 +127,7 @@ _DEPENDENCY_REVIEW_POLICY = {
     "evidence_files_must_match_skill_inventory": True,
     "rejects_placeholder_evidence_refs": True,
     "rejects_secret_like_evidence_refs": True,
+    "signed_package_evidence_contract": _SIGNED_PACKAGE_EVIDENCE_CONTRACT,
     "does_not_close_g6": True,
 }
 _SKILL_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
@@ -167,7 +204,7 @@ def build_skill_release_review_template(*, skill_id: str) -> dict[str, Any]:
             {
                 "id": "sbom_or_signed_package",
                 "passed": False,
-                "notes": "Confirm package provenance and SBOM evidence before setting sbom_reviewed=true. Signed-package evidence requires a future contract before it can clear this gate.",
+                "notes": "Confirm package provenance and SBOM evidence before setting sbom_reviewed=true. Signed-package evidence has a source contract but still needs runtime validation before it can clear this gate.",
             },
             {
                 "id": "license_policy",
@@ -497,6 +534,17 @@ def render_skill_release_readiness_markdown(readiness: dict[str, Any]) -> str:
     if isinstance(policy, dict):
         required_flags = ", ".join(policy.get("required_review_flags", []))
         required_categories = ", ".join(policy.get("required_evidence_categories", []))
+        signed_contract = policy.get("signed_package_evidence_contract")
+        signed_contract_lines = ""
+        if isinstance(signed_contract, dict):
+            signed_fields = ", ".join(signed_contract.get("required_fields", []))
+            signed_contract_lines = (
+                f"\n- Signed package evidence contract: `{signed_contract.get('schema_version')}`"
+                f"\n- Signed package contract status: `{signed_contract.get('status')}`"
+                f"\n- Signed package required fields: `{signed_fields}`"
+                f"\n- Signed package runtime gap: `{signed_contract.get('runtime_validation_gap')}`"
+                f"\n- Signed package contract does not close G6: `{signed_contract.get('does_not_close_g6')}`"
+            )
         policy_lines = (
             f"- Schema: `{policy.get('schema_version')}`\n"
             f"- Status: `{policy.get('status')}`\n"
@@ -505,6 +553,7 @@ def render_skill_release_readiness_markdown(readiness: dict[str, Any]) -> str:
             f"- Required evidence categories: `{required_categories}`\n"
             f"- Evidence files must match Skill inventory: `{policy.get('evidence_files_must_match_skill_inventory')}`\n"
             f"- Does not close G6: `{policy.get('does_not_close_g6')}`"
+            f"{signed_contract_lines}"
         )
     dashboard = readiness.get("admin_skill_release_dashboard")
     dashboard_lines = "- none"

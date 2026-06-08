@@ -177,6 +177,30 @@ def test_skill_release_readiness_records_policy_gaps_without_secret_or_absolute_
     assert policy["rejects_placeholder_evidence_refs"] is True
     assert policy["rejects_secret_like_evidence_refs"] is True
     assert policy["does_not_close_g6"] is True
+    signed_contract = policy["signed_package_evidence_contract"]
+    assert signed_contract["schema_version"] == "ai-platform.skill-signed-package-evidence-contract.v1"
+    assert signed_contract["status"] == "contract_only_not_runtime_satisfied"
+    assert signed_contract["evidence_category"] == "sbom_or_signed_package"
+    assert signed_contract["required_review_manifest_schema"] == "ai-platform.skill-release-review.v1"
+    assert signed_contract["required_review_flag"] == "sbom_reviewed"
+    assert signed_contract["required_fields"] == [
+        "package_artifact_ref",
+        "package_digest_sha256",
+        "signature_artifact_ref",
+        "signer_identity",
+        "signing_key_or_certificate_ref",
+        "transparency_log_or_attestation_ref",
+        "verification_status",
+        "review_status",
+    ]
+    assert signed_contract["safe_reference_policy"] == {
+        "relative_or_artifact_refs_only": True,
+        "raw_object_storage_refs_forbidden": True,
+        "executor_private_runtime_payload_forbidden": True,
+        "sandbox_working_directory_forbidden": True,
+        "secret_like_values_forbidden": True,
+    }
+    assert signed_contract["does_not_close_g6"] is True
     dashboard = readiness["admin_skill_release_dashboard"]
     assert dashboard["schema_version"] == "ai-platform.skill-release-dashboard-readiness.v1"
     assert dashboard["dashboard_contract"]["schema_version"] == "ai-platform.skill-release-dashboard-contract.v1"
@@ -218,6 +242,7 @@ def test_skill_release_readiness_markdown_is_gap_first_and_operator_readable(tmp
     assert "signed_skill_package_or_sbom_release_gate" in markdown
     assert "dependency_vulnerability_or_license_policy" in markdown
     assert "ai-platform.skill-dependency-review-policy.v1" in markdown
+    assert "ai-platform.skill-signed-package-evidence-contract.v1" in markdown
     assert "ai-platform.skill-release-dashboard-contract.v1" in markdown
     assert "admin_skill_release_dashboard_runtime_acceptance" in markdown
     assert "contract_only_not_runtime_satisfied" in markdown

@@ -69,7 +69,7 @@ or secret-like runtime configuration.
 | Domain | Implemented baseline | Remaining gap |
 | --- | --- | --- |
 | Tool permission | Admin tool policy inventory, tenant-scoped policy update audit, bounded admin change-history projection through `GET /api/ai/admin/tool-policies/history`, user request/decision flow, fail-closed risk/write policy evaluation, public permission-card projection, audit-visible legacy route policy mapping, secret-safe allow/ask/deny taxonomy evidence through `tools/tool_policy_readiness.py`, and contract-only Admin bulk-review dashboard readiness through `tools/tool_policy_bulk_review_readiness.py` / `admin_policy_bulk_review_dashboard_contract` | Policy enforcement or ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel surfaces, plus `admin_policy_bulk_review_runtime_acceptance`, `admin_policy_bulk_review_visual_acceptance`, and `admin_policy_bulk_review_211_acceptance` |
-| Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock, secret-safe skill release readiness snapshot, pending review-manifest template entrypoint, source-level `ai-platform.skill-dependency-review-policy.v1` contract, and contract-only Admin Skill release dashboard readiness through `tools/skill_release_dashboard_readiness.py` / `admin_skill_release_dashboard_contract` | SBOM release gate, signed-package evidence contract, dependency vulnerability/license evidence, `skill_dependency_review_policy_runtime_acceptance`, plus `admin_skill_release_dashboard_runtime_acceptance`, `admin_skill_release_dashboard_visual_acceptance`, and `admin_skill_release_dashboard_211_acceptance` |
+| Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock, secret-safe skill release readiness snapshot, pending review-manifest template entrypoint, source-level `ai-platform.skill-dependency-review-policy.v1` contract, source-level `ai-platform.skill-signed-package-evidence-contract.v1` / `skill_signed_package_evidence_contract`, and contract-only Admin Skill release dashboard readiness through `tools/skill_release_dashboard_readiness.py` / `admin_skill_release_dashboard_contract` | SBOM release gate, signed-package runtime validation and reviewed evidence, dependency vulnerability/license evidence, `skill_dependency_review_policy_runtime_acceptance`, plus `admin_skill_release_dashboard_runtime_acceptance`, `admin_skill_release_dashboard_visual_acceptance`, and `admin_skill_release_dashboard_211_acceptance` |
 | Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py`, source-level office context-pack architecture readiness through `tools/office_context_readiness.py` | Runtime context-pack persistence/injection, document-centric follow-up state, sandbox cold-start latency split, and frontend context provenance acceptance |
 | Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest with build-provenance same-commit gate, packaged frontend image definition traceability, non-push CI packaged-image build/provenance contract, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Profile env-var surface removed from the active browser entry graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Quarantined inactive legacy model/channel/envvar sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image smoke and release acceptance on 211 or another Docker-capable host |
 
@@ -178,8 +178,15 @@ requires the `sbom_reviewed`, `license_policy_reviewed`, and
 `vulnerability_reviewed` flags, requires SBOM/signed-package, license-policy,
 and vulnerability-scan evidence categories, and keeps evidence references
 matched to the Skill inventory while rejecting placeholder or secret-like
-references. This is a contract-only baseline; it does not close G6 without real
-reviewed evidence.
+references. It also embeds the source-level
+`ai-platform.skill-signed-package-evidence-contract.v1` as
+`skill_signed_package_evidence_contract`. The contract defines required signed
+package evidence fields such as package artifact reference, package digest,
+signature artifact reference, signer identity, signing certificate or key
+reference, transparency log or attestation reference, verification status, and
+review status, while keeping evidence references bounded to relative or
+artifact references. This is a contract-only baseline; it does not close G6
+without real reviewed evidence and runtime validation.
 `tools/skill_release_dashboard_readiness.py` now records a contract-only Admin
 Skill release dashboard baseline with schema
 `ai-platform.skill-release-dashboard-readiness.v1` and nested
@@ -195,8 +202,8 @@ This replaces the previous coarse dashboard acceptance blocker with explicit
 runtime, visual, and 211 acceptance gaps.
 Therefore G6 remains blocked by
 `signed_skill_package_or_sbom_release_gate` and
-`dependency_vulnerability_or_license_policy`, plus
-`skill_dependency_review_policy_runtime_acceptance`,
+`dependency_vulnerability_or_license_policy`, plus signed-package runtime
+validation and reviewed evidence, `skill_dependency_review_policy_runtime_acceptance`,
 `admin_skill_release_dashboard_runtime_acceptance`,
 `admin_skill_release_dashboard_visual_acceptance`, and
 `admin_skill_release_dashboard_211_acceptance` until the source-level policy and
@@ -217,9 +224,9 @@ present, reviewed, and explicitly bound to those real evidence files. Empty
 review evidence arrays, copied template placeholders, secret-like evidence
 paths, or references that do not match the Skill evidence inventory keep the
 readiness verdict fail-closed.
-Signed-package evidence remains a separate future contract until the accepted
-file names, signature verification, and review policy are defined in code and
-tests.
+Signed-package evidence now has a source-level contract in code and tests, but
+it remains fail-closed until accepted runtime validation, real package evidence,
+and passed review manifests are available.
 
 `tools/memory_erasure_readiness.py` now records code/test evidence for
 ordinary-user session-scoped soft delete, admin same-tenant soft delete, admin
