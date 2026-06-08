@@ -24,6 +24,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     active_paths = set(audit["active_browser_entry"]["files"])
     assert "frontend/web/src/components/panels/channel/feishu/FeishuPanel.tsx" not in active_paths
     assert "frontend/web/src/components/panels/ModelPanel/ModelPanel.tsx" not in active_paths
+    assert "frontend/web/src/components/profile/tabs/ProfileEnvVarsTab.tsx" not in active_paths
     quarantined_paths = {
         item["path"] for item in audit["quarantined_legacy_sources"]["violations"]
     }

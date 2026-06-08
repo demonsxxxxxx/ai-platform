@@ -59,6 +59,14 @@ test("active ai-platform source does not contain legacy LambChat runtime routes"
   assert.deepEqual(violations, []);
 });
 
+test("profile modal does not expose the legacy env-var surface", () => {
+  const profileModalSource = readSource("../components/profile/ProfileModal.tsx");
+
+  assert.doesNotMatch(profileModalSource, /ProfileEnvVarsTab/);
+  assert.doesNotMatch(profileModalSource, /envvars/);
+  assert.doesNotMatch(profileModalSource, /envVars\.title/);
+});
+
 test("MCP tool endpoints remain allowed through ai-platform /api/mcp routes", () => {
   const useToolsSource = readSource("../hooks/useTools.ts");
   const profileToolsSource = readSource(

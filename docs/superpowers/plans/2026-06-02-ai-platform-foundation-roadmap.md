@@ -91,8 +91,8 @@ quarantined inactive legacy source findings, private/secret-like projection
 term scan, `ci:verify` integration, legacy route policy mapping, and remaining
 legacy enforcement/remap gaps. The active browser entry graph is currently
 clear, so `projection:audit` exits 0 with status `pass_with_policy_gaps`;
-G6/G9 still block ordinary-user expansion until active env-var profile routes
-and quarantined legacy model/channel sources are remapped or policy-gated.
+G6/G9 still block ordinary-user expansion until quarantined legacy
+model/channel/envvar sources are remapped or policy-gated.
 This provides the traceability and audit base for backend/worker/frontend
 same-commit review. `.github/workflows/ai-platform-frontend.yml` now runs
 frontend install, `ci:verify`, and release traceability on relevant source
@@ -107,8 +107,8 @@ Settings includes an admin-only Admin Runtime Capacity section that consumes
 only `GET /api/ai/admin/runtime/overview` and renders capacity, backpressure,
 G6 governance gaps, and missing load-test evidence. This reduces the G9 visual
 gap but does not close #21 because no load-test evidence has been recorded, and
-does not close G6 because legacy env-var/model/channel/MCP route remap and 211
-visual acceptance remain open.
+does not close G6 because legacy env-var/model/channel/MCP route remap and
+ordinary-user acceptance remain open.
 
 ### G6 Governance Readiness Status
 
@@ -137,8 +137,7 @@ This does not close G6. Remaining blockers are policy enforcement or
 ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel
 surfaces, full allow/deny/ask taxonomy for every MCP tool, signed package or
 SBOM release evidence, dependency vulnerability/license policy, bounded office
-context-pack product contract, active
-env-var profile surface remap, quarantined legacy frontend source remap,
+context-pack product contract, quarantined legacy frontend source remap,
 packaged frontend image
 traceability, and ordinary-user G9 acceptance. Do
 not use this baseline to expand sandbox privilege, raw Skill selection, or

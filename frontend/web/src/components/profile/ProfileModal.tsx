@@ -6,7 +6,6 @@ import {
   User,
   Bell,
   Settings,
-  Braces,
   Wrench,
   Cpu,
   Scale,
@@ -19,7 +18,6 @@ import { APP_NAME } from "../../constants";
 import { ProfileInfoTab } from "./tabs/ProfileInfoTab";
 import { ProfileNotificationTab } from "./tabs/ProfileNotificationTab";
 import { ProfilePreferencesTab } from "./tabs/ProfilePreferencesTab";
-import { ProfileEnvVarsTab } from "./tabs/ProfileEnvVarsTab";
 import { ProfileToolsTab } from "./tabs/ProfileToolsTab";
 import { ProfileModelsTab } from "./tabs/ProfileModelsTab";
 import { ProfileTermsTab } from "./tabs/ProfileTermsTab";
@@ -38,7 +36,6 @@ const TAB_ICONS: Record<
   info: User,
   notification: Bell,
   preferences: Settings,
-  envvars: Braces,
   tools: Wrench,
   models: Cpu,
   terms: Scale,
@@ -56,7 +53,6 @@ export function ProfileModal({
     | "info"
     | "notification"
     | "preferences"
-    | "envvars"
     | "tools"
     | "models"
     | "terms"
@@ -111,7 +107,6 @@ export function ProfileModal({
     { key: "info", label: t("profile.title") },
     { key: "notification", label: t("profile.notifications") },
     { key: "preferences", label: t("profile.preferences") },
-    { key: "envvars", label: t("envVars.title") },
     { key: "tools", label: t("profile.toolsTab", "Tools") },
     { key: "models", label: t("profile.modelIntro") },
     { key: "terms", label: t("profile.termsTab") },
@@ -122,7 +117,6 @@ export function ProfileModal({
       {activeTab === "info" && <ProfileInfoTab />}
       {activeTab === "notification" && <ProfileNotificationTab />}
       {activeTab === "preferences" && <ProfilePreferencesTab />}
-      {activeTab === "envvars" && <ProfileEnvVarsTab />}
       {activeTab === "tools" && <ProfileToolsTab />}
       {activeTab === "models" && <ProfileModelsTab />}
       {activeTab === "terms" && <ProfileTermsTab />}

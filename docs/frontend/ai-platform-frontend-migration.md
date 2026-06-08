@@ -13,7 +13,7 @@ auth/session, DB schema, or compose delivery behavior.
 | --- | --- |
 | #15 roadmap governance | Open. The roadmap has a gate-based sync, but release evidence and execution history are still mixed in older sections. |
 | #16 tenant-aware concurrency | Open. #20 closed the current G5 scheduling/admission gaps, but #21 still blocks capacity claims and production default increases. |
-| #17 frontend source ownership | In progress. Source now lives under `frontend/web`, has local install/lint/build evidence, exposes release traceability plus a frontend projection audit, and now has a GitHub Actions frontend workflow with passing remote run evidence. `ci:verify` starts with the projection audit launcher; the active browser entry graph is currently clear of forbidden private/secret-like projection terms, while inactive legacy secret-like model/channel sources remain quarantined and must be remapped before G9 rollout. Full closure still needs later packaged image integration and release acceptance. |
+| #17 frontend source ownership | In progress. Source now lives under `frontend/web`, has local install/lint/build evidence, exposes release traceability plus a frontend projection audit, and now has a GitHub Actions frontend workflow with passing remote run evidence. `ci:verify` starts with the projection audit launcher; the active browser entry graph is currently clear of forbidden private/secret-like projection terms, and the Profile env-var surface is no longer active. Inactive legacy secret-like model/channel/envvar sources remain quarantined and must be remapped before G9 rollout. Full closure still needs later packaged image integration and release acceptance. |
 | #20 G5 scheduling/admission gaps | Closed on 2026-06-06 by `f5da825` and `e203412`, with local full pytest and 211 smoke evidence recorded in the issue. |
 | #21 capacity baseline | Open. Current default active worker execution is still about three runs, and load-test evidence is required before raising concurrency defaults. |
 | #22 office UX/context continuity | Open future product issue. It should inform workbench design but is not implemented in this migration. |
@@ -167,11 +167,11 @@ Remaining audit risks:
 
 - Imported legacy LambChat panels still include admin/model/MCP/envvar/channel
   surfaces that can handle or read user-entered credentials. The projection
-  audit now reports inactive secret-like model/channel sources as quarantined
-  legacy source gaps rather than active browser entry violations. The env-var
-  profile surface is still an active legacy route policy gap and must be
-  remapped to ai-platform projections, masked, admin/policy-gated, or hidden
-  before ordinary-user Agent Frontend rollout.
+  audit now reports inactive secret-like model/channel/envvar sources as
+  quarantined legacy source gaps rather than active browser entry violations.
+  The Profile env-var tab is hidden from the active browser entry graph until
+  `/api/env-vars/*` is remapped to an ai-platform projection, masked,
+  admin/policy-gated, or removed before ordinary-user Agent Frontend rollout.
 - Legacy `/api/memory/*`, `/api/mcp/*`, `/api/env-vars/*`,
   `/api/agent/models/*`, and channel/admin endpoints now have audit-visible
   route policy mappings, but still need actual enforcement, hiding, or remap to
@@ -262,10 +262,10 @@ back to the same git commit as API and worker.
 ## Remaining Risks
 
 - The imported frontend still contains legacy LambChat admin/model/MCP/persona
-  and sandbox-related panels. Secret-like `/channels` and `/models` surfaces
-  are now quarantined from the active browser entry graph; active legacy routes
-  such as env-var profile management and the remaining route inventory still
-  need ai-platform remap/policy acceptance before ordinary-user rollout.
+  and sandbox-related panels. Secret-like `/channels`, `/models`, and Profile
+  env-var surfaces are now quarantined from the active browser entry graph; the
+  remaining route inventory still needs ai-platform remap/policy acceptance
+  before ordinary-user rollout.
 - The source worktree on 211 was dirty at migration time; this import captures
   the hash-matched snapshot but does not clean the upstream LambChat POC repo.
 - #21 capacity/load-test evidence remains open, so no production concurrency
