@@ -274,9 +274,23 @@ Current local and CI-contract evidence on 2026-06-08:
   `not_configured` with blockers
   `packaged_frontend_dockerfile_missing`,
   `packaged_frontend_compose_overlay_missing`, and
-  `packaged_frontend_image_trace_missing`. The latest pushed change after the
-  previous frontend workflow run touched only backend tests, so no newer
-  frontend GitHub Actions run was required by the workflow filters.
+  `packaged_frontend_image_trace_missing`. At that time, the latest pushed
+  change after the previous frontend workflow run touched only backend tests,
+  so no newer frontend GitHub Actions run was required by the workflow
+  filters.
+- At commit `be03c953e60489f1d27b8e6d1a0a770f11e48fb8`,
+  `corepack.cmd pnpm run ci:verify` exited 0 and wrote
+  `dist/ai-platform-build-provenance.json`. A fresh
+  `python tools/frontend_release_traceability.py --format json` run reported
+  `git.dirty = false`, `dist.status = built`,
+  `dist.build_provenance.status = verified`,
+  `dist.build_provenance.verified_same_commit = true`, and no static `dist`
+  blockers. The packaged frontend image section intentionally remained
+  `not_configured` with blockers until a frontend Dockerfile, compose overlay,
+  and image trace are added and verified on a Docker-capable host.
+- GitHub Actions run `27114040908` passed on commit
+  `be03c953e60489f1d27b8e6d1a0a770f11e48fb8`, covering the frontend workflow
+  contract after the build-provenance hardening.
 
 These warnings do not block the source migration, but they remain frontend
 hardening work before broader Agent Frontend V1 rollout. Generated `dist/` is

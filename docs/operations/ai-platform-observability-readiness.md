@@ -99,6 +99,51 @@ percentiles, model-gateway concurrency/backpressure, recorded load-test
 evidence, taxonomy dashboard acceptance, golden-set evaluation, alerts, and
 export contracts are still open.
 
+### Follow-up 211 Runtime Evidence - 2026-06-08, commit `be03c95`
+
+Commit `be03c953e60489f1d27b8e6d1a0a770f11e48fb8` was later synced to the 211
+repo-local source target and deployed to API/worker with image
+`ai-platform:be03c95-frontend-provenance`. The image labels matched the same
+commit and retained:
+
+- `org.opencontainers.image.source = ai-platform/services/ai-platform`
+- `ai-platform.source_target = services/ai-platform`
+
+211 smoke evidence after deployment:
+
+- `GET /api/ai/health` returned `{"status":"ok"}` from the API container.
+- The 211 frontend proxy health path returned `{"status":"ok"}`.
+- API and worker containers both ran
+  `ai-platform:be03c95-frontend-provenance` with matching revision labels.
+- Container-local `python -m compileall -q app` passed for both API and worker.
+- Admin Runtime overview returned the required operational sections:
+  `capacity`, `database_pool`, `queue`, `admission`, `backpressure`,
+  `sandbox`, `governance`, `observability`, and
+  `observability_readiness`.
+- `capacity.schema_version` was `ai-platform.capacity-baseline.v1`, and
+  `capacity.production_default_policy` remained
+  `do_not_raise_without_recorded_load_test_evidence`.
+- `governance.schema_version` was `ai-platform.governance-readiness.v1`.
+- `observability_readiness.schema_version` was
+  `ai-platform.observability-readiness.v1`.
+- `observability_readiness.error_taxonomy.schema_version` was
+  `ai-platform.error-taxonomy.v1`.
+- `observability.error_categories` was present as a dictionary.
+- Ordinary-user access to `GET /api/ai/admin/runtime/overview` returned
+  HTTP 403.
+- A refined projection leak scan found no forbidden runtime markers for DSNs,
+  Redis URLs, bearer/API tokens, raw storage keys, sandbox work directories,
+  executor private payloads, callback tokens, provider tokens, client secrets,
+  or object-storage keys.
+- Recent API/worker logs since deployment had no startup traceback, exception,
+  error, failed import, module-not-found, or syntax-error markers.
+
+This follow-up evidence proves the latest deployed main commit still exposes
+the G9 readiness and error-taxonomy projections safely on 211. It still does
+not close G9 because latency percentiles, model-gateway concurrency and
+backpressure controls, recorded load-test evidence, dashboard acceptance,
+golden-set evaluation, alerts, and export contracts remain open.
+
 ## Gate Rule
 
 Do not close G9 or raise production concurrency defaults from this readiness

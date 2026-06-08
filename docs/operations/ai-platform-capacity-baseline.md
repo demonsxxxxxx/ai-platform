@@ -231,6 +231,46 @@ This evidence keeps #21 open. It verifies that current 211 runtime visibility
 and fail-closed policy are deployed, but it still does not provide a safe
 maximum concurrency number and must not be used to raise production defaults.
 
+### 211 Runtime Evidence - 2026-06-08, commit `be03c95`
+
+After the frontend build-provenance hardening deployment, API and worker both
+ran image `ai-platform:be03c95-frontend-provenance` with
+`org.opencontainers.image.revision =
+be03c953e60489f1d27b8e6d1a0a770f11e48fb8`. API health, frontend proxy health,
+container-local compile, Admin Runtime admin access, ordinary-user HTTP 403,
+Admin Runtime projection leak scan, and recent API/worker startup log checks
+all passed.
+
+The read-only capacity runtime evidence command was run against the 211 API:
+
+```powershell
+python tools/capacity_runtime_evidence.py --base-url http://10.56.0.211:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha be03c953e60489f1d27b8e6d1a0a770f11e48fb8 --runtime-profile 211-current --format json
+```
+
+The output schema was `ai-platform.capacity-runtime-evidence.v1`. The nested
+snapshot schema was `ai-platform.capacity-evidence-snapshot.v1`, and
+`snapshot.runtime_identity.commit_sha` matched
+`be03c953e60489f1d27b8e6d1a0a770f11e48fb8`.
+
+The gate readiness schema was `ai-platform.capacity-gate-readiness.v1` with
+status `blocked_missing_load_test_evidence`. The production default decision
+remained `do_not_raise_without_recorded_load_test_evidence`, and all seven
+load-test gates were still missing recorded evidence:
+
+- `api_read_write_burst`
+- `run_creation_burst_by_tenant_and_user`
+- `worker_processing_throughput`
+- `queue_depth_and_lease_latency`
+- `cancel_retry_resume_under_load`
+- `sandbox_lease_creation_under_load`
+- `model_gateway_timeout_and_backpressure`
+
+This follow-up evidence keeps #21 open and continues to fail closed for
+production concurrency. The observed 211 defaults still include single API and
+worker process counts, DB pool max size `10`, active worker runs `3`,
+per-user active admission `3`, tenant/user queue quotas disabled, model
+gateway concurrency unbounded by platform config, and sandbox provider `fake`.
+
 ## Required Load-Test Gates
 
 Generate the repeatable command manifest for a target deployment profile:
