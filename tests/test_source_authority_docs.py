@@ -152,6 +152,8 @@ def test_frontend_source_import_is_documented_without_replacing_current_runtime(
     assert "current 211 thin-shell deployment remains the active runtime entry" in combined_text
     assert "G8/G10 Long Task and Multi-Agent work are not implemented" in combined_text
     assert "Docker compose one-command startup is not a current" in combined_text
+    assert "tools/office_context_readiness.py" in combined_text
+    assert "frontend context provenance acceptance" in combined_text
     assert "C:\\Users" not in combined_text
     assert "/api/ai/workbench" not in combined_text
 

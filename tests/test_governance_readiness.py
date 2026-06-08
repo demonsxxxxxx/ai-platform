@@ -69,9 +69,25 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "memory_delete_retention_erasure_evidence_snapshot" in domains["memory_governance"]["implemented"]
     assert "memory_export_erasure_evidence_snapshot" in domains["memory_governance"]["implemented"]
     assert "memory_redaction_policy_admin_preview_and_audit" in domains["memory_governance"]["implemented"]
+    assert "office_context_pack_architecture_readiness_snapshot" in domains["memory_governance"]["implemented"]
     assert "formal_memory_delete_export_erasure_evidence" not in domains["memory_governance"]["gaps"]
     assert "memory_export_erasure_evidence" not in domains["memory_governance"]["gaps"]
     assert "memory_redaction_policy_admin_preview_and_audit" not in domains["memory_governance"]["gaps"]
+    assert "bounded_context_pack_product_contract_for_office_workflows" not in domains["memory_governance"]["gaps"]
+    assert "office_context_pack_runtime_implementation_and_acceptance" in domains["memory_governance"]["gaps"]
+    context_evidence = domains["memory_governance"]["evidence"]["office_context_pack_readiness"]
+    assert context_evidence["schema_version"] == "ai-platform.office-context-pack-readiness.v1"
+    assert context_evidence["status"] == "partial_blocked"
+    assert context_evidence["policy"]["lightweight_office_tasks_start_sandbox_by_default"] is False
+    assert context_evidence["policy"]["ordinary_user_policy"] == "public_projection_only"
+    assert context_evidence["policy"]["long_term_memory_policy"] == "fail_closed_until_policy_and_acceptance"
+    assert context_evidence["policy"]["does_not_expand_multi_agent_beta"] is True
+    assert context_evidence["summary"]["allowed_sources"] >= 7
+    assert context_evidence["summary"]["execution_tiers"] >= 3
+    assert context_evidence["summary"]["open_gaps"] >= 7
+    assert context_evidence["summary"]["sandbox_default_for_lightweight_office_tasks"] is False
+    assert "frontend_context_provenance_acceptance" in context_evidence["open_gaps"]
+    assert "sandbox_cold_start_latency_split" in context_evidence["open_gaps"]
     assert "public_admin_projection_audit_baseline" in domains["frontend_projection"]["implemented"]
     assert "frontend_projection_audit_cli" in domains["frontend_projection"]["implemented"]
     assert "frontend_ci_projection_audit_integration" in domains["frontend_projection"]["implemented"]
@@ -201,6 +217,7 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     assert "signed_skill_package_or_sbom_release_gate" in markdown
     assert "memory_delete_retention_erasure_evidence_snapshot" in markdown
     assert "memory_export_erasure_evidence_snapshot" in markdown
+    assert "office_context_pack_runtime_implementation_and_acceptance" in markdown
     open_gaps = markdown.split("## Domains", 1)[0]
     assert "memory_export_erasure_evidence" not in open_gaps
     assert "callback-secret" not in markdown

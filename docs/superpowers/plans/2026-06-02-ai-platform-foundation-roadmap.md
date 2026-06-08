@@ -215,6 +215,8 @@ records, user opt-out, Admin memory policy inventory, retention cleanup,
 redaction, Admin redaction preview/audit, long-term cross-session memory fail-closed behavior,
 delete/retention/export erasure evidence through
 `tools/memory_erasure_readiness.py`,
+source-level office context-pack architecture readiness through
+`tools/office_context_readiness.py`,
 secret-safe Skill release readiness evidence through
 `tools/skill_release_readiness.py`,
 pending Skill release review-manifest template generation through
@@ -239,12 +241,21 @@ surfaces, Admin taxonomy/bulk/history dashboard acceptance, SBOM release
 evidence plus passed review manifests bound to matching evidence files,
 signed-package evidence contract definition, dependency vulnerability
 and license evidence plus passed review manifests bound to matching evidence
-files, bounded office context-pack
-product contract, quarantined legacy frontend source remap, packaged frontend
-image smoke/release acceptance on 211 or another Docker-capable host, and
-ordinary-user G9 acceptance. Do
-not use this baseline to expand sandbox privilege, raw Skill selection, or
-multi-agent ordinary-user exposure.
+files, office context-pack runtime implementation, document-centric follow-up
+state, sandbox cold-start latency split, frontend context provenance
+acceptance, quarantined legacy frontend source remap, packaged frontend image
+smoke/release acceptance on 211 or another Docker-capable host, and
+ordinary-user G9 acceptance. Do not use this baseline to expand sandbox
+privilege, raw Skill selection, or multi-agent ordinary-user exposure.
+
+The #22 office context-pack work now has source-level architecture readiness
+evidence only: `tools/office_context_readiness.py` defines bounded allowed
+context sources, user-visible provenance fields, execution tiers, and non-goals
+without enabling runtime context-pack persistence, executor injection, long-term
+cross-session memory, lightweight-task Docker sandbox startup, or ordinary-user
+G8/G10 exposure. It replaces the older single "bounded office context-pack
+product contract" blocker with explicit runtime, follow-up-state, latency, and
+frontend provenance acceptance gaps.
 
 The 2026-06-08 frontend projection audit follow-up makes the remaining frontend
 G6/G9 blockers machine-actionable through

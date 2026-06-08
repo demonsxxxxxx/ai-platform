@@ -1,5 +1,6 @@
 from typing import Any
 
+from app.office_context_readiness import build_office_context_readiness
 from app.settings import get_settings
 from app.skills.release_readiness import build_skill_release_readiness
 from app.tool_policy_readiness import build_tool_policy_readiness
@@ -119,6 +120,7 @@ def build_governance_readiness(
     resolved_settings = settings or get_settings()
     skill_release_readiness = build_skill_release_readiness()
     tool_policy_readiness = build_tool_policy_readiness()
+    office_context_readiness = build_office_context_readiness()
     frontend_projection_evidence = (
         {"projection_audit": _frontend_projection_audit_evidence()}
         if include_frontend_projection_audit
@@ -192,15 +194,38 @@ def build_governance_readiness(
                 "memory_delete_retention_erasure_evidence_snapshot",
                 "memory_export_erasure_evidence_snapshot",
                 "memory_redaction_policy_admin_preview_and_audit",
+                "office_context_pack_architecture_readiness_snapshot",
             ],
             gaps=[
-                "bounded_context_pack_product_contract_for_office_workflows",
+                "office_context_pack_runtime_implementation_and_acceptance",
+                "document_centric_followup_state",
+                "sandbox_cold_start_latency_split",
+                "frontend_context_provenance_acceptance",
             ],
             next_checks=[
                 "keep delete, retention, and export erasure evidence current through tools/memory_erasure_readiness.py",
                 "keep cross-session long-term memory disabled until policy and acceptance are complete",
-                "shape context pack work from issue 22 without enabling broad memory reads",
+                "use tools/office_context_readiness.py to keep the office context-pack architecture contract current",
+                "do not start Docker sandbox for lightweight office writing tasks by default",
             ],
+            evidence={
+                "office_context_pack_readiness": {
+                    "schema_version": office_context_readiness["schema_version"],
+                    "status": office_context_readiness["status"],
+                    "policy": office_context_readiness["policy"],
+                    "summary": {
+                        "allowed_sources": len(
+                            office_context_readiness["context_pack_contract"]["allowed_sources"]
+                        ),
+                        "execution_tiers": len(office_context_readiness["execution_tiers"]),
+                        "open_gaps": len(office_context_readiness["open_gaps"]),
+                        "sandbox_default_for_lightweight_office_tasks": office_context_readiness[
+                            "policy"
+                        ]["lightweight_office_tasks_start_sandbox_by_default"],
+                    },
+                    "open_gaps": office_context_readiness["open_gaps"],
+                }
+            },
         ),
         "frontend_projection": _domain(
             implemented=[

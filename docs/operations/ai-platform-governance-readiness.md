@@ -5,9 +5,9 @@ Date: 2026-06-08
 This document records the current G6 Tool / Skill / Memory Governance baseline.
 It is an operator readiness snapshot, not a gate-closure claim. G6 remains
 partial until frontend route policy enforcement/remap, release governance
-evidence, bounded office context-pack contract, quarantined inactive legacy
-source remap, packaged frontend image delivery/release acceptance, and
-ordinary-user G9 acceptance are complete.
+evidence, office context-pack runtime implementation and acceptance,
+quarantined inactive legacy source remap, packaged frontend image
+delivery/release acceptance, and ordinary-user G9 acceptance are complete.
 
 Generate the current readiness snapshot from the repository root:
 
@@ -22,6 +22,8 @@ python tools/skill_release_readiness.py --review-template --skill-id <skill-id> 
 python tools/skill_release_readiness.py --review-template --skill-id <skill-id> --format json --output skills/<skill-id>/ai-platform-skill-release-review.json
 python tools/memory_erasure_readiness.py --format markdown
 python tools/memory_erasure_readiness.py --format json
+python tools/office_context_readiness.py --format markdown
+python tools/office_context_readiness.py --format json
 ```
 
 The script intentionally does not print callback tokens, sandbox workspace
@@ -64,7 +66,7 @@ or secret-like runtime configuration.
 | --- | --- | --- |
 | Tool permission | Admin tool policy inventory, tenant-scoped policy update audit, user request/decision flow, fail-closed risk/write policy evaluation, public permission-card projection, audit-visible legacy route policy mapping, secret-safe allow/ask/deny taxonomy evidence through `tools/tool_policy_readiness.py` | Policy enforcement or ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel surfaces, bulk review/history UX, Admin dashboard acceptance for taxonomy evidence |
 | Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock, secret-safe skill release readiness snapshot, pending review-manifest template entrypoint | SBOM release gate, signed-package evidence contract, Admin release dashboard acceptance, dependency vulnerability/license policy |
-| Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py` | Bounded office context-pack product contract |
+| Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py`, source-level office context-pack architecture readiness through `tools/office_context_readiness.py` | Runtime context-pack persistence/injection, document-centric follow-up state, sandbox cold-start latency split, and frontend context provenance acceptance |
 | Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest with build-provenance same-commit gate, packaged frontend image definition traceability, non-push CI packaged-image build/provenance contract, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Profile env-var surface removed from the active browser entry graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Quarantined inactive legacy model/channel/envvar sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image smoke and release acceptance on 211 or another Docker-capable host |
 
 The frontend projection evidence now records three current structured blockers:
@@ -177,8 +179,24 @@ tests, delete/cleanup audit allowlists, and the admin-only
 same-tenant admin scope, returns only redacted preview fields, and writes an
 audit payload that records policy scope, mode, change booleans, and redacted
 reason without sample content or metadata. This does not close memory
-governance by itself: the bounded office context-pack product contract remains
-open.
+governance by itself: office workflow context continuity still needs runtime
+persistence/versioning, executor context-pack injection, public context
+provenance projection, document-centric follow-up state, execution-tier
+routing, sandbox cold-start latency split, and frontend acceptance.
+
+`tools/office_context_readiness.py` now records the source-level #22
+architecture contract for office-heavy workflows with schema
+`ai-platform.office-context-pack-readiness.v1`. The contract keeps lightweight
+writing/rewrite/summarization/translation follow-up work in the
+`sdk_only_writing` tier by default, models document generation/conversion as a
+separate `document_worker` tier, and reserves `heavy_sandbox` for script,
+browser, risky tool, or complex multi-tool work. It defines allowed context
+sources, user-visible context provenance fields, and forbidden projection terms
+without reading `.env` values, raw storage keys, sandbox workdirs,
+executor-private payloads, or secret-like runtime paths. This is architecture
+readiness only. It does not persist context packs, inject them into executor
+prompts, enable long-term cross-session memory, start Docker for lightweight
+office tasks, or expand G8/G10 multi-agent exposure.
 
 On 2026-06-08, commit `f7c6b0d9114748fa249acb88da6584851c48aa96` was synced to
 the 211 repo-local source target and deployed to API/worker with image
@@ -192,9 +210,9 @@ storage key, sandbox workdir, object-storage URL, skill package key, provider
 token, bearer token, or client-secret markers. The smoke used the existing 211
 runtime `.env` path through compose without printing or copying secret values.
 Local source readiness for the same commit reports no missing memory erasure
-evidence markers and keeps only
-`bounded_context_pack_product_contract_for_office_workflows` open for memory
-governance.
+evidence markers. The former bounded context-pack product-contract gap is now
+split into explicit office context-pack runtime, follow-up state, latency, and
+frontend acceptance gaps.
 
 ## Gate Rule
 
