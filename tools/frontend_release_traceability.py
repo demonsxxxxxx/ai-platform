@@ -21,6 +21,7 @@ WORKFLOW_COMMANDS = [
     "corepack pnpm install --frozen-lockfile",
     "corepack pnpm run ci:verify",
     "python tools/frontend_release_traceability.py --format json",
+    "python tools/frontend_packaged_runtime_smoke.py --format json",
     "docker build",
     "--build-arg AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}",
     "--build-arg AI_PLATFORM_BUILD_DIRTY=false",
@@ -35,6 +36,7 @@ WORKFLOW_PATH_FILTERS = [
     "tests/test_frontend_*.py",
     "tools/frontend_projection_audit.py",
     "tools/frontend_release_traceability.py",
+    "tools/frontend_packaged_runtime_smoke.py",
     ".github/workflows/ai-platform-frontend.yml",
 ]
 PACKAGED_DELIVERY_PATHS = [

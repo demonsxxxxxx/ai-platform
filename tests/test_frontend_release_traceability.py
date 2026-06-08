@@ -35,7 +35,9 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert len(trace["workflow"]["sha256"]) == 64
     assert "corepack pnpm run ci:verify" in trace["workflow"]["enforced_commands"]
     assert "python tools/frontend_release_traceability.py --format json" in trace["workflow"]["enforced_commands"]
+    assert "python tools/frontend_packaged_runtime_smoke.py --format json" in trace["workflow"]["enforced_commands"]
     assert "deploy/ai-platform/docker-compose.frontend.yml" in trace["workflow"]["required_path_filters"]
+    assert "tools/frontend_packaged_runtime_smoke.py" in trace["workflow"]["required_path_filters"]
     assert trace["workflow"]["missing_path_filters"] == []
     assert len(trace["source_hashes"]["package_json_sha256"]) == 64
     assert len(trace["source_hashes"]["pnpm_lock_sha256"]) == 64
@@ -288,6 +290,7 @@ def test_frontend_release_traceability_flags_workflow_missing_enforced_commands(
         "corepack pnpm install --frozen-lockfile",
         "corepack pnpm run ci:verify",
         "python tools/frontend_release_traceability.py --format json",
+        "python tools/frontend_packaged_runtime_smoke.py --format json",
         "docker build",
         "--build-arg AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}",
         "--build-arg AI_PLATFORM_BUILD_DIRTY=false",
@@ -296,6 +299,7 @@ def test_frontend_release_traceability_flags_workflow_missing_enforced_commands(
         "ai-platform-build-provenance.json",
     ]
     assert "deploy/ai-platform/docker-compose.frontend.yml" in trace["workflow"]["missing_path_filters"]
+    assert "tools/frontend_packaged_runtime_smoke.py" in trace["workflow"]["missing_path_filters"]
 
 
 def test_frontend_packaged_image_files_define_static_proxy_contract():

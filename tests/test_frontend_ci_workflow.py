@@ -11,6 +11,7 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "corepack pnpm install --frozen-lockfile" in workflow
     assert "corepack pnpm run ci:verify" in workflow
     assert "python tools/frontend_release_traceability.py --format json" in workflow
+    assert "python tools/frontend_packaged_runtime_smoke.py --format json" in workflow
     assert "docker build" in workflow
     assert "--build-arg AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}" in workflow
     assert "--build-arg AI_PLATFORM_BUILD_DIRTY=false" in workflow
@@ -23,6 +24,7 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "tests/test_frontend_*.py" in workflow
     assert "tools/frontend_projection_audit.py" in workflow
     assert "tools/frontend_release_traceability.py" in workflow
+    assert "tools/frontend_packaged_runtime_smoke.py" in workflow
 
     ci_verify_index = workflow.index("corepack pnpm run ci:verify")
     traceability_index = workflow.index("python tools/frontend_release_traceability.py --format json")

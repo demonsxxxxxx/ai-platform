@@ -179,7 +179,18 @@ contains a non-push packaged-image build/provenance job that builds
 `ai-platform-frontend:${{ github.sha }}` with the current commit and verifies
 `ai-platform-build-provenance.json` from inside the image without running Docker
 compose or reading `.env`. Docker-capable runtime smoke and release acceptance
-remain pending. The projection
+remain pending. `tools/frontend_packaged_runtime_smoke.py` now records the
+fail-closed packaged frontend runtime smoke readiness contract
+`ai-platform.frontend-packaged-runtime-smoke.v1`; its evidence contract is
+`ai-platform.frontend-packaged-runtime-smoke-evidence.v1` with write path
+`frontend_release.packaged_runtime_smoke.<commit_sha>`. The tool is
+evidence-only, does not run Docker, and does not close G6, G9, or #21. The
+2026-06-08 211 attempt for commit `305bc40` reached the extracted source and
+current API/thin-shell health, but packaged image build failed before runtime
+smoke because required `node:22-alpine` and `nginx:1.27-alpine` base image
+metadata could not be pulled or found locally. The classified blockers are
+`docker_registry_proxy_unreachable` and `base_image_pull_failed`; this is an
+environment/build-host blocker, not release acceptance. The projection
 audit records the current production-source route inventory, active-browser
 route inventory, active browser entry graph, active-browser legacy route policy
 mapping, quarantined inactive legacy source findings, private/secret-like

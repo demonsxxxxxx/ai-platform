@@ -9,6 +9,7 @@ on:
       - "tests/test_frontend_*.py"
       - "tools/frontend_projection_audit.py"
       - "tools/frontend_release_traceability.py"
+      - "tools/frontend_packaged_runtime_smoke.py"
       - ".github/workflows/ai-platform-frontend.yml"
   push:
     branches:
@@ -20,6 +21,7 @@ on:
       - "tests/test_frontend_*.py"
       - "tools/frontend_projection_audit.py"
       - "tools/frontend_release_traceability.py"
+      - "tools/frontend_packaged_runtime_smoke.py"
       - ".github/workflows/ai-platform-frontend.yml"
   workflow_dispatch:
 
@@ -57,6 +59,9 @@ jobs:
 
       - name: Record frontend release traceability
         run: python tools/frontend_release_traceability.py --format json
+
+      - name: Record packaged frontend runtime smoke contract
+        run: python tools/frontend_packaged_runtime_smoke.py --format json
 
   frontend-image:
     name: packaged image build

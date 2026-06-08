@@ -193,3 +193,21 @@ def test_observability_docs_record_quality_golden_set_contract_without_closing_g
         assert "does not close G9" in text
         assert "golden-set evaluation runtime and 211 acceptance remain open" in text
         assert "C:\\Users" not in text
+
+
+def test_frontend_docs_record_packaged_runtime_smoke_contract_and_211_blocker():
+    frontend_text = read(FRONTEND_MIGRATION_DOC)
+    roadmap_text = read(ROADMAP)
+
+    for text in (frontend_text, roadmap_text):
+        assert "tools/frontend_packaged_runtime_smoke.py" in text
+        assert "ai-platform.frontend-packaged-runtime-smoke.v1" in text
+        assert "ai-platform.frontend-packaged-runtime-smoke-evidence.v1" in text
+        assert "frontend_release.packaged_runtime_smoke.<commit_sha>" in text
+        assert "305bc40" in text
+        assert "docker_registry_proxy_unreachable" in text
+        assert "base_image_pull_failed" in text
+        assert "node:22-alpine" in text
+        assert "nginx:1.27-alpine" in text
+        assert "not release acceptance" in text
+        assert "C:\\Users" not in text

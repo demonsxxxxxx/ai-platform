@@ -280,11 +280,14 @@ Current local and CI-contract evidence on 2026-06-08:
   gates by itself.
 - `.github/workflows/ai-platform-frontend.yml` runs on frontend source,
   `docs/frontend/**`, `tests/test_frontend_*.py`, frontend audit/traceability
-  tools, `deploy/ai-platform/docker-compose.frontend.yml`, and workflow
-  changes. The `frontend` job executes
+  tools, `tools/frontend_packaged_runtime_smoke.py`,
+  `deploy/ai-platform/docker-compose.frontend.yml`, and workflow changes. The
+  `frontend` job executes
   `corepack pnpm install --frozen-lockfile`,
   `corepack pnpm run ci:verify`, and
-  `python tools/frontend_release_traceability.py --format json`. The
+  `python tools/frontend_release_traceability.py --format json`, then records
+  the packaged runtime smoke contract with
+  `python tools/frontend_packaged_runtime_smoke.py --format json`. The
   `frontend-image` job then builds `ai-platform-frontend:${{ github.sha }}`
   with `AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}` and
   `AI_PLATFORM_BUILD_DIRTY=false`, and reads
@@ -293,6 +296,14 @@ Current local and CI-contract evidence on 2026-06-08:
   consume `.env`, or require secret-dependent steps. The release traceability
   CLI records this workflow path, hash, and required image-build commands as
   part of the same-commit traceability manifest.
+- `tools/frontend_packaged_runtime_smoke.py` defines fail-closed packaged
+  frontend runtime smoke readiness with schema
+  `ai-platform.frontend-packaged-runtime-smoke.v1`. Its evidence contract is
+  `ai-platform.frontend-packaged-runtime-smoke-evidence.v1` and writes to
+  `frontend_release.packaged_runtime_smoke.<commit_sha>`. The tool is
+  evidence-only: it records required Docker-capable-host commands and classifies
+  missing or incomplete evidence, but it does not run Docker, does not run
+  Docker compose, and does not close G6, G9, or #21.
 - GitHub Actions run `27104398690` passed on commit
   `11ab56c660385f6790964af3d5bd60e3d4431ff2`, providing remote CI evidence for
   the frontend workflow contract.
@@ -341,6 +352,16 @@ Current local and CI-contract evidence on 2026-06-08:
   build/provenance job. The run verifies that the image builds in CI and
   contains `ai-platform-build-provenance.json`; it is still not 211 runtime
   smoke or compose-overlay release acceptance.
+- A 211 packaged frontend runtime smoke attempt for commit `305bc40` used the
+  extracted same-source archive and verified API plus current thin-shell
+  frontend health, but the packaged image build did not reach runtime smoke.
+  The 211 Docker host could not pull required registry/base-image metadata:
+  BuildKit and legacy build paths both classified the failure as
+  `docker_registry_proxy_unreachable` and `base_image_pull_failed`. Required
+  `node:22-alpine` and `nginx:1.27-alpine` base images were not cached locally.
+  This is an environment/build-host blocker and explicitly not release
+  acceptance; #17 remains open until the packaged frontend image is built and
+  smoked on 211 or another Docker-capable host.
 
 These warnings do not block the source migration, but they remain frontend
 hardening work before broader Agent Frontend V1 rollout. Generated `dist/` is
