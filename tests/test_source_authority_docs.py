@@ -13,6 +13,7 @@ GITIGNORE = ROOT / ".gitignore"
 FRONTEND_WEB = ROOT / "frontend/web"
 FRONTEND_README = FRONTEND_WEB / "README.md"
 FRONTEND_MIGRATION_DOC = ROOT / "docs/frontend/ai-platform-frontend-migration.md"
+CAPACITY_BASELINE_DOC = ROOT / "docs/operations/ai-platform-capacity-baseline.md"
 
 AUTHORITY_DOCS = [PRD, ROADMAP, GUARDRAILS, AGENTS]
 TARGET_211_BACKEND = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform"
@@ -165,3 +166,15 @@ def test_frontend_readme_matches_current_projection_audit_gate():
     assert "expected to fail" not in readme_text.lower()
     assert "continues to lint, type-check, and build" in readme_text
     assert "G6/G9" in readme_text
+
+
+def test_capacity_docs_record_machine_readable_gate_evidence_contract():
+    capacity_text = read(CAPACITY_BASELINE_DOC)
+    roadmap_text = read(ROADMAP)
+
+    for text in (capacity_text, roadmap_text):
+        assert "recorded_gate_evidence_contract" in text
+        assert "ai-platform.capacity-recorded-gate-evidence-contract.v1" in text
+        assert "load_test_evidence.gate_evidence.<gate>" in text
+        assert "does not raise production concurrency defaults" in text
+        assert "C:\\Users" not in text

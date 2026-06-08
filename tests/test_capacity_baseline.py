@@ -11,11 +11,31 @@ from app.capacity_baseline import (
     build_capacity_evidence_snapshot,
     build_capacity_gate_readiness,
     build_capacity_load_test_plan,
+    build_capacity_recorded_gate_evidence_contract,
     render_capacity_baseline_markdown,
     render_capacity_evidence_snapshot_markdown,
     render_capacity_gate_readiness_markdown,
     render_capacity_load_test_plan_markdown,
 )
+
+
+LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST = [
+    "commit_sha",
+    "api_worker_image_labels",
+    "frontend_commit_or_image_label",
+    "runtime_profile",
+    "api_worker_process_counts",
+    "database_pool_settings",
+    "redis_queue_settings",
+    "admission_worker_queue_sandbox_model_settings",
+    "peak_and_sustained_queue_depths",
+    "active_worker_runs_users_and_tenants",
+    "database_pool_waiting_and_saturation",
+    "latency_p50_p95_p99",
+    "error_taxonomy_counts",
+    "dead_letter_counts",
+    "cleanup_proof",
+]
 
 
 class SecretBearingSettings:
@@ -183,6 +203,23 @@ def test_capacity_load_test_plan_covers_each_gate_with_dry_run_commands_and_no_d
     assert all("https://ai-platform.internal" in scenario["command"] for scenario in plan["scenarios"])
     assert all("sandbox" in scenario["required_admin_runtime_sections"] for scenario in plan["scenarios"])
     assert all(
+        scenario["recorded_gate_evidence_contract"]["gate_evidence_path"]
+        == f"load_test_evidence.gate_evidence.{scenario['gate']}"
+        for scenario in plan["scenarios"]
+    )
+    assert all(
+        [
+            field["name"]
+            for field in scenario["recorded_gate_evidence_contract"]["required_evidence"]
+        ]
+        == plan["required_evidence"]
+        for scenario in plan["scenarios"]
+    )
+    assert all(
+        scenario["recorded_gate_evidence_contract"]["does_not_raise_defaults"] is True
+        for scenario in plan["scenarios"]
+    )
+    assert all(
         set(scenario["required_admin_runtime_sections"])
         == {"capacity", "database_pool", "queue", "admission", "backpressure", "sandbox", "observability"}
         for scenario in plan["scenarios"]
@@ -215,6 +252,47 @@ def test_capacity_load_test_plan_covers_each_gate_with_dry_run_commands_and_no_d
     assert "openai_api_key" not in serialized
 
 
+def test_capacity_recorded_gate_evidence_contract_is_machine_readable_and_fail_closed():
+    contract = build_capacity_recorded_gate_evidence_contract("queue_depth_and_lease_latency")
+
+    assert contract["schema_version"] == "ai-platform.capacity-recorded-gate-evidence-contract.v1"
+    assert contract["gate"] == "queue_depth_and_lease_latency"
+    assert contract["valid_gate"] is True
+    assert contract["load_test_evidence_status"] == "recorded"
+    assert contract["recorded_gates_entry"] == "queue_depth_and_lease_latency"
+    assert contract["gate_evidence_path"] == "load_test_evidence.gate_evidence.queue_depth_and_lease_latency"
+    assert [field["name"] for field in contract["required_evidence"]] == LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST
+    assert all(field["required"] is True for field in contract["required_evidence"])
+    assert all("placeholder" in field["value_rule"] for field in contract["required_evidence"])
+    assert contract["accepted_statuses"]["cleanup_proof_status"] == [
+        "recorded",
+        "passed",
+        "verified",
+        "complete",
+    ]
+    assert contract["accepted_statuses"]["stop_condition_status"] == [
+        "passed",
+        "not_triggered",
+        "verified",
+        "clear",
+    ]
+    assert contract["triggered_stop_conditions_rule"] == "must_be_empty_for_operator_review"
+    assert contract["does_not_raise_defaults"] is True
+    assert "do_not_submit_template_or_placeholder_values" in contract["operator_warnings"]
+
+    invalid = build_capacity_recorded_gate_evidence_contract("not_a_gate")
+    assert invalid["valid_gate"] is False
+    assert invalid["gate"] == "unknown"
+    assert invalid["gate_evidence_path"] == "load_test_evidence.gate_evidence.unknown"
+
+    serialized = json.dumps(contract, ensure_ascii=False).lower()
+    assert "database_url" not in serialized
+    assert "redis_url" not in serialized
+    assert "raw_storage_key" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "executor_private_payload" not in serialized
+
+
 def test_render_capacity_load_test_plan_markdown_is_repeatable_and_safe():
     markdown = render_capacity_load_test_plan_markdown(
         build_capacity_load_test_plan(SecretBearingSettings(), base_url="http://127.0.0.1:8020")
@@ -227,6 +305,8 @@ def test_render_capacity_load_test_plan_markdown_is_repeatable_and_safe():
     assert "record_cleanup_proof" in markdown
     assert "capacity_gate_readiness.py" in markdown
     assert "python tools/capacity_load_plan.py --dry-run --scenario api_read_write_burst" in markdown
+    assert "Recorded gate evidence path: `load_test_evidence.gate_evidence.api_read_write_burst`" in markdown
+    assert "Required recorded evidence fields: `commit_sha`, `api_worker_image_labels`" in markdown
     assert "Admin Runtime sections: `capacity`, `database_pool`, `queue`, `admission`, `backpressure`, `sandbox`, `observability`" in markdown
     assert "Do not raise production concurrency defaults" in markdown
     assert "super-secret-password" not in markdown

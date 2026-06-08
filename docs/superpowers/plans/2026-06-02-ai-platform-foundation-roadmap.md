@@ -62,6 +62,12 @@ defaults. The operator workflow requires start/end
 `tools/capacity_runtime_evidence.py` captures, explicit operator approval for
 the real load-harness step, cleanup proof, and a final
 `tools/capacity_gate_readiness.py` verdict.
+Each dry-run scenario now also carries a machine-readable
+`recorded_gate_evidence_contract` with schema
+`ai-platform.capacity-recorded-gate-evidence-contract.v1`, writing path
+`load_test_evidence.gate_evidence.<gate>`, required recorded-evidence fields,
+accepted cleanup/stop-condition statuses, and `does_not_raise_defaults = true`.
+This contract reduces operator evidence drift. It does not raise production concurrency defaults or replace real load-test artifacts.
 
 `python tools/capacity_evidence_snapshot.py --overview-json <admin-runtime-overview.json>
 --commit-sha <deployed-commit>` now turns an operator-captured Admin Runtime

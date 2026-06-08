@@ -156,7 +156,13 @@ from the environment and never printed.
 
 `tools/capacity_load_plan.py` now emits a machine-readable
 `operator_workflow` block in addition to the dry-run scenario command
-manifest. The workflow is intentionally conservative:
+manifest. Each scenario also includes `recorded_gate_evidence_contract` with
+schema `ai-platform.capacity-recorded-gate-evidence-contract.v1`. That contract
+names the snapshot write path `load_test_evidence.gate_evidence.<gate>`, the
+required evidence keys, accepted cleanup and stop-condition statuses, and the
+rule that triggered stop conditions must be empty before operator review. The
+contract is a recording template only. It does not raise production concurrency defaults.
+The workflow is intentionally conservative:
 
 1. Capture start runtime evidence with `tools/capacity_runtime_evidence.py`.
 2. Confirm the start gate verdict before applying load.

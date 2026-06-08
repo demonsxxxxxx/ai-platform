@@ -63,6 +63,8 @@ _LOAD_TEST_STOP_CONDITIONS = [
     "sandbox_cleanup_or_orphan_detection_fails",
     "model_gateway_timeout_or_retry_storm_detected",
 ]
+_CLEANUP_PROOF_STATUS_VALUES = ["recorded", "passed", "verified", "complete"]
+_STOP_CONDITION_STATUS_VALUES = ["passed", "not_triggered", "verified", "clear"]
 _SECRET_EVIDENCE_MARKERS = (
     "secret",
     "token",
@@ -609,6 +611,7 @@ def build_capacity_load_test_plan(
             "parameters": parameters,
             "command": command_for(gate),
             "required_admin_runtime_sections": _LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS,
+            "recorded_gate_evidence_contract": build_capacity_recorded_gate_evidence_contract(gate),
         }
         for gate in selected_gates
     ]
@@ -635,6 +638,44 @@ def build_capacity_load_test_plan(
         "required_evidence": _LOAD_TEST_REQUIRED_EVIDENCE,
         "stop_conditions": _LOAD_TEST_STOP_CONDITIONS,
         "cleanup_policy": "remove test tenants, queued payloads, sandbox leases, temporary artifacts, and generated documents after each run",
+    }
+
+
+def build_capacity_recorded_gate_evidence_contract(gate: str) -> dict[str, Any]:
+    """Build the machine-readable evidence contract for one recorded #21 load-test gate."""
+    normalized_gate = str(gate or "").strip()
+    valid_gate = normalized_gate in LOAD_TEST_GATES
+    safe_gate = normalized_gate if valid_gate else "unknown"
+    return {
+        "schema_version": "ai-platform.capacity-recorded-gate-evidence-contract.v1",
+        "gate": safe_gate,
+        "valid_gate": valid_gate,
+        "load_test_evidence_status": "recorded",
+        "recorded_gates_entry": safe_gate,
+        "gate_evidence_path": f"load_test_evidence.gate_evidence.{safe_gate}",
+        "required_evidence": [
+            {
+                "name": item,
+                "required": True,
+                "value_rule": (
+                    "non-empty measured value or artifact reference; "
+                    "must not contain sensitive markers or placeholder/template values"
+                ),
+                "source": "approved_bounded_load_harness_or_runtime_capture",
+            }
+            for item in _LOAD_TEST_REQUIRED_EVIDENCE
+        ],
+        "accepted_statuses": {
+            "cleanup_proof_status": list(_CLEANUP_PROOF_STATUS_VALUES),
+            "stop_condition_status": list(_STOP_CONDITION_STATUS_VALUES),
+        },
+        "triggered_stop_conditions_rule": "must_be_empty_for_operator_review",
+        "operator_warnings": [
+            "do_not_submit_template_or_placeholder_values",
+            "do_not_include_raw_sensitive_or_private_runtime_payloads",
+            "do_not_raise_defaults_from_this_contract",
+        ],
+        "does_not_raise_defaults": True,
     }
 
 
@@ -990,6 +1031,13 @@ def render_capacity_load_test_plan_markdown(plan: dict[str, Any]) -> str:
         )
     scenario_blocks = []
     for item in plan["scenarios"]:
+        contract = _dict(item.get("recorded_gate_evidence_contract"))
+        required_fields = [
+            str(field.get("name"))
+            for field in contract.get("required_evidence", [])
+            if isinstance(field, dict) and field.get("name")
+        ]
+        required_field_text = ", ".join(f"`{field}`" for field in required_fields)
         scenario_blocks.append(
             "\n".join(
                 [
@@ -1003,6 +1051,10 @@ def render_capacity_load_test_plan_markdown(plan: dict[str, Any]) -> str:
                     "",
                     "Admin Runtime sections: "
                     + ", ".join(f"`{section}`" for section in item["required_admin_runtime_sections"]),
+                    "",
+                    f"Recorded gate evidence path: `{contract.get('gate_evidence_path', 'missing')}`",
+                    "",
+                    f"Required recorded evidence fields: {required_field_text}",
                 ]
             )
         )
