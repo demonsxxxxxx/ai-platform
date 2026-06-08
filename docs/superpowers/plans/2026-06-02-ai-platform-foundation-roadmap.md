@@ -169,9 +169,10 @@ This provides the traceability and audit base for backend/worker/frontend
 same-commit review. `.github/workflows/ai-platform-frontend.yml` now runs
 frontend install, `ci:verify`, release traceability, and the packaged-image
 build/provenance gate on relevant source changes; GitHub Actions run
-`27116320577` passed on commit
-`d7b02e20968353611fc9813a1302976f28abe650` before the packaged-image job was
-added. A 211 packaged-image build attempt for commit
+`27124531731` passed on commit
+`1d8ba363f7f76b944e37b9003c2fef6998386fd1`, including both the frontend
+projection/lint/build/trace job and the packaged image build/provenance job.
+A 211 packaged-image build attempt for commit
 `e8dc27f30f5d5302547090a2121923aed88e8201` reached the private repository
 source but failed before the application build because the Docker build host
 could not pull required registry/base-image metadata and lacked cached base

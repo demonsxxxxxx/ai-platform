@@ -324,11 +324,12 @@ Current local and CI-contract evidence on 2026-06-08:
   build because the Docker daemon could not pull required registry/base-image
   metadata and the required base images were not cached locally. This is
   recorded as an environment/build-host blocker, not release acceptance.
-- GitHub Actions run `27114040908` passed on commit
-  `be03c953e60489f1d27b8e6d1a0a770f11e48fb8`, covering the frontend workflow
-  contract after the build-provenance hardening and before the later
-  packaged-image CI job was added. It is not evidence that the current image
-  job has passed remotely.
+- GitHub Actions run `27124531731` passed on commit
+  `1d8ba363f7f76b944e37b9003c2fef6998386fd1`, covering the frontend
+  projection/lint/build/trace job and the packaged frontend image
+  build/provenance job. The run verifies that the image builds in CI and
+  contains `ai-platform-build-provenance.json`; it is still not 211 runtime
+  smoke or compose-overlay release acceptance.
 
 These warnings do not block the source migration, but they remain frontend
 hardening work before broader Agent Frontend V1 rollout. Generated `dist/` is
@@ -351,10 +352,10 @@ packaged frontend image trace.
   and 211 frontend acceptance at commit
   `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35`; the release traceability CLI now
   records a static `dist/` manifest for that same commit and reports packaged
-  frontend image definition status. The CI workflow now has a non-push
-  packaged image build/provenance contract, but packaged frontend image release
-  acceptance remains pending until the image is smoked with the compose overlay
-  on 211 or another Docker-capable host.
+  frontend image definition status. The CI workflow now has a passing non-push
+  packaged image build/provenance contract at run `27124531731`, but packaged
+  frontend image release acceptance remains pending until the image is smoked
+  with the compose overlay on 211 or another Docker-capable host.
 - #22 document-centric context/workbench UX remains future work and is not part
   of this source move.
 
