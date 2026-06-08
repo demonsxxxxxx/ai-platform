@@ -8,6 +8,14 @@ from app.skills.release_readiness import (
     build_skill_release_review_template,
     render_skill_release_readiness_markdown,
 )
+from app.skills.release_dashboard_readiness import build_skill_release_dashboard_readiness
+
+
+_DASHBOARD_GAPS = [
+    "admin_skill_release_dashboard_runtime_acceptance",
+    "admin_skill_release_dashboard_visual_acceptance",
+    "admin_skill_release_dashboard_211_acceptance",
+]
 
 
 def _write_skill(root, skill_id: str, description: str, extra_files: dict[str, str] | None = None) -> None:
@@ -49,6 +57,74 @@ def _passed_review_manifest(
     )
 
 
+def test_skill_release_dashboard_readiness_contract_is_safe_and_does_not_close_g6():
+    readiness = build_skill_release_dashboard_readiness()
+
+    assert readiness["schema_version"] == "ai-platform.skill-release-dashboard-readiness.v1"
+    assert readiness["status"] == "partial_blocked"
+    assert readiness["policy"] == "contract_only_not_runtime_dashboard_acceptance"
+    assert readiness["does_not_close_g6"] is True
+    assert readiness["dashboard_contract"] == {
+        "schema_version": "ai-platform.skill-release-dashboard-contract.v1",
+        "admin_only": True,
+        "same_tenant_only": True,
+        "source_routes": [
+            "GET /api/ai/admin/skills/{skill_id}",
+            "POST /api/ai/admin/skills/sync-builtin",
+            "POST /api/ai/admin/skills/{skill_id}/versions/upload",
+            "GET /api/ai/admin/skills/{skill_id}/versions/diff",
+            "POST /api/ai/admin/skills/{skill_id}/promote",
+            "POST /api/ai/admin/skills/{skill_id}/rollback",
+        ],
+        "required_inputs": [
+            "skill_inventory_summary",
+            "skill_dependency_policy",
+            "release_review_evidence_summary",
+            "version_diff_summary",
+            "promote_rollback_policy",
+            "runtime_materialization_status",
+        ],
+        "allowed_dashboard_fields": [
+            "skill_id",
+            "name",
+            "description",
+            "current_version",
+            "previous_version",
+            "rollout_percent",
+            "status",
+            "dependency_ids",
+            "dependency_policy_status",
+            "release_review_status",
+            "blockers",
+            "created_by",
+            "created_at",
+        ],
+        "required_dashboard_controls": [
+            "skill_filter",
+            "dependency_policy_filter",
+            "release_review_status_filter",
+            "version_diff_preview",
+            "promote_confirmation",
+            "rollback_confirmation",
+            "review_evidence_drilldown",
+        ],
+    }
+    assert readiness["open_gaps"] == [
+        "admin_skill_release_dashboard_runtime_acceptance",
+        "admin_skill_release_dashboard_visual_acceptance",
+        "admin_skill_release_dashboard_211_acceptance",
+    ]
+
+    serialized = json.dumps(readiness, ensure_ascii=False).lower()
+    assert "executor_private_payload" not in serialized
+    assert "raw_storage_key" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "storage_key" not in serialized
+    assert "package_sha256" not in serialized
+    assert "content_base64" not in serialized
+    assert "bearer" not in serialized
+
+
 def test_skill_release_readiness_records_policy_gaps_without_secret_or_absolute_paths(tmp_path):
     skills_root = tmp_path / "skills"
     _write_skill(skills_root, "qa-file-reviewer", "Review Word documents.")
@@ -81,6 +157,7 @@ def test_skill_release_readiness_records_policy_gaps_without_secret_or_absolute_
         "signed_skill_package_or_sbom_release_gate",
         "dependency_vulnerability_or_license_policy",
         "skill_dependency_review_policy_runtime_acceptance",
+        *_DASHBOARD_GAPS,
     ]
     policy = readiness["dependency_review_policy"]
     assert policy["schema_version"] == "ai-platform.skill-dependency-review-policy.v1"
@@ -100,6 +177,11 @@ def test_skill_release_readiness_records_policy_gaps_without_secret_or_absolute_
     assert policy["rejects_placeholder_evidence_refs"] is True
     assert policy["rejects_secret_like_evidence_refs"] is True
     assert policy["does_not_close_g6"] is True
+    dashboard = readiness["admin_skill_release_dashboard"]
+    assert dashboard["schema_version"] == "ai-platform.skill-release-dashboard-readiness.v1"
+    assert dashboard["dashboard_contract"]["schema_version"] == "ai-platform.skill-release-dashboard-contract.v1"
+    assert dashboard["open_gaps"] == _DASHBOARD_GAPS
+    assert dashboard["does_not_close_g6"] is True
 
     qa_skill = next(item for item in readiness["skills"] if item["skill_id"] == "qa-file-reviewer")
     assert qa_skill["public"] is True
@@ -136,6 +218,8 @@ def test_skill_release_readiness_markdown_is_gap_first_and_operator_readable(tmp
     assert "signed_skill_package_or_sbom_release_gate" in markdown
     assert "dependency_vulnerability_or_license_policy" in markdown
     assert "ai-platform.skill-dependency-review-policy.v1" in markdown
+    assert "ai-platform.skill-release-dashboard-contract.v1" in markdown
+    assert "admin_skill_release_dashboard_runtime_acceptance" in markdown
     assert "contract_only_not_runtime_satisfied" in markdown
     assert "general-chat" in markdown
     assert str(tmp_path) not in markdown
@@ -166,10 +250,42 @@ def test_skill_release_readiness_cli_outputs_json_without_secret_markers(tmp_pat
     payload = json.loads(result.stdout)
     assert payload["schema_version"] == "ai-platform.skill-release-readiness.v1"
     assert payload["status"] == "partial_blocked"
+    assert payload["admin_skill_release_dashboard"]["schema_version"] == (
+        "ai-platform.skill-release-dashboard-readiness.v1"
+    )
+    assert payload["admin_skill_release_dashboard"]["open_gaps"] == _DASHBOARD_GAPS
     assert payload["skills"][0]["skill_id"] == "general-chat"
     assert str(tmp_path) not in result.stdout
     assert "token=secret" not in result.stdout
     assert ".claude/skills" not in result.stdout
+
+
+def test_skill_release_dashboard_readiness_cli_outputs_json_without_secret_markers():
+    env = os.environ.copy()
+    env["SKILL_STAGING_SUBDIR"] = ".claude/skills/token=secret"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/skill_release_dashboard_readiness.py",
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "ai-platform.skill-release-dashboard-readiness.v1"
+    assert payload["dashboard_contract"]["schema_version"] == "ai-platform.skill-release-dashboard-contract.v1"
+    assert payload["open_gaps"] == _DASHBOARD_GAPS
+    assert "token=secret" not in result.stdout
+    assert ".claude/skills" not in result.stdout
+    assert "executor_private_payload" not in result.stdout
+    assert "raw_storage_key" not in result.stdout
+    assert "sandbox_workdir" not in result.stdout
 
 
 def test_skill_release_readiness_fails_closed_when_inventory_is_missing(tmp_path):
@@ -214,6 +330,7 @@ def test_skill_release_readiness_does_not_clear_review_gates_from_filenames_only
         "signed_skill_package_or_sbom_release_gate",
         "dependency_vulnerability_or_license_policy",
         "skill_dependency_review_policy_runtime_acceptance",
+        *_DASHBOARD_GAPS,
     ]
     skill = readiness["skills"][0]
     assert skill["package_evidence"]["sbom_files"] == ["sbom.json"]
@@ -457,7 +574,10 @@ def test_skill_release_review_manifest_clears_review_gate_with_matched_evidence_
     readiness = build_skill_release_readiness(skills_root=skills_root)
 
     assert readiness["status"] == "partial_blocked"
-    assert readiness["open_gaps"] == ["skill_dependency_review_policy_runtime_acceptance"]
+    assert readiness["open_gaps"] == [
+        "skill_dependency_review_policy_runtime_acceptance",
+        *_DASHBOARD_GAPS,
+    ]
     skill = readiness["skills"][0]
     assert skill["release_review"]["status"] == "passed"
     assert skill["release_review"]["evidence_files_verified"] is True
@@ -496,7 +616,10 @@ def test_skill_release_review_manifest_uses_later_valid_review_when_earlier_file
     readiness = build_skill_release_readiness(skills_root=skills_root)
 
     assert readiness["status"] == "partial_blocked"
-    assert readiness["open_gaps"] == ["skill_dependency_review_policy_runtime_acceptance"]
+    assert readiness["open_gaps"] == [
+        "skill_dependency_review_policy_runtime_acceptance",
+        *_DASHBOARD_GAPS,
+    ]
     skill = readiness["skills"][0]
     assert skill["release_review"]["status"] == "passed"
     assert skill["release_review"]["evidence_files_verified"] is True

@@ -1001,6 +1001,11 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
     assert body["governance"]["status"] == "partial_blocked"
     assert "tool_permission" in body["governance"]["domains"]
     assert "evidence" not in body["governance"]["domains"]["frontend_projection"]
+    skill_dashboard = body["governance"]["domains"]["skill_governance"]["evidence"][
+        "admin_skill_release_dashboard"
+    ]
+    assert skill_dashboard["schema_version"] == "ai-platform.skill-release-dashboard-readiness.v1"
+    assert "dashboard_contract" not in skill_dashboard
     assert body["observability_readiness"]["schema_version"] == "ai-platform.observability-readiness.v1"
     assert body["observability_readiness"]["status"] == "partial_blocked"
     assert "runtime_metrics" in body["observability_readiness"]["domains"]

@@ -11,6 +11,9 @@ from app.skills.dependencies import (
     PUBLIC_WORKBENCH_SKILL_IDS,
     skill_dependency_policy,
 )
+from app.skills.release_dashboard_readiness import (
+    build_skill_release_dashboard_readiness,
+)
 from app.skills.registry import BuiltinSkillRegistry
 
 
@@ -412,6 +415,7 @@ def _open_gaps(skills: list[dict[str, Any]], *, inventory_present: bool) -> list
 def build_skill_release_readiness(*, skills_root: str | Path = "skills") -> dict[str, Any]:
     """Build a secret-safe, offline skill release governance evidence snapshot."""
     root = Path(skills_root)
+    dashboard_readiness = build_skill_release_dashboard_readiness()
     builtin_skills = BuiltinSkillRegistry(root).list_builtin_skills()
     available_skill_ids = {skill.name for skill in builtin_skills}
     skill_items: list[dict[str, Any]] = []
@@ -441,7 +445,10 @@ def build_skill_release_readiness(*, skills_root: str | Path = "skills") -> dict
         )
 
     inventory_present = bool(root.exists() and skill_items)
-    open_gaps = _open_gaps(skill_items, inventory_present=inventory_present)
+    open_gaps = [
+        *_open_gaps(skill_items, inventory_present=inventory_present),
+        *dashboard_readiness["open_gaps"],
+    ]
     return {
         "schema_version": SCHEMA_VERSION,
         "gate": GATE_NAME,
@@ -474,6 +481,7 @@ def build_skill_release_readiness(*, skills_root: str | Path = "skills") -> dict
         },
         "skills": skill_items,
         "dependency_review_policy": deepcopy(_DEPENDENCY_REVIEW_POLICY),
+        "admin_skill_release_dashboard": dashboard_readiness,
         "open_gaps": open_gaps,
         "evidence_policy": (
             "SBOM evidence plus dependency license and vulnerability review "
@@ -498,6 +506,23 @@ def render_skill_release_readiness_markdown(readiness: dict[str, Any]) -> str:
             f"- Evidence files must match Skill inventory: `{policy.get('evidence_files_must_match_skill_inventory')}`\n"
             f"- Does not close G6: `{policy.get('does_not_close_g6')}`"
         )
+    dashboard = readiness.get("admin_skill_release_dashboard")
+    dashboard_lines = "- none"
+    if isinstance(dashboard, dict):
+        contract = dashboard.get("dashboard_contract")
+        if isinstance(contract, dict):
+            dashboard_gaps = ", ".join(dashboard.get("open_gaps", []))
+            dashboard_controls = ", ".join(contract.get("required_dashboard_controls", []))
+            dashboard_lines = (
+                f"- Readiness schema: `{dashboard.get('schema_version')}`\n"
+                f"- Status: `{dashboard.get('status')}`\n"
+                f"- Dashboard contract: `{contract.get('schema_version')}`\n"
+                f"- Admin only: `{contract.get('admin_only')}`\n"
+                f"- Same tenant only: `{contract.get('same_tenant_only')}`\n"
+                f"- Required controls: `{dashboard_controls}`\n"
+                f"- Open gaps: `{dashboard_gaps}`\n"
+                f"- Does not close G6: `{dashboard.get('does_not_close_g6')}`"
+            )
     skill_lines = []
     for item in readiness["skills"]:
         blockers = ", ".join(item["blockers"]) if item["blockers"] else "none"
@@ -522,6 +547,8 @@ def render_skill_release_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"- Skills with vulnerability evidence: `{readiness['summary']['skills_with_vulnerability_evidence']}`\n\n"
         "## Dependency Review Policy\n\n"
         f"{policy_lines}\n\n"
+        "## Admin Skill Release Dashboard Contract\n\n"
+        f"{dashboard_lines}\n\n"
         "## Skills\n\n"
         f"{skills_markdown}\n\n"
         "## Evidence Policy\n\n"

@@ -20,6 +20,8 @@ python tools/tool_policy_bulk_review_readiness.py --format markdown
 python tools/tool_policy_bulk_review_readiness.py --format json
 python tools/skill_release_readiness.py --format markdown
 python tools/skill_release_readiness.py --format json
+python tools/skill_release_dashboard_readiness.py --format markdown
+python tools/skill_release_dashboard_readiness.py --format json
 python tools/skill_release_readiness.py --review-template --skill-id <skill-id> --format json
 python tools/skill_release_readiness.py --review-template --skill-id <skill-id> --format json --output skills/<skill-id>/ai-platform-skill-release-review.json
 python tools/memory_erasure_readiness.py --format markdown
@@ -67,7 +69,7 @@ or secret-like runtime configuration.
 | Domain | Implemented baseline | Remaining gap |
 | --- | --- | --- |
 | Tool permission | Admin tool policy inventory, tenant-scoped policy update audit, bounded admin change-history projection through `GET /api/ai/admin/tool-policies/history`, user request/decision flow, fail-closed risk/write policy evaluation, public permission-card projection, audit-visible legacy route policy mapping, secret-safe allow/ask/deny taxonomy evidence through `tools/tool_policy_readiness.py`, and contract-only Admin bulk-review dashboard readiness through `tools/tool_policy_bulk_review_readiness.py` / `admin_policy_bulk_review_dashboard_contract` | Policy enforcement or ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel surfaces, plus `admin_policy_bulk_review_runtime_acceptance`, `admin_policy_bulk_review_visual_acceptance`, and `admin_policy_bulk_review_211_acceptance` |
-| Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock, secret-safe skill release readiness snapshot, pending review-manifest template entrypoint, source-level `ai-platform.skill-dependency-review-policy.v1` contract | SBOM release gate, signed-package evidence contract, Admin release dashboard acceptance, dependency vulnerability/license evidence and runtime acceptance |
+| Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock, secret-safe skill release readiness snapshot, pending review-manifest template entrypoint, source-level `ai-platform.skill-dependency-review-policy.v1` contract, and contract-only Admin Skill release dashboard readiness through `tools/skill_release_dashboard_readiness.py` / `admin_skill_release_dashboard_contract` | SBOM release gate, signed-package evidence contract, dependency vulnerability/license evidence, `skill_dependency_review_policy_runtime_acceptance`, plus `admin_skill_release_dashboard_runtime_acceptance`, `admin_skill_release_dashboard_visual_acceptance`, and `admin_skill_release_dashboard_211_acceptance` |
 | Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py`, source-level office context-pack architecture readiness through `tools/office_context_readiness.py` | Runtime context-pack persistence/injection, document-centric follow-up state, sandbox cold-start latency split, and frontend context provenance acceptance |
 | Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest with build-provenance same-commit gate, packaged frontend image definition traceability, non-push CI packaged-image build/provenance contract, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Profile env-var surface removed from the active browser entry graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Quarantined inactive legacy model/channel/envvar sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image smoke and release acceptance on 211 or another Docker-capable host |
 
@@ -178,12 +180,28 @@ and vulnerability-scan evidence categories, and keeps evidence references
 matched to the Skill inventory while rejecting placeholder or secret-like
 references. This is a contract-only baseline; it does not close G6 without real
 reviewed evidence.
+`tools/skill_release_dashboard_readiness.py` now records a contract-only Admin
+Skill release dashboard baseline with schema
+`ai-platform.skill-release-dashboard-readiness.v1` and nested
+`ai-platform.skill-release-dashboard-contract.v1`. Governance readiness records
+this as `admin_skill_release_dashboard_contract`: the contract binds the
+dashboard to existing admin-only Skill inventory, sync, upload, diff, promote,
+and rollback routes; requires inventory summary, dependency policy, release
+review evidence summary, version diff summary, promote/rollback policy, runtime
+materialization status, filters, diff preview, confirmation controls, and review
+evidence drilldown; and does not expose raw package internals, staging paths,
+secret material, private runtime payloads, or sandbox working directories.
+This replaces the previous coarse dashboard acceptance blocker with explicit
+runtime, visual, and 211 acceptance gaps.
 Therefore G6 remains blocked by
 `signed_skill_package_or_sbom_release_gate` and
 `dependency_vulnerability_or_license_policy`, plus
-`skill_dependency_review_policy_runtime_acceptance` until the source-level
-policy is accepted through runtime/Admin release evidence. Ordinary users must still not
-be exposed to raw Skill selection or staging internals.
+`skill_dependency_review_policy_runtime_acceptance`,
+`admin_skill_release_dashboard_runtime_acceptance`,
+`admin_skill_release_dashboard_visual_acceptance`, and
+`admin_skill_release_dashboard_211_acceptance` until the source-level policy and
+dashboard are accepted through runtime/Admin release evidence. Ordinary users
+must still not be exposed to raw Skill selection or staging internals.
 
 The same CLI can now generate a pending review-manifest template:
 `python tools/skill_release_readiness.py --review-template --skill-id <skill-id>

@@ -66,6 +66,25 @@ def _sanitize_dict(value: object) -> dict[str, object]:
     return cleaned if isinstance(cleaned, dict) else {}
 
 
+def _governance_overview_projection(settings: object) -> dict[str, object]:
+    readiness = _sanitize_dict(build_governance_readiness(settings))
+    domains = readiness.get("domains")
+    if not isinstance(domains, dict):
+        return readiness
+    skill_governance = domains.get("skill_governance")
+    if not isinstance(skill_governance, dict):
+        return readiness
+    evidence = skill_governance.get("evidence")
+    if not isinstance(evidence, dict):
+        return readiness
+    dashboard = evidence.get("admin_skill_release_dashboard")
+    if isinstance(dashboard, dict):
+        evidence["admin_skill_release_dashboard"] = {
+            key: value for key, value in dashboard.items() if key != "dashboard_contract"
+        }
+    return readiness
+
+
 def _drop_overview_forbidden_keys(value: object) -> object:
     if isinstance(value, dict):
         cleaned: dict[str, object] = {}
@@ -565,7 +584,7 @@ async def admin_runtime_overview(
         "sandbox": _sandbox_overview(containers, visible_leases, visible_lease_history),
         "observability": _sanitize_observability_summary(observability_summary),
         "capacity": capacity,
-        "governance": build_governance_readiness(get_settings()),
+        "governance": _governance_overview_projection(get_settings()),
         "observability_readiness": build_observability_readiness(get_settings()),
         "database_pool": database_pool,
         "admission": admission,

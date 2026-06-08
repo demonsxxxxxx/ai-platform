@@ -119,6 +119,7 @@ def build_governance_readiness(
     """Build a secret-safe G6 governance readiness baseline for Admin Runtime and CLI use."""
     resolved_settings = settings or get_settings()
     skill_release_readiness = build_skill_release_readiness()
+    skill_release_dashboard = skill_release_readiness["admin_skill_release_dashboard"]
     tool_policy_readiness = build_tool_policy_readiness()
     bulk_review_evidence = tool_policy_readiness["evidence"]["admin_policy_bulk_review_dashboard"]
     office_context_readiness = build_office_context_readiness()
@@ -176,11 +177,9 @@ def build_governance_readiness(
                 "skill_release_readiness_evidence_snapshot",
                 "skill_release_review_template_entrypoint",
                 "skill_dependency_review_policy_contract",
+                "admin_skill_release_dashboard_contract",
             ],
-            gaps=[
-                *skill_release_readiness["open_gaps"],
-                "admin_skill_release_dashboard_acceptance",
-            ],
+            gaps=skill_release_readiness["open_gaps"],
             next_checks=[
                 "record package provenance and dependency review before promoting uploaded skills",
                 "keep ordinary users away from raw skill selection and staging internals",
@@ -195,6 +194,14 @@ def build_governance_readiness(
                         "dependency_review_policy"
                     ],
                     "open_gaps": skill_release_readiness["open_gaps"],
+                },
+                "admin_skill_release_dashboard": {
+                    "schema_version": skill_release_dashboard["schema_version"],
+                    "status": skill_release_dashboard["status"],
+                    "policy": skill_release_dashboard["policy"],
+                    "dashboard_contract": skill_release_dashboard["dashboard_contract"],
+                    "open_gaps": skill_release_dashboard["open_gaps"],
+                    "does_not_close_g6": skill_release_dashboard["does_not_close_g6"],
                 }
             },
         ),
@@ -351,6 +358,20 @@ def render_governance_readiness_markdown(readiness: dict[str, Any]) -> str:
                     f"`{release_readiness.get('status')}`\n"
                     f"- dependency review policy `{policy.get('schema_version')}` status "
                     f"`{policy.get('status')}`\n"
+                )
+        skill_dashboard = (
+            evidence.get("admin_skill_release_dashboard")
+            if isinstance(evidence, dict)
+            else None
+        )
+        if isinstance(skill_dashboard, dict):
+            contract = skill_dashboard.get("dashboard_contract")
+            if isinstance(contract, dict):
+                evidence_lines += (
+                    "\nEvidence:\n\n"
+                    f"- admin skill release dashboard readiness `{skill_dashboard.get('schema_version')}` status "
+                    f"`{skill_dashboard.get('status')}`\n"
+                    f"- admin skill release dashboard contract `{contract.get('schema_version')}`\n"
                 )
         sections.append(
             f"### {name}\n\n"

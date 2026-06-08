@@ -402,6 +402,11 @@ source-level office context-pack architecture readiness through
 secret-safe Skill release readiness evidence through
 `tools/skill_release_readiness.py` with schema
 `ai-platform.skill-release-readiness.v1`,
+contract-only Admin Skill release dashboard readiness through
+`tools/skill_release_dashboard_readiness.py` with schema
+`ai-platform.skill-release-dashboard-readiness.v1` and nested
+`ai-platform.skill-release-dashboard-contract.v1`, recorded in governance
+readiness as `admin_skill_release_dashboard_contract`,
 pending Skill release review-manifest template generation through
 `tools/skill_release_readiness.py --review-template --skill-id <skill-id>`,
 fail-closed review-manifest evidence-file validation that rejects empty,
@@ -447,6 +452,9 @@ and license evidence plus passed review manifests bound to matching evidence
 files, runtime acceptance for the source-level skill dependency review policy,
 `dependency_vulnerability_or_license_policy`,
 `skill_dependency_review_policy_runtime_acceptance`,
+`admin_skill_release_dashboard_runtime_acceptance`,
+`admin_skill_release_dashboard_visual_acceptance`,
+`admin_skill_release_dashboard_211_acceptance`,
 office context-pack runtime implementation, document-centric follow-up
 state, sandbox cold-start latency split, frontend context provenance
 acceptance, quarantined legacy frontend source remap, packaged frontend image

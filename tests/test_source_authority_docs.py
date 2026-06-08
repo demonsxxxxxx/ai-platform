@@ -305,7 +305,10 @@ def test_governance_docs_record_skill_dependency_review_policy_without_closing_g
 
     for text in (governance_text, roadmap_text):
         assert "tools/skill_release_readiness.py" in text
+        assert "tools/skill_release_dashboard_readiness.py" in text
         assert "ai-platform.skill-release-readiness.v1" in text
+        assert "ai-platform.skill-release-dashboard-readiness.v1" in text
+        assert "ai-platform.skill-release-dashboard-contract.v1" in text
         assert "ai-platform.skill-dependency-review-policy.v1" in text
         assert "ai-platform.skill-release-review.v1" in text
         assert "sbom_reviewed" in text
@@ -313,6 +316,11 @@ def test_governance_docs_record_skill_dependency_review_policy_without_closing_g
         assert "vulnerability_reviewed" in text
         assert "dependency_vulnerability_or_license_policy" in text
         assert "skill_dependency_review_policy_runtime_acceptance" in text
+        assert "admin_skill_release_dashboard_contract" in text
+        assert "admin_skill_release_dashboard_runtime_acceptance" in text
+        assert "admin_skill_release_dashboard_visual_acceptance" in text
+        assert "admin_skill_release_dashboard_211_acceptance" in text
+        assert "admin_skill_release_dashboard_acceptance" not in text
         assert "tools/tool_policy_bulk_review_readiness.py" in text
         assert "ai-platform.tool-policy-bulk-review-readiness.v1" in text
         assert "ai-platform.tool-policy-bulk-review-dashboard-contract.v1" in text
