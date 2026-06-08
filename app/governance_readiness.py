@@ -165,11 +165,11 @@ def build_governance_readiness(
                 "skill_snapshot_and_release_decision_lock",
                 "skill_release_readiness_evidence_snapshot",
                 "skill_release_review_template_entrypoint",
+                "skill_dependency_review_policy_contract",
             ],
             gaps=[
-                "signed_skill_package_or_sbom_release_gate",
+                *skill_release_readiness["open_gaps"],
                 "admin_skill_release_dashboard_acceptance",
-                "dependency_vulnerability_or_license_policy",
             ],
             next_checks=[
                 "record package provenance and dependency review before promoting uploaded skills",
@@ -181,6 +181,9 @@ def build_governance_readiness(
                     "schema_version": skill_release_readiness["schema_version"],
                     "status": skill_release_readiness["status"],
                     "summary": skill_release_readiness["summary"],
+                    "dependency_review_policy": skill_release_readiness[
+                        "dependency_review_policy"
+                    ],
                     "open_gaps": skill_release_readiness["open_gaps"],
                 }
             },
@@ -318,6 +321,17 @@ def render_governance_readiness_markdown(readiness: dict[str, Any]) -> str:
                 + "\n".join(detail_lines)
                 + "\n"
             )
+        release_readiness = evidence.get("release_readiness") if isinstance(evidence, dict) else None
+        if isinstance(release_readiness, dict):
+            policy = release_readiness.get("dependency_review_policy")
+            if isinstance(policy, dict):
+                evidence_lines += (
+                    "\nEvidence:\n\n"
+                    f"- skill release readiness `{release_readiness.get('schema_version')}` status "
+                    f"`{release_readiness.get('status')}`\n"
+                    f"- dependency review policy `{policy.get('schema_version')}` status "
+                    f"`{policy.get('status')}`\n"
+                )
         sections.append(
             f"### {name}\n\n"
             f"Status: `{domain['status']}`\n\n"

@@ -1,6 +1,7 @@
 from typing import Any
 
 from app.alert_slo_readiness import build_alert_slo_readiness
+from app.capacity_baseline import build_model_gateway_backpressure_policy
 from app.error_taxonomy import build_error_taxonomy_contract
 from app.quality_golden_set_readiness import build_quality_golden_set_readiness
 from app.release_evidence_readiness import build_release_evidence_readiness
@@ -61,6 +62,7 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
     alert_slo_readiness = build_alert_slo_readiness()
     quality_golden_set_readiness = build_quality_golden_set_readiness()
     release_evidence_readiness = build_release_evidence_readiness()
+    model_gateway_backpressure_policy = build_model_gateway_backpressure_policy()
     model_gateway_request_concurrency_limit = _positive_int_setting(
         resolved_settings,
         "model_gateway_request_concurrency_limit",
@@ -80,6 +82,7 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
                 "token_cost_latency_error_counts",
                 "latency_percentiles_p50_p95_p99_admin_projection",
                 "queue_admission_database_pool_backpressure_summary",
+                "model_gateway_backpressure_policy_contract",
                 "capacity_runtime_evidence_capture",
             ],
             gaps=[
@@ -92,6 +95,9 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
                 "add or prove model-gateway timeout and concurrency pressure signals before raising defaults",
                 "keep capacity gate blocked until real load-test evidence is recorded",
             ],
+            evidence={
+                "model_gateway_backpressure_policy": model_gateway_backpressure_policy,
+            },
         ),
         "error_taxonomy": _domain(
             implemented=[
@@ -136,6 +142,7 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
                 "capacity_gate_readiness_verdict",
                 "alert_slo_rule_template_evidence",
                 "release_evidence_export_location_contract",
+                "release_evidence_retention_policy_contract",
             ],
             gaps=[
                 "alert_rules_runtime_dashboard_and_211_acceptance",
@@ -238,12 +245,34 @@ def _render_domain_evidence(evidence: object) -> str:
     release_evidence = evidence.get("release_evidence")
     if isinstance(release_evidence, dict):
         rendered_sections.append(_render_release_evidence(release_evidence))
+    model_gateway_policy = evidence.get("model_gateway_backpressure_policy")
+    if isinstance(model_gateway_policy, dict):
+        rendered_sections.append(_render_model_gateway_backpressure_policy(model_gateway_policy))
     return "".join(section for section in rendered_sections if section)
+
+
+def _render_model_gateway_backpressure_policy(policy: dict[str, Any]) -> str:
+    fields = policy.get("required_admin_runtime_fields")
+    field_lines = ""
+    if isinstance(fields, list):
+        field_lines = "\n".join(f"- `{field}`" for field in fields)
+    return (
+        "\nEvidence:\n\n"
+        f"- model gateway backpressure policy `{policy.get('schema_version')}` status "
+        f"`{policy.get('status')}`\n"
+        f"- config signal `{policy.get('config_signal')}`\n"
+        f"- required load-test gate `{policy.get('required_load_test_gate')}`\n"
+        f"- enforcement status `{policy.get('enforcement_status')}`\n"
+        f"- does not raise defaults `{policy.get('does_not_raise_defaults')}`\n"
+        "Required Admin Runtime fields:\n\n"
+        f"{field_lines}\n"
+    )
 
 
 def _render_release_evidence(release: dict[str, Any]) -> str:
     location = release.get("export_location") if isinstance(release.get("export_location"), dict) else {}
     contract = release.get("evidence_contract") if isinstance(release.get("evidence_contract"), dict) else {}
+    retention = release.get("retention_policy") if isinstance(release.get("retention_policy"), dict) else {}
     open_gaps = release.get("open_gaps")
     gap_lines = ""
     if isinstance(open_gaps, list):
@@ -252,16 +281,23 @@ def _render_release_evidence(release: dict[str, Any]) -> str:
     artifact_lines = ""
     if isinstance(artifact_kinds, list):
         artifact_lines = "\n".join(f"- `{kind}`" for kind in artifact_kinds)
+    delete_targets = retention.get("forbidden_delete_targets")
+    delete_target_lines = ""
+    if isinstance(delete_targets, list):
+        delete_target_lines = "\n".join(f"- `{target}`" for target in delete_targets)
     return (
         "\nEvidence:\n\n"
         f"- `{release.get('schema_version')}` status `{release.get('status')}`\n"
         f"- export location `{location.get('path')}` index `{location.get('index')}`\n"
         f"- evidence entry schema `{contract.get('schema_version')}` at `{contract.get('write_path')}`\n"
+        f"- retention policy `{retention.get('schema_version')}` status `{retention.get('status')}`\n"
         f"- does not close G9 `{contract.get('does_not_close_g9')}`\n"
         "Nested release-evidence gaps:\n\n"
         f"{gap_lines}\n\n"
         "Accepted artifact kinds:\n\n"
-        f"{artifact_lines}\n"
+        f"{artifact_lines}\n\n"
+        "Forbidden retention delete targets:\n\n"
+        f"{delete_target_lines}\n"
     )
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 import re
 from typing import Any
@@ -14,7 +15,9 @@ from app.skills.registry import BuiltinSkillRegistry
 
 
 SCHEMA_VERSION = "ai-platform.skill-release-readiness.v1"
+DEPENDENCY_REVIEW_POLICY_SCHEMA_VERSION = "ai-platform.skill-dependency-review-policy.v1"
 GATE_NAME = "G6 Skill Release / Dependency Governance"
+DEPENDENCY_REVIEW_POLICY_RUNTIME_GAP = "skill_dependency_review_policy_runtime_acceptance"
 
 _PACKAGE_METADATA_FILES = {"_meta.json", ".clawhub/origin.json"}
 _REQUIREMENTS_FILES = {
@@ -63,6 +66,29 @@ _RELEASE_EVIDENCE_CATEGORIES = {
     "sbom_or_signed_package": _SBOM_FILE_NAMES,
     "license_policy": _LICENSE_FILE_NAMES,
     "vulnerability_scan": _VULNERABILITY_EVIDENCE_NAMES,
+}
+_DEPENDENCY_REVIEW_POLICY = {
+    "schema_version": DEPENDENCY_REVIEW_POLICY_SCHEMA_VERSION,
+    "status": "contract_only_not_runtime_satisfied",
+    "required_review_manifest_schema": _RELEASE_REVIEW_SCHEMA_VERSION,
+    "required_review_flags": [
+        "sbom_reviewed",
+        "license_policy_reviewed",
+        "vulnerability_reviewed",
+    ],
+    "required_evidence_categories": [
+        "sbom_or_signed_package",
+        "license_policy",
+        "vulnerability_scan",
+    ],
+    "required_evidence_file_names": {
+        category: sorted(file_names)
+        for category, file_names in _RELEASE_EVIDENCE_CATEGORIES.items()
+    },
+    "evidence_files_must_match_skill_inventory": True,
+    "rejects_placeholder_evidence_refs": True,
+    "rejects_secret_like_evidence_refs": True,
+    "does_not_close_g6": True,
 }
 _SKILL_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _PLACEHOLDER_PATTERN = re.compile(
@@ -379,6 +405,7 @@ def _open_gaps(skills: list[dict[str, Any]], *, inventory_present: bool) -> list
         for item in skills
     ):
         gaps.append("dependency_vulnerability_or_license_policy")
+    gaps.append(DEPENDENCY_REVIEW_POLICY_RUNTIME_GAP)
     return gaps
 
 
@@ -446,6 +473,7 @@ def build_skill_release_readiness(*, skills_root: str | Path = "skills") -> dict
             ),
         },
         "skills": skill_items,
+        "dependency_review_policy": deepcopy(_DEPENDENCY_REVIEW_POLICY),
         "open_gaps": open_gaps,
         "evidence_policy": (
             "SBOM evidence plus dependency license and vulnerability review "
@@ -456,6 +484,20 @@ def build_skill_release_readiness(*, skills_root: str | Path = "skills") -> dict
 
 def render_skill_release_readiness_markdown(readiness: dict[str, Any]) -> str:
     gap_lines = "\n".join(f"- {gap}" for gap in readiness["open_gaps"]) or "- none"
+    policy = readiness.get("dependency_review_policy")
+    policy_lines = "- none"
+    if isinstance(policy, dict):
+        required_flags = ", ".join(policy.get("required_review_flags", []))
+        required_categories = ", ".join(policy.get("required_evidence_categories", []))
+        policy_lines = (
+            f"- Schema: `{policy.get('schema_version')}`\n"
+            f"- Status: `{policy.get('status')}`\n"
+            f"- Required review manifest: `{policy.get('required_review_manifest_schema')}`\n"
+            f"- Required flags: `{required_flags}`\n"
+            f"- Required evidence categories: `{required_categories}`\n"
+            f"- Evidence files must match Skill inventory: `{policy.get('evidence_files_must_match_skill_inventory')}`\n"
+            f"- Does not close G6: `{policy.get('does_not_close_g6')}`"
+        )
     skill_lines = []
     for item in readiness["skills"]:
         blockers = ", ".join(item["blockers"]) if item["blockers"] else "none"
@@ -478,6 +520,8 @@ def render_skill_release_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"- Skills with SBOM evidence: `{readiness['summary']['skills_with_sbom_evidence']}`\n"
         f"- Skills with license evidence: `{readiness['summary']['skills_with_license_evidence']}`\n"
         f"- Skills with vulnerability evidence: `{readiness['summary']['skills_with_vulnerability_evidence']}`\n\n"
+        "## Dependency Review Policy\n\n"
+        f"{policy_lines}\n\n"
         "## Skills\n\n"
         f"{skills_markdown}\n\n"
         "## Evidence Policy\n\n"

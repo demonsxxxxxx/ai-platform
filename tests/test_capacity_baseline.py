@@ -118,6 +118,23 @@ def test_capacity_baseline_records_defaults_without_secret_like_settings():
     assert baseline["limits"]["database_pool"]["max_size"] == 10
     assert baseline["limits"]["sandbox"]["container_provider"] == "fake"
     assert baseline["limits"]["model_gateway"]["request_concurrency_limit"] is None
+    assert baseline["model_gateway_backpressure_policy"] == {
+        "schema_version": "ai-platform.model-gateway-backpressure-policy.v1",
+        "status": "contract_only_not_enforced",
+        "config_signal": "MODEL_GATEWAY_REQUEST_CONCURRENCY_LIMIT",
+        "default_limit_policy": "0_disables_platform_request_limit",
+        "required_admin_runtime_fields": [
+            "capacity.limits.model_gateway",
+            "backpressure.model_gateway",
+            "observability.error_categories",
+        ],
+        "required_load_test_gate": "model_gateway_timeout_and_backpressure",
+        "enforcement_status": "not_implemented",
+        "capacity_evidence": "unproven_without_load_test",
+        "production_default_policy": "do_not_raise_without_recorded_load_test_evidence",
+        "does_not_raise_defaults": True,
+        "does_not_close_g9": True,
+    }
     assert baseline["production_default_policy"] == "do_not_raise_without_recorded_load_test_evidence"
     assert "model_gateway_concurrency_unbounded_by_platform" in baseline["warnings"]
     assert "queue_tenant_processing_quota_disabled" in baseline["warnings"]
@@ -184,6 +201,8 @@ def test_render_capacity_baseline_markdown_is_operator_readable_and_safe():
     assert "# ai-platform Capacity Baseline" in markdown
     assert "Active worker runs | 3" in markdown
     assert "DB pool max size | 10" in markdown
+    assert "ai-platform.model-gateway-backpressure-policy.v1" in markdown
+    assert "model_gateway_timeout_and_backpressure" in markdown
     assert "Do not raise production concurrency defaults" in markdown
     assert "super-secret-password" not in markdown
     assert "redis-secret" not in markdown

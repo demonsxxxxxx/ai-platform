@@ -1,5 +1,6 @@
 import json
 import re
+from copy import deepcopy
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -27,6 +28,24 @@ CAPACITY_PROFILE_IDS = [
 
 _SANDBOX_PROVIDER_VALUES = {"docker", "fake"}
 _MODEL_GATEWAY_PROVIDER_VALUES = {"new-api", "openai_compatible"}
+MODEL_GATEWAY_BACKPRESSURE_POLICY_SCHEMA = "ai-platform.model-gateway-backpressure-policy.v1"
+_MODEL_GATEWAY_BACKPRESSURE_POLICY = {
+    "schema_version": MODEL_GATEWAY_BACKPRESSURE_POLICY_SCHEMA,
+    "status": "contract_only_not_enforced",
+    "config_signal": "MODEL_GATEWAY_REQUEST_CONCURRENCY_LIMIT",
+    "default_limit_policy": "0_disables_platform_request_limit",
+    "required_admin_runtime_fields": [
+        "capacity.limits.model_gateway",
+        "backpressure.model_gateway",
+        "observability.error_categories",
+    ],
+    "required_load_test_gate": "model_gateway_timeout_and_backpressure",
+    "enforcement_status": "not_implemented",
+    "capacity_evidence": "unproven_without_load_test",
+    "production_default_policy": "do_not_raise_without_recorded_load_test_evidence",
+    "does_not_raise_defaults": True,
+    "does_not_close_g9": True,
+}
 _CAPACITY_GATE_READINESS_STATUSES = {
     "blocked_missing_admin_runtime_sections",
     "blocked_incomplete_load_test_evidence",
@@ -700,11 +719,17 @@ def build_capacity_baseline(settings: object | None = None) -> dict[str, Any]:
         "schema_version": "ai-platform.capacity-baseline.v1",
         "profile": "unproven_default",
         "limits": limits,
+        "model_gateway_backpressure_policy": build_model_gateway_backpressure_policy(),
         "live_signal_route": "/api/ai/admin/runtime/overview",
         "load_test_gates": LOAD_TEST_GATES,
         "production_default_policy": "do_not_raise_without_recorded_load_test_evidence",
         "warnings": _warnings_for(limits),
     }
+
+
+def build_model_gateway_backpressure_policy() -> dict[str, Any]:
+    """Return the source-level model-gateway backpressure policy contract."""
+    return deepcopy(_MODEL_GATEWAY_BACKPRESSURE_POLICY)
 
 
 def build_capacity_load_test_plan(
@@ -1951,6 +1976,8 @@ def render_capacity_baseline_markdown(baseline: dict[str, Any]) -> str:
     table = "\n".join(f"| {name} | {value} |" for name, value in rows)
     gates = "\n".join(f"- {gate}" for gate in baseline["load_test_gates"])
     warnings = "\n".join(f"- {warning}" for warning in baseline["warnings"])
+    policy = baseline["model_gateway_backpressure_policy"]
+    policy_fields = "\n".join(f"- `{field}`" for field in policy["required_admin_runtime_fields"])
     return (
         "# ai-platform Capacity Baseline\n\n"
         f"Schema: `{baseline['schema_version']}`\n\n"
@@ -1961,6 +1988,15 @@ def render_capacity_baseline_markdown(baseline: dict[str, Any]) -> str:
         f"{gates}\n\n"
         "## Production Default Policy\n\n"
         "Do not raise production concurrency defaults without recorded load-test evidence.\n\n"
+        "## Model Gateway Backpressure Policy\n\n"
+        f"Schema: `{policy['schema_version']}`\n\n"
+        f"Status: `{policy['status']}`\n\n"
+        f"Config signal: `{policy['config_signal']}`\n\n"
+        f"Default limit policy: `{policy['default_limit_policy']}`\n\n"
+        f"Required load-test gate: `{policy['required_load_test_gate']}`\n\n"
+        f"Enforcement status: `{policy['enforcement_status']}`\n\n"
+        "Required Admin Runtime fields:\n\n"
+        f"{policy_fields}\n\n"
         "## Current Warnings\n\n"
         f"{warnings}\n"
     )

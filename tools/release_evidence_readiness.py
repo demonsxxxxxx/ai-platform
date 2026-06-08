@@ -15,9 +15,11 @@ def render_release_evidence_readiness_markdown(readiness: dict[str, object]) -> 
     """Render release-evidence readiness as operator-readable Markdown."""
     location = readiness["export_location"]
     contract = readiness["evidence_contract"]
+    retention = readiness["retention_policy"]
     gaps = "\n".join(f"- {gap}" for gap in readiness["open_gaps"])
     required_fields = "\n".join(f"- `{field}`" for field in contract["required_fields"])
     artifact_kinds = "\n".join(f"- `{kind}`" for kind in contract["accepted_artifact_kinds"])
+    delete_targets = "\n".join(f"- `{target}`" for target in retention["forbidden_delete_targets"])
     return (
         "# ai-platform Release Evidence Readiness\n\n"
         f"Schema: `{readiness['schema_version']}`\n\n"
@@ -30,6 +32,15 @@ def render_release_evidence_readiness_markdown(readiness: dict[str, object]) -> 
         f"{required_fields}\n\n"
         "## Accepted Artifact Kinds\n\n"
         f"{artifact_kinds}\n\n"
+        "## Retention Policy\n\n"
+        f"Schema: `{retention['schema_version']}`\n\n"
+        f"Status: `{retention['status']}`\n\n"
+        f"Default retention days: `{retention['default_retention_days']}`\n\n"
+        f"Minimum retention days: `{retention['minimum_retention_days']}`\n\n"
+        f"Requires review before delete: `{retention['requires_review_before_delete']}`\n\n"
+        f"Delete only reviewed redacted entries: `{retention['delete_only_reviewed_redacted_entries']}`\n\n"
+        "Forbidden delete targets:\n\n"
+        f"{delete_targets}\n\n"
         "## Open Gaps\n\n"
         f"{gaps}\n\n"
         "This contract defines a repository-owned evidence location only. It does not close G9.\n"

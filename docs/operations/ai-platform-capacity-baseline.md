@@ -61,6 +61,18 @@ the safe maximum concurrency question, does not enforce model gateway
 backpressure, and does not permit production default increases without recorded
 load-test evidence.
 
+The machine-readable contract for this baseline is
+`ai-platform.model-gateway-backpressure-policy.v1`. It is contract-only:
+`MODEL_GATEWAY_REQUEST_CONCURRENCY_LIMIT=0` disables the platform request
+limit, Admin Runtime must continue to expose `capacity.limits.model_gateway`,
+`backpressure.model_gateway`, and
+`observability.error_categories`, and the required recorded load
+gate remains `model_gateway_timeout_and_backpressure`. The contract records
+`enforcement_status = not_implemented`,
+`capacity_evidence = unproven_without_load_test`, and
+`production_default_policy = do_not_raise_without_recorded_load_test_evidence`;
+it does not raise production concurrency defaults or close #21/G9.
+
 Even if a deployment profile sets `SANDBOX_CONTAINER_PROVIDER=docker`, the
 baseline must still warn that sandbox hardening evidence is missing until G7
 records provider hardening, egress/quota, orphan-cleanup, and load-test proof.

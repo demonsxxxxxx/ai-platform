@@ -14,7 +14,8 @@ python tools/release_evidence_readiness.py --format json
 ```
 
 The readiness schema is `ai-platform.release-evidence-readiness.v1`. The entry
-schema is `ai-platform.release-evidence-entry.v1`.
+schema is `ai-platform.release-evidence-entry.v1`. The retention policy schema
+is `ai-platform.release-evidence-retention-policy.v1`.
 
 ## Export Location
 
@@ -59,11 +60,27 @@ Accepted artifact kinds currently include:
 - `governance_readiness`
 - `observability_readiness`
 
+## Retention Policy Contract
+
+Release evidence currently has a source-level retention policy contract only.
+It is not runtime-enforced and does not close G9.
+
+- schema: `ai-platform.release-evidence-retention-policy.v1`
+- status: `contract_only_not_runtime_enforced`
+- default retention: 180 days
+- minimum retention: 30 days
+- delete requires review and applies only to reviewed, redacted evidence
+  entries
+
+The policy forbids deleting raw runtime payloads, executor private payloads,
+raw storage keys, sandbox work directories, secret material, or unreviewed
+evidence drafts through this reviewed release-evidence path.
+
 ## Open Gaps
 
 - `release_evidence_runtime_export_acceptance`
-- `release_evidence_retention_policy`
+- `release_evidence_retention_runtime_acceptance`
 
 This contract creates the source-level export location and entry shape. It does
-not close the gate until runtime export acceptance, retention policy, review
-workflow, and deployment evidence are all proven.
+not close the gate until runtime export acceptance, runtime retention
+acceptance, review workflow, and deployment evidence are all proven.

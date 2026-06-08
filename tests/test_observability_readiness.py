@@ -43,6 +43,24 @@ def test_observability_readiness_records_g9_domains_and_open_gaps_without_secret
     assert "admin_runtime_observability_summary" in domains["runtime_metrics"]["implemented"]
     assert "token_cost_latency_error_counts" in domains["runtime_metrics"]["implemented"]
     assert "latency_percentiles_p50_p95_p99_admin_projection" in domains["runtime_metrics"]["implemented"]
+    assert "model_gateway_backpressure_policy_contract" in domains["runtime_metrics"]["implemented"]
+    assert domains["runtime_metrics"]["evidence"]["model_gateway_backpressure_policy"] == {
+        "schema_version": "ai-platform.model-gateway-backpressure-policy.v1",
+        "status": "contract_only_not_enforced",
+        "config_signal": "MODEL_GATEWAY_REQUEST_CONCURRENCY_LIMIT",
+        "default_limit_policy": "0_disables_platform_request_limit",
+        "required_admin_runtime_fields": [
+            "capacity.limits.model_gateway",
+            "backpressure.model_gateway",
+            "observability.error_categories",
+        ],
+        "required_load_test_gate": "model_gateway_timeout_and_backpressure",
+        "enforcement_status": "not_implemented",
+        "capacity_evidence": "unproven_without_load_test",
+        "production_default_policy": "do_not_raise_without_recorded_load_test_evidence",
+        "does_not_raise_defaults": True,
+        "does_not_close_g9": True,
+    }
     assert "latency_percentiles_p50_p95_p99" not in domains["runtime_metrics"]["gaps"]
     assert "latency_percentile_runtime_211_acceptance" not in domains["runtime_metrics"]["gaps"]
     assert "latency_percentile_per_surface_split_and_dashboard_acceptance" in domains["runtime_metrics"]["gaps"]
@@ -175,9 +193,23 @@ def test_release_evidence_readiness_contract_defines_safe_export_location_withou
         "Redis URL",
     ]
     assert readiness["evidence_contract"]["does_not_close_g9"] is True
+    assert readiness["retention_policy"]["schema_version"] == "ai-platform.release-evidence-retention-policy.v1"
+    assert readiness["retention_policy"]["status"] == "contract_only_not_runtime_enforced"
+    assert readiness["retention_policy"]["default_retention_days"] == 180
+    assert readiness["retention_policy"]["minimum_retention_days"] == 30
+    assert readiness["retention_policy"]["requires_review_before_delete"] is True
+    assert readiness["retention_policy"]["delete_only_reviewed_redacted_entries"] is True
+    assert readiness["retention_policy"]["forbidden_delete_targets"] == [
+        "raw runtime payload",
+        "executor private payload",
+        "raw storage key",
+        "sandbox workdir",
+        "secret material",
+        "unreviewed evidence draft",
+    ]
     assert readiness["open_gaps"] == [
         "release_evidence_runtime_export_acceptance",
-        "release_evidence_retention_policy",
+        "release_evidence_retention_runtime_acceptance",
     ]
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
@@ -195,15 +227,28 @@ def test_observability_readiness_includes_release_evidence_contract_without_clos
 
     alerts = readiness["domains"]["alerts_and_exports"]
     assert "release_evidence_export_location_contract" in alerts["implemented"]
+    assert "release_evidence_retention_policy_contract" in alerts["implemented"]
     assert "release_evidence_export_location" not in alerts["gaps"]
     assert "release_evidence_runtime_export_acceptance" in alerts["gaps"]
+    assert "release_evidence_retention_policy" not in alerts["gaps"]
+    assert "release_evidence_retention_runtime_acceptance" in alerts["gaps"]
 
     evidence = alerts["evidence"]["release_evidence"]
     assert evidence["schema_version"] == "ai-platform.release-evidence-readiness.v1"
     assert evidence["status"] == "partial_blocked"
     assert evidence["export_location"]["path"] == "docs/release-evidence/"
     assert evidence["evidence_contract"]["does_not_close_g9"] is True
+    assert evidence["retention_policy"]["schema_version"] == "ai-platform.release-evidence-retention-policy.v1"
+    assert evidence["retention_policy"]["forbidden_delete_targets"] == [
+        "raw runtime payload",
+        "executor private payload",
+        "raw storage key",
+        "sandbox workdir",
+        "secret material",
+        "unreviewed evidence draft",
+    ]
     assert "release_evidence_runtime_export_acceptance" in readiness["open_gaps"]
+    assert "release_evidence_retention_runtime_acceptance" in readiness["open_gaps"]
 
 
 def test_quality_golden_set_readiness_contract_is_source_level_and_fail_closed():
@@ -339,6 +384,8 @@ def test_render_observability_readiness_markdown_is_operator_readable_and_gap_fi
     assert "## Open Gaps" in markdown
     assert "formal_error_taxonomy_contract" in markdown
     assert "latency_percentiles_p50_p95_p99_admin_projection" in markdown
+    assert "model_gateway_backpressure_policy_contract" in markdown
+    assert "ai-platform.model-gateway-backpressure-policy.v1" in markdown
     assert "latency_percentile_runtime_211_acceptance" not in markdown
     assert "latency_percentile_per_surface_split_and_dashboard_acceptance" in markdown
     assert "quality_golden_set_readiness_contract" in markdown
@@ -350,9 +397,12 @@ def test_render_observability_readiness_markdown_is_operator_readable_and_gap_fi
     assert "alert_delivery_channel_policy" in markdown
     assert "slo_threshold_runtime_calibration" in markdown
     assert "release_evidence_export_location_contract" in markdown
+    assert "release_evidence_retention_policy_contract" in markdown
     assert "ai-platform.release-evidence-readiness.v1" in markdown
+    assert "ai-platform.release-evidence-retention-policy.v1" in markdown
     assert "docs/release-evidence/" in markdown
     assert "release_evidence_runtime_export_acceptance" in markdown
+    assert "release_evidence_retention_runtime_acceptance" in markdown
     assert "template_only_not_enabled" in markdown
     assert "queue_depth_no_lease_progress" in markdown
     assert "## Domains" in markdown

@@ -80,7 +80,26 @@ def test_skill_release_readiness_records_policy_gaps_without_secret_or_absolute_
     assert readiness["open_gaps"] == [
         "signed_skill_package_or_sbom_release_gate",
         "dependency_vulnerability_or_license_policy",
+        "skill_dependency_review_policy_runtime_acceptance",
     ]
+    policy = readiness["dependency_review_policy"]
+    assert policy["schema_version"] == "ai-platform.skill-dependency-review-policy.v1"
+    assert policy["status"] == "contract_only_not_runtime_satisfied"
+    assert policy["required_review_manifest_schema"] == "ai-platform.skill-release-review.v1"
+    assert policy["required_review_flags"] == [
+        "sbom_reviewed",
+        "license_policy_reviewed",
+        "vulnerability_reviewed",
+    ]
+    assert policy["required_evidence_categories"] == [
+        "sbom_or_signed_package",
+        "license_policy",
+        "vulnerability_scan",
+    ]
+    assert policy["evidence_files_must_match_skill_inventory"] is True
+    assert policy["rejects_placeholder_evidence_refs"] is True
+    assert policy["rejects_secret_like_evidence_refs"] is True
+    assert policy["does_not_close_g6"] is True
 
     qa_skill = next(item for item in readiness["skills"] if item["skill_id"] == "qa-file-reviewer")
     assert qa_skill["public"] is True
@@ -116,6 +135,8 @@ def test_skill_release_readiness_markdown_is_gap_first_and_operator_readable(tmp
     assert "## Open Gaps" in markdown
     assert "signed_skill_package_or_sbom_release_gate" in markdown
     assert "dependency_vulnerability_or_license_policy" in markdown
+    assert "ai-platform.skill-dependency-review-policy.v1" in markdown
+    assert "contract_only_not_runtime_satisfied" in markdown
     assert "general-chat" in markdown
     assert str(tmp_path) not in markdown
     assert "token=secret" not in markdown
@@ -192,6 +213,7 @@ def test_skill_release_readiness_does_not_clear_review_gates_from_filenames_only
     assert readiness["open_gaps"] == [
         "signed_skill_package_or_sbom_release_gate",
         "dependency_vulnerability_or_license_policy",
+        "skill_dependency_review_policy_runtime_acceptance",
     ]
     skill = readiness["skills"][0]
     assert skill["package_evidence"]["sbom_files"] == ["sbom.json"]
@@ -434,8 +456,8 @@ def test_skill_release_review_manifest_clears_review_gate_with_matched_evidence_
 
     readiness = build_skill_release_readiness(skills_root=skills_root)
 
-    assert readiness["status"] == "ready_for_verification"
-    assert readiness["open_gaps"] == []
+    assert readiness["status"] == "partial_blocked"
+    assert readiness["open_gaps"] == ["skill_dependency_review_policy_runtime_acceptance"]
     skill = readiness["skills"][0]
     assert skill["release_review"]["status"] == "passed"
     assert skill["release_review"]["evidence_files_verified"] is True
@@ -473,7 +495,8 @@ def test_skill_release_review_manifest_uses_later_valid_review_when_earlier_file
 
     readiness = build_skill_release_readiness(skills_root=skills_root)
 
-    assert readiness["status"] == "ready_for_verification"
+    assert readiness["status"] == "partial_blocked"
+    assert readiness["open_gaps"] == ["skill_dependency_review_policy_runtime_acceptance"]
     skill = readiness["skills"][0]
     assert skill["release_review"]["status"] == "passed"
     assert skill["release_review"]["evidence_files_verified"] is True

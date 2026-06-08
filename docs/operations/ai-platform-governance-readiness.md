@@ -65,7 +65,7 @@ or secret-like runtime configuration.
 | Domain | Implemented baseline | Remaining gap |
 | --- | --- | --- |
 | Tool permission | Admin tool policy inventory, tenant-scoped policy update audit, bounded admin change-history projection through `GET /api/ai/admin/tool-policies/history`, user request/decision flow, fail-closed risk/write policy evaluation, public permission-card projection, audit-visible legacy route policy mapping, secret-safe allow/ask/deny taxonomy evidence through `tools/tool_policy_readiness.py` | Policy enforcement or ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel surfaces, Admin bulk-review/dashboard acceptance for policy history and taxonomy evidence |
-| Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock, secret-safe skill release readiness snapshot, pending review-manifest template entrypoint | SBOM release gate, signed-package evidence contract, Admin release dashboard acceptance, dependency vulnerability/license policy |
+| Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock, secret-safe skill release readiness snapshot, pending review-manifest template entrypoint, source-level `ai-platform.skill-dependency-review-policy.v1` contract | SBOM release gate, signed-package evidence contract, Admin release dashboard acceptance, dependency vulnerability/license evidence and runtime acceptance |
 | Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py`, source-level office context-pack architecture readiness through `tools/office_context_readiness.py` | Runtime context-pack persistence/injection, document-centric follow-up state, sandbox cold-start latency split, and frontend context provenance acceptance |
 | Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest with build-provenance same-commit gate, packaged frontend image definition traceability, non-push CI packaged-image build/provenance contract, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Profile env-var surface removed from the active browser entry graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Quarantined inactive legacy model/channel/envvar sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image smoke and release acceptance on 211 or another Docker-capable host |
 
@@ -150,9 +150,20 @@ closed as `skill_dependency_policy_blocked`; and SBOM/license/vulnerability
 filenames do not clear release governance unless an explicit review manifest
 marks the evidence as passed and its `evidence_files` entries are non-empty,
 non-placeholder, secret-safe, and matched to actual Skill evidence files.
+The same snapshot now embeds the source-level
+`ai-platform.skill-dependency-review-policy.v1` contract. That contract binds
+the required review manifest schema to `ai-platform.skill-release-review.v1`,
+requires the `sbom_reviewed`, `license_policy_reviewed`, and
+`vulnerability_reviewed` flags, requires SBOM/signed-package, license-policy,
+and vulnerability-scan evidence categories, and keeps evidence references
+matched to the Skill inventory while rejecting placeholder or secret-like
+references. This is a contract-only baseline; it does not close G6 without real
+reviewed evidence.
 Therefore G6 remains blocked by
 `signed_skill_package_or_sbom_release_gate` and
-`dependency_vulnerability_or_license_policy`, and ordinary users must still not
+`dependency_vulnerability_or_license_policy`, plus
+`skill_dependency_review_policy_runtime_acceptance` until the source-level
+policy is accepted through runtime/Admin release evidence. Ordinary users must still not
 be exposed to raw Skill selection or staging internals.
 
 The same CLI can now generate a pending review-manifest template:

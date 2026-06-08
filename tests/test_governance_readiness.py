@@ -62,13 +62,20 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "skill_dependency_policy_materialization" in domains["skill_governance"]["implemented"]
     assert "skill_release_readiness_evidence_snapshot" in domains["skill_governance"]["implemented"]
     assert "skill_release_review_template_entrypoint" in domains["skill_governance"]["implemented"]
+    assert "skill_dependency_review_policy_contract" in domains["skill_governance"]["implemented"]
     assert "signed_skill_package_or_sbom_release_gate" in domains["skill_governance"]["gaps"]
+    assert "skill_dependency_review_policy_runtime_acceptance" in domains["skill_governance"]["gaps"]
     release_evidence = domains["skill_governance"]["evidence"]["release_readiness"]
     assert release_evidence["schema_version"] == "ai-platform.skill-release-readiness.v1"
     assert release_evidence["status"] == "partial_blocked"
     assert release_evidence["summary"]["total_skills"] >= 1
+    assert release_evidence["dependency_review_policy"]["schema_version"] == (
+        "ai-platform.skill-dependency-review-policy.v1"
+    )
+    assert release_evidence["dependency_review_policy"]["does_not_close_g6"] is True
     assert "signed_skill_package_or_sbom_release_gate" in release_evidence["open_gaps"]
     assert "dependency_vulnerability_or_license_policy" in release_evidence["open_gaps"]
+    assert "skill_dependency_review_policy_runtime_acceptance" in release_evidence["open_gaps"]
     assert "memory_retention_cleanup_admin_and_worker" in domains["memory_governance"]["implemented"]
     assert "long_term_cross_session_memory_default_fail_closed" in domains["memory_governance"]["implemented"]
     assert "memory_delete_retention_erasure_evidence_snapshot" in domains["memory_governance"]["implemented"]
@@ -220,6 +227,9 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     assert "legacy_frontend_route_policy_enforcement_or_ai_platform_remap" in markdown
     assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in markdown
     assert "signed_skill_package_or_sbom_release_gate" in markdown
+    assert "skill_dependency_review_policy_contract" in markdown
+    assert "skill_dependency_review_policy_runtime_acceptance" in markdown
+    assert "ai-platform.skill-dependency-review-policy.v1" in markdown
     assert "memory_delete_retention_erasure_evidence_snapshot" in markdown
     assert "memory_export_erasure_evidence_snapshot" in markdown
     assert "office_context_pack_runtime_implementation_and_acceptance" in markdown

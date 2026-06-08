@@ -6,6 +6,7 @@ from typing import Any
 
 SCHEMA_VERSION = "ai-platform.release-evidence-readiness.v1"
 ENTRY_SCHEMA_VERSION = "ai-platform.release-evidence-entry.v1"
+RETENTION_POLICY_SCHEMA_VERSION = "ai-platform.release-evidence-retention-policy.v1"
 GATE_NAME = "G9 Release Evidence Export"
 
 _EXPORT_LOCATION = {
@@ -44,9 +45,26 @@ _ACCEPTED_ARTIFACT_KINDS = [
     "governance_readiness",
     "observability_readiness",
 ]
+_RETENTION_POLICY = {
+    "schema_version": RETENTION_POLICY_SCHEMA_VERSION,
+    "status": "contract_only_not_runtime_enforced",
+    "default_retention_days": 180,
+    "minimum_retention_days": 30,
+    "requires_review_before_delete": True,
+    "delete_only_reviewed_redacted_entries": True,
+    "forbidden_delete_targets": [
+        "raw runtime payload",
+        "executor private payload",
+        "raw storage key",
+        "sandbox workdir",
+        "secret material",
+        "unreviewed evidence draft",
+    ],
+    "does_not_close_g9": True,
+}
 _OPEN_GAPS = [
     "release_evidence_runtime_export_acceptance",
-    "release_evidence_retention_policy",
+    "release_evidence_retention_runtime_acceptance",
 ]
 
 
@@ -69,6 +87,7 @@ def build_release_evidence_readiness() -> dict[str, Any]:
             "does_not_export_raw_runtime_payloads": True,
             "does_not_close_g9": True,
         },
+        "retention_policy": deepcopy(_RETENTION_POLICY),
         "open_gaps": list(_OPEN_GAPS),
         "does_not_close_g9": True,
     }

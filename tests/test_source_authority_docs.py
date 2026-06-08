@@ -15,6 +15,7 @@ FRONTEND_README = FRONTEND_WEB / "README.md"
 FRONTEND_MIGRATION_DOC = ROOT / "docs/frontend/ai-platform-frontend-migration.md"
 CAPACITY_BASELINE_DOC = ROOT / "docs/operations/ai-platform-capacity-baseline.md"
 OBSERVABILITY_READINESS_DOC = ROOT / "docs/operations/ai-platform-observability-readiness.md"
+GOVERNANCE_READINESS_DOC = ROOT / "docs/operations/ai-platform-governance-readiness.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SCHEMA = ROOT / "app/schema.sql"
 
@@ -204,6 +205,10 @@ def test_capacity_docs_record_machine_readable_gate_evidence_contract():
         assert "ai-platform.capacity-recorded-gate-snapshot.v1" in text
         assert "ai-platform.capacity-recorded-gate-evidence.v1" in text
         assert "assemble_recorded_gate_snapshot" in text
+        assert "ai-platform.model-gateway-backpressure-policy.v1" in text
+        assert "MODEL_GATEWAY_REQUEST_CONCURRENCY_LIMIT" in text
+        assert "model_gateway_timeout_and_backpressure" in text
+        assert "contract-only" in text
         assert "--start-runtime-evidence-json capacity-runtime-evidence-start.json" in text
         assert "--cleanup-proof-json capacity-cleanup-proof-api-read-write-burst.json" in text
         assert "capacity-cleanup-proof-api-read-write-burst.json" in text
@@ -235,6 +240,10 @@ def test_observability_docs_record_quality_golden_set_contract_without_closing_g
         assert "latency_percentiles_p50_p95_p99_admin_projection" in text
         assert "latency_percentile_runtime_211_acceptance" not in text
         assert "latency_percentile_per_surface_split_and_dashboard_acceptance" in text
+        assert "ai-platform.model-gateway-backpressure-policy.v1" in text
+        assert "model_gateway_backpressure_policy_contract" in text
+        assert "model_gateway_timeout_and_backpressure" in text
+        assert "do_not_raise_without_recorded_load_test_evidence" in text
         assert "ai-platform.quality-golden-set-readiness.v1" in text
         assert "ai-platform.golden-set-eval-evidence-contract.v1" in text
         assert "quality_evaluation.golden_set_runs.<eval_run_id>" in text
@@ -248,12 +257,36 @@ def test_observability_docs_record_quality_golden_set_contract_without_closing_g
         assert "ai-platform.release-evidence-readiness.v1" in text
         assert "docs/release-evidence/" in text
         assert "ai-platform.release-evidence-entry.v1" in text
+        assert "ai-platform.release-evidence-retention-policy.v1" in text
         assert "release_evidence_runtime_export_acceptance" in text
+        assert "release_evidence_retention_runtime_acceptance" in text
+        assert "`release_evidence_retention_policy`" not in text
         assert "does not close G9" in text
         assert "executor_private_payload" not in text
         assert "raw_storage_key" not in text
         assert "sandbox_workdir" not in text
         assert "api_key" not in text
+        assert "C:\\Users" not in text
+
+
+def test_governance_docs_record_skill_dependency_review_policy_without_closing_g6():
+    governance_text = read(GOVERNANCE_READINESS_DOC)
+    roadmap_text = read(ROADMAP)
+
+    for text in (governance_text, roadmap_text):
+        assert "tools/skill_release_readiness.py" in text
+        assert "ai-platform.skill-release-readiness.v1" in text
+        assert "ai-platform.skill-dependency-review-policy.v1" in text
+        assert "ai-platform.skill-release-review.v1" in text
+        assert "sbom_reviewed" in text
+        assert "license_policy_reviewed" in text
+        assert "vulnerability_reviewed" in text
+        assert "dependency_vulnerability_or_license_policy" in text
+        assert "skill_dependency_review_policy_runtime_acceptance" in text
+        assert "does not close G6" in text
+        assert "executor_private_payload" not in text
+        assert "raw_storage_key" not in text
+        assert "sandbox_workdir" not in text
         assert "C:\\Users" not in text
 
 
