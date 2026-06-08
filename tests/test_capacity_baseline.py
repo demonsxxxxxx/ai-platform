@@ -141,6 +141,12 @@ def test_capacity_load_test_plan_covers_each_gate_with_dry_run_commands_and_no_d
     assert [scenario["gate"] for scenario in plan["scenarios"]] == LOAD_TEST_GATES
     assert all(scenario["command"].startswith("python tools/capacity_load_plan.py --dry-run") for scenario in plan["scenarios"])
     assert all("https://ai-platform.internal" in scenario["command"] for scenario in plan["scenarios"])
+    assert all("sandbox" in scenario["required_admin_runtime_sections"] for scenario in plan["scenarios"])
+    assert all(
+        set(scenario["required_admin_runtime_sections"])
+        == {"capacity", "database_pool", "queue", "admission", "backpressure", "sandbox", "observability"}
+        for scenario in plan["scenarios"]
+    )
     assert "commit_sha" in plan["required_evidence"]
     assert "api_worker_image_labels" in plan["required_evidence"]
     assert "cleanup_proof" in plan["required_evidence"]
@@ -162,6 +168,7 @@ def test_render_capacity_load_test_plan_markdown_is_repeatable_and_safe():
 
     assert "# ai-platform Capacity Load-Test Plan" in markdown
     assert "python tools/capacity_load_plan.py --dry-run --scenario api_read_write_burst" in markdown
+    assert "Admin Runtime sections: `capacity`, `database_pool`, `queue`, `admission`, `backpressure`, `sandbox`, `observability`" in markdown
     assert "Do not raise production concurrency defaults" in markdown
     assert "super-secret-password" not in markdown
     assert "redis-secret" not in markdown

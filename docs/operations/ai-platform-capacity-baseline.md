@@ -146,6 +146,13 @@ follow when they run a real harness on 211 or another Docker-capable/internal
 host. It does not create runs, issue traffic bursts, mutate runtime state, or
 raise production defaults.
 
+Each generated scenario now also names the Admin Runtime sections that must be
+captured during the run: `capacity`, `database_pool`, `queue`, `admission`,
+`backpressure`, `sandbox`, and `observability`. `sandbox` is required even when
+the current provider is `fake`, because #21 still needs lease/container counts,
+cleanup evidence, and later Docker-provider hardening proof before any
+production concurrency increase.
+
 Do not raise production concurrency defaults until these gates have recorded
 evidence for the target deployment profile:
 

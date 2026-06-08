@@ -42,6 +42,15 @@ _LOAD_TEST_REQUIRED_EVIDENCE = [
     "dead_letter_counts",
     "cleanup_proof",
 ]
+_LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS = [
+    "capacity",
+    "database_pool",
+    "queue",
+    "admission",
+    "backpressure",
+    "sandbox",
+    "observability",
+]
 _LOAD_TEST_STOP_CONDITIONS = [
     "do_not_raise_concurrency_defaults",
     "http_5xx_rate_exceeds_threshold",
@@ -457,14 +466,7 @@ def build_capacity_load_test_plan(
             "mode": "dry_run_command_manifest",
             "parameters": parameters,
             "command": command_for(gate),
-            "required_admin_runtime_sections": [
-                "capacity",
-                "database_pool",
-                "queue",
-                "admission",
-                "backpressure",
-                "observability",
-            ],
+            "required_admin_runtime_sections": _LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS,
         }
         for gate in selected_gates
     ]
@@ -580,6 +582,9 @@ def render_capacity_load_test_plan_markdown(plan: dict[str, Any]) -> str:
                     "```powershell",
                     item["command"],
                     "```",
+                    "",
+                    "Admin Runtime sections: "
+                    + ", ".join(f"`{section}`" for section in item["required_admin_runtime_sections"]),
                 ]
             )
         )
