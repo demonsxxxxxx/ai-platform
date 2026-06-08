@@ -96,6 +96,42 @@ load-test evidence is still `missing` until a real harness run records the
 required gates. It does not read gateway secrets, send load, create runs, or
 raise any default.
 
+### 211 Snapshot Evidence - 2026-06-08
+
+The current 211 API/worker runtime was checked after the G6 redaction-preview
+deployment. API and worker both reported image
+`ai-platform:f7c6b0d-g6-memory-redaction-preview` with
+`org.opencontainers.image.revision=f7c6b0d9114748fa249acb88da6584851c48aa96`,
+and `GET /api/ai/health` returned `{"status":"ok"}`.
+
+An operator-captured Admin Runtime overview was converted with:
+
+```powershell
+python tools/capacity_evidence_snapshot.py --overview-json <211-admin-runtime-overview.json> --commit-sha f7c6b0d9114748fa249acb88da6584851c48aa96 --runtime-profile 211-current --format json
+```
+
+The resulting `ai-platform.capacity-evidence-snapshot.v1` snapshot keeps
+`load_test_evidence.status = missing` and
+`production_default_decision = do_not_raise_without_recorded_load_test_evidence`.
+It recorded the following allowlisted live signals:
+
+| Signal | 211 value |
+| --- | --- |
+| Queue depth | queued `0`, processing `0`, dead-letter `6` |
+| Worker queue capacity | max active worker runs `3`, available worker slots `3`, processing saturated `false` |
+| Queue quota config | tenant processing limit `0`, user processing limit `0` |
+| DB pool | open `true`, max size `10`, max waiting `100`, waiting requests `0` |
+| Admission | active runs `27`, active users `24`, saturated users `0`, per-user limit `3` |
+| Sandbox | provider `fake`, running containers `0`, active leases `0`, released leases `21` |
+| Backpressure reasons | `queued_behind_existing_work` |
+| Capacity warnings | API request concurrency unbounded by platform; model gateway concurrency unbounded by platform; tenant/user queue quotas disabled; sandbox provider not production Docker; sandbox hardening evidence missing |
+
+The snapshot leak scan found no DSN, Redis URL, object-storage key, sandbox
+workdir, executor private payload, callback token, session secret, gateway
+token, or raw storage-key markers. This is live observability evidence, not
+load-test evidence; it does not answer the safe maximum concurrency question
+and must not be used to raise production defaults.
+
 ## Required Load-Test Gates
 
 Generate the repeatable command manifest for a target deployment profile:
