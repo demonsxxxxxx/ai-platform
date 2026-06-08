@@ -45,7 +45,7 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     else:
         print(render_capacity_recorded_gate_snapshot_markdown(result))
-    return 0 if result["status"] == "recorded_gate_snapshot_ready" else 2
+    return 0 if result["status"] == "recorded_gate_input_accepted" else 2
 
 
 if __name__ == "__main__":

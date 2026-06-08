@@ -1980,7 +1980,7 @@ def test_capacity_recorded_gate_snapshot_records_only_explicit_complete_gate():
     result = build_capacity_recorded_gate_snapshot(runtime_evidence, evidence_packet)
 
     assert result["schema_version"] == "ai-platform.capacity-recorded-gate-snapshot.v1"
-    assert result["status"] == "recorded_gate_snapshot_ready"
+    assert result["status"] == "recorded_gate_input_accepted"
     assert result["input_status"] == {
         "runtime_evidence": "accepted",
         "recorded_gate_evidence": "accepted",
@@ -1996,6 +1996,152 @@ def test_capacity_recorded_gate_snapshot_records_only_explicit_complete_gate():
     assert result["readiness"]["production_default_decision"] == (
         "do_not_raise_without_recorded_load_test_evidence"
     )
+
+
+def test_capacity_recorded_gate_snapshot_does_not_echo_unsafe_runtime_snapshot_fields():
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-end",
+    )
+    snapshot["executor_private_payload"] = {"raw_storage_key": "tenants/default/private/raw.json"}
+    snapshot["live_signals"]["queue"]["raw_storage_key"] = "tenants/default/private/queue.json"
+    snapshot["live_signals"]["database_pool"]["database_url"] = (
+        "postgresql://user:secret@db.internal/ai_platform"
+    )
+    snapshot["runtime_identity"]["commit_sha"] = (
+        "C:\\Users\\Xinlin.jiang\\Temp\\capacity.json"
+    )
+    snapshot["runtime_identity"]["profile"] = "mailto:operator@example.com"
+    snapshot["local_path"] = "C:\\Users\\Xinlin.jiang\\AppData\\Local\\Temp\\capacity.json"
+    runtime_evidence = {
+        "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+        "snapshot": snapshot,
+        "readiness": build_capacity_gate_readiness(snapshot),
+    }
+    evidence_packet = {
+        "schema_version": "ai-platform.capacity-recorded-gate-evidence.v1",
+        "gate": "api_read_write_burst",
+        "does_not_raise_defaults": True,
+        "evidence": {
+            item: f"capacity-evidence/api-read-write-burst/{item}.json"
+            for item in LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST
+        },
+        "cleanup_proof_status": "verified",
+        "stop_condition_status": "passed",
+        "triggered_stop_conditions": [],
+    }
+
+    result = build_capacity_recorded_gate_snapshot(runtime_evidence, evidence_packet)
+    serialized = json.dumps(result, ensure_ascii=False).lower()
+
+    assert result["status"] == "recorded_gate_input_accepted"
+    assert result["input_status"]["runtime_evidence"] == "accepted"
+    assert result["snapshot"]["runtime_identity"] == {
+        "commit_sha": "unknown",
+        "profile": "unknown",
+    }
+    assert result["readiness"]["runtime_identity"] == {
+        "commit_sha": "unknown",
+        "profile": "unknown",
+    }
+    assert "executor_private_payload" not in serialized
+    assert "raw_storage_key" not in serialized
+    assert "tenants/default/private" not in serialized
+    assert "xinlin" not in serialized
+    assert "operator@example.com" not in serialized
+    assert "database_url" not in serialized
+    assert "postgresql://" not in serialized
+    assert "c:\\users" not in serialized
+
+
+def test_capacity_recorded_gate_snapshot_recomputes_admin_runtime_sections_fail_closed():
+    snapshot = _snapshot_with_complete_recorded_gates()
+    existing_recorded_gates = [gate for gate in LOAD_TEST_GATES if gate != "api_read_write_burst"]
+    snapshot["load_test_evidence"]["recorded_gates"] = existing_recorded_gates
+    snapshot["load_test_evidence"]["gate_evidence"].pop("api_read_write_burst")
+    snapshot["admin_runtime_evidence"] = {
+        "required_sections": ["queue"],
+        "observed_sections": ["queue"],
+        "missing_sections": [],
+    }
+    snapshot["capacity"] = None
+    snapshot["live_signals"] = {
+        "queue": snapshot["live_signals"]["queue"],
+    }
+    runtime_evidence = {
+        "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+        "snapshot": snapshot,
+        "readiness": build_capacity_gate_readiness(snapshot),
+    }
+    evidence_packet = {
+        "schema_version": "ai-platform.capacity-recorded-gate-evidence.v1",
+        "gate": "api_read_write_burst",
+        "does_not_raise_defaults": True,
+        "evidence": {
+            item: f"capacity-evidence/api-read-write-burst/{item}.json"
+            for item in LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST
+        },
+        "cleanup_proof_status": "verified",
+        "stop_condition_status": "passed",
+        "triggered_stop_conditions": [],
+    }
+
+    result = build_capacity_recorded_gate_snapshot(runtime_evidence, evidence_packet)
+
+    assert result["status"] == "recorded_gate_input_accepted"
+    assert result["readiness"]["status"] == "blocked_missing_admin_runtime_sections"
+    assert result["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
+    assert result["readiness"]["admin_runtime_evidence"]["required_sections"] == [
+        "capacity",
+        "database_pool",
+        "queue",
+        "admission",
+        "backpressure",
+        "sandbox",
+        "observability",
+    ]
+    assert result["readiness"]["admin_runtime_evidence"]["missing_sections"] == [
+        "capacity",
+        "database_pool",
+        "queue",
+        "admission",
+        "backpressure",
+        "sandbox",
+        "observability",
+    ]
+
+
+def test_capacity_recorded_gate_snapshot_preserves_existing_recorded_gates():
+    snapshot = _snapshot_with_complete_recorded_gates()
+    existing_recorded_gates = [gate for gate in LOAD_TEST_GATES if gate != "api_read_write_burst"]
+    snapshot["load_test_evidence"]["recorded_gates"] = existing_recorded_gates
+    snapshot["load_test_evidence"]["gate_evidence"].pop("api_read_write_burst")
+    runtime_evidence = {
+        "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+        "snapshot": snapshot,
+        "readiness": build_capacity_gate_readiness(snapshot),
+    }
+    evidence_packet = {
+        "schema_version": "ai-platform.capacity-recorded-gate-evidence.v1",
+        "gate": "api_read_write_burst",
+        "does_not_raise_defaults": True,
+        "evidence": {
+            item: f"capacity-evidence/api-read-write-burst/{item}.json"
+            for item in LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST
+        },
+        "cleanup_proof_status": "verified",
+        "stop_condition_status": "passed",
+        "triggered_stop_conditions": [],
+    }
+
+    result = build_capacity_recorded_gate_snapshot(runtime_evidence, evidence_packet)
+
+    assert result["status"] == "recorded_gate_input_accepted"
+    assert result["snapshot"]["load_test_evidence"]["recorded_gates"] == list(LOAD_TEST_GATES)
+    assert set(result["snapshot"]["load_test_evidence"]["gate_evidence"]) == set(LOAD_TEST_GATES)
+    assert result["readiness"]["status"] == "ready_for_operator_review"
+    assert result["production_default_decision"] == "operator_review_required_before_default_change"
 
 
 def test_capacity_recorded_gate_snapshot_rejects_unsafe_evidence_without_echoing_values():
@@ -2095,7 +2241,7 @@ def test_capacity_recorded_gate_snapshot_cli_outputs_snapshot_and_verdict(tmp_pa
 
     payload = json.loads(result.stdout)
     assert payload["schema_version"] == "ai-platform.capacity-recorded-gate-snapshot.v1"
-    assert payload["status"] == "recorded_gate_snapshot_ready"
+    assert payload["status"] == "recorded_gate_input_accepted"
     assert payload["readiness"]["status"] == "blocked_missing_load_test_evidence"
     assert payload["snapshot"]["load_test_evidence"]["recorded_gates"] == [
         "api_read_write_burst"

@@ -398,6 +398,26 @@ def _safe_identity(value: object) -> str:
     return cleaned[:128] or "unknown"
 
 
+def _safe_runtime_identity(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "unknown"
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("secret", "token", "password", "api_key", "authorization", "bearer")):
+        return "redacted"
+    if (
+        "\\" in text
+        or "/" in text
+        or "://" in text
+        or re.match(r"^[A-Za-z]:", text)
+        or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", text)
+    ):
+        return "unknown"
+    if lowered in _EVIDENCE_REF_UNSAFE_SEGMENTS:
+        return "unknown"
+    return _safe_identity(text)
+
+
 def _numeric_bool_map(value: object, allowed_keys: set[str]) -> dict[str, object]:
     source = _dict(value)
     result: dict[str, object] = {}
@@ -818,8 +838,8 @@ def build_capacity_evidence_snapshot(
             "mode": "operator_captured_admin_projection",
         },
         "runtime_identity": {
-            "commit_sha": _safe_identity(commit_sha),
-            "profile": _safe_identity(runtime_profile),
+            "commit_sha": _safe_runtime_identity(commit_sha),
+            "profile": _safe_runtime_identity(runtime_profile),
         },
         "admin_runtime_evidence": admin_runtime_evidence,
         "capacity": capacity,
@@ -844,27 +864,40 @@ def build_capacity_evidence_snapshot(
 
 
 def _snapshot_admin_runtime_evidence(snapshot: dict[str, Any]) -> dict[str, object]:
+    required_sections = list(_LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS)
     source = _dict(snapshot.get("admin_runtime_evidence"))
-    required = source.get("required_sections")
-    observed = source.get("observed_sections")
-    required_sections = [
-        section for section in required if section in _LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS
-    ] if isinstance(required, list) else list(_LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS)
-    observed_sections = [
-        section for section in observed if section in required_sections
-    ] if isinstance(observed, list) else []
-    if not observed_sections:
-        live_signals = _dict(snapshot.get("live_signals"))
-        observed_sections = [
-            section
-            for section in required_sections
-            if (section == "capacity" and isinstance(snapshot.get("capacity"), dict))
-            or (section != "capacity" and section in live_signals)
-        ]
+    source_required = source.get("required_sections")
+    source_missing = source.get("missing_sections")
+    reported_missing_sections: set[str] = set()
+    if source:
+        if (
+            isinstance(source_required, list)
+            and set(source_required) == set(required_sections)
+            and isinstance(source_missing, list)
+        ):
+            reported_missing_sections = {
+                section for section in source_missing if section in required_sections
+            }
+        else:
+            reported_missing_sections = set(required_sections)
+
+    live_signals = _dict(snapshot.get("live_signals"))
+    observed_from_fields = {
+        section
+        for section in required_sections
+        if (section == "capacity" and isinstance(snapshot.get("capacity"), dict))
+        or (section != "capacity" and section in live_signals and live_signals.get(section) is not None)
+    }
+    missing_sections = [
+        section
+        for section in required_sections
+        if section in reported_missing_sections or section not in observed_from_fields
+    ]
+    observed_sections = [section for section in required_sections if section not in missing_sections]
     return {
         "required_sections": required_sections,
         "observed_sections": observed_sections,
-        "missing_sections": [section for section in required_sections if section not in observed_sections],
+        "missing_sections": missing_sections,
     }
 
 
@@ -1056,10 +1089,10 @@ def _load_gate_evidence_summary(
 def _extract_capacity_evidence_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     source = _dict(payload)
     if source.get("schema_version") == "ai-platform.capacity-evidence-snapshot.v1":
-        return source
+        return _safe_capacity_evidence_snapshot(source)
     snapshot = _dict(source.get("snapshot"))
     if snapshot.get("schema_version") == "ai-platform.capacity-evidence-snapshot.v1":
-        return snapshot
+        return _safe_capacity_evidence_snapshot(snapshot)
     return {}
 
 
@@ -1179,10 +1212,10 @@ def _capacity_bundle_runtime_window(
     start_identity = _dict(start_snapshot.get("runtime_identity")) if start_snapshot else {}
     end_identity = _dict(end_snapshot.get("runtime_identity"))
     return {
-        "start_commit_sha": _safe_identity(start_identity.get("commit_sha")) if start_snapshot else None,
-        "end_commit_sha": _safe_identity(end_identity.get("commit_sha")),
-        "start_profile": _safe_identity(start_identity.get("profile")) if start_snapshot else None,
-        "end_profile": _safe_identity(end_identity.get("profile")),
+        "start_commit_sha": _safe_runtime_identity(start_identity.get("commit_sha")) if start_snapshot else None,
+        "end_commit_sha": _safe_runtime_identity(end_identity.get("commit_sha")),
+        "start_profile": _safe_runtime_identity(start_identity.get("profile")) if start_snapshot else None,
+        "end_profile": _safe_runtime_identity(end_identity.get("profile")),
     }
 
 
@@ -1428,6 +1461,130 @@ def _capacity_recorded_gate_evidence_packet(
     return ("accepted" if not errors else "not_accepted"), gate_packet, errors
 
 
+def _safe_recorded_load_test_gate_packet(value: object) -> dict[str, Any] | None:
+    source = _dict(value)
+    source_evidence = _dict(source.get("evidence"))
+    safe_evidence: dict[str, object] = {}
+    for field in _LOAD_TEST_REQUIRED_EVIDENCE:
+        safe_value = _safe_recorded_gate_evidence_value(source_evidence.get(field))
+        if safe_value is None:
+            return None
+        safe_evidence[field] = safe_value
+
+    cleanup_status = _safe_status(
+        source.get("cleanup_proof_status") or source.get("cleanup_proof"),
+        set(_CLEANUP_PROOF_STATUS_VALUES),
+    )
+    stop_condition_status = _safe_status(
+        source.get("stop_condition_status") or source.get("stop_conditions_status"),
+        set(_STOP_CONDITION_STATUS_VALUES),
+    )
+    triggered_stop_conditions = _safe_triggered_stop_conditions(source.get("triggered_stop_conditions"))
+    if cleanup_status == "missing" or stop_condition_status == "missing" or triggered_stop_conditions:
+        return None
+    return {
+        "evidence": safe_evidence,
+        "cleanup_proof_status": cleanup_status,
+        "stop_condition_status": stop_condition_status,
+        "triggered_stop_conditions": [],
+    }
+
+
+def _safe_load_test_evidence(value: object) -> dict[str, Any]:
+    source = _dict(value)
+    source_recorded_gates = source.get("recorded_gates")
+    source_gate_evidence = _dict(source.get("gate_evidence"))
+    recorded_gates: list[str] = []
+    gate_evidence: dict[str, dict[str, Any]] = {}
+    if source.get("status") == "recorded" and isinstance(source_recorded_gates, list):
+        for gate in LOAD_TEST_GATES:
+            if gate not in source_recorded_gates:
+                continue
+            safe_packet = _safe_recorded_load_test_gate_packet(source_gate_evidence.get(gate))
+            if safe_packet is not None:
+                recorded_gates.append(gate)
+                gate_evidence[gate] = safe_packet
+
+    result: dict[str, Any] = {
+        "status": "recorded" if recorded_gates else "missing",
+        "required_evidence": list(_LOAD_TEST_REQUIRED_EVIDENCE),
+        "required_gates": list(LOAD_TEST_GATES),
+    }
+    if recorded_gates:
+        result["recorded_gates"] = recorded_gates
+        result["gate_evidence"] = gate_evidence
+    return result
+
+
+def _safe_snapshot_live_signals(snapshot: dict[str, Any]) -> dict[str, object]:
+    source = _dict(snapshot.get("live_signals"))
+    queue = _dict(source.get("queue"))
+    database_pool = _dict(source.get("database_pool"))
+    sandbox = _dict(source.get("sandbox"))
+    observability = _dict(source.get("observability"))
+    backpressure = _dict(source.get("backpressure"))
+    containers = _numeric_bool_map(_dict(sandbox.get("containers")), _SANDBOX_CONTAINER_KEYS)
+    leases = _numeric_bool_map(_dict(sandbox.get("leases")), _SANDBOX_LEASE_KEYS)
+    return {
+        "queue": {
+            "depths": _numeric_bool_map(queue.get("depths"), _QUEUE_DEPTH_KEYS),
+            "active_worker_heartbeats": _coerce_int(queue.get("active_worker_heartbeats")),
+            "reason": str(queue.get("reason")) if str(queue.get("reason") or "") in _BACKPRESSURE_REASON_VALUES else None,
+            "capacity": _numeric_bool_map(queue.get("capacity"), _QUEUE_CAPACITY_KEYS),
+            "sample": _numeric_bool_map(queue.get("sample"), _QUEUE_SAMPLE_KEYS),
+            "throttling": _numeric_bool_map(
+                queue.get("throttling"),
+                {"tenant_processing_limit", "tenant_processing_saturated", "user_processing_limit"},
+            ),
+        },
+        "database_pool": {
+            "open": bool(database_pool.get("open")),
+            "configured": _numeric_bool_map(database_pool.get("configured"), _DB_POOL_CONFIG_KEYS),
+            "requests_waiting": _coerce_int(database_pool.get("requests_waiting")),
+            "max_waiting": _coerce_int(database_pool.get("max_waiting")),
+            "stats": _numeric_bool_map(database_pool.get("stats"), _DB_POOL_STATS_KEYS),
+        },
+        "admission": _numeric_bool_map(source.get("admission"), _ADMISSION_KEYS),
+        "backpressure": {
+            "reasons": _safe_reason_list(backpressure.get("reasons")),
+        },
+        "sandbox": {
+            "containers": containers,
+            "running_containers": _coerce_int(sandbox.get("running_containers") or containers.get("running")),
+            "active_leases": _coerce_int(sandbox.get("active_leases") or leases.get("active")),
+            "leases": leases,
+        },
+        "observability": {
+            **_numeric_bool_map(observability, _OBSERVABILITY_KEYS),
+            "error_categories": _numeric_bool_map(
+                observability.get("error_categories"),
+                set(ERROR_CATEGORY_DEFINITIONS),
+            ),
+            "latency_ms": _numeric_bool_map(observability.get("latency_ms"), _LATENCY_KEYS),
+        },
+    }
+
+
+def _safe_capacity_evidence_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": "ai-platform.capacity-evidence-snapshot.v1",
+        "source": {
+            "projection": "/api/ai/admin/runtime/overview",
+            "mode": "operator_captured_admin_projection",
+        },
+        "runtime_identity": {
+            "commit_sha": _safe_runtime_identity(_dict(snapshot.get("runtime_identity")).get("commit_sha")),
+            "profile": _safe_runtime_identity(_dict(snapshot.get("runtime_identity")).get("profile")),
+        },
+        "admin_runtime_evidence": _snapshot_admin_runtime_evidence(snapshot),
+        "capacity": _safe_capacity_snapshot(snapshot.get("capacity")),
+        "live_signals": _safe_snapshot_live_signals(snapshot),
+        "load_test_evidence": _safe_load_test_evidence(snapshot.get("load_test_evidence")),
+        "capacity_answer": "safe_max_concurrency_unproven_without_recorded_load_test_evidence",
+        "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+    }
+
+
 def build_capacity_recorded_gate_snapshot(
     runtime_evidence: dict[str, Any],
     recorded_gate_evidence: dict[str, Any],
@@ -1452,19 +1609,33 @@ def build_capacity_recorded_gate_snapshot(
 
     snapshot_output = json.loads(json.dumps(snapshot if snapshot else build_capacity_evidence_snapshot({})))
     if not input_errors:
+        existing_load_test_evidence = _safe_load_test_evidence(snapshot_output.get("load_test_evidence"))
+        existing_gate_evidence = _dict(existing_load_test_evidence.get("gate_evidence"))
+        existing_recorded_gates = {
+            gate
+            for gate in existing_load_test_evidence.get("recorded_gates", [])
+            if gate in LOAD_TEST_GATES
+        } if isinstance(existing_load_test_evidence.get("recorded_gates"), list) else set()
+        existing_gate_evidence[safe_gate] = gate_packet
+        existing_recorded_gates.add(safe_gate)
+        recorded_gates = [gate for gate in LOAD_TEST_GATES if gate in existing_recorded_gates]
         snapshot_output["load_test_evidence"] = {
             "status": "recorded",
             "required_evidence": list(_LOAD_TEST_REQUIRED_EVIDENCE),
             "required_gates": list(LOAD_TEST_GATES),
-            "recorded_gates": [safe_gate],
-            "gate_evidence": {safe_gate: gate_packet},
+            "recorded_gates": recorded_gates,
+            "gate_evidence": {
+                gate: existing_gate_evidence[gate]
+                for gate in recorded_gates
+                if gate in existing_gate_evidence
+            },
         }
 
     readiness = build_capacity_gate_readiness(snapshot_output)
     return {
         "schema_version": CAPACITY_RECORDED_GATE_SNAPSHOT_SCHEMA,
         "status": (
-            "recorded_gate_snapshot_ready"
+            "recorded_gate_input_accepted"
             if not input_errors
             else "blocked_incomplete_inputs"
         ),
@@ -1528,8 +1699,8 @@ def build_capacity_gate_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
         "schema_version": "ai-platform.capacity-gate-readiness.v1",
         "status": status,
         "runtime_identity": {
-            "commit_sha": _safe_identity(runtime_identity.get("commit_sha")),
-            "profile": _safe_identity(runtime_identity.get("profile")),
+            "commit_sha": _safe_runtime_identity(runtime_identity.get("commit_sha")),
+            "profile": _safe_runtime_identity(runtime_identity.get("profile")),
         },
         "admin_runtime_evidence": admin_runtime_evidence,
         "load_test_evidence_status": _safe_identity(load_test_evidence.get("status") or "missing"),
@@ -1650,8 +1821,8 @@ def _safe_capacity_gate_readiness(readiness: dict[str, Any]) -> dict[str, Any]:
         "schema_version": "ai-platform.capacity-gate-readiness.v1",
         "status": status,
         "runtime_identity": {
-            "commit_sha": _safe_identity(runtime_identity.get("commit_sha")),
-            "profile": _safe_identity(runtime_identity.get("profile")),
+            "commit_sha": _safe_runtime_identity(runtime_identity.get("commit_sha")),
+            "profile": _safe_runtime_identity(runtime_identity.get("profile")),
         },
         "admin_runtime_evidence": {
             "required_sections": list(_LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS),
