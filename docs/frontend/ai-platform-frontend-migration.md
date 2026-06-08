@@ -257,8 +257,10 @@ Current local and CI-contract evidence on 2026-06-08:
   without printing local absolute paths or secret-like runtime configuration.
   The current status is `pass_with_policy_gaps`; this allows local
   `ci:verify` to exercise lint/build while preserving G6/G9 rollout blockers.
-- `.github/workflows/ai-platform-frontend.yml` runs on frontend/tool workflow
-  changes and executes `corepack pnpm install --frozen-lockfile`,
+- `.github/workflows/ai-platform-frontend.yml` runs on frontend source,
+  `docs/frontend/**`, `tests/test_frontend_*.py`, frontend audit/traceability
+  tools, and workflow changes. It executes
+  `corepack pnpm install --frozen-lockfile`,
   `corepack pnpm run ci:verify`, and
   `python tools/frontend_release_traceability.py --format json` without Docker,
   compose, `.env`, or secret-dependent steps. The release traceability CLI now

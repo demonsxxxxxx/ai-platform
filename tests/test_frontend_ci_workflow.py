@@ -12,6 +12,8 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "corepack pnpm run ci:verify" in workflow
     assert "python tools/frontend_release_traceability.py --format json" in workflow
     assert "frontend/web/**" in workflow
+    assert "docs/frontend/**" in workflow
+    assert "tests/test_frontend_*.py" in workflow
     assert "tools/frontend_projection_audit.py" in workflow
     assert "tools/frontend_release_traceability.py" in workflow
 

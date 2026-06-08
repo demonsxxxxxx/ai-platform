@@ -127,6 +127,27 @@ any default. If a deployment requires `X-AI-Gateway-Secret`, pass only the
 environment variable name with `--gateway-secret-env`; the secret value is read
 from the environment and never printed.
 
+## Operator Load-Test Workflow
+
+`tools/capacity_load_plan.py` now emits a machine-readable
+`operator_workflow` block in addition to the dry-run scenario command
+manifest. The workflow is intentionally conservative:
+
+1. Capture start runtime evidence with `tools/capacity_runtime_evidence.py`.
+2. Confirm the start gate verdict before applying load.
+3. Execute only an operator-approved bounded load harness for one selected
+   scenario. `tools/capacity_load_plan.py` itself remains dry-run-only.
+4. Capture end runtime evidence with `tools/capacity_runtime_evidence.py`.
+5. Record cleanup proof for test tenants, queues, sandbox leases, and generated
+   artifacts.
+6. Generate the final fail-closed verdict with
+   `tools/capacity_gate_readiness.py`.
+
+Every workflow step carries `does_not_raise_defaults = true`. The only step
+that requires real load is marked `requires_explicit_operator_execution = true`.
+This gives operators a repeatable evidence chain for #21 without implying that
+any current profile has been load-tested.
+
 ### 211 Snapshot Evidence - 2026-06-08
 
 The current 211 API/worker runtime was checked after the G6 redaction-preview

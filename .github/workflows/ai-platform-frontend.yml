@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "frontend/web/**"
+      - "docs/frontend/**"
+      - "tests/test_frontend_*.py"
       - "tools/frontend_projection_audit.py"
       - "tools/frontend_release_traceability.py"
       - ".github/workflows/ai-platform-frontend.yml"
@@ -12,6 +14,8 @@ on:
       - main
     paths:
       - "frontend/web/**"
+      - "docs/frontend/**"
+      - "tests/test_frontend_*.py"
       - "tools/frontend_projection_audit.py"
       - "tools/frontend_release_traceability.py"
       - ".github/workflows/ai-platform-frontend.yml"

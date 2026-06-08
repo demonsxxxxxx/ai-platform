@@ -155,6 +155,19 @@ def test_capacity_load_test_plan_covers_each_gate_with_dry_run_commands_and_no_d
     assert "api_worker_image_labels" in plan["required_evidence"]
     assert "cleanup_proof" in plan["required_evidence"]
     assert "do_not_raise_concurrency_defaults" in plan["stop_conditions"]
+    assert [step["id"] for step in plan["operator_workflow"]] == [
+        "capture_start_runtime_evidence",
+        "confirm_start_gate_status",
+        "execute_bounded_load_scenario",
+        "capture_end_runtime_evidence",
+        "record_cleanup_proof",
+        "generate_gate_readiness_verdict",
+    ]
+    assert plan["operator_workflow"][0]["command"].startswith("python tools/capacity_runtime_evidence.py")
+    assert "https://ai-platform.internal" in plan["operator_workflow"][0]["command"]
+    assert plan["operator_workflow"][2]["requires_explicit_operator_execution"] is True
+    assert plan["operator_workflow"][2]["does_not_raise_defaults"] is True
+    assert "capacity_gate_readiness.py" in plan["operator_workflow"][-1]["command"]
 
     serialized = json.dumps(plan, ensure_ascii=False).lower()
     assert "super-secret-password" not in serialized
@@ -171,6 +184,11 @@ def test_render_capacity_load_test_plan_markdown_is_repeatable_and_safe():
     )
 
     assert "# ai-platform Capacity Load-Test Plan" in markdown
+    assert "## Operator Workflow" in markdown
+    assert "capture_start_runtime_evidence" in markdown
+    assert "capture_end_runtime_evidence" in markdown
+    assert "record_cleanup_proof" in markdown
+    assert "capacity_gate_readiness.py" in markdown
     assert "python tools/capacity_load_plan.py --dry-run --scenario api_read_write_burst" in markdown
     assert "Admin Runtime sections: `capacity`, `database_pool`, `queue`, `admission`, `backpressure`, `sandbox`, `observability`" in markdown
     assert "Do not raise production concurrency defaults" in markdown

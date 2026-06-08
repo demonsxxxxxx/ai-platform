@@ -61,6 +61,84 @@ _LOAD_TEST_STOP_CONDITIONS = [
     "sandbox_cleanup_or_orphan_detection_fails",
     "model_gateway_timeout_or_retry_storm_detected",
 ]
+_LOAD_TEST_OPERATOR_WORKFLOW = [
+    {
+        "id": "capture_start_runtime_evidence",
+        "purpose": "Capture the pre-load Admin Runtime capacity projection and fail-closed gate verdict.",
+        "command_template": (
+            "python tools/capacity_runtime_evidence.py"
+            " --base-url {base_url}"
+            " --user-id codex-capacity-audit"
+            " --tenant-id default"
+            " --roles admin"
+            " --commit-sha <deployed-commit>"
+            " --runtime-profile <runtime-profile>"
+            " --format json > capacity-runtime-evidence-start.json"
+        ),
+        "expected_evidence": "capacity-runtime-evidence-start.json",
+        "requires_explicit_operator_execution": False,
+        "does_not_raise_defaults": True,
+    },
+    {
+        "id": "confirm_start_gate_status",
+        "purpose": "Confirm the start verdict is fail-closed before applying load.",
+        "command_template": (
+            "verify capacity-runtime-evidence-start.json readiness.status is"
+            " blocked_missing_load_test_evidence or ready_for_operator_review"
+        ),
+        "expected_evidence": "recorded start readiness status and missing gates",
+        "requires_explicit_operator_execution": False,
+        "does_not_raise_defaults": True,
+    },
+    {
+        "id": "execute_bounded_load_scenario",
+        "purpose": "Run only an approved bounded load harness for one selected gate and profile.",
+        "command_template": (
+            "use the selected scenario command manifest and an operator-approved load harness;"
+            " tools/capacity_load_plan.py remains dry-run-only"
+        ),
+        "expected_evidence": "scenario result with latency, errors, queue depth, DB waiting, cleanup, and stop-condition status",
+        "requires_explicit_operator_execution": True,
+        "does_not_raise_defaults": True,
+    },
+    {
+        "id": "capture_end_runtime_evidence",
+        "purpose": "Capture the post-load Admin Runtime projection after the scenario and cooldown.",
+        "command_template": (
+            "python tools/capacity_runtime_evidence.py"
+            " --base-url {base_url}"
+            " --user-id codex-capacity-audit"
+            " --tenant-id default"
+            " --roles admin"
+            " --commit-sha <deployed-commit>"
+            " --runtime-profile <runtime-profile>"
+            " --format json > capacity-runtime-evidence-end.json"
+        ),
+        "expected_evidence": "capacity-runtime-evidence-end.json",
+        "requires_explicit_operator_execution": False,
+        "does_not_raise_defaults": True,
+    },
+    {
+        "id": "record_cleanup_proof",
+        "purpose": "Record test-tenant, queue, sandbox lease, and generated artifact cleanup proof.",
+        "command_template": "record cleanup_proof in the scenario evidence before marking the gate recorded",
+        "expected_evidence": "cleanup_proof",
+        "requires_explicit_operator_execution": True,
+        "does_not_raise_defaults": True,
+    },
+    {
+        "id": "generate_gate_readiness_verdict",
+        "purpose": "Generate the final fail-closed #21 verdict from the recorded evidence snapshot.",
+        "command_template": (
+            "python tools/capacity_gate_readiness.py"
+            " --snapshot-json <capacity-evidence-snapshot-with-recorded-load-gates.json>"
+            " --format json > capacity-gate-readiness.json"
+        ),
+        "expected_evidence": "capacity-gate-readiness.json",
+        "requires_explicit_operator_execution": False,
+        "does_not_raise_defaults": True,
+    },
+]
 _BACKPRESSURE_REASON_VALUES = {
     "active_run_limit_saturated",
     "queued_behind_existing_work",
@@ -495,6 +573,15 @@ def build_capacity_load_test_plan(
         }
         for gate in selected_gates
     ]
+    operator_workflow = [
+        {
+            key: (value.format(base_url=safe_base_url) if key == "command_template" else value)
+            for key, value in step.items()
+        }
+        for step in _LOAD_TEST_OPERATOR_WORKFLOW
+    ]
+    for step in operator_workflow:
+        step["command"] = step.pop("command_template")
     return {
         "schema_version": "ai-platform.capacity-load-test-plan.v1",
         "baseline": build_capacity_baseline(settings),
@@ -505,6 +592,7 @@ def build_capacity_load_test_plan(
             "production_defaults_policy": "do_not_raise_without_recorded_load_test_evidence",
         },
         "scenarios": scenarios,
+        "operator_workflow": operator_workflow,
         "required_evidence": _LOAD_TEST_REQUIRED_EVIDENCE,
         "stop_conditions": _LOAD_TEST_STOP_CONDITIONS,
         "cleanup_policy": "remove test tenants, queued payloads, sandbox leases, temporary artifacts, and generated documents after each run",
@@ -670,6 +758,27 @@ def render_capacity_baseline_markdown(baseline: dict[str, Any]) -> str:
 
 def render_capacity_load_test_plan_markdown(plan: dict[str, Any]) -> str:
     """Render a #21 capacity load-test command manifest as operator-readable Markdown."""
+    workflow_blocks = []
+    for step in plan.get("operator_workflow", []):
+        workflow_blocks.append(
+            "\n".join(
+                [
+                    f"### {step['id']}",
+                    "",
+                    step["purpose"],
+                    "",
+                    "```powershell",
+                    step["command"],
+                    "```",
+                    "",
+                    f"Expected evidence: `{step['expected_evidence']}`",
+                    "",
+                    f"Requires explicit operator execution: `{str(step['requires_explicit_operator_execution']).lower()}`",
+                    "",
+                    f"Does not raise defaults: `{str(step['does_not_raise_defaults']).lower()}`",
+                ]
+            )
+        )
     scenario_blocks = []
     for item in plan["scenarios"]:
         scenario_blocks.append(
@@ -690,6 +799,7 @@ def render_capacity_load_test_plan_markdown(plan: dict[str, Any]) -> str:
         )
     evidence = "\n".join(f"- {item}" for item in plan["required_evidence"])
     stop_conditions = "\n".join(f"- {item}" for item in plan["stop_conditions"])
+    workflow = "\n\n".join(workflow_blocks)
     scenarios = "\n\n".join(scenario_blocks)
     return (
         "# ai-platform Capacity Load-Test Plan\n\n"
@@ -701,6 +811,8 @@ def render_capacity_load_test_plan_markdown(plan: dict[str, Any]) -> str:
         "- Default mode: dry-run plan only.\n"
         "- Explicit operator execution is required for any real load.\n"
         "- Do not raise production concurrency defaults without recorded load-test evidence.\n\n"
+        "## Operator Workflow\n\n"
+        f"{workflow}\n\n"
         "## Scenarios\n\n"
         f"{scenarios}\n\n"
         "## Required Evidence\n\n"
