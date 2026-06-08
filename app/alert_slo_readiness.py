@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 
 SCHEMA_VERSION = "ai-platform.alert-slo-readiness.v1"
+DELIVERY_CHANNEL_POLICY_SCHEMA_VERSION = "ai-platform.alert-delivery-channel-policy.v1"
 GATE_NAME = "G9 Alert / SLO Rule Template"
 
 
@@ -75,6 +77,32 @@ _RULES: list[dict[str, Any]] = [
 
 _EXPECTED_RULE_IDS = tuple(rule["id"] for rule in _RULES)
 
+_DELIVERY_CHANNEL_POLICY = {
+    "schema_version": DELIVERY_CHANNEL_POLICY_SCHEMA_VERSION,
+    "status": "contract_only_not_enabled",
+    "allowed_channels": [
+        "admin_runtime_dashboard",
+        "release_evidence_entry",
+        "operator_manual_review",
+    ],
+    "ordinary_user_delivery_policy": "disabled_until_g9_acceptance",
+    "payload_policy": "category_threshold_and_public_projection_refs_only",
+    "forbidden_payload_classes": [
+        "executor private payload",
+        "raw storage key",
+        "sandbox workdir",
+        "secret material",
+        "API key",
+        "bearer token",
+        "database URL",
+        "Redis URL",
+    ],
+    "requires_runtime_dashboard_acceptance": True,
+    "requires_211_smoke": True,
+    "does_not_enable_alert_delivery": True,
+    "does_not_close_g9": True,
+}
+
 
 def _validate_rules(rules: list[dict[str, Any]]) -> None:
     rule_ids = tuple(str(rule.get("id") or "") for rule in rules)
@@ -92,7 +120,7 @@ def build_alert_slo_readiness() -> dict[str, Any]:
     categories = [str(rule["category"]) for rule in rules]
     open_gaps = [
         "alert_rules_runtime_dashboard_and_211_acceptance",
-        "alert_delivery_channel_policy",
+        "alert_delivery_channel_runtime_acceptance",
         "slo_threshold_runtime_calibration",
     ]
     return {
@@ -100,6 +128,7 @@ def build_alert_slo_readiness() -> dict[str, Any]:
         "gate": GATE_NAME,
         "status": "partial_blocked",
         "active_alerting_policy": "template_only_not_enabled",
+        "delivery_channel_policy": deepcopy(_DELIVERY_CHANNEL_POLICY),
         "rules": rules,
         "summary": {
             "rule_count": len(rules),

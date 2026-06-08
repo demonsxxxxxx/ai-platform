@@ -141,13 +141,12 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
                 "admin_runtime_overview_projection",
                 "capacity_gate_readiness_verdict",
                 "alert_slo_rule_template_evidence",
+                "alert_delivery_channel_policy_contract",
                 "release_evidence_export_location_contract",
                 "release_evidence_retention_policy_contract",
             ],
             gaps=[
-                "alert_rules_runtime_dashboard_and_211_acceptance",
-                "alert_delivery_channel_policy",
-                "slo_threshold_runtime_calibration",
+                *alert_slo_readiness["open_gaps"],
                 "trace_audit_export_contract",
                 *release_evidence_readiness["open_gaps"],
             ],
@@ -305,6 +304,11 @@ def _render_alert_slo_evidence(alert_rules: dict[str, Any]) -> str:
     rules = alert_rules.get("rules")
     if not isinstance(rules, list):
         return ""
+    delivery_policy = (
+        alert_rules.get("delivery_channel_policy")
+        if isinstance(alert_rules.get("delivery_channel_policy"), dict)
+        else {}
+    )
     rule_lines = "\n".join(
         f"- `{rule.get('id')}`: `{rule.get('category')}`"
         for rule in rules
@@ -318,6 +322,9 @@ def _render_alert_slo_evidence(alert_rules: dict[str, Any]) -> str:
         "\nEvidence:\n\n"
         f"- `{alert_rules.get('schema_version')}` status `{alert_rules.get('status')}`\n"
         f"- active alerting policy `{alert_rules.get('active_alerting_policy')}`\n"
+        f"- delivery channel policy `{delivery_policy.get('schema_version')}` status "
+        f"`{delivery_policy.get('status')}`\n"
+        f"- does not enable alert delivery `{delivery_policy.get('does_not_enable_alert_delivery')}`\n"
         "Nested alert gaps:\n\n"
         f"{gap_lines}\n\n"
         "Template rules:\n\n"

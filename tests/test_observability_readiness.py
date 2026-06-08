@@ -69,7 +69,9 @@ def test_observability_readiness_records_g9_domains_and_open_gaps_without_secret
     assert "quality_golden_set_readiness_contract" in domains["quality_evaluation"]["implemented"]
     assert "golden_set_eval_runtime_and_211_acceptance" in domains["quality_evaluation"]["gaps"]
     assert "alert_rules_runtime_dashboard_and_211_acceptance" in domains["alerts_and_exports"]["gaps"]
-    assert "alert_delivery_channel_policy" in domains["alerts_and_exports"]["gaps"]
+    assert "alert_delivery_channel_policy_contract" in domains["alerts_and_exports"]["implemented"]
+    assert "alert_delivery_channel_policy" not in domains["alerts_and_exports"]["gaps"]
+    assert "alert_delivery_channel_runtime_acceptance" in domains["alerts_and_exports"]["gaps"]
     assert "slo_threshold_runtime_calibration" in domains["alerts_and_exports"]["gaps"]
     assert "alert_rules_and_slo_thresholds" not in domains["alerts_and_exports"]["gaps"]
     assert "trace_audit_export_contract" in domains["alerts_and_exports"]["gaps"]
@@ -80,7 +82,8 @@ def test_observability_readiness_records_g9_domains_and_open_gaps_without_secret
     assert "latency_percentile_runtime_211_acceptance" not in readiness["open_gaps"]
     assert "latency_percentile_per_surface_split_and_dashboard_acceptance" in readiness["open_gaps"]
     assert readiness["config_signals"]["model_gateway_request_concurrency_limit"] is None
-    assert "alert_delivery_channel_policy" in readiness["open_gaps"]
+    assert "alert_delivery_channel_policy" not in readiness["open_gaps"]
+    assert "alert_delivery_channel_runtime_acceptance" in readiness["open_gaps"]
     assert "slo_threshold_runtime_calibration" in readiness["open_gaps"]
     assert "release_evidence_export_location" not in readiness["open_gaps"]
     assert "release_evidence_runtime_export_acceptance" in readiness["open_gaps"]
@@ -120,6 +123,31 @@ def test_observability_readiness_includes_alert_slo_rule_template_evidence_witho
     assert evidence["schema_version"] == "ai-platform.alert-slo-readiness.v1"
     assert evidence["status"] == "partial_blocked"
     assert evidence["active_alerting_policy"] == "template_only_not_enabled"
+    assert evidence["delivery_channel_policy"] == {
+        "schema_version": "ai-platform.alert-delivery-channel-policy.v1",
+        "status": "contract_only_not_enabled",
+        "allowed_channels": [
+            "admin_runtime_dashboard",
+            "release_evidence_entry",
+            "operator_manual_review",
+        ],
+        "ordinary_user_delivery_policy": "disabled_until_g9_acceptance",
+        "payload_policy": "category_threshold_and_public_projection_refs_only",
+        "forbidden_payload_classes": [
+            "executor private payload",
+            "raw storage key",
+            "sandbox workdir",
+            "secret material",
+            "API key",
+            "bearer token",
+            "database URL",
+            "Redis URL",
+        ],
+        "requires_runtime_dashboard_acceptance": True,
+        "requires_211_smoke": True,
+        "does_not_enable_alert_delivery": True,
+        "does_not_close_g9": True,
+    }
     assert evidence["summary"] == {
         "rule_count": 7,
         "categories": [
@@ -143,7 +171,7 @@ def test_observability_readiness_includes_alert_slo_rule_template_evidence_witho
     ]
     assert evidence["open_gaps"] == [
         "alert_rules_runtime_dashboard_and_211_acceptance",
-        "alert_delivery_channel_policy",
+        "alert_delivery_channel_runtime_acceptance",
         "slo_threshold_runtime_calibration",
     ]
 
@@ -394,7 +422,9 @@ def test_render_observability_readiness_markdown_is_operator_readable_and_gap_fi
     assert "golden_set_eval_runtime_and_211_acceptance" in markdown
     assert "alert_slo_rule_template_evidence" in markdown
     assert "alert_rules_runtime_dashboard_and_211_acceptance" in markdown
-    assert "alert_delivery_channel_policy" in markdown
+    assert "alert_delivery_channel_policy_contract" in markdown
+    assert "ai-platform.alert-delivery-channel-policy.v1" in markdown
+    assert "alert_delivery_channel_runtime_acceptance" in markdown
     assert "slo_threshold_runtime_calibration" in markdown
     assert "release_evidence_export_location_contract" in markdown
     assert "release_evidence_retention_policy_contract" in markdown

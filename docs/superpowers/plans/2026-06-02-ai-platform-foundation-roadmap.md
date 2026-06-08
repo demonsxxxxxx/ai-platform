@@ -208,7 +208,12 @@ commit `a877f590b3cea611c1cde4b2e78f856597cb1894` accepted the projection on
 per-surface latency splits and dashboard acceptance. The alert/export baseline now embeds
 `ai-platform.alert-slo-readiness.v1` rule-template evidence for queue,
 database, worker, model-gateway, sandbox, error-taxonomy, and capacity-gate
-signals. It does not close G9 and does not replace recorded load-test evidence,
+signals plus contract-only `ai-platform.alert-delivery-channel-policy.v1` as
+`alert_delivery_channel_policy_contract`. The delivery policy allows only
+Admin Runtime dashboard, release-evidence entry, and operator manual review
+channels, keeps ordinary-user delivery disabled until G9 acceptance, and keeps
+`alert_delivery_channel_runtime_acceptance` open. It does not close G9 and does
+not replace recorded load-test evidence,
 latency percentile per-surface/dashboard acceptance, model-gateway load-test evidence,
 taxonomy dashboard acceptance, golden-set evaluation runtime and 211 acceptance, alert
 runtime/dashboard/211 acceptance, trace/audit export contracts, or 211

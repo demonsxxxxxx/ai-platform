@@ -56,7 +56,7 @@ or ordinary-user private content.
 | Runtime metrics | Admin Runtime observability summary, token/cost/latency/error counts, `latency_percentiles_p50_p95_p99_admin_projection`, queue/admission/DB-pool backpressure summary, config-visible model-gateway request limit status, capacity runtime evidence capture | `latency_percentile_per_surface_split_and_dashboard_acceptance` across API, queue lease, worker, model, sandbox, artifact, cancel, retry, and resume; enforced model-gateway request-limit/backpressure gate plus recorded model-gateway load-test evidence; recorded capacity load-test evidence |
 | Error taxonomy | Formal `ai-platform.error-taxonomy.v1` contract, category mapping for executor/tool/sandbox/model-gateway/queue/database/memory/artifact/auth failures, Admin Runtime `error_categories`, run event error count projection, and redacted recent failure projection | Dashboard acceptance and 211/runtime evidence for taxonomy-driven operations |
 | Quality evaluation | Run trace/audit linkage baseline, source-level `ai-platform.quality-golden-set-readiness.v1` contract, and `ai-platform.quality-score.v1` score schema | Golden-set evaluation runtime and 211 acceptance, office workflow acceptance dataset, quality threshold calibration, dashboard acceptance |
-| Alerts and exports | Admin Runtime overview projection, fail-closed capacity gate readiness verdict, source-level `ai-platform.alert-slo-readiness.v1` rule template evidence for queue, database, worker, model gateway, sandbox, error-taxonomy, and capacity gates, plus source-level `ai-platform.release-evidence-readiness.v1` export-location contract and `ai-platform.release-evidence-retention-policy.v1` retention policy contract | Alert runtime dashboard and 211 acceptance, delivery-channel policy, runtime SLO calibration, trace/audit export contract, `release_evidence_runtime_export_acceptance`, and `release_evidence_retention_runtime_acceptance` |
+| Alerts and exports | Admin Runtime overview projection, fail-closed capacity gate readiness verdict, source-level `ai-platform.alert-slo-readiness.v1` rule template evidence for queue, database, worker, model gateway, sandbox, error-taxonomy, and capacity gates, source-level `ai-platform.alert-delivery-channel-policy.v1` as `alert_delivery_channel_policy_contract`, plus source-level `ai-platform.release-evidence-readiness.v1` export-location contract and `ai-platform.release-evidence-retention-policy.v1` retention policy contract | Alert runtime dashboard and 211 acceptance, `alert_delivery_channel_runtime_acceptance`, runtime SLO calibration, trace/audit export contract, `release_evidence_runtime_export_acceptance`, and `release_evidence_retention_runtime_acceptance` |
 
 ## Quality Golden-Set Contract Baseline
 
@@ -108,8 +108,18 @@ Template rules cover:
 - `error_taxonomy_spike`
 - `capacity_load_evidence_missing`
 
-Remaining alert blockers are runtime dashboard wiring, delivery-channel policy,
-SLO threshold calibration from recorded runtime evidence, review, and 211 smoke.
+The same snapshot embeds the contract-only
+`ai-platform.alert-delivery-channel-policy.v1` as
+`alert_delivery_channel_policy_contract`. Allowed channels are
+`admin_runtime_dashboard`, `release_evidence_entry`, and
+`operator_manual_review`; ordinary-user delivery remains
+`disabled_until_g9_acceptance`. Payloads are limited to category, threshold,
+and public projection references, and must not include executor-only data, raw
+storage identifiers, sandbox runtime paths, or secret-like values.
+
+Remaining alert blockers are runtime dashboard wiring,
+`alert_delivery_channel_runtime_acceptance`, SLO threshold calibration from
+recorded runtime evidence, review, and 211 smoke.
 
 ## Release Evidence Export Contract Baseline
 

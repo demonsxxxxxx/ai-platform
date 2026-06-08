@@ -247,6 +247,10 @@ def test_observability_docs_record_quality_golden_set_contract_without_closing_g
         assert "ai-platform.quality-golden-set-readiness.v1" in text
         assert "ai-platform.golden-set-eval-evidence-contract.v1" in text
         assert "quality_evaluation.golden_set_runs.<eval_run_id>" in text
+        assert "ai-platform.alert-delivery-channel-policy.v1" in text
+        assert "alert_delivery_channel_policy_contract" in text
+        assert "alert_delivery_channel_runtime_acceptance" in text
+        assert "`alert_delivery_channel_policy`" not in text
         assert "contract-only" in text
         assert "does not close G9" in text
         assert "golden-set evaluation runtime and 211 acceptance remain open" in text
