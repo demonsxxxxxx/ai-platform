@@ -43,8 +43,12 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "audit_visible_legacy_frontend_route_policy_mapping" in domains["tool_permission"]["implemented"]
     assert "tool_allow_deny_ask_policy_taxonomy_evidence" in domains["tool_permission"]["implemented"]
     assert "admin_policy_change_history_projection" in domains["tool_permission"]["implemented"]
+    assert "admin_policy_bulk_review_dashboard_contract" in domains["tool_permission"]["implemented"]
     assert "legacy_frontend_route_policy_enforcement_or_ai_platform_remap" in domains["tool_permission"]["gaps"]
-    assert "admin_policy_bulk_review_and_dashboard_acceptance" in domains["tool_permission"]["gaps"]
+    assert "admin_policy_bulk_review_and_dashboard_acceptance" not in domains["tool_permission"]["gaps"]
+    assert "admin_policy_bulk_review_runtime_acceptance" in domains["tool_permission"]["gaps"]
+    assert "admin_policy_bulk_review_visual_acceptance" in domains["tool_permission"]["gaps"]
+    assert "admin_policy_bulk_review_211_acceptance" in domains["tool_permission"]["gaps"]
     assert "admin_policy_bulk_review_and_change_history_view" not in domains["tool_permission"]["gaps"]
     assert "admin_policy_bulk_review_and_change_history_view" not in readiness["open_gaps"]
     assert "tool_allow_deny_ask_policy_taxonomy_for_all_mcp_tools" not in domains["tool_permission"]["gaps"]
@@ -52,12 +56,23 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert tool_evidence["schema_version"] == "ai-platform.tool-policy-readiness.v1"
     assert tool_evidence["status"] == "partial_blocked"
     assert "admin_policy_change_history_projection" in tool_evidence["implemented_controls"]
+    assert "admin_policy_bulk_review_dashboard_contract" in tool_evidence["implemented_controls"]
     assert tool_evidence["summary"] == {
         "taxonomy_cases": 6,
         "auto_allow_cases": 1,
         "ask_cases": 3,
         "deny_cases": 2,
     }
+    bulk_review_evidence = domains["tool_permission"]["evidence"]["admin_policy_bulk_review_dashboard"]
+    assert bulk_review_evidence["schema_version"] == "ai-platform.tool-policy-bulk-review-readiness.v1"
+    assert bulk_review_evidence["dashboard_contract"]["schema_version"] == (
+        "ai-platform.tool-policy-bulk-review-dashboard-contract.v1"
+    )
+    assert bulk_review_evidence["open_gaps"] == [
+        "admin_policy_bulk_review_runtime_acceptance",
+        "admin_policy_bulk_review_visual_acceptance",
+        "admin_policy_bulk_review_211_acceptance",
+    ]
     assert "skill_release_promote_rollback_policy" in domains["skill_governance"]["implemented"]
     assert "skill_dependency_policy_materialization" in domains["skill_governance"]["implemented"]
     assert "skill_release_readiness_evidence_snapshot" in domains["skill_governance"]["implemented"]
@@ -226,6 +241,9 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     assert "## Open Gaps" in markdown
     assert "legacy_frontend_route_policy_enforcement_or_ai_platform_remap" in markdown
     assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in markdown
+    assert "admin_policy_bulk_review_dashboard_contract" in markdown
+    assert "ai-platform.tool-policy-bulk-review-dashboard-contract.v1" in markdown
+    assert "admin_policy_bulk_review_runtime_acceptance" in markdown
     assert "signed_skill_package_or_sbom_release_gate" in markdown
     assert "skill_dependency_review_policy_contract" in markdown
     assert "skill_dependency_review_policy_runtime_acceptance" in markdown

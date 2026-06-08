@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.tool_policy_bulk_review_readiness import build_tool_policy_bulk_review_readiness
 from app.tool_policy import RISK_ORDER, evaluate_tool_policy
 
 
@@ -78,14 +79,15 @@ def build_tool_policy_readiness() -> dict[str, Any]:
     """Build a secret-safe offline G6 tool permission taxonomy readiness snapshot."""
     taxonomy_cases = _taxonomy_cases()
     _validate_taxonomy_cases(taxonomy_cases)
+    bulk_review_readiness = build_tool_policy_bulk_review_readiness()
     implemented_controls = [
         "tool_allow_deny_ask_policy_taxonomy_for_all_mcp_tools",
         "admin_policy_change_history_projection",
+        "admin_policy_bulk_review_dashboard_contract",
     ]
     open_gaps = [
         "legacy_frontend_route_policy_enforcement_or_ai_platform_remap",
-        "admin_policy_bulk_review_and_dashboard_acceptance",
-        "tool_policy_taxonomy_admin_dashboard_acceptance",
+        *bulk_review_readiness["open_gaps"],
     ]
     return {
         "schema_version": SCHEMA_VERSION,
@@ -107,6 +109,16 @@ def build_tool_policy_readiness() -> dict[str, Any]:
         },
         "implemented_controls": implemented_controls,
         "open_gaps": open_gaps,
+        "evidence": {
+            "admin_policy_bulk_review_dashboard": {
+                "schema_version": bulk_review_readiness["schema_version"],
+                "status": bulk_review_readiness["status"],
+                "policy": bulk_review_readiness["policy"],
+                "dashboard_contract": bulk_review_readiness["dashboard_contract"],
+                "open_gaps": bulk_review_readiness["open_gaps"],
+                "does_not_close_g6": bulk_review_readiness["does_not_close_g6"],
+            }
+        },
         "evidence_policy": (
             "taxonomy and change-history evidence document policy behavior only; route enforcement, admin UX acceptance, "
             "and 211 smoke are still required before G6 closure"
@@ -117,6 +129,17 @@ def build_tool_policy_readiness() -> dict[str, Any]:
 def render_tool_policy_readiness_markdown(readiness: dict[str, Any]) -> str:
     """Render the tool policy taxonomy readiness snapshot as operator-readable Markdown."""
     gap_lines = "\n".join(f"- {gap}" for gap in readiness["open_gaps"]) or "- none"
+    evidence = readiness.get("evidence", {})
+    bulk_review = evidence.get("admin_policy_bulk_review_dashboard") if isinstance(evidence, dict) else None
+    bulk_contract_lines = ""
+    if isinstance(bulk_review, dict):
+        contract = bulk_review.get("dashboard_contract")
+        if isinstance(contract, dict):
+            bulk_contract_lines = (
+                "## Admin Bulk Review Dashboard Contract\n\n"
+                f"Schema: `{contract.get('schema_version')}`\n\n"
+                f"Policy: `{bulk_review.get('policy')}`\n\n"
+            )
     case_lines = "\n".join(
         "- "
         f"`{item['id']}`: `{item['classification']}`, risk `{item['risk_level']}`, "
@@ -137,6 +160,7 @@ def render_tool_policy_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"{implemented_lines}\n\n"
         "## Open Gaps\n\n"
         f"{gap_lines}\n\n"
+        f"{bulk_contract_lines}"
         "## Policy Contract\n\n"
         f"{contract_lines}\n\n"
         "## Taxonomy Cases\n\n"

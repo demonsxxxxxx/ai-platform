@@ -425,10 +425,22 @@ disabled registry or tenant-policy cases. Admin tool policy governance now also
 has a bounded same-tenant change-history projection through
 `GET /api/ai/admin/tool-policies/history`, backed by the existing
 `admin.tool_policy.updated` audit log and allowlisted public policy fields.
+The Admin bulk-review dashboard baseline is now split into a contract-only
+readiness artifact through `tools/tool_policy_bulk_review_readiness.py` with
+schema `ai-platform.tool-policy-bulk-review-readiness.v1` and nested
+`ai-platform.tool-policy-bulk-review-dashboard-contract.v1`. Governance
+readiness records this as `admin_policy_bulk_review_dashboard_contract`: the
+contract binds the dashboard to the existing admin-only policy inventory,
+history, and single-tool update routes; requires bounded inventory/history,
+taxonomy summary, decision options, legacy-route gap summary, filters,
+per-tool diff preview, update confirmation, and change-history drilldown; and
+does not add a batch mutation API or expose private runtime data.
 
 This does not close G6. Remaining blockers are policy enforcement or
 ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel
-surfaces, Admin bulk-review and taxonomy/history dashboard acceptance, SBOM release
+surfaces, `admin_policy_bulk_review_runtime_acceptance`,
+`admin_policy_bulk_review_visual_acceptance`,
+`admin_policy_bulk_review_211_acceptance`, SBOM release
 evidence plus passed review manifests bound to matching evidence files,
 signed-package evidence contract definition, dependency vulnerability
 and license evidence plus passed review manifests bound to matching evidence

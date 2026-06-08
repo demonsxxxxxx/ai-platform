@@ -120,6 +120,7 @@ def build_governance_readiness(
     resolved_settings = settings or get_settings()
     skill_release_readiness = build_skill_release_readiness()
     tool_policy_readiness = build_tool_policy_readiness()
+    bulk_review_evidence = tool_policy_readiness["evidence"]["admin_policy_bulk_review_dashboard"]
     office_context_readiness = build_office_context_readiness()
     frontend_projection_evidence = (
         {"projection_audit": _frontend_projection_audit_evidence()}
@@ -137,10 +138,11 @@ def build_governance_readiness(
                 "audit_visible_legacy_frontend_route_policy_mapping",
                 "tool_allow_deny_ask_policy_taxonomy_evidence",
                 "admin_policy_change_history_projection",
+                "admin_policy_bulk_review_dashboard_contract",
             ],
             gaps=[
                 "legacy_frontend_route_policy_enforcement_or_ai_platform_remap",
-                "admin_policy_bulk_review_and_dashboard_acceptance",
+                *bulk_review_evidence["open_gaps"],
             ],
             next_checks=[
                 "enforce or remap every legacy frontend MCP/model/env/channel/admin route to ai-platform projections",
@@ -154,7 +156,15 @@ def build_governance_readiness(
                     "summary": tool_policy_readiness["summary"],
                     "implemented_controls": tool_policy_readiness["implemented_controls"],
                     "open_gaps": tool_policy_readiness["open_gaps"],
-                }
+                },
+                "admin_policy_bulk_review_dashboard": {
+                    "schema_version": bulk_review_evidence["schema_version"],
+                    "status": bulk_review_evidence["status"],
+                    "policy": bulk_review_evidence["policy"],
+                    "dashboard_contract": bulk_review_evidence["dashboard_contract"],
+                    "open_gaps": bulk_review_evidence["open_gaps"],
+                    "does_not_close_g6": bulk_review_evidence["does_not_close_g6"],
+                },
             },
         ),
         "skill_governance": _domain(
@@ -321,6 +331,16 @@ def render_governance_readiness_markdown(readiness: dict[str, Any]) -> str:
                 + "\n".join(detail_lines)
                 + "\n"
             )
+        bulk_review = evidence.get("admin_policy_bulk_review_dashboard") if isinstance(evidence, dict) else None
+        if isinstance(bulk_review, dict):
+            contract = bulk_review.get("dashboard_contract")
+            if isinstance(contract, dict):
+                evidence_lines += (
+                    "\nEvidence:\n\n"
+                    f"- admin bulk review readiness `{bulk_review.get('schema_version')}` status "
+                    f"`{bulk_review.get('status')}`\n"
+                    f"- admin bulk review dashboard contract `{contract.get('schema_version')}`\n"
+                )
         release_readiness = evidence.get("release_readiness") if isinstance(evidence, dict) else None
         if isinstance(release_readiness, dict):
             policy = release_readiness.get("dependency_review_policy")

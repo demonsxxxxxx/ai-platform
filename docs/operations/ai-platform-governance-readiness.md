@@ -16,6 +16,8 @@ python tools/governance_readiness.py --format markdown
 python tools/governance_readiness.py --format json
 python tools/tool_policy_readiness.py --format markdown
 python tools/tool_policy_readiness.py --format json
+python tools/tool_policy_bulk_review_readiness.py --format markdown
+python tools/tool_policy_bulk_review_readiness.py --format json
 python tools/skill_release_readiness.py --format markdown
 python tools/skill_release_readiness.py --format json
 python tools/skill_release_readiness.py --review-template --skill-id <skill-id> --format json
@@ -64,7 +66,7 @@ or secret-like runtime configuration.
 
 | Domain | Implemented baseline | Remaining gap |
 | --- | --- | --- |
-| Tool permission | Admin tool policy inventory, tenant-scoped policy update audit, bounded admin change-history projection through `GET /api/ai/admin/tool-policies/history`, user request/decision flow, fail-closed risk/write policy evaluation, public permission-card projection, audit-visible legacy route policy mapping, secret-safe allow/ask/deny taxonomy evidence through `tools/tool_policy_readiness.py` | Policy enforcement or ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel surfaces, Admin bulk-review/dashboard acceptance for policy history and taxonomy evidence |
+| Tool permission | Admin tool policy inventory, tenant-scoped policy update audit, bounded admin change-history projection through `GET /api/ai/admin/tool-policies/history`, user request/decision flow, fail-closed risk/write policy evaluation, public permission-card projection, audit-visible legacy route policy mapping, secret-safe allow/ask/deny taxonomy evidence through `tools/tool_policy_readiness.py`, and contract-only Admin bulk-review dashboard readiness through `tools/tool_policy_bulk_review_readiness.py` / `admin_policy_bulk_review_dashboard_contract` | Policy enforcement or ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel surfaces, plus `admin_policy_bulk_review_runtime_acceptance`, `admin_policy_bulk_review_visual_acceptance`, and `admin_policy_bulk_review_211_acceptance` |
 | Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock, secret-safe skill release readiness snapshot, pending review-manifest template entrypoint, source-level `ai-platform.skill-dependency-review-policy.v1` contract | SBOM release gate, signed-package evidence contract, Admin release dashboard acceptance, dependency vulnerability/license evidence and runtime acceptance |
 | Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py`, source-level office context-pack architecture readiness through `tools/office_context_readiness.py` | Runtime context-pack persistence/injection, document-centric follow-up state, sandbox cold-start latency split, and frontend context provenance acceptance |
 | Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest with build-provenance same-commit gate, packaged frontend image definition traceability, non-push CI packaged-image build/provenance contract, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Profile env-var surface removed from the active browser entry graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Quarantined inactive legacy model/channel/envvar sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image smoke and release acceptance on 211 or another Docker-capable host |
@@ -91,9 +93,26 @@ or explicit deny fail closed. The admin-only
 same-tenant audit log for `admin.tool_policy.updated`, applies a bounded limit,
 and returns only allowlisted public policy fields. This removes the previous
 taxonomy-evidence gap and narrows the history-view gap from the G6 source
-baseline. It does not close G6: route enforcement/remap for legacy frontend
-surfaces, admin policy bulk review, dashboard acceptance, and 211 runtime smoke
-remain required before gate closure.
+baseline. `tools/tool_policy_bulk_review_readiness.py` now records a
+contract-only Admin review dashboard baseline with schema
+`ai-platform.tool-policy-bulk-review-readiness.v1` and nested
+`ai-platform.tool-policy-bulk-review-dashboard-contract.v1`. The contract binds
+the dashboard to the existing admin-only same-tenant policy inventory, history,
+and single-tool update routes; requires bounded inventory/history, taxonomy
+summary, decision options, legacy-route gap summary, filters, per-tool diff
+preview, update confirmation, and change-history drilldown; and keeps raw
+registry connection details, credentials, tool request bodies, sandbox working
+directories, and executor-private runtime data out of the public/admin
+projection.
+
+This removes the previous coarse Admin dashboard blocker from the source
+baseline and replaces it with explicit runtime, visual, and 211 acceptance
+gaps: `admin_policy_bulk_review_runtime_acceptance`,
+`admin_policy_bulk_review_visual_acceptance`, and
+`admin_policy_bulk_review_211_acceptance`. It does not close G6, does not add a
+batch mutation API, and does not permit ordinary-user access to policy
+internals. Route enforcement/remap for legacy frontend surfaces, Admin
+dashboard acceptance, and 211 runtime smoke remain required before gate closure.
 
 ## 211 Acceptance Evidence
 

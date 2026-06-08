@@ -313,6 +313,14 @@ def test_governance_docs_record_skill_dependency_review_policy_without_closing_g
         assert "vulnerability_reviewed" in text
         assert "dependency_vulnerability_or_license_policy" in text
         assert "skill_dependency_review_policy_runtime_acceptance" in text
+        assert "tools/tool_policy_bulk_review_readiness.py" in text
+        assert "ai-platform.tool-policy-bulk-review-readiness.v1" in text
+        assert "ai-platform.tool-policy-bulk-review-dashboard-contract.v1" in text
+        assert "admin_policy_bulk_review_dashboard_contract" in text
+        assert "admin_policy_bulk_review_runtime_acceptance" in text
+        assert "admin_policy_bulk_review_visual_acceptance" in text
+        assert "admin_policy_bulk_review_211_acceptance" in text
+        assert "admin_policy_bulk_review_and_dashboard_acceptance" not in text
         assert "does not close G6" in text
         assert "executor_private_payload" not in text
         assert "raw_storage_key" not in text
