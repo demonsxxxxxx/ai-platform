@@ -200,6 +200,22 @@ _LOAD_TEST_OPERATOR_WORKFLOW = [
         "does_not_raise_defaults": True,
     },
     {
+        "id": "assemble_evidence_bundle_draft",
+        "purpose": "Assemble a gap-first draft from post-load runtime evidence and the bounded probe without marking the gate recorded.",
+        "command_template": (
+            "python tools/capacity_evidence_bundle.py"
+            " --runtime-evidence-json capacity-runtime-evidence-end.json"
+            " --bounded-probe-json capacity-bounded-load-harness-api-read-write-burst.json"
+            " --gate api_read_write_burst"
+            " --format markdown > capacity-evidence-bundle-api-read-write-burst.md;"
+            " output status draft_not_recorded is not recorded gate evidence;"
+            " use this bundle only to identify missing measured evidence and cleanup proof"
+        ),
+        "expected_evidence": "capacity-evidence-bundle-api-read-write-burst.md",
+        "requires_explicit_operator_execution": False,
+        "does_not_raise_defaults": True,
+    },
+    {
         "id": "record_cleanup_proof",
         "purpose": "Record test-tenant, queue, sandbox lease, and generated artifact cleanup proof.",
         "command_template": "record cleanup_proof in the scenario evidence before marking the gate recorded",

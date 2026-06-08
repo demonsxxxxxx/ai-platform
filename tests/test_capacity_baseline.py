@@ -273,6 +273,7 @@ def test_capacity_load_test_plan_covers_each_gate_with_dry_run_commands_and_no_d
         "confirm_start_gate_status",
         "execute_bounded_load_scenario",
         "capture_end_runtime_evidence",
+        "assemble_evidence_bundle_draft",
         "record_cleanup_proof",
         "generate_gate_readiness_verdict",
     ]
@@ -283,6 +284,12 @@ def test_capacity_load_test_plan_covers_each_gate_with_dry_run_commands_and_no_d
     assert plan["operator_workflow"][2]["does_not_raise_defaults"] is True
     assert "capacity_bounded_load_harness.py" in plan["operator_workflow"][2]["command"]
     assert "probe_only_not_recorded" in plan["operator_workflow"][2]["command"]
+    assert plan["operator_workflow"][4]["requires_explicit_operator_execution"] is False
+    assert plan["operator_workflow"][4]["does_not_raise_defaults"] is True
+    assert "capacity_evidence_bundle.py" in plan["operator_workflow"][4]["command"]
+    assert "capacity-runtime-evidence-end.json" in plan["operator_workflow"][4]["command"]
+    assert "capacity-bounded-load-harness-api-read-write-burst.json" in plan["operator_workflow"][4]["command"]
+    assert "capacity-evidence-bundle-api-read-write-burst.md" in plan["operator_workflow"][4]["command"]
     assert "capacity_gate_readiness.py" in plan["operator_workflow"][-1]["command"]
 
     serialized = json.dumps(plan, ensure_ascii=False).lower()
@@ -344,8 +351,10 @@ def test_render_capacity_load_test_plan_markdown_is_repeatable_and_safe():
     assert "## Operator Workflow" in markdown
     assert "capture_start_runtime_evidence" in markdown
     assert "capture_end_runtime_evidence" in markdown
+    assert "assemble_evidence_bundle_draft" in markdown
     assert "record_cleanup_proof" in markdown
     assert "capacity_bounded_load_harness.py" in markdown
+    assert "capacity_evidence_bundle.py" in markdown
     assert "probe_only_not_recorded" in markdown
     assert "capacity_gate_readiness.py" in markdown
     assert "python tools/capacity_load_plan.py --dry-run --scenario api_read_write_burst" in markdown

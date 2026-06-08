@@ -136,6 +136,11 @@ fields, and a readiness preview. The draft keeps
 `probe_only_not_recorded`, and `does_not_mark_gate_recorded = true`; it is not
 accepted by `tools/capacity_gate_readiness.py` as recorded gate evidence and
 does not raise production concurrency defaults.
+`tools/capacity_load_plan.py` includes that command as the
+`assemble_evidence_bundle_draft` operator workflow step after post-load runtime
+evidence capture, so the machine-readable #21 plan now points operators from
+bounded probe output to a draft missing-evidence bundle before cleanup proof and
+the final fail-closed gate verdict.
 
 The 2026-06-08 211 gate-readiness pass captured the admin-only runtime overview
 from the deployed `f7c6b0d9114748fa249acb88da6584851c48aa96` image and ran the

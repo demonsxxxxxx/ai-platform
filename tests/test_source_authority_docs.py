@@ -188,6 +188,7 @@ def test_capacity_docs_record_machine_readable_gate_evidence_contract():
         assert "tools/capacity_evidence_bundle.py" in text
         assert "ai-platform.capacity-evidence-bundle.v1" in text
         assert "draft_not_recorded" in text
+        assert "assemble_evidence_bundle_draft" in text
         assert "C:\\Users" not in text
 
 

@@ -472,6 +472,14 @@ preserves `probe_only_not_recorded`, and keeps
 `tools/capacity_gate_readiness.py` as recorded gate evidence and does not raise
 production concurrency defaults.
 
+`tools/capacity_load_plan.py` now includes this as the
+`assemble_evidence_bundle_draft` operator workflow step after post-load runtime
+evidence capture. The step is a planning/readiness aid only: it points at
+`capacity-runtime-evidence-end.json` and the bounded probe JSON, produces
+`capacity-evidence-bundle-api-read-write-burst.md`, and leaves cleanup proof,
+recorded load-test artifacts, final gate readiness, and operator review as
+separate required work.
+
 ## Required Load-Test Gates
 
 Generate the repeatable command manifest for a target deployment profile:
