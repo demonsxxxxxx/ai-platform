@@ -4,12 +4,11 @@ Date: 2026-06-08
 
 This document records the current G9 Observability / Quality / Ops readiness
 baseline. It is an operator readiness snapshot, not a gate-closure claim. G9
-remains partial until the latency percentiles p50/p95/p99 admin projection is
-accepted on 211 with runtime evidence, model-gateway pressure controls and
-recorded capacity load-test evidence, error taxonomy dashboard acceptance,
-golden-set evaluation runtime and 211 acceptance, alert/SLO runtime acceptance,
-and trace/audit export contracts have code, tests, docs, review, and runtime
-evidence.
+remains partial until latency percentile per-surface split and dashboard
+acceptance, model-gateway pressure controls and recorded capacity load-test
+evidence, error taxonomy dashboard acceptance, golden-set evaluation runtime
+and 211 acceptance, alert/SLO runtime acceptance, and trace/audit export
+contracts have code, tests, docs, review, and runtime evidence.
 
 Generate the current readiness snapshot from the repository root:
 
@@ -53,7 +52,7 @@ or ordinary-user private content.
 
 | Domain | Implemented baseline | Remaining gap |
 | --- | --- | --- |
-| Runtime metrics | Admin Runtime observability summary, token/cost/latency/error counts, `latency_percentiles_p50_p95_p99_admin_projection`, queue/admission/DB-pool backpressure summary, config-visible model-gateway request limit status, capacity runtime evidence capture | `latency_percentile_runtime_211_acceptance` for 211 proof and per-surface splits across API, queue lease, worker, model, sandbox, artifact, cancel, retry, and resume; enforced model-gateway request-limit/backpressure gate plus recorded model-gateway load-test evidence; recorded capacity load-test evidence |
+| Runtime metrics | Admin Runtime observability summary, token/cost/latency/error counts, `latency_percentiles_p50_p95_p99_admin_projection`, queue/admission/DB-pool backpressure summary, config-visible model-gateway request limit status, capacity runtime evidence capture | `latency_percentile_per_surface_split_and_dashboard_acceptance` across API, queue lease, worker, model, sandbox, artifact, cancel, retry, and resume; enforced model-gateway request-limit/backpressure gate plus recorded model-gateway load-test evidence; recorded capacity load-test evidence |
 | Error taxonomy | Formal `ai-platform.error-taxonomy.v1` contract, category mapping for executor/tool/sandbox/model-gateway/queue/database/memory/artifact/auth failures, Admin Runtime `error_categories`, run event error count projection, and redacted recent failure projection | Dashboard acceptance and 211/runtime evidence for taxonomy-driven operations |
 | Quality evaluation | Run trace/audit linkage baseline, source-level `ai-platform.quality-golden-set-readiness.v1` contract, and `ai-platform.quality-score.v1` score schema | Golden-set evaluation runtime and 211 acceptance, office workflow acceptance dataset, quality threshold calibration, dashboard acceptance |
 | Alerts and exports | Admin Runtime overview projection, fail-closed capacity gate readiness verdict, and source-level `ai-platform.alert-slo-readiness.v1` rule template evidence for queue, database, worker, model gateway, sandbox, error-taxonomy, and capacity gates | Alert runtime dashboard and 211 acceptance, delivery-channel policy, runtime SLO calibration, trace/audit export contract, release evidence export location |
@@ -150,10 +149,11 @@ repo-local services source target with OCI labels:
   error, failed import, pydantic, or syntax-error markers.
 
 This runtime evidence proves the source-level G9 taxonomy/readiness projection
-is deployed on 211. It does not close G9 because the remaining latency
-percentile 211 acceptance, model-gateway concurrency/backpressure, recorded load-test
-evidence, taxonomy dashboard acceptance, golden-set evaluation, alert runtime
-acceptance, and export contracts are still open.
+is deployed on 211. It does not close G9 because latency percentile
+per-surface split and dashboard acceptance, model-gateway
+concurrency/backpressure, recorded load-test evidence, taxonomy dashboard
+acceptance, golden-set evaluation, alert runtime acceptance, and export
+contracts are still open.
 
 ### Follow-up 211 Runtime Evidence - 2026-06-08, commit `be03c95`
 
@@ -196,10 +196,52 @@ commit and retained:
 
 This follow-up evidence proves the latest deployed main commit still exposes
 the G9 readiness and error-taxonomy projections safely on 211. It still does
-not close G9 because latency percentile runtime acceptance, model-gateway concurrency and
-backpressure controls, recorded load-test evidence, dashboard acceptance,
-golden-set evaluation, alert runtime acceptance, and export contracts remain
-open.
+not close G9 because latency percentile per-surface split and dashboard
+acceptance, model-gateway concurrency and backpressure controls, recorded
+load-test evidence, dashboard acceptance, golden-set evaluation, alert runtime
+acceptance, and export contracts remain open.
+
+### Follow-up 211 Runtime Evidence - 2026-06-08, commit `a877f59`
+
+Commit `a877f590b3cea611c1cde4b2e78f856597cb1894` was synced to the 211
+repo-local source target and deployed to API/worker with image
+`ai-platform:a877f59-g9-latency-percentiles`. The image labels matched the
+same commit:
+
+- `org.opencontainers.image.revision =
+  a877f590b3cea611c1cde4b2e78f856597cb1894`
+- `ai-platform.source-revision =
+  a877f590b3cea611c1cde4b2e78f856597cb1894`
+- `ai-platform.source_target = services/ai-platform`
+
+211 smoke evidence after deployment:
+
+- `GET /api/ai/health` returned `{"status":"ok"}` from the API container.
+- API and worker containers both ran
+  `ai-platform:a877f59-g9-latency-percentiles` with matching revision labels.
+- Container-local `python -m compileall -q app tools scripts` passed for both
+  API and worker.
+- Admin Runtime overview returned HTTP 200 for an admin trusted principal and
+  HTTP 403 for an ordinary user.
+- `observability.latency_ms` exposed the allowlisted keys `avg`, `max`, `p50`,
+  `p95`, and `p99`.
+- `observability_readiness.domains.runtime_metrics.implemented` contained
+  `latency_percentiles_p50_p95_p99_admin_projection`.
+- A refined projection leak scan found no forbidden runtime markers for DSNs,
+  Redis URLs, bearer/API tokens, raw storage keys, sandbox work directories,
+  executor private payloads, callback tokens, provider tokens, client secrets,
+  or object-storage keys. Guardrail/readiness text that says not to expose
+  secret-like data was treated as policy documentation, not runtime data.
+- Recent API/worker logs since deployment had no startup traceback, exception,
+  error, failed import, pydantic, module-not-found, permission, entrypoint, or
+  syntax-error markers.
+
+This follow-up evidence closes the narrower 211 acceptance item for the
+source-level latency percentiles p50/p95/p99 admin projection. It still does
+not close G9: the remaining runtime-metrics blocker is
+`latency_percentile_per_surface_split_and_dashboard_acceptance`, along with
+model-gateway concurrency/backpressure enforcement and recorded load-test
+evidence.
 
 ## Model Gateway Capacity Control Baseline
 

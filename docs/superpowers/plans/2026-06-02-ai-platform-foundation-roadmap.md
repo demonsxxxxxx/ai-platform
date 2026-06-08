@@ -159,14 +159,16 @@ runtime overview field `observability_readiness` with schema
 implemented runtime-metric, error-taxonomy, quality-evaluation, and
 alert/export baselines plus open gaps. Runtime metrics now include the
 source-level Admin Runtime latency percentiles p50/p95/p99 projection
-`latency_percentiles_p50_p95_p99_admin_projection`; G9 still keeps
-`latency_percentile_runtime_211_acceptance` open until the projection has 211
-runtime evidence and per-surface latency splits. The alert/export baseline now embeds
+`latency_percentiles_p50_p95_p99_admin_projection`; 211 runtime smoke for
+commit `a877f590b3cea611c1cde4b2e78f856597cb1894` accepted the projection on
+2026-06-08, so G9 now keeps
+`latency_percentile_per_surface_split_and_dashboard_acceptance` open for
+per-surface latency splits and dashboard acceptance. The alert/export baseline now embeds
 `ai-platform.alert-slo-readiness.v1` rule-template evidence for queue,
 database, worker, model-gateway, sandbox, error-taxonomy, and capacity-gate
 signals. It does not close G9 and does not replace recorded load-test evidence,
-latency percentile runtime acceptance, model-gateway load-test evidence, taxonomy dashboard
-acceptance, golden-set evaluation runtime and 211 acceptance, alert
+latency percentile per-surface/dashboard acceptance, model-gateway load-test evidence,
+taxonomy dashboard acceptance, golden-set evaluation runtime and 211 acceptance, alert
 runtime/dashboard/211 acceptance, trace/audit export contracts, or 211
 deployment smoke.
 
