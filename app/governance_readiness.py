@@ -1,6 +1,7 @@
 from typing import Any
 
 from app.settings import get_settings
+from app.skills.release_readiness import build_skill_release_readiness
 
 
 SCHEMA_VERSION = "ai-platform.governance-readiness.v1"
@@ -30,18 +31,27 @@ def _sandbox_provider(settings: object) -> str:
     return value if value in _SANDBOX_PROVIDER_VALUES else "unknown"
 
 
-def _domain(implemented: list[str], gaps: list[str], next_checks: list[str]) -> dict[str, Any]:
-    return {
+def _domain(
+    implemented: list[str],
+    gaps: list[str],
+    next_checks: list[str],
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    domain = {
         "status": "partial_blocked" if gaps else "ready_for_verification",
         "implemented": implemented,
         "gaps": gaps,
         "next_checks": next_checks,
     }
+    if evidence is not None:
+        domain["evidence"] = evidence
+    return domain
 
 
 def build_governance_readiness(settings: object | None = None) -> dict[str, Any]:
     """Build a secret-safe G6 governance readiness baseline for Admin Runtime and CLI use."""
     resolved_settings = settings or get_settings()
+    skill_release_readiness = build_skill_release_readiness()
     domains = {
         "tool_permission": _domain(
             implemented=[
@@ -69,6 +79,7 @@ def build_governance_readiness(settings: object | None = None) -> dict[str, Any]
                 "skill_release_promote_rollback_policy",
                 "skill_dependency_policy_materialization",
                 "skill_snapshot_and_release_decision_lock",
+                "skill_release_readiness_evidence_snapshot",
             ],
             gaps=[
                 "signed_skill_package_or_sbom_release_gate",
@@ -80,6 +91,14 @@ def build_governance_readiness(settings: object | None = None) -> dict[str, Any]
                 "keep ordinary users away from raw skill selection and staging internals",
                 "verify rollback uses materializable snapshots before changing policy",
             ],
+            evidence={
+                "release_readiness": {
+                    "schema_version": skill_release_readiness["schema_version"],
+                    "status": skill_release_readiness["status"],
+                    "summary": skill_release_readiness["summary"],
+                    "open_gaps": skill_release_readiness["open_gaps"],
+                }
+            },
         ),
         "memory_governance": _domain(
             implemented=[

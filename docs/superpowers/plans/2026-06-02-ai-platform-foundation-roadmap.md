@@ -171,6 +171,8 @@ records, user opt-out, Admin memory policy inventory, retention cleanup,
 redaction, Admin redaction preview/audit, long-term cross-session memory fail-closed behavior,
 delete/retention/export erasure evidence through
 `tools/memory_erasure_readiness.py`,
+secret-safe Skill release readiness evidence through
+`tools/skill_release_readiness.py`,
 frontend
 release traceability, static `dist/` release manifest with build-provenance
 gate, frontend projection audit wired first into `ci:verify`, packaged frontend image blocker

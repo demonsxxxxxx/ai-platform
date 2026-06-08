@@ -41,7 +41,14 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "legacy_frontend_route_policy_enforcement_or_ai_platform_remap" in domains["tool_permission"]["gaps"]
     assert "skill_release_promote_rollback_policy" in domains["skill_governance"]["implemented"]
     assert "skill_dependency_policy_materialization" in domains["skill_governance"]["implemented"]
+    assert "skill_release_readiness_evidence_snapshot" in domains["skill_governance"]["implemented"]
     assert "signed_skill_package_or_sbom_release_gate" in domains["skill_governance"]["gaps"]
+    release_evidence = domains["skill_governance"]["evidence"]["release_readiness"]
+    assert release_evidence["schema_version"] == "ai-platform.skill-release-readiness.v1"
+    assert release_evidence["status"] == "partial_blocked"
+    assert release_evidence["summary"]["total_skills"] >= 1
+    assert "signed_skill_package_or_sbom_release_gate" in release_evidence["open_gaps"]
+    assert "dependency_vulnerability_or_license_policy" in release_evidence["open_gaps"]
     assert "memory_retention_cleanup_admin_and_worker" in domains["memory_governance"]["implemented"]
     assert "long_term_cross_session_memory_default_fail_closed" in domains["memory_governance"]["implemented"]
     assert "memory_delete_retention_erasure_evidence_snapshot" in domains["memory_governance"]["implemented"]
