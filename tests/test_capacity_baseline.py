@@ -7,9 +7,11 @@ from app.capacity_baseline import (
     LOAD_TEST_GATES,
     build_capacity_baseline,
     build_capacity_evidence_snapshot,
+    build_capacity_gate_readiness,
     build_capacity_load_test_plan,
     render_capacity_baseline_markdown,
     render_capacity_evidence_snapshot_markdown,
+    render_capacity_gate_readiness_markdown,
     render_capacity_load_test_plan_markdown,
 )
 
@@ -308,6 +310,11 @@ def test_capacity_evidence_snapshot_extracts_live_signals_without_private_payloa
     assert snapshot["live_signals"]["observability"]["error_count"] == 1
     assert snapshot["load_test_evidence"]["status"] == "missing"
     assert snapshot["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
+    assert snapshot["admin_runtime_evidence"] == {
+        "required_sections": ["capacity", "database_pool", "queue", "admission", "backpressure", "sandbox", "observability"],
+        "observed_sections": ["capacity", "database_pool", "queue", "admission", "backpressure", "sandbox", "observability"],
+        "missing_sections": [],
+    }
 
     serialized = json.dumps(snapshot, ensure_ascii=False).lower()
     assert "pool-secret" not in serialized
@@ -382,6 +389,109 @@ def test_capacity_evidence_snapshot_cli_outputs_json_from_overview_file(tmp_path
     assert payload["runtime_identity"]["commit_sha"] == "abc123"
     assert payload["live_signals"]["queue"]["depths"]["queued"] == 2
     assert payload["load_test_evidence"]["status"] == "missing"
+    assert "sandbox" in payload["admin_runtime_evidence"]["missing_sections"]
     assert "pool-secret" not in result.stdout
+    assert "sk-secret" not in result.stdout
+    assert "executor_private_payload" not in result.stdout
+
+
+def test_capacity_gate_readiness_blocks_default_raise_until_load_gates_are_recorded():
+    snapshot = build_capacity_evidence_snapshot(
+        {
+            "capacity": build_capacity_baseline(SecretBearingSettings()),
+            "queue": {"status": {"depths": {"queued": 1, "processing": 0, "dead_letter": 0}}},
+            "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+            "admission": {"active_runs": 1, "saturated_users": 0},
+            "backpressure": {"reasons": []},
+            "sandbox": {"containers": {"running": 0}, "leases": {"active": 0}},
+            "observability": {"event_count": 3, "error_count": 0},
+            "executor_private_payload": {"api_key": "sk-secret"},
+        },
+        commit_sha="abc123",
+        runtime_profile="211-current",
+    )
+
+    readiness = build_capacity_gate_readiness(snapshot)
+
+    assert readiness["schema_version"] == "ai-platform.capacity-gate-readiness.v1"
+    assert readiness["status"] == "blocked_missing_load_test_evidence"
+    assert readiness["runtime_identity"] == {"commit_sha": "abc123", "profile": "211-current"}
+    assert readiness["admin_runtime_evidence"]["missing_sections"] == []
+    assert readiness["missing_load_test_gates"] == LOAD_TEST_GATES
+    assert {gate["gate"]: gate["status"] for gate in readiness["load_test_gates"]} == {
+        gate: "missing_recorded_load_test_evidence" for gate in LOAD_TEST_GATES
+    }
+    assert readiness["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
+
+    serialized = json.dumps(readiness, ensure_ascii=False).lower()
+    assert "sk-secret" not in serialized
+    assert "executor_private_payload" not in serialized
+
+
+def test_render_capacity_gate_readiness_markdown_is_gap_first_and_safe():
+    readiness = build_capacity_gate_readiness(
+        build_capacity_evidence_snapshot(
+            {
+                "capacity": build_capacity_baseline(SecretBearingSettings()),
+                "queue": {"status": {"depths": {"queued": 1, "processing": 0, "dead_letter": 0}}},
+                "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+                "admission": {"active_runs": 1, "saturated_users": 0},
+                "backpressure": {"reasons": []},
+                "sandbox": {"containers": {"running": 0}, "leases": {"active": 0}},
+                "observability": {"event_count": 3, "error_count": 0},
+            },
+            commit_sha="abc123",
+        )
+    )
+
+    markdown = render_capacity_gate_readiness_markdown(readiness)
+
+    assert "# ai-platform Capacity Gate Readiness" in markdown
+    assert "Status: `blocked_missing_load_test_evidence`" in markdown
+    assert "- api_read_write_burst" in markdown
+    assert "Do not raise production concurrency defaults" in markdown
+    assert "super-secret-password" not in markdown
+    assert "sk-secret" not in markdown
+
+
+def test_capacity_gate_readiness_cli_outputs_json_from_snapshot_file(tmp_path):
+    snapshot_path = tmp_path / "capacity-snapshot.json"
+    snapshot_path.write_text(
+        json.dumps(
+            build_capacity_evidence_snapshot(
+                {
+                    "capacity": build_capacity_baseline(SecretBearingSettings()),
+                    "queue": {"status": {"depths": {"queued": 1, "processing": 0, "dead_letter": 0}}},
+                    "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+                    "admission": {"active_runs": 1, "saturated_users": 0},
+                    "backpressure": {"reasons": []},
+                    "sandbox": {"containers": {"running": 0}, "leases": {"active": 0}},
+                    "observability": {"event_count": 3, "error_count": 0},
+                    "executor_private_payload": {"api_key": "sk-secret"},
+                },
+                commit_sha="abc123",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_gate_readiness.py",
+            "--snapshot-json",
+            str(snapshot_path),
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "ai-platform.capacity-gate-readiness.v1"
+    assert payload["status"] == "blocked_missing_load_test_evidence"
+    assert payload["missing_load_test_gates"] == LOAD_TEST_GATES
     assert "sk-secret" not in result.stdout
     assert "executor_private_payload" not in result.stdout

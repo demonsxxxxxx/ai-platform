@@ -65,6 +65,10 @@ overview into a secret-safe capacity evidence snapshot. The snapshot binds
 allowlisted live queue, admission, backpressure, DB-pool, sandbox, and
 observability signals to a deployed commit while still marking load-test
 evidence as missing until a real harness records the required gates.
+`python tools/capacity_gate_readiness.py --snapshot-json <capacity-evidence-snapshot.json>`
+then converts that snapshot into a fail-closed gate verdict, listing missing
+Admin Runtime sections and missing recorded load-test gates without sending
+load or changing defaults.
 
 This baseline does not claim a safe maximum concurrency number. Before raising
 `MAX_ACTIVE_WORKER_RUNS`, `MAX_ACTIVE_RUNS_PER_USER`, DB pool size,

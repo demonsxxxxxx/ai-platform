@@ -18,6 +18,8 @@ python tools/capacity_load_plan.py --format markdown --base-url http://127.0.0.1
 python tools/capacity_load_plan.py --format json --base-url http://127.0.0.1:8020
 python tools/capacity_evidence_snapshot.py --overview-json <admin-runtime-overview.json> --commit-sha <deployed-commit> --format markdown
 python tools/capacity_evidence_snapshot.py --overview-json <admin-runtime-overview.json> --commit-sha <deployed-commit> --format json
+python tools/capacity_gate_readiness.py --snapshot-json <capacity-evidence-snapshot.json> --format markdown
+python tools/capacity_gate_readiness.py --snapshot-json <capacity-evidence-snapshot.json> --format json
 ```
 
 The scripts intentionally do not print DSNs, Redis URLs, model gateway URLs,
@@ -95,6 +97,19 @@ bind live signals to a deployed commit while preserving the #21 rule that
 load-test evidence is still `missing` until a real harness run records the
 required gates. It does not read gateway secrets, send load, create runs, or
 raise any default.
+
+After generating a snapshot, operators can produce a gate verdict with:
+
+```powershell
+python tools/capacity_gate_readiness.py --snapshot-json .\capacity-evidence-snapshot.json --format markdown
+python tools/capacity_gate_readiness.py --snapshot-json .\capacity-evidence-snapshot.json --format json
+```
+
+The verdict checks whether all required Admin Runtime sections were captured
+and whether all seven load-test gates have recorded evidence. It is a
+fail-closed verifier: missing sections or missing recorded gates keep
+`production_default_decision =
+do_not_raise_without_recorded_load_test_evidence`.
 
 ### 211 Snapshot Evidence - 2026-06-08
 

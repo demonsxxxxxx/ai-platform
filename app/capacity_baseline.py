@@ -263,6 +263,23 @@ def _observability_live_signals(overview: dict[str, Any]) -> dict[str, object]:
     }
 
 
+def _admin_runtime_section_evidence(overview: dict[str, Any]) -> dict[str, object]:
+    observed_sections = [
+        section
+        for section in _LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS
+        if section in overview and overview.get(section) is not None
+    ]
+    return {
+        "required_sections": list(_LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS),
+        "observed_sections": observed_sections,
+        "missing_sections": [
+            section
+            for section in _LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS
+            if section not in observed_sections
+        ],
+    }
+
+
 def _safe_capacity_value(value: object, default: object) -> object:
     if isinstance(default, bool):
         return value if isinstance(value, bool) else default
@@ -496,6 +513,7 @@ def build_capacity_evidence_snapshot(
     safe_overview = _dict(overview)
     capacity = _safe_capacity_snapshot(safe_overview.get("capacity"))
     backpressure = _dict(safe_overview.get("backpressure"))
+    admin_runtime_evidence = _admin_runtime_section_evidence(safe_overview)
     return {
         "schema_version": "ai-platform.capacity-evidence-snapshot.v1",
         "source": {
@@ -506,6 +524,7 @@ def build_capacity_evidence_snapshot(
             "commit_sha": _safe_identity(commit_sha),
             "profile": _safe_identity(runtime_profile),
         },
+        "admin_runtime_evidence": admin_runtime_evidence,
         "capacity": capacity,
         "live_signals": {
             "queue": _queue_live_signals(safe_overview),
@@ -524,6 +543,79 @@ def build_capacity_evidence_snapshot(
         },
         "capacity_answer": "safe_max_concurrency_unproven_without_recorded_load_test_evidence",
         "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+    }
+
+
+def _snapshot_admin_runtime_evidence(snapshot: dict[str, Any]) -> dict[str, object]:
+    source = _dict(snapshot.get("admin_runtime_evidence"))
+    required = source.get("required_sections")
+    observed = source.get("observed_sections")
+    required_sections = [
+        section for section in required if section in _LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS
+    ] if isinstance(required, list) else list(_LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS)
+    observed_sections = [
+        section for section in observed if section in required_sections
+    ] if isinstance(observed, list) else []
+    if not observed_sections:
+        live_signals = _dict(snapshot.get("live_signals"))
+        observed_sections = [
+            section
+            for section in required_sections
+            if (section == "capacity" and isinstance(snapshot.get("capacity"), dict))
+            or (section != "capacity" and section in live_signals)
+        ]
+    return {
+        "required_sections": required_sections,
+        "observed_sections": observed_sections,
+        "missing_sections": [section for section in required_sections if section not in observed_sections],
+    }
+
+
+def build_capacity_gate_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Build a secret-safe #21 readiness verdict from a capacity evidence snapshot."""
+    safe_snapshot = _dict(snapshot)
+    runtime_identity = _dict(safe_snapshot.get("runtime_identity"))
+    admin_runtime_evidence = _snapshot_admin_runtime_evidence(safe_snapshot)
+    load_test_evidence = _dict(safe_snapshot.get("load_test_evidence"))
+    required_gates_source = load_test_evidence.get("required_gates")
+    required_gates = [
+        gate for gate in required_gates_source if gate in LOAD_TEST_GATES
+    ] if isinstance(required_gates_source, list) else list(LOAD_TEST_GATES)
+    recorded_gates_source = load_test_evidence.get("recorded_gates")
+    recorded_gates = [
+        gate for gate in recorded_gates_source if gate in required_gates
+    ] if load_test_evidence.get("status") == "recorded" and isinstance(recorded_gates_source, list) else []
+    missing_gates = [gate for gate in required_gates if gate not in recorded_gates]
+    missing_sections = list(admin_runtime_evidence["missing_sections"])
+    if missing_sections:
+        status = "blocked_missing_admin_runtime_sections"
+    elif missing_gates:
+        status = "blocked_missing_load_test_evidence"
+    else:
+        status = "ready_for_operator_review"
+    return {
+        "schema_version": "ai-platform.capacity-gate-readiness.v1",
+        "status": status,
+        "runtime_identity": {
+            "commit_sha": _safe_identity(runtime_identity.get("commit_sha")),
+            "profile": _safe_identity(runtime_identity.get("profile")),
+        },
+        "admin_runtime_evidence": admin_runtime_evidence,
+        "load_test_evidence_status": _safe_identity(load_test_evidence.get("status") or "missing"),
+        "load_test_gates": [
+            {
+                "gate": gate,
+                "status": "recorded" if gate in recorded_gates else "missing_recorded_load_test_evidence",
+            }
+            for gate in required_gates
+        ],
+        "missing_load_test_gates": missing_gates,
+        "capacity_answer": "safe_max_concurrency_unproven_without_recorded_load_test_evidence"
+        if missing_gates or missing_sections
+        else "operator_review_required_before_default_change",
+        "production_default_decision": "do_not_raise_without_recorded_load_test_evidence"
+        if missing_gates or missing_sections
+        else "operator_review_required_before_default_change",
     }
 
 
@@ -638,6 +730,35 @@ def render_capacity_evidence_snapshot_markdown(snapshot: dict[str, Any]) -> str:
         f"| Running sandbox containers | `{_coerce_int(sandbox.get('running_containers'))}` |\n"
         f"| Active sandbox leases | `{_coerce_int(sandbox.get('active_leases'))}` |\n"
         f"| Backpressure reasons | `{reasons}` |\n\n"
+        "## Production Default Decision\n\n"
+        "Do not raise production concurrency defaults without recorded load-test evidence.\n"
+    )
+
+
+def render_capacity_gate_readiness_markdown(readiness: dict[str, Any]) -> str:
+    """Render a #21 capacity gate readiness verdict as operator-readable Markdown."""
+    missing_sections = "\n".join(
+        f"- {section}" for section in readiness["admin_runtime_evidence"]["missing_sections"]
+    ) or "- none"
+    missing_gates = "\n".join(f"- {gate}" for gate in readiness["missing_load_test_gates"]) or "- none"
+    gate_rows = "\n".join(
+        f"| {item['gate']} | `{item['status']}` |"
+        for item in readiness["load_test_gates"]
+    )
+    return (
+        "# ai-platform Capacity Gate Readiness\n\n"
+        f"Schema: `{readiness['schema_version']}`\n\n"
+        f"Status: `{readiness['status']}`\n\n"
+        f"Commit: `{readiness['runtime_identity']['commit_sha']}`\n\n"
+        f"Runtime profile: `{readiness['runtime_identity']['profile']}`\n\n"
+        "## Missing Admin Runtime Sections\n\n"
+        f"{missing_sections}\n\n"
+        "## Missing Load-Test Gates\n\n"
+        f"{missing_gates}\n\n"
+        "## Gate Status\n\n"
+        "| Gate | Status |\n"
+        "| --- | --- |\n"
+        f"{gate_rows}\n\n"
         "## Production Default Decision\n\n"
         "Do not raise production concurrency defaults without recorded load-test evidence.\n"
     )
