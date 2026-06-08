@@ -157,11 +157,15 @@ Current source also exposes a machine-readable G9 readiness baseline through
 runtime overview field `observability_readiness` with schema
 `ai-platform.observability-readiness.v1`. This source-level projection records
 implemented runtime-metric, error-taxonomy, quality-evaluation, and
-alert/export baselines plus open gaps. The alert/export baseline now embeds
+alert/export baselines plus open gaps. Runtime metrics now include the
+source-level Admin Runtime latency percentiles p50/p95/p99 projection
+`latency_percentiles_p50_p95_p99_admin_projection`; G9 still keeps
+`latency_percentile_runtime_211_acceptance` open until the projection has 211
+runtime evidence and per-surface latency splits. The alert/export baseline now embeds
 `ai-platform.alert-slo-readiness.v1` rule-template evidence for queue,
 database, worker, model-gateway, sandbox, error-taxonomy, and capacity-gate
 signals. It does not close G9 and does not replace recorded load-test evidence,
-latency percentiles, model-gateway load-test evidence, taxonomy dashboard
+latency percentile runtime acceptance, model-gateway load-test evidence, taxonomy dashboard
 acceptance, golden-set evaluation runtime and 211 acceptance, alert
 runtime/dashboard/211 acceptance, trace/audit export contracts, or 211
 deployment smoke.

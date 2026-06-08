@@ -201,6 +201,9 @@ def _sanitize_observability_summary(value: object) -> dict[str, object]:
     summary["latency_ms"] = {
         "avg": _coerce_int(latency["avg"]) if latency.get("avg") is not None else None,
         "max": _coerce_int(latency["max"]) if latency.get("max") is not None else None,
+        "p50": _coerce_int(latency["p50"]) if latency.get("p50") is not None else None,
+        "p95": _coerce_int(latency["p95"]) if latency.get("p95") is not None else None,
+        "p99": _coerce_int(latency["p99"]) if latency.get("p99") is not None else None,
     }
     return summary
 

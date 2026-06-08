@@ -76,16 +76,17 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
             implemented=[
                 "admin_runtime_observability_summary",
                 "token_cost_latency_error_counts",
+                "latency_percentiles_p50_p95_p99_admin_projection",
                 "queue_admission_database_pool_backpressure_summary",
                 "capacity_runtime_evidence_capture",
             ],
             gaps=[
-                "latency_percentiles_p50_p95_p99",
+                "latency_percentile_runtime_211_acceptance",
                 *model_gateway_capacity_gaps,
                 "recorded_capacity_load_test_evidence",
             ],
             next_checks=[
-                "record p50, p95, and p99 latency for API, queue lease, worker, model, sandbox, artifact, cancel, retry, and resume",
+                "verify p50, p95, and p99 latency projections on 211 and split API, queue lease, worker, model, sandbox, artifact, cancel, retry, and resume latency before G9 closure",
                 "add or prove model-gateway timeout and concurrency pressure signals before raising defaults",
                 "keep capacity gate blocked until real load-test evidence is recorded",
             ],

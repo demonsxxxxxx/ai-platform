@@ -193,6 +193,9 @@ def test_observability_docs_record_quality_golden_set_contract_without_closing_g
     roadmap_text = read(ROADMAP)
 
     for text in (observability_text, roadmap_text):
+        assert "latency percentiles p50/p95/p99" in text
+        assert "latency_percentiles_p50_p95_p99_admin_projection" in text
+        assert "latency_percentile_runtime_211_acceptance" in text
         assert "ai-platform.quality-golden-set-readiness.v1" in text
         assert "ai-platform.golden-set-eval-evidence-contract.v1" in text
         assert "quality_evaluation.golden_set_runs.<eval_run_id>" in text

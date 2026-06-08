@@ -4639,7 +4639,13 @@ async def get_admin_runtime_observability_summary(
             count(*) as event_count,
             count(*) filter (where error_code is not null and error_code <> '') as event_error_count,
             avg(latency_ms) filter (where latency_ms is not null) as avg_latency_ms,
-            max(latency_ms) as max_latency_ms
+            max(latency_ms) as max_latency_ms,
+            percentile_cont(0.5) within group (order by latency_ms)
+              filter (where latency_ms is not null) as p50_latency_ms,
+            percentile_cont(0.95) within group (order by latency_ms)
+              filter (where latency_ms is not null) as p95_latency_ms,
+            percentile_cont(0.99) within group (order by latency_ms)
+              filter (where latency_ms is not null) as p99_latency_ms
           from run_events
           where tenant_id = %s
         ),
@@ -4685,6 +4691,9 @@ async def get_admin_runtime_observability_summary(
           error_types.error_types,
           event_summary.avg_latency_ms,
           event_summary.max_latency_ms,
+          event_summary.p50_latency_ms,
+          event_summary.p95_latency_ms,
+          event_summary.p99_latency_ms,
           run_totals.run_input_token_count as input_token_count,
           run_totals.run_output_token_count as output_token_count,
           run_totals.run_total_token_count as total_token_count,
@@ -4702,6 +4711,9 @@ async def get_admin_runtime_observability_summary(
     }
     avg_latency = row.get("avg_latency_ms")
     max_latency = row.get("max_latency_ms")
+    p50_latency = row.get("p50_latency_ms")
+    p95_latency = row.get("p95_latency_ms")
+    p99_latency = row.get("p99_latency_ms")
     return {
         "event_count": _coerce_int(row.get("event_count")),
         "artifact_count": _coerce_int(row.get("artifact_count")),
@@ -4711,6 +4723,9 @@ async def get_admin_runtime_observability_summary(
         "latency_ms": {
             "avg": _coerce_int(avg_latency) if avg_latency is not None else None,
             "max": _coerce_int(max_latency) if max_latency is not None else None,
+            "p50": _coerce_int(p50_latency) if p50_latency is not None else None,
+            "p95": _coerce_int(p95_latency) if p95_latency is not None else None,
+            "p99": _coerce_int(p99_latency) if p99_latency is not None else None,
         },
         "token_counts": {
             "input": _coerce_int(row.get("input_token_count")),

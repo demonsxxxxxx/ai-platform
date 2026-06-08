@@ -41,7 +41,9 @@ def test_observability_readiness_records_g9_domains_and_open_gaps_without_secret
     }
     assert "admin_runtime_observability_summary" in domains["runtime_metrics"]["implemented"]
     assert "token_cost_latency_error_counts" in domains["runtime_metrics"]["implemented"]
-    assert "latency_percentiles_p50_p95_p99" in domains["runtime_metrics"]["gaps"]
+    assert "latency_percentiles_p50_p95_p99_admin_projection" in domains["runtime_metrics"]["implemented"]
+    assert "latency_percentiles_p50_p95_p99" not in domains["runtime_metrics"]["gaps"]
+    assert "latency_percentile_runtime_211_acceptance" in domains["runtime_metrics"]["gaps"]
     assert "formal_error_taxonomy_contract" in domains["error_taxonomy"]["implemented"]
     assert "error_category_mapping_for_executor_tool_sandbox_model_gateway" in domains["error_taxonomy"]["implemented"]
     assert "quality_golden_set_readiness_contract" in domains["quality_evaluation"]["implemented"]
@@ -52,6 +54,7 @@ def test_observability_readiness_records_g9_domains_and_open_gaps_without_secret
     assert "alert_rules_and_slo_thresholds" not in domains["alerts_and_exports"]["gaps"]
     assert "trace_audit_export_contract" in domains["alerts_and_exports"]["gaps"]
     assert "model_gateway_request_concurrency_limit" in readiness["open_gaps"]
+    assert "latency_percentile_runtime_211_acceptance" in readiness["open_gaps"]
     assert readiness["config_signals"]["model_gateway_request_concurrency_limit"] is None
     assert "alert_delivery_channel_policy" in readiness["open_gaps"]
     assert "slo_threshold_runtime_calibration" in readiness["open_gaps"]
@@ -258,6 +261,8 @@ def test_render_observability_readiness_markdown_is_operator_readable_and_gap_fi
     assert "Status: `partial_blocked`" in markdown
     assert "## Open Gaps" in markdown
     assert "formal_error_taxonomy_contract" in markdown
+    assert "latency_percentiles_p50_p95_p99_admin_projection" in markdown
+    assert "latency_percentile_runtime_211_acceptance" in markdown
     assert "quality_golden_set_readiness_contract" in markdown
     assert "ai-platform.quality-golden-set-readiness.v1" in markdown
     assert "ai-platform.golden-set-eval-evidence-contract.v1" in markdown

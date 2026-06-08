@@ -873,7 +873,14 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
                 "sandbox_runtime_cleanup_failed": 2,
                 "model_gateway_timeout": 3,
             },
-            "latency_ms": {"avg": 20, "max": 30},
+            "latency_ms": {
+                "avg": 20,
+                "max": 30,
+                "p50": 21,
+                "p95": 28,
+                "p99": 29,
+                "sandbox_workdir": "/tmp/private-run",
+            },
             "token_counts": {"input": 10, "output": 12, "total": 22},
             "estimated_cost_minor": 7,
         }
@@ -960,6 +967,13 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
         "history_included": True,
     }
     assert body["observability"]["token_counts"]["total"] == 22
+    assert body["observability"]["latency_ms"] == {
+        "avg": 20,
+        "max": 30,
+        "p50": 21,
+        "p95": 28,
+        "p99": 29,
+    }
     assert body["observability"]["error_categories"] == {
         "executor": 1,
         "sandbox": 2,
@@ -1128,7 +1142,7 @@ def test_admin_runtime_overview_sanitizes_summary_payloads(monkeypatch):
             "artifact_count": 0,
             "error_count": 1,
             "error_types": {"executor_failure token=route-error-type-token": 1},
-            "latency_ms": {"avg": None, "max": None},
+            "latency_ms": {"avg": None, "max": None, "p50": None, "p95": None, "p99": None},
             "token_counts": {"input": 0, "output": 0, "total": 0},
             "estimated_cost_minor": 0,
         }
@@ -1197,7 +1211,13 @@ def test_admin_runtime_overview_sanitizes_summary_payloads(monkeypatch):
     assert "raw_queue_payload" not in backpressure_serialized
     assert "storage_key" not in backpressure_serialized
     assert "private-output.json" not in backpressure_serialized
-    assert response.json()["observability"]["latency_ms"] == {"avg": None, "max": None}
+    assert response.json()["observability"]["latency_ms"] == {
+        "avg": None,
+        "max": None,
+        "p50": None,
+        "p95": None,
+        "p99": None,
+    }
 
 
 def test_admin_runtime_backpressure_omits_worker_available_from_reasons():

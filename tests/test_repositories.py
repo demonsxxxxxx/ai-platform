@@ -4397,6 +4397,9 @@ async def test_get_admin_runtime_observability_summary_coerces_nulls_to_defaults
                     "error_types": None,
                     "avg_latency_ms": None,
                     "max_latency_ms": None,
+                    "p50_latency_ms": None,
+                    "p95_latency_ms": None,
+                    "p99_latency_ms": None,
                     "input_token_count": None,
                     "output_token_count": None,
                     "total_token_count": None,
@@ -4415,7 +4418,7 @@ async def test_get_admin_runtime_observability_summary_coerces_nulls_to_defaults
         "error_count": 0,
         "error_types": {},
         "error_categories": {},
-        "latency_ms": {"avg": None, "max": None},
+        "latency_ms": {"avg": None, "max": None, "p50": None, "p95": None, "p99": None},
         "token_counts": {"input": 0, "output": 0, "total": 0},
         "estimated_cost_minor": 0,
     }
@@ -4434,10 +4437,15 @@ async def test_get_admin_runtime_observability_summary_uses_run_totals_for_termi
         async def execute(self, sql, params):
             compact = " ".join(sql.lower().split())
             assert all(param == "tenant-a" for param in params)
+            assert len(params) == 5
+            assert compact.count("tenant_id = %s") == 5
             assert "+ event_summary.event_input_token_count" not in compact
             assert "+ event_summary.event_output_token_count" not in compact
             assert "+ event_summary.event_total_token_count" not in compact
             assert "+ event_summary.event_estimated_cost_minor" not in compact
+            assert "percentile_cont(0.5)" in compact
+            assert "percentile_cont(0.95)" in compact
+            assert "percentile_cont(0.99)" in compact
             return SummaryCursor(
                 {
                     "event_count": 2,
@@ -4446,6 +4454,9 @@ async def test_get_admin_runtime_observability_summary_uses_run_totals_for_termi
                     "error_types": {"executor_failure": 2},
                     "avg_latency_ms": 250,
                     "max_latency_ms": 300,
+                    "p50_latency_ms": 240,
+                    "p95_latency_ms": 295,
+                    "p99_latency_ms": 299,
                     "input_token_count": 10,
                     "output_token_count": 20,
                     "total_token_count": 30,
@@ -4462,6 +4473,6 @@ async def test_get_admin_runtime_observability_summary_uses_run_totals_for_termi
     assert summary["error_count"] == 2
     assert summary["error_types"] == {"executor_failure": 2}
     assert summary["error_categories"] == {"executor": 2}
-    assert summary["latency_ms"] == {"avg": 250, "max": 300}
+    assert summary["latency_ms"] == {"avg": 250, "max": 300, "p50": 240, "p95": 295, "p99": 299}
     assert summary["token_counts"] == {"input": 10, "output": 20, "total": 30}
     assert summary["estimated_cost_minor"] == 7

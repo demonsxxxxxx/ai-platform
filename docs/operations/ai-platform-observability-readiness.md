@@ -4,7 +4,8 @@ Date: 2026-06-08
 
 This document records the current G9 Observability / Quality / Ops readiness
 baseline. It is an operator readiness snapshot, not a gate-closure claim. G9
-remains partial until latency percentiles, model-gateway pressure controls and
+remains partial until the latency percentiles p50/p95/p99 admin projection is
+accepted on 211 with runtime evidence, model-gateway pressure controls and
 recorded capacity load-test evidence, error taxonomy dashboard acceptance,
 golden-set evaluation runtime and 211 acceptance, alert/SLO runtime acceptance,
 and trace/audit export contracts have code, tests, docs, review, and runtime
@@ -32,9 +33,10 @@ GET /api/ai/admin/runtime/overview
 
 Current source exposes:
 
-- `observability`: same-tenant token, cost, latency average/max, error count,
-  artifact count, sanitized error type counts, public error taxonomy category
-  counts, and sanitized recent failure aggregates.
+- `observability`: same-tenant token, cost, latency average/max and latency
+  percentiles p50/p95/p99, error count, artifact count, sanitized error type
+  counts, public error taxonomy category counts, and sanitized recent failure
+  aggregates.
 - `capacity`: configured capacity ceiling and missing load-test gates.
 - `database_pool`, `queue`, `admission`, and `backpressure`: bounded runtime
   pressure signals used by the #21 capacity evidence snapshot.
@@ -51,7 +53,7 @@ or ordinary-user private content.
 
 | Domain | Implemented baseline | Remaining gap |
 | --- | --- | --- |
-| Runtime metrics | Admin Runtime observability summary, token/cost/latency/error counts, queue/admission/DB-pool backpressure summary, config-visible model-gateway request limit status, capacity runtime evidence capture | p50/p95/p99 latency for API, queue lease, worker, model, sandbox, artifact, cancel, retry, and resume; enforced model-gateway request-limit/backpressure gate plus recorded model-gateway load-test evidence; recorded capacity load-test evidence |
+| Runtime metrics | Admin Runtime observability summary, token/cost/latency/error counts, `latency_percentiles_p50_p95_p99_admin_projection`, queue/admission/DB-pool backpressure summary, config-visible model-gateway request limit status, capacity runtime evidence capture | `latency_percentile_runtime_211_acceptance` for 211 proof and per-surface splits across API, queue lease, worker, model, sandbox, artifact, cancel, retry, and resume; enforced model-gateway request-limit/backpressure gate plus recorded model-gateway load-test evidence; recorded capacity load-test evidence |
 | Error taxonomy | Formal `ai-platform.error-taxonomy.v1` contract, category mapping for executor/tool/sandbox/model-gateway/queue/database/memory/artifact/auth failures, Admin Runtime `error_categories`, run event error count projection, and redacted recent failure projection | Dashboard acceptance and 211/runtime evidence for taxonomy-driven operations |
 | Quality evaluation | Run trace/audit linkage baseline, source-level `ai-platform.quality-golden-set-readiness.v1` contract, and `ai-platform.quality-score.v1` score schema | Golden-set evaluation runtime and 211 acceptance, office workflow acceptance dataset, quality threshold calibration, dashboard acceptance |
 | Alerts and exports | Admin Runtime overview projection, fail-closed capacity gate readiness verdict, and source-level `ai-platform.alert-slo-readiness.v1` rule template evidence for queue, database, worker, model gateway, sandbox, error-taxonomy, and capacity gates | Alert runtime dashboard and 211 acceptance, delivery-channel policy, runtime SLO calibration, trace/audit export contract, release evidence export location |
@@ -149,7 +151,7 @@ repo-local services source target with OCI labels:
 
 This runtime evidence proves the source-level G9 taxonomy/readiness projection
 is deployed on 211. It does not close G9 because the remaining latency
-percentiles, model-gateway concurrency/backpressure, recorded load-test
+percentile 211 acceptance, model-gateway concurrency/backpressure, recorded load-test
 evidence, taxonomy dashboard acceptance, golden-set evaluation, alert runtime
 acceptance, and export contracts are still open.
 
@@ -194,7 +196,7 @@ commit and retained:
 
 This follow-up evidence proves the latest deployed main commit still exposes
 the G9 readiness and error-taxonomy projections safely on 211. It still does
-not close G9 because latency percentiles, model-gateway concurrency and
+not close G9 because latency percentile runtime acceptance, model-gateway concurrency and
 backpressure controls, recorded load-test evidence, dashboard acceptance,
 golden-set evaluation, alert runtime acceptance, and export contracts remain
 open.
