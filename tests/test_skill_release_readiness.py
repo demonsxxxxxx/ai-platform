@@ -3,7 +3,11 @@ import os
 import subprocess
 import sys
 
-from app.skills.release_readiness import build_skill_release_readiness, render_skill_release_readiness_markdown
+from app.skills.release_readiness import (
+    build_skill_release_readiness,
+    build_skill_release_review_template,
+    render_skill_release_readiness_markdown,
+)
 
 
 def _write_skill(root, skill_id: str, description: str, extra_files: dict[str, str] | None = None) -> None:
@@ -197,3 +201,91 @@ def test_skill_release_readiness_redacts_secret_like_evidence_path_segments(tmp_
     assert readiness["skills"][0]["package_evidence"]["sbom_files"] == ["sbom.json"]
     assert readiness["skills"][0]["package_evidence"]["requirements_files"] == ["requirements.txt"]
     assert readiness["skills"][0]["package_evidence"]["vulnerability_evidence_files"] == ["npm-audit.json"]
+
+
+def test_skill_release_review_template_is_pending_and_does_not_clear_gate():
+    template = build_skill_release_review_template(skill_id="general-chat")
+
+    assert template["schema_version"] == "ai-platform.skill-release-review.v1"
+    assert template["status"] == "pending"
+    assert template["skill_id"] == "general-chat"
+    assert template["sbom_reviewed"] is False
+    assert template["license_policy_reviewed"] is False
+    assert template["vulnerability_reviewed"] is False
+    assert template["does_not_close_gate_by_itself"] is True
+    assert template["required_evidence"]["sbom_or_signed_package"]
+    assert template["required_evidence"]["license_policy"]
+    assert template["required_evidence"]["vulnerability_scan"]
+
+    serialized = json.dumps(template, ensure_ascii=False)
+    assert "token=secret" not in serialized
+    assert ".env" not in serialized
+    assert ".claude/skills" not in serialized
+    assert "work_dir" not in serialized
+
+
+def test_skill_release_review_template_rejects_secret_like_or_path_skill_ids():
+    for skill_id in ("token=secret", "../general-chat", "private/.env", "general chat"):
+        try:
+            build_skill_release_review_template(skill_id=skill_id)
+        except ValueError as exc:
+            assert "Invalid skill_id" in str(exc)
+        else:
+            raise AssertionError(f"expected invalid skill_id to be rejected: {skill_id}")
+
+
+def test_skill_release_readiness_cli_outputs_review_template_json_without_writing_files(tmp_path):
+    output_path = tmp_path / "ai-platform-skill-release-review.json"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/skill_release_readiness.py",
+            "--review-template",
+            "--skill-id",
+            "general-chat",
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "ai-platform.skill-release-review.v1"
+    assert payload["status"] == "pending"
+    assert payload["skill_id"] == "general-chat"
+    assert payload["sbom_reviewed"] is False
+    assert payload["license_policy_reviewed"] is False
+    assert payload["vulnerability_reviewed"] is False
+    assert output_path.exists() is False
+    assert str(tmp_path) not in result.stdout
+    assert "token=secret" not in result.stdout
+
+
+def test_skill_release_readiness_cli_can_write_review_template_when_output_is_explicit(tmp_path):
+    output_path = tmp_path / "ai-platform-skill-release-review.json"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/skill_release_readiness.py",
+            "--review-template",
+            "--skill-id",
+            "general-chat",
+            "--format",
+            "json",
+            "--output",
+            str(output_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout == ""
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "pending"
+    assert payload["skill_id"] == "general-chat"
+    assert "token=secret" not in output_path.read_text(encoding="utf-8")

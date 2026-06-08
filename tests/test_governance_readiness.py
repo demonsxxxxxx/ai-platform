@@ -42,6 +42,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "skill_release_promote_rollback_policy" in domains["skill_governance"]["implemented"]
     assert "skill_dependency_policy_materialization" in domains["skill_governance"]["implemented"]
     assert "skill_release_readiness_evidence_snapshot" in domains["skill_governance"]["implemented"]
+    assert "skill_release_review_template_entrypoint" in domains["skill_governance"]["implemented"]
     assert "signed_skill_package_or_sbom_release_gate" in domains["skill_governance"]["gaps"]
     release_evidence = domains["skill_governance"]["evidence"]["release_readiness"]
     assert release_evidence["schema_version"] == "ai-platform.skill-release-readiness.v1"

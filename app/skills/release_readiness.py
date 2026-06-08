@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from app.skills.dependencies import (
@@ -58,6 +59,75 @@ _RELEASE_REVIEW_FILE_NAMES = {
     "skill-release-review.json",
 }
 _RELEASE_REVIEW_SCHEMA_VERSION = "ai-platform.skill-release-review.v1"
+_SKILL_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+_FORBIDDEN_SKILL_ID_MARKERS = (
+    "/",
+    "\\",
+    "..",
+    ".env",
+    ".claude",
+    "secret",
+    "token=",
+    "work_dir",
+)
+
+
+def _validate_skill_id(skill_id: str) -> str:
+    normalized = str(skill_id or "").strip()
+    lowered = normalized.lower()
+    if (
+        not _SKILL_ID_PATTERN.fullmatch(normalized)
+        or any(marker in lowered for marker in _FORBIDDEN_SKILL_ID_MARKERS)
+    ):
+        raise ValueError("Invalid skill_id for release review template")
+    return normalized
+
+
+def build_skill_release_review_template(*, skill_id: str) -> dict[str, Any]:
+    """Build a pending, operator-fillable review manifest that cannot close G6 by itself."""
+    normalized_skill_id = _validate_skill_id(skill_id)
+    return {
+        "schema_version": _RELEASE_REVIEW_SCHEMA_VERSION,
+        "status": "pending",
+        "skill_id": normalized_skill_id,
+        "reviewer": "",
+        "reviewed_at": "",
+        "sbom_reviewed": False,
+        "license_policy_reviewed": False,
+        "vulnerability_reviewed": False,
+        "does_not_close_gate_by_itself": True,
+        "required_evidence": {
+            "sbom_or_signed_package": sorted(_SBOM_FILE_NAMES),
+            "license_policy": sorted(_LICENSE_FILE_NAMES),
+            "vulnerability_scan": sorted(_VULNERABILITY_EVIDENCE_NAMES),
+        },
+        "evidence_files": {
+            "sbom_or_signed_package": [],
+            "license_policy": [],
+            "vulnerability_scan": [],
+        },
+        "review_checklist": [
+            {
+                "id": "sbom_or_signed_package",
+                "passed": False,
+                "notes": "Confirm package provenance and SBOM or signed-package evidence before setting sbom_reviewed=true.",
+            },
+            {
+                "id": "license_policy",
+                "passed": False,
+                "notes": "Confirm third-party license policy evidence before setting license_policy_reviewed=true.",
+            },
+            {
+                "id": "vulnerability_scan",
+                "passed": False,
+                "notes": "Confirm dependency vulnerability scan evidence before setting vulnerability_reviewed=true.",
+            },
+        ],
+        "operator_instructions": (
+            "Keep status pending until real evidence files are present and reviewed. "
+            "Only change status to passed after all review booleans are true."
+        ),
+    }
 
 
 def _relative_file_names(skill_dir: Path) -> list[str]:
@@ -299,4 +369,32 @@ def render_skill_release_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"{skills_markdown}\n\n"
         "## Evidence Policy\n\n"
         f"{readiness['evidence_policy']}\n"
+    )
+
+
+def render_skill_release_review_template_markdown(template: dict[str, Any]) -> str:
+    required_lines = []
+    for category, filenames in template["required_evidence"].items():
+        required_lines.append(f"- `{category}`: `{', '.join(filenames)}`")
+    checklist_lines = []
+    for item in template["review_checklist"]:
+        checklist_lines.append(f"- `{item['id']}`: passed `{item['passed']}`, notes `{item['notes']}`")
+    required_markdown = "\n".join(required_lines)
+    checklist_markdown = "\n".join(checklist_lines)
+    return (
+        "# ai-platform Skill Release Review Template\n\n"
+        f"Schema: `{template['schema_version']}`\n\n"
+        f"Skill: `{template['skill_id']}`\n\n"
+        f"Status: `{template['status']}`\n\n"
+        f"Does not close gate by itself: `{template['does_not_close_gate_by_itself']}`\n\n"
+        "## Review Flags\n\n"
+        f"- SBOM reviewed: `{template['sbom_reviewed']}`\n"
+        f"- License policy reviewed: `{template['license_policy_reviewed']}`\n"
+        f"- Vulnerability reviewed: `{template['vulnerability_reviewed']}`\n\n"
+        "## Required Evidence\n\n"
+        f"{required_markdown}\n\n"
+        "## Checklist\n\n"
+        f"{checklist_markdown}\n\n"
+        "## Operator Instructions\n\n"
+        f"{template['operator_instructions']}\n"
     )

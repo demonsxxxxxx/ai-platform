@@ -80,6 +80,7 @@ def build_governance_readiness(settings: object | None = None) -> dict[str, Any]
                 "skill_dependency_policy_materialization",
                 "skill_snapshot_and_release_decision_lock",
                 "skill_release_readiness_evidence_snapshot",
+                "skill_release_review_template_entrypoint",
             ],
             gaps=[
                 "signed_skill_package_or_sbom_release_gate",

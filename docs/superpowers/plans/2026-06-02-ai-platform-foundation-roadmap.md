@@ -144,8 +144,8 @@ policy-gated.
 This provides the traceability and audit base for backend/worker/frontend
 same-commit review. `.github/workflows/ai-platform-frontend.yml` now runs
 frontend install, `ci:verify`, and release traceability on relevant source
-changes, and GitHub Actions run `27104398690` passed on commit
-`11ab56c660385f6790964af3d5bd60e3d4431ff2`. The remaining #17
+changes, and GitHub Actions run `27116320577` passed on commit
+`d7b02e20968353611fc9813a1302976f28abe650`. The remaining #17
 source-ownership evidence is later packaged frontend image delivery and release
 acceptance; the current trace only records that blocker fail-closed. It does
 not close legacy policy enforcement / ai-platform projection remap.
@@ -177,6 +177,8 @@ delete/retention/export erasure evidence through
 `tools/memory_erasure_readiness.py`,
 secret-safe Skill release readiness evidence through
 `tools/skill_release_readiness.py`,
+pending Skill release review-manifest template generation through
+`tools/skill_release_readiness.py --review-template --skill-id <skill-id>`,
 frontend
 release traceability, static `dist/` release manifest with build-provenance
 gate, frontend projection audit wired first into `ci:verify`, packaged frontend image blocker
@@ -187,10 +189,10 @@ inactive legacy secret-like source reporting.
 This does not close G6. Remaining blockers are policy enforcement or
 ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel
 surfaces, full allow/deny/ask taxonomy for every MCP tool, signed package or
-SBOM release evidence, dependency vulnerability/license policy, bounded office
-context-pack product contract, quarantined legacy frontend source remap,
-packaged frontend image delivery/release acceptance, and ordinary-user G9
-acceptance. Do
+SBOM release evidence plus passed review manifests, dependency vulnerability
+and license evidence plus passed review manifests, bounded office context-pack
+product contract, quarantined legacy frontend source remap, packaged frontend
+image delivery/release acceptance, and ordinary-user G9 acceptance. Do
 not use this baseline to expand sandbox privilege, raw Skill selection, or
 multi-agent ordinary-user exposure.
 

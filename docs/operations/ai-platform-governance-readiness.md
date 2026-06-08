@@ -16,6 +16,8 @@ python tools/governance_readiness.py --format markdown
 python tools/governance_readiness.py --format json
 python tools/skill_release_readiness.py --format markdown
 python tools/skill_release_readiness.py --format json
+python tools/skill_release_readiness.py --review-template --skill-id <skill-id> --format json
+python tools/skill_release_readiness.py --review-template --skill-id <skill-id> --format json --output skills/<skill-id>/ai-platform-skill-release-review.json
 python tools/memory_erasure_readiness.py --format markdown
 python tools/memory_erasure_readiness.py --format json
 ```
@@ -50,7 +52,7 @@ or secret-like runtime configuration.
 | Domain | Implemented baseline | Remaining gap |
 | --- | --- | --- |
 | Tool permission | Admin tool policy inventory, tenant-scoped policy update audit, user request/decision flow, fail-closed risk/write policy evaluation, public permission-card projection, audit-visible legacy route policy mapping | Policy enforcement or ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel surfaces, bulk review/history UX, full allow/deny/ask taxonomy for every MCP tool |
-| Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock, secret-safe skill release readiness snapshot | Signed package or SBOM release gate, Admin release dashboard acceptance, dependency vulnerability/license policy |
+| Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock, secret-safe skill release readiness snapshot, pending review-manifest template entrypoint | Signed package or SBOM release gate, Admin release dashboard acceptance, dependency vulnerability/license policy |
 | Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py` | Bounded office context-pack product contract |
 | Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest with build-provenance same-commit gate, packaged frontend image blocker traceability, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Profile env-var surface removed from the active browser entry graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Quarantined inactive legacy model/channel/envvar sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image delivery and release acceptance |
 
@@ -101,6 +103,18 @@ marks the evidence as passed. Therefore G6 remains blocked by
 `signed_skill_package_or_sbom_release_gate` and
 `dependency_vulnerability_or_license_policy`, and ordinary users must still not
 be exposed to raw Skill selection or staging internals.
+
+The same CLI can now generate a pending review-manifest template:
+`python tools/skill_release_readiness.py --review-template --skill-id <skill-id>
+--format json`. By default this writes only to stdout; operators must pass
+`--output skills/<skill-id>/ai-platform-skill-release-review.json` to create a
+file. The template schema is `ai-platform.skill-release-review.v1`, starts with
+`status = pending`, keeps `sbom_reviewed`, `license_policy_reviewed`, and
+`vulnerability_reviewed` false, and includes required evidence/checklist fields.
+This entrypoint does not close the release gate by itself. A Skill remains
+blocked until real SBOM or signed-package evidence, license-policy evidence,
+vulnerability-scan evidence, and a completed `passed` review manifest are
+present and reviewed.
 
 `tools/memory_erasure_readiness.py` now records code/test evidence for
 ordinary-user session-scoped soft delete, admin same-tenant soft delete, admin

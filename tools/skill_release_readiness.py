@@ -9,7 +9,9 @@ if str(ROOT) not in sys.path:
 
 from app.skills.release_readiness import (  # noqa: E402
     build_skill_release_readiness,
+    build_skill_release_review_template,
     render_skill_release_readiness_markdown,
+    render_skill_release_review_template_markdown,
 )
 
 
@@ -26,13 +28,51 @@ def main() -> None:
         default="markdown",
         help="Output format. Defaults to markdown.",
     )
+    parser.add_argument(
+        "--review-template",
+        action="store_true",
+        help="Print a pending skill release review manifest template instead of the readiness snapshot.",
+    )
+    parser.add_argument(
+        "--skill-id",
+        help="Skill id for --review-template.",
+    )
+    parser.add_argument(
+        "--output",
+        help="Optional path to write the rendered output. By default output is written to stdout only.",
+    )
     args = parser.parse_args()
+
+    if args.review_template:
+        if not args.skill_id:
+            parser.error("--review-template requires --skill-id")
+        try:
+            template = build_skill_release_review_template(skill_id=args.skill_id)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if args.format == "json":
+            rendered = json.dumps(template, ensure_ascii=False, indent=2, sort_keys=True)
+        else:
+            rendered = render_skill_release_review_template_markdown(template)
+        if args.output:
+            output_path = Path(args.output)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(f"{rendered}\n", encoding="utf-8")
+            return
+        print(rendered)
+        return
 
     readiness = build_skill_release_readiness(skills_root=args.skills_root)
     if args.format == "json":
-        print(json.dumps(readiness, ensure_ascii=False, indent=2, sort_keys=True))
+        rendered = json.dumps(readiness, ensure_ascii=False, indent=2, sort_keys=True)
+    else:
+        rendered = render_skill_release_readiness_markdown(readiness)
+    if args.output:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(f"{rendered}\n", encoding="utf-8")
         return
-    print(render_skill_release_readiness_markdown(readiness))
+    print(rendered)
 
 
 if __name__ == "__main__":
