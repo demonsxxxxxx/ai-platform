@@ -188,6 +188,21 @@ def test_capacity_docs_record_machine_readable_gate_evidence_contract():
         assert "C:\\Users" not in text
 
 
+def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
+    capacity_text = read(CAPACITY_BASELINE_DOC)
+
+    assert "3d607c96b8d8e21f59461bd94cc4b64de1d49dd5" in capacity_text
+    assert "ai-platform:3d607c9-g9-latency-acceptance" in capacity_text
+    assert "probe_completed_not_gate_evidence" in capacity_text
+    assert "sent_requests = 20" in capacity_text
+    assert "status counts were `{\"200\": 20}`" in capacity_text
+    assert "does_not_mark_gate_recorded = true" in capacity_text
+    assert "not accepted by `tools/capacity_gate_readiness.py` as recorded gate evidence" in capacity_text
+    assert "still does not close #21" in capacity_text
+    assert "must not be used to raise production defaults" in capacity_text
+    assert "C:\\Users" not in capacity_text
+
+
 def test_observability_docs_record_quality_golden_set_contract_without_closing_g9():
     observability_text = read(OBSERVABILITY_READINESS_DOC)
     roadmap_text = read(ROADMAP)

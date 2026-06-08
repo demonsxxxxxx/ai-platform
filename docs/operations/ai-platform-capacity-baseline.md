@@ -399,6 +399,61 @@ worker process counts, DB pool max size `10`, active worker runs `3`,
 per-user active admission `3`, tenant/user queue quotas disabled, model
 gateway concurrency unbounded by platform config, and sandbox provider `fake`.
 
+### 211 Runtime Evidence and Bounded Probe - 2026-06-08, commit `3d607c9`
+
+After the G9 latency-percentile acceptance deployment, API and worker both ran
+image `ai-platform:3d607c9-g9-latency-acceptance` with
+`org.opencontainers.image.revision =
+3d607c96b8d8e21f59461bd94cc4b64de1d49dd5`. API health, container-local
+compile, Admin Runtime admin access, ordinary-user HTTP 403, Admin Runtime
+projection leak scan, and recent API/worker startup log checks all passed.
+
+The read-only capacity runtime evidence command was run against the 211 API:
+
+```powershell
+python tools/capacity_runtime_evidence.py --base-url http://10.56.0.211:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha 3d607c96b8d8e21f59461bd94cc4b64de1d49dd5 --runtime-profile 211-current --format json
+```
+
+The output schema was `ai-platform.capacity-runtime-evidence.v1`. The nested
+snapshot schema was `ai-platform.capacity-evidence-snapshot.v1`, and
+`snapshot.runtime_identity.commit_sha` matched
+`3d607c96b8d8e21f59461bd94cc4b64de1d49dd5`.
+
+The gate readiness schema was `ai-platform.capacity-gate-readiness.v1` with
+status `blocked_missing_load_test_evidence`. The production default decision
+remained `do_not_raise_without_recorded_load_test_evidence`, and all seven
+load-test gates were still missing recorded evidence.
+
+The repository-owned bounded read-only probe was also executed against 211:
+
+```powershell
+python tools/capacity_bounded_load_harness.py --base-url http://10.56.0.211:8020 --gate api_read_write_burst --requests 20 --concurrency 4 --execute --operator-acknowledgement send-bounded-load-without-default-raise --user-id codex-capacity-audit --tenant-id default --roles admin --format json
+```
+
+The probe output schema was `ai-platform.capacity-bounded-load-harness.v1`,
+status `probe_completed_not_gate_evidence`, and `sent_requests = 20`. HTTP
+status counts were `{"200": 20}`. Observed Admin Runtime sections were
+`admission`, `backpressure`, `capacity`, `database_pool`, `observability`,
+`queue`, `sandbox`, and `status`. Probe latency was:
+
+- `min = 1.187 ms`
+- `p50 = 72.864 ms`
+- `p95 = 252.748 ms`
+- `p99 = 283.726 ms`
+- `max = 283.726 ms`
+
+The probe stop-condition status was `passed` with no triggered stop conditions.
+The output remained `load_test_evidence_status = probe_only_not_recorded` and
+`does_not_mark_gate_recorded = true`, so it is not accepted by
+`tools/capacity_gate_readiness.py` as recorded gate evidence. Recent API/worker
+logs after the probe had no traceback, exception, error, timeout, failed import,
+permission, entrypoint, pydantic, module-not-found, or syntax-error markers.
+
+This evidence updates #21 to the latest 211 runtime and proves the bounded
+read-only probe path is operational. It still does not close #21, does not
+claim a safe maximum concurrency number, and must not be used to raise
+production defaults.
+
 ## Required Load-Test Gates
 
 Generate the repeatable command manifest for a target deployment profile:
