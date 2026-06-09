@@ -28,6 +28,7 @@ def test_capacity_bounded_load_harness_dry_run_is_safe_and_not_gate_evidence():
     assert plan["supported_gates"] == [
         "api_read_write_burst",
         "queue_depth_and_lease_latency",
+        "model_gateway_timeout_and_backpressure",
     ]
     assert plan["base_url"] == "https://ai-platform.internal/api"
     assert plan["request_count"] == 12
@@ -63,6 +64,27 @@ def test_capacity_bounded_load_harness_queue_gate_dry_run_is_safe():
     assert [endpoint["path"] for endpoint in plan["endpoints"]] == [
         "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
     ]
+    assert plan["load_test_evidence_status"] == "probe_only_not_recorded"
+    assert plan["does_not_raise_defaults"] is True
+    assert plan["does_not_mark_gate_recorded"] is True
+
+
+def test_capacity_bounded_load_harness_model_gateway_gate_dry_run_is_safe():
+    plan = build_capacity_bounded_load_harness_plan(
+        base_url="https://ai-platform.internal",
+        gate="model_gateway_timeout_and_backpressure",
+        request_count=300,
+        concurrency=50,
+    )
+
+    assert plan["status"] == "dry_run"
+    assert plan["gate"] == "model_gateway_timeout_and_backpressure"
+    assert plan["request_count"] == 200
+    assert plan["concurrency"] == 20
+    assert [endpoint["path"] for endpoint in plan["endpoints"]] == [
+        "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+    ]
+    assert "model gateway" in plan["endpoints"][0]["purpose"]
     assert plan["load_test_evidence_status"] == "probe_only_not_recorded"
     assert plan["does_not_raise_defaults"] is True
     assert plan["does_not_mark_gate_recorded"] is True
@@ -235,6 +257,301 @@ def test_capacity_bounded_load_harness_executes_queue_gate_against_admin_project
     assert "secret" not in serialized
 
 
+def test_capacity_bounded_load_harness_executes_model_gateway_gate_against_admin_projection_only():
+    requests: list[str] = []
+
+    class ModelGatewayProbeHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # noqa: A002
+            return
+
+        def do_GET(self):  # noqa: N802
+            requests.append(self.path)
+            if self.path != "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false":
+                self.send_response(404)
+                self.end_headers()
+                return
+            payload = {
+                "capacity": {
+                    "limits": {
+                        "model_gateway": {
+                            "request_concurrency_limit": None,
+                            "configured_request_concurrency_limit": 8,
+                            "limit_enforcement": "not_implemented",
+                            "capacity_evidence": "unproven_without_load_test",
+                            "api_key": "sk-secret",
+                        }
+                    }
+                },
+                "database_pool": {"open": True},
+                "queue": {"status": {"depths": {"queued": 0, "processing": 0}}},
+                "admission": {"active_runs": 0},
+                "backpressure": {
+                    "reasons": [],
+                    "model_gateway": {
+                        "configured_request_concurrency_limit": 8,
+                        "enforcement_status": "not_implemented",
+                        "gateway_secret": "hidden",
+                    },
+                },
+                "sandbox": {"leases": {"active": 0}},
+                "observability": {
+                    "error_categories": {"model_gateway": 0},
+                    "executor_private_payload": "hidden",
+                },
+            }
+            raw = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ModelGatewayProbeHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = run_capacity_bounded_load_harness(
+            base_url=f"http://127.0.0.1:{server.server_port}",
+            gate="model_gateway_timeout_and_backpressure",
+            request_count=5,
+            concurrency=2,
+            execute=True,
+            operator_acknowledgement=OPERATOR_ACKNOWLEDGEMENT,
+            user_id="capacity-admin",
+            tenant_id="default",
+            roles="admin",
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result["status"] == "probe_completed_not_gate_evidence"
+    assert result["gate"] == "model_gateway_timeout_and_backpressure"
+    assert result["sent_requests"] == 5
+    assert set(requests) == {"/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"}
+    assert result["http_status_counts"] == {"200": 5}
+    assert result["observed_admin_runtime_sections"] == [
+        "admission",
+        "backpressure",
+        "capacity",
+        "database_pool",
+        "observability",
+        "queue",
+        "sandbox",
+    ]
+    assert result["observed_model_gateway_projection_fields"] == [
+        "backpressure.model_gateway",
+        "capacity.limits.model_gateway",
+        "observability.error_categories",
+    ]
+    assert result["missing_model_gateway_projection_fields"] == []
+    assert result["complete_model_gateway_projection_response_count"] == 5
+    assert result["incomplete_model_gateway_projection_response_count"] == 0
+    serialized = json.dumps(result, ensure_ascii=False).lower()
+    assert "api_key" not in serialized
+    assert "sk-secret" not in serialized
+    assert "gateway_secret" not in serialized
+    assert "executor_private_payload" not in serialized
+    assert "hidden" not in serialized
+
+
+def test_capacity_bounded_load_harness_model_gateway_gate_fails_when_projection_fields_are_missing():
+    class MissingModelGatewayProjectionHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # noqa: A002
+            return
+
+        def do_GET(self):  # noqa: N802
+            payload = {
+                "capacity": {"limits": {"worker": {"max_active_worker_runs": 3}}},
+                "database_pool": {"open": True},
+                "queue": {"status": {"depths": {"queued": 0}}},
+                "admission": {"active_runs": 0},
+                "backpressure": {"reasons": []},
+                "sandbox": {"leases": {"active": 0}},
+                "observability": {"error_categories": {"executor": 0}},
+            }
+            raw = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), MissingModelGatewayProjectionHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = run_capacity_bounded_load_harness(
+            base_url=f"http://127.0.0.1:{server.server_port}",
+            gate="model_gateway_timeout_and_backpressure",
+            request_count=3,
+            concurrency=2,
+            execute=True,
+            operator_acknowledgement=OPERATOR_ACKNOWLEDGEMENT,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result["status"] == "probe_failed_stop_condition_triggered"
+    assert result["stop_condition_status"] == "triggered"
+    assert result["triggered_stop_conditions"] == ["model_gateway_projection_fields_missing"]
+    assert result["observed_model_gateway_projection_fields"] == [
+        "observability.error_categories",
+    ]
+    assert result["missing_model_gateway_projection_fields"] == [
+        "backpressure.model_gateway",
+        "capacity.limits.model_gateway",
+    ]
+    assert result["does_not_mark_gate_recorded"] is True
+
+
+def test_capacity_bounded_load_harness_model_gateway_gate_fails_when_each_response_is_partial():
+    response_index = 0
+
+    class PartialModelGatewayProjectionHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # noqa: A002
+            return
+
+        def do_GET(self):  # noqa: N802
+            nonlocal response_index
+            partial_payloads = [
+                {
+                    "capacity": {
+                        "limits": {
+                            "model_gateway": {
+                                "configured_request_concurrency_limit": 8,
+                                "capacity_evidence": "unproven_without_load_test",
+                            }
+                        }
+                    },
+                    "database_pool": {"open": True},
+                    "queue": {"status": {"depths": {"queued": 0}}},
+                    "admission": {"active_runs": 0},
+                    "backpressure": {"reasons": []},
+                    "sandbox": {"leases": {"active": 0}},
+                    "observability": {},
+                },
+                {
+                    "capacity": {"limits": {}},
+                    "database_pool": {"open": True},
+                    "queue": {"status": {"depths": {"queued": 0}}},
+                    "admission": {"active_runs": 0},
+                    "backpressure": {
+                        "reasons": [],
+                        "model_gateway": {"enforcement_status": "not_implemented"},
+                    },
+                    "sandbox": {"leases": {"active": 0}},
+                    "observability": {},
+                },
+                {
+                    "capacity": {"limits": {}},
+                    "database_pool": {"open": True},
+                    "queue": {"status": {"depths": {"queued": 0}}},
+                    "admission": {"active_runs": 0},
+                    "backpressure": {"reasons": []},
+                    "sandbox": {"leases": {"active": 0}},
+                    "observability": {"error_categories": {}},
+                },
+            ]
+            payload = partial_payloads[response_index % len(partial_payloads)]
+            response_index += 1
+            raw = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PartialModelGatewayProjectionHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = run_capacity_bounded_load_harness(
+            base_url=f"http://127.0.0.1:{server.server_port}",
+            gate="model_gateway_timeout_and_backpressure",
+            request_count=3,
+            concurrency=1,
+            execute=True,
+            operator_acknowledgement=OPERATOR_ACKNOWLEDGEMENT,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result["status"] == "probe_failed_stop_condition_triggered"
+    assert result["triggered_stop_conditions"] == ["model_gateway_projection_fields_missing"]
+    assert result["complete_model_gateway_projection_response_count"] == 0
+    assert result["incomplete_model_gateway_projection_response_count"] == 3
+    assert result["observed_model_gateway_projection_fields"] == [
+        "backpressure.model_gateway",
+        "capacity.limits.model_gateway",
+        "observability.error_categories",
+    ]
+    assert result["missing_model_gateway_projection_fields"] == [
+        "backpressure.model_gateway",
+        "capacity.limits.model_gateway",
+        "observability.error_categories",
+    ]
+
+
+def test_capacity_bounded_load_harness_model_gateway_gate_accepts_empty_error_taxonomy():
+    class EmptyErrorTaxonomyHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # noqa: A002
+            return
+
+        def do_GET(self):  # noqa: N802
+            payload = {
+                "capacity": {
+                    "limits": {
+                        "model_gateway": {
+                            "request_concurrency_limit": None,
+                            "configured_request_concurrency_limit": None,
+                            "limit_enforcement": "not_implemented",
+                            "capacity_evidence": "unproven_without_load_test",
+                        }
+                    }
+                },
+                "database_pool": {"open": True},
+                "queue": {"status": {"depths": {"queued": 0}}},
+                "admission": {"active_runs": 0},
+                "backpressure": {"reasons": [], "model_gateway": {"limit_enforced": False}},
+                "sandbox": {"leases": {"active": 0}},
+                "observability": {"error_categories": {}},
+            }
+            raw = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), EmptyErrorTaxonomyHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = run_capacity_bounded_load_harness(
+            base_url=f"http://127.0.0.1:{server.server_port}",
+            gate="model_gateway_timeout_and_backpressure",
+            request_count=3,
+            concurrency=2,
+            execute=True,
+            operator_acknowledgement=OPERATOR_ACKNOWLEDGEMENT,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result["status"] == "probe_completed_not_gate_evidence"
+    assert result["observed_model_gateway_projection_fields"] == [
+        "backpressure.model_gateway",
+        "capacity.limits.model_gateway",
+        "observability.error_categories",
+    ]
+    assert result["missing_model_gateway_projection_fields"] == []
+    assert result["does_not_mark_gate_recorded"] is True
+
+
 def test_capacity_bounded_load_harness_marks_triggered_stop_conditions_as_failed():
     class FailingProbeHandler(BaseHTTPRequestHandler):
         def log_message(self, format, *args):  # noqa: A002
@@ -346,6 +663,20 @@ def test_capacity_gate_readiness_rejects_queue_harness_output_as_recorded_eviden
     assert readiness["status"] == "blocked_missing_admin_runtime_sections"
     assert readiness["load_test_evidence_status"] == "missing"
     assert "queue_depth_and_lease_latency" in readiness["missing_load_test_gates"]
+    assert readiness["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
+
+
+def test_capacity_gate_readiness_rejects_model_gateway_harness_output_as_recorded_evidence():
+    payload = build_capacity_bounded_load_harness_plan(
+        base_url="https://ai-platform.internal",
+        gate="model_gateway_timeout_and_backpressure",
+    )
+
+    readiness = build_capacity_gate_readiness(payload)
+
+    assert readiness["status"] == "blocked_missing_admin_runtime_sections"
+    assert readiness["load_test_evidence_status"] == "missing"
+    assert "model_gateway_timeout_and_backpressure" in readiness["missing_load_test_gates"]
     assert readiness["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
 
 
@@ -482,7 +813,44 @@ def test_capacity_bounded_load_harness_cli_queue_gate_dry_run_outputs_supported_
     assert payload["supported_gates"] == [
         "api_read_write_burst",
         "queue_depth_and_lease_latency",
+        "model_gateway_timeout_and_backpressure",
     ]
     assert [endpoint["path"] for endpoint in payload["endpoints"]] == [
         "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
     ]
+
+
+def test_capacity_bounded_load_harness_cli_model_gateway_gate_dry_run_outputs_supported_gate():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_bounded_load_harness.py",
+            "--base-url",
+            "https://ai-platform.internal",
+            "--gate",
+            "model_gateway_timeout_and_backpressure",
+            "--requests",
+            "4",
+            "--concurrency",
+            "2",
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == CAPACITY_BOUNDED_LOAD_HARNESS_SCHEMA
+    assert payload["status"] == "dry_run"
+    assert payload["gate"] == "model_gateway_timeout_and_backpressure"
+    assert payload["supported_gates"] == [
+        "api_read_write_burst",
+        "queue_depth_and_lease_latency",
+        "model_gateway_timeout_and_backpressure",
+    ]
+    assert [endpoint["path"] for endpoint in payload["endpoints"]] == [
+        "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+    ]
+    assert "model gateway" in payload["endpoints"][0]["purpose"]

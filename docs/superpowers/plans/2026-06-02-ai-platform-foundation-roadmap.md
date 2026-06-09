@@ -119,10 +119,13 @@ operator command without printing the raw overview or secret values.
 `python tools/capacity_bounded_load_harness.py --base-url <api-url> --gate
 api_read_write_burst --requests <n> --concurrency <n> --format json` and
 `python tools/capacity_bounded_load_harness.py --base-url <api-url> --gate
-queue_depth_and_lease_latency --requests <n> --concurrency <n> --format json`
+queue_depth_and_lease_latency --requests <n> --concurrency <n> --format json` and
+`python tools/capacity_bounded_load_harness.py --base-url <api-url> --gate
+model_gateway_timeout_and_backpressure --requests <n> --concurrency <n> --format json`
 now add repository-owned bounded harness entrypoints with schema
 `ai-platform.capacity-bounded-load-harness.v1`. The harness currently supports
-`api_read_write_burst` and `queue_depth_and_lease_latency`. It defaults to
+`api_read_write_burst`, `queue_depth_and_lease_latency`, and
+`model_gateway_timeout_and_backpressure`. It defaults to
 dry-run and only sends read-only probe traffic when `--execute` is paired with
 `--operator-acknowledgement send-bounded-load-without-default-raise`. The API
 gate uses `/api/ai/health` plus
@@ -131,9 +134,17 @@ queue-depth gate uses
 `/api/ai/admin/runtime/overview?include_maintenance_cleanup=false` only to
 observe queue, admission, backpressure, DB-pool, sandbox, and observability
 sections without triggering Admin Runtime sandbox/container maintenance
-cleanup. Its output is `probe_only_not_recorded`, `does_not_raise_defaults = true`, and
+cleanup. The model-gateway gate also uses only the same Admin Runtime overview
+to observe source-level model-gateway limit, timeout taxonomy, and
+backpressure projection without sending model calls or reading gateway secrets.
+It records only observed model-gateway projection field paths, and missing
+required fields trigger `model_gateway_projection_fields_missing` instead of a
+successful probe. The taxonomy requirement is the `observability.error_categories`
+container itself, so zero model-gateway errors do not fail the probe by
+themselves.
+Its output is `probe_only_not_recorded`, `does_not_raise_defaults = true`, and
 `does_not_mark_gate_recorded = true`; it is not accepted by `tools/capacity_gate_readiness.py` as recorded gate evidence.
-Machine-readable doc check: the harness currently supports `api_read_write_burst` and `queue_depth_and_lease_latency`.
+Machine-readable doc check: the harness currently supports `api_read_write_burst`, `queue_depth_and_lease_latency`, and `model_gateway_timeout_and_backpressure`.
 `python tools/capacity_evidence_bundle.py --start-runtime-evidence-json
 capacity-runtime-evidence-start.json --runtime-evidence-json
 capacity-runtime-evidence-end.json --bounded-probe-json

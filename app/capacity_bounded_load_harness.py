@@ -30,9 +30,22 @@ _GATE_ENDPOINTS = {
             "purpose": "read-only Admin Runtime queue depth, lease, and backpressure projection probe with maintenance cleanup disabled",
         },
     ),
+    "model_gateway_timeout_and_backpressure": (
+        {
+            "path": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+            "method": "GET",
+            "purpose": "read-only Admin Runtime model gateway limit, timeout taxonomy, and backpressure projection probe with maintenance cleanup disabled",
+        },
+    ),
 }
 _SUPPORTED_GATES = tuple(_GATE_ENDPOINTS)
 _LOAD_TEST_EVIDENCE_STATUS = "probe_only_not_recorded"
+_MODEL_GATEWAY_GATE = "model_gateway_timeout_and_backpressure"
+_MODEL_GATEWAY_REQUIRED_PROJECTION_FIELDS = (
+    "backpressure.model_gateway",
+    "capacity.limits.model_gateway",
+    "observability.error_categories",
+)
 _SECRET_MARKERS = (
     "secret",
     "password",
@@ -147,6 +160,7 @@ def _request_once(url: str, headers: dict[str, str], timeout_seconds: float) -> 
     status = 0
     content_type = ""
     observed_sections: list[str] = []
+    observed_model_gateway_projection_fields: list[str] = []
     error_type = None
     try:
         with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310 - operator-provided internal URL.
@@ -168,6 +182,7 @@ def _request_once(url: str, headers: dict[str, str], timeout_seconds: float) -> 
                             "status",
                         }
                     )
+                    observed_model_gateway_projection_fields = _observed_model_gateway_projection_fields(parsed)
     except HTTPError as exc:
         status = int(exc.code)
         error_type = None
@@ -181,8 +196,27 @@ def _request_once(url: str, headers: dict[str, str], timeout_seconds: float) -> 
         "latency_ms": elapsed_ms,
         "content_type": content_type.split(";")[0].strip()[:64],
         "observed_sections": observed_sections,
+        "observed_model_gateway_projection_fields": observed_model_gateway_projection_fields,
         "error_type": error_type,
     }
+
+
+def _observed_model_gateway_projection_fields(payload: dict[str, Any]) -> list[str]:
+    fields: list[str] = []
+    capacity = payload.get("capacity")
+    if isinstance(capacity, dict):
+        limits = capacity.get("limits")
+        if isinstance(limits, dict) and isinstance(limits.get("model_gateway"), dict):
+            fields.append("capacity.limits.model_gateway")
+    backpressure = payload.get("backpressure")
+    if isinstance(backpressure, dict) and isinstance(backpressure.get("model_gateway"), dict):
+        fields.append("backpressure.model_gateway")
+    observability = payload.get("observability")
+    if isinstance(observability, dict):
+        error_categories = observability.get("error_categories")
+        if isinstance(error_categories, dict):
+            fields.append("observability.error_categories")
+    return [field for field in _MODEL_GATEWAY_REQUIRED_PROJECTION_FIELDS if field in fields]
 
 
 def _percentile(values: list[float], percentile: float) -> float:
@@ -231,7 +265,54 @@ def _observed_sections(results: list[dict[str, Any]]) -> list[str]:
     return sorted(sections)
 
 
-def _triggered_stop_conditions(status_counts: dict[str, int], error_counts: dict[str, int]) -> list[str]:
+def _observed_model_gateway_projection_fields_from_results(results: list[dict[str, Any]]) -> list[str]:
+    fields: set[str] = set()
+    for item in results:
+        source = item.get("observed_model_gateway_projection_fields")
+        if isinstance(source, list):
+            fields.update(field for field in source if field in _MODEL_GATEWAY_REQUIRED_PROJECTION_FIELDS)
+    return [field for field in _MODEL_GATEWAY_REQUIRED_PROJECTION_FIELDS if field in fields]
+
+
+def _is_successful_response(result: dict[str, Any]) -> bool:
+    return str(result.get("status") or "").startswith("2")
+
+
+def _model_gateway_projection_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
+    observed_fields = _observed_model_gateway_projection_fields_from_results(results)
+    missing_by_response: set[str] = set()
+    complete_count = 0
+    incomplete_count = 0
+    for item in results:
+        if not _is_successful_response(item):
+            continue
+        observed = {
+            field
+            for field in item.get("observed_model_gateway_projection_fields", [])
+            if field in _MODEL_GATEWAY_REQUIRED_PROJECTION_FIELDS
+        }
+        missing = set(_MODEL_GATEWAY_REQUIRED_PROJECTION_FIELDS) - observed
+        if missing:
+            incomplete_count += 1
+            missing_by_response.update(missing)
+        else:
+            complete_count += 1
+    return {
+        "observed_fields": observed_fields,
+        "missing_fields": [
+            field for field in _MODEL_GATEWAY_REQUIRED_PROJECTION_FIELDS if field in missing_by_response
+        ],
+        "complete_response_count": complete_count,
+        "incomplete_response_count": incomplete_count,
+    }
+
+
+def _triggered_stop_conditions(
+    status_counts: dict[str, int],
+    error_counts: dict[str, int],
+    *,
+    missing_model_gateway_projection_fields: list[str] | None = None,
+) -> list[str]:
     triggered: list[str] = []
     total = sum(status_counts.values())
     five_xx = sum(count for status, count in status_counts.items() if status.startswith("5"))
@@ -246,6 +327,8 @@ def _triggered_stop_conditions(status_counts: dict[str, int], error_counts: dict
         triggered.append("http_non_2xx_response_detected")
     if error_counts:
         triggered.append("request_errors_detected")
+    if missing_model_gateway_projection_fields:
+        triggered.append("model_gateway_projection_fields_missing")
     return triggered
 
 
@@ -301,7 +384,21 @@ def run_capacity_bounded_load_harness(
 
     http_status_counts = _status_counts(results)
     error_counts = _error_type_counts(results)
-    triggered = _triggered_stop_conditions(http_status_counts, error_counts)
+    observed_model_gateway_fields: list[str] = []
+    missing_model_gateway_fields: list[str] = []
+    complete_model_gateway_projection_response_count = 0
+    incomplete_model_gateway_projection_response_count = 0
+    if payload["gate"] == _MODEL_GATEWAY_GATE:
+        projection_summary = _model_gateway_projection_summary(results)
+        observed_model_gateway_fields = projection_summary["observed_fields"]
+        missing_model_gateway_fields = projection_summary["missing_fields"]
+        complete_model_gateway_projection_response_count = projection_summary["complete_response_count"]
+        incomplete_model_gateway_projection_response_count = projection_summary["incomplete_response_count"]
+    triggered = _triggered_stop_conditions(
+        http_status_counts,
+        error_counts,
+        missing_model_gateway_projection_fields=missing_model_gateway_fields,
+    )
     status = "probe_failed_stop_condition_triggered" if triggered else "probe_completed_not_gate_evidence"
     payload.update(
         {
@@ -316,6 +413,15 @@ def run_capacity_bounded_load_harness(
             "triggered_stop_conditions": triggered,
         }
     )
+    if payload["gate"] == _MODEL_GATEWAY_GATE:
+        payload.update(
+            {
+                "observed_model_gateway_projection_fields": observed_model_gateway_fields,
+                "missing_model_gateway_projection_fields": missing_model_gateway_fields,
+                "complete_model_gateway_projection_response_count": complete_model_gateway_projection_response_count,
+                "incomplete_model_gateway_projection_response_count": incomplete_model_gateway_projection_response_count,
+            }
+        )
     return payload
 
 

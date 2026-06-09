@@ -425,6 +425,51 @@ def test_capacity_load_test_plan_uses_selected_gate_in_operator_workflow():
     )
 
 
+def test_capacity_load_test_plan_uses_model_gateway_selected_gate_in_operator_workflow():
+    plan = build_capacity_load_test_plan(
+        SecretBearingSettings(),
+        base_url="https://ai-platform.internal",
+        scenario="model_gateway_timeout_and_backpressure",
+    )
+
+    workflow = {step["id"]: step for step in plan["operator_workflow"]}
+
+    assert [scenario["gate"] for scenario in plan["scenarios"]] == [
+        "model_gateway_timeout_and_backpressure",
+    ]
+    assert "--gate model_gateway_timeout_and_backpressure" in workflow["execute_bounded_load_scenario"]["command"]
+    assert (
+        "capacity-bounded-load-harness-model-gateway-timeout-and-backpressure.json"
+        in workflow["execute_bounded_load_scenario"]["command"]
+    )
+    assert "--gate api_read_write_burst" not in workflow["execute_bounded_load_scenario"]["command"]
+    assert (
+        "capacity-bounded-load-harness-api-read-write-burst.json"
+        not in workflow["execute_bounded_load_scenario"]["command"]
+    )
+    assert workflow["record_cleanup_proof"]["expected_evidence"] == (
+        "capacity-cleanup-proof-model-gateway-timeout-and-backpressure.json"
+    )
+    assert (
+        "capacity-bounded-load-harness-model-gateway-timeout-and-backpressure.json"
+        in workflow["assemble_evidence_bundle_draft"]["command"]
+    )
+    assert "--gate model_gateway_timeout_and_backpressure" in workflow["assemble_evidence_bundle_draft"]["command"]
+    assert (
+        "capacity-evidence-bundle-model-gateway-timeout-and-backpressure.md"
+        in workflow["assemble_evidence_bundle_draft"]["command"]
+    )
+    assert (
+        "capacity-recorded-gate-evidence-model-gateway-timeout-and-backpressure.json"
+        in workflow["assemble_recorded_gate_snapshot"]["command"]
+    )
+    assert "--gate model_gateway_timeout_and_backpressure" in workflow["assemble_recorded_gate_snapshot"]["command"]
+    assert (
+        "capacity-evidence-snapshot-recorded-model-gateway-timeout-and-backpressure.json"
+        in workflow["generate_gate_readiness_verdict"]["command"]
+    )
+
+
 def test_render_capacity_load_test_plan_markdown_is_repeatable_and_safe():
     markdown = render_capacity_load_test_plan_markdown(
         build_capacity_load_test_plan(SecretBearingSettings(), base_url="http://127.0.0.1:8020")

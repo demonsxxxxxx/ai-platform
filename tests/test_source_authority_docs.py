@@ -196,7 +196,10 @@ def test_capacity_docs_record_machine_readable_gate_evidence_contract():
         assert "tools/capacity_bounded_load_harness.py" in text
         assert "ai-platform.capacity-bounded-load-harness.v1" in text
         assert "queue_depth_and_lease_latency" in text
-        assert "currently supports `api_read_write_burst` and `queue_depth_and_lease_latency`" in text
+        assert (
+            "currently supports `api_read_write_burst`, `queue_depth_and_lease_latency`, "
+            "and `model_gateway_timeout_and_backpressure`"
+        ) in text
         assert "include_maintenance_cleanup=false" in text
         assert "probe_only_not_recorded" in text
         assert "not accepted by `tools/capacity_gate_readiness.py` as recorded gate evidence" in text
