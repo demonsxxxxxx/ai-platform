@@ -295,6 +295,15 @@ def _full_access_requested(settings: object) -> bool:
     return _safe_permission_mode(getattr(settings, "claude_agent_permission_mode", "dontAsk")) == "bypassPermissions"
 
 
+def _sdk_permission_mode(value: object, *, full_access: bool = False) -> str:
+    mode = _safe_permission_mode(value)
+    if full_access and mode == "bypassPermissions":
+        # Claude CLI refuses its dangerous skip-permissions flag under root.
+        # Platform full access is enforced below through tools, hooks, and can_use_tool.
+        return "dontAsk"
+    return mode
+
+
 def _safe_allowed_tools(value: object, *, full_access: bool = False) -> list[str]:
     if full_access:
         return list(_SDK_AVAILABLE_TOOLS)
@@ -518,7 +527,10 @@ async def run_claude_agent_sdk(
     allowed_skill_names = set(configured_skills)
     used_skill_names: list[str] = []
     full_access = _full_access_requested(settings)
-    permission_mode = _safe_permission_mode(getattr(settings, "claude_agent_permission_mode", "dontAsk"))
+    permission_mode = _sdk_permission_mode(
+        getattr(settings, "claude_agent_permission_mode", "dontAsk"),
+        full_access=full_access,
+    )
     allowed_tools = _safe_allowed_tools(
         getattr(settings, "claude_agent_allowed_tools", "Read,Glob,LS"),
         full_access=full_access,
