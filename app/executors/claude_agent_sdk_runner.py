@@ -24,7 +24,7 @@ _SDK_AVAILABLE_TOOLS = ["Read", "Glob", "LS", "Bash"]
 _SDK_AUTO_ALLOWED_TOOLS = {"Read", "Glob", "LS"}
 _SDK_PLATFORM_DISALLOWED_TOOLS = ["Write", "Edit", "NotebookEdit"]
 _SDK_PROJECT_SETTING_FILES = (".claude/settings.json", ".claude/settings.local.json")
-_SHELL_UNSAFE_CHARS = set("$`;&|<>(){}[]*?!\n\r")
+_SHELL_UNSAFE_CHARS = set("$`;&|<>{}[]*?!\n\r")
 _QA_REVIEW_PREFLIGHT_LS_FLAGS = {"-l", "-la", "-al"}
 _QA_REVIEW_PREFLIGHT_LS_PATHS = (
     ".claude/skills/minimax-docx/docx_engine.py",
@@ -285,10 +285,19 @@ def _scrub_project_setting_files(cwd: Path) -> None:
 
 
 def _safe_permission_mode(value: object) -> str:
+    mode = str(value or "dontAsk").strip() or "dontAsk"
+    if mode in {"default", "plan", "acceptEdits", "bypassPermissions", "dontAsk"}:
+        return mode
     return "dontAsk"
 
 
-def _safe_allowed_tools(value: object) -> list[str]:
+def _full_access_requested(settings: object) -> bool:
+    return _safe_permission_mode(getattr(settings, "claude_agent_permission_mode", "dontAsk")) == "bypassPermissions"
+
+
+def _safe_allowed_tools(value: object, *, full_access: bool = False) -> list[str]:
+    if full_access:
+        return list(_SDK_AVAILABLE_TOOLS)
     allowed: list[str] = []
     for tool_name in _split_csv(str(value or "Read,Glob,LS")):
         if tool_name in _SDK_AUTO_ALLOWED_TOOLS and tool_name not in allowed:
@@ -296,7 +305,9 @@ def _safe_allowed_tools(value: object) -> list[str]:
     return allowed
 
 
-def _safe_disallowed_tools(value: object) -> list[str]:
+def _safe_disallowed_tools(value: object, *, full_access: bool = False) -> list[str]:
+    if full_access:
+        return []
     disallowed: list[str] = []
     for tool_name in _SDK_PLATFORM_DISALLOWED_TOOLS + _split_csv(str(value or "")):
         if tool_name == "Bash" or tool_name in disallowed:
@@ -506,6 +517,16 @@ async def run_claude_agent_sdk(
     configured_skills = skills if skills is not None else (_split_csv(settings.claude_agent_sdk_skills) or [skill_id])
     allowed_skill_names = set(configured_skills)
     used_skill_names: list[str] = []
+    full_access = _full_access_requested(settings)
+    permission_mode = _safe_permission_mode(getattr(settings, "claude_agent_permission_mode", "dontAsk"))
+    allowed_tools = _safe_allowed_tools(
+        getattr(settings, "claude_agent_allowed_tools", "Read,Glob,LS"),
+        full_access=full_access,
+    )
+    disallowed_tools = _safe_disallowed_tools(
+        getattr(settings, "claude_agent_disallowed_tools", ""),
+        full_access=full_access,
+    )
 
     async def record_used_skill(skill_name: str, metadata: dict[str, Any]) -> None:
         if allowed_skill_names and skill_name not in allowed_skill_names:
@@ -517,6 +538,8 @@ async def run_claude_agent_sdk(
             await on_skill_use(skill_name, metadata)
 
     async def can_use_tool(tool_name: str, tool_input: dict[str, Any], _context=None):
+        if full_access and tool_name in _SDK_AVAILABLE_TOOLS:
+            return PermissionResultAllow()
         if tool_name == "Bash" and isinstance(tool_input, dict):
             command = str(tool_input.get("command") or "")
             permitted_command = _canonical_permitted_bash_command(command, cwd)
@@ -581,6 +604,14 @@ async def run_claude_agent_sdk(
                         else "ai-platform allowlisted QA review preflight command"
                     ),
                     "updatedInput": {**tool_input, "command": permitted_command},
+                }
+            }
+        if full_access:
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "ai-platform full access permits Bash",
                 }
             }
         if on_tool_permission is not None:
@@ -652,9 +683,9 @@ async def run_claude_agent_sdk(
         cwd=str(cwd),
         model=settings.claude_agent_model or settings.anthropic_model or None,
         tools=list(_SDK_AVAILABLE_TOOLS),
-        permission_mode=_safe_permission_mode(getattr(settings, "claude_agent_permission_mode", "default")),
-        allowed_tools=_safe_allowed_tools(getattr(settings, "claude_agent_allowed_tools", "Read,Glob,LS")),
-        disallowed_tools=_safe_disallowed_tools(getattr(settings, "claude_agent_disallowed_tools", "")),
+        permission_mode=permission_mode,
+        allowed_tools=allowed_tools,
+        disallowed_tools=disallowed_tools,
         env=build_sdk_env(cwd=cwd),
         skills=configured_skills,
         max_turns=max(1, int(getattr(settings, "claude_agent_sdk_max_turns", 12))),

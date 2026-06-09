@@ -38,6 +38,7 @@ PUNCTUATION_TRANSLATIONS = str.maketrans(
 )
 MAX_ZIP_ENTRIES = 2000
 MAX_MEMBER_SIZE_BYTES = 20 * 1024 * 1024
+MAX_DOCUMENT_XML_SIZE_BYTES = 64 * 1024 * 1024
 MAX_TOTAL_UNCOMPRESSED_BYTES = 80 * 1024 * 1024
 
 
@@ -94,7 +95,8 @@ def validate_docx_members(source_zip: zipfile.ZipFile) -> None:
         if name in seen:
             raise ValueError(f"duplicate_docx_member: {info.filename}")
         seen.add(name)
-        if info.file_size > MAX_MEMBER_SIZE_BYTES:
+        member_limit = MAX_DOCUMENT_XML_SIZE_BYTES if name == "word/document.xml" else MAX_MEMBER_SIZE_BYTES
+        if info.file_size > member_limit:
             raise ValueError(f"docx_member_too_large: {info.filename}")
         total_size += int(info.file_size)
         if total_size > MAX_TOTAL_UNCOMPRESSED_BYTES:

@@ -92,6 +92,39 @@ def test_translation_runner_writes_translated_docx_and_report(monkeypatch, tmp_p
     assert not (output_dir / "sample_translation_report.txt").exists()
 
 
+def test_translation_runner_allows_large_document_xml_within_package_limit(monkeypatch, tmp_path):
+    runner = load_runner_module()
+    input_docx = tmp_path / "large-document-xml.docx"
+    output_dir = tmp_path / "output"
+    write_minimal_docx(input_docx, ["项目名称：AI 平台文档翻译冒烟测试。" + "正文" * 700])
+    monkeypatch.setattr(runner, "MAX_MEMBER_SIZE_BYTES", 500)
+    monkeypatch.setattr(runner, "MAX_DOCUMENT_XML_SIZE_BYTES", 5000)
+    monkeypatch.setattr(runner, "MAX_TOTAL_UNCOMPRESSED_BYTES", 10000)
+    with zipfile.ZipFile(input_docx) as archive:
+        assert archive.getinfo("word/document.xml").file_size > runner.MAX_MEMBER_SIZE_BYTES
+        assert archive.getinfo("[Content_Types].xml").file_size < runner.MAX_MEMBER_SIZE_BYTES
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_translation.py",
+            str(input_docx),
+            str(output_dir),
+            "--target-language",
+            "English",
+            "--original-filename",
+            "TP(G)-AD-IP166E-1-026 IP166E PPQ_-_ -_ - _-hy.docx",
+        ],
+    )
+
+    exit_code = runner.main()
+
+    assert exit_code == 0
+    translated_docx = output_dir / "TP(G)-AD-IP166E-1-026 IP166E PPQ_-_ -_ - _-hy_translated.docx"
+    assert translated_docx.is_file()
+
+
 def test_translation_runner_rejects_invalid_docx_without_traceback(monkeypatch, tmp_path, capsys):
     runner = load_runner_module()
     input_docx = tmp_path / "broken.docx"

@@ -1631,6 +1631,19 @@ async def test_sdk_runner_allows_only_platform_file_skill_bash_fast_paths(monkey
         },
         None,
     )
+    allowed_baoyu_translate_parenthesized_filename = await can_use_tool(
+        "Bash",
+        {
+            "command": (
+                "mkdir -p output && python "
+                ".claude/skills/baoyu-translate/scripts/run_translation.py "
+                '"TP(G)-AD-IP166E-1-026 IP166E PPQ_-_ -_ - _-hy.docx" output '
+                '--target-language "English" --original-filename '
+                '"TP(G)-AD-IP166E-1-026 IP166E PPQ_-_ -_ - _-hy.docx"'
+            )
+        },
+        None,
+    )
     unsafe_baoyu_target = await can_use_tool(
         "Bash",
         {
@@ -1698,6 +1711,8 @@ async def test_sdk_runner_allows_only_platform_file_skill_bash_fast_paths(monkey
     assert "qa-file-reviewer" in allowed_preflight_ls.updated_input["command"]
     assert allowed_baoyu_translate.behavior == "allow"
     assert "baoyu-translate" in allowed_baoyu_translate.updated_input["command"]
+    assert allowed_baoyu_translate_parenthesized_filename.behavior == "allow"
+    assert "TP(G)-AD-IP166E" in allowed_baoyu_translate_parenthesized_filename.updated_input["command"]
     assert unsafe_baoyu_target.behavior == "deny"
     assert unsafe.behavior == "deny"
     assert unsafe_preflight_ls.behavior == "deny"
@@ -2911,7 +2926,9 @@ async def test_sdk_runner_records_baoyu_skill_use_from_allowed_bash_fast_path(mo
                 "tool_input": {
                     "command": (
                         "python .claude/skills/baoyu-translate/scripts/run_translation.py "
-                        '"sample.docx" output --target-language "English" --original-filename "sample.docx"'
+                        '"TP(G)-AD-IP166E-1-026 IP166E PPQ_-_ -_ - _-hy.docx" output '
+                        '--target-language "English" --original-filename '
+                        '"TP(G)-AD-IP166E-1-026 IP166E PPQ_-_ -_ - _-hy.docx"'
                     )
                 },
                 "tool_use_id": "tool-translate",
@@ -3334,8 +3351,9 @@ async def test_sdk_runner_preserves_skill_use_when_timeout_fires_after_hook(monk
 
 
 @pytest.mark.asyncio
-async def test_sdk_runner_clamps_unsafe_tool_policy_override(monkeypatch, tmp_path):
+async def test_sdk_runner_honors_explicit_full_access_tool_policy_override(monkeypatch, tmp_path):
     captured = {}
+    permission_calls = []
 
     class TextBlock:
         def __init__(self, text):
@@ -3356,11 +3374,34 @@ async def test_sdk_runner_clamps_unsafe_tool_policy_override(monkeypatch, tmp_pa
 
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
+            self.kwargs = kwargs
             captured.update(kwargs)
+
+    class HookMatcher:
+        def __init__(self, matcher=None, hooks=None, timeout=None):
+            self.matcher = matcher
+            self.hooks = hooks or []
+            self.timeout = timeout
+
+    class PermissionResultAllow:
+        def __init__(self, behavior="allow", updated_input=None, updated_permissions=None):
+            self.behavior = behavior
+            self.updated_input = updated_input
+            self.updated_permissions = updated_permissions
 
     async def query(prompt, options):
         yield AssistantMessage([TextBlock("ok")])
         yield ResultMessage()
+
+    async def on_tool_permission(request):
+        permission_calls.append(request)
+        return {
+            "allowed": False,
+            "reason": "tool_permission_required",
+            "risk_level": "high",
+            "write_capable": True,
+            "permission_request_id": "unexpected",
+        }
 
     current_settings = type(
         "S",
@@ -3383,6 +3424,8 @@ async def test_sdk_runner_clamps_unsafe_tool_policy_override(monkeypatch, tmp_pa
     fake_sdk = types.SimpleNamespace(
         AssistantMessage=AssistantMessage,
         ClaudeAgentOptions=ClaudeAgentOptions,
+        HookMatcher=HookMatcher,
+        PermissionResultAllow=PermissionResultAllow,
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
         query=query,
@@ -3395,14 +3438,32 @@ async def test_sdk_runner_clamps_unsafe_tool_policy_override(monkeypatch, tmp_pa
         cwd=tmp_path,
         skill_id="general-chat",
         skills=["qa-file-reviewer"],
+        on_tool_permission=on_tool_permission,
     )
 
     assert result.message == "ok"
-    assert captured["permission_mode"] == "dontAsk"
+    assert captured["permission_mode"] == "bypassPermissions"
     assert captured["tools"] == ["Read", "Glob", "LS", "Bash"]
-    assert captured["allowed_tools"] == ["Read"]
-    assert captured["disallowed_tools"] == ["Write", "Edit", "NotebookEdit"]
+    assert captured["allowed_tools"] == ["Read", "Glob", "LS", "Bash"]
+    assert captured["disallowed_tools"] == []
     assert callable(captured["can_use_tool"])
+    can_use_tool = captured["can_use_tool"]
+    allowed = await can_use_tool("Bash", {"command": "python custom_translate.py"}, None)
+    assert allowed.behavior == "allow"
+    pre_tool_hook = captured["hooks"]["PreToolUse"][0].hooks[0]
+    pre_tool_result = await pre_tool_hook(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "python custom_translate.py"},
+            "tool_use_id": "tool-full-access",
+        },
+        "tool-full-access",
+        {},
+    )
+    assert pre_tool_result["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert "full access" in pre_tool_result["hookSpecificOutput"]["permissionDecisionReason"]
+    assert permission_calls == []
 
 
 @pytest.mark.asyncio
