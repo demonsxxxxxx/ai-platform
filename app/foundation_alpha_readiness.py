@@ -26,6 +26,7 @@ _RUNTIME_NEUTRAL_EXACT_PATHS = {
     ".gitignore",
     "app/foundation_alpha_readiness.py",
     "tools/foundation_alpha_readiness.py",
+    "tools/verify_auth_rbac_smoke.py",
 }
 
 _OPEN_FOLLOWUPS = [
