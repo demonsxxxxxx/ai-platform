@@ -17,17 +17,59 @@ PLATFORM_AUTH_ME_ROUTE = "/api/ai/auth/me"
 COMPAT_AUTH_ME_ROUTE = "/api/auth/me"
 ADMIN_RUNTIME_ROUTE = "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"
 FORBIDDEN_PROJECTION_TERMS = (
+    "authorization",
+    "client_secret",
     "executor_private_payload",
     "runtime_private_payload",
     "private_payload",
+    "password",
     "raw_storage_key",
     "storage_key",
     "sandbox_workdir",
     "api_key",
     "database_url",
     "redis_url",
+    "token",
     "bearer ",
     "sk-",
+)
+FORBIDDEN_PROJECTION_KEY_TERMS = (
+    "authorization",
+    "apikey",
+    "api_key",
+    "bearer",
+    "clientsecret",
+    "client_secret",
+    "databaseurl",
+    "database_url",
+    "executorprivatepayload",
+    "executor_private_payload",
+    "password",
+    "privatepayload",
+    "private_payload",
+    "rawstoragekey",
+    "raw_storage_key",
+    "redisurl",
+    "redis_url",
+    "runtimeprivatepayload",
+    "runtime_private_payload",
+    "sandboxworkdir",
+    "sandbox_workdir",
+    "secret",
+    "sk-",
+    "storagekey",
+    "storage_key",
+    "token",
+)
+FORBIDDEN_PROJECTION_VALUE_TERMS = (
+    "authorization:",
+    "bearer ",
+    "client_secret",
+    "database_url",
+    "password",
+    "redis_url",
+    "sk-",
+    "token",
 )
 ALLOWED_POLICY_CLASS_LABELS = {
     "api key",
@@ -117,6 +159,10 @@ def _normalized_label(value: str) -> str:
     return " ".join(str(value or "").strip().lower().split())
 
 
+def _normalized_key(value: object) -> str:
+    return "".join(ch for ch in str(value).lower() if ch.isalnum() or ch in {"_", "-"})
+
+
 def _is_allowed_policy_class_label(value: str) -> bool:
     return _normalized_label(value) in ALLOWED_POLICY_CLASS_LABELS
 
@@ -125,8 +171,8 @@ def _contains_forbidden_projection_term(payload: Any) -> bool:
     def walk(value: Any) -> bool:
         if isinstance(value, dict):
             for key, child in value.items():
-                key_text = str(key).lower()
-                if any(term in key_text for term in FORBIDDEN_PROJECTION_TERMS):
+                key_text = _normalized_key(key)
+                if any(term in key_text for term in FORBIDDEN_PROJECTION_KEY_TERMS):
                     return True
                 if walk(child):
                     return True
@@ -137,7 +183,7 @@ def _contains_forbidden_projection_term(payload: Any) -> bool:
             if _is_allowed_policy_class_label(value):
                 return False
             value_text = value.lower()
-            return any(term in value_text for term in FORBIDDEN_PROJECTION_TERMS)
+            return any(term in value_text for term in FORBIDDEN_PROJECTION_VALUE_TERMS)
         return False
 
     return walk(payload)

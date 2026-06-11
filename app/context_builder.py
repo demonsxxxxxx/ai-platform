@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import unquote, unquote_plus
@@ -47,6 +48,20 @@ PUBLIC_CONTEXT_FORBIDDEN_KEY_ALIASES = {
     "secretlikevalues",
     "storagekey",
 }
+PUBLIC_CONTEXT_FORBIDDEN_ID_TOKEN_SEQUENCES = (
+    ("artifact", "id"),
+    ("artifact", "ids"),
+    ("file", "id"),
+    ("file", "ids"),
+    ("material", "id"),
+    ("material", "ids"),
+    ("memory", "record", "id"),
+    ("memory", "record", "ids"),
+    ("message", "id"),
+    ("message", "ids"),
+    ("raw", "material", "id"),
+    ("raw", "material", "ids"),
+)
 
 PUBLIC_CONTEXT_MATERIAL_COUNT_KEYS = {
     "message_count",
@@ -55,27 +70,66 @@ PUBLIC_CONTEXT_MATERIAL_COUNT_KEYS = {
     "memory_record_count",
 }
 PUBLIC_CONTEXT_KEY_DECODE_DEPTH = 8
+PUBLIC_CONTEXT_CAMEL_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
+PUBLIC_CONTEXT_ACRONYM_BOUNDARY_RE = re.compile(r"([A-Z]+)([A-Z][a-z])")
+PUBLIC_CONTEXT_TOKEN_SEPARATOR_RE = re.compile(r"[^A-Za-z0-9]+")
 
 
 def _normalized_public_context_key(value: object) -> str:
     return "".join(ch for ch in str(value) if ch.isalnum()).lower()
 
 
-def _normalized_public_context_key_candidates(value: object) -> tuple[str, ...]:
+def _decoded_public_context_key_candidates(value: object) -> tuple[tuple[str, ...], bool]:
     raw = str(value)
     candidates: list[str] = []
     pending: list[tuple[str, int]] = [(raw, 0)]
+    decode_budget_exhausted = False
     while pending:
         current, depth = pending.pop(0)
-        normalized = _normalized_public_context_key(current)
-        if normalized and normalized not in candidates:
-            candidates.append(normalized)
+        if current and current not in candidates:
+            candidates.append(current)
         if depth >= PUBLIC_CONTEXT_KEY_DECODE_DEPTH:
+            if any(decoded != current for decoded in {unquote(current), unquote_plus(current)}):
+                decode_budget_exhausted = True
             continue
         for decoded in {unquote(current), unquote_plus(current)}:
             if decoded != current:
                 pending.append((decoded, depth + 1))
-    return tuple(candidates)
+    return tuple(candidates), decode_budget_exhausted
+
+
+def _normalized_public_context_key_candidates(value: object) -> tuple[tuple[str, ...], bool]:
+    decoded_candidates, decode_budget_exhausted = _decoded_public_context_key_candidates(value)
+    candidates: list[str] = []
+    for decoded in decoded_candidates:
+        normalized = _normalized_public_context_key(decoded)
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+    return tuple(candidates), decode_budget_exhausted
+
+
+def _public_context_key_token_candidates(value: object) -> tuple[tuple[str, ...], ...]:
+    decoded_candidates, _ = _decoded_public_context_key_candidates(value)
+    token_candidates: list[tuple[str, ...]] = []
+    for decoded in decoded_candidates:
+        spaced = PUBLIC_CONTEXT_ACRONYM_BOUNDARY_RE.sub(r"\1 \2", decoded)
+        spaced = PUBLIC_CONTEXT_CAMEL_BOUNDARY_RE.sub(r"\1 \2", spaced)
+        tokens = tuple(
+            token.lower()
+            for token in PUBLIC_CONTEXT_TOKEN_SEPARATOR_RE.sub(" ", spaced).split()
+            if token
+        )
+        if tokens and tokens not in token_candidates:
+            token_candidates.append(tokens)
+    return tuple(token_candidates)
+
+
+def _has_public_context_forbidden_id_tokens(tokens: tuple[str, ...]) -> bool:
+    return any(
+        tokens[index : index + len(sequence)] == sequence
+        for sequence in PUBLIC_CONTEXT_FORBIDDEN_ID_TOKEN_SEQUENCES
+        for index in range(0, len(tokens) - len(sequence) + 1)
+    )
 
 
 PUBLIC_CONTEXT_PROVENANCE_KEY_ALIASES = {
@@ -109,7 +163,9 @@ def _strip_context_private_fields(value: Any) -> Any:
         cleaned: dict[str, Any] = {}
         for key, item in value.items():
             key_text = str(key)
-            normalized_keys = _normalized_public_context_key_candidates(key_text)
+            normalized_keys, decode_budget_exhausted = _normalized_public_context_key_candidates(key_text)
+            if decode_budget_exhausted:
+                continue
             if any(normalized_key in PUBLIC_CONTEXT_PROVENANCE_KEY_ALIASES for normalized_key in normalized_keys):
                 continue
             if any(normalized_key in PUBLIC_CONTEXT_SUMMARY_KEY_ALIASES for normalized_key in normalized_keys):
@@ -121,6 +177,11 @@ def _strip_context_private_fields(value: Any) -> Any:
             ):
                 continue
             if any(normalized_key in PUBLIC_CONTEXT_FORBIDDEN_KEY_ALIASES for normalized_key in normalized_keys):
+                continue
+            if any(
+                _has_public_context_forbidden_id_tokens(token_candidate)
+                for token_candidate in _public_context_key_token_candidates(key_text)
+            ):
                 continue
             cleaned_item = _strip_context_private_fields(item)
             if cleaned_item is not None:

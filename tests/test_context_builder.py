@@ -79,6 +79,29 @@ def test_public_context_payload_strips_legacy_context_summary_fields():
     }
 
 
+def test_public_context_payload_strips_raw_material_id_aliases_and_overencoded_private_keys():
+    overencoded_raw_storage_key = "raw_storage_key"
+    for _ in range(9):
+        overencoded_raw_storage_key = overencoded_raw_storage_key.replace("_", "%5F").replace("%", "%25")
+
+    payload = {
+        "message_ids": ["msg-secret"],
+        "fileIds": ["file-secret"],
+        "artifact_ids": ["artifact-secret"],
+        "memoryRecordIds": ["memory-secret"],
+        "raw_material_ids": ["raw-material-secret"],
+        "sourceFileId": "source-file-secret",
+        overencoded_raw_storage_key: "object-locator-123",
+        "profile_id": "public-profile-id",
+        "safe_context_label": "kept",
+    }
+
+    assert public_context_payload(payload) == {
+        "profile_id": "public-profile-id",
+        "safe_context_label": "kept",
+    }
+
+
 def test_initial_context_summary_includes_public_context_provenance_contract():
     summary = initial_context_summary(
         source="runs_api",

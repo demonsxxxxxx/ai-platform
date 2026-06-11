@@ -134,6 +134,31 @@ class LeakyBearerValueHandler(AuthRbacHandler):
         super().do_GET()
 
 
+class LeakySecretLikeFieldsHandler(AuthRbacHandler):
+    def do_GET(self):  # noqa: N802
+        if self.path.startswith("/api/ai/admin/runtime/overview") and "admin" in self.headers.get("X-AI-Roles", ""):
+            self._send_json(
+                200,
+                {
+                    "tenant_id": "default",
+                    "queue": {"tenant_insight": {"capacity": {"queue_lease_scan_limit": 50}}},
+                    "sandbox": {"leases": {"active": 0}},
+                    "capacity": {"max_active_worker_runs": 3},
+                    "observability": {"error_count": 0},
+                    "governance": {
+                        "client_secret": "object-locator-123",
+                        "password": "plain-password-value",
+                        "token": "plain-token-value",
+                        "authorization": "Plain abcdefgh12345678",
+                    },
+                    "database_pool": {"open": True},
+                    "backpressure": {"reasons": []},
+                },
+            )
+            return
+        super().do_GET()
+
+
 class TenantMismatchHandler(AuthRbacHandler):
     def do_GET(self):  # noqa: N802
         if self.path == "/api/ai/auth/me" and self.headers.get("X-AI-User-ID", ""):
@@ -277,6 +302,25 @@ def test_auth_rbac_smoke_fails_closed_on_bearer_credential_value():
     assert payload["ok"] is False
     assert payload["checks"]["admin_runtime"]["status"] == 200
     assert payload["checks"]["admin_runtime"]["forbidden_projection_terms_present"] is True
+
+
+def test_auth_rbac_smoke_fails_closed_on_secret_like_admin_projection_fields():
+    server = run_server(LeakySecretLikeFieldsHandler)
+    try:
+        payload = build_auth_rbac_smoke(
+            base_url=f"http://127.0.0.1:{server.server_port}",
+            gateway_secret="test-secret",
+            commit_sha="bf20432f9889efa8b367afdf512c641068ba30bc",
+            image="ai-platform:bf20432-foundation-alpha-poc",
+            timeout_seconds=5,
+        )
+    finally:
+        server.shutdown()
+
+    assert payload["ok"] is False
+    assert payload["checks"]["admin_runtime"]["status"] == 200
+    assert payload["checks"]["admin_runtime"]["forbidden_projection_terms_present"] is True
+    assert payload["redaction_scan_status"] == "failed"
 
 
 def test_auth_rbac_smoke_fails_closed_on_principal_or_admin_tenant_mismatch():
