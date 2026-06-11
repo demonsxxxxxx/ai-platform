@@ -10,7 +10,7 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
-ACTIVE_RUNTIME_SUBJECT_SHA = "8d61fd7cd8de8ec1cd99ce7e813a1431f9b672bf"
+ACTIVE_RUNTIME_SUBJECT_SHA = "4f2b043a4d0dfaca0a210a739fa9eafbc6961a7d"
 HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
@@ -825,7 +825,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "forbidden_projection_leak_count": 0,
         "summary_source": "stored_context_snapshot",
         "input_keys": ["message"],
-        "memory_policy_source": "not_recorded",
+        "memory_policy_source": "default",
         "long_term_memory_read": False,
         "execution_tier": "sdk_only_writing",
         "context_pack_generated_at_present": True,
@@ -984,7 +984,7 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeyp
     assert "Runtime source relation: `runtime_current_for_source_tree`" in markdown
     assert "Context snapshot public projection: `verified_public_context_projection`" in markdown
     assert "Context referenced material counts: `message=1, file=1, artifact=0, memory=0`" in markdown
-    assert "Context public summary: `source=stored_context_snapshot, input_keys=message, memory_policy=not_recorded, long_term_memory_read=False, tier=sdk_only_writing, generated_at=True`" in markdown
+    assert "Context public summary: `source=stored_context_snapshot, input_keys=message, memory_policy=default, long_term_memory_read=False, tier=sdk_only_writing, generated_at=True`" in markdown
     assert "Missing context public summary fields:" not in markdown
     assert "`production_claim_allowed`: `False`" in markdown
     assert "#21_recorded_capacity_evidence" in markdown
