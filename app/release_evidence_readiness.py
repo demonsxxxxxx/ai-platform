@@ -27,6 +27,22 @@ _REQUIRED_FIELDS = [
     "redaction_scan_status",
     "review_status",
 ]
+_FIELD_SEMANTICS = {
+    "commit_sha": "verified subject commit for the runtime, capacity, frontend, or governance artifact under review",
+    "runtime_subject_commit_sha": (
+        "runtime source revision proven by 211 source marker and API/worker image labels "
+        "when artifact_kind is 211_runtime_smoke"
+    ),
+    "record_commit_sha": (
+        "not embedded because a git commit cannot contain its own final hash; "
+        "use VCS history to identify the commit that introduced or updated an evidence record"
+    ),
+}
+_CONDITIONAL_FIELDS = {
+    "211_runtime_smoke": [
+        "runtime_subject_commit_sha",
+    ],
+}
 _FORBIDDEN_MARKER_CLASSES = [
     "executor private payload",
     "raw storage key",
@@ -80,6 +96,8 @@ def build_release_evidence_readiness() -> dict[str, Any]:
             "schema_version": ENTRY_SCHEMA_VERSION,
             "write_path": "docs/release-evidence/<gate>/<commit_sha>/<evidence_id>.json",
             "required_fields": list(_REQUIRED_FIELDS),
+            "field_semantics": deepcopy(_FIELD_SEMANTICS),
+            "conditional_fields": deepcopy(_CONDITIONAL_FIELDS),
             "accepted_artifact_kinds": list(_ACCEPTED_ARTIFACT_KINDS),
             "accepted_redaction_scan_statuses": ["passed"],
             "accepted_review_statuses": ["reviewed", "accepted"],

@@ -46,6 +46,14 @@ for public/admin operational proof, not executor private payloads, raw storage
 keys, sandbox workdirs, secret material, bearer tokens, database URLs, or Redis
 URLs.
 
+For runtime smoke evidence, `commit_sha` is the verified subject commit that was
+running or otherwise under review when the smoke was captured. The Git commit
+that introduced or last updated an evidence file is intentionally not embedded
+inside the JSON record, because a commit cannot contain its own final hash. Use
+VCS history for the record commit. For `211_runtime_smoke` entries,
+`runtime_subject_commit_sha`, `source_ref.runtime_source_marker`, and API/worker
+image labels must all point to the same runtime subject commit.
+
 ## Reviewed Entries
 
 | Date | Gate | Commit | Evidence | Status |
@@ -70,6 +78,10 @@ Each `ai-platform.release-evidence-entry.v1` entry must include:
 - `evidence_ref`
 - `redaction_scan_status`
 - `review_status`
+
+Conditional fields:
+
+- `211_runtime_smoke`: `runtime_subject_commit_sha`
 
 Accepted artifact kinds currently include:
 

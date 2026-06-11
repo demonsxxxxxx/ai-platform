@@ -2,6 +2,7 @@
   "schema_version": "ai-platform.release-evidence-entry.v1",
   "evidence_id": "2026-06-11-211-foundation-alpha-poc-current-main-smoke",
   "commit_sha": "8c0cffca63bc747fad0a5771f209acc8a608ab9e",
+  "runtime_subject_commit_sha": "8c0cffca63bc747fad0a5771f209acc8a608ab9e",
   "gate": "Foundation Alpha POC",
   "issue_refs": [
     "#15",
@@ -145,6 +146,7 @@
   "review_status": "reviewed",
   "review_notes": [
     "This entry is a redacted summary of the current-main 211 verifier output, not the raw runtime payload.",
+    "The evidence record was committed after the verified runtime smoke; commit_sha and runtime_subject_commit_sha identify the verified runtime subject, while Git history identifies the evidence record commit.",
     "The API and worker containers both reported the same image and source revision as this entry before the smoke was recorded.",
     "No secret-bearing environment values, credential header values, DSNs, internal object locators, runtime workspace paths, hidden executor data, or personal Windows paths are included.",
     "The verifier output included internal artifact and file identifiers; those raw fields are intentionally omitted here.",

@@ -2,6 +2,7 @@
   "schema_version": "ai-platform.release-evidence-entry.v1",
   "evidence_id": "2026-06-11-211-foundation-alpha-poc-current-main-auth-rbac-smoke",
   "commit_sha": "8c0cffca63bc747fad0a5771f209acc8a608ab9e",
+  "runtime_subject_commit_sha": "8c0cffca63bc747fad0a5771f209acc8a608ab9e",
   "gate": "Foundation Alpha POC",
   "issue_refs": [
     "#15",
@@ -68,6 +69,7 @@
   "review_status": "reviewed",
   "review_notes": [
     "This entry records a redacted Auth/RBAC smoke summary for the current-main Foundation Alpha POC runtime.",
+    "The evidence record was committed after the verified runtime smoke; commit_sha and runtime_subject_commit_sha identify the verified runtime subject, while Git history identifies the evidence record commit.",
     "No real credential header value, DSN, object locator, hidden executor data, runtime workspace path, or personal Windows path is included.",
     "This evidence supports the Foundation Alpha POC security baseline only. It does not close production auth rollout, capacity, sandbox hardening, ordinary-user multi-agent, department rollout, runtime export, or release-evidence retention gates."
   ],

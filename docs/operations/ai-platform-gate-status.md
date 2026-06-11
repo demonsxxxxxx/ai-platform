@@ -13,10 +13,9 @@ issue -> PR -> review -> merge -> 211 deploy/smoke -> close issue workflow in
 
 Status: `211 verified for Foundation Alpha POC`, not production gate closure.
 
-On 2026-06-11, current `main` commit
+On 2026-06-11, runtime subject commit
 `8c0cffca63bc747fad0a5771f209acc8a608ab9e` was synced to 211 source and the
-211 API and worker were running `ai-platform:8c0cffc-foundation-alpha-poc`
-with image ID
+211 API and worker ran `ai-platform:8c0cffc-foundation-alpha-poc` with image ID
 `sha256:a596cdb2ff2f54658d1298f6882b7623c6ab790b1bc077f826a5eb6bf14a2220`.
 Both runtime source labels pointed to
 `8c0cffca63bc747fad0a5771f209acc8a608ab9e`. Runtime labels pointed to the
@@ -24,6 +23,11 @@ repo-local compose file under
 `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform`,
 API health returned `ok`, and OpenAPI exposed
 `/api/ai/artifacts/{artifact_id}/preview`.
+
+Later docs/test evidence commits can be synced to the 211 source tree for
+source-authority parity without changing the running API/worker runtime subject.
+The record commit is proven by Git history, not embedded inside the evidence
+JSON, because a commit cannot contain its own final hash.
 
 The aggregate verifier `tools/verify_poc_gate.py` returned `ok: true` on 211
 for the controlled POC loop: LambChat thin-shell frontend, same-origin API

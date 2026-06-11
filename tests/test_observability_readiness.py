@@ -287,6 +287,18 @@ def test_release_evidence_readiness_contract_defines_safe_export_location_withou
         "redaction_scan_status",
         "review_status",
     ]
+    assert readiness["evidence_contract"]["field_semantics"]["commit_sha"] == (
+        "verified subject commit for the runtime, capacity, frontend, or governance artifact under review"
+    )
+    assert readiness["evidence_contract"]["field_semantics"]["runtime_subject_commit_sha"] == (
+        "runtime source revision proven by 211 source marker and API/worker image labels when artifact_kind is 211_runtime_smoke"
+    )
+    assert "cannot contain its own final hash" in readiness["evidence_contract"]["field_semantics"]["record_commit_sha"]
+    assert readiness["evidence_contract"]["conditional_fields"] == {
+        "211_runtime_smoke": [
+            "runtime_subject_commit_sha",
+        ]
+    }
     assert readiness["evidence_contract"]["forbidden_marker_classes"] == [
         "executor private payload",
         "raw storage key",

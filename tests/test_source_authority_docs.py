@@ -170,6 +170,8 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert payload["schema_version"] == "ai-platform.release-evidence-entry.v1"
     assert payload["evidence_id"] == "2026-06-11-211-foundation-alpha-poc-current-main-smoke"
     assert payload["commit_sha"] == "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
+    assert payload["runtime_subject_commit_sha"] == "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
+    assert "record_commit_sha" not in payload
     assert payload["gate"] == "Foundation Alpha POC"
     assert payload["artifact_kind"] == "211_runtime_smoke"
     assert payload["redaction_scan_status"] == "passed"
@@ -230,6 +232,8 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert auth_rbac_payload["schema_version"] == "ai-platform.release-evidence-entry.v1"
     assert auth_rbac_payload["evidence_id"] == "2026-06-11-211-foundation-alpha-poc-current-main-auth-rbac-smoke"
     assert auth_rbac_payload["commit_sha"] == "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
+    assert auth_rbac_payload["runtime_subject_commit_sha"] == "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
+    assert "record_commit_sha" not in auth_rbac_payload
     assert auth_rbac_payload["source_ref"]["runtime_image"] == "ai-platform:8c0cffc-foundation-alpha-poc"
     assert auth_rbac_payload["source_ref"]["image_id"] == "sha256:a596cdb2ff2f54658d1298f6882b7623c6ab790b1bc077f826a5eb6bf14a2220"
     assert auth_rbac_payload["source_ref"]["image_labels"]["ai-platform.source-revision"] == "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
@@ -245,6 +249,25 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     lowered_auth_rbac = auth_rbac_text.lower()
     for marker in forbidden_markers:
         assert marker.lower() not in lowered_auth_rbac
+
+
+def test_foundation_alpha_runtime_evidence_subject_commit_parity_without_self_referential_record_commit():
+    import json
+
+    for path in (
+        FOUNDATION_ALPHA_POC_CURRENT_MAIN_SMOKE_EVIDENCE,
+        FOUNDATION_ALPHA_POC_CURRENT_MAIN_AUTH_RBAC_EVIDENCE,
+    ):
+        payload = json.loads(read(path))
+        source_ref = payload["source_ref"]
+        labels = source_ref["image_labels"]
+
+        assert payload["artifact_kind"] == "211_runtime_smoke"
+        assert "record_commit_sha" not in payload
+        assert payload["commit_sha"] == payload["runtime_subject_commit_sha"]
+        assert source_ref["runtime_source_marker"] == payload["runtime_subject_commit_sha"]
+        assert labels["ai-platform.source-revision"] == payload["runtime_subject_commit_sha"]
+        assert labels["org.opencontainers.image.revision"] == payload["runtime_subject_commit_sha"]
 
 
 def test_source_authority_docs_keep_current_repo_and_211_deploy_boundary():
