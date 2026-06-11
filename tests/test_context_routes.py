@@ -182,7 +182,6 @@ def test_create_context_snapshot_records_snapshot_and_event(monkeypatch):
     assert response.status_code == 200
     body = response.json()["context_snapshot"]
     assert body["context_snapshot_id"] == "ctx-a"
-    assert body["included_message_ids"] == ["msg-a"]
     assert body["payload"]["referenced_materials"] == {
         "message_count": 1,
         "file_count": 1,
@@ -201,7 +200,64 @@ def test_create_context_snapshot_records_snapshot_and_event(monkeypatch):
     serialized = response.text.lower()
     assert "msg-a" not in serialized.replace('"msg-a"', "")
     assert calls[0][0] == "snapshot"
+    assert calls[0][1]["included_message_ids"] == ["msg-a"]
+    assert calls[0][1]["included_file_ids"] == ["file-a"]
+    assert calls[0][1]["included_artifact_ids"] == ["art-a"]
+    assert calls[0][1]["included_memory_record_ids"] == ["mem-a"]
     assert calls[1][1]["event_type"] == "context_snapshot_created"
+
+
+def test_context_snapshot_response_omits_raw_material_ids_from_public_projection(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {"id": run_id, "workspace_id": "workspace-a", "session_id": "session-a", "trace_id": "trace-a"}
+
+    async def fake_list_context_snapshots(conn, *, tenant_id, user_id, run_id):
+        return [
+            {
+                "id": "ctx-public",
+                "tenant_id": tenant_id,
+                "workspace_id": "workspace-a",
+                "user_id": user_id,
+                "session_id": "session-a",
+                "run_id": run_id,
+                "trace_id": "trace-a",
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "context_kind": "executor",
+                "included_message_ids": ["msg-sensitive"],
+                "included_file_ids": ["file-sensitive"],
+                "included_artifact_ids": ["artifact-sensitive"],
+                "included_memory_record_ids": ["memory-sensitive"],
+                "redaction_summary_json": {},
+                "payload_json": {"window": "current"},
+                "created_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.context.repositories.list_context_snapshots", fake_list_context_snapshots)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-a/context/snapshots", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()["context_snapshots"][0]
+    assert "included_message_ids" not in body
+    assert "included_file_ids" not in body
+    assert "included_artifact_ids" not in body
+    assert "included_memory_record_ids" not in body
+    assert body["payload"]["referenced_materials"] == {
+        "message_count": 1,
+        "file_count": 1,
+        "artifact_count": 1,
+        "memory_record_count": 1,
+    }
+    serialized = response.text
+    assert "msg-sensitive" not in serialized
+    assert "file-sensitive" not in serialized
+    assert "artifact-sensitive" not in serialized
+    assert "memory-sensitive" not in serialized
 
 
 def test_create_context_snapshot_rejects_forged_public_provenance_and_forbidden_aliases(monkeypatch):

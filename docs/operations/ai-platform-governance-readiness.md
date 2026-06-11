@@ -267,9 +267,9 @@ carry source-level public provenance fields for `referenced_materials`,
 `used_context_summary`, `latest_artifact_version`, `execution_tier`, and
 `context_pack_generated_at`; those fields contain counts, safe input keys, tier,
 and generated time rather than raw message/file/artifact/memory IDs. The
-owner-scoped context snapshot debug response may still include `included_*_ids`
-for authorized run inspection; those IDs are not part of the frontend public
-provenance contract. Worker-side executor `context_ref` reconstruction resolves
+owner-scoped context snapshot API response no longer returns `included_*_ids`;
+those IDs stay in the scoped database row and worker lookup path only to compute
+public counts. Worker-side executor `context_ref` reconstruction resolves
 the scoped DB snapshot by id and regenerates public provenance/counts instead of
 trusting queue copies or stored payload provenance. This still does not persist
 versioned context packs, inject them into executor prompts, enable long-term
