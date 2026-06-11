@@ -5,9 +5,6 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from app.governance_readiness import build_governance_readiness
-from app.observability_readiness import build_observability_readiness
-
 
 SCHEMA_VERSION = "ai-platform.foundation-alpha-poc-readiness.v1"
 STAGE_NAME = "Foundation Alpha POC"
@@ -80,14 +77,69 @@ def _auth_rbac_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _dependency_unavailable_summary(kind: str, exc: ModuleNotFoundError) -> dict[str, Any]:
+    status_key = f"{kind}_readiness_status"
+    return {
+        status_key: "dependency_unavailable",
+        "open_gap_count": 1,
+        "dependency_error_class": exc.__class__.__name__,
+    }
+
+
+def _governance_dependency_unavailable_summary(exc: ModuleNotFoundError) -> dict[str, Any]:
+    summary = _dependency_unavailable_summary("governance", exc)
+    summary["ordinary_user_policy"] = "fail_closed_until_projection_mapping_and_acceptance_pass"
+    return summary
+
+
+def _observability_dependency_unavailable_summary(exc: ModuleNotFoundError) -> dict[str, Any]:
+    summary = _dependency_unavailable_summary("observability", exc)
+    summary["admin_runtime_projection"] = "/api/ai/admin/runtime/overview"
+    return summary
+
+
+def _build_governance_summary(settings: object | None) -> dict[str, Any]:
+    try:
+        from app.governance_readiness import build_governance_readiness
+    except ModuleNotFoundError as exc:
+        return _governance_dependency_unavailable_summary(exc)
+
+    governance = build_governance_readiness(settings, include_frontend_projection_audit=False)
+    return {
+        "governance_readiness_status": governance["status"],
+        "ordinary_user_policy": governance["ordinary_user_policy"],
+        "open_gap_count": len(governance["open_gaps"]),
+    }
+
+
+def _build_observability_summary(settings: object | None) -> dict[str, Any]:
+    try:
+        from app.observability_readiness import build_observability_readiness
+    except ModuleNotFoundError as exc:
+        return _observability_dependency_unavailable_summary(exc)
+
+    observability = build_observability_readiness(settings)
+    return {
+        "observability_readiness_status": observability["status"],
+        "admin_runtime_projection": observability["admin_runtime_projection"],
+        "open_gap_count": len(observability["open_gaps"]),
+    }
+
+
 def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str, Any]:
     """Build a secret-safe Foundation Alpha POC readiness summary for operators."""
     smoke = _load_json(_SMOKE_EVIDENCE)
     auth_rbac = _load_json(_AUTH_RBAC_EVIDENCE)
     smoke_checks = smoke["evidence_ref"]["runtime_checks"]
     auth_checks = auth_rbac["evidence_ref"]["runtime_checks"]
-    governance = build_governance_readiness(settings, include_frontend_projection_audit=False)
-    observability = build_observability_readiness(settings)
+    try:
+        governance_summary = _build_governance_summary(settings)
+    except ModuleNotFoundError as exc:
+        governance_summary = _governance_dependency_unavailable_summary(exc)
+    try:
+        observability_summary = _build_observability_summary(settings)
+    except ModuleNotFoundError as exc:
+        observability_summary = _observability_dependency_unavailable_summary(exc)
 
     runtime_subject_commit = smoke["runtime_subject_commit_sha"]
     domains = {
@@ -137,11 +189,11 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             ],
         },
         "g6_poc_governance": {
-            "status": _status_from_gaps(governance["open_gaps"]),
+            "status": "partial_followups_open"
+            if governance_summary["open_gap_count"]
+            else "poc_verified_keep_under_regression",
             "evidence": {
-                "governance_readiness_status": governance["status"],
-                "ordinary_user_policy": governance["ordinary_user_policy"],
-                "open_gap_count": len(governance["open_gaps"]),
+                **governance_summary,
                 "skill_snapshot_run_seen": True,
                 "tool_permission_decision_audit_required": True,
                 "memory_long_term_default_fail_closed": True,
@@ -152,11 +204,11 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             ],
         },
         "g9_admin_runtime_observability": {
-            "status": _status_from_gaps(observability["open_gaps"]),
+            "status": "partial_followups_open"
+            if observability_summary["open_gap_count"]
+            else "poc_verified_keep_under_regression",
             "evidence": {
-                "observability_readiness_status": observability["status"],
-                "admin_runtime_projection": observability["admin_runtime_projection"],
-                "open_gap_count": len(observability["open_gaps"]),
+                **observability_summary,
                 "release_evidence_result": smoke["evidence_ref"]["result"],
             },
             "open_followups": [

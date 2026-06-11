@@ -2,6 +2,9 @@ import json
 import subprocess
 import sys
 
+import pytest
+
+import app.foundation_alpha_readiness as foundation_alpha_readiness
 from app.foundation_alpha_readiness import (
     build_foundation_alpha_readiness,
     render_foundation_alpha_readiness_markdown,
@@ -104,3 +107,38 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable():
         text=True,
     )
     assert "# ai-platform Foundation Alpha POC Readiness" in markdown_result.stdout
+
+
+def test_foundation_alpha_readiness_fails_closed_when_optional_readiness_dependencies_are_unavailable(monkeypatch):
+    def missing_governance(_: object | None = None):
+        raise ModuleNotFoundError("No module named 'pydantic'")
+
+    def missing_observability(_: object | None = None):
+        raise ModuleNotFoundError("No module named 'pydantic'")
+
+    monkeypatch.setattr(foundation_alpha_readiness, "_build_governance_summary", missing_governance)
+    monkeypatch.setattr(foundation_alpha_readiness, "_build_observability_summary", missing_observability)
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert readiness["domains"]["g6_poc_governance"]["status"] == "partial_followups_open"
+    assert readiness["domains"]["g6_poc_governance"]["evidence"] == {
+        "governance_readiness_status": "dependency_unavailable",
+        "ordinary_user_policy": "fail_closed_until_projection_mapping_and_acceptance_pass",
+        "open_gap_count": 1,
+        "dependency_error_class": "ModuleNotFoundError",
+        "skill_snapshot_run_seen": True,
+        "tool_permission_decision_audit_required": True,
+        "memory_long_term_default_fail_closed": True,
+    }
+    assert readiness["domains"]["g9_admin_runtime_observability"]["evidence"] == {
+        "observability_readiness_status": "dependency_unavailable",
+        "admin_runtime_projection": "/api/ai/admin/runtime/overview",
+        "open_gap_count": 1,
+        "dependency_error_class": "ModuleNotFoundError",
+        "release_evidence_result": "ok:true",
+    }
+
+    serialized = json.dumps(readiness, ensure_ascii=False).lower()
+    assert "pydantic" not in serialized
+    assert "traceback" not in serialized
