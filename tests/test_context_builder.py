@@ -85,11 +85,17 @@ def test_public_context_payload_strips_raw_material_id_aliases_and_overencoded_p
         overencoded_raw_storage_key = overencoded_raw_storage_key.replace("_", "%5F").replace("%", "%25")
 
     payload = {
+        "messageids": ["msg-lower-secret"],
         "message_ids": ["msg-secret"],
+        "fileids": ["file-lower-secret"],
         "fileIds": ["file-secret"],
+        "artifactids": ["artifact-lower-secret"],
         "artifact_ids": ["artifact-secret"],
+        "memoryrecordids": ["memory-lower-secret"],
         "memoryRecordIds": ["memory-secret"],
+        "materialids": ["material-lower-secret"],
         "raw_material_ids": ["raw-material-secret"],
+        "sourcefileid": "source-file-lower-secret",
         "sourceFileId": "source-file-secret",
         overencoded_raw_storage_key: "object-locator-123",
         "profile_id": "public-profile-id",

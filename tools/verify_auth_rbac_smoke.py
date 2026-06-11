@@ -8,7 +8,7 @@ import json
 import os
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, unquote_plus, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 
@@ -102,6 +102,7 @@ REQUIRED_ADMIN_RUNTIME_SECTIONS = (
     "database_pool",
     "backpressure",
 )
+PROJECTION_KEY_DECODE_DEPTH = 8
 
 
 def sanitize_base_url(value: str) -> str:
@@ -163,6 +164,25 @@ def _normalized_key(value: object) -> str:
     return "".join(ch for ch in str(value).lower() if ch.isalnum() or ch in {"_", "-"})
 
 
+def _normalized_key_candidates(value: object) -> tuple[tuple[str, ...], bool]:
+    pending: list[tuple[str, int]] = [(str(value), 0)]
+    candidates: list[str] = []
+    decode_budget_exhausted = False
+    while pending:
+        current, depth = pending.pop(0)
+        normalized = _normalized_key(current)
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+        if depth >= PROJECTION_KEY_DECODE_DEPTH:
+            if any(decoded != current for decoded in {unquote(current), unquote_plus(current)}):
+                decode_budget_exhausted = True
+            continue
+        for decoded in {unquote(current), unquote_plus(current)}:
+            if decoded != current:
+                pending.append((decoded, depth + 1))
+    return tuple(candidates), decode_budget_exhausted
+
+
 def _is_allowed_policy_class_label(value: str) -> bool:
     return _normalized_label(value) in ALLOWED_POLICY_CLASS_LABELS
 
@@ -171,8 +191,10 @@ def _contains_forbidden_projection_term(payload: Any) -> bool:
     def walk(value: Any) -> bool:
         if isinstance(value, dict):
             for key, child in value.items():
-                key_text = _normalized_key(key)
-                if any(term in key_text for term in FORBIDDEN_PROJECTION_KEY_TERMS):
+                key_candidates, decode_budget_exhausted = _normalized_key_candidates(key)
+                if decode_budget_exhausted:
+                    return True
+                if any(term in key_text for key_text in key_candidates for term in FORBIDDEN_PROJECTION_KEY_TERMS):
                     return True
                 if walk(child):
                     return True

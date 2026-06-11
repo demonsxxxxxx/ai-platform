@@ -48,6 +48,22 @@ PUBLIC_CONTEXT_FORBIDDEN_KEY_ALIASES = {
     "secretlikevalues",
     "storagekey",
 }
+PUBLIC_CONTEXT_FORBIDDEN_ID_KEY_ALIASES = {
+    "artifactid",
+    "artifactids",
+    "fileid",
+    "fileids",
+    "materialid",
+    "materialids",
+    "memoryrecordid",
+    "memoryrecordids",
+    "messageid",
+    "messageids",
+    "rawmaterialid",
+    "rawmaterialids",
+    "sourcefileid",
+    "sourcefileids",
+}
 PUBLIC_CONTEXT_FORBIDDEN_ID_TOKEN_SEQUENCES = (
     ("artifact", "id"),
     ("artifact", "ids"),
@@ -177,6 +193,8 @@ def _strip_context_private_fields(value: Any) -> Any:
             ):
                 continue
             if any(normalized_key in PUBLIC_CONTEXT_FORBIDDEN_KEY_ALIASES for normalized_key in normalized_keys):
+                continue
+            if any(normalized_key in PUBLIC_CONTEXT_FORBIDDEN_ID_KEY_ALIASES for normalized_key in normalized_keys):
                 continue
             if any(
                 _has_public_context_forbidden_id_tokens(token_candidate)
