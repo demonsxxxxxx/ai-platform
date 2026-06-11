@@ -14,7 +14,7 @@ from app.control_plane_contracts import (
     artifact_manifest_contract,
     standard_trace_id,
 )
-from app.context_builder import record_initial_context_snapshot
+from app.context_builder import ensure_public_context_provenance, record_initial_context_snapshot
 from app.db import transaction
 from app.executors.base import ExecutorResult, RunPayload
 from app.executors.registry import AdapterRegistry
@@ -681,7 +681,7 @@ def _is_top_level_multi_agent_parent_for_worker_dispatch(payload: QueueRunPayloa
 
 
 def _has_context_snapshot(payload: QueueRunPayload) -> bool:
-    return bool(payload.context_snapshot_id and payload.context_snapshot)
+    return bool(payload.context_snapshot_id)
 
 
 def _included_count(row: dict[str, Any], field: str, payload: dict[str, Any], payload_field: str) -> int:
@@ -694,24 +694,54 @@ def _included_count(row: dict[str, Any], field: str, payload: dict[str, Any], pa
         return 0
 
 
+def _safe_context_memory_policy(raw: object) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    source = str(raw.get("source") or "default").strip()
+    if source not in {"default", "stored", "not_recorded"}:
+        source = "stored"
+    try:
+        retention_days = int(raw.get("retention_days") or 90)
+    except (TypeError, ValueError):
+        retention_days = 90
+    if retention_days <= 0:
+        retention_days = 90
+    return {
+        "source": source,
+        "memory_enabled": bool(raw.get("memory_enabled", True)),
+        "long_term_memory_enabled": False,
+        "retention_days": retention_days,
+    }
+
+
 def _context_snapshot_ref_from_row(row: dict[str, Any]) -> dict[str, Any]:
     payload = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
+    public_payload = ensure_public_context_provenance(
+        payload,
+        source="stored_context_snapshot",
+        message_count=_included_count(row, "included_message_ids", payload, "message_count"),
+        file_count=_included_count(row, "included_file_ids", payload, "file_count"),
+        artifact_count=_included_count(row, "included_artifact_ids", payload, "artifact_count"),
+        memory_record_count=_included_count(row, "included_memory_record_ids", payload, "memory_record_count"),
+        memory_policy_source="not_recorded",
+        long_term_memory_read=False,
+    )
     context_ref: dict[str, Any] = {
         "schema_version": str(row.get("schema_version") or payload.get("schema_version") or CONTEXT_SNAPSHOT_SCHEMA_VERSION),
         "context_snapshot_id": str(row["id"]),
-        "source": str(payload.get("source") or "queued"),
-        "message_count": _included_count(row, "included_message_ids", payload, "message_count"),
-        "file_count": _included_count(row, "included_file_ids", payload, "file_count"),
-        "memory_record_count": _included_count(row, "included_memory_record_ids", payload, "memory_record_count"),
+        "source": public_payload["used_context_summary"]["source"],
+        "message_count": public_payload["referenced_materials"]["message_count"],
+        "file_count": public_payload["referenced_materials"]["file_count"],
+        "memory_record_count": public_payload["referenced_materials"]["memory_record_count"],
+        "referenced_materials": public_payload["referenced_materials"],
+        "used_context_summary": public_payload["used_context_summary"],
+        "latest_artifact_version": public_payload["latest_artifact_version"],
+        "execution_tier": public_payload["execution_tier"],
+        "context_pack_generated_at": public_payload["context_pack_generated_at"],
     }
-    memory_policy = payload.get("memory_policy")
-    if isinstance(memory_policy, dict):
-        context_ref["memory_policy"] = {
-            "source": str(memory_policy.get("source") or "default"),
-            "memory_enabled": bool(memory_policy.get("memory_enabled", True)),
-            "long_term_memory_enabled": False,
-            "retention_days": int(memory_policy.get("retention_days") or 90),
-        }
+    memory_policy = _safe_context_memory_policy(payload.get("memory_policy"))
+    if memory_policy is not None:
+        context_ref["memory_policy"] = memory_policy
     return context_ref
 
 

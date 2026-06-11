@@ -22,7 +22,7 @@ case "$APP_PORT" in
     ;;
 esac
 
-if [ "${1:-}" = "uvicorn" ]; then
+if [ "${1:-}" = "uvicorn" ] && [ "${2:-}" = "" ]; then
   exec "$@" "$APP_MODULE" --factory --host 0.0.0.0 --port "$APP_PORT"
 fi
 

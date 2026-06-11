@@ -1,8 +1,8 @@
 {
   "schema_version": "ai-platform.release-evidence-entry.v1",
-  "evidence_id": "2026-06-11-211-foundation-alpha-poc-faa7ad6-auth-rbac-smoke",
-  "commit_sha": "faa7ad6aa61637cbcdf3a22ce81de119762e96bf",
-  "runtime_subject_commit_sha": "faa7ad6aa61637cbcdf3a22ce81de119762e96bf",
+  "evidence_id": "2026-06-11-211-foundation-alpha-poc-8f45469-auth-rbac-smoke",
+  "commit_sha": "8f454696be0e9c532fa86bc61ef353e4d3dec4f8",
+  "runtime_subject_commit_sha": "8f454696be0e9c532fa86bc61ef353e4d3dec4f8",
   "gate": "Foundation Alpha POC",
   "issue_refs": [
     "#15",
@@ -14,20 +14,19 @@
     "#24"
   ],
   "artifact_kind": "211_runtime_smoke",
-  "captured_at": "2026-06-11T17:39:16+08:00",
+  "captured_at": "2026-06-11T18:12:12+08:00",
   "source_ref": {
     "branch": "main",
-    "runtime_commit": "faa7ad6aa61637cbcdf3a22ce81de119762e96bf",
-    "runtime_source_marker": "faa7ad6aa61637cbcdf3a22ce81de119762e96bf",
-    "verifier_source_commit_sha": "2e9b363ebf12b60e6c1413f111a13bc686d0f6dc",
+    "runtime_commit": "8f454696be0e9c532fa86bc61ef353e4d3dec4f8",
+    "runtime_source_marker": "8f454696be0e9c532fa86bc61ef353e4d3dec4f8",
+    "verifier_source_commit_sha": "8f454696be0e9c532fa86bc61ef353e4d3dec4f8",
     "runtime_affecting_changes_since_runtime_subject": [],
-    "runtime_image": "ai-platform:faa7ad6-foundation-alpha-poc",
-    "image_id": "sha256:531a63640cadb917874d74e2379fe16bf76cb2da3f548e8e18a42043dbdd075f",
+    "runtime_image": "ai-platform:8f45469-foundation-alpha-readiness",
+    "image_id": "sha256:144c90709996f768b7b975b121fce41244fa96606a890b2d133fc455659b9cf3",
     "image_labels": {
-      "ai-platform.source-branch": "main",
-      "ai-platform.source-revision": "faa7ad6aa61637cbcdf3a22ce81de119762e96bf",
-      "ai-platform.source_note": "foundation-alpha-poc-readiness-context",
-      "org.opencontainers.image.revision": "faa7ad6aa61637cbcdf3a22ce81de119762e96bf"
+      "ai-platform.source-revision": "8f454696be0e9c532fa86bc61ef353e4d3dec4f8",
+      "ai-platform.source_note": "foundation-alpha-readiness-context",
+      "org.opencontainers.image.revision": "8f454696be0e9c532fa86bc61ef353e4d3dec4f8"
     },
     "containers": [
       "ai-platform-api"
@@ -39,7 +38,7 @@
   },
   "evidence_ref": {
     "verifier": "tools/verify_auth_rbac_smoke.py",
-    "command": "AI_PLATFORM_GATEWAY_SECRET=<redacted> python3 tools/verify_auth_rbac_smoke.py --base-url http://127.0.0.1:8020 --commit-sha 2e9b363ebf12b60e6c1413f111a13bc686d0f6dc --image ai-platform:faa7ad6-foundation-alpha-poc --gateway-secret-env AI_PLATFORM_GATEWAY_SECRET --timeout-seconds 10",
+    "command": "AI_PLATFORM_GATEWAY_SECRET=<redacted> python3 tools/verify_auth_rbac_smoke.py --base-url http://127.0.0.1:8020 --commit-sha 8f454696be0e9c532fa86bc61ef353e4d3dec4f8 --image ai-platform:8f45469-foundation-alpha-readiness --gateway-secret-env AI_PLATFORM_GATEWAY_SECRET --timeout-seconds 10",
     "result": "ok:true",
     "schema_version": "ai-platform.auth-rbac-smoke.v1",
     "runtime_checks": {
@@ -53,9 +52,8 @@
         "route": "/api/ai/auth/me",
         "status": 200,
         "expected_status": 200,
-        "user_id": "poc-admin-smoke",
         "tenant_id": "default",
-        "source": "trusted-header",
+        "source": "frontend-poc",
         "is_admin": true,
         "user_matches_requested": true,
         "tenant_matches_requested": true,
@@ -90,9 +88,9 @@
   "redaction_scan_status": "passed",
   "review_status": "reviewed",
   "review_notes": [
-    "This entry records a redacted Auth/RBAC smoke summary for the faa7ad6 Foundation Alpha POC runtime, refreshed with verifier source 2e9b363.",
-    "The runtime subject remains faa7ad6; the later verifier/source archive contains only runtime-neutral readiness and smoke-tool changes.",
-    "The reviewed summary omits credentials, DSNs, object locators, executor internals, runtime workspace paths, and personal workstation paths.",
+    "This entry records a redacted Auth/RBAC smoke summary for the 8f45469 Foundation Alpha POC runtime.",
+    "The API container reported image ai-platform:8f45469-foundation-alpha-readiness with matching source revision labels before the smoke was recorded.",
+    "The reviewed summary omits credentials, DSNs, object locators, executor internals, runtime workspace paths, storage locators, user identifiers, and personal workstation paths.",
     "This evidence supports the Foundation Alpha POC security baseline only. It does not close production auth rollout, capacity, sandbox hardening, ordinary-user multi-agent, department rollout, runtime export, or release-evidence retention gates."
   ],
   "open_followups": [

@@ -8,6 +8,7 @@ from app.auth import BREAK_GLASS_ADMIN_ROLE, PLATFORM_ADMIN_ROLE, TENANT_ADMIN_R
 from app.control_plane_contracts import sanitize_public_payload, standard_trace_id
 from app.db import transaction
 from app.memory_redaction import redact_memory_metadata, redact_memory_text
+from app.context_builder import ensure_public_context_provenance
 from app.models import ContextSnapshotRequest, MemoryPolicyRequest, MemoryRecordRequest, MemoryRedactionPreviewRequest
 from app.projection_redaction import internal_agent_id_for_request, public_agent_id_for_projection
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
@@ -63,7 +64,11 @@ def _safe_query_id(value: str, field_name: str) -> str:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-def _snapshot_response(row: dict[str, Any]) -> dict[str, Any]:
+def _snapshot_response(
+    row: dict[str, Any],
+    *,
+    provenance_source: str = "stored_context_snapshot",
+) -> dict[str, Any]:
     payload = sanitize_public_payload(row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {})
     if not isinstance(payload, dict):
         payload = {}
@@ -72,6 +77,16 @@ def _snapshot_response(row: dict[str, Any]) -> dict[str, Any]:
     )
     if not isinstance(redaction_summary, dict):
         redaction_summary = {}
+    payload = ensure_public_context_provenance(
+        payload,
+        source=provenance_source,
+        message_count=len(row.get("included_message_ids") or []),
+        file_count=len(row.get("included_file_ids") or []),
+        artifact_count=len(row.get("included_artifact_ids") or []),
+        memory_record_count=len(row.get("included_memory_record_ids") or []),
+        memory_policy_source="not_recorded",
+        long_term_memory_read=False,
+    )
     return {
         "context_snapshot_id": str(row["id"]),
         "schema_version": str(row.get("schema_version") or "ai-platform.context-snapshot.v1"),
@@ -82,10 +97,6 @@ def _snapshot_response(row: dict[str, Any]) -> dict[str, Any]:
         "run_id": str(row["run_id"]),
         "trace_id": str(row.get("trace_id") or standard_trace_id(str(row["run_id"]))),
         "context_kind": str(row.get("context_kind") or "executor"),
-        "included_message_ids": list(row.get("included_message_ids") or []),
-        "included_file_ids": list(row.get("included_file_ids") or []),
-        "included_artifact_ids": list(row.get("included_artifact_ids") or []),
-        "included_memory_record_ids": list(row.get("included_memory_record_ids") or []),
         "redaction_summary": redaction_summary,
         "payload": payload,
         "created_at": row.get("created_at"),
@@ -316,9 +327,16 @@ async def create_run_context_snapshot(
         redaction_summary = sanitize_public_payload(request.redaction_summary)
         if not isinstance(redaction_summary, dict):
             redaction_summary = {}
-        payload = sanitize_public_payload(request.payload)
-        if not isinstance(payload, dict):
-            payload = {}
+        payload = ensure_public_context_provenance(
+            request.payload,
+            source="manual_context_snapshot",
+            message_count=len(request.included_message_ids),
+            file_count=len(request.included_file_ids),
+            artifact_count=len(request.included_artifact_ids),
+            memory_record_count=len(request.included_memory_record_ids),
+            memory_policy_source="not_recorded",
+            long_term_memory_read=False,
+        )
         snapshot = await repositories.create_context_snapshot(
             conn,
             tenant_id=principal.tenant_id,
@@ -353,7 +371,7 @@ async def create_run_context_snapshot(
                 "memory_record_count": len(request.included_memory_record_ids),
             },
         )
-    return {"context_snapshot": _snapshot_response(snapshot)}
+    return {"context_snapshot": _snapshot_response(snapshot, provenance_source="manual_context_snapshot")}
 
 
 @router.get("/runs/{run_id}/context/snapshots")

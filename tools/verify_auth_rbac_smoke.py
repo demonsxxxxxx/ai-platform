@@ -8,25 +8,81 @@ import json
 import os
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, unquote_plus, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 
 SCHEMA_VERSION = "ai-platform.auth-rbac-smoke.v1"
+PLATFORM_AUTH_ME_ROUTE = "/api/ai/auth/me"
+COMPAT_AUTH_ME_ROUTE = "/api/auth/me"
 ADMIN_RUNTIME_ROUTE = "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"
 FORBIDDEN_PROJECTION_TERMS = (
+    "authorization",
+    "client_secret",
     "executor_private_payload",
     "runtime_private_payload",
     "private_payload",
+    "password",
     "raw_storage_key",
     "storage_key",
     "sandbox_workdir",
     "api_key",
     "database_url",
     "redis_url",
+    "token",
     "bearer ",
     "sk-",
 )
+FORBIDDEN_PROJECTION_KEY_TERMS = (
+    "authorization",
+    "apikey",
+    "api_key",
+    "bearer",
+    "clientsecret",
+    "client_secret",
+    "databaseurl",
+    "database_url",
+    "executorprivatepayload",
+    "executor_private_payload",
+    "password",
+    "privatepayload",
+    "private_payload",
+    "rawstoragekey",
+    "raw_storage_key",
+    "redisurl",
+    "redis_url",
+    "runtimeprivatepayload",
+    "runtime_private_payload",
+    "sandboxworkdir",
+    "sandbox_workdir",
+    "secret",
+    "sk-",
+    "storagekey",
+    "storage_key",
+    "token",
+)
+FORBIDDEN_PROJECTION_VALUE_TERMS = (
+    "authorization:",
+    "bearer ",
+    "client_secret",
+    "database_url",
+    "password",
+    "redis_url",
+    "sk-",
+    "token",
+)
+ALLOWED_PROJECTION_KEY_TERMS = {
+    "input_token_count",
+    "inputtokencount",
+    "output_token_count",
+    "outputtokencount",
+    "token_count",
+    "token_counts",
+    "tokencount",
+    "tokencounts",
+    "total_token_count",
+    "totaltokencount",
+}
 ALLOWED_POLICY_CLASS_LABELS = {
     "api key",
     "api_key",
@@ -58,6 +114,7 @@ REQUIRED_ADMIN_RUNTIME_SECTIONS = (
     "database_pool",
     "backpressure",
 )
+PROJECTION_KEY_DECODE_DEPTH = 8
 
 
 def sanitize_base_url(value: str) -> str:
@@ -100,14 +157,50 @@ def _principal_headers(*, user_id: str, roles: str, tenant_id: str, gateway_secr
     return headers
 
 
-def _detail(payload: Any) -> str:
+def _detail(payload: Any, *, redactions: tuple[str, ...] = ()) -> str:
     if isinstance(payload, dict):
-        return str(payload.get("detail") or payload.get("error") or "")
-    return str(payload or "")[:120]
+        detail = str(payload.get("detail") or payload.get("error") or "")
+    else:
+        detail = str(payload or "")[:120]
+    for marker in redactions:
+        if marker:
+            detail = detail.replace(marker, "[redacted]")
+    return detail
 
 
 def _normalized_label(value: str) -> str:
     return " ".join(str(value or "").strip().lower().split())
+
+
+def _normalized_key(value: object) -> str:
+    return "".join(ch for ch in str(value).lower() if ch.isalnum() or ch in {"_", "-"})
+
+
+def _normalized_key_candidates(value: object) -> tuple[tuple[str, ...], bool]:
+    pending: list[tuple[str, int]] = [(str(value), 0)]
+    candidates: list[str] = []
+    decode_budget_exhausted = False
+    while pending:
+        current, depth = pending.pop(0)
+        normalized = _normalized_key(current)
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+        if depth >= PROJECTION_KEY_DECODE_DEPTH:
+            if any(decoded != current for decoded in {unquote(current), unquote_plus(current)}):
+                decode_budget_exhausted = True
+            continue
+        for decoded in {unquote(current), unquote_plus(current)}:
+            if decoded != current:
+                pending.append((decoded, depth + 1))
+    return tuple(candidates), decode_budget_exhausted
+
+
+def _contains_forbidden_projection_key_term(key_candidates: tuple[str, ...]) -> bool:
+    return any(
+        candidate not in ALLOWED_PROJECTION_KEY_TERMS and term in candidate
+        for candidate in key_candidates
+        for term in FORBIDDEN_PROJECTION_KEY_TERMS
+    )
 
 
 def _is_allowed_policy_class_label(value: str) -> bool:
@@ -118,8 +211,10 @@ def _contains_forbidden_projection_term(payload: Any) -> bool:
     def walk(value: Any) -> bool:
         if isinstance(value, dict):
             for key, child in value.items():
-                key_text = str(key).lower()
-                if any(term in key_text for term in FORBIDDEN_PROJECTION_TERMS):
+                key_candidates, decode_budget_exhausted = _normalized_key_candidates(key)
+                if decode_budget_exhausted:
+                    return True
+                if _contains_forbidden_projection_key_term(key_candidates):
                     return True
                 if walk(child):
                     return True
@@ -130,13 +225,28 @@ def _contains_forbidden_projection_term(payload: Any) -> bool:
             if _is_allowed_policy_class_label(value):
                 return False
             value_text = value.lower()
-            return any(term in value_text for term in FORBIDDEN_PROJECTION_TERMS)
+            return any(term in value_text for term in FORBIDDEN_PROJECTION_VALUE_TERMS)
         return False
 
     return walk(payload)
 
 
-def _admin_runtime_summary(payload: Any) -> dict[str, object]:
+def _principal_summary(payload: Any, *, expected_user_id: str, expected_tenant_id: str) -> dict[str, object]:
+    body = payload if isinstance(payload, dict) else {}
+    user_id = str(body.get("user_id") or "")
+    tenant_id = str(body.get("tenant_id") or "")
+    return {
+        "user_id": user_id,
+        "tenant_id": tenant_id,
+        "source": str(body.get("source") or ""),
+        "is_admin": bool(body.get("is_admin")) if "is_admin" in body else None,
+        "user_matches_requested": user_id == expected_user_id,
+        "tenant_matches_requested": tenant_id == expected_tenant_id,
+        "forbidden_projection_terms_present": _contains_forbidden_projection_term(payload),
+    }
+
+
+def _admin_runtime_summary(payload: Any, *, expected_tenant_id: str) -> dict[str, object]:
     body = payload if isinstance(payload, dict) else {}
     missing_sections = [section for section in REQUIRED_ADMIN_RUNTIME_SECTIONS if section not in body]
     queue = body.get("queue") if isinstance(body.get("queue"), dict) else {}
@@ -148,10 +258,18 @@ def _admin_runtime_summary(payload: Any) -> dict[str, object]:
         "required_sections_present": not missing_sections,
         "missing_sections": missing_sections,
         "tenant_id": str(body.get("tenant_id") or ""),
+        "tenant_matches_requested": str(body.get("tenant_id") or "") == expected_tenant_id,
         "queue_lease_scan_limit": capacity.get("queue_lease_scan_limit"),
         "sandbox_active_leases": leases.get("active"),
         "forbidden_projection_terms_present": _contains_forbidden_projection_term(payload),
     }
+
+
+def _invalid_gateway_secret(gateway_secret: str) -> str:
+    candidate = "__ai_platform_smoke_invalid_gateway_secret__"
+    if gateway_secret and candidate == gateway_secret:
+        return f"{candidate}_invalid"
+    return candidate
 
 
 def build_auth_rbac_smoke(
@@ -167,7 +285,28 @@ def build_auth_rbac_smoke(
 ) -> dict[str, object]:
     safe_base_url = sanitize_base_url(base_url)
     auth_me_status, auth_me_payload = _request_json(
-        f"{safe_base_url}/api/auth/me",
+        f"{safe_base_url}{COMPAT_AUTH_ME_ROUTE}",
+        timeout_seconds=timeout_seconds,
+    )
+    authenticated_auth_me_status, authenticated_auth_me_payload = _request_json(
+        f"{safe_base_url}{PLATFORM_AUTH_ME_ROUTE}",
+        headers=_principal_headers(
+            user_id=admin_user_id,
+            roles="admin",
+            tenant_id=tenant_id,
+            gateway_secret=gateway_secret,
+        ),
+        timeout_seconds=timeout_seconds,
+    )
+    invalid_secret = _invalid_gateway_secret(gateway_secret)
+    invalid_gateway_secret_status, invalid_gateway_secret_payload = _request_json(
+        f"{safe_base_url}{PLATFORM_AUTH_ME_ROUTE}",
+        headers=_principal_headers(
+            user_id=admin_user_id,
+            roles="admin",
+            tenant_id=tenant_id,
+            gateway_secret=invalid_secret,
+        ),
         timeout_seconds=timeout_seconds,
     )
     ordinary_status, ordinary_payload = _request_json(
@@ -190,18 +329,44 @@ def build_auth_rbac_smoke(
         ),
         timeout_seconds=timeout_seconds,
     )
-    admin_summary = _admin_runtime_summary(admin_payload)
+    auth_me_summary = _principal_summary(
+        authenticated_auth_me_payload,
+        expected_user_id=admin_user_id,
+        expected_tenant_id=tenant_id,
+    )
+    admin_summary = _admin_runtime_summary(admin_payload, expected_tenant_id=tenant_id)
+    redaction_failed = any(
+        [
+            _contains_forbidden_projection_term(auth_me_payload),
+            auth_me_summary["forbidden_projection_terms_present"],
+            _contains_forbidden_projection_term(invalid_gateway_secret_payload),
+            _contains_forbidden_projection_term(ordinary_payload),
+            admin_summary["forbidden_projection_terms_present"],
+        ]
+    )
     checks = {
         "unauthenticated_auth_me": {
-            "route": "/api/auth/me",
+            "route": COMPAT_AUTH_ME_ROUTE,
             "status": auth_me_status,
-            "detail": _detail(auth_me_payload),
+            "detail": _detail(auth_me_payload, redactions=(gateway_secret, invalid_secret)),
             "expected_status": 401,
+        },
+        "authenticated_auth_me": {
+            "route": PLATFORM_AUTH_ME_ROUTE,
+            "status": authenticated_auth_me_status,
+            "expected_status": 200,
+            **auth_me_summary,
+        },
+        "invalid_gateway_secret_auth_me": {
+            "route": PLATFORM_AUTH_ME_ROUTE,
+            "status": invalid_gateway_secret_status,
+            "detail": _detail(invalid_gateway_secret_payload, redactions=(gateway_secret, invalid_secret)),
+            "expected_status": 403,
         },
         "ordinary_admin_runtime": {
             "route": ADMIN_RUNTIME_ROUTE,
             "status": ordinary_status,
-            "detail": _detail(ordinary_payload),
+            "detail": _detail(ordinary_payload, redactions=(gateway_secret, invalid_secret)),
             "expected_status": 403,
         },
         "admin_runtime": {
@@ -214,15 +379,24 @@ def build_auth_rbac_smoke(
     ok = (
         auth_me_status == 401
         and checks["unauthenticated_auth_me"]["detail"] == "missing_authenticated_principal"
+        and authenticated_auth_me_status == 200
+        and bool(auth_me_summary["user_matches_requested"])
+        and bool(auth_me_summary["tenant_matches_requested"])
+        and not bool(auth_me_summary["forbidden_projection_terms_present"])
+        and invalid_gateway_secret_status == 403
+        and checks["invalid_gateway_secret_auth_me"]["detail"] == "invalid_gateway_principal_secret"
         and ordinary_status == 403
         and checks["ordinary_admin_runtime"]["detail"] == "not_ai_admin"
         and admin_status == 200
         and bool(admin_summary["required_sections_present"])
+        and bool(admin_summary["tenant_matches_requested"])
         and not bool(admin_summary["forbidden_projection_terms_present"])
+        and not redaction_failed
     )
     return {
         "schema_version": SCHEMA_VERSION,
         "ok": ok,
+        "redaction_scan_status": "failed" if redaction_failed else "passed",
         "source": {
             "base_url": safe_base_url,
             "commit_sha": commit_sha,

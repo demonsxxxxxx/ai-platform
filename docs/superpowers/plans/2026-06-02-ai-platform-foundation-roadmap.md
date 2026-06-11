@@ -121,32 +121,36 @@ operator command without printing the raw overview or secret values.
 `python tools/capacity_bounded_load_harness.py --base-url <api-url> --gate
 api_read_write_burst --requests <n> --concurrency <n> --format json` and
 `python tools/capacity_bounded_load_harness.py --base-url <api-url> --gate
-queue_depth_and_lease_latency --requests <n> --concurrency <n> --format json` and
-`python tools/capacity_bounded_load_harness.py --base-url <api-url> --gate
-model_gateway_timeout_and_backpressure --requests <n> --concurrency <n> --format json`
+<any-seven-load-test-gate> --requests <n> --concurrency <n> --format json`
 now add repository-owned bounded harness entrypoints with schema
 `ai-platform.capacity-bounded-load-harness.v1`. The harness currently supports
-`api_read_write_burst`, `queue_depth_and_lease_latency`, and
-`model_gateway_timeout_and_backpressure`. It defaults to
-dry-run and only sends read-only probe traffic when `--execute` is paired with
+all seven #21 load-test gates. It defaults to dry-run and only sends read-only
+probe traffic when `--execute` is paired with
 `--operator-acknowledgement send-bounded-load-without-default-raise`. The API
 gate uses `/api/ai/health` plus
-`/api/ai/admin/runtime/overview?include_maintenance_cleanup=false`; the
-queue-depth gate uses
-`/api/ai/admin/runtime/overview?include_maintenance_cleanup=false` only to
-observe queue, admission, backpressure, DB-pool, sandbox, and observability
-sections without triggering Admin Runtime sandbox/container maintenance
-cleanup. The model-gateway gate also uses only the same Admin Runtime overview
-to observe source-level model-gateway limit, timeout taxonomy, and
-backpressure projection without sending model calls or reading gateway secrets.
-It records only observed model-gateway projection field paths, and missing
-required fields trigger `model_gateway_projection_fields_missing` instead of a
-successful probe. The taxonomy requirement is the `observability.error_categories`
-container itself, so zero model-gateway errors do not fail the probe by
-themselves.
+`/api/ai/admin/runtime/overview?include_maintenance_cleanup=false`; the other
+six gates use only the same Admin Runtime overview with maintenance cleanup
+disabled to observe admission, worker heartbeat, queue, retry/cancel pressure,
+sandbox lease/container counts, DB-pool, backpressure, observability, and
+model-gateway projection fields without creating runs, sending model calls,
+reading gateway secrets, or triggering sandbox/container maintenance cleanup.
+For every successful Admin Runtime overview response, the harness now requires
+the baseline sections `capacity`, `database_pool`, `queue`, `admission`,
+`backpressure`, `sandbox`, and `observability`; missing sections trigger
+`admin_runtime_projection_sections_missing` and return only section names and
+counts, not the raw projection body.
+The model-gateway gate records only observed model-gateway projection field
+paths, and missing required fields trigger
+`model_gateway_projection_fields_missing` instead of a successful probe. The
+taxonomy requirement is the `observability.error_categories` container itself,
+so zero model-gateway errors do not fail the probe by themselves.
 Its output is `probe_only_not_recorded`, `does_not_raise_defaults = true`, and
 `does_not_mark_gate_recorded = true`; it is not accepted by `tools/capacity_gate_readiness.py` as recorded gate evidence.
-Machine-readable doc check: the harness currently supports `api_read_write_burst`, `queue_depth_and_lease_latency`, and `model_gateway_timeout_and_backpressure`.
+Machine-readable doc check: the harness currently supports
+`api_read_write_burst`, `run_creation_burst_by_tenant_and_user`,
+`worker_processing_throughput`, `queue_depth_and_lease_latency`,
+`cancel_retry_resume_under_load`, `sandbox_lease_creation_under_load`, and
+`model_gateway_timeout_and_backpressure`.
 `python tools/capacity_evidence_bundle.py --start-runtime-evidence-json
 capacity-runtime-evidence-start.json --runtime-evidence-json
 capacity-runtime-evidence-end.json --bounded-probe-json
@@ -482,8 +486,8 @@ files, runtime acceptance for the source-level skill dependency review policy,
 `admin_skill_release_dashboard_runtime_acceptance`,
 `admin_skill_release_dashboard_visual_acceptance`,
 `admin_skill_release_dashboard_211_acceptance`,
-office context-pack runtime implementation, document-centric follow-up
-state, sandbox cold-start latency split, frontend context provenance
+office context-pack persistence/versioning, executor context-pack injection,
+document-centric follow-up state, sandbox cold-start latency split, frontend context provenance
 acceptance, quarantined legacy frontend source remap, packaged frontend image
 smoke/release acceptance on 211 or another Docker-capable host, and
 ordinary-user G9 acceptance. Do not use this baseline to expand sandbox
@@ -495,8 +499,32 @@ context sources, user-visible provenance fields, execution tiers, and non-goals
 without enabling runtime context-pack persistence, executor injection, long-term
 cross-session memory, lightweight-task Docker sandbox startup, or ordinary-user
 G8/G10 exposure. It replaces the older single "bounded office context-pack
-product contract" blocker with explicit runtime, follow-up-state, latency, and
-frontend provenance acceptance gaps.
+product contract" blocker with explicit persistence/versioning, executor
+injection, follow-up-state, latency, and frontend provenance acceptance gaps.
+
+The 2026-06-11 context provenance follow-up adds source-level public provenance
+fields to created context snapshots and queued `context_snapshot` references:
+`referenced_materials`, `used_context_summary`, `latest_artifact_version`,
+`execution_tier`, and `context_pack_generated_at`. These fields expose counts,
+safe input keys, tier, and generated time only; raw message/file/artifact/memory
+IDs remain outside the public provenance fields and the owner-scoped context
+snapshot API response. The scoped database row and worker lookup path still keep
+those IDs internally to compute public counts. Executor private payloads, raw
+storage keys, sandbox workdirs, and secret-like values remain outside the public
+projection. Worker execution
+resolves existing context snapshots from the scoped DB row and regenerates
+public provenance/counts rather than trusting queue copies or stored payload
+provenance. This narrows the G6/#22 context output gap but does not close
+executor context-pack injection, frontend context provenance acceptance,
+long-term memory, sandbox, or multi-agent gates.
+
+The Foundation Alpha readiness summary now also promotes reviewed 211
+`context_snapshot_public_projection` smoke evidence into the G6 POC governance
+domain. The promoted summary is intentionally bounded to status, referenced
+material counts, raw-ID presence, forbidden-leak count, and summary source; it
+does not echo raw message/file/artifact/memory IDs, executor private payloads,
+storage locators, or workspace paths. Older smoke records without that runtime
+projection stay fail-closed as `missing_context_snapshot_public_projection`.
 
 The 2026-06-08 frontend projection audit follow-up makes the remaining frontend
 G6/G9 blockers machine-actionable through

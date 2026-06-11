@@ -19,6 +19,29 @@ class SecretBearingSettings:
     multi_agent_dispatch_worker_enabled = False
 
 
+def test_governance_readiness_import_is_runtime_dependency_neutral():
+    script = (
+        "import builtins\n"
+        "real_import = builtins.__import__\n"
+        "class SettingsBlocker:\n"
+        "    sandbox_container_provider = 'fake'\n"
+        "    memory_retention_worker_cleanup_enabled = True\n"
+        "    memory_retention_worker_cleanup_limit = 200\n"
+        "    multi_agent_dispatch_worker_enabled = False\n"
+        "def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):\n"
+        "    if name == 'app.settings':\n"
+        "        raise ModuleNotFoundError(\"No module named 'pydantic_settings'\")\n"
+        "    return real_import(name, globals, locals, fromlist, level)\n"
+        "builtins.__import__ = guarded_import\n"
+        "from app.governance_readiness import build_governance_readiness\n"
+        "readiness = build_governance_readiness(SettingsBlocker())\n"
+        "assert readiness['status'] == 'partial_blocked'\n"
+        "assert len(readiness['open_gaps']) > 1\n"
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets():
     readiness = build_governance_readiness(
         SecretBearingSettings(),
@@ -124,11 +147,14 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "memory_export_erasure_evidence_snapshot" in domains["memory_governance"]["implemented"]
     assert "memory_redaction_policy_admin_preview_and_audit" in domains["memory_governance"]["implemented"]
     assert "office_context_pack_architecture_readiness_snapshot" in domains["memory_governance"]["implemented"]
+    assert "context_snapshot_public_provenance_projection_contract" in domains["memory_governance"]["implemented"]
     assert "formal_memory_delete_export_erasure_evidence" not in domains["memory_governance"]["gaps"]
     assert "memory_export_erasure_evidence" not in domains["memory_governance"]["gaps"]
     assert "memory_redaction_policy_admin_preview_and_audit" not in domains["memory_governance"]["gaps"]
     assert "bounded_context_pack_product_contract_for_office_workflows" not in domains["memory_governance"]["gaps"]
-    assert "office_context_pack_runtime_implementation_and_acceptance" in domains["memory_governance"]["gaps"]
+    assert "office_context_pack_runtime_implementation_and_acceptance" not in domains["memory_governance"]["gaps"]
+    assert "office_context_pack_persistence_and_versioning" in domains["memory_governance"]["gaps"]
+    assert "executor_context_pack_injection" in domains["memory_governance"]["gaps"]
     context_evidence = domains["memory_governance"]["evidence"]["office_context_pack_readiness"]
     assert context_evidence["schema_version"] == "ai-platform.office-context-pack-readiness.v1"
     assert context_evidence["status"] == "partial_blocked"
@@ -282,7 +308,9 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     assert "admin_skill_release_dashboard_runtime_acceptance" in markdown
     assert "memory_delete_retention_erasure_evidence_snapshot" in markdown
     assert "memory_export_erasure_evidence_snapshot" in markdown
-    assert "office_context_pack_runtime_implementation_and_acceptance" in markdown
+    assert "context_snapshot_public_provenance_projection_contract" in markdown
+    assert "office_context_pack_persistence_and_versioning" in markdown
+    assert "executor_context_pack_injection" in markdown
     open_gaps = markdown.split("## Domains", 1)[0]
     assert "memory_export_erasure_evidence" not in open_gaps
     assert "callback-secret" not in markdown

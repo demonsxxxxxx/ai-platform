@@ -1,7 +1,6 @@
 from typing import Any
 
 from app.office_context_readiness import build_office_context_readiness
-from app.settings import get_settings
 from app.skills.release_readiness import build_skill_release_readiness
 from app.tool_policy_readiness import build_tool_policy_readiness
 
@@ -36,6 +35,12 @@ def _int_setting(settings: object, name: str, default: int = 0) -> int:
 def _sandbox_provider(settings: object) -> str:
     value = str(getattr(settings, "sandbox_container_provider", "fake") or "fake").strip().lower()
     return value if value in _SANDBOX_PROVIDER_VALUES else "unknown"
+
+
+def _default_settings() -> object:
+    from app.settings import get_settings
+
+    return get_settings()
 
 
 def _domain(
@@ -117,7 +122,7 @@ def build_governance_readiness(
     include_frontend_projection_audit: bool = False,
 ) -> dict[str, Any]:
     """Build a secret-safe G6 governance readiness baseline for Admin Runtime and CLI use."""
-    resolved_settings = settings or get_settings()
+    resolved_settings = settings or _default_settings()
     skill_release_readiness = build_skill_release_readiness()
     skill_release_dashboard = skill_release_readiness["admin_skill_release_dashboard"]
     tool_policy_readiness = build_tool_policy_readiness()
@@ -219,9 +224,11 @@ def build_governance_readiness(
                 "memory_export_erasure_evidence_snapshot",
                 "memory_redaction_policy_admin_preview_and_audit",
                 "office_context_pack_architecture_readiness_snapshot",
+                "context_snapshot_public_provenance_projection_contract",
             ],
             gaps=[
-                "office_context_pack_runtime_implementation_and_acceptance",
+                "office_context_pack_persistence_and_versioning",
+                "executor_context_pack_injection",
                 "document_centric_followup_state",
                 "sandbox_cold_start_latency_split",
                 "frontend_context_provenance_acceptance",
@@ -230,6 +237,7 @@ def build_governance_readiness(
                 "keep delete, retention, and export erasure evidence current through tools/memory_erasure_readiness.py",
                 "keep cross-session long-term memory disabled until policy and acceptance are complete",
                 "use tools/office_context_readiness.py to keep the office context-pack architecture contract current",
+                "keep context snapshot public provenance limited to counts, safe input keys, execution tier, and generated time",
                 "do not start Docker sandbox for lightweight office writing tasks by default",
             ],
             evidence={

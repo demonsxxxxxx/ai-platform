@@ -10,12 +10,12 @@ from typing import Any
 SCHEMA_VERSION = "ai-platform.foundation-alpha-poc-readiness.v1"
 SOURCE_SNAPSHOT_SCHEMA_VERSION = "ai-platform.source-snapshot.v1"
 STAGE_NAME = "Foundation Alpha POC"
-RUNTIME_SUBJECT_COMMIT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
+RUNTIME_SUBJECT_COMMIT_SHA = "9b02836262fb0f238a7f90b9705bf39a8b298158"
 _ROOT = Path(__file__).resolve().parents[1]
 _EVIDENCE_BASE_ROOT = _ROOT / "docs/release-evidence/foundation-alpha-poc"
 _EVIDENCE_ROOT = _EVIDENCE_BASE_ROOT / RUNTIME_SUBJECT_COMMIT_SHA
-_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-11-211-foundation-alpha-poc-current-main-smoke.json"
-_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-11-211-foundation-alpha-poc-current-main-auth-rbac-smoke.json"
+_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-11-211-foundation-alpha-poc-9b02836-context-output-smoke.json"
+_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-11-211-foundation-alpha-poc-9b02836-auth-rbac-smoke.json"
 _SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
 _SOURCE_SNAPSHOT_MARKER = _ROOT / ".ai-platform-source-snapshot.json"
 _RUNTIME_NEUTRAL_PATH_PREFIXES = (
@@ -24,8 +24,10 @@ _RUNTIME_NEUTRAL_PATH_PREFIXES = (
 )
 _RUNTIME_NEUTRAL_EXACT_PATHS = {
     ".gitignore",
+    "app/capacity_bounded_load_harness.py",
     "app/foundation_alpha_readiness.py",
     "tools/foundation_alpha_readiness.py",
+    "tools/verify_auth_rbac_smoke.py",
 }
 
 _OPEN_FOLLOWUPS = [
@@ -36,6 +38,15 @@ _OPEN_FOLLOWUPS = [
     "packaged_frontend_image_release_acceptance",
     "broader_auth_session_rbac_tenant_redaction_regression",
 ]
+
+
+class _ReadinessDefaultSettings:
+    sandbox_container_provider = "fake"
+    llm_gateway_provider = "openai_compatible"
+    model_gateway_request_concurrency_limit = 0
+    memory_retention_worker_cleanup_enabled = True
+    memory_retention_worker_cleanup_limit = 200
+    multi_agent_dispatch_worker_enabled = False
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -157,6 +168,8 @@ def _is_runtime_affecting_path(path: str) -> bool:
         return False
     if normalized in _RUNTIME_NEUTRAL_EXACT_PATHS:
         return False
+    if normalized.startswith("ai-platform-") and normalized.endswith(".tar") and "/" not in normalized:
+        return False
     return not normalized.startswith(_RUNTIME_NEUTRAL_PATH_PREFIXES)
 
 
@@ -231,11 +244,17 @@ def _is_poc_smoke_evidence(payload: dict[str, Any]) -> bool:
     runtime_checks = evidence_ref.get("runtime_checks") if isinstance(evidence_ref, dict) else {}
     if not isinstance(runtime_checks, dict) or _is_auth_rbac_evidence(payload):
         return False
+    has_frontend_signal = (
+        "lambchat_frontend" in runtime_checks
+        or "frontend_http_status" in runtime_checks
+    )
+    has_document_loop_signal = (
+        "document_review_attachment_run" in runtime_checks
+        or "word_review_attachment_chat" in runtime_checks
+    )
     return (
         evidence_ref.get("verifier") == "tools/verify_poc_gate.py"
-        or "document_review_attachment_run" in runtime_checks
-        or "lambchat_frontend" in runtime_checks
-        or "frontend_http_status" in runtime_checks
+        or (has_frontend_signal and has_document_loop_signal)
     )
 
 
@@ -308,6 +327,15 @@ def _resolve_release_evidence_paths(source_tree_commit: str) -> tuple[Path, Path
         current_pair = _discover_release_evidence_pair(source_tree_commit)
         if current_pair is not None:
             return current_pair
+        marker = _source_snapshot_marker_for_source_tree(source_tree_commit)
+        if marker is not None:
+            runtime_subject_commit = str(marker.get("runtime_subject_commit_sha") or "")
+            marker_pair = _discover_release_evidence_pair(runtime_subject_commit)
+            if marker_pair is not None:
+                return marker_pair
+    configured_runtime_pair = _discover_release_evidence_pair(RUNTIME_SUBJECT_COMMIT_SHA)
+    if configured_runtime_pair is not None:
+        return configured_runtime_pair
     latest_pair = _discover_latest_release_evidence_pair()
     if latest_pair is not None:
         return latest_pair
@@ -381,18 +409,20 @@ def _artifact_review_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": document_review.get("status"),
         "skill_id": document_review.get("skill_id"),
-        "artifact_types": document_review.get("artifact_types") or [],
+        "artifact_types": sorted(document_review.get("artifact_types") or []),
         "playback_contract_version": document_review.get("playback_contract_version"),
     }
 
 
 def _projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
+    frontend = _safe_runtime_check(runtime_checks.get("lambchat_frontend"))
+    boundary = _safe_runtime_check(runtime_checks.get("frontend_dist_api_boundary"))
     return {
-        "frontend_http_status": _safe_runtime_check(runtime_checks.get("lambchat_frontend")).get("status"),
+        "frontend_http_status": frontend.get("status") or runtime_checks.get("frontend_http_status"),
         "same_origin_api_health": _safe_runtime_check(runtime_checks.get("same_origin_api_health")),
-        "forbidden_reference_count": _safe_runtime_check(runtime_checks.get("frontend_dist_api_boundary")).get(
-            "forbidden_reference_count"
-        ),
+        "forbidden_reference_count": boundary.get("forbidden_reference_count")
+        if boundary.get("forbidden_reference_count") is not None
+        else runtime_checks.get("frontend_forbidden_reference_count"),
         "artifact_download_cross_user_statuses": _safe_runtime_check(
             runtime_checks.get("artifact_download_isolation")
         ).get("cross_user_statuses"),
@@ -402,17 +432,62 @@ def _projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _context_projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
+    projection = _safe_runtime_check(runtime_checks.get("context_snapshot_public_projection"))
+    if not projection:
+        return {
+            "status": "missing_context_snapshot_public_projection",
+            "referenced_material_counts": {},
+            "raw_material_id_fields_present": None,
+            "forbidden_projection_leak_count": None,
+            "summary_source": None,
+        }
+
+    forbidden_leaks = projection.get("forbidden_projection_leaks")
+    forbidden_leak_count = len(forbidden_leaks) if isinstance(forbidden_leaks, list) else None
+    raw_material_id_fields_present = projection.get("raw_material_id_fields_present")
+    status = (
+        "verified_public_context_projection"
+        if projection.get("ok") is True
+        and raw_material_id_fields_present is False
+        and forbidden_leak_count == 0
+        else "context_snapshot_public_projection_followup_required"
+    )
+    counts = projection.get("referenced_material_counts")
+    return {
+        "status": status,
+        "referenced_material_counts": deepcopy(counts) if isinstance(counts, dict) else {},
+        "raw_material_id_fields_present": raw_material_id_fields_present
+        if isinstance(raw_material_id_fields_present, bool)
+        else None,
+        "forbidden_projection_leak_count": forbidden_leak_count,
+        "summary_source": projection.get("summary_source") if isinstance(projection.get("summary_source"), str) else None,
+    }
+
+
 def _auth_rbac_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     admin_runtime = _safe_runtime_check(runtime_checks.get("admin_runtime"))
+    authenticated_auth_me = _safe_runtime_check(runtime_checks.get("authenticated_auth_me"))
     return {
         "unauthenticated_auth_me_status": _safe_runtime_check(runtime_checks.get("unauthenticated_auth_me")).get(
             "status"
         ),
+        "authenticated_auth_me_status": authenticated_auth_me.get("status"),
+        "authenticated_auth_me_route": authenticated_auth_me.get("route"),
+        "authenticated_auth_me_tenant_matches_requested": authenticated_auth_me.get("tenant_matches_requested"),
+        "authenticated_auth_me_user_matches_requested": authenticated_auth_me.get("user_matches_requested"),
+        "authenticated_auth_me_forbidden_projection_terms_present": authenticated_auth_me.get(
+            "forbidden_projection_terms_present"
+        ),
+        "invalid_gateway_secret_auth_me_status": _safe_runtime_check(
+            runtime_checks.get("invalid_gateway_secret_auth_me")
+        ).get("status"),
         "ordinary_admin_runtime_status": _safe_runtime_check(runtime_checks.get("ordinary_admin_runtime")).get(
             "status"
         ),
         "admin_runtime_status": admin_runtime.get("status"),
         "admin_required_sections_present": admin_runtime.get("required_sections_present"),
+        "admin_tenant_matches_requested": admin_runtime.get("tenant_matches_requested"),
         "admin_forbidden_projection_terms_present": admin_runtime.get("forbidden_projection_terms_present"),
     }
 
@@ -444,12 +519,51 @@ def _top_level_status(runtime_relation_status: str, runtime_matches_source_tree:
     return f"{runtime_relation_status}_followups_open"
 
 
+def _poc_loop_status(runtime_relation: dict[str, Any]) -> str:
+    if runtime_relation.get("runtime_relevant_source_matches"):
+        return "verified_for_current_source"
+    if runtime_relation.get("runtime_affecting_dirty_paths"):
+        return "runtime_affecting_uncommitted_changes_pending"
+    if runtime_relation.get("status") == "source_tree_uncommitted_changes_pending":
+        return "source_dirty_unknown_runtime_impact"
+    return "runtime_rollout_required"
+
+
+def _operator_context(runtime_relation: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "poc_scope": "foundation_alpha_controlled_internal_poc",
+        "poc_loop_status": _poc_loop_status(runtime_relation),
+        "current_runtime_relation": runtime_relation["status"],
+        "stage_gate": "foundation_alpha_poc_not_production",
+        "verified_poc_capabilities": [
+            "source_authority_security_baseline",
+            "control_plane_public_admin_projection_contracts",
+            "queue_worker_document_task_artifact_loop",
+            "frontend_public_projection_poc",
+        ],
+        "blocked_expansions": [
+            "production_concurrency_increase",
+            "docker_sandbox_hardening_claim",
+            "ordinary_user_multi_agent_exposure",
+            "department_rollout",
+        ],
+        "next_recommended_slices": [
+            "#21_recorded_capacity_evidence",
+            "g6_runtime_admin_dashboard_acceptance_for_governance",
+            "g9_runtime_export_and_retention_acceptance",
+            "packaged_frontend_image_release_acceptance",
+            "broader_auth_session_rbac_tenant_redaction_regression",
+        ],
+    }
+
+
 def _build_governance_summary(settings: object | None) -> dict[str, Any]:
     try:
         from app.governance_readiness import build_governance_readiness
     except ModuleNotFoundError as exc:
         return _governance_dependency_unavailable_summary(exc)
 
+    settings = settings or _ReadinessDefaultSettings()
     governance = build_governance_readiness(settings, include_frontend_projection_audit=False)
     return {
         "governance_readiness_status": governance["status"],
@@ -464,6 +578,7 @@ def _build_observability_summary(settings: object | None) -> dict[str, Any]:
     except ModuleNotFoundError as exc:
         return _observability_dependency_unavailable_summary(exc)
 
+    settings = settings or _ReadinessDefaultSettings()
     observability = build_observability_readiness(settings)
     return {
         "observability_readiness_status": observability["status"],
@@ -578,6 +693,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
                 "skill_snapshot_run_seen": True,
                 "tool_permission_decision_audit_required": True,
                 "memory_long_term_default_fail_closed": True,
+                "context_snapshot_public_projection": _context_projection_summary(smoke_checks),
             },
             "open_followups": [
                 "runtime_admin_dashboard_acceptance_for_governance",
@@ -620,6 +736,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             "poc_smoke": _path_for_output(smoke_evidence_path),
             "auth_rbac_smoke": _path_for_output(auth_rbac_evidence_path),
         },
+        "operator_context": _operator_context(runtime_relation),
         "decision": {
             "reviewed_poc_loop_evidence_available": True,
             "controlled_poc_loop_verified_for_current_source": runtime_relevant_source_matches,
@@ -641,15 +758,37 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
 def render_foundation_alpha_readiness_markdown(readiness: dict[str, Any]) -> str:
     """Render Foundation Alpha POC readiness as operator-readable Markdown."""
     decision = readiness["decision"]
+    operator_context = readiness["operator_context"]
     verified_runtime_subject = readiness["verified_runtime_subject"]
     decision_lines = "\n".join(f"- `{key}`: `{value}`" for key, value in decision.items())
+    verified_capabilities = "\n".join(f"- {item}" for item in operator_context["verified_poc_capabilities"])
+    blocked_expansions = "\n".join(f"- {item}" for item in operator_context["blocked_expansions"])
+    next_slices = "\n".join(f"- {item}" for item in operator_context["next_recommended_slices"])
     followups = "\n".join(f"- {item}" for item in readiness["open_followups"])
     domain_sections: list[str] = []
     for name, domain in readiness["domains"].items():
         domain_followups = "\n".join(f"- {item}" for item in domain.get("open_followups", [])) or "- none"
+        evidence_lines = ""
+        if name == "g6_poc_governance":
+            context_projection = domain.get("evidence", {}).get("context_snapshot_public_projection")
+            if isinstance(context_projection, dict):
+                counts = context_projection.get("referenced_material_counts")
+                counts = counts if isinstance(counts, dict) else {}
+                count_summary = (
+                    f"message={int(counts.get('message_count') or 0)}, "
+                    f"file={int(counts.get('file_count') or 0)}, "
+                    f"artifact={int(counts.get('artifact_count') or 0)}, "
+                    f"memory={int(counts.get('memory_record_count') or 0)}"
+                )
+                evidence_lines = (
+                    "\n"
+                    f"Context snapshot public projection: `{context_projection.get('status')}`\n\n"
+                    f"Context referenced material counts: `{count_summary}`\n\n"
+                )
         domain_sections.append(
             f"### {name}\n\n"
             f"Status: `{domain['status']}`\n\n"
+            f"{evidence_lines}"
             "Open followups:\n\n"
             f"{domain_followups}\n"
         )
@@ -666,6 +805,16 @@ def render_foundation_alpha_readiness_markdown(readiness: dict[str, Any]) -> str
         f"Image: `{verified_runtime_subject['image']}`\n\n"
         f"Image ID: `{verified_runtime_subject['image_id']}`\n\n"
         f"Evidence scope: `{verified_runtime_subject['evidence_scope']}`\n\n"
+        "## Operator Context\n\n"
+        f"POC scope: `{operator_context['poc_scope']}`\n\n"
+        f"POC loop status: `{operator_context['poc_loop_status']}`\n\n"
+        f"Stage gate: `{operator_context['stage_gate']}`\n\n"
+        "Verified POC capabilities:\n\n"
+        f"{verified_capabilities}\n\n"
+        "Blocked expansions:\n\n"
+        f"{blocked_expansions}\n\n"
+        "Next recommended slices:\n\n"
+        f"{next_slices}\n\n"
         "## Current decision\n\n"
         f"{decision_lines}\n\n"
         "## Open Followups\n\n"
