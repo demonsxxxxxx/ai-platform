@@ -1,0 +1,84 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-06-11-211-foundation-alpha-poc-faa7ad6-auth-rbac-smoke",
+  "commit_sha": "faa7ad6aa61637cbcdf3a22ce81de119762e96bf",
+  "runtime_subject_commit_sha": "faa7ad6aa61637cbcdf3a22ce81de119762e96bf",
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#15",
+    "#16",
+    "#17",
+    "#21",
+    "#22",
+    "#23",
+    "#24"
+  ],
+  "artifact_kind": "211_runtime_smoke",
+  "captured_at": "2026-06-11T16:29:03+08:00",
+  "source_ref": {
+    "branch": "main",
+    "runtime_commit": "faa7ad6aa61637cbcdf3a22ce81de119762e96bf",
+    "runtime_source_marker": "faa7ad6aa61637cbcdf3a22ce81de119762e96bf",
+    "runtime_image": "ai-platform:faa7ad6-foundation-alpha-poc",
+    "image_id": "sha256:531a63640cadb917874d74e2379fe16bf76cb2da3f548e8e18a42043dbdd075f",
+    "image_labels": {
+      "ai-platform.source-branch": "main",
+      "ai-platform.source-revision": "faa7ad6aa61637cbcdf3a22ce81de119762e96bf",
+      "ai-platform.source_note": "foundation-alpha-poc-readiness-context",
+      "org.opencontainers.image.revision": "faa7ad6aa61637cbcdf3a22ce81de119762e96bf"
+    },
+    "containers": [
+      "ai-platform-api"
+    ],
+    "compose_working_dir": "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform",
+    "compose_config_file": "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/docker-compose.yml",
+    "compose_env_source": "existing 211 runtime env path, not copied or printed",
+    "gateway_secret_supplied": true
+  },
+  "evidence_ref": {
+    "verifier": "tools/verify_auth_rbac_smoke.py",
+    "command": "AI_PLATFORM_GATEWAY_SECRET=<redacted> python3 tools/verify_auth_rbac_smoke.py --base-url http://127.0.0.1:8020 --commit-sha faa7ad6aa61637cbcdf3a22ce81de119762e96bf --image ai-platform:faa7ad6-foundation-alpha-poc --gateway-secret-env AI_PLATFORM_GATEWAY_SECRET",
+    "result": "ok:true",
+    "schema_version": "ai-platform.auth-rbac-smoke.v1",
+    "runtime_checks": {
+      "unauthenticated_auth_me": {
+        "route": "/api/auth/me",
+        "status": 401,
+        "detail": "missing_authenticated_principal",
+        "expected_status": 401
+      },
+      "ordinary_admin_runtime": {
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "status": 403,
+        "detail": "not_ai_admin",
+        "expected_status": 403
+      },
+      "admin_runtime": {
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "status": 200,
+        "expected_status": 200,
+        "required_sections_present": true,
+        "missing_sections": [],
+        "tenant_id": "default",
+        "queue_lease_scan_limit": 50,
+        "sandbox_active_leases": 0,
+        "forbidden_projection_terms_present": false
+      }
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "This entry records a redacted Auth/RBAC smoke summary for the faa7ad6 Foundation Alpha POC runtime.",
+    "The reviewed summary omits credentials, DSNs, object locators, executor internals, runtime workspace paths, and personal workstation paths.",
+    "This evidence supports the Foundation Alpha POC security baseline only. It does not close production auth rollout, capacity, sandbox hardening, ordinary-user multi-agent, department rollout, runtime export, or release-evidence retention gates."
+  ],
+  "open_followups": [
+    "Broader auth/session/RBAC/tenant/redaction regression remains required before production gate closure.",
+    "#21 recorded multi-tenant capacity/load evidence remains required before raising production concurrency defaults.",
+    "G7 Docker sandbox hardening and Docker-capable sandbox smoke remain blocked.",
+    "G8 ordinary-user multi-agent exposure remains feature-flagged/internal only.",
+    "G9 release-evidence runtime export and retention runtime acceptance remain open.",
+    "Packaged frontend image smoke/release acceptance remains separate from this thin-shell POC smoke."
+  ]
+}

@@ -28,12 +28,20 @@ controlled POC loop evidence remains useful for the recorded runtime subject,
 but current source commits still need rollout and smoke evidence before being
 treated as runtime-verified.
 
+When it reports `runtime_current_for_runtime_relevant_source`, the latest
+running runtime subject still covers all runtime-affecting source. This state is
+only valid when `runtime_affecting_dirty_paths` and
+`runtime_affecting_changes_since_runtime_subject` are empty. In that case,
+docs/tests/evidence/readiness record changes may be newer than the image, so
+`current_source_exact_runtime_commit_match=false` can coexist with
+`current_source_verified_by_running_runtime=true`.
+
 On 2026-06-11, runtime subject commit
-`a3f1d739e12686cba2e0b309de26a4e1127bd3a5` was synced to 211 source and the
-211 API and worker ran `ai-platform:a3f1d73-foundation-alpha-poc` with image ID
-`sha256:b3ea3f65823c1b64250fdd73d58a30990a56333a867f310f23b2e7ed86e2b7a0`.
+`faa7ad6aa61637cbcdf3a22ce81de119762e96bf` was synced to 211 source and the
+211 API and worker ran `ai-platform:faa7ad6-foundation-alpha-poc` with image ID
+`sha256:531a63640cadb917874d74e2379fe16bf76cb2da3f548e8e18a42043dbdd075f`.
 Both runtime source labels pointed to
-`a3f1d739e12686cba2e0b309de26a4e1127bd3a5`. Runtime labels pointed to the
+`faa7ad6aa61637cbcdf3a22ce81de119762e96bf`. Runtime labels pointed to the
 repo-local compose file under
 `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform`,
 API health returned `ok`, and OpenAPI exposed
@@ -49,19 +57,21 @@ for the controlled POC loop: LambChat thin-shell frontend, same-origin API
 health, public/admin projection boundary, company auth bridge, general chat run,
 document review attachment run, artifact download isolation, artifact preview
 isolation, playback with preview URL and no private payload leakage, company
-login audit, and Admin capacity/backpressure fields. The reviewed, redacted
-release-evidence entry is
-`docs/release-evidence/foundation-alpha-poc/a3f1d739e12686cba2e0b309de26a4e1127bd3a5/2026-06-11-211-foundation-alpha-poc-a3f1d73-smoke.json`.
+login audit, and Admin capacity/backpressure fields. The current reviewed,
+redacted release-evidence entry is
+`docs/release-evidence/foundation-alpha-poc/faa7ad6aa61637cbcdf3a22ce81de119762e96bf/2026-06-11-211-foundation-alpha-poc-faa7ad6-smoke.json`.
 
 The focused Auth/RBAC verifier `tools/verify_auth_rbac_smoke.py` also returned
 `ok: true` on 211 against the same current-main runtime. It verified
 unauthenticated `/api/auth/me` returns 401, ordinary trusted principals are
 denied from Admin Runtime with 403, admin trusted principals can read the
 required Admin Runtime sections with 200, and the projection scan did not find
-private or secret-like values. The reviewed, redacted evidence entry is
-`docs/release-evidence/foundation-alpha-poc/a3f1d739e12686cba2e0b309de26a4e1127bd3a5/2026-06-11-211-foundation-alpha-poc-a3f1d73-auth-rbac-smoke.json`.
+private or secret-like values. The current reviewed, redacted Auth/RBAC
+evidence entry is
+`docs/release-evidence/foundation-alpha-poc/faa7ad6aa61637cbcdf3a22ce81de119762e96bf/2026-06-11-211-foundation-alpha-poc-faa7ad6-auth-rbac-smoke.json`.
 
 Earlier smoke evidence for
+`a3f1d739e12686cba2e0b309de26a4e1127bd3a5`,
 `8c0cffca63bc747fad0a5771f209acc8a608ab9e`,
 `bf20432f9889efa8b367afdf512c641068ba30bc`, and
 `3874281276c84a418bd08bda56d7ea55b52970b7` remains retained as historical evidence only; the current-main evidence above is the active Foundation Alpha POC reference.

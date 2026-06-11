@@ -27,6 +27,16 @@ class SecretBearingSettings:
     multi_agent_dispatch_worker_enabled = False
 
 
+@pytest.fixture(autouse=True)
+def _default_no_runtime_affecting_dirty_paths(monkeypatch):
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_dirty_paths",
+        lambda: [],
+        raising=False,
+    )
+
+
 def _minimal_smoke_payload(commit_sha: str, *, image: str, captured_at: str = "2026-06-11T10:00:00+08:00") -> dict:
     return {
         "schema_version": "ai-platform.release-evidence-entry.v1",
@@ -185,6 +195,9 @@ def test_foundation_alpha_readiness_selects_current_source_release_evidence_pair
         "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
         "runtime_source_marker": CURRENT_SOURCE_SHA,
         "runtime_matches_source_tree": True,
+        "runtime_relevant_source_matches": True,
+        "runtime_affecting_changes_since_runtime_subject": [],
+        "runtime_affecting_dirty_paths": [],
         "status": "runtime_current_for_source_tree",
     }
     assert readiness["decision"]["current_source_verified_by_running_runtime"] is True
@@ -215,10 +228,16 @@ def test_foundation_alpha_readiness_does_not_overclaim_dirty_source_tree(monkeyp
         raising=False,
     )
     monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: True, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_dirty_paths",
+        lambda: ["app/routes/runs.py"],
+        raising=False,
+    )
 
     readiness = build_foundation_alpha_readiness(SecretBearingSettings())
 
-    assert readiness["status"] == "source_tree_uncommitted_changes_pending_followups_open"
+    assert readiness["status"] == "source_tree_runtime_affecting_uncommitted_changes_pending_followups_open"
     assert readiness["source_tree_commit_sha"] == CURRENT_SOURCE_SHA
     assert readiness["source_tree_dirty"] is True
     assert readiness["runtime_subject_commit_sha"] == CURRENT_SOURCE_SHA
@@ -228,12 +247,113 @@ def test_foundation_alpha_readiness_does_not_overclaim_dirty_source_tree(monkeyp
         "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
         "runtime_source_marker": CURRENT_SOURCE_SHA,
         "runtime_matches_source_tree": False,
-        "status": "source_tree_uncommitted_changes_pending",
+        "runtime_relevant_source_matches": False,
+        "runtime_affecting_changes_since_runtime_subject": [],
+        "runtime_affecting_dirty_paths": ["app/routes/runs.py"],
+        "status": "source_tree_runtime_affecting_uncommitted_changes_pending",
     }
     assert (
         readiness["domains"]["g0_g1_source_authority_security"]["status"]
-        == "source_tree_uncommitted_changes_pending"
+        == "source_tree_runtime_affecting_uncommitted_changes_pending"
     )
+    assert readiness["decision"]["current_source_verified_by_running_runtime"] is False
+    assert readiness["decision"]["runtime_rollout_required_for_current_source"] is True
+
+
+def test_foundation_alpha_readiness_accepts_runtime_neutral_uncommitted_records(monkeypatch, tmp_path):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    old_smoke_path, old_auth_path = _write_release_evidence_pair(
+        evidence_root,
+        RUNTIME_SUBJECT_SHA,
+        image="ai-platform:8c0cffc-foundation-alpha-poc",
+    )
+    _write_release_evidence_pair(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image="ai-platform:a3f1d73-foundation-alpha-poc",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", old_smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", old_auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: CURRENT_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: True, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_dirty_paths",
+        lambda: [],
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert readiness["status"] == "runtime_current_for_runtime_relevant_source_followups_open"
+    assert readiness["source_tree_dirty"] is True
+    assert readiness["runtime_source_relation"] == {
+        "source_tree_commit_sha": CURRENT_SOURCE_SHA,
+        "source_tree_dirty": True,
+        "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
+        "runtime_source_marker": CURRENT_SOURCE_SHA,
+        "runtime_matches_source_tree": False,
+        "runtime_relevant_source_matches": True,
+        "runtime_affecting_changes_since_runtime_subject": [],
+        "runtime_affecting_dirty_paths": [],
+        "status": "runtime_current_for_runtime_relevant_source",
+    }
+    assert readiness["verified_runtime_subject"]["evidence_scope"] == "current_runtime_relevant_source"
+    assert readiness["decision"]["current_source_verified_by_running_runtime"] is True
+    assert readiness["decision"]["current_source_exact_runtime_commit_match"] is False
+    assert readiness["decision"]["runtime_rollout_required_for_current_source"] is False
+
+
+def test_foundation_alpha_readiness_fails_closed_when_dirty_state_is_unknown(monkeypatch, tmp_path):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    old_smoke_path, old_auth_path = _write_release_evidence_pair(
+        evidence_root,
+        RUNTIME_SUBJECT_SHA,
+        image="ai-platform:8c0cffc-foundation-alpha-poc",
+    )
+    _write_release_evidence_pair(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image="ai-platform:a3f1d73-foundation-alpha-poc",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", old_smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", old_auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: CURRENT_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: None, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_dirty_paths",
+        lambda: [],
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert readiness["status"] == "source_synced_runtime_pending_followups_open"
+    assert readiness["runtime_source_relation"] == {
+        "source_tree_commit_sha": CURRENT_SOURCE_SHA,
+        "source_tree_dirty": None,
+        "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
+        "runtime_source_marker": CURRENT_SOURCE_SHA,
+        "runtime_matches_source_tree": False,
+        "runtime_relevant_source_matches": False,
+        "runtime_affecting_changes_since_runtime_subject": [],
+        "runtime_affecting_dirty_paths": [],
+        "status": "source_synced_runtime_pending",
+    }
+    assert readiness["verified_runtime_subject"]["evidence_scope"] == "reviewed_historical_runtime_evidence"
     assert readiness["decision"]["current_source_verified_by_running_runtime"] is False
     assert readiness["decision"]["runtime_rollout_required_for_current_source"] is True
 
@@ -264,6 +384,12 @@ def test_foundation_alpha_readiness_falls_back_to_latest_reviewed_runtime_eviden
         raising=False,
     )
     monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_changes_since",
+        lambda _: ["app/routes/runs.py"],
+        raising=False,
+    )
 
     readiness = build_foundation_alpha_readiness(SecretBearingSettings())
 
@@ -283,6 +409,9 @@ def test_foundation_alpha_readiness_falls_back_to_latest_reviewed_runtime_eviden
         "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
         "runtime_source_marker": CURRENT_SOURCE_SHA,
         "runtime_matches_source_tree": False,
+        "runtime_relevant_source_matches": False,
+        "runtime_affecting_changes_since_runtime_subject": ["app/routes/runs.py"],
+        "runtime_affecting_dirty_paths": [],
         "status": "source_synced_runtime_pending",
     }
     assert readiness["decision"]["current_source_verified_by_running_runtime"] is False
@@ -293,7 +422,74 @@ def test_foundation_alpha_readiness_falls_back_to_latest_reviewed_runtime_eviden
     assert RUNTIME_SUBJECT_SHA not in readiness["evidence_entries"]["poc_smoke"]
 
 
+def test_foundation_alpha_readiness_accepts_evidence_only_record_commit_without_runtime_rollout(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    old_smoke_path, old_auth_path = _write_release_evidence_pair(
+        evidence_root,
+        RUNTIME_SUBJECT_SHA,
+        image="ai-platform:8c0cffc-foundation-alpha-poc",
+        smoke_captured_at="2026-06-11T10:00:00+08:00",
+        auth_captured_at="2026-06-11T10:01:00+08:00",
+    )
+    _write_release_evidence_pair(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image="ai-platform:a3f1d73-foundation-alpha-poc",
+        smoke_captured_at="2026-06-11T15:19:22+08:00",
+        auth_captured_at="2026-06-11T15:18:58+08:00",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", old_smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", old_auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: NEWER_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_changes_since",
+        lambda _: [],
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert readiness["status"] == "runtime_current_for_runtime_relevant_source_followups_open"
+    assert readiness["source_tree_commit_sha"] == NEWER_SOURCE_SHA
+    assert readiness["runtime_subject_commit_sha"] == CURRENT_SOURCE_SHA
+    assert readiness["runtime_source_relation"] == {
+        "source_tree_commit_sha": NEWER_SOURCE_SHA,
+        "source_tree_dirty": False,
+        "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
+        "runtime_source_marker": CURRENT_SOURCE_SHA,
+        "runtime_matches_source_tree": False,
+        "runtime_relevant_source_matches": True,
+        "runtime_affecting_changes_since_runtime_subject": [],
+        "runtime_affecting_dirty_paths": [],
+        "status": "runtime_current_for_runtime_relevant_source",
+    }
+    assert (
+        readiness["domains"]["g0_g1_source_authority_security"]["status"]
+        == "runtime_current_for_runtime_relevant_source"
+    )
+    assert readiness["decision"]["current_source_verified_by_running_runtime"] is True
+    assert readiness["decision"]["current_source_exact_runtime_commit_match"] is False
+    assert readiness["decision"]["runtime_rollout_required_for_current_source"] is False
+
+
 def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_overclaiming(monkeypatch):
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_changes_since",
+        lambda _: [],
+        raising=False,
+    )
     monkeypatch.setattr(
         foundation_alpha_readiness,
         "_resolve_source_tree_revision",
@@ -315,12 +511,16 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "runtime_subject_commit_sha": RUNTIME_SUBJECT_SHA,
         "runtime_source_marker": RUNTIME_SUBJECT_SHA,
         "runtime_matches_source_tree": True,
+        "runtime_relevant_source_matches": True,
+        "runtime_affecting_changes_since_runtime_subject": [],
+        "runtime_affecting_dirty_paths": [],
         "status": "runtime_current_for_source_tree",
     }
     assert readiness["decision"] == {
         "reviewed_poc_loop_evidence_available": True,
         "controlled_poc_loop_verified_for_current_source": True,
         "current_source_verified_by_running_runtime": True,
+        "current_source_exact_runtime_commit_match": True,
         "runtime_rollout_required_for_current_source": False,
         "can_enter_next_stage_without_restrictions": False,
         "production_claim_allowed": False,
@@ -369,7 +569,28 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert "c:\\users" not in serialized
 
 
-def test_foundation_alpha_readiness_marks_source_synced_runtime_pending_without_overclaiming(monkeypatch):
+def test_foundation_alpha_readiness_marks_source_synced_runtime_pending_without_overclaiming(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    old_smoke_path, old_auth_path = _write_release_evidence_pair(
+        evidence_root,
+        RUNTIME_SUBJECT_SHA,
+        image="ai-platform:8c0cffc-foundation-alpha-poc",
+        smoke_captured_at="2026-06-11T10:00:00+08:00",
+        auth_captured_at="2026-06-11T10:01:00+08:00",
+    )
+    _write_release_evidence_pair(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image="ai-platform:a3f1d73-foundation-alpha-poc",
+        smoke_captured_at="2026-06-11T15:19:22+08:00",
+        auth_captured_at="2026-06-11T15:18:58+08:00",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", old_smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", old_auth_path, raising=False)
     monkeypatch.setattr(
         foundation_alpha_readiness,
         "_resolve_source_tree_revision",
@@ -377,6 +598,12 @@ def test_foundation_alpha_readiness_marks_source_synced_runtime_pending_without_
         raising=False,
     )
     monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_changes_since",
+        lambda _: ["app/worker.py"],
+        raising=False,
+    )
 
     readiness = build_foundation_alpha_readiness(SecretBearingSettings())
 
@@ -389,6 +616,9 @@ def test_foundation_alpha_readiness_marks_source_synced_runtime_pending_without_
         "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
         "runtime_source_marker": CURRENT_SOURCE_SHA,
         "runtime_matches_source_tree": False,
+        "runtime_relevant_source_matches": False,
+        "runtime_affecting_changes_since_runtime_subject": ["app/worker.py"],
+        "runtime_affecting_dirty_paths": [],
         "status": "source_synced_runtime_pending",
     }
     assert (
@@ -402,6 +632,7 @@ def test_foundation_alpha_readiness_marks_source_synced_runtime_pending_without_
     assert readiness["decision"]["reviewed_poc_loop_evidence_available"] is True
     assert readiness["decision"]["controlled_poc_loop_verified_for_current_source"] is False
     assert readiness["decision"]["current_source_verified_by_running_runtime"] is False
+    assert readiness["decision"]["current_source_exact_runtime_commit_match"] is False
     assert readiness["decision"]["runtime_rollout_required_for_current_source"] is True
     assert readiness["decision"]["production_claim_allowed"] is False
     assert readiness["decision"]["can_enter_next_stage_without_restrictions"] is False
@@ -440,9 +671,12 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeyp
     payload = json.loads(json_result.stdout)
     assert payload["schema_version"] == "ai-platform.foundation-alpha-poc-readiness.v1"
     assert payload["decision"]["reviewed_poc_loop_evidence_available"] is True
-    assert payload["decision"]["controlled_poc_loop_verified_for_current_source"] is False
     assert "runtime_image" not in payload
-    assert payload["verified_runtime_subject"]["evidence_scope"] == "reviewed_historical_runtime_evidence"
+    assert payload["verified_runtime_subject"]["evidence_scope"] in {
+        "current_source_tree",
+        "current_runtime_relevant_source",
+        "reviewed_historical_runtime_evidence",
+    }
 
     markdown_result = subprocess.run(
         [sys.executable, "tools/foundation_alpha_readiness.py", "--format", "markdown"],

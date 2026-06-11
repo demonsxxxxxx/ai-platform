@@ -1,0 +1,162 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-06-11-211-foundation-alpha-poc-faa7ad6-smoke",
+  "commit_sha": "faa7ad6aa61637cbcdf3a22ce81de119762e96bf",
+  "runtime_subject_commit_sha": "faa7ad6aa61637cbcdf3a22ce81de119762e96bf",
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#15",
+    "#16",
+    "#17",
+    "#21",
+    "#22",
+    "#23",
+    "#24"
+  ],
+  "artifact_kind": "211_runtime_smoke",
+  "captured_at": "2026-06-11T16:29:43+08:00",
+  "source_ref": {
+    "branch": "main",
+    "runtime_commit": "faa7ad6aa61637cbcdf3a22ce81de119762e96bf",
+    "runtime_source_marker": "faa7ad6aa61637cbcdf3a22ce81de119762e96bf",
+    "image": "ai-platform:faa7ad6-foundation-alpha-poc",
+    "image_id": "sha256:531a63640cadb917874d74e2379fe16bf76cb2da3f548e8e18a42043dbdd075f",
+    "image_labels": {
+      "ai-platform.source-branch": "main",
+      "ai-platform.source-revision": "faa7ad6aa61637cbcdf3a22ce81de119762e96bf",
+      "ai-platform.source_note": "foundation-alpha-poc-readiness-context",
+      "org.opencontainers.image.revision": "faa7ad6aa61637cbcdf3a22ce81de119762e96bf"
+    },
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "compose_working_dir": "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform",
+    "compose_config_file": "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/docker-compose.yml",
+    "compose_env_source": "existing 211 runtime env path, not copied or printed",
+    "repo_local_env_present": false
+  },
+  "evidence_ref": {
+    "verifier": "tools/verify_poc_gate.py",
+    "command": "python3 tools/verify_poc_gate.py --frontend-url http://127.0.0.1:18001 --api-url http://127.0.0.1:8020 --frontend-dist /home/xinlin.jiang/lambchat-poc/frontend-dist-ai-platform --env-path <existing-211-runtime-env-path> --api-container ai-platform-api --postgres-container ai-platform-postgres --postgres-user ai_platform --postgres-db ai_platform --allow-missing-auth-audit",
+    "result": "ok:true",
+    "runtime_checks": {
+      "lambchat_frontend": {
+        "status": 200
+      },
+      "frontend_dist_api_boundary": {
+        "forbidden_reference_count": 0
+      },
+      "same_origin_api_health": {
+        "status": 200,
+        "payload_status": "ok"
+      },
+      "lambchat_api_compat": {
+        "all_required_routes_http_200": true,
+        "registration_enabled": false,
+        "default_model_id": "deepseek-v4-flash",
+        "missing_permissions": []
+      },
+      "runtime_config": {
+        "claude_agent_sdk_enabled": true,
+        "models": [
+          "deepseek-v4-flash"
+        ],
+        "skills_present": [
+          "baoyu-translate",
+          "general-chat",
+          "qa-file-reviewer"
+        ],
+        "live_container_env_preferred_over_env_file": true
+      },
+      "company_auth_bridge": "invalid-login-probe-returned-unsuccessfully",
+      "general_chat_run": "succeeded",
+      "review_artifact_run": {
+        "status": "succeeded",
+        "skill_id": "qa-file-reviewer",
+        "artifact_content_type": "application/json",
+        "artifact_size_positive": true
+      },
+      "translate_artifact_run": {
+        "status": "succeeded",
+        "skill_id": "baoyu-translate",
+        "artifact_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "artifact_size_positive": true
+      },
+      "upload_attachment_chat": {
+        "upload_status": 200,
+        "chat_status": 200,
+        "run_status": "succeeded",
+        "executor_type": "claude-agent-worker"
+      },
+      "document_review_attachment_run": {
+        "upload_status": 200,
+        "chat_status": 200,
+        "status": "succeeded",
+        "agent_id": "qa-word-review",
+        "skill_id": "qa-file-reviewer",
+        "artifact_count": 3,
+        "artifact_types": [
+          "report_txt",
+          "result_json",
+          "reviewed_docx"
+        ],
+        "playback_status": 200,
+        "playback_contract_version": "ai-platform.run-playback.v1",
+        "playback_artifact_count": 3,
+        "playback_download_url_count": 3,
+        "playback_preview_url_count": 1,
+        "matched_download_artifact_count": 1,
+        "matched_preview_artifact_count": 1,
+        "private_payload_leaked": false
+      },
+      "artifact_download_isolation": {
+        "checked_artifacts": 2,
+        "owner_statuses": [
+          200,
+          200
+        ],
+        "cross_user_statuses": [
+          404,
+          404
+        ]
+      },
+      "artifact_preview_isolation": {
+        "checked_artifacts": 1,
+        "owner_statuses": [
+          200
+        ],
+        "cross_user_statuses": [
+          404
+        ],
+        "cache_control": "no-store",
+        "x_content_type_options": "nosniff"
+      },
+      "company_login_audit": {
+        "ordinary_user_count": 12,
+        "admin_user_count": 34,
+        "source": "company-login"
+      },
+      "sdk_task_tool_boundary": {
+        "task_tool_exposed_in_full_access": false,
+        "reason": "child-run admission, quota/backpressure, and audit must remain platform-managed"
+      }
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "This entry is a redacted summary of the faa7ad6 211 verifier output, not the raw runtime payload.",
+    "The API and worker containers both reported the same image and source revision as this entry before the smoke was recorded.",
+    "The reviewed summary omits credentials, DSNs, object locators, workspace paths, executor internals, and personal workstation paths.",
+    "The verifier output included internal artifact, file, run, and user identifiers; those raw fields are intentionally omitted here.",
+    "This evidence supports Foundation Alpha POC smoke only. It does not close production concurrency, Docker sandbox hardening, ordinary-user multi-agent, department rollout, runtime export, or release-evidence retention gates."
+  ],
+  "open_followups": [
+    "#21 recorded multi-tenant capacity/load evidence remains required before raising production concurrency defaults.",
+    "G7 Docker sandbox hardening and Docker-capable sandbox smoke remain blocked.",
+    "G8 ordinary-user multi-agent exposure remains feature-flagged/internal only.",
+    "G9 release-evidence runtime export and retention runtime acceptance remain open.",
+    "Packaged frontend image smoke/release acceptance remains separate from this thin-shell POC smoke."
+  ]
+}

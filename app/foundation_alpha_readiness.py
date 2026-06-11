@@ -16,6 +16,14 @@ _EVIDENCE_ROOT = _EVIDENCE_BASE_ROOT / RUNTIME_SUBJECT_COMMIT_SHA
 _SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-11-211-foundation-alpha-poc-current-main-smoke.json"
 _AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-11-211-foundation-alpha-poc-current-main-auth-rbac-smoke.json"
 _SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
+_RUNTIME_NEUTRAL_PATH_PREFIXES = (
+    "docs/",
+    "tests/",
+)
+_RUNTIME_NEUTRAL_EXACT_PATHS = {
+    "app/foundation_alpha_readiness.py",
+    "tools/foundation_alpha_readiness.py",
+}
 
 _OPEN_FOLLOWUPS = [
     "#21_recorded_capacity_evidence",
@@ -72,6 +80,64 @@ def _resolve_source_tree_dirty() -> bool | None:
     except (OSError, subprocess.CalledProcessError):
         return None
     return bool(result.stdout.strip())
+
+
+def _resolve_source_tree_dirty_paths() -> list[str] | None:
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+    paths: list[str] = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        path = line[3:].strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1].strip()
+        normalized = path.replace("\\", "/")
+        if normalized:
+            paths.append(normalized)
+    return paths
+
+
+def _is_runtime_affecting_path(path: str) -> bool:
+    normalized = path.replace("\\", "/").strip()
+    if not normalized:
+        return False
+    if normalized in _RUNTIME_NEUTRAL_EXACT_PATHS:
+        return False
+    return not normalized.startswith(_RUNTIME_NEUTRAL_PATH_PREFIXES)
+
+
+def _resolve_runtime_affecting_changes_since(runtime_subject_commit: str) -> list[str] | None:
+    if runtime_subject_commit == "unknown":
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", f"{runtime_subject_commit}..HEAD"],
+            cwd=_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    paths = [line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip()]
+    return [path for path in paths if _is_runtime_affecting_path(path)]
+
+
+def _resolve_runtime_affecting_dirty_paths() -> list[str] | None:
+    dirty_paths = _resolve_source_tree_dirty_paths()
+    if dirty_paths is None:
+        return None
+    return [path for path in dirty_paths if _is_runtime_affecting_path(path)]
 
 
 def _release_evidence_entry_is_valid(payload: dict[str, Any], commit_sha: str) -> bool:
@@ -203,17 +269,34 @@ def _runtime_source_relation(
     source_tree_dirty: bool | None,
     runtime_subject_commit: str,
     runtime_source_marker: str,
+    runtime_affecting_changes_since_runtime_subject: list[str] | None,
+    runtime_affecting_dirty_paths: list[str] | None,
 ) -> dict[str, Any]:
+    no_runtime_affecting_dirty_paths = runtime_affecting_dirty_paths == []
     runtime_matches_source_tree = (
         source_tree_commit != "unknown"
         and source_tree_dirty is False
         and source_tree_commit == runtime_subject_commit
         and source_tree_commit == runtime_source_marker
     )
-    if source_tree_dirty is True:
+    runtime_relevant_source_matches = (
+        runtime_matches_source_tree
+        or (
+            source_tree_commit != "unknown"
+            and source_tree_dirty is not None
+            and no_runtime_affecting_dirty_paths
+            and runtime_subject_commit == runtime_source_marker
+            and runtime_affecting_changes_since_runtime_subject == []
+        )
+    )
+    if source_tree_dirty is True and runtime_affecting_dirty_paths is None:
         status = "source_tree_uncommitted_changes_pending"
+    elif source_tree_dirty is True and runtime_affecting_dirty_paths:
+        status = "source_tree_runtime_affecting_uncommitted_changes_pending"
     elif runtime_matches_source_tree:
         status = "runtime_current_for_source_tree"
+    elif runtime_relevant_source_matches:
+        status = "runtime_current_for_runtime_relevant_source"
     else:
         status = "source_synced_runtime_pending"
     return {
@@ -222,6 +305,9 @@ def _runtime_source_relation(
         "runtime_subject_commit_sha": runtime_subject_commit,
         "runtime_source_marker": runtime_source_marker,
         "runtime_matches_source_tree": runtime_matches_source_tree,
+        "runtime_relevant_source_matches": runtime_relevant_source_matches,
+        "runtime_affecting_changes_since_runtime_subject": runtime_affecting_changes_since_runtime_subject,
+        "runtime_affecting_dirty_paths": runtime_affecting_dirty_paths,
         "status": status,
     }
 
@@ -356,14 +442,31 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
 
     runtime_subject_commit = smoke["runtime_subject_commit_sha"]
     runtime_source_marker = smoke["source_ref"]["runtime_source_marker"]
+    runtime_affecting_changes = (
+        []
+        if source_tree_commit == runtime_subject_commit
+        else _resolve_runtime_affecting_changes_since(runtime_subject_commit)
+    )
+    runtime_affecting_dirty_paths = _resolve_runtime_affecting_dirty_paths()
     runtime_relation = _runtime_source_relation(
         source_tree_commit=source_tree_commit,
         source_tree_dirty=source_tree_dirty,
         runtime_subject_commit=runtime_subject_commit,
         runtime_source_marker=runtime_source_marker,
+        runtime_affecting_changes_since_runtime_subject=runtime_affecting_changes,
+        runtime_affecting_dirty_paths=runtime_affecting_dirty_paths,
     )
     runtime_matches_source_tree = runtime_relation["runtime_matches_source_tree"]
-    evidence_scope = "current_source_tree" if runtime_matches_source_tree else "reviewed_historical_runtime_evidence"
+    runtime_relevant_source_matches = runtime_relation["runtime_relevant_source_matches"]
+    evidence_scope = (
+        "current_source_tree"
+        if runtime_matches_source_tree
+        else (
+            "current_runtime_relevant_source"
+            if runtime_relevant_source_matches
+            else "reviewed_historical_runtime_evidence"
+        )
+    )
     domains = {
         "g0_g1_source_authority_security": {
             "status": "poc_verified_keep_under_regression"
@@ -375,6 +478,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
                 "source_tree_dirty": source_tree_dirty,
                 "runtime_source_marker": runtime_source_marker,
                 "runtime_source_relation": runtime_relation["status"],
+                "runtime_affecting_dirty_paths": runtime_affecting_dirty_paths,
                 "image": smoke["source_ref"]["image"],
                 "image_id": smoke["source_ref"]["image_id"],
                 "api_worker_label_revision": smoke["source_ref"]["image_labels"]["ai-platform.source-revision"],
@@ -468,9 +572,10 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         },
         "decision": {
             "reviewed_poc_loop_evidence_available": True,
-            "controlled_poc_loop_verified_for_current_source": runtime_matches_source_tree,
-            "current_source_verified_by_running_runtime": runtime_matches_source_tree,
-            "runtime_rollout_required_for_current_source": not runtime_matches_source_tree,
+            "controlled_poc_loop_verified_for_current_source": runtime_relevant_source_matches,
+            "current_source_verified_by_running_runtime": runtime_relevant_source_matches,
+            "current_source_exact_runtime_commit_match": runtime_matches_source_tree,
+            "runtime_rollout_required_for_current_source": not runtime_relevant_source_matches,
             "can_enter_next_stage_without_restrictions": False,
             "production_claim_allowed": False,
             "ordinary_user_multi_agent_allowed": False,

@@ -33,7 +33,12 @@ The summary exposes that recorded evidence subject as
 reviewed, redacted 211 evidence record, not a live runtime claim for the current
 source tree. Use
 `controlled_poc_loop_verified_for_current_source=true` before treating the
-controlled POC loop as verified for the current source revision.
+controlled POC loop as verified for the current source revision. If
+`current_source_exact_runtime_commit_match=false` but
+`runtime_source_relation.status=runtime_current_for_runtime_relevant_source`,
+the runtime subject has verified all runtime-affecting source while later
+docs/tests/evidence/readiness records remain outside the running image. Any
+non-empty `runtime_affecting_dirty_paths` must still block that claim.
 
 The readiness schema is `ai-platform.release-evidence-readiness.v1`. The entry
 schema is `ai-platform.release-evidence-entry.v1`. The retention policy schema
@@ -80,6 +85,8 @@ image labels must all point to the same runtime subject commit.
 
 | Date | Gate | Commit | Evidence | Status |
 | --- | --- | --- | --- | --- |
+| 2026-06-11 | Foundation Alpha POC | `faa7ad6aa61637cbcdf3a22ce81de119762e96bf` | [`2026-06-11-211-foundation-alpha-poc-faa7ad6-auth-rbac-smoke.json`](foundation-alpha-poc/faa7ad6aa61637cbcdf3a22ce81de119762e96bf/2026-06-11-211-foundation-alpha-poc-faa7ad6-auth-rbac-smoke.json) | Current main Auth/RBAC smoke passed on 211 against `ai-platform:faa7ad6-foundation-alpha-poc`; not production gate closure. |
+| 2026-06-11 | Foundation Alpha POC | `faa7ad6aa61637cbcdf3a22ce81de119762e96bf` | [`2026-06-11-211-foundation-alpha-poc-faa7ad6-smoke.json`](foundation-alpha-poc/faa7ad6aa61637cbcdf3a22ce81de119762e96bf/2026-06-11-211-foundation-alpha-poc-faa7ad6-smoke.json) | Current main 211 runtime smoke passed for the controlled Foundation Alpha POC loop; not production gate closure. |
 | 2026-06-11 | Foundation Alpha POC | `a3f1d739e12686cba2e0b309de26a4e1127bd3a5` | [`2026-06-11-211-foundation-alpha-poc-a3f1d73-auth-rbac-smoke.json`](foundation-alpha-poc/a3f1d739e12686cba2e0b309de26a4e1127bd3a5/2026-06-11-211-foundation-alpha-poc-a3f1d73-auth-rbac-smoke.json) | Current main Auth/RBAC smoke passed on 211 against `ai-platform:a3f1d73-foundation-alpha-poc`; not production gate closure. |
 | 2026-06-11 | Foundation Alpha POC | `a3f1d739e12686cba2e0b309de26a4e1127bd3a5` | [`2026-06-11-211-foundation-alpha-poc-a3f1d73-smoke.json`](foundation-alpha-poc/a3f1d739e12686cba2e0b309de26a4e1127bd3a5/2026-06-11-211-foundation-alpha-poc-a3f1d73-smoke.json) | Current main 211 runtime smoke passed for the controlled Foundation Alpha POC loop; not production gate closure. |
 | 2026-06-11 | Foundation Alpha POC | `8c0cffca63bc747fad0a5771f209acc8a608ab9e` | [`2026-06-11-211-foundation-alpha-poc-current-main-auth-rbac-smoke.json`](foundation-alpha-poc/8c0cffca63bc747fad0a5771f209acc8a608ab9e/2026-06-11-211-foundation-alpha-poc-current-main-auth-rbac-smoke.json) | Historical current-main Auth/RBAC smoke passed on 211 against `ai-platform:8c0cffc-foundation-alpha-poc`; superseded by `a3f1d73`. |
