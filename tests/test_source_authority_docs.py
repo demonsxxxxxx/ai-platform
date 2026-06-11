@@ -263,10 +263,18 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert auth_rbac_payload["source_ref"]["runtime_image"] == "ai-platform:faa7ad6-foundation-alpha-poc"
     assert auth_rbac_payload["source_ref"]["image_id"] == "sha256:531a63640cadb917874d74e2379fe16bf76cb2da3f548e8e18a42043dbdd075f"
     assert auth_rbac_payload["source_ref"]["image_labels"]["ai-platform.source-revision"] == "faa7ad6aa61637cbcdf3a22ce81de119762e96bf"
+    assert auth_rbac_payload["source_ref"]["verifier_source_commit_sha"] == "2e9b363ebf12b60e6c1413f111a13bc686d0f6dc"
+    assert auth_rbac_payload["source_ref"]["runtime_affecting_changes_since_runtime_subject"] == []
     assert auth_rbac_payload["evidence_ref"]["result"] == "ok:true"
     assert auth_rbac_payload["evidence_ref"]["runtime_checks"]["unauthenticated_auth_me"]["status"] == 401
+    assert auth_rbac_payload["evidence_ref"]["runtime_checks"]["authenticated_auth_me"]["route"] == "/api/ai/auth/me"
+    assert auth_rbac_payload["evidence_ref"]["runtime_checks"]["authenticated_auth_me"]["status"] == 200
+    assert auth_rbac_payload["evidence_ref"]["runtime_checks"]["authenticated_auth_me"]["tenant_matches_requested"] is True
+    assert auth_rbac_payload["evidence_ref"]["runtime_checks"]["authenticated_auth_me"]["user_matches_requested"] is True
+    assert auth_rbac_payload["evidence_ref"]["runtime_checks"]["invalid_gateway_secret_auth_me"]["status"] == 403
     assert auth_rbac_payload["evidence_ref"]["runtime_checks"]["ordinary_admin_runtime"]["status"] == 403
     assert auth_rbac_payload["evidence_ref"]["runtime_checks"]["admin_runtime"]["status"] == 200
+    assert auth_rbac_payload["evidence_ref"]["runtime_checks"]["admin_runtime"]["tenant_matches_requested"] is True
     assert auth_rbac_payload["evidence_ref"]["runtime_checks"]["admin_runtime"]["required_sections_present"] is True
     assert auth_rbac_payload["evidence_ref"]["runtime_checks"]["admin_runtime"]["forbidden_projection_terms_present"] is False
     assert auth_rbac_payload["redaction_scan_status"] == "passed"
@@ -275,6 +283,11 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     lowered_auth_rbac = auth_rbac_text.lower()
     for marker in forbidden_markers:
         assert marker.lower() not in lowered_auth_rbac
+
+    gate_status_text = read(GATE_STATUS_DOC)
+    assert "`/api/ai/auth/me`" in gate_status_text
+    assert "tenant match" in gate_status_text
+    assert "invalid gateway secret" in gate_status_text
 
 
 def test_foundation_alpha_runtime_evidence_subject_commit_parity_without_self_referential_record_commit():

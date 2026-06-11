@@ -68,12 +68,15 @@ redacted release-evidence entry is
 `docs/release-evidence/foundation-alpha-poc/faa7ad6aa61637cbcdf3a22ce81de119762e96bf/2026-06-11-211-foundation-alpha-poc-faa7ad6-smoke.json`.
 
 The focused Auth/RBAC verifier `tools/verify_auth_rbac_smoke.py` also returned
-`ok: true` on 211 against the same current-main runtime. It verified
-unauthenticated `/api/auth/me` returns 401, ordinary trusted principals are
-denied from Admin Runtime with 403, admin trusted principals can read the
-required Admin Runtime sections with 200, and the projection scan did not find
-private or secret-like values. The current reviewed, redacted Auth/RBAC
-evidence entry is
+`ok: true` on 211 against the same current-main runtime. The refreshed
+2026-06-11 17:39 +08:00 smoke used verifier source `2e9b363` while the running
+runtime subject remained `faa7ad6`. It verified unauthenticated `/api/auth/me`
+returns 401, platform `/api/ai/auth/me` returns the trusted principal with
+tenant match, invalid gateway secret access to `/api/ai/auth/me` fails with
+403, ordinary trusted principals are denied from Admin Runtime with 403, admin
+trusted principals can read the required same-tenant Admin Runtime sections with
+200, and the projection scan did not find private or secret-like values. The
+current reviewed, redacted Auth/RBAC evidence entry is
 `docs/release-evidence/foundation-alpha-poc/faa7ad6aa61637cbcdf3a22ce81de119762e96bf/2026-06-11-211-foundation-alpha-poc-faa7ad6-auth-rbac-smoke.json`.
 
 Earlier smoke evidence for
