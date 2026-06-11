@@ -174,6 +174,9 @@ PUBLIC_CONTEXT_SOURCE_VALUES = {
     "runs_api",
     "worker_refresh",
 }
+PUBLIC_CONTEXT_EXECUTION_TIERS = {"sdk_only_writing", "document_worker", "heavy_sandbox"}
+PUBLIC_CONTEXT_ARTIFACT_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,80}$")
+PUBLIC_CONTEXT_HASH_LIKE_VALUE_RE = re.compile(r"^[a-f0-9]{32,}$", re.IGNORECASE)
 
 
 def _utc_now_iso() -> str:
@@ -282,6 +285,14 @@ def _stored_public_context_input_keys(payload: dict[str, Any]) -> list[str]:
 
 
 def _stored_public_context_memory_policy_source(payload: dict[str, Any]) -> str | None:
+    used_summary = payload.get("used_context_summary")
+    if isinstance(used_summary, dict) and _stored_public_context_source(payload) is not None:
+        summary_source = used_summary.get("memory_policy_source")
+        if isinstance(summary_source, str):
+            summary_source = summary_source.strip()
+            if summary_source in PUBLIC_CONTEXT_MEMORY_POLICY_SOURCE_VALUES:
+                return summary_source
+
     memory_policy = payload.get("memory_policy")
     if not isinstance(memory_policy, dict):
         return None
@@ -299,6 +310,42 @@ def _stored_public_context_source(payload: dict[str, Any]) -> str | None:
         return None
     source = source.strip()
     return source if source in PUBLIC_CONTEXT_SOURCE_VALUES else None
+
+
+def _safe_public_context_string(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    if sanitize_public_payload(value) != value:
+        return None
+    normalized_candidates, decode_budget_exhausted = _normalized_public_context_key_candidates(value)
+    if decode_budget_exhausted:
+        return None
+    forbidden_aliases = PUBLIC_CONTEXT_FORBIDDEN_KEY_ALIASES | PUBLIC_CONTEXT_FORBIDDEN_ID_KEY_ALIASES
+    if any(alias in normalized_key for normalized_key in normalized_candidates for alias in forbidden_aliases):
+        return None
+    if any(
+        _has_public_context_forbidden_id_tokens(token_candidate)
+        for token_candidate in _public_context_key_token_candidates(value)
+    ):
+        return None
+    return value
+
+
+def _stored_public_context_execution_tier(payload: dict[str, Any]) -> str | None:
+    value = _safe_public_context_string(payload.get("execution_tier"))
+    return value if value in PUBLIC_CONTEXT_EXECUTION_TIERS else None
+
+
+def _stored_public_context_latest_artifact_version(payload: dict[str, Any]) -> str | None:
+    value = _safe_public_context_string(payload.get("latest_artifact_version"))
+    if value is None:
+        return None
+    if PUBLIC_CONTEXT_HASH_LIKE_VALUE_RE.fullmatch(value):
+        return None
+    return value if PUBLIC_CONTEXT_ARTIFACT_VERSION_RE.fullmatch(value) else None
 
 
 def _stored_public_context_generated_at(payload: dict[str, Any]) -> str | None:
@@ -375,6 +422,10 @@ def ensure_public_context_provenance(
         _stored_public_context_memory_policy_source(payload) if preserve_stored_input_keys else None
     )
     stored_generated_at = _stored_public_context_generated_at(payload) if preserve_stored_input_keys else None
+    stored_execution_tier = _stored_public_context_execution_tier(payload) if preserve_stored_input_keys else None
+    stored_latest_artifact_version = (
+        _stored_public_context_latest_artifact_version(payload) if preserve_stored_input_keys else None
+    )
     provenance = public_context_provenance(
         source=stored_source or source,
         input_payload=sanitized_payload,
@@ -385,6 +436,8 @@ def ensure_public_context_provenance(
         memory_record_count=memory_record_count,
         memory_policy_source=stored_memory_policy_source or memory_policy_source,
         long_term_memory_read=long_term_memory_read,
+        latest_artifact_version=stored_latest_artifact_version,
+        execution_tier=stored_execution_tier or "sdk_only_writing",
         generated_at=stored_generated_at,
     )
     return {**sanitized_payload, **provenance}
