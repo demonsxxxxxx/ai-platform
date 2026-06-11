@@ -1180,7 +1180,7 @@ async def test_worker_preserves_stored_safe_summary_metadata_when_payload_has_on
 
     assert outcome.status == "succeeded"
     assert captured["payload"].context_snapshot["used_context_summary"] == {
-        "source": "stored_context_snapshot",
+        "source": "runs_api",
         "input_keys": ["attachments", "message"],
         "memory_policy_source": "stored",
         "long_term_memory_read": False,

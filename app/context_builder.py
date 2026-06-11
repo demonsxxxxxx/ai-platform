@@ -163,6 +163,17 @@ PUBLIC_CONTEXT_SUMMARY_PREFIX_ALIASES = {
     "summary",
 }
 PUBLIC_CONTEXT_MEMORY_POLICY_SOURCE_VALUES = {"default", "not_recorded", "stored"}
+PUBLIC_CONTEXT_SOURCE_VALUES = {
+    "chat_stream",
+    "copy_run",
+    "manual_context_snapshot",
+    "multi_agent_dispatch_handoff",
+    "multi_agent_dispatch_tick",
+    "resume_run",
+    "retry_run",
+    "runs_api",
+    "worker_refresh",
+}
 
 
 def _utc_now_iso() -> str:
@@ -281,6 +292,15 @@ def _stored_public_context_memory_policy_source(payload: dict[str, Any]) -> str 
     return source if source in PUBLIC_CONTEXT_MEMORY_POLICY_SOURCE_VALUES else None
 
 
+def _stored_public_context_source(payload: dict[str, Any]) -> str | None:
+    used_summary = payload.get("used_context_summary")
+    source = used_summary.get("source") if isinstance(used_summary, dict) else None
+    if not isinstance(source, str):
+        return None
+    source = source.strip()
+    return source if source in PUBLIC_CONTEXT_SOURCE_VALUES else None
+
+
 def _stored_public_context_generated_at(payload: dict[str, Any]) -> str | None:
     value = payload.get("context_pack_generated_at")
     if not isinstance(value, str):
@@ -350,12 +370,13 @@ def ensure_public_context_provenance(
 ) -> dict[str, Any]:
     sanitized_payload = public_context_payload(payload)
     input_keys = _stored_public_context_input_keys(payload) if preserve_stored_input_keys else None
+    stored_source = _stored_public_context_source(payload) if preserve_stored_input_keys else None
     stored_memory_policy_source = (
         _stored_public_context_memory_policy_source(payload) if preserve_stored_input_keys else None
     )
     stored_generated_at = _stored_public_context_generated_at(payload) if preserve_stored_input_keys else None
     provenance = public_context_provenance(
-        source=source,
+        source=stored_source or source,
         input_payload=sanitized_payload,
         input_keys=input_keys,
         message_count=message_count,

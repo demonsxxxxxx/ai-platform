@@ -318,7 +318,7 @@ def test_context_snapshot_response_preserves_stored_safe_summary_metadata(monkey
     assert response.status_code == 200
     payload = response.json()["context_snapshots"][0]["payload"]
     assert payload["used_context_summary"] == {
-        "source": "stored_context_snapshot",
+        "source": "runs_api",
         "input_keys": ["attachments", "message"],
         "memory_policy_source": "stored",
         "long_term_memory_read": False,
