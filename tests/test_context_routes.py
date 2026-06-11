@@ -197,8 +197,15 @@ def test_create_context_snapshot_records_snapshot_and_event(monkeypatch):
     assert body["payload"]["latest_artifact_version"] is None
     assert body["payload"]["execution_tier"] == "sdk_only_writing"
     assert datetime.fromisoformat(body["payload"]["context_pack_generated_at"].replace("Z", "+00:00"))
-    serialized = response.text.lower()
-    assert "msg-a" not in serialized.replace('"msg-a"', "")
+    assert "included_message_ids" not in body
+    assert "included_file_ids" not in body
+    assert "included_artifact_ids" not in body
+    assert "included_memory_record_ids" not in body
+    serialized = response.text
+    assert "msg-a" not in serialized
+    assert "file-a" not in serialized
+    assert "art-a" not in serialized
+    assert "mem-a" not in serialized
     assert calls[0][0] == "snapshot"
     assert calls[0][1]["included_message_ids"] == ["msg-a"]
     assert calls[0][1]["included_file_ids"] == ["file-a"]
