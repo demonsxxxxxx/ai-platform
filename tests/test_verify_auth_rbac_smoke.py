@@ -114,6 +114,36 @@ class GovernancePolicyTextHandler(AuthRbacHandler):
         super().do_GET()
 
 
+class ObservabilityReadinessTextHandler(AuthRbacHandler):
+    def do_GET(self):  # noqa: N802
+        if self.path.startswith("/api/ai/admin/runtime/overview") and "admin" in self.headers.get("X-AI-Roles", ""):
+            self._send_json(
+                200,
+                {
+                    "tenant_id": "default",
+                    "queue": {"tenant_insight": {"capacity": {"queue_lease_scan_limit": 50}}},
+                    "sandbox": {"leases": {"active": 0}},
+                    "capacity": {"max_active_worker_runs": 3},
+                    "observability": {"error_count": 0, "token_counts": {"input": 3, "output": 5, "total": 8}},
+                    "observability_readiness": {
+                        "domains": {
+                            "runtime_metrics": {
+                                "implemented": [
+                                    "latency histogram",
+                                    "token/cost/error counters",
+                                ]
+                            }
+                        }
+                    },
+                    "governance": {"tool_policy": "visible"},
+                    "database_pool": {"open": True},
+                    "backpressure": {"reasons": []},
+                },
+            )
+            return
+        super().do_GET()
+
+
 class LeakyBearerValueHandler(AuthRbacHandler):
     def do_GET(self):  # noqa: N802
         if self.path.startswith("/api/ai/admin/runtime/overview") and "admin" in self.headers.get("X-AI-Roles", ""):
@@ -301,6 +331,24 @@ def test_auth_rbac_smoke_fails_closed_on_admin_projection_private_payload_leak()
 
 def test_auth_rbac_smoke_allows_governance_policy_text_forbidden_class_names():
     server = run_server(GovernancePolicyTextHandler)
+    try:
+        payload = build_auth_rbac_smoke(
+            base_url=f"http://127.0.0.1:{server.server_port}",
+            gateway_secret="test-secret",
+            commit_sha="bf20432f9889efa8b367afdf512c641068ba30bc",
+            image="ai-platform:bf20432-foundation-alpha-poc",
+            timeout_seconds=5,
+        )
+    finally:
+        server.shutdown()
+
+    assert payload["ok"] is True
+    assert payload["checks"]["admin_runtime"]["status"] == 200
+    assert payload["checks"]["admin_runtime"]["forbidden_projection_terms_present"] is False
+
+
+def test_auth_rbac_smoke_allows_observability_readiness_metric_text():
+    server = run_server(ObservabilityReadinessTextHandler)
     try:
         payload = build_auth_rbac_smoke(
             base_url=f"http://127.0.0.1:{server.server_port}",
