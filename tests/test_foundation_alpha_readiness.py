@@ -10,7 +10,9 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
-RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
+ACTIVE_RUNTIME_SUBJECT_SHA = "9b02836262fb0f238a7f90b9705bf39a8b298158"
+HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
+RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
 NEWER_SOURCE_SHA = "78362bcb380da67408ff7298cbdf24978d370992"
 
@@ -172,6 +174,10 @@ def test_foundation_alpha_readiness_classifies_source_metadata_paths_as_runtime_
     assert foundation_alpha_readiness._is_runtime_affecting_path("tools/verify_auth_rbac_smoke.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("ai-platform-cdc09ba.tar") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("app/routes/runs.py") is True
+
+
+def test_foundation_alpha_readiness_default_runtime_subject_tracks_active_211_evidence():
+    assert foundation_alpha_readiness.RUNTIME_SUBJECT_COMMIT_SHA == ACTIVE_RUNTIME_SUBJECT_SHA
 
 
 def test_foundation_alpha_readiness_selects_current_source_release_evidence_pair(monkeypatch, tmp_path):
@@ -676,7 +682,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     monkeypatch.setattr(
         foundation_alpha_readiness,
         "_resolve_source_tree_revision",
-        lambda: RUNTIME_SUBJECT_SHA,
+        lambda: ACTIVE_RUNTIME_SUBJECT_SHA,
         raising=False,
     )
     monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
@@ -686,13 +692,13 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert readiness["schema_version"] == "ai-platform.foundation-alpha-poc-readiness.v1"
     assert readiness["stage"] == "Foundation Alpha POC"
     assert readiness["status"] == "211_verified_followups_open"
-    assert readiness["runtime_subject_commit_sha"] == RUNTIME_SUBJECT_SHA
-    assert readiness["source_tree_commit_sha"] == RUNTIME_SUBJECT_SHA
+    assert readiness["runtime_subject_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert readiness["source_tree_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
     assert readiness["runtime_source_relation"] == {
-        "source_tree_commit_sha": RUNTIME_SUBJECT_SHA,
+        "source_tree_commit_sha": ACTIVE_RUNTIME_SUBJECT_SHA,
         "source_tree_dirty": False,
-        "runtime_subject_commit_sha": RUNTIME_SUBJECT_SHA,
-        "runtime_source_marker": RUNTIME_SUBJECT_SHA,
+        "runtime_subject_commit_sha": ACTIVE_RUNTIME_SUBJECT_SHA,
+        "runtime_source_marker": ACTIVE_RUNTIME_SUBJECT_SHA,
         "runtime_matches_source_tree": True,
         "runtime_relevant_source_matches": True,
         "runtime_affecting_changes_since_runtime_subject": [],
@@ -766,7 +772,27 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "playback_contract_version": "ai-platform.run-playback.v1",
     }
     assert readiness["domains"]["frontend_poc"]["evidence"]["same_origin_api_health"]["payload_status"] == "ok"
+    assert readiness["domains"]["frontend_poc"]["evidence"]["frontend_http_status"] == 200
+    assert readiness["domains"]["frontend_poc"]["evidence"]["forbidden_reference_count"] == 0
+    assert (
+        readiness["domains"]["g2_g4_control_plane_contracts"]["evidence"]["artifact_preview_isolation"][
+            "x_content_type_options"
+        ]
+        == "nosniff"
+    )
     assert readiness["domains"]["g6_poc_governance"]["evidence"]["governance_readiness_status"] == "partial_blocked"
+    assert readiness["domains"]["g6_poc_governance"]["evidence"]["context_snapshot_public_projection"] == {
+        "status": "verified_public_context_projection",
+        "referenced_material_counts": {
+            "message_count": 1,
+            "file_count": 1,
+            "artifact_count": 1,
+            "memory_record_count": 1,
+        },
+        "raw_material_id_fields_present": False,
+        "forbidden_projection_leak_count": 0,
+        "summary_source": "stored_context_snapshot",
+    }
     assert readiness["domains"]["g9_admin_runtime_observability"]["evidence"]["observability_readiness_status"] == "partial_blocked"
 
     assert "#21_recorded_capacity_evidence" in readiness["open_followups"]
@@ -873,7 +899,7 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeyp
     monkeypatch.setattr(
         foundation_alpha_readiness,
         "_resolve_source_tree_revision",
-        lambda: RUNTIME_SUBJECT_SHA,
+        lambda: ACTIVE_RUNTIME_SUBJECT_SHA,
         raising=False,
     )
     monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
@@ -884,12 +910,14 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeyp
     assert "# ai-platform Foundation Alpha POC Readiness" in markdown
     assert "Schema: `ai-platform.foundation-alpha-poc-readiness.v1`" in markdown
     assert "Status: `211_verified_followups_open`" in markdown
-    assert f"Source tree: `{RUNTIME_SUBJECT_SHA}`" in markdown
+    assert f"Source tree: `{ACTIVE_RUNTIME_SUBJECT_SHA}`" in markdown
     assert "Verified Runtime Subject" in markdown
     assert "Evidence scope: `current_source_tree`" in markdown
     assert "Current decision" in markdown
     assert "`current_source_verified_by_running_runtime`: `True`" in markdown
     assert "Runtime source relation: `runtime_current_for_source_tree`" in markdown
+    assert "Context snapshot public projection: `verified_public_context_projection`" in markdown
+    assert "Context referenced material counts: `message=1, file=1, artifact=1, memory=1`" in markdown
     assert "`production_claim_allowed`: `False`" in markdown
     assert "#21_recorded_capacity_evidence" in markdown
 
@@ -947,6 +975,13 @@ def test_foundation_alpha_readiness_fails_closed_when_optional_readiness_depende
         "skill_snapshot_run_seen": True,
         "tool_permission_decision_audit_required": True,
         "memory_long_term_default_fail_closed": True,
+        "context_snapshot_public_projection": {
+            "status": "missing_context_snapshot_public_projection",
+            "referenced_material_counts": {},
+            "raw_material_id_fields_present": None,
+            "forbidden_projection_leak_count": None,
+            "summary_source": None,
+        },
     }
     assert readiness["domains"]["g9_admin_runtime_observability"]["evidence"] == {
         "observability_readiness_status": "dependency_unavailable",

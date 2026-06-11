@@ -43,17 +43,20 @@ For source-only docs/tests/evidence syncs, write a local-only
 empty. Missing, stale, or malformed snapshot markers intentionally fail closed.
 
 On 2026-06-11, runtime subject commit
-`8f454696be0e9c532fa86bc61ef353e4d3dec4f8` was synced to 211 source and the
-211 API and worker ran `ai-platform:8f45469-foundation-alpha-readiness` with
+`9b02836262fb0f238a7f90b9705bf39a8b298158` was synced to the 211 runtime
+subject and the 211 API and worker ran `ai-platform:9b02836-context-output` with
 image ID
-`sha256:144c90709996f768b7b975b121fce41244fa96606a890b2d133fc455659b9cf3`.
+`sha256:23fc483694b4cffb555759cb6205b56608e16701577f54939a977942c9e1bdb4`.
 Both runtime source labels pointed to
-`8f454696be0e9c532fa86bc61ef353e4d3dec4f8`. Runtime labels pointed to the
+`9b02836262fb0f238a7f90b9705bf39a8b298158`. Runtime labels pointed to the
 repo-local compose file under
 `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform`,
 API health returned `ok`, and OpenAPI exposed
 `/api/ai/artifacts/{artifact_id}/preview`.
 
+The local source snapshot marker records source tree
+`cdc09ba8867d91e8db76570fbf158e6d082da7cf` with runtime subject
+`9b02836262fb0f238a7f90b9705bf39a8b298158` and no runtime-affecting delta.
 Later docs/test evidence commits can be synced to the 211 source tree for
 source-authority parity without changing the running API/worker runtime subject.
 The record commit is proven by Git history, not embedded inside the evidence
@@ -64,23 +67,26 @@ for the controlled POC loop: LambChat thin-shell frontend, same-origin API
 health, public/admin projection boundary, company auth bridge, general chat run,
 document review attachment run, artifact download isolation, artifact preview
 isolation, playback with preview URL and no private payload leakage, company
-login audit, and Admin capacity/backpressure fields. The current reviewed,
-redacted release-evidence entry is
-`docs/release-evidence/foundation-alpha-poc/8f454696be0e9c532fa86bc61ef353e4d3dec4f8/2026-06-11-211-foundation-alpha-poc-8f45469-smoke.json`.
+login audit, Admin capacity/backpressure fields, and context snapshot public
+projection counts without raw material IDs. `tools/foundation_alpha_readiness.py`
+promotes that context projection into the G6 evidence summary and fails closed
+as `missing_context_snapshot_public_projection` when an older smoke record lacks
+it. The current reviewed, redacted release-evidence entry is
+`docs/release-evidence/foundation-alpha-poc/9b02836262fb0f238a7f90b9705bf39a8b298158/2026-06-11-211-foundation-alpha-poc-9b02836-context-output-smoke.json`.
 
 The focused Auth/RBAC verifier `tools/verify_auth_rbac_smoke.py` also returned
-`ok: true` on 211 against the same current-main runtime. The refreshed
-2026-06-11 18:12 +08:00 smoke used verifier source `8f45469` while the running
-runtime subject remained `8f45469`. It verified unauthenticated `/api/auth/me`
+`ok: true` on 211 against the same runtime. The refreshed 2026-06-11 22:18
++08:00 smoke used runtime subject `9b02836`. It verified unauthenticated `/api/auth/me`
 returns 401, platform `/api/ai/auth/me` returns the trusted principal with
 tenant match, invalid gateway secret access to `/api/ai/auth/me` fails with
 403, ordinary trusted principals are denied from Admin Runtime with 403, admin
 trusted principals can read the required same-tenant Admin Runtime sections with
 200, and the projection scan did not find private or secret-like values. The
 current reviewed, redacted Auth/RBAC evidence entry is
-`docs/release-evidence/foundation-alpha-poc/8f454696be0e9c532fa86bc61ef353e4d3dec4f8/2026-06-11-211-foundation-alpha-poc-8f45469-auth-rbac-smoke.json`.
+`docs/release-evidence/foundation-alpha-poc/9b02836262fb0f238a7f90b9705bf39a8b298158/2026-06-11-211-foundation-alpha-poc-9b02836-auth-rbac-smoke.json`.
 
 Earlier smoke evidence for
+`8f454696be0e9c532fa86bc61ef353e4d3dec4f8`,
 `faa7ad6aa61637cbcdf3a22ce81de119762e96bf`,
 `a3f1d739e12686cba2e0b309de26a4e1127bd3a5`,
 `8c0cffca63bc747fad0a5771f209acc8a608ab9e`,
@@ -110,7 +116,7 @@ release acceptance.
 | Issue area | Current judgment | Next closure action |
 | --- | --- | --- |
 | #17 frontend source migration | Source lives under `frontend/web` with projection audit, `ci:verify`, release traceability, GitHub Actions workflow, packaged frontend image definition, and 211 thin-shell POC smoke. | Run or refresh frontend install/lint/build when changing browser code; complete packaged frontend image smoke/release acceptance on 211 or another Docker-capable host. |
-| #21 capacity baseline | Baseline plan, snapshot/verdict/profile tools, bounded probe harness, and Admin Runtime capacity/backpressure visibility exist. | Record approved load evidence for the seven gates before raising any production default. Until then every profile remains `do_not_raise_without_recorded_load_test_evidence`. |
+| #21 capacity baseline | Baseline plan, snapshot/verdict/profile tools, bounded probe harness, and Admin Runtime capacity/backpressure visibility exist; bounded probes now fail closed when successful Admin Runtime overview responses miss required baseline sections. | Record approved load evidence for the seven gates before raising any production default. Until then every profile remains `do_not_raise_without_recorded_load_test_evidence`. |
 | G6 governance | Source-level policies and readiness contracts exist. | Convert contracts into runtime/Admin dashboard acceptance and real reviewed Skill release evidence; keep long-term memory fail-closed. |
 | G8/G10 expansion | Not a current implementation target. | Keep feature flags and do not broaden ordinary-user multi-agent exposure until G5/G6/G7/G9 gates are closed. |
 
@@ -131,3 +137,6 @@ evidence bundles, and fail-closed verdicts, but probes are not accepted as
 recorded gate evidence until an operator-reviewed recorded gate snapshot
 contains measured results, cleanup proof, stop-condition status, and deployed
 commit binding.
+Bounded probes are allowed to fail closed on missing Admin Runtime projection
+sections; that improves operator safety but still does not count as recorded
+load-test evidence.

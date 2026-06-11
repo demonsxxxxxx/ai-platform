@@ -134,6 +134,11 @@ disabled to observe admission, worker heartbeat, queue, retry/cancel pressure,
 sandbox lease/container counts, DB-pool, backpressure, observability, and
 model-gateway projection fields without creating runs, sending model calls,
 reading gateway secrets, or triggering sandbox/container maintenance cleanup.
+For every successful Admin Runtime overview response, the harness now requires
+the baseline sections `capacity`, `database_pool`, `queue`, `admission`,
+`backpressure`, `sandbox`, and `observability`; missing sections trigger
+`admin_runtime_projection_sections_missing` and return only section names and
+counts, not the raw projection body.
 The model-gateway gate records only observed model-gateway projection field
 paths, and missing required fields trigger
 `model_gateway_projection_fields_missing` instead of a successful probe. The
@@ -512,6 +517,14 @@ public provenance/counts rather than trusting queue copies or stored payload
 provenance. This narrows the G6/#22 context output gap but does not close
 executor context-pack injection, frontend context provenance acceptance,
 long-term memory, sandbox, or multi-agent gates.
+
+The Foundation Alpha readiness summary now also promotes reviewed 211
+`context_snapshot_public_projection` smoke evidence into the G6 POC governance
+domain. The promoted summary is intentionally bounded to status, referenced
+material counts, raw-ID presence, forbidden-leak count, and summary source; it
+does not echo raw message/file/artifact/memory IDs, executor private payloads,
+storage locators, or workspace paths. Older smoke records without that runtime
+projection stay fail-closed as `missing_context_snapshot_public_projection`.
 
 The 2026-06-08 frontend projection audit follow-up makes the remaining frontend
 G6/G9 blockers machine-actionable through

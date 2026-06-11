@@ -10,12 +10,12 @@ from typing import Any
 SCHEMA_VERSION = "ai-platform.foundation-alpha-poc-readiness.v1"
 SOURCE_SNAPSHOT_SCHEMA_VERSION = "ai-platform.source-snapshot.v1"
 STAGE_NAME = "Foundation Alpha POC"
-RUNTIME_SUBJECT_COMMIT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
+RUNTIME_SUBJECT_COMMIT_SHA = "9b02836262fb0f238a7f90b9705bf39a8b298158"
 _ROOT = Path(__file__).resolve().parents[1]
 _EVIDENCE_BASE_ROOT = _ROOT / "docs/release-evidence/foundation-alpha-poc"
 _EVIDENCE_ROOT = _EVIDENCE_BASE_ROOT / RUNTIME_SUBJECT_COMMIT_SHA
-_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-11-211-foundation-alpha-poc-current-main-smoke.json"
-_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-11-211-foundation-alpha-poc-current-main-auth-rbac-smoke.json"
+_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-11-211-foundation-alpha-poc-9b02836-context-output-smoke.json"
+_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-11-211-foundation-alpha-poc-9b02836-auth-rbac-smoke.json"
 _SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
 _SOURCE_SNAPSHOT_MARKER = _ROOT / ".ai-platform-source-snapshot.json"
 _RUNTIME_NEUTRAL_PATH_PREFIXES = (
@@ -244,11 +244,17 @@ def _is_poc_smoke_evidence(payload: dict[str, Any]) -> bool:
     runtime_checks = evidence_ref.get("runtime_checks") if isinstance(evidence_ref, dict) else {}
     if not isinstance(runtime_checks, dict) or _is_auth_rbac_evidence(payload):
         return False
+    has_frontend_signal = (
+        "lambchat_frontend" in runtime_checks
+        or "frontend_http_status" in runtime_checks
+    )
+    has_document_loop_signal = (
+        "document_review_attachment_run" in runtime_checks
+        or "word_review_attachment_chat" in runtime_checks
+    )
     return (
         evidence_ref.get("verifier") == "tools/verify_poc_gate.py"
-        or "document_review_attachment_run" in runtime_checks
-        or "lambchat_frontend" in runtime_checks
-        or "frontend_http_status" in runtime_checks
+        or (has_frontend_signal and has_document_loop_signal)
     )
 
 
@@ -403,24 +409,59 @@ def _artifact_review_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": document_review.get("status"),
         "skill_id": document_review.get("skill_id"),
-        "artifact_types": document_review.get("artifact_types") or [],
+        "artifact_types": sorted(document_review.get("artifact_types") or []),
         "playback_contract_version": document_review.get("playback_contract_version"),
     }
 
 
 def _projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
+    frontend = _safe_runtime_check(runtime_checks.get("lambchat_frontend"))
+    boundary = _safe_runtime_check(runtime_checks.get("frontend_dist_api_boundary"))
     return {
-        "frontend_http_status": _safe_runtime_check(runtime_checks.get("lambchat_frontend")).get("status"),
+        "frontend_http_status": frontend.get("status") or runtime_checks.get("frontend_http_status"),
         "same_origin_api_health": _safe_runtime_check(runtime_checks.get("same_origin_api_health")),
-        "forbidden_reference_count": _safe_runtime_check(runtime_checks.get("frontend_dist_api_boundary")).get(
-            "forbidden_reference_count"
-        ),
+        "forbidden_reference_count": boundary.get("forbidden_reference_count")
+        if boundary.get("forbidden_reference_count") is not None
+        else runtime_checks.get("frontend_forbidden_reference_count"),
         "artifact_download_cross_user_statuses": _safe_runtime_check(
             runtime_checks.get("artifact_download_isolation")
         ).get("cross_user_statuses"),
         "artifact_preview_cross_user_statuses": _safe_runtime_check(
             runtime_checks.get("artifact_preview_isolation")
         ).get("cross_user_statuses"),
+    }
+
+
+def _context_projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
+    projection = _safe_runtime_check(runtime_checks.get("context_snapshot_public_projection"))
+    if not projection:
+        return {
+            "status": "missing_context_snapshot_public_projection",
+            "referenced_material_counts": {},
+            "raw_material_id_fields_present": None,
+            "forbidden_projection_leak_count": None,
+            "summary_source": None,
+        }
+
+    forbidden_leaks = projection.get("forbidden_projection_leaks")
+    forbidden_leak_count = len(forbidden_leaks) if isinstance(forbidden_leaks, list) else None
+    raw_material_id_fields_present = projection.get("raw_material_id_fields_present")
+    status = (
+        "verified_public_context_projection"
+        if projection.get("ok") is True
+        and raw_material_id_fields_present is False
+        and forbidden_leak_count == 0
+        else "context_snapshot_public_projection_followup_required"
+    )
+    counts = projection.get("referenced_material_counts")
+    return {
+        "status": status,
+        "referenced_material_counts": deepcopy(counts) if isinstance(counts, dict) else {},
+        "raw_material_id_fields_present": raw_material_id_fields_present
+        if isinstance(raw_material_id_fields_present, bool)
+        else None,
+        "forbidden_projection_leak_count": forbidden_leak_count,
+        "summary_source": projection.get("summary_source") if isinstance(projection.get("summary_source"), str) else None,
     }
 
 
@@ -652,6 +693,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
                 "skill_snapshot_run_seen": True,
                 "tool_permission_decision_audit_required": True,
                 "memory_long_term_default_fail_closed": True,
+                "context_snapshot_public_projection": _context_projection_summary(smoke_checks),
             },
             "open_followups": [
                 "runtime_admin_dashboard_acceptance_for_governance",
@@ -726,9 +768,27 @@ def render_foundation_alpha_readiness_markdown(readiness: dict[str, Any]) -> str
     domain_sections: list[str] = []
     for name, domain in readiness["domains"].items():
         domain_followups = "\n".join(f"- {item}" for item in domain.get("open_followups", [])) or "- none"
+        evidence_lines = ""
+        if name == "g6_poc_governance":
+            context_projection = domain.get("evidence", {}).get("context_snapshot_public_projection")
+            if isinstance(context_projection, dict):
+                counts = context_projection.get("referenced_material_counts")
+                counts = counts if isinstance(counts, dict) else {}
+                count_summary = (
+                    f"message={int(counts.get('message_count') or 0)}, "
+                    f"file={int(counts.get('file_count') or 0)}, "
+                    f"artifact={int(counts.get('artifact_count') or 0)}, "
+                    f"memory={int(counts.get('memory_record_count') or 0)}"
+                )
+                evidence_lines = (
+                    "\n"
+                    f"Context snapshot public projection: `{context_projection.get('status')}`\n\n"
+                    f"Context referenced material counts: `{count_summary}`\n\n"
+                )
         domain_sections.append(
             f"### {name}\n\n"
             f"Status: `{domain['status']}`\n\n"
+            f"{evidence_lines}"
             "Open followups:\n\n"
             f"{domain_followups}\n"
         )

@@ -241,8 +241,13 @@ cleanup disabled. This lets operators observe admission, worker heartbeat,
 queue depth, retry/cancel pressure, sandbox lease/container counts, DB-pool,
 backpressure, observability, and model-gateway projection fields without
 creating runs, sending model calls, reading gateway secrets, triggering
-sandbox/container maintenance cleanup, or marking a gate recorded. The
-model-gateway gate records only observed model-gateway projection field paths,
+sandbox/container maintenance cleanup, or marking a gate recorded. For every
+successful Admin Runtime overview response, the harness requires the seven
+baseline sections `capacity`, `database_pool`, `queue`, `admission`,
+`backpressure`, `sandbox`, and `observability`; missing sections trigger
+`admin_runtime_projection_sections_missing` and return only section names and
+counts, not the raw projection body. The model-gateway gate records only
+observed model-gateway projection field paths,
 and missing required projection fields trigger
 `model_gateway_projection_fields_missing` instead of producing a successful
 probe. The taxonomy requirement is the `observability.error_categories`

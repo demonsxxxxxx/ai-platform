@@ -197,6 +197,9 @@ def test_capacity_bounded_load_harness_executes_bounded_read_only_probe_without_
     assert result["latency_ms"]["p50"] >= 0
     assert result["latency_ms"]["p95"] >= 0
     assert result["latency_ms"]["p99"] >= 0
+    assert result["missing_admin_runtime_sections"] == []
+    assert result["complete_admin_runtime_projection_response_count"] == 3
+    assert result["incomplete_admin_runtime_projection_response_count"] == 0
     assert result["cleanup_proof_status"] == "not_applicable_read_only_probe"
     assert result["stop_condition_status"] in {"passed", "triggered"}
     assert result["load_test_evidence_status"] == "probe_only_not_recorded"
@@ -430,6 +433,123 @@ def test_capacity_bounded_load_harness_model_gateway_gate_fails_when_projection_
         "capacity.limits.model_gateway",
     ]
     assert result["does_not_mark_gate_recorded"] is True
+
+
+def test_capacity_bounded_load_harness_model_gateway_gate_reports_admin_section_counts_separately():
+    class MissingSectionsWithModelGatewayFieldsHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # noqa: A002
+            return
+
+        def do_GET(self):  # noqa: N802
+            payload = {
+                "capacity": {
+                    "limits": {
+                        "model_gateway": {
+                            "configured_request_concurrency_limit": 8,
+                            "capacity_evidence": "unproven_without_load_test",
+                        }
+                    }
+                },
+                "backpressure": {"model_gateway": {"enforcement_status": "not_implemented"}},
+                "observability": {"error_categories": {"model_gateway": 0}},
+            }
+            raw = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), MissingSectionsWithModelGatewayFieldsHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = run_capacity_bounded_load_harness(
+            base_url=f"http://127.0.0.1:{server.server_port}",
+            gate="model_gateway_timeout_and_backpressure",
+            request_count=2,
+            concurrency=1,
+            execute=True,
+            operator_acknowledgement=OPERATOR_ACKNOWLEDGEMENT,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result["status"] == "probe_failed_stop_condition_triggered"
+    assert result["triggered_stop_conditions"] == ["admin_runtime_projection_sections_missing"]
+    assert result["missing_admin_runtime_sections"] == [
+        "admission",
+        "database_pool",
+        "queue",
+        "sandbox",
+    ]
+    assert result["complete_admin_runtime_projection_response_count"] == 0
+    assert result["incomplete_admin_runtime_projection_response_count"] == 2
+    assert result["observed_model_gateway_projection_fields"] == [
+        "backpressure.model_gateway",
+        "capacity.limits.model_gateway",
+        "observability.error_categories",
+    ]
+    assert result["missing_model_gateway_projection_fields"] == []
+    assert result["complete_model_gateway_projection_response_count"] == 2
+    assert result["incomplete_model_gateway_projection_response_count"] == 0
+
+
+def test_capacity_bounded_load_harness_admin_projection_gate_fails_when_required_sections_are_missing():
+    class MissingAdminRuntimeSectionsHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # noqa: A002
+            return
+
+        def do_GET(self):  # noqa: N802
+            payload = {
+                "capacity": {"schema_version": "ai-platform.capacity-baseline.v1"},
+                "queue": {"status": {"depths": {"queued": 0}}},
+                "observability": {"error_count": 0, "executor_private_payload": "hidden"},
+            }
+            raw = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), MissingAdminRuntimeSectionsHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = run_capacity_bounded_load_harness(
+            base_url=f"http://127.0.0.1:{server.server_port}",
+            gate="queue_depth_and_lease_latency",
+            request_count=3,
+            concurrency=2,
+            execute=True,
+            operator_acknowledgement=OPERATOR_ACKNOWLEDGEMENT,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result["status"] == "probe_failed_stop_condition_triggered"
+    assert result["stop_condition_status"] == "triggered"
+    assert result["triggered_stop_conditions"] == ["admin_runtime_projection_sections_missing"]
+    assert result["observed_admin_runtime_sections"] == [
+        "capacity",
+        "observability",
+        "queue",
+    ]
+    assert result["missing_admin_runtime_sections"] == [
+        "admission",
+        "backpressure",
+        "database_pool",
+        "sandbox",
+    ]
+    assert result["complete_admin_runtime_projection_response_count"] == 0
+    assert result["incomplete_admin_runtime_projection_response_count"] == 3
+    assert result["does_not_mark_gate_recorded"] is True
+    serialized = json.dumps(result, ensure_ascii=False).lower()
+    assert "executor_private_payload" not in serialized
+    assert "hidden" not in serialized
 
 
 def test_capacity_bounded_load_harness_model_gateway_gate_fails_when_each_response_is_partial():

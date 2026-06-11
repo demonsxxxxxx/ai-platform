@@ -73,6 +73,15 @@ _MODEL_GATEWAY_REQUIRED_PROJECTION_FIELDS = (
     "capacity.limits.model_gateway",
     "observability.error_categories",
 )
+_ADMIN_RUNTIME_REQUIRED_SECTIONS = (
+    "admission",
+    "backpressure",
+    "capacity",
+    "database_pool",
+    "observability",
+    "queue",
+    "sandbox",
+)
 _SECRET_MARKERS = (
     "secret",
     "password",
@@ -184,6 +193,7 @@ def _safe_header_value(value: str, default: str) -> str:
 def _request_once(url: str, headers: dict[str, str], timeout_seconds: float) -> dict[str, Any]:
     started = time.perf_counter()
     request = Request(url, headers=headers, method="GET")
+    is_admin_runtime_projection = urlsplit(url).path.endswith("/api/ai/admin/runtime/overview")
     status = 0
     content_type = ""
     observed_sections: list[str] = []
@@ -198,16 +208,7 @@ def _request_once(url: str, headers: dict[str, str], timeout_seconds: float) -> 
                 parsed = json.loads(body.decode("utf-8"))
                 if isinstance(parsed, dict):
                     observed_sections = sorted(
-                        key for key in parsed if key in {
-                            "capacity",
-                            "database_pool",
-                            "queue",
-                            "admission",
-                            "backpressure",
-                            "sandbox",
-                            "observability",
-                            "status",
-                        }
+                        key for key in parsed if key in {*_ADMIN_RUNTIME_REQUIRED_SECTIONS, "status"}
                     )
                     observed_model_gateway_projection_fields = _observed_model_gateway_projection_fields(parsed)
     except HTTPError as exc:
@@ -222,6 +223,7 @@ def _request_once(url: str, headers: dict[str, str], timeout_seconds: float) -> 
         "status": status,
         "latency_ms": elapsed_ms,
         "content_type": content_type.split(";")[0].strip()[:64],
+        "is_admin_runtime_projection": is_admin_runtime_projection,
         "observed_sections": observed_sections,
         "observed_model_gateway_projection_fields": observed_model_gateway_projection_fields,
         "error_type": error_type,
@@ -292,6 +294,33 @@ def _observed_sections(results: list[dict[str, Any]]) -> list[str]:
     return sorted(sections)
 
 
+def _admin_runtime_projection_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
+    missing_by_response: set[str] = set()
+    complete_count = 0
+    incomplete_count = 0
+    for item in results:
+        if not item.get("is_admin_runtime_projection") or not _is_successful_response(item):
+            continue
+        observed = {
+            section
+            for section in item.get("observed_sections", [])
+            if section in _ADMIN_RUNTIME_REQUIRED_SECTIONS
+        }
+        missing = set(_ADMIN_RUNTIME_REQUIRED_SECTIONS) - observed
+        if missing:
+            incomplete_count += 1
+            missing_by_response.update(missing)
+        else:
+            complete_count += 1
+    return {
+        "missing_sections": [
+            section for section in _ADMIN_RUNTIME_REQUIRED_SECTIONS if section in missing_by_response
+        ],
+        "complete_response_count": complete_count,
+        "incomplete_response_count": incomplete_count,
+    }
+
+
 def _observed_model_gateway_projection_fields_from_results(results: list[dict[str, Any]]) -> list[str]:
     fields: set[str] = set()
     for item in results:
@@ -338,6 +367,7 @@ def _triggered_stop_conditions(
     status_counts: dict[str, int],
     error_counts: dict[str, int],
     *,
+    missing_admin_runtime_sections: list[str] | None = None,
     missing_model_gateway_projection_fields: list[str] | None = None,
 ) -> list[str]:
     triggered: list[str] = []
@@ -354,6 +384,8 @@ def _triggered_stop_conditions(
         triggered.append("http_non_2xx_response_detected")
     if error_counts:
         triggered.append("request_errors_detected")
+    if missing_admin_runtime_sections:
+        triggered.append("admin_runtime_projection_sections_missing")
     if missing_model_gateway_projection_fields:
         triggered.append("model_gateway_projection_fields_missing")
     return triggered
@@ -411,19 +443,22 @@ def run_capacity_bounded_load_harness(
 
     http_status_counts = _status_counts(results)
     error_counts = _error_type_counts(results)
+    admin_projection_summary = _admin_runtime_projection_summary(results)
+    missing_admin_runtime_sections = admin_projection_summary["missing_sections"]
     observed_model_gateway_fields: list[str] = []
     missing_model_gateway_fields: list[str] = []
     complete_model_gateway_projection_response_count = 0
     incomplete_model_gateway_projection_response_count = 0
     if payload["gate"] == _MODEL_GATEWAY_GATE:
-        projection_summary = _model_gateway_projection_summary(results)
-        observed_model_gateway_fields = projection_summary["observed_fields"]
-        missing_model_gateway_fields = projection_summary["missing_fields"]
-        complete_model_gateway_projection_response_count = projection_summary["complete_response_count"]
-        incomplete_model_gateway_projection_response_count = projection_summary["incomplete_response_count"]
+        model_gateway_projection_summary = _model_gateway_projection_summary(results)
+        observed_model_gateway_fields = model_gateway_projection_summary["observed_fields"]
+        missing_model_gateway_fields = model_gateway_projection_summary["missing_fields"]
+        complete_model_gateway_projection_response_count = model_gateway_projection_summary["complete_response_count"]
+        incomplete_model_gateway_projection_response_count = model_gateway_projection_summary["incomplete_response_count"]
     triggered = _triggered_stop_conditions(
         http_status_counts,
         error_counts,
+        missing_admin_runtime_sections=missing_admin_runtime_sections,
         missing_model_gateway_projection_fields=missing_model_gateway_fields,
     )
     status = "probe_failed_stop_condition_triggered" if triggered else "probe_completed_not_gate_evidence"
@@ -435,6 +470,9 @@ def run_capacity_bounded_load_harness(
             "error_type_counts": error_counts,
             "latency_ms": _latency_summary(results),
             "observed_admin_runtime_sections": _observed_sections(results),
+            "missing_admin_runtime_sections": missing_admin_runtime_sections,
+            "complete_admin_runtime_projection_response_count": admin_projection_summary["complete_response_count"],
+            "incomplete_admin_runtime_projection_response_count": admin_projection_summary["incomplete_response_count"],
             "cleanup_proof_status": "not_applicable_read_only_probe",
             "stop_condition_status": "triggered" if triggered else "passed",
             "triggered_stop_conditions": triggered,
