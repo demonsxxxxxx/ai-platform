@@ -39,6 +39,15 @@ _OPEN_FOLLOWUPS = [
 ]
 
 
+class _ReadinessDefaultSettings:
+    sandbox_container_provider = "fake"
+    llm_gateway_provider = "openai_compatible"
+    model_gateway_request_concurrency_limit = 0
+    memory_retention_worker_cleanup_enabled = True
+    memory_retention_worker_cleanup_limit = 200
+    multi_agent_dispatch_worker_enabled = False
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -501,6 +510,7 @@ def _build_governance_summary(settings: object | None) -> dict[str, Any]:
     except ModuleNotFoundError as exc:
         return _governance_dependency_unavailable_summary(exc)
 
+    settings = settings or _ReadinessDefaultSettings()
     governance = build_governance_readiness(settings, include_frontend_projection_audit=False)
     return {
         "governance_readiness_status": governance["status"],
@@ -515,6 +525,7 @@ def _build_observability_summary(settings: object | None) -> dict[str, Any]:
     except ModuleNotFoundError as exc:
         return _observability_dependency_unavailable_summary(exc)
 
+    settings = settings or _ReadinessDefaultSettings()
     observability = build_observability_readiness(settings)
     return {
         "observability_readiness_status": observability["status"],

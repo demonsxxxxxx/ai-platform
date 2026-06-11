@@ -880,6 +880,27 @@ def test_foundation_alpha_readiness_fails_closed_when_optional_readiness_depende
     assert "traceback" not in serialized
 
 
+def test_foundation_alpha_readiness_summaries_do_not_require_runtime_settings_import():
+    script = (
+        "import builtins\n"
+        "real_import = builtins.__import__\n"
+        "def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):\n"
+        "    if name == 'app.settings':\n"
+        "        raise ModuleNotFoundError(\"No module named 'pydantic_settings'\")\n"
+        "    return real_import(name, globals, locals, fromlist, level)\n"
+        "builtins.__import__ = guarded_import\n"
+        "from app.foundation_alpha_readiness import _build_governance_summary, _build_observability_summary\n"
+        "governance = _build_governance_summary(None)\n"
+        "observability = _build_observability_summary(None)\n"
+        "assert governance['governance_readiness_status'] == 'partial_blocked'\n"
+        "assert governance['open_gap_count'] > 1\n"
+        "assert observability['observability_readiness_status'] == 'partial_blocked'\n"
+        "assert observability['open_gap_count'] > 1\n"
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 def test_auth_rbac_summary_reports_platform_principal_tenant_and_gateway_checks():
     summary = foundation_alpha_readiness._auth_rbac_summary(
         {
