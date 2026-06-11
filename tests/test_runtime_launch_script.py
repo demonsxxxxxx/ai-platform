@@ -139,6 +139,13 @@ def test_dockerfile_can_start_sandbox_executor_app():
     assert 'CMD ["uvicorn"]' in content
 
 
+def test_dockerfile_packages_release_evidence_for_runtime_readiness():
+    content = Path("Dockerfile").read_text(encoding="utf-8")
+
+    assert "COPY docs/release-evidence /app/docs/release-evidence" in content
+    assert "COPY docs /app/docs" not in content
+
+
 def test_docker_entrypoint_validates_runtime_env():
     content = Path("docker-entrypoint.sh").read_text(encoding="utf-8")
 

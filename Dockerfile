@@ -17,6 +17,7 @@ RUN if [ -n "$PIP_INDEX_URL" ]; then pip config set global.index-url "$PIP_INDEX
     && pip install --no-cache-dir -e . \
     && chmod +x /app/docker-entrypoint.sh
 COPY skills /app/skills
+COPY docs/release-evidence /app/docs/release-evidence
 
 ENV APP_MODULE=app.main:create_app
 ENV APP_PORT=8020
