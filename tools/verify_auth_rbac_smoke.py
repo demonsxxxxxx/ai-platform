@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, unquote_plus, urlsplit, urlunsplit
@@ -62,14 +63,16 @@ FORBIDDEN_PROJECTION_KEY_TERMS = (
     "token",
 )
 FORBIDDEN_PROJECTION_VALUE_TERMS = (
-    "authorization:",
-    "bearer ",
     "client_secret",
     "database_url",
     "password",
     "redis_url",
-    "sk-",
-    "token",
+)
+FORBIDDEN_PROJECTION_VALUE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bauthorization\s*[:=]", re.IGNORECASE),
+    re.compile(r"\bbearer\s+[A-Za-z0-9._~+/=-]{8,}\b", re.IGNORECASE),
+    re.compile(r"\b(?:api[_-]?key|client[_-]?secret|database[_-]?url|password|redis[_-]?url|token)\s*[:=]", re.IGNORECASE),
+    re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_-]{8,}\b", re.IGNORECASE),
 )
 ALLOWED_PROJECTION_KEY_TERMS = {
     "input_token_count",
@@ -208,6 +211,11 @@ def _is_allowed_policy_class_label(value: str) -> bool:
 
 
 def _contains_forbidden_projection_term(payload: Any) -> bool:
+    def contains_forbidden_value_term(value_text: str) -> bool:
+        if any(term in value_text for term in FORBIDDEN_PROJECTION_VALUE_TERMS):
+            return True
+        return any(pattern.search(value_text) is not None for pattern in FORBIDDEN_PROJECTION_VALUE_PATTERNS)
+
     def walk(value: Any) -> bool:
         if isinstance(value, dict):
             for key, child in value.items():
@@ -225,7 +233,7 @@ def _contains_forbidden_projection_term(payload: Any) -> bool:
             if _is_allowed_policy_class_label(value):
                 return False
             value_text = value.lower()
-            return any(term in value_text for term in FORBIDDEN_PROJECTION_VALUE_TERMS)
+            return contains_forbidden_value_term(value_text)
         return False
 
     return walk(payload)
