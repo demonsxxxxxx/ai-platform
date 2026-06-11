@@ -13,9 +13,9 @@ issue -> PR -> review -> merge -> 211 deploy/smoke -> close issue workflow in
 
 Status: `211 verified for Foundation Alpha POC`, not production gate closure.
 
-On 2026-06-11, the 211 API and worker were running
-`ai-platform:3874281-foundation-alpha-poc` with source revision
-`3874281276c84a418bd08bda56d7ea55b52970b7`. Runtime labels pointed to the
+On 2026-06-11, after PR #24 merged, the 211 API and worker were running
+`ai-platform:bf20432-foundation-alpha-poc` with source revision
+`bf20432f9889efa8b367afdf512c641068ba30bc`. Runtime labels pointed to the
 repo-local compose file under
 `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform`,
 API health returned `ok`, and OpenAPI exposed
@@ -28,7 +28,11 @@ document review attachment run, artifact download isolation, artifact preview
 isolation, playback with preview URL and no private payload leakage, company
 login audit, and Admin capacity/backpressure fields. The reviewed, redacted
 release-evidence entry is
-`docs/release-evidence/foundation-alpha-poc/3874281276c84a418bd08bda56d7ea55b52970b7/2026-06-11-211-foundation-alpha-poc-smoke.json`.
+`docs/release-evidence/foundation-alpha-poc/bf20432f9889efa8b367afdf512c641068ba30bc/2026-06-11-211-foundation-alpha-poc-merged-smoke.json`.
+
+The earlier pre-merge smoke for
+`3874281276c84a418bd08bda56d7ea55b52970b7` remains retained as historical evidence only; the merged-head evidence above is the current Foundation Alpha
+POC reference.
 
 This smoke does not close #21 capacity, G7 Docker sandbox hardening, ordinary
 user multi-agent exposure, department rollout, release-evidence runtime export,

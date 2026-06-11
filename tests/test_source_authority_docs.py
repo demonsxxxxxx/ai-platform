@@ -25,6 +25,10 @@ FOUNDATION_ALPHA_POC_EVIDENCE = (
     ROOT
     / "docs/release-evidence/foundation-alpha-poc/3874281276c84a418bd08bda56d7ea55b52970b7/2026-06-11-211-foundation-alpha-poc-smoke.json"
 )
+FOUNDATION_ALPHA_POC_MERGED_EVIDENCE = (
+    ROOT
+    / "docs/release-evidence/foundation-alpha-poc/bf20432f9889efa8b367afdf512c641068ba30bc/2026-06-11-211-foundation-alpha-poc-merged-smoke.json"
+)
 SCHEMA = ROOT / "app/schema.sql"
 
 AUTHORITY_DOCS = [PRD, TECH_ACCEPTANCE, ROADMAP, GUARDRAILS, AGENTS]
@@ -126,7 +130,9 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "packaged frontend image smoke/release acceptance" in gate_status_text
     assert "Foundation Alpha POC Smoke" in gate_status_text
     assert "211 verified for Foundation Alpha POC" in gate_status_text
+    assert "bf20432f9889efa8b367afdf512c641068ba30bc" in gate_status_text
     assert "3874281276c84a418bd08bda56d7ea55b52970b7" in gate_status_text
+    assert "historical evidence only" in gate_status_text
     assert "signed package or SBOM review evidence" in gate_status_text
     assert "Keep feature flags" in gate_status_text
     assert "executor_private_payload" not in gate_status_text
@@ -139,37 +145,51 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
 def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded():
     import json
 
-    evidence_text = read(FOUNDATION_ALPHA_POC_EVIDENCE)
+    assert FOUNDATION_ALPHA_POC_EVIDENCE.exists()
+    evidence_text = read(FOUNDATION_ALPHA_POC_MERGED_EVIDENCE)
     payload = json.loads(evidence_text)
 
     assert payload["schema_version"] == "ai-platform.release-evidence-entry.v1"
-    assert payload["evidence_id"] == "2026-06-11-211-foundation-alpha-poc-smoke"
-    assert payload["commit_sha"] == "3874281276c84a418bd08bda56d7ea55b52970b7"
+    assert payload["evidence_id"] == "2026-06-11-211-foundation-alpha-poc-merged-smoke"
+    assert payload["commit_sha"] == "bf20432f9889efa8b367afdf512c641068ba30bc"
     assert payload["gate"] == "Foundation Alpha POC"
     assert payload["artifact_kind"] == "211_runtime_smoke"
     assert payload["redaction_scan_status"] == "passed"
     assert payload["review_status"] == "reviewed"
+    assert payload["source_ref"]["pull_request"].endswith("/pull/24")
+    assert payload["source_ref"]["image"] == "ai-platform:bf20432-foundation-alpha-poc"
+    assert payload["source_ref"]["repo_local_env_present"] is False
     assert payload["evidence_ref"]["result"] == "ok:true"
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["status"] == "succeeded"
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["private_payload_leaked"] is False
     assert payload["evidence_ref"]["runtime_checks"]["artifact_download_isolation"]["cross_user_status"] == 404
     assert payload["evidence_ref"]["runtime_checks"]["artifact_preview_isolation"]["cache_control"] == "no-store"
+    assert payload["evidence_ref"]["runtime_checks"]["runtime_config"]["live_container_env_preferred_over_env_file"] is True
+    assert payload["evidence_ref"]["runtime_checks"]["sdk_task_tool_boundary"]["task_tool_exposed_in_full_access"] is False
     assert "G9 release-evidence runtime export" in "\n".join(payload["open_followups"])
 
-    assert "2026-06-11-211-foundation-alpha-poc-smoke.json" in read(RELEASE_EVIDENCE_INDEX)
+    release_evidence_index = read(RELEASE_EVIDENCE_INDEX)
+    assert "2026-06-11-211-foundation-alpha-poc-merged-smoke.json" in release_evidence_index
+    assert "2026-06-11-211-foundation-alpha-poc-smoke.json" in release_evidence_index
 
     forbidden_markers = (
         "executor_private_payload",
+        "executor private payload",
         "raw_storage_key",
+        "raw storage key",
         "sandbox_workdir",
+        "sandbox workdir",
         "api_key",
         "bearer ",
         "database_url",
+        "database url",
         "redis_url",
+        "redis url",
         "sk-",
         "C:\\Users",
         "artifact_storage_key",
         "tenants/default/workspaces",
+        "tenants/default",
     )
     lowered = evidence_text.lower()
     for marker in forbidden_markers:
