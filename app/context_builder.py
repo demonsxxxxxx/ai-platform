@@ -175,7 +175,7 @@ PUBLIC_CONTEXT_SOURCE_VALUES = {
     "worker_refresh",
 }
 PUBLIC_CONTEXT_EXECUTION_TIERS = {"sdk_only_writing", "document_worker", "heavy_sandbox"}
-PUBLIC_CONTEXT_ARTIFACT_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,80}$")
+PUBLIC_CONTEXT_ARTIFACT_VERSION_RE = re.compile(r"^v\d+(?:[._:-]\d+){0,3}$", re.IGNORECASE)
 PUBLIC_CONTEXT_HASH_LIKE_VALUE_RE = re.compile(r"^[a-f0-9]{32,}$", re.IGNORECASE)
 
 
@@ -303,6 +303,14 @@ def _stored_public_context_memory_policy_source(payload: dict[str, Any]) -> str 
     return source if source in PUBLIC_CONTEXT_MEMORY_POLICY_SOURCE_VALUES else None
 
 
+def _stored_public_context_long_term_memory_read(payload: dict[str, Any]) -> bool | None:
+    used_summary = payload.get("used_context_summary")
+    if not isinstance(used_summary, dict) or _stored_public_context_source(payload) is None:
+        return None
+    value = used_summary.get("long_term_memory_read")
+    return value if isinstance(value, bool) else None
+
+
 def _stored_public_context_source(payload: dict[str, Any]) -> str | None:
     used_summary = payload.get("used_context_summary")
     source = used_summary.get("source") if isinstance(used_summary, dict) else None
@@ -421,6 +429,9 @@ def ensure_public_context_provenance(
     stored_memory_policy_source = (
         _stored_public_context_memory_policy_source(payload) if preserve_stored_input_keys else None
     )
+    stored_long_term_memory_read = (
+        _stored_public_context_long_term_memory_read(payload) if preserve_stored_input_keys else None
+    )
     stored_generated_at = _stored_public_context_generated_at(payload) if preserve_stored_input_keys else None
     stored_execution_tier = _stored_public_context_execution_tier(payload) if preserve_stored_input_keys else None
     stored_latest_artifact_version = (
@@ -435,7 +446,9 @@ def ensure_public_context_provenance(
         artifact_count=artifact_count,
         memory_record_count=memory_record_count,
         memory_policy_source=stored_memory_policy_source or memory_policy_source,
-        long_term_memory_read=long_term_memory_read,
+        long_term_memory_read=stored_long_term_memory_read
+        if stored_long_term_memory_read is not None
+        else long_term_memory_read,
         latest_artifact_version=stored_latest_artifact_version,
         execution_tier=stored_execution_tier or "sdk_only_writing",
         generated_at=stored_generated_at,

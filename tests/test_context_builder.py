@@ -120,10 +120,10 @@ def test_ensure_public_context_provenance_preserves_stored_safe_explainability_f
             "source": "chat_stream",
             "input_keys": ["message", "raw_storage_key"],
             "memory_policy_source": "stored",
-            "long_term_memory_read": False,
+            "long_term_memory_read": True,
         },
         "execution_tier": "document_worker",
-        "latest_artifact_version": "artifact-v7",
+        "latest_artifact_version": "v7",
         "context_pack_generated_at": "2026-06-12T01:23:45Z",
     }
 
@@ -141,10 +141,10 @@ def test_ensure_public_context_provenance_preserves_stored_safe_explainability_f
         "source": "chat_stream",
         "input_keys": ["message"],
         "memory_policy_source": "stored",
-        "long_term_memory_read": False,
+        "long_term_memory_read": True,
     }
     assert projected["execution_tier"] == "document_worker"
-    assert projected["latest_artifact_version"] == "artifact-v7"
+    assert projected["latest_artifact_version"] == "v7"
     assert projected["context_pack_generated_at"] == "2026-06-12T01:23:45Z"
     serialized = str(projected).lower()
     assert "raw_storage_key" not in serialized
@@ -160,7 +160,7 @@ def test_ensure_public_context_provenance_rejects_unsafe_stored_explainability_f
             "long_term_memory_read": True,
         },
         "execution_tier": "private_root_shell",
-        "latest_artifact_version": "raw_storage_key=s3://private/key",
+        "latest_artifact_version": "artifact-a",
         "context_pack_generated_at": "not-a-date",
     }
 
@@ -186,7 +186,7 @@ def test_ensure_public_context_provenance_rejects_unsafe_stored_explainability_f
     assert projected["context_pack_generated_at"] != "not-a-date"
     serialized = str(projected).lower()
     assert "raw_storage_key" not in serialized
-    assert "s3://private/key" not in serialized
+    assert "artifact-a" not in serialized
 
 
 def test_initial_context_summary_includes_public_context_provenance_contract():
