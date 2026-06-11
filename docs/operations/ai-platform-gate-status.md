@@ -13,6 +13,13 @@ issue -> PR -> review -> merge -> 211 deploy/smoke -> close issue workflow in
 
 Status: `211 verified for Foundation Alpha POC`, not production gate closure.
 
+Generate the current operator readiness summary with:
+
+```powershell
+python tools/foundation_alpha_readiness.py --format json
+python tools/foundation_alpha_readiness.py --format markdown
+```
+
 On 2026-06-11, runtime subject commit
 `8c0cffca63bc747fad0a5771f209acc8a608ab9e` was synced to 211 source and the
 211 API and worker ran `ai-platform:8c0cffc-foundation-alpha-poc` with image ID

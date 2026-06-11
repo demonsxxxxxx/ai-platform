@@ -13,6 +13,13 @@ python tools/release_evidence_readiness.py --format markdown
 python tools/release_evidence_readiness.py --format json
 ```
 
+Generate the current Foundation Alpha POC operator summary separately:
+
+```powershell
+python tools/foundation_alpha_readiness.py --format markdown
+python tools/foundation_alpha_readiness.py --format json
+```
+
 The readiness schema is `ai-platform.release-evidence-readiness.v1`. The entry
 schema is `ai-platform.release-evidence-entry.v1`. The retention policy schema
 is `ai-platform.release-evidence-retention-policy.v1`.

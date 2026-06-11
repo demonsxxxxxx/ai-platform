@@ -64,6 +64,11 @@ fresh 211 gate closure.
 | Reference sources | ai-platform-owned workflow; no external source should define authority. |
 | S1 acceptance | User/product-owner approves authority flip; old PRD is archived or redirected; dynamic per-commit logs are routed out of product requirements; `tests/test_source_authority_docs.py` passes; docs do not embed real secrets or personal machine paths. |
 
+S1 operator summary: run
+`python tools/foundation_alpha_readiness.py --format json`. The readiness output
+may mark `controlled_poc_loop_verified=true`, but S1 remains constrained until
+its `open_followups` are explicitly accepted or moved to later gates.
+
 ### 3.2 Auth, RBAC, Tenant Isolation
 
 | Field | Standard |

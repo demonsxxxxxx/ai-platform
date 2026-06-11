@@ -90,6 +90,8 @@ def test_active_prd_v2_records_appendix_and_closure_workflow_authority():
     assert "Status: active companion acceptance document" in tech_text
     assert "2026-05-29 PRD remains a migration appendix" in prd_text
     assert "This PRD v2 is the active product source" in prd_text
+    assert "tools/foundation_alpha_readiness.py --format json" in prd_text
+    assert "tools/foundation_alpha_readiness.py --format json" in tech_text
     assert "docs/agent-rules/github-issue-pr-workflow.md" in prd_text
     assert "issue -> PR -> review -> merge -> deploy/smoke when required -> close issue with evidence" in prd_text
     assert "Use `Closes #N` or `Fixes #N` only when" in workflow_text
@@ -142,6 +144,7 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "packaged frontend image smoke/release acceptance" in gate_status_text
     assert "Foundation Alpha POC Smoke" in gate_status_text
     assert "211 verified for Foundation Alpha POC" in gate_status_text
+    assert "tools/foundation_alpha_readiness.py --format json" in gate_status_text
     assert "8c0cffca63bc747fad0a5771f209acc8a608ab9e" in gate_status_text
     assert "ai-platform:8c0cffc-foundation-alpha-poc" in gate_status_text
     assert "sha256:a596cdb2ff2f54658d1298f6882b7623c6ab790b1bc077f826a5eb6bf14a2220" in gate_status_text
