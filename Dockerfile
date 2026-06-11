@@ -11,6 +11,8 @@ WORKDIR /app
 
 COPY pyproject.toml /app/pyproject.toml
 COPY app /app/app
+COPY tools /app/tools
+COPY scripts /app/scripts
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN if [ -n "$PIP_INDEX_URL" ]; then pip config set global.index-url "$PIP_INDEX_URL"; fi \
     && if [ -n "$PIP_TRUSTED_HOST" ]; then pip config set global.trusted-host "$PIP_TRUSTED_HOST"; fi \

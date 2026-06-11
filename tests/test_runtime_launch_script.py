@@ -143,6 +143,8 @@ def test_dockerfile_packages_release_evidence_for_runtime_readiness():
     content = Path("Dockerfile").read_text(encoding="utf-8")
 
     assert "COPY docs/release-evidence /app/docs/release-evidence" in content
+    assert "COPY tools /app/tools" in content
+    assert "COPY scripts /app/scripts" in content
     assert "COPY docs /app/docs" not in content
 
 
