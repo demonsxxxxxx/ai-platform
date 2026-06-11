@@ -8,6 +8,7 @@ from typing import Any
 
 
 SCHEMA_VERSION = "ai-platform.foundation-alpha-poc-readiness.v1"
+SOURCE_SNAPSHOT_SCHEMA_VERSION = "ai-platform.source-snapshot.v1"
 STAGE_NAME = "Foundation Alpha POC"
 RUNTIME_SUBJECT_COMMIT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 _ROOT = Path(__file__).resolve().parents[1]
@@ -16,11 +17,13 @@ _EVIDENCE_ROOT = _EVIDENCE_BASE_ROOT / RUNTIME_SUBJECT_COMMIT_SHA
 _SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-11-211-foundation-alpha-poc-current-main-smoke.json"
 _AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-11-211-foundation-alpha-poc-current-main-auth-rbac-smoke.json"
 _SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
+_SOURCE_SNAPSHOT_MARKER = _ROOT / ".ai-platform-source-snapshot.json"
 _RUNTIME_NEUTRAL_PATH_PREFIXES = (
     "docs/",
     "tests/",
 )
 _RUNTIME_NEUTRAL_EXACT_PATHS = {
+    ".gitignore",
     "app/foundation_alpha_readiness.py",
     "tools/foundation_alpha_readiness.py",
 }
@@ -50,11 +53,51 @@ def _status_from_gaps(gaps: list[str]) -> str:
     return "partial_followups_open" if gaps else "poc_verified_keep_under_regression"
 
 
+def _string_list(value: Any) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            return None
+        normalized = item.replace("\\", "/").strip()
+        if normalized:
+            result.append(normalized)
+    return result
+
+
+def _read_source_revision_marker() -> str | None:
+    if not _SOURCE_REVISION_MARKER.exists():
+        return None
+    marker = _SOURCE_REVISION_MARKER.read_text(encoding="utf-8").strip()
+    return marker or None
+
+
+def _source_snapshot_marker_for_source_tree(source_tree_commit: str | None = None) -> dict[str, Any] | None:
+    source_tree_commit = source_tree_commit or _read_source_revision_marker()
+    if not source_tree_commit or source_tree_commit == "unknown" or not _SOURCE_SNAPSHOT_MARKER.exists():
+        return None
+    try:
+        payload = _load_json(_SOURCE_SNAPSHOT_MARKER)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if payload.get("schema_version") != SOURCE_SNAPSHOT_SCHEMA_VERSION:
+        return None
+    if payload.get("source_tree_commit_sha") != source_tree_commit:
+        return None
+    if not isinstance(payload.get("source_tree_dirty"), bool):
+        return None
+    if _string_list(payload.get("runtime_affecting_changes_since_runtime_subject")) is None:
+        return None
+    if _string_list(payload.get("runtime_affecting_dirty_paths")) is None:
+        return None
+    return payload
+
+
 def _resolve_source_tree_revision() -> str:
-    if _SOURCE_REVISION_MARKER.exists():
-        marker = _SOURCE_REVISION_MARKER.read_text(encoding="utf-8").strip()
-        if marker:
-            return marker
+    marker = _read_source_revision_marker()
+    if marker:
+        return marker
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -78,7 +121,8 @@ def _resolve_source_tree_dirty() -> bool | None:
             text=True,
         )
     except (OSError, subprocess.CalledProcessError):
-        return None
+        marker = _source_snapshot_marker_for_source_tree()
+        return marker.get("source_tree_dirty") if marker else None
     return bool(result.stdout.strip())
 
 
@@ -128,7 +172,10 @@ def _resolve_runtime_affecting_changes_since(runtime_subject_commit: str) -> lis
             text=True,
         )
     except (OSError, subprocess.CalledProcessError):
-        return None
+        marker = _source_snapshot_marker_for_source_tree()
+        if marker is None or marker.get("runtime_subject_commit_sha") != runtime_subject_commit:
+            return None
+        return _string_list(marker.get("runtime_affecting_changes_since_runtime_subject"))
     paths = [line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip()]
     return [path for path in paths if _is_runtime_affecting_path(path)]
 
@@ -136,7 +183,10 @@ def _resolve_runtime_affecting_changes_since(runtime_subject_commit: str) -> lis
 def _resolve_runtime_affecting_dirty_paths() -> list[str] | None:
     dirty_paths = _resolve_source_tree_dirty_paths()
     if dirty_paths is None:
-        return None
+        marker = _source_snapshot_marker_for_source_tree()
+        if marker is None:
+            return None
+        return _string_list(marker.get("runtime_affecting_dirty_paths"))
     return [path for path in dirty_paths if _is_runtime_affecting_path(path)]
 
 
@@ -426,6 +476,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     """Build a secret-safe Foundation Alpha POC readiness summary for operators."""
     source_tree_commit = _resolve_source_tree_revision()
     source_tree_dirty = _resolve_source_tree_dirty()
+    runtime_affecting_dirty_paths = _resolve_runtime_affecting_dirty_paths()
     smoke_evidence_path, auth_rbac_evidence_path = _resolve_release_evidence_paths(source_tree_commit)
     smoke = _load_json(smoke_evidence_path)
     auth_rbac = _load_json(auth_rbac_evidence_path)
@@ -447,7 +498,6 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         if source_tree_commit == runtime_subject_commit
         else _resolve_runtime_affecting_changes_since(runtime_subject_commit)
     )
-    runtime_affecting_dirty_paths = _resolve_runtime_affecting_dirty_paths()
     runtime_relation = _runtime_source_relation(
         source_tree_commit=source_tree_commit,
         source_tree_dirty=source_tree_dirty,

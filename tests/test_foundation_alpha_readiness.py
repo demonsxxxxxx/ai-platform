@@ -154,6 +154,14 @@ def _write_release_evidence_pair(
     return smoke_path, auth_path
 
 
+def test_foundation_alpha_readiness_classifies_source_metadata_paths_as_runtime_neutral():
+    assert foundation_alpha_readiness._is_runtime_affecting_path(".gitignore") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("app/foundation_alpha_readiness.py") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("docs/release-evidence/README.md") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("tests/test_foundation_alpha_readiness.py") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("app/routes/runs.py") is True
+
+
 def test_foundation_alpha_readiness_selects_current_source_release_evidence_pair(monkeypatch, tmp_path):
     evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
     old_smoke_path, old_auth_path = _write_release_evidence_pair(
@@ -356,6 +364,101 @@ def test_foundation_alpha_readiness_fails_closed_when_dirty_state_is_unknown(mon
     assert readiness["verified_runtime_subject"]["evidence_scope"] == "reviewed_historical_runtime_evidence"
     assert readiness["decision"]["current_source_verified_by_running_runtime"] is False
     assert readiness["decision"]["runtime_rollout_required_for_current_source"] is True
+
+
+def test_foundation_alpha_readiness_uses_valid_source_snapshot_marker_when_git_is_unavailable(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    old_smoke_path, old_auth_path = _write_release_evidence_pair(
+        evidence_root,
+        RUNTIME_SUBJECT_SHA,
+        image="ai-platform:8c0cffc-foundation-alpha-poc",
+        smoke_captured_at="2026-06-11T10:00:00+08:00",
+        auth_captured_at="2026-06-11T10:01:00+08:00",
+    )
+    _write_release_evidence_pair(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image="ai-platform:a3f1d73-foundation-alpha-poc",
+        smoke_captured_at="2026-06-11T15:19:22+08:00",
+        auth_captured_at="2026-06-11T15:18:58+08:00",
+    )
+    marker = {
+        "schema_version": foundation_alpha_readiness.SOURCE_SNAPSHOT_SCHEMA_VERSION,
+        "source_tree_commit_sha": NEWER_SOURCE_SHA,
+        "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
+        "source_tree_dirty": False,
+        "runtime_affecting_changes_since_runtime_subject": [],
+        "runtime_affecting_dirty_paths": [],
+        "note": "source archive contains only docs/tests/readiness records after runtime subject",
+    }
+    marker_path = tmp_path / ".ai-platform-source-snapshot.json"
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", old_smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", old_auth_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SOURCE_SNAPSHOT_MARKER", marker_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_read_source_revision_marker",
+        lambda: NEWER_SOURCE_SHA,
+        raising=False,
+    )
+
+    def git_unavailable(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(128, "git")
+
+    monkeypatch.setattr(foundation_alpha_readiness.subprocess, "run", git_unavailable)
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert readiness["status"] == "runtime_current_for_runtime_relevant_source_followups_open"
+    assert readiness["source_tree_commit_sha"] == NEWER_SOURCE_SHA
+    assert readiness["source_tree_dirty"] is False
+    assert readiness["runtime_source_relation"] == {
+        "source_tree_commit_sha": NEWER_SOURCE_SHA,
+        "source_tree_dirty": False,
+        "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
+        "runtime_source_marker": CURRENT_SOURCE_SHA,
+        "runtime_matches_source_tree": False,
+        "runtime_relevant_source_matches": True,
+        "runtime_affecting_changes_since_runtime_subject": [],
+        "runtime_affecting_dirty_paths": [],
+        "status": "runtime_current_for_runtime_relevant_source",
+    }
+    assert readiness["verified_runtime_subject"]["evidence_scope"] == "current_runtime_relevant_source"
+    assert readiness["decision"]["current_source_verified_by_running_runtime"] is True
+
+
+def test_foundation_alpha_readiness_rejects_source_snapshot_marker_for_wrong_commit(
+    monkeypatch,
+    tmp_path,
+):
+    marker_path = tmp_path / ".ai-platform-source-snapshot.json"
+    marker_path.write_text(
+        json.dumps(
+            {
+                "schema_version": foundation_alpha_readiness.SOURCE_SNAPSHOT_SCHEMA_VERSION,
+                "source_tree_commit_sha": "wrong",
+                "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
+                "source_tree_dirty": False,
+                "runtime_affecting_changes_since_runtime_subject": [],
+                "runtime_affecting_dirty_paths": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_SOURCE_SNAPSHOT_MARKER", marker_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_read_source_revision_marker",
+        lambda: NEWER_SOURCE_SHA,
+        raising=False,
+    )
+
+    assert foundation_alpha_readiness._source_snapshot_marker_for_source_tree(NEWER_SOURCE_SHA) is None
 
 
 def test_foundation_alpha_readiness_falls_back_to_latest_reviewed_runtime_evidence(monkeypatch, tmp_path):

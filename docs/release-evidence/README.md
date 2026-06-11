@@ -40,6 +40,12 @@ the runtime subject has verified all runtime-affecting source while later
 docs/tests/evidence/readiness records remain outside the running image. Any
 non-empty `runtime_affecting_dirty_paths` must still block that claim.
 
+On 211 source archives that are not Git worktrees, the summary may use a
+local-only `.ai-platform-source-snapshot.json` marker to preserve that same
+distinction after a docs/tests/evidence-only source sync. The marker must match
+the local `.ai-platform-source-revision`, name the runtime subject commit, and
+declare empty runtime-affecting changes; missing or invalid markers fail closed.
+
 The readiness schema is `ai-platform.release-evidence-readiness.v1`. The entry
 schema is `ai-platform.release-evidence-entry.v1`. The retention policy schema
 is `ai-platform.release-evidence-retention-policy.v1`.

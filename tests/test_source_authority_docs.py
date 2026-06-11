@@ -388,6 +388,8 @@ def test_gitignore_excludes_real_env_variants_but_not_templates():
         "frontend/web/.env.*",
         "!frontend/web/.env.example",
         "frontend/web/*.tsbuildinfo",
+        ".ai-platform-source-revision",
+        ".ai-platform-source-snapshot.json",
     }
 
     assert required_patterns.issubset(gitignore_lines)

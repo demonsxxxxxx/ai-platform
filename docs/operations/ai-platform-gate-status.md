@@ -36,6 +36,12 @@ docs/tests/evidence/readiness record changes may be newer than the image, so
 `current_source_exact_runtime_commit_match=false` can coexist with
 `current_source_verified_by_running_runtime=true`.
 
+The 211 source directory is often a synced archive rather than a Git worktree.
+For source-only docs/tests/evidence syncs, write a local-only
+`.ai-platform-source-snapshot.json` next to `.ai-platform-source-revision` so
+`tools/foundation_alpha_readiness.py` can prove the runtime-affecting delta is
+empty. Missing, stale, or malformed snapshot markers intentionally fail closed.
+
 On 2026-06-11, runtime subject commit
 `faa7ad6aa61637cbcdf3a22ce81de119762e96bf` was synced to 211 source and the
 211 API and worker ran `ai-platform:faa7ad6-foundation-alpha-poc` with image ID
