@@ -10,12 +10,12 @@ from typing import Any
 SCHEMA_VERSION = "ai-platform.foundation-alpha-poc-readiness.v1"
 SOURCE_SNAPSHOT_SCHEMA_VERSION = "ai-platform.source-snapshot.v1"
 STAGE_NAME = "Foundation Alpha POC"
-RUNTIME_SUBJECT_COMMIT_SHA = "d95107da2b5691781518bdbb8c4e5e76409869f3"
+RUNTIME_SUBJECT_COMMIT_SHA = "e274d78b21c22fdf4f56a8cf8b31a0480d42c22f"
 _ROOT = Path(__file__).resolve().parents[1]
 _EVIDENCE_BASE_ROOT = _ROOT / "docs/release-evidence/foundation-alpha-poc"
 _EVIDENCE_ROOT = _EVIDENCE_BASE_ROOT / RUNTIME_SUBJECT_COMMIT_SHA
-_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-12-211-foundation-alpha-poc-d95107d-context-projection-smoke.json"
-_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-12-211-foundation-alpha-poc-d95107d-auth-rbac-smoke.json"
+_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-12-211-foundation-alpha-poc-e274d78-runtime-readiness-tools-smoke.json"
+_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-12-211-foundation-alpha-poc-e274d78-auth-rbac-smoke.json"
 _SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
 _SOURCE_SNAPSHOT_MARKER = _ROOT / ".ai-platform-source-snapshot.json"
 _RUNTIME_NEUTRAL_PATH_PREFIXES = (
@@ -29,6 +29,7 @@ _RUNTIME_NEUTRAL_EXACT_PATHS = {
     "tools/foundation_alpha_readiness.py",
     "tools/frontend_release_traceability.py",
     "tools/verify_auth_rbac_smoke.py",
+    "tests/test_source_authority_docs.py",
 }
 
 _OPEN_FOLLOWUPS = [
@@ -417,10 +418,13 @@ def _safe_context_input_keys(value: Any) -> list[str]:
 
 def _artifact_review_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     document_review = _safe_runtime_check(runtime_checks.get("document_review_attachment_run"))
+    artifact_types = document_review.get("artifact_types")
+    if not isinstance(artifact_types, list):
+        artifact_types = document_review.get("artifact_type_summary")
     return {
         "status": document_review.get("status"),
         "skill_id": document_review.get("skill_id"),
-        "artifact_types": sorted(document_review.get("artifact_types") or []),
+        "artifact_types": sorted(artifact_types or []),
         "playback_contract_version": document_review.get("playback_contract_version"),
     }
 
@@ -428,9 +432,12 @@ def _artifact_review_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
 def _projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     frontend = _safe_runtime_check(runtime_checks.get("lambchat_frontend"))
     boundary = _safe_runtime_check(runtime_checks.get("frontend_dist_api_boundary"))
+    same_origin_api_health = _safe_runtime_check(runtime_checks.get("same_origin_api_health"))
+    if same_origin_api_health.get("status") is None and same_origin_api_health.get("api_status") is not None:
+        same_origin_api_health["status"] = same_origin_api_health.get("api_status")
     return {
         "frontend_http_status": frontend.get("status") or runtime_checks.get("frontend_http_status"),
-        "same_origin_api_health": _safe_runtime_check(runtime_checks.get("same_origin_api_health")),
+        "same_origin_api_health": same_origin_api_health,
         "forbidden_reference_count": boundary.get("forbidden_reference_count")
         if boundary.get("forbidden_reference_count") is not None
         else runtime_checks.get("frontend_forbidden_reference_count"),

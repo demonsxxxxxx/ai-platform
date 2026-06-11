@@ -42,17 +42,18 @@ For source-only docs/tests/evidence syncs, write a local-only
 `tools/foundation_alpha_readiness.py` can prove the runtime-affecting delta is
 empty. Missing, stale, or malformed snapshot markers intentionally fail closed.
 
-On 2026-06-12, merged-main PR #30 runtime subject commit
-`d95107da2b5691781518bdbb8c4e5e76409869f3` was synced to the 211 runtime
-subject and the 211 API and worker ran `ai-platform:d95107d-context-projection` with
-image ID
-`sha256:1c6bad9766cacb4d7bebfed38b3616dc559e04c155f2ccf495d5b84ce58d2815`.
+On 2026-06-12, runtime subject commit
+`e274d78b21c22fdf4f56a8cf8b31a0480d42c22f` was synced to the 211 runtime
+subject and the 211 API and worker ran
+`ai-platform:e274d78-g9-runtime-readiness-tools` with image ID
+`sha256:a8873641808cbf15f919a12a2d4a540a2cbf309557a15f8f832e0dbb0801f4ab`.
 Both runtime source labels pointed to
-`d95107da2b5691781518bdbb8c4e5e76409869f3`. Runtime labels pointed to the
-repo-local compose file under
-`/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform`,
-API health returned `ok`, and OpenAPI exposed
-`/api/ai/artifacts/{artifact_id}/preview`.
+`e274d78b21c22fdf4f56a8cf8b31a0480d42c22f`. Runtime labels pointed to the
+repo-local 211 deploy composition, API health returned `ok`, container-side
+`python -m compileall -q app tools scripts` passed for API and worker, and the container-side
+`tools/release_evidence_export_acceptance.py` preflight returned
+`ready_for_operator_review` with `safe_entry_count=16`, `blocked_entry_count=0`,
+and `excluded_entry_count=3`.
 
 The aggregate verifier `tools/verify_poc_gate.py` returned `ok: true` on 211
 for the controlled POC loop: LambChat thin-shell frontend, same-origin API
@@ -66,11 +67,11 @@ material IDs. `tools/foundation_alpha_readiness.py`
 promotes that context projection into the G6 evidence summary and fails closed
 as `missing_context_snapshot_public_projection` when an older smoke record lacks
 it. The current reviewed, redacted release-evidence entry is
-`docs/release-evidence/foundation-alpha-poc/d95107da2b5691781518bdbb8c4e5e76409869f3/2026-06-12-211-foundation-alpha-poc-d95107d-context-projection-smoke.json`.
+`docs/release-evidence/foundation-alpha-poc/e274d78b21c22fdf4f56a8cf8b31a0480d42c22f/2026-06-12-211-foundation-alpha-poc-e274d78-runtime-readiness-tools-smoke.json`.
 
 The focused Auth/RBAC verifier `tools/verify_auth_rbac_smoke.py` also returned
-`ok: true` on 211 against the same runtime. The refreshed 2026-06-12 05:24
-+08:00 smoke used runtime subject `d95107d`. It verified unauthenticated `/api/auth/me`
+`ok: true` on 211 against the same runtime. The refreshed 2026-06-12 smoke used
+runtime subject `e274d78`. It verified unauthenticated `/api/auth/me`
 returns 401, platform `/api/ai/auth/me` returns the trusted principal with
 tenant match, invalid gateway secret access to `/api/ai/auth/me` fails with
 403, ordinary trusted principals are denied from Admin Runtime with 403, admin
@@ -80,10 +81,11 @@ PR #26 verifier fix allows legitimate Admin Runtime observability/readiness
 metric text such as token/cost/error summaries while continuing to fail closed
 on secret-like keys and credential-shaped values. The
 current reviewed, redacted Auth/RBAC evidence entry is
-`docs/release-evidence/foundation-alpha-poc/d95107da2b5691781518bdbb8c4e5e76409869f3/2026-06-12-211-foundation-alpha-poc-d95107d-auth-rbac-smoke.json`.
+`docs/release-evidence/foundation-alpha-poc/e274d78b21c22fdf4f56a8cf8b31a0480d42c22f/2026-06-12-211-foundation-alpha-poc-e274d78-auth-rbac-smoke.json`.
 
 Earlier smoke evidence for
 `a63dbbd0b474cce3702b3485e6589f86155cf5aa`,
+`d95107da2b5691781518bdbb8c4e5e76409869f3`,
 `458f6056dd0fa533162e780a303d79ce1b3d0eec`,
 `9b02836262fb0f238a7f90b9705bf39a8b298158`,
 `cdc09ba8867d91e8db76570fbf158e6d082da7cf`,
@@ -93,7 +95,7 @@ Earlier smoke evidence for
 `8c0cffca63bc747fad0a5771f209acc8a608ab9e`,
 `bf20432f9889efa8b367afdf512c641068ba30bc`, and
 `3874281276c84a418bd08bda56d7ea55b52970b7` remains retained as historical evidence only; the current-main evidence above is the active Foundation Alpha POC reference.
-The immediately superseded runtime image was `ai-platform:a63dbbd-context-summary-source`.
+The immediately superseded runtime image was `ai-platform:3ead61c-g9-release-evidence-runtime-docs`.
 
 This smoke does not close #21 capacity, G7 Docker sandbox hardening, ordinary
 user multi-agent exposure, department rollout, release-evidence runtime export,
