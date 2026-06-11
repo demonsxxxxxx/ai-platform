@@ -117,11 +117,20 @@ def _minimal_auth_payload(commit_sha: str, *, image: str, captured_at: str = "20
         "evidence_ref": {
             "result": "ok:true",
             "runtime_checks": {
-                "unauthenticated_auth_me": {"status": 401},
+                "unauthenticated_auth_me": {"route": "/api/auth/me", "status": 401},
+                "authenticated_auth_me": {
+                    "route": "/api/ai/auth/me",
+                    "status": 200,
+                    "tenant_matches_requested": True,
+                    "user_matches_requested": True,
+                    "forbidden_projection_terms_present": False,
+                },
+                "invalid_gateway_secret_auth_me": {"route": "/api/ai/auth/me", "status": 403},
                 "ordinary_admin_runtime": {"status": 403},
                 "admin_runtime": {
                     "status": 200,
                     "required_sections_present": True,
+                    "tenant_matches_requested": True,
                     "forbidden_projection_terms_present": False,
                 },
             },
@@ -632,6 +641,31 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "docker_sandbox_hardened_claim_allowed": False,
         "capacity_default_increase_allowed": False,
     }
+    assert readiness["operator_context"] == {
+        "poc_scope": "foundation_alpha_controlled_internal_poc",
+        "poc_loop_status": "verified_for_current_source",
+        "current_runtime_relation": "runtime_current_for_source_tree",
+        "stage_gate": "foundation_alpha_poc_not_production",
+        "verified_poc_capabilities": [
+            "source_authority_security_baseline",
+            "control_plane_public_admin_projection_contracts",
+            "queue_worker_document_task_artifact_loop",
+            "frontend_public_projection_poc",
+        ],
+        "blocked_expansions": [
+            "production_concurrency_increase",
+            "docker_sandbox_hardening_claim",
+            "ordinary_user_multi_agent_exposure",
+            "department_rollout",
+        ],
+        "next_recommended_slices": [
+            "#21_recorded_capacity_evidence",
+            "g6_runtime_admin_dashboard_acceptance_for_governance",
+            "g9_runtime_export_and_retention_acceptance",
+            "packaged_frontend_image_release_acceptance",
+            "broader_auth_session_rbac_tenant_redaction_regression",
+        ],
+    }
 
     assert set(readiness["domains"]) == {
         "g0_g1_source_authority_security",
@@ -642,6 +676,15 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "frontend_poc",
     }
     assert readiness["domains"]["g0_g1_source_authority_security"]["status"] == "poc_verified_keep_under_regression"
+    assert readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["auth_rbac"][
+        "unauthenticated_auth_me_status"
+    ] == 401
+    assert readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["auth_rbac"][
+        "ordinary_admin_runtime_status"
+    ] == 403
+    assert readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["auth_rbac"][
+        "admin_runtime_status"
+    ] == 200
     assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"]["document_review_attachment_run"] == {
         "status": "succeeded",
         "skill_id": "qa-file-reviewer",
@@ -740,6 +783,9 @@ def test_foundation_alpha_readiness_marks_source_synced_runtime_pending_without_
     assert readiness["decision"]["runtime_rollout_required_for_current_source"] is True
     assert readiness["decision"]["production_claim_allowed"] is False
     assert readiness["decision"]["can_enter_next_stage_without_restrictions"] is False
+    assert readiness["operator_context"]["poc_loop_status"] == "runtime_rollout_required"
+    assert readiness["operator_context"]["current_runtime_relation"] == "source_synced_runtime_pending"
+    assert "production_concurrency_increase" in readiness["operator_context"]["blocked_expansions"]
 
 
 def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeypatch):
@@ -832,3 +878,41 @@ def test_foundation_alpha_readiness_fails_closed_when_optional_readiness_depende
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
     assert "pydantic" not in serialized
     assert "traceback" not in serialized
+
+
+def test_auth_rbac_summary_reports_platform_principal_tenant_and_gateway_checks():
+    summary = foundation_alpha_readiness._auth_rbac_summary(
+        {
+            "unauthenticated_auth_me": {"route": "/api/auth/me", "status": 401},
+            "authenticated_auth_me": {
+                "route": "/api/ai/auth/me",
+                "status": 200,
+                "tenant_matches_requested": True,
+                "user_matches_requested": True,
+                "forbidden_projection_terms_present": False,
+            },
+            "invalid_gateway_secret_auth_me": {"route": "/api/ai/auth/me", "status": 403},
+            "ordinary_admin_runtime": {"status": 403},
+            "admin_runtime": {
+                "status": 200,
+                "required_sections_present": True,
+                "tenant_matches_requested": True,
+                "forbidden_projection_terms_present": False,
+            },
+        }
+    )
+
+    assert summary == {
+        "unauthenticated_auth_me_status": 401,
+        "authenticated_auth_me_status": 200,
+        "authenticated_auth_me_route": "/api/ai/auth/me",
+        "authenticated_auth_me_tenant_matches_requested": True,
+        "authenticated_auth_me_user_matches_requested": True,
+        "authenticated_auth_me_forbidden_projection_terms_present": False,
+        "invalid_gateway_secret_auth_me_status": 403,
+        "ordinary_admin_runtime_status": 403,
+        "admin_runtime_status": 200,
+        "admin_required_sections_present": True,
+        "admin_tenant_matches_requested": True,
+        "admin_forbidden_projection_terms_present": False,
+    }

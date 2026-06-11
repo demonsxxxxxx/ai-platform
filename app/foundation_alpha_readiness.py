@@ -405,15 +405,27 @@ def _projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
 
 def _auth_rbac_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     admin_runtime = _safe_runtime_check(runtime_checks.get("admin_runtime"))
+    authenticated_auth_me = _safe_runtime_check(runtime_checks.get("authenticated_auth_me"))
     return {
         "unauthenticated_auth_me_status": _safe_runtime_check(runtime_checks.get("unauthenticated_auth_me")).get(
             "status"
         ),
+        "authenticated_auth_me_status": authenticated_auth_me.get("status"),
+        "authenticated_auth_me_route": authenticated_auth_me.get("route"),
+        "authenticated_auth_me_tenant_matches_requested": authenticated_auth_me.get("tenant_matches_requested"),
+        "authenticated_auth_me_user_matches_requested": authenticated_auth_me.get("user_matches_requested"),
+        "authenticated_auth_me_forbidden_projection_terms_present": authenticated_auth_me.get(
+            "forbidden_projection_terms_present"
+        ),
+        "invalid_gateway_secret_auth_me_status": _safe_runtime_check(
+            runtime_checks.get("invalid_gateway_secret_auth_me")
+        ).get("status"),
         "ordinary_admin_runtime_status": _safe_runtime_check(runtime_checks.get("ordinary_admin_runtime")).get(
             "status"
         ),
         "admin_runtime_status": admin_runtime.get("status"),
         "admin_required_sections_present": admin_runtime.get("required_sections_present"),
+        "admin_tenant_matches_requested": admin_runtime.get("tenant_matches_requested"),
         "admin_forbidden_projection_terms_present": admin_runtime.get("forbidden_projection_terms_present"),
     }
 
@@ -443,6 +455,44 @@ def _top_level_status(runtime_relation_status: str, runtime_matches_source_tree:
     if runtime_matches_source_tree:
         return "211_verified_followups_open"
     return f"{runtime_relation_status}_followups_open"
+
+
+def _poc_loop_status(runtime_relation: dict[str, Any]) -> str:
+    if runtime_relation.get("runtime_relevant_source_matches"):
+        return "verified_for_current_source"
+    if runtime_relation.get("runtime_affecting_dirty_paths"):
+        return "runtime_affecting_uncommitted_changes_pending"
+    if runtime_relation.get("status") == "source_tree_uncommitted_changes_pending":
+        return "source_dirty_unknown_runtime_impact"
+    return "runtime_rollout_required"
+
+
+def _operator_context(runtime_relation: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "poc_scope": "foundation_alpha_controlled_internal_poc",
+        "poc_loop_status": _poc_loop_status(runtime_relation),
+        "current_runtime_relation": runtime_relation["status"],
+        "stage_gate": "foundation_alpha_poc_not_production",
+        "verified_poc_capabilities": [
+            "source_authority_security_baseline",
+            "control_plane_public_admin_projection_contracts",
+            "queue_worker_document_task_artifact_loop",
+            "frontend_public_projection_poc",
+        ],
+        "blocked_expansions": [
+            "production_concurrency_increase",
+            "docker_sandbox_hardening_claim",
+            "ordinary_user_multi_agent_exposure",
+            "department_rollout",
+        ],
+        "next_recommended_slices": [
+            "#21_recorded_capacity_evidence",
+            "g6_runtime_admin_dashboard_acceptance_for_governance",
+            "g9_runtime_export_and_retention_acceptance",
+            "packaged_frontend_image_release_acceptance",
+            "broader_auth_session_rbac_tenant_redaction_regression",
+        ],
+    }
 
 
 def _build_governance_summary(settings: object | None) -> dict[str, Any]:
@@ -621,6 +671,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             "poc_smoke": _path_for_output(smoke_evidence_path),
             "auth_rbac_smoke": _path_for_output(auth_rbac_evidence_path),
         },
+        "operator_context": _operator_context(runtime_relation),
         "decision": {
             "reviewed_poc_loop_evidence_available": True,
             "controlled_poc_loop_verified_for_current_source": runtime_relevant_source_matches,
@@ -642,8 +693,12 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
 def render_foundation_alpha_readiness_markdown(readiness: dict[str, Any]) -> str:
     """Render Foundation Alpha POC readiness as operator-readable Markdown."""
     decision = readiness["decision"]
+    operator_context = readiness["operator_context"]
     verified_runtime_subject = readiness["verified_runtime_subject"]
     decision_lines = "\n".join(f"- `{key}`: `{value}`" for key, value in decision.items())
+    verified_capabilities = "\n".join(f"- {item}" for item in operator_context["verified_poc_capabilities"])
+    blocked_expansions = "\n".join(f"- {item}" for item in operator_context["blocked_expansions"])
+    next_slices = "\n".join(f"- {item}" for item in operator_context["next_recommended_slices"])
     followups = "\n".join(f"- {item}" for item in readiness["open_followups"])
     domain_sections: list[str] = []
     for name, domain in readiness["domains"].items():
@@ -667,6 +722,16 @@ def render_foundation_alpha_readiness_markdown(readiness: dict[str, Any]) -> str
         f"Image: `{verified_runtime_subject['image']}`\n\n"
         f"Image ID: `{verified_runtime_subject['image_id']}`\n\n"
         f"Evidence scope: `{verified_runtime_subject['evidence_scope']}`\n\n"
+        "## Operator Context\n\n"
+        f"POC scope: `{operator_context['poc_scope']}`\n\n"
+        f"POC loop status: `{operator_context['poc_loop_status']}`\n\n"
+        f"Stage gate: `{operator_context['stage_gate']}`\n\n"
+        "Verified POC capabilities:\n\n"
+        f"{verified_capabilities}\n\n"
+        "Blocked expansions:\n\n"
+        f"{blocked_expansions}\n\n"
+        "Next recommended slices:\n\n"
+        f"{next_slices}\n\n"
         "## Current decision\n\n"
         f"{decision_lines}\n\n"
         "## Open Followups\n\n"
