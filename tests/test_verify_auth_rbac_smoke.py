@@ -61,7 +61,7 @@ class AuthRbacHandler(BaseHTTPRequestHandler):
                     "queue": {"tenant_insight": {"capacity": {"queue_lease_scan_limit": 50}}},
                     "sandbox": {"leases": {"active": 0}},
                     "capacity": {"max_active_worker_runs": 3},
-                    "observability": {"error_count": 0},
+                    "observability": {"error_count": 0, "token_counts": {"input": 3, "output": 5, "total": 8}},
                     "governance": {"tool_policy": "visible"},
                     "database_pool": {"open": True},
                     "backpressure": {"reasons": []},

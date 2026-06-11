@@ -71,6 +71,18 @@ FORBIDDEN_PROJECTION_VALUE_TERMS = (
     "sk-",
     "token",
 )
+ALLOWED_PROJECTION_KEY_TERMS = {
+    "input_token_count",
+    "inputtokencount",
+    "output_token_count",
+    "outputtokencount",
+    "token_count",
+    "token_counts",
+    "tokencount",
+    "tokencounts",
+    "total_token_count",
+    "totaltokencount",
+}
 ALLOWED_POLICY_CLASS_LABELS = {
     "api key",
     "api_key",
@@ -183,6 +195,14 @@ def _normalized_key_candidates(value: object) -> tuple[tuple[str, ...], bool]:
     return tuple(candidates), decode_budget_exhausted
 
 
+def _contains_forbidden_projection_key_term(key_candidates: tuple[str, ...]) -> bool:
+    return any(
+        candidate not in ALLOWED_PROJECTION_KEY_TERMS and term in candidate
+        for candidate in key_candidates
+        for term in FORBIDDEN_PROJECTION_KEY_TERMS
+    )
+
+
 def _is_allowed_policy_class_label(value: str) -> bool:
     return _normalized_label(value) in ALLOWED_POLICY_CLASS_LABELS
 
@@ -194,7 +214,7 @@ def _contains_forbidden_projection_term(payload: Any) -> bool:
                 key_candidates, decode_budget_exhausted = _normalized_key_candidates(key)
                 if decode_budget_exhausted:
                     return True
-                if any(term in key_text for key_text in key_candidates for term in FORBIDDEN_PROJECTION_KEY_TERMS):
+                if _contains_forbidden_projection_key_term(key_candidates):
                     return True
                 if walk(child):
                     return True
