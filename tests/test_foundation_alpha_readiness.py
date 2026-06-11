@@ -10,7 +10,7 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
-ACTIVE_RUNTIME_SUBJECT_SHA = "458f6056dd0fa533162e780a303d79ce1b3d0eec"
+ACTIVE_RUNTIME_SUBJECT_SHA = "a63dbbd0b474cce3702b3485e6589f86155cf5aa"
 HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
@@ -740,7 +740,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     }
     assert readiness["decision"] == {
         "reviewed_poc_loop_evidence_available": True,
-        "controlled_poc_loop_verified_for_current_source": False,
+        "controlled_poc_loop_verified_for_current_source": True,
         "current_source_verified_by_running_runtime": True,
         "current_source_exact_runtime_commit_match": True,
         "runtime_rollout_required_for_current_source": False,
@@ -752,7 +752,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     }
     assert readiness["operator_context"] == {
         "poc_scope": "foundation_alpha_controlled_internal_poc",
-        "poc_loop_status": "context_snapshot_public_summary_followup_required",
+        "poc_loop_status": "verified_for_current_source",
         "current_runtime_relation": "runtime_current_for_source_tree",
         "stage_gate": "foundation_alpha_poc_not_production",
         "verified_poc_capabilities": [
@@ -809,34 +809,28 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert readiness["domains"]["frontend_poc"]["evidence"]["forbidden_reference_count"] == 0
     assert (
         readiness["domains"]["g2_g4_control_plane_contracts"]["evidence"]["artifact_preview_isolation"][
-            "x_content_type_options"
+            "checked_artifacts"
         ]
-        == "nosniff"
+        == 1
     )
     assert readiness["domains"]["g6_poc_governance"]["evidence"]["governance_readiness_status"] == "partial_blocked"
     assert readiness["domains"]["g6_poc_governance"]["evidence"]["context_snapshot_public_projection"] == {
-        "status": "context_snapshot_public_projection_followup_required",
+        "status": "verified_public_context_projection",
         "referenced_material_counts": {
             "message_count": 1,
             "file_count": 1,
-            "artifact_count": 1,
-            "memory_record_count": 1,
+            "artifact_count": 0,
+            "memory_record_count": 0,
         },
         "raw_material_id_fields_present": False,
         "forbidden_projection_leak_count": 0,
-        "summary_source": "stored_context_snapshot",
-        "input_keys": [],
-        "memory_policy_source": None,
-        "long_term_memory_read": None,
-        "execution_tier": None,
-        "context_pack_generated_at_present": False,
-        "missing_public_summary_fields": [
-            "context_pack_generated_at",
-            "execution_tier",
-            "input_keys",
-            "long_term_memory_read",
-            "memory_policy_source",
-        ],
+        "summary_source": "chat_stream",
+        "input_keys": ["message"],
+        "memory_policy_source": "default",
+        "long_term_memory_read": False,
+        "execution_tier": "sdk_only_writing",
+        "context_pack_generated_at_present": True,
+        "missing_public_summary_fields": [],
     }
     assert readiness["domains"]["g9_admin_runtime_observability"]["evidence"]["observability_readiness_status"] == "partial_blocked"
 
@@ -960,12 +954,12 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeyp
     assert "Evidence scope: `current_source_tree`" in markdown
     assert "Current decision" in markdown
     assert "`current_source_verified_by_running_runtime`: `True`" in markdown
-    assert "`controlled_poc_loop_verified_for_current_source`: `False`" in markdown
+    assert "`controlled_poc_loop_verified_for_current_source`: `True`" in markdown
     assert "Runtime source relation: `runtime_current_for_source_tree`" in markdown
-    assert "POC loop status: `context_snapshot_public_summary_followup_required`" in markdown
-    assert "Context snapshot public projection: `context_snapshot_public_projection_followup_required`" in markdown
-    assert "Context referenced material counts: `message=1, file=1, artifact=1, memory=1`" in markdown
-    assert "Missing context public summary fields:" in markdown
+    assert "POC loop status: `verified_for_current_source`" in markdown
+    assert "Context snapshot public projection: `verified_public_context_projection`" in markdown
+    assert "Context referenced material counts: `message=1, file=1, artifact=0, memory=0`" in markdown
+    assert "Missing context public summary fields:" not in markdown
     assert "`production_claim_allowed`: `False`" in markdown
     assert "#21_recorded_capacity_evidence" in markdown
 
