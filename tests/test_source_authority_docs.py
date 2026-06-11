@@ -29,6 +29,10 @@ FOUNDATION_ALPHA_POC_MERGED_EVIDENCE = (
     ROOT
     / "docs/release-evidence/foundation-alpha-poc/bf20432f9889efa8b367afdf512c641068ba30bc/2026-06-11-211-foundation-alpha-poc-merged-smoke.json"
 )
+FOUNDATION_ALPHA_POC_AUTH_RBAC_EVIDENCE = (
+    ROOT
+    / "docs/release-evidence/foundation-alpha-poc/bf20432f9889efa8b367afdf512c641068ba30bc/2026-06-11-211-foundation-alpha-poc-auth-rbac-smoke.json"
+)
 SCHEMA = ROOT / "app/schema.sql"
 
 AUTHORITY_DOCS = [PRD, TECH_ACCEPTANCE, ROADMAP, GUARDRAILS, AGENTS]
@@ -146,6 +150,7 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     import json
 
     assert FOUNDATION_ALPHA_POC_EVIDENCE.exists()
+    assert FOUNDATION_ALPHA_POC_AUTH_RBAC_EVIDENCE.exists()
     evidence_text = read(FOUNDATION_ALPHA_POC_MERGED_EVIDENCE)
     payload = json.loads(evidence_text)
 
@@ -169,6 +174,7 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert "G9 release-evidence runtime export" in "\n".join(payload["open_followups"])
 
     release_evidence_index = read(RELEASE_EVIDENCE_INDEX)
+    assert "2026-06-11-211-foundation-alpha-poc-auth-rbac-smoke.json" in release_evidence_index
     assert "2026-06-11-211-foundation-alpha-poc-merged-smoke.json" in release_evidence_index
     assert "2026-06-11-211-foundation-alpha-poc-smoke.json" in release_evidence_index
 
@@ -194,6 +200,26 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     lowered = evidence_text.lower()
     for marker in forbidden_markers:
         assert marker.lower() not in lowered
+
+    auth_rbac_text = read(FOUNDATION_ALPHA_POC_AUTH_RBAC_EVIDENCE)
+    auth_rbac_payload = json.loads(auth_rbac_text)
+    assert auth_rbac_payload["schema_version"] == "ai-platform.release-evidence-entry.v1"
+    assert auth_rbac_payload["evidence_id"] == "2026-06-11-211-foundation-alpha-poc-auth-rbac-smoke"
+    assert auth_rbac_payload["commit_sha"] == "bf20432f9889efa8b367afdf512c641068ba30bc"
+    assert auth_rbac_payload["source_ref"]["verifier_source_commit"] == "3a3da257484d4d430a7a26e00a6f1cdae39a2b12"
+    assert auth_rbac_payload["source_ref"]["runtime_redeployed_for_this_smoke"] is False
+    assert auth_rbac_payload["evidence_ref"]["result"] == "ok:true"
+    assert auth_rbac_payload["evidence_ref"]["runtime_checks"]["unauthenticated_auth_me"]["status"] == 401
+    assert auth_rbac_payload["evidence_ref"]["runtime_checks"]["ordinary_admin_runtime"]["status"] == 403
+    assert auth_rbac_payload["evidence_ref"]["runtime_checks"]["admin_runtime"]["status"] == 200
+    assert auth_rbac_payload["evidence_ref"]["runtime_checks"]["admin_runtime"]["required_sections_present"] is True
+    assert auth_rbac_payload["evidence_ref"]["runtime_checks"]["admin_runtime"]["forbidden_projection_terms_present"] is False
+    assert auth_rbac_payload["redaction_scan_status"] == "passed"
+    assert auth_rbac_payload["review_status"] == "reviewed"
+
+    lowered_auth_rbac = auth_rbac_text.lower()
+    for marker in forbidden_markers:
+        assert marker.lower() not in lowered_auth_rbac
 
 
 def test_source_authority_docs_keep_current_repo_and_211_deploy_boundary():

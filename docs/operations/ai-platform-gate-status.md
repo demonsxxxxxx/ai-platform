@@ -30,6 +30,15 @@ login audit, and Admin capacity/backpressure fields. The reviewed, redacted
 release-evidence entry is
 `docs/release-evidence/foundation-alpha-poc/bf20432f9889efa8b367afdf512c641068ba30bc/2026-06-11-211-foundation-alpha-poc-merged-smoke.json`.
 
+The focused Auth/RBAC verifier `tools/verify_auth_rbac_smoke.py` also returned
+`ok: true` on 211 against the same `bf20432` runtime after syncing verifier
+source commit `3a3da257484d4d430a7a26e00a6f1cdae39a2b12` only. It verified
+unauthenticated `/api/auth/me` returns 401, ordinary trusted principals are
+denied from Admin Runtime with 403, admin trusted principals can read the
+required Admin Runtime sections with 200, and the projection scan did not find
+private or secret-like values. The reviewed, redacted evidence entry is
+`docs/release-evidence/foundation-alpha-poc/bf20432f9889efa8b367afdf512c641068ba30bc/2026-06-11-211-foundation-alpha-poc-auth-rbac-smoke.json`.
+
 The earlier pre-merge smoke for
 `3874281276c84a418bd08bda56d7ea55b52970b7` remains retained as historical evidence only; the merged-head evidence above is the current Foundation Alpha
 POC reference.
@@ -43,7 +52,7 @@ release acceptance.
 
 | Gate | Current status | Evidence now in repository | Remaining blocker before closure |
 | --- | --- | --- | --- |
-| G0-G1 Source Authority / Security Baseline | Foundation Alpha POC has fresh 211 source/deploy/runtime-label parity and company-login audit evidence; keep under regression. | PRD v2, tech acceptance matrix, roadmap, guardrails, source-authority tests, repo-local compose context, frontend source migration, redacted deploy templates, and 2026-06-11 POC release evidence. | Full issue/PR/review closure path and broader auth/session/RBAC/tenant/redaction regression are still required before production closure. |
+| G0-G1 Source Authority / Security Baseline | Foundation Alpha POC has fresh 211 source/deploy/runtime-label parity, company-login audit evidence, and focused Auth/RBAC smoke evidence; keep under regression. | PRD v2, tech acceptance matrix, roadmap, guardrails, source-authority tests, repo-local compose context, frontend source migration, redacted deploy templates, and 2026-06-11 POC release evidence. | Full issue/PR/review closure path and broader auth/session/RBAC/tenant/redaction regression are still required before production closure. |
 | G2-G4 Control Plane MVP | Substantial coverage; keep under regression. | Session/run/file/artifact/skill/tool/memory/event/audit contracts, repositories, routes, schema indexes, and focused tests. | Full regression before PR/deploy, plus no executor-owned platform schema drift. |
 | G5 Run Lifecycle / Worker Runtime V1 | Foundation Alpha POC verified queue/run/worker execution and Admin capacity/backpressure projection; not capacity-closed. | Tenant-aware queue lease, worker maintenance, active-run admission, bounded metadata, Admin Runtime capacity/backpressure projection, #20 roadmap closure notes, and 2026-06-11 POC verifier evidence. | #21 remains open: large queue bounded lookup pressure, multi-tenant load, and recorded seven-gate load evidence are still missing. Production defaults stay unchanged. |
 | G6 Tool / Skill / Memory Governance | POC governance baseline is visible, but ordinary-user expansion remains blocked. | Tool policy taxonomy/history, public permission-card projection, skill release/dependency policy contracts, memory delete/retention/redaction/export readiness, office context-pack architecture readiness, governance readiness CLI, and POC runs using governed skills. | Legacy frontend route remap/policy enforcement, signed package or SBOM review evidence, dependency vulnerability/license evidence, runtime/Admin dashboard acceptance, and broader 211 acceptance. |

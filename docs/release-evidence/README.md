@@ -50,6 +50,7 @@ URLs.
 
 | Date | Gate | Commit | Evidence | Status |
 | --- | --- | --- | --- | --- |
+| 2026-06-11 | Foundation Alpha POC | `bf20432f9889efa8b367afdf512c641068ba30bc` | [`2026-06-11-211-foundation-alpha-poc-auth-rbac-smoke.json`](foundation-alpha-poc/bf20432f9889efa8b367afdf512c641068ba30bc/2026-06-11-211-foundation-alpha-poc-auth-rbac-smoke.json) | Auth/RBAC smoke passed against the existing merged runtime using verifier source `3a3da257484d4d430a7a26e00a6f1cdae39a2b12`; not production gate closure. |
 | 2026-06-11 | Foundation Alpha POC | `bf20432f9889efa8b367afdf512c641068ba30bc` | [`2026-06-11-211-foundation-alpha-poc-merged-smoke.json`](foundation-alpha-poc/bf20432f9889efa8b367afdf512c641068ba30bc/2026-06-11-211-foundation-alpha-poc-merged-smoke.json) | Merged main 211 runtime smoke passed for the controlled POC loop; not production gate closure. |
 | 2026-06-11 | Foundation Alpha POC | `3874281276c84a418bd08bda56d7ea55b52970b7` | [`2026-06-11-211-foundation-alpha-poc-smoke.json`](foundation-alpha-poc/3874281276c84a418bd08bda56d7ea55b52970b7/2026-06-11-211-foundation-alpha-poc-smoke.json) | 211 runtime smoke passed for the controlled POC loop; not production gate closure. |
 
