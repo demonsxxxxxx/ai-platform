@@ -241,15 +241,16 @@ ordinary-user session-scoped soft delete, admin same-tenant soft delete, admin
 retention cleanup, worker retention cleanup across scopes, ordinary-user export
 excluding deleted/expired rows, admin export using an operator projection
 without content/metadata, no content/metadata returning in delete repository
-tests, delete/cleanup audit allowlists, and the admin-only
-`POST /api/ai/admin/memory/redaction/preview` route. The preview route validates
+tests, delete/cleanup audit allowlists, the admin-only
+`POST /api/ai/admin/memory/redaction/preview` route, and the source-level
+context snapshot public provenance projection contract. The preview route validates
 same-tenant admin scope, returns only redacted preview fields, and writes an
 audit payload that records policy scope, mode, change booleans, and redacted
 reason without sample content or metadata. This does not close memory
 governance by itself: office workflow context continuity still needs runtime
-persistence/versioning, executor context-pack injection, public context
-provenance projection, document-centric follow-up state, execution-tier
-routing, sandbox cold-start latency split, and frontend acceptance.
+persistence/versioning, executor context-pack injection, document-centric
+follow-up state, execution-tier routing, sandbox cold-start latency split, and
+frontend context provenance acceptance.
 
 `tools/office_context_readiness.py` now records the source-level #22
 architecture contract for office-heavy workflows with schema
@@ -260,10 +261,18 @@ separate `document_worker` tier, and reserves `heavy_sandbox` for script,
 browser, risky tool, or complex multi-tool work. It defines allowed context
 sources, user-visible context provenance fields, and forbidden projection terms
 without reading `.env` values, raw storage keys, sandbox workdirs,
-executor-private payloads, or secret-like runtime paths. This is architecture
-readiness only. It does not persist context packs, inject them into executor
-prompts, enable long-term cross-session memory, start Docker for lightweight
-office tasks, or expand G8/G10 multi-agent exposure.
+executor-private payloads, or secret-like runtime paths. The current
+`run_context_snapshots.payload_json` and queued `context_snapshot` references now
+carry source-level public provenance fields for `referenced_materials`,
+`used_context_summary`, `latest_artifact_version`, `execution_tier`, and
+`context_pack_generated_at`; those fields contain counts, safe input keys, tier,
+and generated time rather than raw message/file/artifact/memory IDs. The
+owner-scoped context snapshot debug response may still include `included_*_ids`
+for authorized run inspection; those IDs are not part of the frontend public
+provenance contract. This still does not persist versioned context packs, inject
+them into executor prompts, enable long-term cross-session memory, start Docker
+for lightweight office tasks, provide frontend acceptance, or expand G8/G10
+multi-agent exposure.
 
 On 2026-06-08, commit `f7c6b0d9114748fa249acb88da6584851c48aa96` was synced to
 the 211 repo-local source target and deployed to API/worker with image

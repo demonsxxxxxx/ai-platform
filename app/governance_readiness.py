@@ -224,9 +224,11 @@ def build_governance_readiness(
                 "memory_export_erasure_evidence_snapshot",
                 "memory_redaction_policy_admin_preview_and_audit",
                 "office_context_pack_architecture_readiness_snapshot",
+                "context_snapshot_public_provenance_projection_contract",
             ],
             gaps=[
-                "office_context_pack_runtime_implementation_and_acceptance",
+                "office_context_pack_persistence_and_versioning",
+                "executor_context_pack_injection",
                 "document_centric_followup_state",
                 "sandbox_cold_start_latency_split",
                 "frontend_context_provenance_acceptance",
@@ -235,6 +237,7 @@ def build_governance_readiness(
                 "keep delete, retention, and export erasure evidence current through tools/memory_erasure_readiness.py",
                 "keep cross-session long-term memory disabled until policy and acceptance are complete",
                 "use tools/office_context_readiness.py to keep the office context-pack architecture contract current",
+                "keep context snapshot public provenance limited to counts, safe input keys, execution tier, and generated time",
                 "do not start Docker sandbox for lightweight office writing tasks by default",
             ],
             evidence={

@@ -481,8 +481,8 @@ files, runtime acceptance for the source-level skill dependency review policy,
 `admin_skill_release_dashboard_runtime_acceptance`,
 `admin_skill_release_dashboard_visual_acceptance`,
 `admin_skill_release_dashboard_211_acceptance`,
-office context-pack runtime implementation, document-centric follow-up
-state, sandbox cold-start latency split, frontend context provenance
+office context-pack persistence/versioning, executor context-pack injection,
+document-centric follow-up state, sandbox cold-start latency split, frontend context provenance
 acceptance, quarantined legacy frontend source remap, packaged frontend image
 smoke/release acceptance on 211 or another Docker-capable host, and
 ordinary-user G9 acceptance. Do not use this baseline to expand sandbox
@@ -494,8 +494,20 @@ context sources, user-visible provenance fields, execution tiers, and non-goals
 without enabling runtime context-pack persistence, executor injection, long-term
 cross-session memory, lightweight-task Docker sandbox startup, or ordinary-user
 G8/G10 exposure. It replaces the older single "bounded office context-pack
-product contract" blocker with explicit runtime, follow-up-state, latency, and
-frontend provenance acceptance gaps.
+product contract" blocker with explicit persistence/versioning, executor
+injection, follow-up-state, latency, and frontend provenance acceptance gaps.
+
+The 2026-06-11 context provenance follow-up adds source-level public provenance
+fields to created context snapshots and queued `context_snapshot` references:
+`referenced_materials`, `used_context_summary`, `latest_artifact_version`,
+`execution_tier`, and `context_pack_generated_at`. These fields expose counts,
+safe input keys, tier, and generated time only; raw message/file/artifact/memory
+IDs remain outside the public provenance fields, while the owner-scoped context
+snapshot debug response can still return `included_*_ids` to authorized run
+owners. Executor private payloads, raw storage keys, sandbox workdirs, and
+secret-like values remain outside the public projection. This narrows the G6/#22
+context output gap but does not close executor context-pack injection, frontend
+context provenance acceptance, long-term memory, sandbox, or multi-agent gates.
 
 The 2026-06-08 frontend projection audit follow-up makes the remaining frontend
 G6/G9 blockers machine-actionable through

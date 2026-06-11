@@ -1,10 +1,138 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from app import repositories
-from app.control_plane_contracts import CONTEXT_SNAPSHOT_SCHEMA_VERSION
+from app.control_plane_contracts import CONTEXT_SNAPSHOT_SCHEMA_VERSION, sanitize_public_payload
 from app.projection_redaction import capability_id_from_skill
+
+
+PUBLIC_CONTEXT_PROVENANCE_KEYS = {
+    "referenced_materials",
+    "used_context_summary",
+    "latest_artifact_version",
+    "execution_tier",
+    "context_pack_generated_at",
+    "source",
+}
+
+PUBLIC_CONTEXT_FORBIDDEN_KEY_ALIASES = {
+    "absoluteruntimepaths",
+    "executorprivatepayload",
+    "privatepayload",
+    "rawstoragekey",
+    "sandboxworkdir",
+    "secretlikevalues",
+    "storagekey",
+}
+
+PUBLIC_CONTEXT_MATERIAL_COUNT_KEYS = {
+    "message_count",
+    "file_count",
+    "artifact_count",
+    "memory_record_count",
+}
+
+
+def _normalized_public_context_key(value: object) -> str:
+    return "".join(ch for ch in str(value) if ch.isalnum()).lower()
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _strip_context_private_fields(value: Any) -> Any:
+    if isinstance(value, list):
+        return [
+            item
+            for item in (_strip_context_private_fields(entry) for entry in value)
+            if item is not None
+        ]
+    if isinstance(value, dict):
+        cleaned: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text in PUBLIC_CONTEXT_PROVENANCE_KEYS:
+                continue
+            if _normalized_public_context_key(key_text) in PUBLIC_CONTEXT_FORBIDDEN_KEY_ALIASES:
+                continue
+            cleaned_item = _strip_context_private_fields(item)
+            if cleaned_item is not None:
+                cleaned[key_text] = cleaned_item
+        return cleaned
+    return value
+
+
+def public_context_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    """Return frontend-safe context payload fields excluding system provenance and private aliases."""
+    sanitized_payload = sanitize_public_payload(payload or {})
+    if not isinstance(sanitized_payload, dict):
+        return {}
+    cleaned = _strip_context_private_fields(sanitized_payload)
+    return cleaned if isinstance(cleaned, dict) else {}
+
+
+def public_context_provenance(
+    *,
+    source: str,
+    input_payload: dict[str, Any] | None = None,
+    message_count: int = 0,
+    file_count: int = 0,
+    artifact_count: int = 0,
+    memory_record_count: int = 0,
+    memory_policy_source: str = "not_recorded",
+    long_term_memory_read: bool = False,
+    latest_artifact_version: str | None = None,
+    execution_tier: str = "sdk_only_writing",
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """Build the user-visible context provenance contract without exposing raw ids."""
+    sanitized_input = public_context_payload(input_payload or {})
+    input_keys = sorted(str(key) for key in sanitized_input.keys())
+    return {
+        "referenced_materials": {
+            "message_count": max(0, int(message_count)),
+            "file_count": max(0, int(file_count)),
+            "artifact_count": max(0, int(artifact_count)),
+            "memory_record_count": max(0, int(memory_record_count)),
+        },
+        "used_context_summary": {
+            "source": str(source),
+            "input_keys": input_keys,
+            "memory_policy_source": str(memory_policy_source or "not_recorded"),
+            "long_term_memory_read": bool(long_term_memory_read),
+        },
+        "latest_artifact_version": latest_artifact_version,
+        "execution_tier": str(execution_tier or "sdk_only_writing"),
+        "context_pack_generated_at": generated_at or _utc_now_iso(),
+    }
+
+
+def ensure_public_context_provenance(
+    payload: dict[str, Any],
+    *,
+    source: str,
+    message_count: int = 0,
+    file_count: int = 0,
+    artifact_count: int = 0,
+    memory_record_count: int = 0,
+    memory_policy_source: str = "not_recorded",
+    long_term_memory_read: bool = False,
+) -> dict[str, Any]:
+    sanitized_payload = public_context_payload(payload)
+    provenance = public_context_provenance(
+        source=source,
+        input_payload=sanitized_payload,
+        message_count=message_count,
+        file_count=file_count,
+        artifact_count=artifact_count,
+        memory_record_count=memory_record_count,
+        memory_policy_source=memory_policy_source,
+        long_term_memory_read=long_term_memory_read,
+    )
+    return {**sanitized_payload, **provenance}
 
 
 def initial_context_summary(
@@ -19,12 +147,15 @@ def initial_context_summary(
     memory_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     memory_ids = list(memory_record_ids or [])
+    memory_policy_source = str((memory_policy or {}).get("source") or "not_recorded")
+    sanitized_input = public_context_payload(input_payload)
+    input_keys = sorted(str(key) for key in sanitized_input.keys())
     summary = {
         "schema_version": CONTEXT_SNAPSHOT_SCHEMA_VERSION,
         "source": source,
         "agent_id": agent_id,
         "capability_id": capability_id_from_skill(skill_id, agent_id),
-        "input_keys": sorted(str(key) for key in input_payload.keys()),
+        "input_keys": input_keys,
         "message_count": len(message_ids),
         "file_count": len(file_ids),
         "memory_record_count": len(memory_ids),
@@ -36,6 +167,18 @@ def initial_context_summary(
             "long_term_memory_enabled": False,
             "retention_days": int(memory_policy.get("retention_days") or 90),
         }
+    summary.update(
+        public_context_provenance(
+            source=source,
+            input_payload=input_payload,
+            message_count=len(message_ids),
+            file_count=len(file_ids),
+            artifact_count=0,
+            memory_record_count=len(memory_ids),
+            memory_policy_source=memory_policy_source,
+            long_term_memory_read=False,
+        )
+    )
     return summary
 
 
@@ -113,6 +256,11 @@ async def record_initial_context_snapshot(
             "long_term_memory_enabled": memory_policy_summary["long_term_memory_enabled"],
             "retention_days": memory_policy_summary["retention_days"],
         },
+        "referenced_materials": summary["referenced_materials"],
+        "used_context_summary": summary["used_context_summary"],
+        "latest_artifact_version": summary["latest_artifact_version"],
+        "execution_tier": summary["execution_tier"],
+        "context_pack_generated_at": summary["context_pack_generated_at"],
     }
     await repositories.update_run_context_snapshot_ref(
         conn,

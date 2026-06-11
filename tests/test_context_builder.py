@@ -1,6 +1,76 @@
 import pytest
+from datetime import datetime
 
 from app.context_builder import initial_context_summary, record_initial_context_snapshot
+
+
+def test_initial_context_summary_strips_context_private_aliases_from_input_keys():
+    summary = initial_context_summary(
+        source="runs_api",
+        agent_id="general-agent",
+        skill_id="general-chat",
+        input_payload={
+            "message": "hello",
+            "raw_storage_key": "storage-key-value",
+            "sandbox_workdir": "relative-workdir",
+            "executor_private_payload": {"token": "hidden"},
+            "nested": {
+                "storage_key": "nested-storage-key",
+                "safe": "kept",
+            },
+        },
+        message_ids=[],
+        file_ids=[],
+    )
+
+    assert summary["input_keys"] == ["message", "nested"]
+    assert summary["used_context_summary"]["input_keys"] == ["message", "nested"]
+    serialized = str(summary).lower()
+    assert "raw_storage_key" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "executor_private_payload" not in serialized
+    assert "storage-key-value" not in serialized
+    assert "relative-workdir" not in serialized
+    assert "nested-storage-key" not in serialized
+
+
+def test_initial_context_summary_includes_public_context_provenance_contract():
+    summary = initial_context_summary(
+        source="runs_api",
+        agent_id="general-agent",
+        skill_id="general-chat",
+        input_payload={"message": "hello", "private_payload": "not stored"},
+        message_ids=["msg-a", "msg-b"],
+        file_ids=["file-a"],
+        memory_record_ids=["mem-a"],
+        memory_policy={
+            "source": "stored",
+            "memory_enabled": True,
+            "long_term_memory_enabled": False,
+            "retention_days": 30,
+        },
+    )
+
+    assert summary["referenced_materials"] == {
+        "message_count": 2,
+        "file_count": 1,
+        "artifact_count": 0,
+        "memory_record_count": 1,
+    }
+    assert summary["used_context_summary"] == {
+        "source": "runs_api",
+        "input_keys": ["message"],
+        "memory_policy_source": "stored",
+        "long_term_memory_read": False,
+    }
+    assert summary["latest_artifact_version"] is None
+    assert summary["execution_tier"] == "sdk_only_writing"
+    assert datetime.fromisoformat(summary["context_pack_generated_at"].replace("Z", "+00:00"))
+    serialized = str(summary).lower()
+    assert "msg-a" not in serialized
+    assert "file-a" not in serialized
+    assert "mem-a" not in serialized
+    assert "private_payload" not in serialized
 
 
 @pytest.mark.asyncio
@@ -83,6 +153,14 @@ async def test_record_initial_context_snapshot_records_effective_memory_policy_w
     }
     assert context_ref["memory_policy"]["memory_enabled"] is False
     assert context_ref["memory_record_count"] == 0
+    assert context_ref["referenced_materials"] == {
+        "message_count": 1,
+        "file_count": 0,
+        "artifact_count": 0,
+        "memory_record_count": 0,
+    }
+    assert context_ref["used_context_summary"]["source"] == "runs_api"
+    assert context_ref["execution_tier"] == "sdk_only_writing"
 
 
 def test_initial_context_summary_clamps_long_term_memory_policy_projection():

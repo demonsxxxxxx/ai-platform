@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from datetime import datetime
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
@@ -182,8 +183,127 @@ def test_create_context_snapshot_records_snapshot_and_event(monkeypatch):
     body = response.json()["context_snapshot"]
     assert body["context_snapshot_id"] == "ctx-a"
     assert body["included_message_ids"] == ["msg-a"]
+    assert body["payload"]["referenced_materials"] == {
+        "message_count": 1,
+        "file_count": 1,
+        "artifact_count": 1,
+        "memory_record_count": 1,
+    }
+    assert body["payload"]["used_context_summary"] == {
+        "source": "manual_context_snapshot",
+        "input_keys": ["window"],
+        "memory_policy_source": "not_recorded",
+        "long_term_memory_read": False,
+    }
+    assert body["payload"]["latest_artifact_version"] is None
+    assert body["payload"]["execution_tier"] == "sdk_only_writing"
+    assert datetime.fromisoformat(body["payload"]["context_pack_generated_at"].replace("Z", "+00:00"))
+    serialized = response.text.lower()
+    assert "msg-a" not in serialized.replace('"msg-a"', "")
     assert calls[0][0] == "snapshot"
     assert calls[1][1]["event_type"] == "context_snapshot_created"
+
+
+def test_create_context_snapshot_rejects_forged_public_provenance_and_forbidden_aliases(monkeypatch):
+    calls = []
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {"id": run_id, "workspace_id": "workspace-a", "session_id": "session-a", "trace_id": "trace-a"}
+
+    async def fake_create_context_snapshot(conn, **kwargs):
+        calls.append(("snapshot", kwargs))
+        return {
+            "id": "ctx-forged",
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "session_id": kwargs["session_id"],
+            "run_id": kwargs["run_id"],
+            "trace_id": kwargs["trace_id"],
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_kind": kwargs["context_kind"],
+            "included_message_ids": kwargs["included_message_ids"],
+            "included_file_ids": kwargs["included_file_ids"],
+            "included_artifact_ids": kwargs["included_artifact_ids"],
+            "included_memory_record_ids": kwargs["included_memory_record_ids"],
+            "redaction_summary_json": kwargs["redaction_summary_json"],
+            "payload_json": kwargs["payload_json"],
+        }
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-forged"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fake_create_context_snapshot)
+    monkeypatch.setattr("app.routes.context.repositories.append_event", fake_append_event)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runs/run-a/context/snapshots",
+        headers=headers(),
+        json={
+            "context_kind": "executor",
+            "included_message_ids": ["msg-a"],
+            "redaction_summary": {
+                "memory_policy_source": "trusted-policy",
+                "long_term_memory_read": True,
+            },
+            "payload": {
+                "window": "current",
+                "source": "forged_top_level_source",
+                "raw_storage_key": "not-a-path-but-still-forbidden",
+                "sandbox_workdir": "relative-workdir",
+                "used_context_summary": {
+                    "source": "forged_executor_injection",
+                    "input_keys": ["raw_storage_key"],
+                    "memory_policy_source": "forged-policy",
+                    "long_term_memory_read": True,
+                },
+                "referenced_materials": {
+                    "message_count": 99,
+                    "file_count": 99,
+                    "artifact_count": 99,
+                    "memory_record_count": 99,
+                },
+                "execution_tier": "heavy_sandbox",
+                "context_pack_generated_at": "1999-01-01T00:00:00Z",
+                "latest_artifact_version": "forged-artifact-version",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["context_snapshot"]["payload"]
+    assert payload["window"] == "current"
+    assert payload["referenced_materials"] == {
+        "message_count": 1,
+        "file_count": 0,
+        "artifact_count": 0,
+        "memory_record_count": 0,
+    }
+    assert payload["used_context_summary"] == {
+        "source": "manual_context_snapshot",
+        "input_keys": ["window"],
+        "memory_policy_source": "not_recorded",
+        "long_term_memory_read": False,
+    }
+    assert payload["execution_tier"] == "sdk_only_writing"
+    assert payload["latest_artifact_version"] is None
+    assert datetime.fromisoformat(payload["context_pack_generated_at"].replace("Z", "+00:00"))
+    assert payload["context_pack_generated_at"] != "1999-01-01T00:00:00Z"
+    serialized = response.text.lower()
+    assert "raw_storage_key" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "not-a-path-but-still-forbidden" not in serialized
+    assert "relative-workdir" not in serialized
+    assert "forged_top_level_source" not in serialized
+    assert "forged_executor_injection" not in serialized
+    assert "forged-policy" not in serialized
+    assert "heavy_sandbox" not in serialized
+    assert "forged-artifact-version" not in serialized
 
 
 def test_create_context_snapshot_redacts_payload_before_persisting(monkeypatch):
@@ -304,7 +424,23 @@ def test_list_context_snapshots_redacts_legacy_dirty_payload_and_summary(monkeyp
 
     assert response.status_code == 200
     body = response.json()["context_snapshots"][0]
-    assert body["payload"] == {"window": "legacy", "nested": {"email": "[redacted-email]", "safe": "kept"}}
+    assert body["payload"]["window"] == "legacy"
+    assert body["payload"]["nested"] == {"email": "[redacted-email]", "safe": "kept"}
+    assert body["payload"]["referenced_materials"] == {
+        "message_count": 0,
+        "file_count": 0,
+        "artifact_count": 0,
+        "memory_record_count": 0,
+    }
+    assert body["payload"]["used_context_summary"] == {
+        "source": "stored_context_snapshot",
+        "input_keys": ["nested", "window"],
+        "memory_policy_source": "not_recorded",
+        "long_term_memory_read": False,
+    }
+    assert body["payload"]["latest_artifact_version"] is None
+    assert body["payload"]["execution_tier"] == "sdk_only_writing"
+    assert datetime.fromisoformat(body["payload"]["context_pack_generated_at"].replace("Z", "+00:00"))
     assert body["redaction_summary"] == {
         "source": "legacy",
         "note": "authorization=[redacted-secret]",
@@ -315,6 +451,122 @@ def test_list_context_snapshots_redacts_legacy_dirty_payload_and_summary(monkeyp
     assert "sk-legacy-context" not in serialized
     assert "/var/lib/ai-platform/run-a" not in serialized
     assert "alice@example.com" not in serialized
+
+
+def test_list_context_snapshots_regenerates_dirty_legacy_provenance(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {"id": run_id, "workspace_id": "workspace-a", "session_id": "session-a", "trace_id": "trace-a"}
+
+    async def fake_list_context_snapshots(conn, *, tenant_id, user_id, run_id):
+        return [
+            {
+                "id": "ctx-dirty-provenance",
+                "tenant_id": tenant_id,
+                "workspace_id": "workspace-a",
+                "user_id": user_id,
+                "session_id": "session-a",
+                "run_id": run_id,
+                "trace_id": "trace-a",
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "context_kind": "executor",
+                "included_message_ids": ["msg-a"],
+                "included_file_ids": [],
+                "included_artifact_ids": [],
+                "included_memory_record_ids": [],
+                "redaction_summary_json": {},
+                "payload_json": {
+                    "window": "legacy",
+                    "used_context_summary": {
+                        "source": "legacy",
+                        "input_keys": ["window", "private_payload", "storage_key"],
+                        "memory_policy_source": "stored",
+                        "long_term_memory_read": True,
+                    },
+                },
+                "created_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.context.repositories.list_context_snapshots", fake_list_context_snapshots)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-a/context/snapshots", headers=headers())
+
+    assert response.status_code == 200
+    payload = response.json()["context_snapshots"][0]["payload"]
+    assert payload["used_context_summary"] == {
+        "source": "stored_context_snapshot",
+        "input_keys": ["window"],
+        "memory_policy_source": "not_recorded",
+        "long_term_memory_read": False,
+    }
+    serialized = response.text.lower()
+    assert "private_payload" not in serialized
+    assert "storage_key" not in serialized
+
+
+def test_list_context_snapshots_replaces_malformed_legacy_provenance(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {"id": run_id, "workspace_id": "workspace-a", "session_id": "session-a", "trace_id": "trace-a"}
+
+    async def fake_list_context_snapshots(conn, *, tenant_id, user_id, run_id):
+        return [
+            {
+                "id": "ctx-malformed-provenance",
+                "tenant_id": tenant_id,
+                "workspace_id": "workspace-a",
+                "user_id": user_id,
+                "session_id": "session-a",
+                "run_id": run_id,
+                "trace_id": "trace-a",
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "context_kind": "executor",
+                "included_message_ids": ["msg-a", "msg-b"],
+                "included_file_ids": ["file-a"],
+                "included_artifact_ids": [],
+                "included_memory_record_ids": [],
+                "redaction_summary_json": {},
+                "payload_json": {
+                    "window": "legacy",
+                    "used_context_summary": "not-a-dict",
+                    "referenced_materials": {
+                        "message_ids": ["msg-a"],
+                        "raw_storage_key": "storage://secret",
+                    },
+                },
+                "created_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.context.repositories.list_context_snapshots", fake_list_context_snapshots)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-a/context/snapshots", headers=headers())
+
+    assert response.status_code == 200
+    payload = response.json()["context_snapshots"][0]["payload"]
+    assert payload["referenced_materials"] == {
+        "message_count": 2,
+        "file_count": 1,
+        "artifact_count": 0,
+        "memory_record_count": 0,
+    }
+    assert payload["used_context_summary"] == {
+        "source": "stored_context_snapshot",
+        "input_keys": ["window"],
+        "memory_policy_source": "not_recorded",
+        "long_term_memory_read": False,
+    }
+    serialized = response.text.lower()
+    assert "raw_storage_key" not in serialized
+    assert "storage://secret" not in serialized
+    assert "msg-a" not in serialized.replace('"msg-a"', "")
 
 
 def test_create_memory_record_requires_session_id_before_writing(monkeypatch):
