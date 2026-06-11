@@ -27,11 +27,11 @@ _RUNTIME_NEUTRAL_EXACT_PATHS = {
     "app/capacity_bounded_load_harness.py",
     "app/foundation_alpha_readiness.py",
     "tools/foundation_alpha_readiness.py",
+    "tools/frontend_release_traceability.py",
     "tools/verify_auth_rbac_smoke.py",
 }
 
 _OPEN_FOLLOWUPS = [
-    "#21_recorded_capacity_evidence",
     "g7_docker_sandbox_hardening",
     "g8_ordinary_user_multi_agent_exposure",
     "g9_runtime_export_and_retention_acceptance",
@@ -609,7 +609,6 @@ def _operator_context(runtime_relation: dict[str, Any], *, context_projection_ve
             "department_rollout",
         ],
         "next_recommended_slices": [
-            "#21_recorded_capacity_evidence",
             "g6_runtime_admin_dashboard_acceptance_for_governance",
             "g9_runtime_export_and_retention_acceptance",
             "packaged_frontend_image_release_acceptance",
@@ -734,16 +733,14 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             "open_followups": [],
         },
         "g5_run_lifecycle_worker_runtime": {
-            "status": "poc_verified_capacity_followups_open",
+            "status": "poc_verified_capacity_baseline_keep_defaults_locked",
             "evidence": {
                 "general_chat_run": smoke_checks.get("general_chat_run"),
                 "upload_attachment_chat": _safe_runtime_check(smoke_checks.get("upload_attachment_chat")),
                 "document_review_attachment_run": _artifact_review_summary(smoke_checks),
-                "capacity_default_policy": "do_not_raise_without_recorded_load_test_evidence",
+                "capacity_default_policy": "do_not_raise_without_separate_recorded_profile_evidence",
             },
-            "open_followups": [
-                "#21_recorded_capacity_evidence",
-            ],
+            "open_followups": [],
         },
         "g6_poc_governance": {
             "status": "partial_followups_open"

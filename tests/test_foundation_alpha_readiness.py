@@ -190,6 +190,7 @@ def test_foundation_alpha_readiness_classifies_source_metadata_paths_as_runtime_
     assert foundation_alpha_readiness._is_runtime_affecting_path("app/capacity_bounded_load_harness.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("docs/release-evidence/README.md") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("tests/test_foundation_alpha_readiness.py") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("tools/frontend_release_traceability.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("tools/verify_auth_rbac_smoke.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("ai-platform-cdc09ba.tar") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("app/routes/runs.py") is True
@@ -768,7 +769,6 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
             "department_rollout",
         ],
         "next_recommended_slices": [
-            "#21_recorded_capacity_evidence",
             "g6_runtime_admin_dashboard_acceptance_for_governance",
             "g9_runtime_export_and_retention_acceptance",
             "packaged_frontend_image_release_acceptance",
@@ -804,6 +804,15 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         ],
         "playback_contract_version": "ai-platform.run-playback.v1",
     }
+    assert (
+        readiness["domains"]["g5_run_lifecycle_worker_runtime"]["status"]
+        == "poc_verified_capacity_baseline_keep_defaults_locked"
+    )
+    assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["open_followups"] == []
+    assert (
+        readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"]["capacity_default_policy"]
+        == "do_not_raise_without_separate_recorded_profile_evidence"
+    )
     assert readiness["domains"]["frontend_poc"]["evidence"]["same_origin_api_health"]["payload_status"] == "ok"
     assert readiness["domains"]["frontend_poc"]["evidence"]["frontend_http_status"] == 200
     assert readiness["domains"]["frontend_poc"]["evidence"]["forbidden_reference_count"] == 0
@@ -834,7 +843,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     }
     assert readiness["domains"]["g9_admin_runtime_observability"]["evidence"]["observability_readiness_status"] == "partial_blocked"
 
-    assert "#21_recorded_capacity_evidence" in readiness["open_followups"]
+    assert "#21_recorded_capacity_evidence" not in readiness["open_followups"]
     assert "g7_docker_sandbox_hardening" in readiness["open_followups"]
     assert "g8_ordinary_user_multi_agent_exposure" in readiness["open_followups"]
     assert "g9_runtime_export_and_retention_acceptance" in readiness["open_followups"]
@@ -961,7 +970,8 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeyp
     assert "Context referenced material counts: `message=1, file=1, artifact=0, memory=0`" in markdown
     assert "Missing context public summary fields:" not in markdown
     assert "`production_claim_allowed`: `False`" in markdown
-    assert "#21_recorded_capacity_evidence" in markdown
+    assert "`capacity_default_increase_allowed`: `False`" in markdown
+    assert "#21_recorded_capacity_evidence" not in markdown
 
     json_result = subprocess.run(
         [sys.executable, "tools/foundation_alpha_readiness.py", "--format", "json"],
