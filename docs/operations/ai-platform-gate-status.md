@@ -1,6 +1,6 @@
 # ai-platform Gate Status Snapshot
 
-Date: 2026-06-11
+Date: 2026-06-12
 
 This snapshot keeps the current PRD, foundation roadmap, guardrails, repository
 code, 211 runtime, and issue-driven priorities aligned. It is not automatic
@@ -42,25 +42,17 @@ For source-only docs/tests/evidence syncs, write a local-only
 `tools/foundation_alpha_readiness.py` can prove the runtime-affecting delta is
 empty. Missing, stale, or malformed snapshot markers intentionally fail closed.
 
-On 2026-06-11, runtime subject commit
-`9b02836262fb0f238a7f90b9705bf39a8b298158` was synced to the 211 runtime
-subject and the 211 API and worker ran `ai-platform:9b02836-context-output` with
+On 2026-06-12, runtime subject commit
+`458f6056dd0fa533162e780a303d79ce1b3d0eec` was synced to the 211 runtime
+subject and the 211 API and worker ran `ai-platform:458f605-auth-rbac-redaction` with
 image ID
-`sha256:23fc483694b4cffb555759cb6205b56608e16701577f54939a977942c9e1bdb4`.
+`sha256:a91b3d1c62aacb4d52604e659d9e6ea30c1a96e7669547ba63e211f976554c9e`.
 Both runtime source labels pointed to
-`9b02836262fb0f238a7f90b9705bf39a8b298158`. Runtime labels pointed to the
+`458f6056dd0fa533162e780a303d79ce1b3d0eec`. Runtime labels pointed to the
 repo-local compose file under
 `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform`,
 API health returned `ok`, and OpenAPI exposed
 `/api/ai/artifacts/{artifact_id}/preview`.
-
-The local source snapshot marker records source tree
-`cdc09ba8867d91e8db76570fbf158e6d082da7cf` with runtime subject
-`9b02836262fb0f238a7f90b9705bf39a8b298158` and no runtime-affecting delta.
-Later docs/test evidence commits can be synced to the 211 source tree for
-source-authority parity without changing the running API/worker runtime subject.
-The record commit is proven by Git history, not embedded inside the evidence
-JSON, because a commit cannot contain its own final hash.
 
 The aggregate verifier `tools/verify_poc_gate.py` returned `ok: true` on 211
 for the controlled POC loop: LambChat thin-shell frontend, same-origin API
@@ -72,26 +64,32 @@ projection counts without raw material IDs. `tools/foundation_alpha_readiness.py
 promotes that context projection into the G6 evidence summary and fails closed
 as `missing_context_snapshot_public_projection` when an older smoke record lacks
 it. The current reviewed, redacted release-evidence entry is
-`docs/release-evidence/foundation-alpha-poc/9b02836262fb0f238a7f90b9705bf39a8b298158/2026-06-11-211-foundation-alpha-poc-9b02836-context-output-smoke.json`.
+`docs/release-evidence/foundation-alpha-poc/458f6056dd0fa533162e780a303d79ce1b3d0eec/2026-06-12-211-foundation-alpha-poc-458f605-smoke.json`.
 
 The focused Auth/RBAC verifier `tools/verify_auth_rbac_smoke.py` also returned
-`ok: true` on 211 against the same runtime. The refreshed 2026-06-11 22:18
-+08:00 smoke used runtime subject `9b02836`. It verified unauthenticated `/api/auth/me`
+`ok: true` on 211 against the same runtime. The refreshed 2026-06-12 00:36
++08:00 smoke used runtime subject `458f605`. It verified unauthenticated `/api/auth/me`
 returns 401, platform `/api/ai/auth/me` returns the trusted principal with
 tenant match, invalid gateway secret access to `/api/ai/auth/me` fails with
 403, ordinary trusted principals are denied from Admin Runtime with 403, admin
 trusted principals can read the required same-tenant Admin Runtime sections with
 200, and the projection scan did not find private or secret-like values. The
+PR #26 verifier fix allows legitimate Admin Runtime observability/readiness
+metric text such as token/cost/error summaries while continuing to fail closed
+on secret-like keys and credential-shaped values. The
 current reviewed, redacted Auth/RBAC evidence entry is
-`docs/release-evidence/foundation-alpha-poc/9b02836262fb0f238a7f90b9705bf39a8b298158/2026-06-11-211-foundation-alpha-poc-9b02836-auth-rbac-smoke.json`.
+`docs/release-evidence/foundation-alpha-poc/458f6056dd0fa533162e780a303d79ce1b3d0eec/2026-06-12-211-foundation-alpha-poc-458f605-auth-rbac-smoke.json`.
 
 Earlier smoke evidence for
+`9b02836262fb0f238a7f90b9705bf39a8b298158`,
+`cdc09ba8867d91e8db76570fbf158e6d082da7cf`,
 `8f454696be0e9c532fa86bc61ef353e4d3dec4f8`,
 `faa7ad6aa61637cbcdf3a22ce81de119762e96bf`,
 `a3f1d739e12686cba2e0b309de26a4e1127bd3a5`,
 `8c0cffca63bc747fad0a5771f209acc8a608ab9e`,
 `bf20432f9889efa8b367afdf512c641068ba30bc`, and
 `3874281276c84a418bd08bda56d7ea55b52970b7` remains retained as historical evidence only; the current-main evidence above is the active Foundation Alpha POC reference.
+The immediately superseded runtime image was `ai-platform:9b02836-context-output`.
 
 This smoke does not close #21 capacity, G7 Docker sandbox hardening, ordinary
 user multi-agent exposure, department rollout, release-evidence runtime export,
@@ -102,9 +100,9 @@ release acceptance.
 
 | Gate | Current status | Evidence now in repository | Remaining blocker before closure |
 | --- | --- | --- | --- |
-| G0-G1 Source Authority / Security Baseline | Foundation Alpha POC has fresh 211 source/deploy/runtime-label parity, company-login audit evidence, and focused Auth/RBAC smoke evidence; keep under regression. | PRD v2, tech acceptance matrix, roadmap, guardrails, source-authority tests, repo-local compose context, frontend source migration, redacted deploy templates, and 2026-06-11 POC release evidence. | Full issue/PR/review closure path and broader auth/session/RBAC/tenant/redaction regression are still required before production closure. |
+| G0-G1 Source Authority / Security Baseline | Foundation Alpha POC has fresh 211 source/deploy/runtime-label parity, company-login audit evidence, and focused Auth/RBAC smoke evidence; keep under regression. | PRD v2, tech acceptance matrix, roadmap, guardrails, source-authority tests, repo-local compose context, frontend source migration, redacted deploy templates, and 2026-06-12 POC release evidence. | Full issue/PR/review closure path and broader auth/session/RBAC/tenant/redaction regression are still required before production closure. |
 | G2-G4 Control Plane MVP | Substantial coverage; keep under regression. | Session/run/file/artifact/skill/tool/memory/event/audit contracts, repositories, routes, schema indexes, and focused tests. | Full regression before PR/deploy, plus no executor-owned platform schema drift. |
-| G5 Run Lifecycle / Worker Runtime V1 | Foundation Alpha POC verified queue/run/worker execution and Admin capacity/backpressure projection; not capacity-closed. | Tenant-aware queue lease, worker maintenance, active-run admission, bounded metadata, Admin Runtime capacity/backpressure projection, #20 roadmap closure notes, and 2026-06-11 POC verifier evidence. | #21 remains open: large queue bounded lookup pressure, multi-tenant load, and recorded seven-gate load evidence are still missing. Production defaults stay unchanged. |
+| G5 Run Lifecycle / Worker Runtime V1 | Foundation Alpha POC verified queue/run/worker execution and Admin capacity/backpressure projection; not capacity-closed. | Tenant-aware queue lease, worker maintenance, active-run admission, bounded metadata, Admin Runtime capacity/backpressure projection, #20 roadmap closure notes, and 2026-06-12 POC verifier evidence. | #21 remains open: large queue bounded lookup pressure, multi-tenant load, and recorded seven-gate load evidence are still missing. Production defaults stay unchanged. |
 | G6 Tool / Skill / Memory Governance | POC governance baseline is visible, but ordinary-user expansion remains blocked. | Tool policy taxonomy/history, public permission-card projection, skill release/dependency policy contracts, memory delete/retention/redaction/export readiness, office context-pack architecture readiness, context snapshot public provenance projection contract, governance readiness CLI, and POC runs using governed skills. | Legacy frontend route remap/policy enforcement, signed package or SBOM review evidence, dependency vulnerability/license evidence, context-pack persistence/executor injection/frontend provenance acceptance, runtime/Admin dashboard acceptance, and broader 211 acceptance. |
 | G7 Sandbox / Resource Hardening | Blocked for high-risk expansion. | Fake provider remains local/test-only; capacity docs expose sandbox limits and missing hardening warnings. | Docker provider hardening, egress/quota policy, orphan cleanup, container security options, and Docker-capable 211 smoke. |
 | G8 Multi-Agent Controlled Beta | Feature-flagged only. | Dispatcher and child-run admission work exists behind current controls. | Tenant-aware scheduling quota/backpressure, #21 capacity evidence, observability, sandbox, and tool governance gates must pass before ordinary-user exposure. |

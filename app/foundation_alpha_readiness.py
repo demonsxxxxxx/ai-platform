@@ -10,12 +10,12 @@ from typing import Any
 SCHEMA_VERSION = "ai-platform.foundation-alpha-poc-readiness.v1"
 SOURCE_SNAPSHOT_SCHEMA_VERSION = "ai-platform.source-snapshot.v1"
 STAGE_NAME = "Foundation Alpha POC"
-RUNTIME_SUBJECT_COMMIT_SHA = "9b02836262fb0f238a7f90b9705bf39a8b298158"
+RUNTIME_SUBJECT_COMMIT_SHA = "458f6056dd0fa533162e780a303d79ce1b3d0eec"
 _ROOT = Path(__file__).resolve().parents[1]
 _EVIDENCE_BASE_ROOT = _ROOT / "docs/release-evidence/foundation-alpha-poc"
 _EVIDENCE_ROOT = _EVIDENCE_BASE_ROOT / RUNTIME_SUBJECT_COMMIT_SHA
-_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-11-211-foundation-alpha-poc-9b02836-context-output-smoke.json"
-_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-11-211-foundation-alpha-poc-9b02836-auth-rbac-smoke.json"
+_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-12-211-foundation-alpha-poc-458f605-smoke.json"
+_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-12-211-foundation-alpha-poc-458f605-auth-rbac-smoke.json"
 _SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
 _SOURCE_SNAPSHOT_MARKER = _ROOT / ".ai-platform-source-snapshot.json"
 _RUNTIME_NEUTRAL_PATH_PREFIXES = (
@@ -106,9 +106,6 @@ def _source_snapshot_marker_for_source_tree(source_tree_commit: str | None = Non
 
 
 def _resolve_source_tree_revision() -> str:
-    marker = _read_source_revision_marker()
-    if marker:
-        return marker
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -118,7 +115,7 @@ def _resolve_source_tree_revision() -> str:
             text=True,
         )
     except (OSError, subprocess.CalledProcessError):
-        return "unknown"
+        return _read_source_revision_marker() or "unknown"
     return result.stdout.strip() or "unknown"
 
 
