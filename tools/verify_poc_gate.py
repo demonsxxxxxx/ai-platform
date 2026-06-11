@@ -228,14 +228,13 @@ def read_container_runtime_env(container: str) -> dict[str, str]:
 
 
 def runtime_env_values(env_path: str, container: str) -> dict[str, str]:
-    """Merge deploy-template values with allowlisted runtime values when needed."""
-    values = read_env(env_path)
-    missing_allowlisted = [key for key in RUNTIME_ENV_ALLOWLIST if key not in values]
-    if missing_allowlisted:
-        container_values = read_container_runtime_env(container)
-        for key in missing_allowlisted:
-            if key in container_values:
-                values[key] = container_values[key]
+    """Prefer allowlisted live container values; use env file only as fallback."""
+    file_values = read_env(env_path)
+    container_values = read_container_runtime_env(container)
+    if not container_values:
+        return file_values
+    values = dict(file_values)
+    values.update(container_values)
     return values
 
 

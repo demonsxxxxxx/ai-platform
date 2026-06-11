@@ -20,7 +20,7 @@ _SDK_ENV_ALLOWLIST = {
     "LC_ALL",
 }
 
-_SDK_AVAILABLE_TOOLS = ["Read", "Glob", "LS", "Bash", "Task"]
+_SDK_AVAILABLE_TOOLS = ["Read", "Glob", "LS", "Bash"]
 _SDK_AUTO_ALLOWED_TOOLS = {"Read", "Glob", "LS"}
 _SDK_PLATFORM_DISALLOWED_TOOLS = ["Write", "Edit", "NotebookEdit"]
 _SDK_PROJECT_SETTING_FILES = (".claude/settings.json", ".claude/settings.local.json")

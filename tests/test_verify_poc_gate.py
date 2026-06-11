@@ -306,6 +306,67 @@ def test_container_env_reads_only_poc_whitelisted_runtime_keys(monkeypatch):
     }
 
 
+def test_runtime_env_values_prefers_live_container_over_env_file(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "CLAUDE_AGENT_SDK_ENABLED=true",
+                "CLAUDE_AGENT_MODEL=stale-model",
+                "OPENAI_MODEL=stale-model",
+                "ANTHROPIC_MODEL=stale-model",
+                "CLAUDE_AGENT_SDK_SKILLS=general-chat",
+                "EXISTING_AUTH_BASE_URL=http://stale-auth.local",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "read_container_runtime_env",
+        lambda container: {
+            "CLAUDE_AGENT_SDK_ENABLED": "true",
+            "CLAUDE_AGENT_MODEL": "deepseek-v4-flash",
+            "OPENAI_MODEL": "deepseek-v4-flash",
+            "ANTHROPIC_MODEL": "deepseek-v4-flash",
+            "CLAUDE_AGENT_SDK_SKILLS": "general-chat,qa-file-reviewer,baoyu-translate",
+            "EXISTING_AUTH_BASE_URL": "",
+        },
+    )
+
+    values = verify_poc_gate.runtime_env_values(str(env_path), "ai-platform-api")
+
+    assert values["CLAUDE_AGENT_MODEL"] == "deepseek-v4-flash"
+    assert values["EXISTING_AUTH_BASE_URL"] == ""
+    assert values["CLAUDE_AGENT_SDK_SKILLS"] == "general-chat,qa-file-reviewer,baoyu-translate"
+
+
+def test_runtime_env_values_uses_env_file_only_when_container_env_unavailable(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("EXISTING_AUTH_BASE_URL=http://auth.local\n", encoding="utf-8")
+    monkeypatch.setattr(verify_poc_gate, "read_container_runtime_env", lambda container: {})
+
+    values = verify_poc_gate.runtime_env_values(str(env_path), "ai-platform-api")
+
+    assert values["EXISTING_AUTH_BASE_URL"] == "http://auth.local"
+
+
+def test_container_auth_url_source_of_truth_can_fail_gate_despite_valid_env_file(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("EXISTING_AUTH_BASE_URL=http://auth.local\n", encoding="utf-8")
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "read_container_runtime_env",
+        lambda container: {"EXISTING_AUTH_BASE_URL": "/api/Login/"},
+    )
+
+    values = verify_poc_gate.runtime_env_values(str(env_path), "ai-platform-api")
+    gate = verify_poc_gate.check_company_auth_bridge(values.get("EXISTING_AUTH_BASE_URL", ""))
+
+    assert gate.ok is False
+    assert gate.evidence["error"] == "missing_or_invalid_existing_auth_base_url"
+
+
 def test_company_auth_bridge_gate_rejects_missing_login_backend_without_traceback():
     gate = verify_poc_gate.check_company_auth_bridge("")
 
