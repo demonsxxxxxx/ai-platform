@@ -1,12 +1,10 @@
 from typing import Any
 
 from app.alert_slo_readiness import build_alert_slo_readiness
-from app.capacity_baseline import build_model_gateway_backpressure_policy
 from app.error_taxonomy import build_error_taxonomy_contract
 from app.error_taxonomy_dashboard_readiness import build_error_taxonomy_dashboard_readiness
 from app.quality_golden_set_readiness import build_quality_golden_set_readiness
 from app.release_evidence_readiness import build_release_evidence_readiness
-from app.settings import get_settings
 from app.trace_audit_export_readiness import build_trace_audit_export_readiness
 
 
@@ -40,6 +38,18 @@ def _enum_setting(settings: object, name: str, *, default: str, allowed_values: 
     return value if value in allowed_values else "unknown"
 
 
+def _default_settings() -> object:
+    from app.settings import get_settings
+
+    return get_settings()
+
+
+def _model_gateway_backpressure_policy() -> dict[str, Any]:
+    from app.capacity_baseline import build_model_gateway_backpressure_policy
+
+    return build_model_gateway_backpressure_policy()
+
+
 def _domain(
     implemented: list[str],
     gaps: list[str],
@@ -60,13 +70,13 @@ def _domain(
 
 def build_observability_readiness(settings: object | None = None) -> dict[str, Any]:
     """Build a secret-safe G9 observability readiness baseline for Admin Runtime and CLI use."""
-    resolved_settings = settings or get_settings()
+    resolved_settings = settings or _default_settings()
     alert_slo_readiness = build_alert_slo_readiness()
     error_taxonomy_dashboard_readiness = build_error_taxonomy_dashboard_readiness()
     quality_golden_set_readiness = build_quality_golden_set_readiness()
     release_evidence_readiness = build_release_evidence_readiness()
     trace_audit_export_readiness = build_trace_audit_export_readiness()
-    model_gateway_backpressure_policy = build_model_gateway_backpressure_policy()
+    model_gateway_backpressure_policy = _model_gateway_backpressure_policy()
     model_gateway_request_concurrency_limit = _positive_int_setting(
         resolved_settings,
         "model_gateway_request_concurrency_limit",

@@ -5,7 +5,6 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from app.error_taxonomy import ERROR_CATEGORY_DEFINITIONS, summarize_error_categories
-from app.settings import get_settings
 
 
 LOAD_TEST_GATES = [
@@ -93,6 +92,14 @@ _CAPACITY_PROFILE_CATALOG = [
         ],
     },
 ]
+
+
+def _default_settings() -> object:
+    from app.settings import get_settings
+
+    return get_settings()
+
+
 _LOAD_TEST_GATE_PURPOSES = {
     "api_read_write_burst": "Measure API health and admin projection behavior during bounded read/write bursts.",
     "run_creation_burst_by_tenant_and_user": "Prove serialized admission and queue behavior across tenants and users.",
@@ -632,7 +639,7 @@ def _warnings_for(limits: dict[str, Any]) -> list[str]:
 
 def build_capacity_baseline(settings: object | None = None) -> dict[str, Any]:
     """Build a secret-safe configured capacity baseline for Admin Runtime and CLI use."""
-    resolved_settings = settings or get_settings()
+    resolved_settings = settings or _default_settings()
     queue_tenant_processing_limit = _int_setting(resolved_settings, "queue_tenant_processing_limit")
     queue_user_processing_limit = _int_setting(resolved_settings, "queue_user_processing_limit")
     limits: dict[str, Any] = {

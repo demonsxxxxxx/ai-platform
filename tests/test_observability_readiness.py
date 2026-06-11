@@ -26,6 +26,29 @@ class SecretBearingSettings:
     multi_agent_dispatch_worker_enabled = False
 
 
+def test_observability_readiness_import_is_runtime_dependency_neutral():
+    script = (
+        "import builtins\n"
+        "real_import = builtins.__import__\n"
+        "class SettingsBlocker:\n"
+        "    sandbox_container_provider = 'fake'\n"
+        "    llm_gateway_provider = 'openai_compatible'\n"
+        "    model_gateway_request_concurrency_limit = 0\n"
+        "    multi_agent_dispatch_worker_enabled = False\n"
+        "def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):\n"
+        "    if name == 'app.settings':\n"
+        "        raise ModuleNotFoundError(\"No module named 'pydantic_settings'\")\n"
+        "    return real_import(name, globals, locals, fromlist, level)\n"
+        "builtins.__import__ = guarded_import\n"
+        "from app.observability_readiness import build_observability_readiness\n"
+        "readiness = build_observability_readiness(SettingsBlocker())\n"
+        "assert readiness['status'] == 'partial_blocked'\n"
+        "assert len(readiness['open_gaps']) > 1\n"
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 def test_observability_readiness_records_g9_domains_and_open_gaps_without_secrets():
     readiness = build_observability_readiness(SecretBearingSettings())
 

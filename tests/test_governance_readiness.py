@@ -19,6 +19,29 @@ class SecretBearingSettings:
     multi_agent_dispatch_worker_enabled = False
 
 
+def test_governance_readiness_import_is_runtime_dependency_neutral():
+    script = (
+        "import builtins\n"
+        "real_import = builtins.__import__\n"
+        "class SettingsBlocker:\n"
+        "    sandbox_container_provider = 'fake'\n"
+        "    memory_retention_worker_cleanup_enabled = True\n"
+        "    memory_retention_worker_cleanup_limit = 200\n"
+        "    multi_agent_dispatch_worker_enabled = False\n"
+        "def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):\n"
+        "    if name == 'app.settings':\n"
+        "        raise ModuleNotFoundError(\"No module named 'pydantic_settings'\")\n"
+        "    return real_import(name, globals, locals, fromlist, level)\n"
+        "builtins.__import__ = guarded_import\n"
+        "from app.governance_readiness import build_governance_readiness\n"
+        "readiness = build_governance_readiness(SettingsBlocker())\n"
+        "assert readiness['status'] == 'partial_blocked'\n"
+        "assert len(readiness['open_gaps']) > 1\n"
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets():
     readiness = build_governance_readiness(
         SecretBearingSettings(),
