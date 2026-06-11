@@ -150,6 +150,13 @@ def test_docker_entrypoint_validates_runtime_env():
     assert "exec \"$@\"" in content
 
 
+def test_docker_entrypoint_does_not_double_append_uvicorn_app_when_cmd_already_has_target():
+    content = Path("docker-entrypoint.sh").read_text(encoding="utf-8")
+
+    assert 'if [ "${1:-}" = "uvicorn" ] && [ "${2:-}" = "" ]; then' in content
+    assert 'exec "$@" "$APP_MODULE" --factory --host 0.0.0.0 --port "$APP_PORT"' in content
+
+
 def test_compose_exposes_sandbox_runtime_configuration():
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     sandbox_text = SANDBOX_COMPOSE_FILE.read_text(encoding="utf-8")
