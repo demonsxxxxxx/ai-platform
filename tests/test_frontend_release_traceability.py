@@ -175,6 +175,12 @@ def test_frontend_release_traceability_fails_closed_for_stale_dist_commit(tmp_pa
     assert trace["dist"]["build_provenance"]["build_commit"] == "older-commit"
     assert trace["dist"]["build_provenance"]["verified_same_commit"] is False
     assert "dist_build_commit_mismatch" in trace["dist"]["blockers"]
+    assert trace["dist"]["artifact_scope"] == "ignored_local_build_output"
+    assert trace["dist"]["remediation_commands"] == [
+        "cd frontend/web",
+        "corepack pnpm run ci:verify",
+        "python ../../tools/frontend_release_traceability.py --format json",
+    ]
 
 
 def test_frontend_release_traceability_fails_closed_for_unknown_dist_commit(tmp_path):
@@ -268,6 +274,8 @@ def test_render_frontend_release_traceability_markdown_is_operator_readable():
     assert "artifact_kind" in markdown
     assert "## Packaged Frontend Image" in markdown
     assert "- status: `configured`" in markdown
+    assert "artifact_scope" in markdown
+    assert "corepack pnpm run ci:verify" in markdown
     assert "ai-platform-frontend.yml" in markdown
     assert "c:\\users" not in markdown.lower()
 

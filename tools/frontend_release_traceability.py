@@ -17,6 +17,11 @@ CI_COMMANDS = [
     "corepack pnpm install --frozen-lockfile",
     "corepack pnpm run ci:verify",
 ]
+DIST_REMEDIATION_COMMANDS = [
+    "cd frontend/web",
+    "corepack pnpm run ci:verify",
+    "python ../../tools/frontend_release_traceability.py --format json",
+]
 WORKFLOW_COMMANDS = [
     "corepack pnpm install --frozen-lockfile",
     "corepack pnpm run ci:verify",
@@ -204,6 +209,7 @@ def _dist_manifest(
     manifest: dict[str, object] = {
         "status": status,
         "artifact_kind": "static_dist",
+        "artifact_scope": "ignored_local_build_output",
         "index_html_present": index_html.exists(),
         "file_count": 0,
         "total_bytes": 0,
@@ -220,6 +226,7 @@ def _dist_manifest(
             "verified_same_commit": bool(provenance_status["verified_same_commit"]),
         },
         "blockers": list(provenance_status["blockers"]),
+        "remediation_commands": DIST_REMEDIATION_COMMANDS if provenance_status["blockers"] else [],
     }
     if not dist_root.exists():
         return manifest
@@ -449,6 +456,7 @@ def render_frontend_release_traceability_markdown(trace: dict[str, Any]) -> str:
         f"{script_rows}\n\n"
         "## Dist Status\n\n"
         f"- status: `{trace['dist']['status']}`\n"
+        f"- artifact_scope: `{trace['dist']['artifact_scope']}`\n"
         f"- index_html_present: `{str(trace['dist']['index_html_present']).lower()}`\n"
         f"- artifact_kind: `{trace['dist']['artifact_kind']}`\n"
         f"- file_count: `{trace['dist']['file_count']}`\n"
@@ -460,6 +468,12 @@ def render_frontend_release_traceability_markdown(trace: dict[str, Any]) -> str:
         f"- build_commit: `{trace['dist']['build_provenance']['build_commit']}`\n"
         f"- verified_same_commit: "
         f"`{str(trace['dist']['build_provenance']['verified_same_commit']).lower()}`\n\n"
+        "Remediation commands:\n\n"
+        + (
+            "\n".join(f"- `{command}`" for command in trace["dist"].get("remediation_commands", []))
+            or "- none"
+        )
+        + "\n\n"
         "## Packaged Frontend Image\n\n"
         f"- status: `{packaged_image['status']}`\n"
         f"- artifact_kind: `{packaged_image['artifact_kind']}`\n"
