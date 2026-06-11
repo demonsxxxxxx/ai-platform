@@ -20,6 +20,14 @@ python tools/foundation_alpha_readiness.py --format json
 python tools/foundation_alpha_readiness.py --format markdown
 ```
 
+The operator summary must be read through `runtime_source_relation`. When the
+source tree is newer than the verified running API/worker image, it reports
+`source_synced_runtime_pending` and sets
+`current_source_verified_by_running_runtime=false`. That state means the
+controlled POC loop evidence remains useful for the recorded runtime subject,
+but current source commits still need rollout and smoke evidence before being
+treated as runtime-verified.
+
 On 2026-06-11, runtime subject commit
 `8c0cffca63bc747fad0a5771f209acc8a608ab9e` was synced to 211 source and the
 211 API and worker ran `ai-platform:8c0cffc-foundation-alpha-poc` with image ID

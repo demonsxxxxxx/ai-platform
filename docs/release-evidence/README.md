@@ -20,6 +20,13 @@ python tools/foundation_alpha_readiness.py --format markdown
 python tools/foundation_alpha_readiness.py --format json
 ```
 
+The Foundation Alpha operator summary is derived from reviewed evidence plus
+the current source tree revision. Read `runtime_source_relation` before using
+the summary as context. If it reports `source_synced_runtime_pending` and
+`current_source_verified_by_running_runtime=false`, the recorded 211 smoke still
+describes the verified runtime subject, while newer source commits still require
+rollout and smoke evidence before they are runtime-verified.
+
 The readiness schema is `ai-platform.release-evidence-readiness.v1`. The entry
 schema is `ai-platform.release-evidence-entry.v1`. The retention policy schema
 is `ai-platform.release-evidence-retention-policy.v1`.

@@ -134,6 +134,7 @@ def test_prd_roadmap_guardrails_share_current_gate_sequence():
 
 def test_gate_status_snapshot_records_blockers_without_closure_claim():
     gate_status_text = read(GATE_STATUS_DOC)
+    release_evidence_text = read(RELEASE_EVIDENCE_INDEX)
 
     assert "not automatic" in gate_status_text
     assert "gate-closure evidence" in gate_status_text
@@ -144,6 +145,9 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "packaged frontend image smoke/release acceptance" in gate_status_text
     assert "Foundation Alpha POC Smoke" in gate_status_text
     assert "211 verified for Foundation Alpha POC" in gate_status_text
+    assert "source_synced_runtime_pending" in gate_status_text
+    assert "runtime_source_relation" in release_evidence_text
+    assert "current_source_verified_by_running_runtime" in release_evidence_text
     assert "tools/foundation_alpha_readiness.py --format json" in gate_status_text
     assert "8c0cffca63bc747fad0a5771f209acc8a608ab9e" in gate_status_text
     assert "ai-platform:8c0cffc-foundation-alpha-poc" in gate_status_text

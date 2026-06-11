@@ -10,6 +10,9 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
+RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
+NEWER_SOURCE_SHA = "78362bcb380da67408ff7298cbdf24978d370992"
+
 
 class SecretBearingSettings:
     sandbox_container_provider = "docker://token@internal/path"
@@ -23,15 +26,32 @@ class SecretBearingSettings:
     multi_agent_dispatch_worker_enabled = False
 
 
-def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_overclaiming():
+def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_overclaiming(monkeypatch):
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: RUNTIME_SUBJECT_SHA,
+        raising=False,
+    )
+
     readiness = build_foundation_alpha_readiness(SecretBearingSettings())
 
     assert readiness["schema_version"] == "ai-platform.foundation-alpha-poc-readiness.v1"
     assert readiness["stage"] == "Foundation Alpha POC"
     assert readiness["status"] == "211_verified_followups_open"
-    assert readiness["runtime_subject_commit_sha"] == "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
+    assert readiness["runtime_subject_commit_sha"] == RUNTIME_SUBJECT_SHA
+    assert readiness["source_tree_commit_sha"] == RUNTIME_SUBJECT_SHA
+    assert readiness["runtime_source_relation"] == {
+        "source_tree_commit_sha": RUNTIME_SUBJECT_SHA,
+        "runtime_subject_commit_sha": RUNTIME_SUBJECT_SHA,
+        "runtime_source_marker": RUNTIME_SUBJECT_SHA,
+        "runtime_matches_source_tree": True,
+        "status": "runtime_current_for_source_tree",
+    }
     assert readiness["decision"] == {
         "controlled_poc_loop_verified": True,
+        "current_source_verified_by_running_runtime": True,
+        "runtime_rollout_required_for_current_source": False,
         "can_enter_next_stage_without_restrictions": False,
         "production_claim_allowed": False,
         "ordinary_user_multi_agent_allowed": False,
@@ -79,14 +99,59 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert "c:\\users" not in serialized
 
 
-def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable():
+def test_foundation_alpha_readiness_marks_source_synced_runtime_pending_without_overclaiming(monkeypatch):
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: NEWER_SOURCE_SHA,
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert readiness["status"] == "211_source_synced_runtime_pending_followups_open"
+    assert readiness["source_tree_commit_sha"] == NEWER_SOURCE_SHA
+    assert readiness["runtime_subject_commit_sha"] == RUNTIME_SUBJECT_SHA
+    assert readiness["runtime_source_relation"] == {
+        "source_tree_commit_sha": NEWER_SOURCE_SHA,
+        "runtime_subject_commit_sha": RUNTIME_SUBJECT_SHA,
+        "runtime_source_marker": RUNTIME_SUBJECT_SHA,
+        "runtime_matches_source_tree": False,
+        "status": "source_synced_runtime_pending",
+    }
+    assert (
+        readiness["domains"]["g0_g1_source_authority_security"]["status"]
+        == "source_synced_runtime_pending"
+    )
+    assert (
+        readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["runtime_source_relation"]
+        == "source_synced_runtime_pending"
+    )
+    assert readiness["decision"]["controlled_poc_loop_verified"] is True
+    assert readiness["decision"]["current_source_verified_by_running_runtime"] is False
+    assert readiness["decision"]["runtime_rollout_required_for_current_source"] is True
+    assert readiness["decision"]["production_claim_allowed"] is False
+    assert readiness["decision"]["can_enter_next_stage_without_restrictions"] is False
+
+
+def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeypatch):
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: RUNTIME_SUBJECT_SHA,
+        raising=False,
+    )
+
     readiness = build_foundation_alpha_readiness(SecretBearingSettings())
     markdown = render_foundation_alpha_readiness_markdown(readiness)
 
     assert "# ai-platform Foundation Alpha POC Readiness" in markdown
     assert "Schema: `ai-platform.foundation-alpha-poc-readiness.v1`" in markdown
     assert "Status: `211_verified_followups_open`" in markdown
+    assert f"Source tree: `{RUNTIME_SUBJECT_SHA}`" in markdown
     assert "Current decision" in markdown
+    assert "`current_source_verified_by_running_runtime`: `True`" in markdown
+    assert "Runtime source relation: `runtime_current_for_source_tree`" in markdown
     assert "`production_claim_allowed`: `False`" in markdown
     assert "#21_recorded_capacity_evidence" in markdown
 
@@ -110,6 +175,13 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable():
 
 
 def test_foundation_alpha_readiness_fails_closed_when_optional_readiness_dependencies_are_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: RUNTIME_SUBJECT_SHA,
+        raising=False,
+    )
+
     def missing_governance(_: object | None = None):
         raise ModuleNotFoundError("No module named 'pydantic'")
 

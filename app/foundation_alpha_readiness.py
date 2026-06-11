@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 _EVIDENCE_ROOT = _ROOT / "docs/release-evidence/foundation-alpha-poc" / RUNTIME_SUBJECT_COMMIT_SHA
 _SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-11-211-foundation-alpha-poc-current-main-smoke.json"
 _AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-11-211-foundation-alpha-poc-current-main-auth-rbac-smoke.json"
+_SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
 
 _OPEN_FOLLOWUPS = [
     "#21_recorded_capacity_evidence",
@@ -30,6 +32,41 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 def _status_from_gaps(gaps: list[str]) -> str:
     return "partial_followups_open" if gaps else "poc_verified_keep_under_regression"
+
+
+def _resolve_source_tree_revision() -> str:
+    if _SOURCE_REVISION_MARKER.exists():
+        marker = _SOURCE_REVISION_MARKER.read_text(encoding="utf-8").strip()
+        if marker:
+            return marker
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return result.stdout.strip() or "unknown"
+
+
+def _runtime_source_relation(source_tree_commit: str, runtime_subject_commit: str, runtime_source_marker: str) -> dict[str, Any]:
+    runtime_matches_source_tree = (
+        source_tree_commit != "unknown"
+        and source_tree_commit == runtime_subject_commit
+        and source_tree_commit == runtime_source_marker
+    )
+    return {
+        "source_tree_commit_sha": source_tree_commit,
+        "runtime_subject_commit_sha": runtime_subject_commit,
+        "runtime_source_marker": runtime_source_marker,
+        "runtime_matches_source_tree": runtime_matches_source_tree,
+        "status": "runtime_current_for_source_tree"
+        if runtime_matches_source_tree
+        else "source_synced_runtime_pending",
+    }
 
 
 def _safe_runtime_check(value: Any) -> dict[str, Any]:
@@ -142,12 +179,24 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         observability_summary = _observability_dependency_unavailable_summary(exc)
 
     runtime_subject_commit = smoke["runtime_subject_commit_sha"]
+    source_tree_commit = _resolve_source_tree_revision()
+    runtime_source_marker = smoke["source_ref"]["runtime_source_marker"]
+    runtime_relation = _runtime_source_relation(
+        source_tree_commit=source_tree_commit,
+        runtime_subject_commit=runtime_subject_commit,
+        runtime_source_marker=runtime_source_marker,
+    )
+    runtime_matches_source_tree = runtime_relation["runtime_matches_source_tree"]
     domains = {
         "g0_g1_source_authority_security": {
-            "status": "poc_verified_keep_under_regression",
+            "status": "poc_verified_keep_under_regression"
+            if runtime_matches_source_tree
+            else "source_synced_runtime_pending",
             "evidence": {
                 "runtime_subject_commit_sha": runtime_subject_commit,
-                "runtime_source_marker": smoke["source_ref"]["runtime_source_marker"],
+                "source_tree_commit_sha": source_tree_commit,
+                "runtime_source_marker": runtime_source_marker,
+                "runtime_source_relation": runtime_relation["status"],
                 "image": smoke["source_ref"]["image"],
                 "image_id": smoke["source_ref"]["image_id"],
                 "api_worker_label_revision": smoke["source_ref"]["image_labels"]["ai-platform.source-revision"],
@@ -229,8 +278,12 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     return {
         "schema_version": SCHEMA_VERSION,
         "stage": STAGE_NAME,
-        "status": "211_verified_followups_open",
+        "status": "211_verified_followups_open"
+        if runtime_matches_source_tree
+        else "211_source_synced_runtime_pending_followups_open",
+        "source_tree_commit_sha": source_tree_commit,
         "runtime_subject_commit_sha": runtime_subject_commit,
+        "runtime_source_relation": runtime_relation,
         "runtime_image": smoke["source_ref"]["image"],
         "evidence_entries": {
             "poc_smoke": str(_SMOKE_EVIDENCE.relative_to(_ROOT)).replace("\\", "/"),
@@ -238,6 +291,8 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         },
         "decision": {
             "controlled_poc_loop_verified": True,
+            "current_source_verified_by_running_runtime": runtime_matches_source_tree,
+            "runtime_rollout_required_for_current_source": not runtime_matches_source_tree,
             "can_enter_next_stage_without_restrictions": False,
             "production_claim_allowed": False,
             "ordinary_user_multi_agent_allowed": False,
@@ -269,7 +324,9 @@ def render_foundation_alpha_readiness_markdown(readiness: dict[str, Any]) -> str
         f"Schema: `{readiness['schema_version']}`\n\n"
         f"Stage: `{readiness['stage']}`\n\n"
         f"Status: `{readiness['status']}`\n\n"
+        f"Source tree: `{readiness['source_tree_commit_sha']}`\n\n"
         f"Runtime subject: `{readiness['runtime_subject_commit_sha']}`\n\n"
+        f"Runtime source relation: `{readiness['runtime_source_relation']['status']}`\n\n"
         "## Current decision\n\n"
         f"{decision_lines}\n\n"
         "## Open Followups\n\n"
