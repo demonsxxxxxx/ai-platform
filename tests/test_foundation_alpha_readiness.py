@@ -11,6 +11,7 @@ from app.foundation_alpha_readiness import (
 )
 
 RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
+CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
 NEWER_SOURCE_SHA = "78362bcb380da67408ff7298cbdf24978d370992"
 
 
@@ -26,6 +27,258 @@ class SecretBearingSettings:
     multi_agent_dispatch_worker_enabled = False
 
 
+def _minimal_smoke_payload(commit_sha: str, *, image: str, captured_at: str = "2026-06-11T10:00:00+08:00") -> dict:
+    return {
+        "schema_version": "ai-platform.release-evidence-entry.v1",
+        "evidence_id": f"{commit_sha[:7]}-smoke",
+        "commit_sha": commit_sha,
+        "runtime_subject_commit_sha": commit_sha,
+        "gate": "Foundation Alpha POC",
+        "artifact_kind": "211_runtime_smoke",
+        "captured_at": captured_at,
+        "source_ref": {
+            "branch": "main",
+            "runtime_commit": commit_sha,
+            "runtime_source_marker": commit_sha,
+            "image": image,
+            "image_id": f"sha256:{commit_sha[:12]}",
+            "image_labels": {
+                "ai-platform.source-revision": commit_sha,
+                "org.opencontainers.image.revision": commit_sha,
+            },
+            "repo_local_env_present": False,
+        },
+        "evidence_ref": {
+            "result": "ok:true",
+            "runtime_checks": {
+                "lambchat_frontend": {"status": 200},
+                "frontend_dist_api_boundary": {"forbidden_reference_count": 0},
+                "same_origin_api_health": {"status": 200, "payload_status": "ok"},
+                "general_chat_run": "succeeded",
+                "upload_attachment_chat": {
+                    "upload_status": 200,
+                    "chat_status": 200,
+                    "run_status": "succeeded",
+                    "executor_type": "claude-agent-worker",
+                },
+                "document_review_attachment_run": {
+                    "status": "succeeded",
+                    "skill_id": "qa-file-reviewer",
+                    "artifact_types": ["reviewed_docx"],
+                    "playback_contract_version": "ai-platform.run-playback.v1",
+                    "private_payload_leaked": False,
+                },
+                "artifact_download_isolation": {
+                    "owner_statuses": [200],
+                    "cross_user_statuses": [404],
+                },
+                "artifact_preview_isolation": {
+                    "owner_statuses": [200],
+                    "cross_user_statuses": [404],
+                    "cache_control": "no-store",
+                },
+            },
+        },
+        "redaction_scan_status": "passed",
+        "review_status": "reviewed",
+    }
+
+
+def _minimal_auth_payload(commit_sha: str, *, image: str, captured_at: str = "2026-06-11T10:01:00+08:00") -> dict:
+    return {
+        "schema_version": "ai-platform.release-evidence-entry.v1",
+        "evidence_id": f"{commit_sha[:7]}-auth-rbac-smoke",
+        "commit_sha": commit_sha,
+        "runtime_subject_commit_sha": commit_sha,
+        "gate": "Foundation Alpha POC",
+        "artifact_kind": "211_runtime_smoke",
+        "captured_at": captured_at,
+        "source_ref": {
+            "branch": "main",
+            "runtime_commit": commit_sha,
+            "runtime_source_marker": commit_sha,
+            "runtime_image": image,
+            "image_id": f"sha256:{commit_sha[:12]}",
+            "image_labels": {
+                "ai-platform.source-revision": commit_sha,
+                "org.opencontainers.image.revision": commit_sha,
+            },
+        },
+        "evidence_ref": {
+            "result": "ok:true",
+            "runtime_checks": {
+                "unauthenticated_auth_me": {"status": 401},
+                "ordinary_admin_runtime": {"status": 403},
+                "admin_runtime": {
+                    "status": 200,
+                    "required_sections_present": True,
+                    "forbidden_projection_terms_present": False,
+                },
+            },
+        },
+        "redaction_scan_status": "passed",
+        "review_status": "reviewed",
+    }
+
+
+def _write_release_evidence_pair(
+    base_root,
+    commit_sha: str,
+    *,
+    image: str,
+    smoke_captured_at: str = "2026-06-11T10:00:00+08:00",
+    auth_captured_at: str = "2026-06-11T10:01:00+08:00",
+):
+    commit_root = base_root / commit_sha
+    commit_root.mkdir(parents=True, exist_ok=True)
+    smoke_path = commit_root / f"{commit_sha[:7]}-smoke.json"
+    auth_path = commit_root / f"{commit_sha[:7]}-auth-rbac-smoke.json"
+    smoke_path.write_text(
+        json.dumps(_minimal_smoke_payload(commit_sha, image=image, captured_at=smoke_captured_at)),
+        encoding="utf-8",
+    )
+    auth_path.write_text(
+        json.dumps(_minimal_auth_payload(commit_sha, image=image, captured_at=auth_captured_at)),
+        encoding="utf-8",
+    )
+    return smoke_path, auth_path
+
+
+def test_foundation_alpha_readiness_selects_current_source_release_evidence_pair(monkeypatch, tmp_path):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    old_smoke_path, old_auth_path = _write_release_evidence_pair(
+        evidence_root,
+        RUNTIME_SUBJECT_SHA,
+        image="ai-platform:8c0cffc-foundation-alpha-poc",
+    )
+    _write_release_evidence_pair(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image="ai-platform:a3f1d73-foundation-alpha-poc",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", old_smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", old_auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: CURRENT_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert readiness["status"] == "211_verified_followups_open"
+    assert readiness["source_tree_commit_sha"] == CURRENT_SOURCE_SHA
+    assert readiness["runtime_subject_commit_sha"] == CURRENT_SOURCE_SHA
+    assert readiness["runtime_image"] == "ai-platform:a3f1d73-foundation-alpha-poc"
+    assert readiness["runtime_source_relation"] == {
+        "source_tree_commit_sha": CURRENT_SOURCE_SHA,
+        "source_tree_dirty": False,
+        "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
+        "runtime_source_marker": CURRENT_SOURCE_SHA,
+        "runtime_matches_source_tree": True,
+        "status": "runtime_current_for_source_tree",
+    }
+    assert readiness["decision"]["current_source_verified_by_running_runtime"] is True
+    assert CURRENT_SOURCE_SHA in readiness["evidence_entries"]["poc_smoke"]
+    assert CURRENT_SOURCE_SHA in readiness["evidence_entries"]["auth_rbac_smoke"]
+    assert RUNTIME_SUBJECT_SHA not in readiness["evidence_entries"]["poc_smoke"]
+
+
+def test_foundation_alpha_readiness_does_not_overclaim_dirty_source_tree(monkeypatch, tmp_path):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    old_smoke_path, old_auth_path = _write_release_evidence_pair(
+        evidence_root,
+        RUNTIME_SUBJECT_SHA,
+        image="ai-platform:8c0cffc-foundation-alpha-poc",
+    )
+    _write_release_evidence_pair(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image="ai-platform:a3f1d73-foundation-alpha-poc",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", old_smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", old_auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: CURRENT_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: True, raising=False)
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert readiness["status"] == "211_source_synced_runtime_pending_followups_open"
+    assert readiness["source_tree_commit_sha"] == CURRENT_SOURCE_SHA
+    assert readiness["source_tree_dirty"] is True
+    assert readiness["runtime_subject_commit_sha"] == CURRENT_SOURCE_SHA
+    assert readiness["runtime_source_relation"] == {
+        "source_tree_commit_sha": CURRENT_SOURCE_SHA,
+        "source_tree_dirty": True,
+        "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
+        "runtime_source_marker": CURRENT_SOURCE_SHA,
+        "runtime_matches_source_tree": False,
+        "status": "source_tree_uncommitted_changes_pending",
+    }
+    assert (
+        readiness["domains"]["g0_g1_source_authority_security"]["status"]
+        == "source_tree_uncommitted_changes_pending"
+    )
+    assert readiness["decision"]["current_source_verified_by_running_runtime"] is False
+    assert readiness["decision"]["runtime_rollout_required_for_current_source"] is True
+
+
+def test_foundation_alpha_readiness_falls_back_to_latest_reviewed_runtime_evidence(monkeypatch, tmp_path):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    old_smoke_path, old_auth_path = _write_release_evidence_pair(
+        evidence_root,
+        RUNTIME_SUBJECT_SHA,
+        image="ai-platform:8c0cffc-foundation-alpha-poc",
+        smoke_captured_at="2026-06-11T10:00:00+08:00",
+        auth_captured_at="2026-06-11T10:01:00+08:00",
+    )
+    _write_release_evidence_pair(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image="ai-platform:a3f1d73-foundation-alpha-poc",
+        smoke_captured_at="2026-06-11T15:19:22+08:00",
+        auth_captured_at="2026-06-11T15:18:58+08:00",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", old_smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", old_auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: NEWER_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert readiness["status"] == "211_source_synced_runtime_pending_followups_open"
+    assert readiness["source_tree_commit_sha"] == NEWER_SOURCE_SHA
+    assert readiness["runtime_subject_commit_sha"] == CURRENT_SOURCE_SHA
+    assert readiness["runtime_image"] == "ai-platform:a3f1d73-foundation-alpha-poc"
+    assert readiness["runtime_source_relation"] == {
+        "source_tree_commit_sha": NEWER_SOURCE_SHA,
+        "source_tree_dirty": False,
+        "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
+        "runtime_source_marker": CURRENT_SOURCE_SHA,
+        "runtime_matches_source_tree": False,
+        "status": "source_synced_runtime_pending",
+    }
+    assert readiness["decision"]["current_source_verified_by_running_runtime"] is False
+    assert readiness["decision"]["runtime_rollout_required_for_current_source"] is True
+    assert CURRENT_SOURCE_SHA in readiness["evidence_entries"]["poc_smoke"]
+    assert RUNTIME_SUBJECT_SHA not in readiness["evidence_entries"]["poc_smoke"]
+
+
 def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_overclaiming(monkeypatch):
     monkeypatch.setattr(
         foundation_alpha_readiness,
@@ -33,6 +286,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         lambda: RUNTIME_SUBJECT_SHA,
         raising=False,
     )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
 
     readiness = build_foundation_alpha_readiness(SecretBearingSettings())
 
@@ -43,6 +297,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert readiness["source_tree_commit_sha"] == RUNTIME_SUBJECT_SHA
     assert readiness["runtime_source_relation"] == {
         "source_tree_commit_sha": RUNTIME_SUBJECT_SHA,
+        "source_tree_dirty": False,
         "runtime_subject_commit_sha": RUNTIME_SUBJECT_SHA,
         "runtime_source_marker": RUNTIME_SUBJECT_SHA,
         "runtime_matches_source_tree": True,
@@ -106,16 +361,18 @@ def test_foundation_alpha_readiness_marks_source_synced_runtime_pending_without_
         lambda: NEWER_SOURCE_SHA,
         raising=False,
     )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
 
     readiness = build_foundation_alpha_readiness(SecretBearingSettings())
 
     assert readiness["status"] == "211_source_synced_runtime_pending_followups_open"
     assert readiness["source_tree_commit_sha"] == NEWER_SOURCE_SHA
-    assert readiness["runtime_subject_commit_sha"] == RUNTIME_SUBJECT_SHA
+    assert readiness["runtime_subject_commit_sha"] == CURRENT_SOURCE_SHA
     assert readiness["runtime_source_relation"] == {
         "source_tree_commit_sha": NEWER_SOURCE_SHA,
-        "runtime_subject_commit_sha": RUNTIME_SUBJECT_SHA,
-        "runtime_source_marker": RUNTIME_SUBJECT_SHA,
+        "source_tree_dirty": False,
+        "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
+        "runtime_source_marker": CURRENT_SOURCE_SHA,
         "runtime_matches_source_tree": False,
         "status": "source_synced_runtime_pending",
     }
@@ -141,6 +398,7 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeyp
         lambda: RUNTIME_SUBJECT_SHA,
         raising=False,
     )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
 
     readiness = build_foundation_alpha_readiness(SecretBearingSettings())
     markdown = render_foundation_alpha_readiness_markdown(readiness)
@@ -181,6 +439,7 @@ def test_foundation_alpha_readiness_fails_closed_when_optional_readiness_depende
         lambda: RUNTIME_SUBJECT_SHA,
         raising=False,
     )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
 
     def missing_governance(_: object | None = None):
         raise ModuleNotFoundError("No module named 'pydantic'")

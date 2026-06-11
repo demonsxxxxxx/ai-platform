@@ -11,7 +11,8 @@ SCHEMA_VERSION = "ai-platform.foundation-alpha-poc-readiness.v1"
 STAGE_NAME = "Foundation Alpha POC"
 RUNTIME_SUBJECT_COMMIT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 _ROOT = Path(__file__).resolve().parents[1]
-_EVIDENCE_ROOT = _ROOT / "docs/release-evidence/foundation-alpha-poc" / RUNTIME_SUBJECT_COMMIT_SHA
+_EVIDENCE_BASE_ROOT = _ROOT / "docs/release-evidence/foundation-alpha-poc"
+_EVIDENCE_ROOT = _EVIDENCE_BASE_ROOT / RUNTIME_SUBJECT_COMMIT_SHA
 _SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-11-211-foundation-alpha-poc-current-main-smoke.json"
 _AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-11-211-foundation-alpha-poc-current-main-auth-rbac-smoke.json"
 _SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
@@ -28,6 +29,13 @@ _OPEN_FOLLOWUPS = [
 
 def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _path_for_output(path: Path) -> str:
+    try:
+        return str(path.relative_to(_ROOT)).replace("\\", "/")
+    except ValueError:
+        return path.as_posix()
 
 
 def _status_from_gaps(gaps: list[str]) -> str:
@@ -52,20 +60,169 @@ def _resolve_source_tree_revision() -> str:
     return result.stdout.strip() or "unknown"
 
 
-def _runtime_source_relation(source_tree_commit: str, runtime_subject_commit: str, runtime_source_marker: str) -> dict[str, Any]:
+def _resolve_source_tree_dirty() -> bool | None:
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return bool(result.stdout.strip())
+
+
+def _release_evidence_entry_is_valid(payload: dict[str, Any], commit_sha: str) -> bool:
+    source_ref = payload.get("source_ref")
+    evidence_ref = payload.get("evidence_ref")
+    if not isinstance(source_ref, dict) or not isinstance(evidence_ref, dict):
+        return False
+
+    labels = source_ref.get("image_labels")
+    return (
+        payload.get("schema_version") == "ai-platform.release-evidence-entry.v1"
+        and payload.get("gate") == STAGE_NAME
+        and payload.get("artifact_kind") == "211_runtime_smoke"
+        and payload.get("commit_sha") == commit_sha
+        and payload.get("runtime_subject_commit_sha") == commit_sha
+        and payload.get("redaction_scan_status") == "passed"
+        and payload.get("review_status") == "reviewed"
+        and source_ref.get("runtime_source_marker") == commit_sha
+        and isinstance(labels, dict)
+        and labels.get("ai-platform.source-revision") == commit_sha
+        and labels.get("org.opencontainers.image.revision") == commit_sha
+        and evidence_ref.get("result") == "ok:true"
+        and isinstance(evidence_ref.get("runtime_checks"), dict)
+    )
+
+
+def _is_auth_rbac_evidence(payload: dict[str, Any]) -> bool:
+    evidence_ref = payload.get("evidence_ref") if isinstance(payload, dict) else {}
+    runtime_checks = evidence_ref.get("runtime_checks") if isinstance(evidence_ref, dict) else {}
+    if not isinstance(runtime_checks, dict):
+        return False
+    return (
+        evidence_ref.get("verifier") == "tools/verify_auth_rbac_smoke.py"
+        or {"unauthenticated_auth_me", "ordinary_admin_runtime", "admin_runtime"}.issubset(runtime_checks)
+        or "auth-rbac" in str(payload.get("evidence_id", ""))
+    )
+
+
+def _is_poc_smoke_evidence(payload: dict[str, Any]) -> bool:
+    evidence_ref = payload.get("evidence_ref") if isinstance(payload, dict) else {}
+    runtime_checks = evidence_ref.get("runtime_checks") if isinstance(evidence_ref, dict) else {}
+    if not isinstance(runtime_checks, dict) or _is_auth_rbac_evidence(payload):
+        return False
+    return (
+        evidence_ref.get("verifier") == "tools/verify_poc_gate.py"
+        or "document_review_attachment_run" in runtime_checks
+        or "lambchat_frontend" in runtime_checks
+        or "frontend_http_status" in runtime_checks
+    )
+
+
+def _release_evidence_sort_key(path: Path, payload: dict[str, Any]) -> tuple[str, str]:
+    return (str(payload.get("captured_at", "")), path.name)
+
+
+def _discover_release_evidence_pair(commit_sha: str) -> tuple[Path, Path] | None:
+    commit_root = _EVIDENCE_BASE_ROOT / commit_sha
+    if not commit_root.is_dir():
+        return None
+
+    smoke_entries: list[tuple[Path, dict[str, Any]]] = []
+    auth_entries: list[tuple[Path, dict[str, Any]]] = []
+    for path in sorted(commit_root.glob("*.json")):
+        try:
+            payload = _load_json(path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not _release_evidence_entry_is_valid(payload, commit_sha):
+            continue
+        if _is_auth_rbac_evidence(payload):
+            auth_entries.append((path, payload))
+        elif _is_poc_smoke_evidence(payload):
+            smoke_entries.append((path, payload))
+
+    if not smoke_entries or not auth_entries:
+        return None
+    smoke_path, _ = max(smoke_entries, key=lambda item: _release_evidence_sort_key(item[0], item[1]))
+    auth_path, _ = max(auth_entries, key=lambda item: _release_evidence_sort_key(item[0], item[1]))
+    return smoke_path, auth_path
+
+
+def _discover_latest_release_evidence_pair() -> tuple[Path, Path] | None:
+    candidates: list[tuple[tuple[str, str], Path, Path]] = []
+    if not _EVIDENCE_BASE_ROOT.is_dir():
+        return None
+
+    for commit_root in sorted(_EVIDENCE_BASE_ROOT.iterdir()):
+        if not commit_root.is_dir():
+            continue
+        pair = _discover_release_evidence_pair(commit_root.name)
+        if pair is None:
+            continue
+        smoke_path, auth_path = pair
+        try:
+            smoke_payload = _load_json(smoke_path)
+            auth_payload = _load_json(auth_path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        candidates.append(
+            (
+                max(
+                    _release_evidence_sort_key(smoke_path, smoke_payload),
+                    _release_evidence_sort_key(auth_path, auth_payload),
+                ),
+                smoke_path,
+                auth_path,
+            )
+        )
+
+    if not candidates:
+        return None
+    _, smoke_path, auth_path = max(candidates, key=lambda item: item[0])
+    return smoke_path, auth_path
+
+
+def _resolve_release_evidence_paths(source_tree_commit: str) -> tuple[Path, Path]:
+    if source_tree_commit != "unknown":
+        current_pair = _discover_release_evidence_pair(source_tree_commit)
+        if current_pair is not None:
+            return current_pair
+    latest_pair = _discover_latest_release_evidence_pair()
+    if latest_pair is not None:
+        return latest_pair
+    return _SMOKE_EVIDENCE, _AUTH_RBAC_EVIDENCE
+
+
+def _runtime_source_relation(
+    source_tree_commit: str,
+    source_tree_dirty: bool | None,
+    runtime_subject_commit: str,
+    runtime_source_marker: str,
+) -> dict[str, Any]:
     runtime_matches_source_tree = (
         source_tree_commit != "unknown"
+        and source_tree_dirty is False
         and source_tree_commit == runtime_subject_commit
         and source_tree_commit == runtime_source_marker
     )
+    if source_tree_dirty is True:
+        status = "source_tree_uncommitted_changes_pending"
+    elif runtime_matches_source_tree:
+        status = "runtime_current_for_source_tree"
+    else:
+        status = "source_synced_runtime_pending"
     return {
         "source_tree_commit_sha": source_tree_commit,
+        "source_tree_dirty": source_tree_dirty,
         "runtime_subject_commit_sha": runtime_subject_commit,
         "runtime_source_marker": runtime_source_marker,
         "runtime_matches_source_tree": runtime_matches_source_tree,
-        "status": "runtime_current_for_source_tree"
-        if runtime_matches_source_tree
-        else "source_synced_runtime_pending",
+        "status": status,
     }
 
 
@@ -165,8 +322,11 @@ def _build_observability_summary(settings: object | None) -> dict[str, Any]:
 
 def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str, Any]:
     """Build a secret-safe Foundation Alpha POC readiness summary for operators."""
-    smoke = _load_json(_SMOKE_EVIDENCE)
-    auth_rbac = _load_json(_AUTH_RBAC_EVIDENCE)
+    source_tree_commit = _resolve_source_tree_revision()
+    source_tree_dirty = _resolve_source_tree_dirty()
+    smoke_evidence_path, auth_rbac_evidence_path = _resolve_release_evidence_paths(source_tree_commit)
+    smoke = _load_json(smoke_evidence_path)
+    auth_rbac = _load_json(auth_rbac_evidence_path)
     smoke_checks = smoke["evidence_ref"]["runtime_checks"]
     auth_checks = auth_rbac["evidence_ref"]["runtime_checks"]
     try:
@@ -179,10 +339,10 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         observability_summary = _observability_dependency_unavailable_summary(exc)
 
     runtime_subject_commit = smoke["runtime_subject_commit_sha"]
-    source_tree_commit = _resolve_source_tree_revision()
     runtime_source_marker = smoke["source_ref"]["runtime_source_marker"]
     runtime_relation = _runtime_source_relation(
         source_tree_commit=source_tree_commit,
+        source_tree_dirty=source_tree_dirty,
         runtime_subject_commit=runtime_subject_commit,
         runtime_source_marker=runtime_source_marker,
     )
@@ -191,10 +351,11 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         "g0_g1_source_authority_security": {
             "status": "poc_verified_keep_under_regression"
             if runtime_matches_source_tree
-            else "source_synced_runtime_pending",
+            else runtime_relation["status"],
             "evidence": {
                 "runtime_subject_commit_sha": runtime_subject_commit,
                 "source_tree_commit_sha": source_tree_commit,
+                "source_tree_dirty": source_tree_dirty,
                 "runtime_source_marker": runtime_source_marker,
                 "runtime_source_relation": runtime_relation["status"],
                 "image": smoke["source_ref"]["image"],
@@ -282,12 +443,13 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         if runtime_matches_source_tree
         else "211_source_synced_runtime_pending_followups_open",
         "source_tree_commit_sha": source_tree_commit,
+        "source_tree_dirty": source_tree_dirty,
         "runtime_subject_commit_sha": runtime_subject_commit,
         "runtime_source_relation": runtime_relation,
         "runtime_image": smoke["source_ref"]["image"],
         "evidence_entries": {
-            "poc_smoke": str(_SMOKE_EVIDENCE.relative_to(_ROOT)).replace("\\", "/"),
-            "auth_rbac_smoke": str(_AUTH_RBAC_EVIDENCE.relative_to(_ROOT)).replace("\\", "/"),
+            "poc_smoke": _path_for_output(smoke_evidence_path),
+            "auth_rbac_smoke": _path_for_output(auth_rbac_evidence_path),
         },
         "decision": {
             "controlled_poc_loop_verified": True,
