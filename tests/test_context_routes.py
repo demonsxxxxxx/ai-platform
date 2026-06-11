@@ -289,12 +289,19 @@ def test_context_snapshot_response_preserves_stored_safe_summary_input_keys(monk
                 "included_memory_record_ids": [],
                 "redaction_summary_json": {},
                 "payload_json": {
+                    "memory_policy": {
+                        "source": "stored",
+                        "memory_enabled": False,
+                        "long_term_memory_enabled": False,
+                        "retention_days": 30,
+                    },
                     "used_context_summary": {
                         "source": "runs_api",
                         "input_keys": ["message", "attachments", "raw_storage_key"],
                         "memory_policy_source": "stored",
                         "long_term_memory_read": False,
-                    }
+                    },
+                    "context_pack_generated_at": "2026-06-12T01:23:45Z",
                 },
                 "created_at": None,
             }
@@ -313,9 +320,10 @@ def test_context_snapshot_response_preserves_stored_safe_summary_input_keys(monk
     assert payload["used_context_summary"] == {
         "source": "stored_context_snapshot",
         "input_keys": ["attachments", "message"],
-        "memory_policy_source": "not_recorded",
+        "memory_policy_source": "stored",
         "long_term_memory_read": False,
     }
+    assert payload["context_pack_generated_at"] == "2026-06-12T01:23:45Z"
     serialized = response.text.lower()
     assert "raw_storage_key" not in serialized
 

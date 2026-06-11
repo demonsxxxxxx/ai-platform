@@ -42,12 +42,25 @@ For source-only docs/tests/evidence syncs, write a local-only
 `tools/foundation_alpha_readiness.py` can prove the runtime-affecting delta is
 empty. Missing, stale, or malformed snapshot markers intentionally fail closed.
 
-On 2026-06-12, runtime subject commit
-`458f6056dd0fa533162e780a303d79ce1b3d0eec` was synced to the 211 runtime
-subject and the 211 API and worker ran `ai-platform:458f605-auth-rbac-redaction` with
+On 2026-06-12, PR #28 runtime subject commit
+`8d61fd7cd8de8ec1cd99ce7e813a1431f9b672bf` was synced to the 211 runtime
+subject and the 211 API and worker ran
+`ai-platform:8d61fd7-context-projection-fixed` with image ID
+`sha256:b2c09010fe5dd433627004d74e1e0bbb048fd0d5aa0c3cb28017d8712abb6d17`.
+Both runtime source labels and in-container source markers pointed to
+`8d61fd7cd8de8ec1cd99ce7e813a1431f9b672bf`. Runtime labels pointed to the
+repo-local compose file under
+`/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform`,
+while the existing runtime env file still lived outside that repo-local deploy
+directory and was passed as an external env source without copying or printing
+secret values. API health returned `ok`.
+
+The immediately superseded runtime subject commit was
+`458f6056dd0fa533162e780a303d79ce1b3d0eec`; it ran
+`ai-platform:458f605-auth-rbac-redaction` with
 image ID
 `sha256:a91b3d1c62aacb4d52604e659d9e6ea30c1a96e7669547ba63e211f976554c9e`.
-Both runtime source labels pointed to
+Both superseded runtime source labels pointed to
 `458f6056dd0fa533162e780a303d79ce1b3d0eec`. Runtime labels pointed to the
 repo-local compose file under
 `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform`,
@@ -60,33 +73,29 @@ health, public/admin projection boundary, company auth bridge, general chat run,
 document review attachment run, artifact download isolation, artifact preview
 isolation, playback with preview URL and no private payload leakage, company
 login audit, Admin capacity/backpressure fields, and context snapshot public
-projection counts without raw material IDs. The current reviewed evidence does
-not yet include the newer machine-verifiable context public summary fields
-(`input_keys`, memory policy source, long-term-memory flag, execution tier, and
-generated-at presence), so `tools/foundation_alpha_readiness.py` now downgrades
-that context slice to
-`context_snapshot_public_projection_followup_required` until 211 is re-smoked
-with the updated `tools/verify_poc_gate.py` context gate. Older smoke records
-without any runtime projection still fail closed as
-`missing_context_snapshot_public_projection`. The current reviewed, redacted
+projection without raw material IDs. The refreshed PR #28 smoke includes the
+machine-verifiable context public summary fields: `input_keys`, memory policy
+source, long-term-memory flag, execution tier, and generated-at presence. Older
+smoke records without these fields still fail closed as
+`context_snapshot_public_projection_followup_required`, and records without any
+runtime projection still fail closed as `missing_context_snapshot_public_projection`.
+The current reviewed, redacted
 release-evidence entry is
-`docs/release-evidence/foundation-alpha-poc/458f6056dd0fa533162e780a303d79ce1b3d0eec/2026-06-12-211-foundation-alpha-poc-458f605-smoke.json`.
+`docs/release-evidence/foundation-alpha-poc/8d61fd7cd8de8ec1cd99ce7e813a1431f9b672bf/2026-06-12-211-foundation-alpha-poc-8d61fd7-smoke.json`.
 
 The focused Auth/RBAC verifier `tools/verify_auth_rbac_smoke.py` also returned
-`ok: true` on 211 against the same runtime. The refreshed 2026-06-12 00:36
-+08:00 smoke used runtime subject `458f605`. It verified unauthenticated `/api/auth/me`
+`ok: true` on 211 against the same runtime. The refreshed 2026-06-12 02:21
++08:00 smoke used runtime subject `8d61fd7`. It verified unauthenticated `/api/auth/me`
 returns 401, platform `/api/ai/auth/me` returns the trusted principal with
 tenant match, invalid gateway secret access to `/api/ai/auth/me` fails with
 403, ordinary trusted principals are denied from Admin Runtime with 403, admin
 trusted principals can read the required same-tenant Admin Runtime sections with
 200, and the projection scan did not find private or secret-like values. The
-PR #26 verifier fix allows legitimate Admin Runtime observability/readiness
-metric text such as token/cost/error summaries while continuing to fail closed
-on secret-like keys and credential-shaped values. The
 current reviewed, redacted Auth/RBAC evidence entry is
-`docs/release-evidence/foundation-alpha-poc/458f6056dd0fa533162e780a303d79ce1b3d0eec/2026-06-12-211-foundation-alpha-poc-458f605-auth-rbac-smoke.json`.
+`docs/release-evidence/foundation-alpha-poc/8d61fd7cd8de8ec1cd99ce7e813a1431f9b672bf/2026-06-12-211-foundation-alpha-poc-8d61fd7-auth-rbac-smoke.json`.
 
 Earlier smoke evidence for
+`458f6056dd0fa533162e780a303d79ce1b3d0eec`,
 `9b02836262fb0f238a7f90b9705bf39a8b298158`,
 `cdc09ba8867d91e8db76570fbf158e6d082da7cf`,
 `8f454696be0e9c532fa86bc61ef353e4d3dec4f8`,
@@ -94,8 +103,7 @@ Earlier smoke evidence for
 `a3f1d739e12686cba2e0b309de26a4e1127bd3a5`,
 `8c0cffca63bc747fad0a5771f209acc8a608ab9e`,
 `bf20432f9889efa8b367afdf512c641068ba30bc`, and
-`3874281276c84a418bd08bda56d7ea55b52970b7` remains retained as historical evidence only; the current-main evidence above is the active Foundation Alpha POC reference.
-The immediately superseded runtime image was `ai-platform:9b02836-context-output`.
+`3874281276c84a418bd08bda56d7ea55b52970b7` remains retained as historical evidence only; the PR #28 evidence above is the active Foundation Alpha POC reference for this branch. The previously superseded runtime image was `ai-platform:9b02836-context-output`.
 
 This smoke does not close #21 capacity, G7 Docker sandbox hardening, ordinary
 user multi-agent exposure, department rollout, release-evidence runtime export,

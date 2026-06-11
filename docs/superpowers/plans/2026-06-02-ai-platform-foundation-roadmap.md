@@ -512,11 +512,12 @@ snapshot API response. The scoped database row and worker lookup path still keep
 those IDs internally to compute public counts. Executor private payloads, raw
 storage keys, sandbox workdirs, and secret-like values remain outside the public
 projection. Worker execution
-resolves existing context snapshots from the scoped DB row and regenerates
-public provenance/counts rather than trusting queue copies or stored payload
-provenance. This narrows the G6/#22 context output gap but does not close
-executor context-pack injection, frontend context provenance acceptance,
-long-term memory, sandbox, or multi-agent gates.
+resolves existing context snapshots from the scoped DB row, rejects queue-copy
+provenance, recomputes public counts from scoped DB fields, and preserves only
+server-generated safe summary metadata such as allowed memory policy source and
+context-pack generated time. This narrows the G6/#22 context output gap but does
+not close executor context-pack injection, frontend context provenance
+acceptance, long-term memory, sandbox, or multi-agent gates.
 
 The Foundation Alpha readiness summary now also promotes reviewed 211
 `context_snapshot_public_projection` smoke evidence into the G6 POC governance

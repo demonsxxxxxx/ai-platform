@@ -43,11 +43,11 @@ FOUNDATION_ALPHA_POC_CURRENT_MAIN_AUTH_RBAC_EVIDENCE = (
 )
 FOUNDATION_ALPHA_POC_ACTIVE_SMOKE_EVIDENCE = (
     ROOT
-    / "docs/release-evidence/foundation-alpha-poc/458f6056dd0fa533162e780a303d79ce1b3d0eec/2026-06-12-211-foundation-alpha-poc-458f605-smoke.json"
+    / "docs/release-evidence/foundation-alpha-poc/8d61fd7cd8de8ec1cd99ce7e813a1431f9b672bf/2026-06-12-211-foundation-alpha-poc-8d61fd7-smoke.json"
 )
 FOUNDATION_ALPHA_POC_ACTIVE_AUTH_RBAC_EVIDENCE = (
     ROOT
-    / "docs/release-evidence/foundation-alpha-poc/458f6056dd0fa533162e780a303d79ce1b3d0eec/2026-06-12-211-foundation-alpha-poc-458f605-auth-rbac-smoke.json"
+    / "docs/release-evidence/foundation-alpha-poc/8d61fd7cd8de8ec1cd99ce7e813a1431f9b672bf/2026-06-12-211-foundation-alpha-poc-8d61fd7-auth-rbac-smoke.json"
 )
 SCHEMA = ROOT / "app/schema.sql"
 
@@ -160,6 +160,9 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "controlled_poc_loop_verified_for_current_source" in release_evidence_text
     assert "reviewed_historical_runtime_evidence" in release_evidence_text
     assert "tools/foundation_alpha_readiness.py --format json" in gate_status_text
+    assert "8d61fd7cd8de8ec1cd99ce7e813a1431f9b672bf" in gate_status_text
+    assert "ai-platform:8d61fd7-context-projection-fixed" in gate_status_text
+    assert "sha256:b2c09010fe5dd433627004d74e1e0bbb048fd0d5aa0c3cb28017d8712abb6d17" in gate_status_text
     assert "458f6056dd0fa533162e780a303d79ce1b3d0eec" in gate_status_text
     assert "ai-platform:458f605-auth-rbac-redaction" in gate_status_text
     assert "sha256:a91b3d1c62aacb4d52604e659d9e6ea30c1a96e7669547ba63e211f976554c9e" in gate_status_text
@@ -195,19 +198,19 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     payload = json.loads(evidence_text)
 
     assert payload["schema_version"] == "ai-platform.release-evidence-entry.v1"
-    assert payload["evidence_id"] == "2026-06-12-211-foundation-alpha-poc-458f605-smoke"
-    assert payload["commit_sha"] == "458f6056dd0fa533162e780a303d79ce1b3d0eec"
-    assert payload["runtime_subject_commit_sha"] == "458f6056dd0fa533162e780a303d79ce1b3d0eec"
+    assert payload["evidence_id"] == "2026-06-12-211-foundation-alpha-poc-8d61fd7-smoke"
+    assert payload["commit_sha"] == "8d61fd7cd8de8ec1cd99ce7e813a1431f9b672bf"
+    assert payload["runtime_subject_commit_sha"] == "8d61fd7cd8de8ec1cd99ce7e813a1431f9b672bf"
     assert "record_commit_sha" not in payload
     assert payload["gate"] == "Foundation Alpha POC"
     assert payload["artifact_kind"] == "211_runtime_smoke"
     assert payload["redaction_scan_status"] == "passed"
     assert payload["review_status"] == "reviewed"
-    assert payload["source_ref"]["runtime_source_marker"] == "458f6056dd0fa533162e780a303d79ce1b3d0eec"
-    assert payload["source_ref"]["image"] == "ai-platform:458f605-auth-rbac-redaction"
-    assert payload["source_ref"]["image_id"] == "sha256:a91b3d1c62aacb4d52604e659d9e6ea30c1a96e7669547ba63e211f976554c9e"
-    assert payload["source_ref"]["image_labels"]["ai-platform.source-revision"] == "458f6056dd0fa533162e780a303d79ce1b3d0eec"
-    assert payload["source_ref"]["image_labels"]["org.opencontainers.image.revision"] == "458f6056dd0fa533162e780a303d79ce1b3d0eec"
+    assert payload["source_ref"]["runtime_source_marker"] == "8d61fd7cd8de8ec1cd99ce7e813a1431f9b672bf"
+    assert payload["source_ref"]["image"] == "ai-platform:8d61fd7-context-projection-fixed"
+    assert payload["source_ref"]["image_id"] == "sha256:b2c09010fe5dd433627004d74e1e0bbb048fd0d5aa0c3cb28017d8712abb6d17"
+    assert payload["source_ref"]["image_labels"]["ai-platform.source-revision"] == "8d61fd7cd8de8ec1cd99ce7e813a1431f9b672bf"
+    assert payload["source_ref"]["image_labels"]["org.opencontainers.image.revision"] == "8d61fd7cd8de8ec1cd99ce7e813a1431f9b672bf"
     assert payload["source_ref"]["repo_local_env_present"] is False
     assert payload["evidence_ref"]["result"] == "ok:true"
     assert payload["evidence_ref"]["runtime_checks"]["lambchat_frontend"]["status"] == 200
@@ -228,9 +231,28 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert payload["evidence_ref"]["runtime_checks"]["artifact_preview_isolation"]["x_content_type_options"] == "nosniff"
     assert payload["evidence_ref"]["runtime_checks"]["runtime_config"]["live_container_env_preferred_over_env_file"] is True
     assert payload["evidence_ref"]["runtime_checks"]["sdk_task_tool_boundary"]["task_tool_exposed_in_full_access"] is False
+    assert payload["evidence_ref"]["runtime_checks"]["context_snapshot_public_projection"] == {
+        "ok": True,
+        "referenced_material_counts": {
+            "message_count": 1,
+            "file_count": 1,
+            "artifact_count": 0,
+            "memory_record_count": 0,
+        },
+        "raw_material_id_fields_present": False,
+        "forbidden_projection_leaks": [],
+        "summary_source": "stored_context_snapshot",
+        "input_keys": ["message"],
+        "memory_policy_source": "not_recorded",
+        "long_term_memory_read": False,
+        "execution_tier": "sdk_only_writing",
+        "context_pack_generated_at_present": True,
+    }
     assert "G9 release-evidence runtime export" in "\n".join(payload["open_followups"])
 
     release_evidence_index = read(RELEASE_EVIDENCE_INDEX)
+    assert "2026-06-12-211-foundation-alpha-poc-8d61fd7-auth-rbac-smoke.json" in release_evidence_index
+    assert "2026-06-12-211-foundation-alpha-poc-8d61fd7-smoke.json" in release_evidence_index
     assert "2026-06-12-211-foundation-alpha-poc-458f605-auth-rbac-smoke.json" in release_evidence_index
     assert "2026-06-12-211-foundation-alpha-poc-458f605-smoke.json" in release_evidence_index
     assert "2026-06-11-211-foundation-alpha-poc-9b02836-auth-rbac-smoke.json" in release_evidence_index
@@ -273,13 +295,13 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     auth_rbac_text = read(FOUNDATION_ALPHA_POC_ACTIVE_AUTH_RBAC_EVIDENCE)
     auth_rbac_payload = json.loads(auth_rbac_text)
     assert auth_rbac_payload["schema_version"] == "ai-platform.release-evidence-entry.v1"
-    assert auth_rbac_payload["evidence_id"] == "2026-06-12-211-foundation-alpha-poc-458f605-auth-rbac-smoke"
-    assert auth_rbac_payload["commit_sha"] == "458f6056dd0fa533162e780a303d79ce1b3d0eec"
-    assert auth_rbac_payload["runtime_subject_commit_sha"] == "458f6056dd0fa533162e780a303d79ce1b3d0eec"
+    assert auth_rbac_payload["evidence_id"] == "2026-06-12-211-foundation-alpha-poc-8d61fd7-auth-rbac-smoke"
+    assert auth_rbac_payload["commit_sha"] == "8d61fd7cd8de8ec1cd99ce7e813a1431f9b672bf"
+    assert auth_rbac_payload["runtime_subject_commit_sha"] == "8d61fd7cd8de8ec1cd99ce7e813a1431f9b672bf"
     assert "record_commit_sha" not in auth_rbac_payload
-    assert (auth_rbac_payload["source_ref"].get("runtime_image") or auth_rbac_payload["source_ref"].get("image")) == "ai-platform:458f605-auth-rbac-redaction"
-    assert auth_rbac_payload["source_ref"]["image_id"] == "sha256:a91b3d1c62aacb4d52604e659d9e6ea30c1a96e7669547ba63e211f976554c9e"
-    assert auth_rbac_payload["source_ref"]["image_labels"]["ai-platform.source-revision"] == "458f6056dd0fa533162e780a303d79ce1b3d0eec"
+    assert (auth_rbac_payload["source_ref"].get("runtime_image") or auth_rbac_payload["source_ref"].get("image")) == "ai-platform:8d61fd7-context-projection-fixed"
+    assert auth_rbac_payload["source_ref"]["image_id"] == "sha256:b2c09010fe5dd433627004d74e1e0bbb048fd0d5aa0c3cb28017d8712abb6d17"
+    assert auth_rbac_payload["source_ref"]["image_labels"]["ai-platform.source-revision"] == "8d61fd7cd8de8ec1cd99ce7e813a1431f9b672bf"
     assert auth_rbac_payload["evidence_ref"]["result"] == "ok:true"
     assert auth_rbac_payload["evidence_ref"]["runtime_checks"]["unauthenticated_auth_me"]["status"] == 401
     assert auth_rbac_payload["evidence_ref"]["runtime_checks"]["authenticated_auth_me"]["route"] == "/api/ai/auth/me"

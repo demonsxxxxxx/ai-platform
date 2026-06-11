@@ -162,6 +162,7 @@ PUBLIC_CONTEXT_SUMMARY_PREFIX_ALIASES = {
     "provenance",
     "summary",
 }
+PUBLIC_CONTEXT_MEMORY_POLICY_SOURCE_VALUES = {"default", "not_recorded", "stored"}
 
 
 def _utc_now_iso() -> str:
@@ -269,6 +270,33 @@ def _stored_public_context_input_keys(payload: dict[str, Any]) -> list[str]:
     return _safe_public_context_input_keys(payload.get("input_keys"))
 
 
+def _stored_public_context_memory_policy_source(payload: dict[str, Any]) -> str | None:
+    memory_policy = payload.get("memory_policy")
+    if not isinstance(memory_policy, dict):
+        return None
+    source = memory_policy.get("source")
+    if not isinstance(source, str):
+        return None
+    source = source.strip()
+    return source if source in PUBLIC_CONTEXT_MEMORY_POLICY_SOURCE_VALUES else None
+
+
+def _stored_public_context_generated_at(payload: dict[str, Any]) -> str | None:
+    value = payload.get("context_pack_generated_at")
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    if sanitize_public_payload(value) != value:
+        return None
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return value
+
+
 def public_context_provenance(
     *,
     source: str,
@@ -322,6 +350,10 @@ def ensure_public_context_provenance(
 ) -> dict[str, Any]:
     sanitized_payload = public_context_payload(payload)
     input_keys = _stored_public_context_input_keys(payload) if preserve_stored_input_keys else None
+    stored_memory_policy_source = (
+        _stored_public_context_memory_policy_source(payload) if preserve_stored_input_keys else None
+    )
+    stored_generated_at = _stored_public_context_generated_at(payload) if preserve_stored_input_keys else None
     provenance = public_context_provenance(
         source=source,
         input_payload=sanitized_payload,
@@ -330,8 +362,9 @@ def ensure_public_context_provenance(
         file_count=file_count,
         artifact_count=artifact_count,
         memory_record_count=memory_record_count,
-        memory_policy_source=memory_policy_source,
+        memory_policy_source=stored_memory_policy_source or memory_policy_source,
         long_term_memory_read=long_term_memory_read,
+        generated_at=stored_generated_at,
     )
     return {**sanitized_payload, **provenance}
 

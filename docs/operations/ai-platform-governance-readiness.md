@@ -270,10 +270,12 @@ and generated time rather than raw message/file/artifact/memory IDs. The
 owner-scoped context snapshot API response no longer returns `included_*_ids`;
 those IDs stay in the scoped database row and worker lookup path only to compute
 public counts. Worker-side executor `context_ref` reconstruction resolves
-the scoped DB snapshot by id and regenerates public provenance/counts instead of
-trusting queue copies or stored payload provenance. This still does not persist
-versioned context packs, inject them into executor prompts, enable long-term
-cross-session memory, start Docker for lightweight office tasks, provide frontend
+the scoped DB snapshot by id, ignores queue-copy provenance, recomputes public
+counts from scoped DB fields, and preserves only server-generated safe summary
+metadata such as allowed memory policy source and context-pack generated time.
+This still does not persist versioned context packs, inject them into executor
+prompts, enable long-term cross-session memory, start Docker for lightweight
+office tasks, provide frontend
 acceptance, or expand G8/G10 multi-agent exposure.
 
 On 2026-06-08, commit `f7c6b0d9114748fa249acb88da6584851c48aa96` was synced to
