@@ -3443,8 +3443,8 @@ async def test_sdk_runner_honors_explicit_full_access_tool_policy_override(monke
 
     assert result.message == "ok"
     assert captured["permission_mode"] == "dontAsk"
-    assert captured["tools"] == ["Read", "Glob", "LS", "Bash"]
-    assert captured["allowed_tools"] == ["Read", "Glob", "LS", "Bash"]
+    assert captured["tools"] == ["Read", "Glob", "LS", "Bash", "Task"]
+    assert captured["allowed_tools"] == ["Read", "Glob", "LS", "Bash", "Task"]
     assert captured["disallowed_tools"] == []
     assert callable(captured["can_use_tool"])
     can_use_tool = captured["can_use_tool"]

@@ -8,11 +8,12 @@ current `ai-platform` control plane.
 Use these sources together, in this order, before implementation work:
 
 1. Current user instruction in the active session.
-2. `docs/superpowers/specs/2026-05-29-ai-platform-final-product-prd.md`.
-3. `docs/superpowers/plans/2026-06-02-ai-platform-foundation-roadmap.md`.
-4. This guardrails file.
-5. Current code, tests, and fresh 211 runtime evidence.
-6. GitHub issues #15/#16/#17 when the active goal names them as current
+2. `docs/superpowers/specs/2026-06-10-ai-platform-product-prd-v2.md`.
+3. `docs/superpowers/specs/2026-06-11-ai-platform-tech-acceptance.md`.
+4. `docs/superpowers/plans/2026-06-02-ai-platform-foundation-roadmap.md`.
+5. This guardrails file.
+6. Current code, tests, and fresh 211 runtime evidence.
+7. GitHub issues #15/#16/#17 when the active goal names them as current
    roadmap or workflow inputs.
 
 If these sources disagree, stop broad implementation and narrow the work to
@@ -108,6 +109,11 @@ source/version ownership as the current platform gates.
 
 ## Review And Deployment Guardrails
 
+- Goal-sized work and gate closures should follow
+  `docs/agent-rules/github-issue-pr-workflow.md`: issue -> PR -> review ->
+  merge -> deploy/smoke -> close issue. Do not close or auto-close an issue
+  until the linked PR has merged and required local, review, docs, and 211
+  evidence are recorded.
 - Stage or high-risk completion requires independent multi-agent review. If the
   delegation tool exposes per-agent model and reasoning controls, set them
   deliberately for task complexity. If it does not expose those fields, record

@@ -36,7 +36,7 @@ This file applies to the current `ai-platform` repository root.
 ## Source Of Truth
 
 - Use the current repository root as the local `ai-platform` source.
-- Use `docs/superpowers/specs/2026-05-29-ai-platform-final-product-prd.md`, `docs/superpowers/plans/2026-06-02-ai-platform-foundation-roadmap.md`, `docs/agent-rules/ai-platform-guardrails.md`, current code, and fresh 211 runtime evidence for ai-platform decisions.
+- Use `docs/superpowers/specs/2026-06-10-ai-platform-product-prd-v2.md`, `docs/superpowers/specs/2026-06-11-ai-platform-tech-acceptance.md`, `docs/superpowers/plans/2026-06-02-ai-platform-foundation-roadmap.md`, `docs/agent-rules/ai-platform-guardrails.md`, current code, and fresh 211 runtime evidence for ai-platform decisions.
 - Treat `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform` as the target 211 backend source path.
 - Treat `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform` as the target 211 repo-local deploy composition path after sync. If live container labels still point to `/home/xinlin.jiang/ai-platform-phaseb/deploy/ai-platform`, report that as stale runtime evidence that must be reconciled before claiming G0 Source Authority closure.
 - Treat `http://10.56.0.211:18001/` as the current 211 frontend entry.
@@ -69,6 +69,13 @@ Move frontend source into this repository and plan backend/worker/frontend
 multi-image delivery as future roadmap work. Do not make compose one-command
 startup or packaged delivery a current acceptance gate, and do not mount the
 Docker socket in the default stack.
+
+## GitHub Issue And PR Workflow
+
+Use GitHub issues and pull requests as the default closure loop for goal-sized
+work, gate closures, and newly discovered defects. Keep the detailed procedure
+in `docs/agent-rules/github-issue-pr-workflow.md` instead of expanding this
+entry file.
 
 ## Multi-Agent Delegation
 

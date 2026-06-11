@@ -11,11 +11,15 @@ import argparse
 import json
 import re
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib import error, request
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.validation import assert_safe_id
 
@@ -24,10 +28,21 @@ DEFAULT_FRONTEND_URL = "http://127.0.0.1:18001"
 DEFAULT_API_URL = "http://127.0.0.1:8020"
 DEFAULT_FRONTEND_DIST = "/home/xinlin.jiang/lambchat-poc/frontend-dist-ai-platform"
 DEFAULT_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/.env"
+DEFAULT_API_CONTAINER = "ai-platform-api"
 DEFAULT_POSTGRES_CONTAINER = "ai-platform-postgres"
 DEFAULT_POSTGRES_USER = "ai_platform"
 DEFAULT_POSTGRES_DB = "ai_platform"
 REQUIRED_UI_PERMISSIONS = {"agent:use", "artifact:download", "agent:admin", "model:admin", "settings:manage", "admin:status"}
+RUNTIME_ENV_ALLOWLIST = frozenset(
+    {
+        "CLAUDE_AGENT_SDK_ENABLED",
+        "CLAUDE_AGENT_MODEL",
+        "OPENAI_MODEL",
+        "ANTHROPIC_MODEL",
+        "CLAUDE_AGENT_SDK_SKILLS",
+        "EXISTING_AUTH_BASE_URL",
+    }
+)
 PREVIEW_ALLOWED_CONTENT_TYPES = frozenset(
     {
         "application/pdf",
@@ -196,6 +211,34 @@ def read_env(path: str) -> dict[str, str]:
     return values
 
 
+def read_container_runtime_env(container: str) -> dict[str, str]:
+    """Read only non-secret POC runtime keys from a running API container."""
+    command = ["sudo", "-n", "docker", "exec", container, "env"]
+    completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=30)
+    if completed.returncode != 0:
+        return {}
+    values: dict[str, str] = {}
+    for line in completed.stdout.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key in RUNTIME_ENV_ALLOWLIST:
+            values[key] = value
+    return values
+
+
+def runtime_env_values(env_path: str, container: str) -> dict[str, str]:
+    """Merge deploy-template values with allowlisted runtime values when needed."""
+    values = read_env(env_path)
+    missing_allowlisted = [key for key in RUNTIME_ENV_ALLOWLIST if key not in values]
+    if missing_allowlisted:
+        container_values = read_container_runtime_env(container)
+        for key in missing_allowlisted:
+            if key in container_values:
+                values[key] = container_values[key]
+    return values
+
+
 def text_files(root: Path) -> list[Path]:
     suffixes = {".html", ".js", ".mjs", ".css", ".json", ".webmanifest"}
     return [path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in suffixes]
@@ -330,8 +373,8 @@ def check_api_compat(api_url: str) -> Gate:
     )
 
 
-def check_runtime_config(env_path: str) -> Gate:
-    values = read_env(env_path)
+def check_runtime_config(env_path: str, values: dict[str, str] | None = None) -> Gate:
+    values = dict(values) if values is not None else read_env(env_path)
     skills = {item.strip() for item in values.get("CLAUDE_AGENT_SDK_SKILLS", "").split(",") if item.strip()}
     ok = (
         values.get("CLAUDE_AGENT_SDK_ENABLED", "").lower() == "true"
@@ -355,7 +398,18 @@ def check_runtime_config(env_path: str) -> Gate:
 
 
 def check_company_auth_bridge(existing_auth_base_url: str) -> Gate:
-    login_url = f"{existing_auth_base_url.rstrip('/')}/api/Login/"
+    base_url = existing_auth_base_url.rstrip("/")
+    if not base_url or not base_url.startswith(("http://", "https://")):
+        return Gate(
+            "company_auth_bridge",
+            False,
+            {
+                "configured": False,
+                "login_url": None,
+                "error": "missing_or_invalid_existing_auth_base_url",
+            },
+        )
+    login_url = f"{base_url}/api/Login/"
     status, payload = http_json_post(
         login_url,
         {"username": "__ai_platform_invalid_probe__", "password": "__invalid__"},
@@ -891,6 +945,7 @@ def main() -> int:
     parser.add_argument("--api-url", default=DEFAULT_API_URL)
     parser.add_argument("--frontend-dist", default=DEFAULT_FRONTEND_DIST)
     parser.add_argument("--env-path", default=DEFAULT_DEPLOY_ENV)
+    parser.add_argument("--api-container", default=DEFAULT_API_CONTAINER)
     parser.add_argument("--postgres-container", default=DEFAULT_POSTGRES_CONTAINER)
     parser.add_argument("--postgres-user", default=DEFAULT_POSTGRES_USER)
     parser.add_argument("--postgres-db", default=DEFAULT_POSTGRES_DB)
@@ -898,14 +953,14 @@ def main() -> int:
     args = parser.parse_args()
 
     db_gates = check_db_evidence(args.postgres_container, args.postgres_user, args.postgres_db)
-    env_values = read_env(args.env_path)
+    env_values = runtime_env_values(args.env_path, args.api_container)
     artifact_rows = [gate.evidence for gate in db_gates if gate.name in {"review_artifact", "translate_artifact"} and gate.ok]
     gates = [
         check_frontend(args.frontend_url),
         check_frontend_dist_api_boundary(args.frontend_dist),
         check_frontend_origin_api(args.frontend_url),
         check_api_compat(args.api_url),
-        check_runtime_config(args.env_path),
+        check_runtime_config(args.env_path, env_values),
         check_company_auth_bridge(env_values.get("EXISTING_AUTH_BASE_URL", "")),
         *db_gates,
         check_artifact_download_isolation(args.api_url, artifact_rows),

@@ -46,6 +46,12 @@ for public/admin operational proof, not executor private payloads, raw storage
 keys, sandbox workdirs, secret material, bearer tokens, database URLs, or Redis
 URLs.
 
+## Reviewed Entries
+
+| Date | Gate | Commit | Evidence | Status |
+| --- | --- | --- | --- | --- |
+| 2026-06-11 | Foundation Alpha POC | `3874281276c84a418bd08bda56d7ea55b52970b7` | [`2026-06-11-211-foundation-alpha-poc-smoke.json`](foundation-alpha-poc/3874281276c84a418bd08bda56d7ea55b52970b7/2026-06-11-211-foundation-alpha-poc-smoke.json) | 211 runtime smoke passed for the controlled POC loop; not production gate closure. |
+
 ## Entry Contract
 
 Each `ai-platform.release-evidence-entry.v1` entry must include:

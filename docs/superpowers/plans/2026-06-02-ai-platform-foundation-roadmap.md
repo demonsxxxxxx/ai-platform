@@ -4,7 +4,9 @@
 
 ## 文档权威
 
-本路线图只服务于 `docs/superpowers/specs/2026-05-29-ai-platform-final-product-prd.md`。
+本路线图只服务于 active product PRD
+`docs/superpowers/specs/2026-06-10-ai-platform-product-prd-v2.md`，并参考
+`docs/superpowers/specs/2026-06-11-ai-platform-tech-acceptance.md` 中的模块验收矩阵。
 
 后续 ai-platform 计划只允许引用当前 PRD、当前路线图、仓库 guardrails（`docs/agent-rules/ai-platform-guardrails.md`）、真实代码和当次 211 运行证据。任何非当前主链路重新进入范围，必须先更新 PRD、本路线图和 guardrails。
 

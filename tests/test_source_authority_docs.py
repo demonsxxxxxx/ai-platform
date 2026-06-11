@@ -2,9 +2,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PRD = ROOT / "docs/superpowers/specs/2026-05-29-ai-platform-final-product-prd.md"
+PRD = ROOT / "docs/superpowers/specs/2026-06-10-ai-platform-product-prd-v2.md"
+OLD_PRD = ROOT / "docs/superpowers/specs/2026-05-29-ai-platform-final-product-prd.md"
+TECH_ACCEPTANCE = ROOT / "docs/superpowers/specs/2026-06-11-ai-platform-tech-acceptance.md"
 ROADMAP = ROOT / "docs/superpowers/plans/2026-06-02-ai-platform-foundation-roadmap.md"
 GUARDRAILS = ROOT / "docs/agent-rules/ai-platform-guardrails.md"
+GITHUB_WORKFLOW = ROOT / "docs/agent-rules/github-issue-pr-workflow.md"
 AGENTS = ROOT / "AGENTS.md"
 COMPOSE = ROOT / "deploy/ai-platform/docker-compose.yml"
 ENV_EXAMPLE = ROOT / "deploy/ai-platform/.env.example"
@@ -16,10 +19,15 @@ FRONTEND_MIGRATION_DOC = ROOT / "docs/frontend/ai-platform-frontend-migration.md
 CAPACITY_BASELINE_DOC = ROOT / "docs/operations/ai-platform-capacity-baseline.md"
 OBSERVABILITY_READINESS_DOC = ROOT / "docs/operations/ai-platform-observability-readiness.md"
 GOVERNANCE_READINESS_DOC = ROOT / "docs/operations/ai-platform-governance-readiness.md"
+GATE_STATUS_DOC = ROOT / "docs/operations/ai-platform-gate-status.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
+FOUNDATION_ALPHA_POC_EVIDENCE = (
+    ROOT
+    / "docs/release-evidence/foundation-alpha-poc/3874281276c84a418bd08bda56d7ea55b52970b7/2026-06-11-211-foundation-alpha-poc-smoke.json"
+)
 SCHEMA = ROOT / "app/schema.sql"
 
-AUTHORITY_DOCS = [PRD, ROADMAP, GUARDRAILS, AGENTS]
+AUTHORITY_DOCS = [PRD, TECH_ACCEPTANCE, ROADMAP, GUARDRAILS, AGENTS]
 TARGET_211_BACKEND = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform"
 TARGET_211_DEPLOY = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform"
 STALE_LOCAL_PATHS = [
@@ -44,14 +52,128 @@ def test_schema_indexes_admin_tool_policy_history_audit_projection():
 
 def test_guardrails_document_exists_and_is_named_by_authority_docs():
     assert GUARDRAILS.exists()
+    assert GITHUB_WORKFLOW.exists()
     guardrails_text = read(GUARDRAILS)
     assert "ai-platform Guardrails" in guardrails_text
     assert "Current Source Boundaries" in guardrails_text
     assert "P0 Gate Order" in guardrails_text
 
     assert "docs/agent-rules/ai-platform-guardrails.md" in read(PRD)
+    assert "docs/agent-rules/github-issue-pr-workflow.md" in read(PRD)
+    assert "docs/agent-rules/github-issue-pr-workflow.md" in read(GUARDRAILS)
     assert "docs/agent-rules/ai-platform-guardrails.md" in read(ROADMAP)
     assert "docs/agent-rules/ai-platform-guardrails.md" in read(AGENTS)
+
+
+def test_active_prd_v2_records_appendix_and_closure_workflow_authority():
+    prd_text = read(PRD)
+    tech_text = read(TECH_ACCEPTANCE)
+    workflow_text = read(GITHUB_WORKFLOW)
+
+    assert "Status: active product PRD" in prd_text
+    assert "Status: active companion acceptance document" in tech_text
+    assert "2026-05-29 PRD remains a migration appendix" in prd_text
+    assert "This PRD v2 is the active product source" in prd_text
+    assert "docs/agent-rules/github-issue-pr-workflow.md" in prd_text
+    assert "issue -> PR -> review -> merge -> deploy/smoke when required -> close issue with evidence" in prd_text
+    assert "Use `Closes #N` or `Fixes #N` only when" in workflow_text
+    assert OLD_PRD.exists()
+
+
+def test_prd_roadmap_guardrails_share_current_gate_sequence():
+    prd_text = read(PRD)
+    roadmap_text = read(ROADMAP)
+    guardrails_text = read(GUARDRAILS)
+    gate_status_text = read(GATE_STATUS_DOC)
+
+    current_gate_names = (
+        "G0-G1 Source Authority / Security Baseline",
+        "G2-G4 Control Plane MVP",
+        "G5 Run Lifecycle / Worker Runtime V1",
+        "G6 Tool / Skill / Memory Governance",
+        "G7 Sandbox / Resource Hardening",
+        "G8 Multi-Agent Controlled Beta",
+        "G9 Observability / Quality / Ops",
+        "G10 Internal Beta / Department Rollout",
+    )
+    for gate_name in current_gate_names:
+        assert gate_name in prd_text or gate_name.replace("G0-G1 ", "G0 ") in prd_text
+        assert gate_name in roadmap_text
+        assert gate_name in guardrails_text
+        assert gate_name in gate_status_text
+
+    stale_gate_names = (
+        "G4 Skills Governance",
+        "G5 Memory/Context MVP",
+        "G6 MCP/Tool Permission",
+        "G9 Agent Frontend V1",
+        "G10 Long Task / Multi-Agent",
+        "G11 Beta",
+    )
+    for stale_gate_name in stale_gate_names:
+        assert stale_gate_name not in prd_text
+
+
+def test_gate_status_snapshot_records_blockers_without_closure_claim():
+    gate_status_text = read(GATE_STATUS_DOC)
+
+    assert "not automatic" in gate_status_text
+    assert "gate-closure evidence" in gate_status_text
+    assert "issue -> PR -> review -> merge -> 211 deploy/smoke -> close issue" in gate_status_text
+    assert "#17 frontend source migration" in gate_status_text
+    assert "#21 capacity baseline" in gate_status_text
+    assert "do_not_raise_without_recorded_load_test_evidence" in gate_status_text
+    assert "packaged frontend image smoke/release acceptance" in gate_status_text
+    assert "Foundation Alpha POC Smoke" in gate_status_text
+    assert "211 verified for Foundation Alpha POC" in gate_status_text
+    assert "3874281276c84a418bd08bda56d7ea55b52970b7" in gate_status_text
+    assert "signed package or SBOM review evidence" in gate_status_text
+    assert "Keep feature flags" in gate_status_text
+    assert "executor_private_payload" not in gate_status_text
+    assert "raw_storage_key" not in gate_status_text
+    assert "sandbox_workdir" not in gate_status_text
+    assert "api_key" not in gate_status_text
+    assert "C:\\Users" not in gate_status_text
+
+
+def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded():
+    import json
+
+    evidence_text = read(FOUNDATION_ALPHA_POC_EVIDENCE)
+    payload = json.loads(evidence_text)
+
+    assert payload["schema_version"] == "ai-platform.release-evidence-entry.v1"
+    assert payload["evidence_id"] == "2026-06-11-211-foundation-alpha-poc-smoke"
+    assert payload["commit_sha"] == "3874281276c84a418bd08bda56d7ea55b52970b7"
+    assert payload["gate"] == "Foundation Alpha POC"
+    assert payload["artifact_kind"] == "211_runtime_smoke"
+    assert payload["redaction_scan_status"] == "passed"
+    assert payload["review_status"] == "reviewed"
+    assert payload["evidence_ref"]["result"] == "ok:true"
+    assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["status"] == "succeeded"
+    assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["private_payload_leaked"] is False
+    assert payload["evidence_ref"]["runtime_checks"]["artifact_download_isolation"]["cross_user_status"] == 404
+    assert payload["evidence_ref"]["runtime_checks"]["artifact_preview_isolation"]["cache_control"] == "no-store"
+    assert "G9 release-evidence runtime export" in "\n".join(payload["open_followups"])
+
+    assert "2026-06-11-211-foundation-alpha-poc-smoke.json" in read(RELEASE_EVIDENCE_INDEX)
+
+    forbidden_markers = (
+        "executor_private_payload",
+        "raw_storage_key",
+        "sandbox_workdir",
+        "api_key",
+        "bearer ",
+        "database_url",
+        "redis_url",
+        "sk-",
+        "C:\\Users",
+        "artifact_storage_key",
+        "tenants/default/workspaces",
+    )
+    lowered = evidence_text.lower()
+    for marker in forbidden_markers:
+        assert marker.lower() not in lowered
 
 
 def test_source_authority_docs_keep_current_repo_and_211_deploy_boundary():
@@ -78,6 +200,7 @@ def test_env_template_satisfies_required_runtime_defaults_without_real_secrets()
     assert "SANDBOX_CALLBACK_TOKEN=change_me_sandbox_callback_token" in env_text
     assert "EXISTING_AUTH_BASE_URL=http://10.56.0.25:7263" in env_text
     assert "EXISTING_USER_INFO_BASE_URL=http://10.56.0.25:5166" in env_text
+    assert "CLAUDE_AGENT_SDK_MAX_TURNS=48" in env_text
     assert "EXISTING_AUTH_BASE_URL=http://10.56.0.211" not in env_text
     assert "sk-" not in env_text
     assert "Bearer " not in env_text
@@ -109,6 +232,12 @@ def test_compose_build_does_not_forward_secret_capable_package_index_args():
 
     assert "PIP_INDEX_URL" not in compose_text
     assert "PIP_TRUSTED_HOST" not in compose_text
+
+
+def test_compose_forwards_claude_agent_sdk_max_turns_to_api_and_worker():
+    compose_text = read(COMPOSE)
+
+    assert compose_text.count("CLAUDE_AGENT_SDK_MAX_TURNS: ${CLAUDE_AGENT_SDK_MAX_TURNS:-48}") == 2
 
 
 def test_agents_lock_211_runtime_verification_and_rebase_deploy_rules():
@@ -366,15 +495,18 @@ def test_prd_records_claude_code_deerflow_boundary_without_second_runtime():
     prd_text = read(PRD)
     roadmap_text = read(ROADMAP)
 
-    assert "Claude Code / Claude Agent SDK 是当前首选执行内核" in prd_text
-    assert "DeerFlow 只吸收为平台级 long-horizon product contract" in prd_text
-    assert "不是第二套 runtime 或控制面" in prd_text
-    assert "executor-private logs" in prd_text
-    assert "不能成为 platform source of truth" in prd_text
-    assert "不要复制 DeerFlow 作为第二控制面" in prd_text
-    assert "不要把 Claude Code 内部 subagents 等同于平台级 multi-run scheduling" in prd_text
-    assert "Platform Product Contract Gates" in prd_text
-    assert "Long Task Product Contract Gate (DeerFlow pattern)" in prd_text
+    assert "Claude Agent SDK is the current primary execution kernel" in prd_text
+    assert "DeerFlow 2.0 remains a long-horizon workflow and subagent/concurrency concept" in prd_text
+    assert "It is not a second ai-platform runtime, scheduler, or memory" in prd_text
+    assert "authority" in prd_text
+    assert "Executor-private logs" in prd_text
+    assert "private artifact metadata are never the platform source" in prd_text
+    assert "truth" in prd_text
+    assert "A second independent runtime/control plane" in prd_text
+    assert "direct replacement for ai-platform worker/runtime" in prd_text
+    assert "CLI-internal subagents are not automatically platform multi-agent runs" in prd_text
+    assert "G8 Multi-Agent Controlled Beta" in prd_text
+    assert "G10 Internal Beta / Department Rollout" in prd_text
     assert "Long Task Product Contract Adapter (DeerFlow pattern)" not in prd_text
 
     assert "Long Task Product Contract / Office Artifact Flow" in roadmap_text

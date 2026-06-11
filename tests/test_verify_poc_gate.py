@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from tools import verify_poc_gate
 
 
@@ -19,6 +21,16 @@ def test_api_compat_gate_requires_user_and_admin_permissions(monkeypatch):
 
     assert gate.ok is False
     assert gate.evidence["missing_permissions"] == ["admin:status", "agent:admin", "model:admin", "settings:manage"]
+
+
+def test_poc_gate_cli_bootstraps_repo_root_for_direct_script_execution():
+    script_text = Path("tools/verify_poc_gate.py").read_text(encoding="utf-8")
+    watcher_text = Path("tools/watch_poc_gate.py").read_text(encoding="utf-8")
+
+    required = 'sys.path.insert(0, str(Path(__file__).resolve().parents[1]))'
+    assert "import sys" in script_text
+    assert required in script_text
+    assert required in watcher_text
 
 
 def test_artifact_download_isolation_gate_accepts_owner_and_denies_cross_user(monkeypatch):
@@ -255,6 +267,52 @@ def test_company_auth_bridge_gate_requires_existing_login_backend(monkeypatch):
     assert gate.ok is True
     assert gate.evidence["login_probe_status"] == 200
     assert gate.evidence["login_probe_payload_status"] == "unsuccessfully!"
+
+
+def test_container_env_reads_only_poc_whitelisted_runtime_keys(monkeypatch):
+    completed = type(
+        "Completed",
+        (),
+        {
+            "returncode": 0,
+            "stdout": (
+                "CLAUDE_AGENT_SDK_ENABLED=true\n"
+                "CLAUDE_AGENT_MODEL=deepseek-v4-flash\n"
+                "OPENAI_MODEL=deepseek-v4-flash\n"
+                "ANTHROPIC_MODEL=deepseek-v4-flash\n"
+                "CLAUDE_AGENT_SDK_SKILLS=general-chat,qa-file-reviewer,baoyu-translate\n"
+                "EXISTING_AUTH_BASE_URL=http://10.56.0.25:7263\n"
+                "ANTHROPIC_AUTH_TOKEN=secret-token\n"
+            ),
+            "stderr": "",
+        },
+    )()
+
+    def fake_run(command, check=False, capture_output=True, text=True, timeout=30):
+        assert command[:4] == ["sudo", "-n", "docker", "exec"]
+        return completed
+
+    monkeypatch.setattr(verify_poc_gate.subprocess, "run", fake_run)
+
+    values = verify_poc_gate.read_container_runtime_env("ai-platform-api")
+
+    assert values == {
+        "CLAUDE_AGENT_SDK_ENABLED": "true",
+        "CLAUDE_AGENT_MODEL": "deepseek-v4-flash",
+        "OPENAI_MODEL": "deepseek-v4-flash",
+        "ANTHROPIC_MODEL": "deepseek-v4-flash",
+        "CLAUDE_AGENT_SDK_SKILLS": "general-chat,qa-file-reviewer,baoyu-translate",
+        "EXISTING_AUTH_BASE_URL": "http://10.56.0.25:7263",
+    }
+
+
+def test_company_auth_bridge_gate_rejects_missing_login_backend_without_traceback():
+    gate = verify_poc_gate.check_company_auth_bridge("")
+
+    assert gate.name == "company_auth_bridge"
+    assert gate.ok is False
+    assert gate.evidence["configured"] is False
+    assert gate.evidence["login_url"] is None
 
 
 def test_company_auth_bridge_gate_rejects_wrong_login_backend(monkeypatch):

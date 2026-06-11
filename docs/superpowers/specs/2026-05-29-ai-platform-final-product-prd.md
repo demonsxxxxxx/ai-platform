@@ -407,33 +407,26 @@ Enterprise User
 
 | Gate | 通过标准 | 未通过时阻断 |
 | --- | --- | --- |
-| G0 Source Authority | 本地、211、文档指向同一代码源和主链路 | 停止 implementation plan |
-| G1 Security MVP | CORS/auth/header/RBAC/tool deny-by-default 正确 | 不开放普通用户入口 |
-| G2 Control Plane | session/run/file/artifact/audit contract 稳定 | 不接新 executor |
-| G3 Queue Lifecycle | lease/retry/dead-letter/cancel/idempotency 可用 | 不做长任务 |
-| G4 Skills Governance | allowed/staged/used/version/dependency/snapshot 可审计 | 不迁移更多 Skills |
-| G5 Memory/Context MVP | context snapshot、memory policy、redaction、delete 可审计 | 禁止跨 session 记忆 |
-| G6 MCP/Tool Permission | tool allow/deny/ask/read-only/dangerous fail-closed | 禁止写工具 |
-| G7 Event/Playback Contract | typed event、SSE replay、ordinary/admin redaction 可用 | 不做复杂前端长任务展示 |
-| G8 Sandbox Lease | lease 边界清晰，资源隔离可证 | 禁止高风险 sandbox/tool |
-| G9 Agent Frontend V1 | 企业 Agent 前端、stream、artifact、permission、playback、file task UI 可验收 | 不开放普通用户试用 |
-| G10 Long Task / Multi-Agent | checkpoint、subagent、artifact tree、真实 provenance 可审计 | 仅保留单 agent/短任务 |
-| G11 Beta | 多用户并发、成本、质量、审计可运营 | 回退内部试用 |
+| G0-G1 Source Authority / Security Baseline | 本地、211、文档指向同一代码源和主链路；公司 AD/auth/session、CORS/header、RBAC、tenant/workspace/user 隔离、redaction 与 tool deny-by-default 正确 | 停止 implementation plan；不开放普通用户入口 |
+| G2-G4 Control Plane MVP | session/run/file/artifact/skill/tool/memory/event/audit contract 稳定；executor 只消费 platform payload | 不接新 executor 或新前端闭环 |
+| G5 Run Lifecycle / Worker Runtime V1 | queue、lease、heartbeat、retry、dead-letter、cancel、resume、checkpoint、idempotency、tenant-aware admission/backpressure 可审计、可运营 | 不提高生产并发默认值，不扩大多 tenant 高并发 |
+| G6 Tool / Skill / Memory Governance | tool allow/deny/ask、skill version/release/dependency policy、memory retention/redaction/delete/export 可运营且 fail-closed | 禁止写工具扩权、长期跨 session 记忆和普通用户 raw Skill 管理 |
+| G7 Sandbox / Resource Hardening | Docker provider、network/egress policy、runtime quota、orphan cleanup、container security options 与 211 smoke 可证 | 禁止高风险 sandbox/tool 扩大曝光 |
+| G8 Multi-Agent Controlled Beta | dispatcher、handoff、child reconciliation、parent rollup/cancel、tenant quota/backpressure 受控且 feature-flagged | 禁止普通用户多 agent beta |
+| G9 Observability / Quality / Ops | Admin Runtime、cost/token/latency/error taxonomy、golden-set eval、trace/audit export、alerts 与 release evidence 可运营 | 不进入 beta 放量或 gate closure |
+| G10 Internal Beta / Department Rollout | 1-2 个真实内网流程有明确 owner、成本/质量/审计/回滚证据 | 回退内部试用，不做部门放量 |
 
 ## 8. 实施顺序
 
 1. Source Authority。
-2. Security / Policy MVP。
-3. Control Plane contract。
-4. Queue / Run Lifecycle。
-5. Skills Governance。
-6. Memory / Context。
-7. MCP / Tool Permission。
-8. Event / Playback。
-9. Sandbox Lease / Workspace。
-10. Agent Frontend V1。
-11. Long Task / Multi-Agent Runtime。
-12. Observability / Quality。
+2. Security Baseline / Policy MVP。
+3. G2-G4 Control Plane MVP。
+4. G5 Run Lifecycle / Worker Runtime V1。
+5. G6 Tool / Skill / Memory Governance。
+6. G7 Sandbox / Resource Hardening。
+7. G8 Multi-Agent Controlled Beta，仅在前置 gate 通过后扩大。
+8. G9 Observability / Quality / Ops。
+9. G10 Internal Beta / Department Rollout。
 
 ## 9. 边界探测清单
 
