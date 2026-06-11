@@ -42,13 +42,13 @@ For source-only docs/tests/evidence syncs, write a local-only
 `tools/foundation_alpha_readiness.py` can prove the runtime-affecting delta is
 empty. Missing, stale, or malformed snapshot markers intentionally fail closed.
 
-On 2026-06-12, runtime subject commit
-`458f6056dd0fa533162e780a303d79ce1b3d0eec` was synced to the 211 runtime
-subject and the 211 API and worker ran `ai-platform:458f605-auth-rbac-redaction` with
+On 2026-06-12, PR #30 runtime subject commit
+`a63dbbd0b474cce3702b3485e6589f86155cf5aa` was synced to the 211 runtime
+subject and the 211 API and worker ran `ai-platform:a63dbbd-context-summary-source` with
 image ID
-`sha256:a91b3d1c62aacb4d52604e659d9e6ea30c1a96e7669547ba63e211f976554c9e`.
+`sha256:c8391dc6b1ff8ecb751bc624d5dbb5473005cbb61dee0d1da58cdac13370312c`.
 Both runtime source labels pointed to
-`458f6056dd0fa533162e780a303d79ce1b3d0eec`. Runtime labels pointed to the
+`a63dbbd0b474cce3702b3485e6589f86155cf5aa`. Runtime labels pointed to the
 repo-local compose file under
 `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform`,
 API health returned `ok`, and OpenAPI exposed
@@ -60,15 +60,17 @@ health, public/admin projection boundary, company auth bridge, general chat run,
 document review attachment run, artifact download isolation, artifact preview
 isolation, playback with preview URL and no private payload leakage, company
 login audit, Admin capacity/backpressure fields, and context snapshot public
-projection counts without raw material IDs. `tools/foundation_alpha_readiness.py`
+projection with `summary_source=chat_stream`, safe `input_keys=["message"]`,
+memory policy source, execution tier, generated-at presence, and no raw
+material IDs. `tools/foundation_alpha_readiness.py`
 promotes that context projection into the G6 evidence summary and fails closed
 as `missing_context_snapshot_public_projection` when an older smoke record lacks
 it. The current reviewed, redacted release-evidence entry is
-`docs/release-evidence/foundation-alpha-poc/458f6056dd0fa533162e780a303d79ce1b3d0eec/2026-06-12-211-foundation-alpha-poc-458f605-smoke.json`.
+`docs/release-evidence/foundation-alpha-poc/a63dbbd0b474cce3702b3485e6589f86155cf5aa/2026-06-12-211-foundation-alpha-poc-a63dbbd-smoke.json`.
 
 The focused Auth/RBAC verifier `tools/verify_auth_rbac_smoke.py` also returned
 `ok: true` on 211 against the same runtime. The refreshed 2026-06-12 00:36
-+08:00 smoke used runtime subject `458f605`. It verified unauthenticated `/api/auth/me`
++08:00 smoke used runtime subject `a63dbbd`. It verified unauthenticated `/api/auth/me`
 returns 401, platform `/api/ai/auth/me` returns the trusted principal with
 tenant match, invalid gateway secret access to `/api/ai/auth/me` fails with
 403, ordinary trusted principals are denied from Admin Runtime with 403, admin
@@ -78,9 +80,10 @@ PR #26 verifier fix allows legitimate Admin Runtime observability/readiness
 metric text such as token/cost/error summaries while continuing to fail closed
 on secret-like keys and credential-shaped values. The
 current reviewed, redacted Auth/RBAC evidence entry is
-`docs/release-evidence/foundation-alpha-poc/458f6056dd0fa533162e780a303d79ce1b3d0eec/2026-06-12-211-foundation-alpha-poc-458f605-auth-rbac-smoke.json`.
+`docs/release-evidence/foundation-alpha-poc/a63dbbd0b474cce3702b3485e6589f86155cf5aa/2026-06-12-211-foundation-alpha-poc-a63dbbd-auth-rbac-smoke.json`.
 
 Earlier smoke evidence for
+`458f6056dd0fa533162e780a303d79ce1b3d0eec`,
 `9b02836262fb0f238a7f90b9705bf39a8b298158`,
 `cdc09ba8867d91e8db76570fbf158e6d082da7cf`,
 `8f454696be0e9c532fa86bc61ef353e4d3dec4f8`,
@@ -89,7 +92,7 @@ Earlier smoke evidence for
 `8c0cffca63bc747fad0a5771f209acc8a608ab9e`,
 `bf20432f9889efa8b367afdf512c641068ba30bc`, and
 `3874281276c84a418bd08bda56d7ea55b52970b7` remains retained as historical evidence only; the current-main evidence above is the active Foundation Alpha POC reference.
-The immediately superseded runtime image was `ai-platform:9b02836-context-output`.
+The immediately superseded runtime image was `ai-platform:458f605-auth-rbac-redaction`.
 
 This smoke does not close #21 capacity, G7 Docker sandbox hardening, ordinary
 user multi-agent exposure, department rollout, release-evidence runtime export,

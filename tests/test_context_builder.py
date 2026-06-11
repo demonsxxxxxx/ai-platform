@@ -1,7 +1,12 @@
 import pytest
 from datetime import datetime
 
-from app.context_builder import initial_context_summary, public_context_payload, record_initial_context_snapshot
+from app.context_builder import (
+    ensure_public_context_provenance,
+    initial_context_summary,
+    public_context_payload,
+    record_initial_context_snapshot,
+)
 
 
 def test_initial_context_summary_strips_context_private_aliases_from_input_keys():
@@ -106,6 +111,82 @@ def test_public_context_payload_strips_raw_material_id_aliases_and_overencoded_p
         "profile_id": "public-profile-id",
         "safe_context_label": "kept",
     }
+
+
+def test_ensure_public_context_provenance_preserves_stored_safe_explainability_fields():
+    payload = {
+        "window": "current",
+        "used_context_summary": {
+            "source": "chat_stream",
+            "input_keys": ["message", "raw_storage_key"],
+            "memory_policy_source": "stored",
+            "long_term_memory_read": True,
+        },
+        "execution_tier": "document_worker",
+        "latest_artifact_version": "v7",
+        "context_pack_generated_at": "2026-06-12T01:23:45Z",
+    }
+
+    projected = ensure_public_context_provenance(
+        payload,
+        source="stored_context_snapshot",
+        message_count=1,
+        file_count=1,
+        artifact_count=1,
+        memory_record_count=0,
+        preserve_stored_input_keys=True,
+    )
+
+    assert projected["used_context_summary"] == {
+        "source": "chat_stream",
+        "input_keys": ["message"],
+        "memory_policy_source": "stored",
+        "long_term_memory_read": True,
+    }
+    assert projected["execution_tier"] == "document_worker"
+    assert projected["latest_artifact_version"] == "v7"
+    assert projected["context_pack_generated_at"] == "2026-06-12T01:23:45Z"
+    serialized = str(projected).lower()
+    assert "raw_storage_key" not in serialized
+
+
+def test_ensure_public_context_provenance_rejects_unsafe_stored_explainability_fields():
+    payload = {
+        "window": "current",
+        "used_context_summary": {
+            "source": "forged_source",
+            "input_keys": ["raw_storage_key"],
+            "memory_policy_source": "forged_policy",
+            "long_term_memory_read": True,
+        },
+        "execution_tier": "private_root_shell",
+        "latest_artifact_version": "artifact-a",
+        "context_pack_generated_at": "not-a-date",
+    }
+
+    projected = ensure_public_context_provenance(
+        payload,
+        source="stored_context_snapshot",
+        message_count=1,
+        file_count=1,
+        artifact_count=0,
+        memory_record_count=0,
+        preserve_stored_input_keys=True,
+    )
+
+    assert projected["used_context_summary"] == {
+        "source": "stored_context_snapshot",
+        "input_keys": ["window"],
+        "memory_policy_source": "not_recorded",
+        "long_term_memory_read": False,
+    }
+    assert projected["execution_tier"] == "sdk_only_writing"
+    assert projected["latest_artifact_version"] is None
+    assert datetime.fromisoformat(projected["context_pack_generated_at"].replace("Z", "+00:00"))
+    assert projected["context_pack_generated_at"] != "not-a-date"
+    serialized = str(projected).lower()
+    assert "raw_storage_key" not in serialized
+    assert "artifact-a" not in serialized
 
 
 def test_initial_context_summary_includes_public_context_provenance_contract():
