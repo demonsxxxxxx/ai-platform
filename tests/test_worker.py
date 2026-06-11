@@ -1099,6 +1099,98 @@ async def test_worker_uses_scoped_db_context_snapshot_when_queue_copy_missing(mo
 
 
 @pytest.mark.asyncio
+async def test_worker_preserves_stored_safe_summary_metadata_when_payload_has_only_provenance(monkeypatch):
+    captured = {}
+
+    class CaptureAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            captured["payload"] = payload
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="capture-adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="capture/1",
+                capabilities={},
+                result={"message": "done"},
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        return "evt-context"
+
+    async def get_context_snapshot_for_worker(conn, **kwargs):
+        return {
+            "id": "ctx-existing",
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "trace_id": "trace_run_a",
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_kind": "executor",
+            "included_message_ids": ["msg-a"],
+            "included_file_ids": ["file-a"],
+            "included_artifact_ids": [],
+            "included_memory_record_ids": [],
+            "redaction_summary_json": {},
+            "payload_json": {
+                "memory_policy": {
+                    "source": "stored",
+                    "memory_enabled": False,
+                    "long_term_memory_enabled": False,
+                    "retention_days": 30,
+                },
+                "used_context_summary": {
+                    "source": "runs_api",
+                    "input_keys": ["message", "attachments", "raw_storage_key"],
+                    "memory_policy_source": "stored",
+                    "long_term_memory_read": False,
+                },
+                "context_pack_generated_at": "2026-06-12T01:23:45Z",
+            },
+            "created_at": None,
+        }
+
+    async def fail_record_context(*args, **kwargs):
+        raise AssertionError("context_snapshot_id-only payload must resolve scoped DB snapshot")
+
+    async def complete_run(conn, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr("app.worker.record_initial_context_snapshot", fail_record_context)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    outcome = await process_run_payload(
+        base_payload(
+            executor_type="claude-agent-worker",
+            context_snapshot_id="ctx-existing",
+            context_snapshot={},
+        ),
+        AdapterRegistry({"claude-agent-worker": CaptureAdapter()}),
+    )
+
+    assert outcome.status == "succeeded"
+    assert captured["payload"].context_snapshot["used_context_summary"] == {
+        "source": "stored_context_snapshot",
+        "input_keys": ["attachments", "message"],
+        "memory_policy_source": "stored",
+        "long_term_memory_read": False,
+    }
+    assert captured["payload"].context_snapshot["context_pack_generated_at"] == "2026-06-12T01:23:45Z"
+    serialized = json.dumps(captured["payload"].context_snapshot, ensure_ascii=False).lower()
+    assert "raw_storage_key" not in serialized
+
+
+@pytest.mark.asyncio
 async def test_worker_rebuilds_db_context_snapshot_with_public_provenance(monkeypatch):
     captured = {}
 

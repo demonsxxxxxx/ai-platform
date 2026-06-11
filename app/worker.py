@@ -725,6 +725,7 @@ def _context_snapshot_ref_from_row(row: dict[str, Any]) -> dict[str, Any]:
         memory_record_count=_included_count(row, "included_memory_record_ids", payload, "memory_record_count"),
         memory_policy_source="not_recorded",
         long_term_memory_read=False,
+        preserve_stored_input_keys=True,
     )
     context_ref: dict[str, Any] = {
         "schema_version": str(row.get("schema_version") or payload.get("schema_version") or CONTEXT_SNAPSHOT_SCHEMA_VERSION),

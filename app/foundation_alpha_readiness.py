@@ -401,6 +401,20 @@ def _safe_runtime_check(value: Any) -> dict[str, Any]:
     return deepcopy(value) if isinstance(value, dict) else {}
 
 
+def _safe_context_input_keys(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    keys: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            return []
+        stripped = item.strip()
+        if not stripped:
+            return []
+        keys.append(stripped)
+    return sorted(keys)
+
+
 def _artifact_review_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     document_review = _safe_runtime_check(runtime_checks.get("document_review_attachment_run"))
     return {
@@ -438,16 +452,57 @@ def _context_projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any
             "raw_material_id_fields_present": None,
             "forbidden_projection_leak_count": None,
             "summary_source": None,
+            "input_keys": [],
+            "memory_policy_source": None,
+            "long_term_memory_read": None,
+            "execution_tier": None,
+            "context_pack_generated_at_present": False,
+            "missing_public_summary_fields": [
+                "context_pack_generated_at",
+                "execution_tier",
+                "input_keys",
+                "long_term_memory_read",
+                "memory_policy_source",
+                "summary_source",
+            ],
         }
 
     forbidden_leaks = projection.get("forbidden_projection_leaks")
     forbidden_leak_count = len(forbidden_leaks) if isinstance(forbidden_leaks, list) else None
     raw_material_id_fields_present = projection.get("raw_material_id_fields_present")
+    input_keys = _safe_context_input_keys(projection.get("input_keys"))
+    summary_source = projection.get("summary_source") if isinstance(projection.get("summary_source"), str) else None
+    memory_policy_source = (
+        projection.get("memory_policy_source") if isinstance(projection.get("memory_policy_source"), str) else None
+    )
+    long_term_memory_read = (
+        projection.get("long_term_memory_read") if isinstance(projection.get("long_term_memory_read"), bool) else None
+    )
+    execution_tier = projection.get("execution_tier") if isinstance(projection.get("execution_tier"), str) else None
+    generated_at_present = bool(projection.get("context_pack_generated_at_present"))
+    missing_public_summary_fields: list[str] = []
+    if not summary_source:
+        missing_public_summary_fields.append("summary_source")
+    if not input_keys:
+        missing_public_summary_fields.append("input_keys")
+    if memory_policy_source is None:
+        missing_public_summary_fields.append("memory_policy_source")
+    if long_term_memory_read is None:
+        missing_public_summary_fields.append("long_term_memory_read")
+    if not execution_tier:
+        missing_public_summary_fields.append("execution_tier")
+    if not generated_at_present:
+        missing_public_summary_fields.append("context_pack_generated_at")
+    reported_missing = projection.get("missing_public_summary_fields")
+    if isinstance(reported_missing, list):
+        missing_public_summary_fields.extend(str(item) for item in reported_missing if str(item).strip())
+    missing_public_summary_fields = sorted(set(missing_public_summary_fields))
     status = (
         "verified_public_context_projection"
         if projection.get("ok") is True
         and raw_material_id_fields_present is False
         and forbidden_leak_count == 0
+        and not missing_public_summary_fields
         else "context_snapshot_public_projection_followup_required"
     )
     counts = projection.get("referenced_material_counts")
@@ -458,7 +513,13 @@ def _context_projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any
         if isinstance(raw_material_id_fields_present, bool)
         else None,
         "forbidden_projection_leak_count": forbidden_leak_count,
-        "summary_source": projection.get("summary_source") if isinstance(projection.get("summary_source"), str) else None,
+        "summary_source": summary_source,
+        "input_keys": input_keys,
+        "memory_policy_source": memory_policy_source,
+        "long_term_memory_read": long_term_memory_read,
+        "execution_tier": execution_tier,
+        "context_pack_generated_at_present": generated_at_present,
+        "missing_public_summary_fields": missing_public_summary_fields,
     }
 
 
@@ -526,10 +587,13 @@ def _poc_loop_status(runtime_relation: dict[str, Any]) -> str:
     return "runtime_rollout_required"
 
 
-def _operator_context(runtime_relation: dict[str, Any]) -> dict[str, Any]:
+def _operator_context(runtime_relation: dict[str, Any], *, context_projection_verified: bool = True) -> dict[str, Any]:
+    poc_loop_status = _poc_loop_status(runtime_relation)
+    if runtime_relation.get("runtime_relevant_source_matches") and not context_projection_verified:
+        poc_loop_status = "context_snapshot_public_summary_followup_required"
     return {
         "poc_scope": "foundation_alpha_controlled_internal_poc",
-        "poc_loop_status": _poc_loop_status(runtime_relation),
+        "poc_loop_status": poc_loop_status,
         "current_runtime_relation": runtime_relation["status"],
         "stage_gate": "foundation_alpha_poc_not_production",
         "verified_poc_capabilities": [
@@ -719,6 +783,12 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             ],
         },
     }
+    context_projection_summary = domains["g6_poc_governance"]["evidence"]["context_snapshot_public_projection"]
+    context_projection_verified = (
+        isinstance(context_projection_summary, dict)
+        and context_projection_summary.get("status") == "verified_public_context_projection"
+    )
+    poc_loop_verified_for_current_source = runtime_relevant_source_matches and context_projection_verified
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -733,10 +803,13 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             "poc_smoke": _path_for_output(smoke_evidence_path),
             "auth_rbac_smoke": _path_for_output(auth_rbac_evidence_path),
         },
-        "operator_context": _operator_context(runtime_relation),
+        "operator_context": _operator_context(
+            runtime_relation,
+            context_projection_verified=context_projection_verified,
+        ),
         "decision": {
             "reviewed_poc_loop_evidence_available": True,
-            "controlled_poc_loop_verified_for_current_source": runtime_relevant_source_matches,
+            "controlled_poc_loop_verified_for_current_source": poc_loop_verified_for_current_source,
             "current_source_verified_by_running_runtime": runtime_relevant_source_matches,
             "current_source_exact_runtime_commit_match": runtime_matches_source_tree,
             "runtime_rollout_required_for_current_source": not runtime_relevant_source_matches,
@@ -782,6 +855,21 @@ def render_foundation_alpha_readiness_markdown(readiness: dict[str, Any]) -> str
                     f"Context snapshot public projection: `{context_projection.get('status')}`\n\n"
                     f"Context referenced material counts: `{count_summary}`\n\n"
                 )
+                input_keys = context_projection.get("input_keys")
+                input_key_summary = ",".join(input_keys) if isinstance(input_keys, list) and input_keys else "none"
+                evidence_lines += (
+                    "Context public summary: `"
+                    f"source={context_projection.get('summary_source')}, "
+                    f"input_keys={input_key_summary}, "
+                    f"memory_policy={context_projection.get('memory_policy_source')}, "
+                    f"long_term_memory_read={context_projection.get('long_term_memory_read')}, "
+                    f"tier={context_projection.get('execution_tier')}, "
+                    f"generated_at={context_projection.get('context_pack_generated_at_present')}`\n\n"
+                )
+                missing_fields = context_projection.get("missing_public_summary_fields")
+                if isinstance(missing_fields, list) and missing_fields:
+                    missing_summary = ",".join(str(item) for item in missing_fields)
+                    evidence_lines += f"Missing context public summary fields: `{missing_summary}`\n\n"
         domain_sections.append(
             f"### {name}\n\n"
             f"Status: `{domain['status']}`\n\n"
