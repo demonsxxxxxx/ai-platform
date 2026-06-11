@@ -13,9 +13,13 @@ issue -> PR -> review -> merge -> 211 deploy/smoke -> close issue workflow in
 
 Status: `211 verified for Foundation Alpha POC`, not production gate closure.
 
-On 2026-06-11, after PR #24 merged, the 211 API and worker were running
-`ai-platform:bf20432-foundation-alpha-poc` with source revision
-`bf20432f9889efa8b367afdf512c641068ba30bc`. Runtime labels pointed to the
+On 2026-06-11, current `main` commit
+`8c0cffca63bc747fad0a5771f209acc8a608ab9e` was synced to 211 source and the
+211 API and worker were running `ai-platform:8c0cffc-foundation-alpha-poc`
+with image ID
+`sha256:a596cdb2ff2f54658d1298f6882b7623c6ab790b1bc077f826a5eb6bf14a2220`.
+Both runtime source labels pointed to
+`8c0cffca63bc747fad0a5771f209acc8a608ab9e`. Runtime labels pointed to the
 repo-local compose file under
 `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform`,
 API health returned `ok`, and OpenAPI exposed
@@ -28,20 +32,19 @@ document review attachment run, artifact download isolation, artifact preview
 isolation, playback with preview URL and no private payload leakage, company
 login audit, and Admin capacity/backpressure fields. The reviewed, redacted
 release-evidence entry is
-`docs/release-evidence/foundation-alpha-poc/bf20432f9889efa8b367afdf512c641068ba30bc/2026-06-11-211-foundation-alpha-poc-merged-smoke.json`.
+`docs/release-evidence/foundation-alpha-poc/8c0cffca63bc747fad0a5771f209acc8a608ab9e/2026-06-11-211-foundation-alpha-poc-current-main-smoke.json`.
 
 The focused Auth/RBAC verifier `tools/verify_auth_rbac_smoke.py` also returned
-`ok: true` on 211 against the same `bf20432` runtime after syncing verifier
-source commit `3a3da257484d4d430a7a26e00a6f1cdae39a2b12` only. It verified
+`ok: true` on 211 against the same current-main runtime. It verified
 unauthenticated `/api/auth/me` returns 401, ordinary trusted principals are
 denied from Admin Runtime with 403, admin trusted principals can read the
 required Admin Runtime sections with 200, and the projection scan did not find
 private or secret-like values. The reviewed, redacted evidence entry is
-`docs/release-evidence/foundation-alpha-poc/bf20432f9889efa8b367afdf512c641068ba30bc/2026-06-11-211-foundation-alpha-poc-auth-rbac-smoke.json`.
+`docs/release-evidence/foundation-alpha-poc/8c0cffca63bc747fad0a5771f209acc8a608ab9e/2026-06-11-211-foundation-alpha-poc-current-main-auth-rbac-smoke.json`.
 
-The earlier pre-merge smoke for
-`3874281276c84a418bd08bda56d7ea55b52970b7` remains retained as historical evidence only; the merged-head evidence above is the current Foundation Alpha
-POC reference.
+Earlier smoke evidence for
+`bf20432f9889efa8b367afdf512c641068ba30bc` and
+`3874281276c84a418bd08bda56d7ea55b52970b7` remains retained as historical evidence only; the current-main evidence above is the active Foundation Alpha POC reference.
 
 This smoke does not close #21 capacity, G7 Docker sandbox hardening, ordinary
 user multi-agent exposure, department rollout, release-evidence runtime export,
