@@ -111,6 +111,7 @@ def test_observability_readiness_records_g9_domains_and_open_gaps_without_secret
     assert "trace_audit_export_211_acceptance" in domains["alerts_and_exports"]["gaps"]
     assert "release_evidence_export_location" not in domains["alerts_and_exports"]["gaps"]
     assert "release_evidence_export_location_contract" in domains["alerts_and_exports"]["implemented"]
+    assert "release_evidence_export_acceptance_preflight" in domains["alerts_and_exports"]["implemented"]
     assert "release_evidence_runtime_export_acceptance" in domains["alerts_and_exports"]["gaps"]
     assert "model_gateway_request_concurrency_limit" in readiness["open_gaps"]
     assert "latency_percentile_runtime_211_acceptance" not in readiness["open_gaps"]
@@ -333,6 +334,13 @@ def test_release_evidence_readiness_contract_defines_safe_export_location_withou
         "Redis URL",
     ]
     assert readiness["evidence_contract"]["does_not_close_g9"] is True
+    assert readiness["export_acceptance"]["schema_version"] == "ai-platform.release-evidence-export-acceptance.v1"
+    assert readiness["export_acceptance"]["status"] == "ready_for_operator_review"
+    assert readiness["export_acceptance"]["export_policy"] == "safe_reviewed_index_only_not_runtime_export"
+    assert readiness["export_acceptance"]["blocked_entry_count"] == 0
+    assert readiness["export_acceptance"]["safe_entry_count"] >= 1
+    assert readiness["export_acceptance"]["does_not_export_raw_runtime_payloads"] is True
+    assert readiness["export_acceptance"]["does_not_close_g9"] is True
     assert readiness["retention_policy"]["schema_version"] == "ai-platform.release-evidence-retention-policy.v1"
     assert readiness["retention_policy"]["status"] == "contract_only_not_runtime_enforced"
     assert readiness["retention_policy"]["default_retention_days"] == 180
@@ -437,6 +445,10 @@ def test_observability_readiness_includes_release_evidence_contract_without_clos
     assert evidence["status"] == "partial_blocked"
     assert evidence["export_location"]["path"] == "docs/release-evidence/"
     assert evidence["evidence_contract"]["does_not_close_g9"] is True
+    assert evidence["export_acceptance"]["schema_version"] == "ai-platform.release-evidence-export-acceptance.v1"
+    assert evidence["export_acceptance"]["status"] == "ready_for_operator_review"
+    assert evidence["export_acceptance"]["blocked_entry_count"] == 0
+    assert evidence["export_acceptance"]["does_not_close_g9"] is True
     assert evidence["retention_policy"]["schema_version"] == "ai-platform.release-evidence-retention-policy.v1"
     assert evidence["retention_policy"]["forbidden_delete_targets"] == [
         "raw runtime payload",
@@ -633,6 +645,9 @@ def test_render_observability_readiness_markdown_is_operator_readable_and_gap_fi
     assert "trace_audit_export_dashboard_acceptance" in markdown
     assert "trace_audit_export_211_acceptance" in markdown
     assert "release_evidence_export_location_contract" in markdown
+    assert "release_evidence_export_acceptance_preflight" in markdown
+    assert "ai-platform.release-evidence-export-acceptance.v1" in markdown
+    assert "safe_reviewed_index_only_not_runtime_export" in markdown
     assert "release_evidence_retention_policy_contract" in markdown
     assert "ai-platform.release-evidence-readiness.v1" in markdown
     assert "ai-platform.release-evidence-retention-policy.v1" in markdown
@@ -695,6 +710,8 @@ def test_release_evidence_readiness_cli_outputs_json_without_secret_markers():
     payload = json.loads(result.stdout)
     assert payload["schema_version"] == "ai-platform.release-evidence-readiness.v1"
     assert payload["export_location"]["path"] == "docs/release-evidence/"
+    assert payload["export_acceptance"]["schema_version"] == "ai-platform.release-evidence-export-acceptance.v1"
+    assert payload["export_acceptance"]["does_not_close_g9"] is True
     assert payload["status"] == "partial_blocked"
     assert "executor_private_payload" not in result.stdout
     assert "raw_storage_key" not in result.stdout

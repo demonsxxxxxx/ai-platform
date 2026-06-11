@@ -162,6 +162,7 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
                 "alert_delivery_channel_policy_contract",
                 "trace_audit_export_contract",
                 "release_evidence_export_location_contract",
+                "release_evidence_export_acceptance_preflight",
                 "release_evidence_retention_policy_contract",
             ],
             gaps=[
@@ -320,6 +321,9 @@ def _render_model_gateway_backpressure_policy(policy: dict[str, Any]) -> str:
 def _render_release_evidence(release: dict[str, Any]) -> str:
     location = release.get("export_location") if isinstance(release.get("export_location"), dict) else {}
     contract = release.get("evidence_contract") if isinstance(release.get("evidence_contract"), dict) else {}
+    export_acceptance = (
+        release.get("export_acceptance") if isinstance(release.get("export_acceptance"), dict) else {}
+    )
     retention = release.get("retention_policy") if isinstance(release.get("retention_policy"), dict) else {}
     open_gaps = release.get("open_gaps")
     gap_lines = ""
@@ -338,6 +342,10 @@ def _render_release_evidence(release: dict[str, Any]) -> str:
         f"- `{release.get('schema_version')}` status `{release.get('status')}`\n"
         f"- export location `{location.get('path')}` index `{location.get('index')}`\n"
         f"- evidence entry schema `{contract.get('schema_version')}` at `{contract.get('write_path')}`\n"
+        f"- export acceptance `{export_acceptance.get('schema_version')}` status "
+        f"`{export_acceptance.get('status')}` policy `{export_acceptance.get('export_policy')}`\n"
+        f"- safe reviewed index count `{export_acceptance.get('safe_entry_count')}` blocked entries "
+        f"`{export_acceptance.get('blocked_entry_count')}`\n"
         f"- retention policy `{retention.get('schema_version')}` status `{retention.get('status')}`\n"
         f"- does not close G9 `{contract.get('does_not_close_g9')}`\n"
         "Nested release-evidence gaps:\n\n"

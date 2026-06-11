@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from app.release_evidence_export_acceptance import build_release_evidence_export_acceptance
+
 
 SCHEMA_VERSION = "ai-platform.release-evidence-readiness.v1"
 ENTRY_SCHEMA_VERSION = "ai-platform.release-evidence-entry.v1"
@@ -86,6 +88,7 @@ _OPEN_GAPS = [
 
 def build_release_evidence_readiness() -> dict[str, Any]:
     """Build the source-level G9 release evidence export-location contract."""
+    export_acceptance = build_release_evidence_export_acceptance()
     return {
         "schema_version": SCHEMA_VERSION,
         "gate": GATE_NAME,
@@ -105,6 +108,7 @@ def build_release_evidence_readiness() -> dict[str, Any]:
             "does_not_export_raw_runtime_payloads": True,
             "does_not_close_g9": True,
         },
+        "export_acceptance": export_acceptance,
         "retention_policy": deepcopy(_RETENTION_POLICY),
         "open_gaps": list(_OPEN_GAPS),
         "does_not_close_g9": True,

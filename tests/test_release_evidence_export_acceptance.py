@@ -1,0 +1,153 @@
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+from app.release_evidence_export_acceptance import build_release_evidence_export_acceptance
+
+
+VALID_COMMIT = "d95107da2b5691781518bdbb8c4e5e76409869f3"
+
+
+def _valid_entry(**overrides):
+    entry = {
+        "schema_version": "ai-platform.release-evidence-entry.v1",
+        "evidence_id": "test-release-evidence",
+        "commit_sha": VALID_COMMIT,
+        "runtime_subject_commit_sha": VALID_COMMIT,
+        "gate": "Foundation Alpha POC",
+        "issue_refs": ["#15"],
+        "pr_refs": ["#30"],
+        "artifact_kind": "211_runtime_smoke",
+        "captured_at": "2026-06-12T05:24:02+08:00",
+        "source_ref": {
+            "branch": "main",
+            "runtime_commit": VALID_COMMIT,
+            "runtime_source_marker": VALID_COMMIT,
+            "image": "ai-platform:d95107d-context-projection",
+            "image_id": "sha256:1c6bad9766cacb4d7bebfed38b3616dc559e04c155f2ccf495d5b84ce58d2815",
+            "image_labels": {
+                "ai-platform.source-revision": VALID_COMMIT,
+                "org.opencontainers.image.revision": VALID_COMMIT,
+            },
+        },
+        "evidence_ref": {
+            "verifier": "tools/verify_poc_gate.py",
+            "result": "ok:true",
+            "runtime_checks": {
+                "private_payload_leaked": False,
+            },
+        },
+        "redaction_scan_status": "passed",
+        "review_status": "reviewed",
+    }
+    entry.update(overrides)
+    return entry
+
+
+def _write_entry(root: Path, entry: dict):
+    entry_dir = root / "foundation-alpha-poc" / entry["commit_sha"]
+    entry_dir.mkdir(parents=True, exist_ok=True)
+    entry_path = entry_dir / f"{entry['evidence_id']}.json"
+    entry_path.write_text(json.dumps(entry), encoding="utf-8")
+    (root / "README.md").write_text("# ai-platform Release Evidence Index\n", encoding="utf-8")
+    return entry_path
+
+
+def test_release_evidence_export_acceptance_indexes_current_tree_without_raw_payloads():
+    acceptance = build_release_evidence_export_acceptance()
+
+    assert acceptance["schema_version"] == "ai-platform.release-evidence-export-acceptance.v1"
+    assert acceptance["status"] == "ready_for_operator_review"
+    assert acceptance["entry_count"] >= 1
+    assert acceptance["blockers"] == []
+    assert acceptance["blocked_entries"] == []
+    assert acceptance["excluded_entry_count"] >= 1
+    assert acceptance["does_not_close_g9"] is True
+    assert acceptance["does_not_export_raw_runtime_payloads"] is True
+    assert acceptance["export_policy"] == "safe_reviewed_index_only_not_runtime_export"
+    assert "release_evidence_runtime_export_acceptance" in acceptance["open_gaps"]
+
+    first_entry = acceptance["entries"][0]
+    assert set(first_entry) == {
+        "path",
+        "evidence_id",
+        "commit_sha",
+        "runtime_subject_commit_sha",
+        "gate",
+        "issue_refs",
+        "pr_refs",
+        "artifact_kind",
+        "captured_at",
+        "redaction_scan_status",
+        "review_status",
+    }
+    assert "source_ref" not in first_entry
+    assert "evidence_ref" not in first_entry
+
+    serialized = json.dumps(acceptance, ensure_ascii=False).lower()
+    assert "c:\\users" not in serialized
+    assert "executor_private_payload" not in serialized
+    assert "raw_storage_key" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "database_url" not in serialized
+    assert "redis_url" not in serialized
+    assert "sk-secret" not in serialized
+
+
+def test_release_evidence_export_acceptance_fails_closed_on_private_payload(tmp_path):
+    unsafe_entry = _valid_entry(
+        evidence_ref={
+            "verifier": "tools/verify_poc_gate.py",
+            "result": "ok:true",
+            "runtime_checks": {
+                "private_payload": {
+                    "raw_storage_key": "tenant/raw/secret-value",
+                },
+            },
+        }
+    )
+    _write_entry(tmp_path, unsafe_entry)
+
+    acceptance = build_release_evidence_export_acceptance(evidence_root=tmp_path)
+
+    assert acceptance["status"] == "blocked_forbidden_evidence"
+    assert acceptance["entry_count"] == 1
+    assert acceptance["safe_entry_count"] == 0
+    assert acceptance["blockers"]
+    assert acceptance["blocked_entry_count"] == 1
+    assert acceptance["entries"] == []
+    assert acceptance["does_not_export_raw_runtime_payloads"] is True
+
+    serialized = json.dumps(acceptance, ensure_ascii=False).lower()
+    assert "secret-value" not in serialized
+    assert "tenant/raw" not in serialized
+    assert "private_payload" not in serialized
+    assert "raw_storage_key" not in serialized
+
+
+def test_release_evidence_export_acceptance_cli_outputs_safe_json(tmp_path):
+    _write_entry(tmp_path, _valid_entry())
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/release_evidence_export_acceptance.py",
+            "--format",
+            "json",
+            "--evidence-root",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "ai-platform.release-evidence-export-acceptance.v1"
+    assert payload["status"] == "ready_for_operator_review"
+    assert payload["entry_count"] == 1
+    assert payload["safe_entry_count"] == 1
+    assert "executor_private_payload" not in result.stdout
+    assert "raw_storage_key" not in result.stdout
+    assert "sandbox_workdir" not in result.stdout

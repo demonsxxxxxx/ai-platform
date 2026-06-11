@@ -13,6 +13,21 @@ python tools/release_evidence_readiness.py --format markdown
 python tools/release_evidence_readiness.py --format json
 ```
 
+Generate the source-level export acceptance preflight separately:
+
+```powershell
+python tools/release_evidence_export_acceptance.py --format markdown
+python tools/release_evidence_export_acceptance.py --format json
+```
+
+The preflight scans reviewed evidence entries and emits only a safe reviewed
+index with entry path, IDs, commit, gate, issue/PR refs, artifact kind,
+timestamps, redaction status, and review status. It does not include
+`source_ref`, `evidence_ref`, executor-private payloads, raw storage keys,
+sandbox work directories, or secret-like data. Older reviewed runtime smoke
+entries that predate `runtime_subject_commit_sha` are excluded from the safe
+index instead of blocking current export acceptance.
+
 Generate the current Foundation Alpha POC operator summary separately:
 
 ```powershell
@@ -59,6 +74,12 @@ python tools/trace_audit_export_readiness.py --format json
 
 It uses schema `ai-platform.trace-audit-export-readiness.v1` and nested
 contract schema `ai-platform.trace-audit-export-contract.v1`.
+
+The release-evidence export acceptance preflight uses schema
+`ai-platform.release-evidence-export-acceptance.v1`. It is embedded under
+`ai-platform.release-evidence-readiness.v1` as `export_acceptance` and under
+Admin Observability readiness as part of the release-evidence evidence block.
+It does not close G9.
 
 ## Export Location
 
@@ -185,4 +206,6 @@ evidence drafts through this reviewed release-evidence path.
 
 This contract creates the source-level export location and entry shape. It does
 not close the gate until runtime export acceptance, runtime retention
-acceptance, review workflow, and deployment evidence are all proven.
+acceptance, review workflow, and deployment evidence are all proven. Passing the
+source-level export acceptance preflight is only a precondition for operator
+review; it is not runtime export evidence.

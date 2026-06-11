@@ -15,10 +15,12 @@ def render_release_evidence_readiness_markdown(readiness: dict[str, object]) -> 
     """Render release-evidence readiness as operator-readable Markdown."""
     location = readiness["export_location"]
     contract = readiness["evidence_contract"]
+    export_acceptance = readiness["export_acceptance"]
     retention = readiness["retention_policy"]
     gaps = "\n".join(f"- {gap}" for gap in readiness["open_gaps"])
     required_fields = "\n".join(f"- `{field}`" for field in contract["required_fields"])
     artifact_kinds = "\n".join(f"- `{kind}`" for kind in contract["accepted_artifact_kinds"])
+    safe_fields = "\n".join(f"- `{field}`" for field in export_acceptance["safe_entry_fields"])
     delete_targets = "\n".join(f"- `{target}`" for target in retention["forbidden_delete_targets"])
     return (
         "# ai-platform Release Evidence Readiness\n\n"
@@ -32,6 +34,15 @@ def render_release_evidence_readiness_markdown(readiness: dict[str, object]) -> 
         f"{required_fields}\n\n"
         "## Accepted Artifact Kinds\n\n"
         f"{artifact_kinds}\n\n"
+        "## Export Acceptance Preflight\n\n"
+        f"Schema: `{export_acceptance['schema_version']}`\n\n"
+        f"Status: `{export_acceptance['status']}`\n\n"
+        f"Export policy: `{export_acceptance['export_policy']}`\n\n"
+        f"Safe entry count: `{export_acceptance['safe_entry_count']}`\n\n"
+        f"Blocked entry count: `{export_acceptance['blocked_entry_count']}`\n\n"
+        f"Excluded entry count: `{export_acceptance['excluded_entry_count']}`\n\n"
+        "Safe entry fields:\n\n"
+        f"{safe_fields}\n\n"
         "## Retention Policy\n\n"
         f"Schema: `{retention['schema_version']}`\n\n"
         f"Status: `{retention['status']}`\n\n"
