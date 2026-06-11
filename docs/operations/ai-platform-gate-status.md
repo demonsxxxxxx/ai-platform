@@ -60,10 +60,16 @@ health, public/admin projection boundary, company auth bridge, general chat run,
 document review attachment run, artifact download isolation, artifact preview
 isolation, playback with preview URL and no private payload leakage, company
 login audit, Admin capacity/backpressure fields, and context snapshot public
-projection counts without raw material IDs. `tools/foundation_alpha_readiness.py`
-promotes that context projection into the G6 evidence summary and fails closed
-as `missing_context_snapshot_public_projection` when an older smoke record lacks
-it. The current reviewed, redacted release-evidence entry is
+projection counts without raw material IDs. The current reviewed evidence does
+not yet include the newer machine-verifiable context public summary fields
+(`input_keys`, memory policy source, long-term-memory flag, execution tier, and
+generated-at presence), so `tools/foundation_alpha_readiness.py` now downgrades
+that context slice to
+`context_snapshot_public_projection_followup_required` until 211 is re-smoked
+with the updated `tools/verify_poc_gate.py` context gate. Older smoke records
+without any runtime projection still fail closed as
+`missing_context_snapshot_public_projection`. The current reviewed, redacted
+release-evidence entry is
 `docs/release-evidence/foundation-alpha-poc/458f6056dd0fa533162e780a303d79ce1b3d0eec/2026-06-12-211-foundation-alpha-poc-458f605-smoke.json`.
 
 The focused Auth/RBAC verifier `tools/verify_auth_rbac_smoke.py` also returned

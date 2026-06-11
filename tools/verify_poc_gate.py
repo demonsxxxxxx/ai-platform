@@ -51,6 +51,56 @@ PREVIEW_ALLOWED_CONTENT_TYPES = frozenset(
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     }
 )
+CONTEXT_PUBLIC_REQUIRED_COUNTS = (
+    "message_count",
+    "file_count",
+    "artifact_count",
+    "memory_record_count",
+)
+CONTEXT_RAW_MATERIAL_ID_KEYS = frozenset(
+    {
+        "message_id",
+        "message_ids",
+        "file_id",
+        "file_ids",
+        "artifact_id",
+        "artifact_ids",
+        "memory_record_id",
+        "memory_record_ids",
+        "material_id",
+        "material_ids",
+        "raw_material_id",
+        "raw_material_ids",
+        "source_file_id",
+        "source_file_ids",
+        "included_message_ids",
+        "included_file_ids",
+        "included_artifact_ids",
+        "included_memory_record_ids",
+    }
+)
+CONTEXT_FORBIDDEN_PROJECTION_MARKERS = (
+    "executor_private_payload",
+    "runtime_private_payload",
+    "private_payload",
+    "raw_storage_key",
+    "storage_key",
+    "sandbox_workdir",
+    "/tmp/",
+    "/home/",
+    "/var/lib/ai-platform",
+    "tenants/default",
+)
+CONTEXT_FORBIDDEN_PROJECTION_KEY_ALIASES = frozenset(
+    {
+        "executor_private_payload",
+        "runtime_private_payload",
+        "private_payload",
+        "raw_storage_key",
+        "storage_key",
+        "sandbox_workdir",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -587,6 +637,156 @@ def _artifact_rows_from_run_evidence(run_evidence: dict[str, Any]) -> list[dict[
     return rows
 
 
+def _compact_key(value: object) -> str:
+    return "".join(ch for ch in str(value).lower() if ch.isalnum())
+
+
+CONTEXT_RAW_MATERIAL_ID_KEY_ALIASES = frozenset(_compact_key(key) for key in CONTEXT_RAW_MATERIAL_ID_KEYS)
+CONTEXT_FORBIDDEN_PROJECTION_KEY_ALIAS_SET = frozenset(
+    _compact_key(key) for key in CONTEXT_FORBIDDEN_PROJECTION_KEY_ALIASES
+)
+
+
+def _safe_context_input_keys(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return sorted(item for item in value if isinstance(item, str) and item)
+
+
+def _context_public_projection_findings(value: Any) -> tuple[bool, list[str]]:
+    raw_material_id_fields_present = False
+    forbidden_leaks: set[str] = set()
+
+    def visit(item: Any) -> None:
+        nonlocal raw_material_id_fields_present
+        if isinstance(item, dict):
+            for key, child in item.items():
+                normalized_key = _compact_key(key)
+                if normalized_key in CONTEXT_RAW_MATERIAL_ID_KEY_ALIASES:
+                    raw_material_id_fields_present = True
+                if normalized_key in CONTEXT_FORBIDDEN_PROJECTION_KEY_ALIAS_SET:
+                    forbidden_leaks.add(str(key))
+                visit(child)
+            return
+        if isinstance(item, list):
+            for child in item:
+                visit(child)
+            return
+        if isinstance(item, str):
+            lowered = item.lower()
+            for marker in CONTEXT_FORBIDDEN_PROJECTION_MARKERS:
+                if marker in lowered:
+                    forbidden_leaks.add(marker)
+
+    visit(value)
+    return raw_material_id_fields_present, sorted(forbidden_leaks)
+
+
+def _context_missing_public_summary_fields(payload: dict[str, Any]) -> list[str]:
+    missing: list[str] = []
+    used_summary = payload.get("used_context_summary")
+    if not isinstance(used_summary, dict) or not isinstance(used_summary.get("source"), str) or not used_summary["source"]:
+        missing.append("summary_source")
+    if (
+        not isinstance(used_summary, dict)
+        or not isinstance(used_summary.get("input_keys"), list)
+        or not _safe_context_input_keys(used_summary.get("input_keys"))
+    ):
+        missing.append("input_keys")
+    if not isinstance(used_summary, dict) or not isinstance(used_summary.get("memory_policy_source"), str):
+        missing.append("memory_policy_source")
+    if not isinstance(used_summary, dict) or not isinstance(used_summary.get("long_term_memory_read"), bool):
+        missing.append("long_term_memory_read")
+    if not isinstance(payload.get("execution_tier"), str) or not payload["execution_tier"]:
+        missing.append("execution_tier")
+    if not isinstance(payload.get("context_pack_generated_at"), str) or not payload["context_pack_generated_at"]:
+        missing.append("context_pack_generated_at")
+    return sorted(missing)
+
+
+def check_context_snapshot_public_projection(
+    api_url: str,
+    run_evidence: dict[str, Any],
+    *,
+    headers: dict[str, str],
+) -> Gate:
+    """Verify the run context snapshot endpoint exposes only safe public provenance."""
+    run_id = str(run_evidence.get("run_id") or "")
+    if not run_id:
+        return Gate(
+            "context_snapshot_public_projection",
+            False,
+            {"ok": False, "error": "missing_run_id", "snapshot_count": 0},
+        )
+    run_id = assert_safe_id(run_id, "run_id")
+    status, payload = http_json_get_with_headers(
+        f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/context/snapshots",
+        headers=headers,
+        timeout=30,
+    )
+    snapshots = payload.get("context_snapshots") if isinstance(payload, dict) else []
+    if not isinstance(snapshots, list):
+        snapshots = []
+    snapshot = snapshots[0] if snapshots and isinstance(snapshots[0], dict) else {}
+    snapshot_payload = snapshot.get("payload") if isinstance(snapshot.get("payload"), dict) else {}
+    referenced_materials = (
+        snapshot_payload.get("referenced_materials")
+        if isinstance(snapshot_payload.get("referenced_materials"), dict)
+        else {}
+    )
+    counts: dict[str, int] = {}
+    counts_valid = True
+    for key in CONTEXT_PUBLIC_REQUIRED_COUNTS:
+        value = referenced_materials.get(key)
+        if not isinstance(value, int) or value < 0:
+            counts_valid = False
+            counts[key] = 0
+        else:
+            counts[key] = value
+    used_summary = (
+        snapshot_payload.get("used_context_summary")
+        if isinstance(snapshot_payload.get("used_context_summary"), dict)
+        else {}
+    )
+    input_keys = used_summary.get("input_keys") if isinstance(used_summary.get("input_keys"), list) else []
+    safe_input_keys = _safe_context_input_keys(input_keys)
+    raw_material_id_fields_present, forbidden_leaks = _context_public_projection_findings(payload)
+    missing_public_summary_fields = _context_missing_public_summary_fields(snapshot_payload)
+    ok = (
+        status == 200
+        and bool(snapshots)
+        and counts_valid
+        and counts["message_count"] >= 1
+        and counts["file_count"] >= 1
+        and raw_material_id_fields_present is False
+        and not forbidden_leaks
+        and not missing_public_summary_fields
+    )
+    evidence = {
+        "status": status,
+        "ok": ok,
+        "snapshot_count": len(snapshots),
+        "referenced_material_counts": counts,
+        "raw_material_id_fields_present": raw_material_id_fields_present,
+        "forbidden_projection_leaks": forbidden_leaks,
+        "summary_source": used_summary.get("source") if isinstance(used_summary.get("source"), str) else None,
+        "input_keys": safe_input_keys,
+        "memory_policy_source": used_summary.get("memory_policy_source")
+        if isinstance(used_summary.get("memory_policy_source"), str)
+        else None,
+        "long_term_memory_read": used_summary.get("long_term_memory_read")
+        if isinstance(used_summary.get("long_term_memory_read"), bool)
+        else None,
+        "execution_tier": snapshot_payload.get("execution_tier")
+        if isinstance(snapshot_payload.get("execution_tier"), str)
+        else None,
+        "context_pack_generated_at_present": bool(snapshot_payload.get("context_pack_generated_at")),
+    }
+    if missing_public_summary_fields:
+        evidence["missing_public_summary_fields"] = missing_public_summary_fields
+    return Gate("context_snapshot_public_projection", ok, evidence)
+
+
 def check_upload_attachment_chat(
     api_url: str,
     container: str,
@@ -847,6 +1047,7 @@ group by r.id;
         and matched_preview_artifact_count == len(reviewed_docx_artifact_ids)
         and not playback_private_payload_leaked
     )
+    context_projection_gate = check_context_snapshot_public_projection(api_url, run_evidence, headers=headers)
     ok = (
         upload_status == 200
         and isinstance(upload_payload, dict)
@@ -858,6 +1059,7 @@ group by r.id;
         and file_id in (run_evidence.get("file_ids") or [])
         and bool(reviewed_docx_artifact_ids)
         and playback_ok
+        and context_projection_gate.ok
     )
     return Gate(
         "word_review_attachment_chat",
@@ -880,6 +1082,7 @@ group by r.id;
                 "matched_preview_artifact_count": matched_preview_artifact_count,
                 "private_payload_leaked": playback_private_payload_leaked,
             },
+            "context_snapshot_public_projection": context_projection_gate.evidence,
         },
     )
 
@@ -954,6 +1157,7 @@ def main() -> int:
     db_gates = check_db_evidence(args.postgres_container, args.postgres_user, args.postgres_db)
     env_values = runtime_env_values(args.env_path, args.api_container)
     artifact_rows = [gate.evidence for gate in db_gates if gate.name in {"review_artifact", "translate_artifact"} and gate.ok]
+    word_review_gate = check_word_review_attachment_chat(args.api_url, args.postgres_container, args.postgres_user, args.postgres_db)
     gates = [
         check_frontend(args.frontend_url),
         check_frontend_dist_api_boundary(args.frontend_dist),
@@ -965,7 +1169,12 @@ def main() -> int:
         check_artifact_download_isolation(args.api_url, artifact_rows),
         check_artifact_preview_isolation(args.api_url, artifact_rows),
         check_upload_attachment_chat(args.api_url, args.postgres_container, args.postgres_user, args.postgres_db),
-        check_word_review_attachment_chat(args.api_url, args.postgres_container, args.postgres_user, args.postgres_db),
+        word_review_gate,
+        Gate(
+            "context_snapshot_public_projection",
+            bool(word_review_gate.evidence.get("context_snapshot_public_projection", {}).get("ok")),
+            word_review_gate.evidence.get("context_snapshot_public_projection", {}),
+        ),
         check_auth_audit(args.postgres_container, args.postgres_user, args.postgres_db, args.allow_missing_auth_audit),
     ]
     result = {

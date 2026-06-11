@@ -521,10 +521,15 @@ long-term memory, sandbox, or multi-agent gates.
 The Foundation Alpha readiness summary now also promotes reviewed 211
 `context_snapshot_public_projection` smoke evidence into the G6 POC governance
 domain. The promoted summary is intentionally bounded to status, referenced
-material counts, raw-ID presence, forbidden-leak count, and summary source; it
-does not echo raw message/file/artifact/memory IDs, executor private payloads,
-storage locators, or workspace paths. Older smoke records without that runtime
-projection stay fail-closed as `missing_context_snapshot_public_projection`.
+material counts, raw-ID presence, forbidden-leak count, summary source, safe
+input keys, memory policy source, long-term-memory-read flag, execution tier,
+and generated-at presence; it does not echo raw message/file/artifact/memory
+IDs, executor private payloads, storage locators, or workspace paths. Smoke
+records that only contain counts now stay fail-closed as
+`context_snapshot_public_projection_followup_required` until 211 is re-smoked
+with the verifier's context summary gate. Older smoke records without that
+runtime projection stay fail-closed as
+`missing_context_snapshot_public_projection`.
 
 The 2026-06-08 frontend projection audit follow-up makes the remaining frontend
 G6/G9 blockers machine-actionable through
