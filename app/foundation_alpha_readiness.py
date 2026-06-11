@@ -168,6 +168,8 @@ def _is_runtime_affecting_path(path: str) -> bool:
         return False
     if normalized in _RUNTIME_NEUTRAL_EXACT_PATHS:
         return False
+    if normalized.startswith("ai-platform-") and normalized.endswith(".tar") and "/" not in normalized:
+        return False
     return not normalized.startswith(_RUNTIME_NEUTRAL_PATH_PREFIXES)
 
 
@@ -319,6 +321,15 @@ def _resolve_release_evidence_paths(source_tree_commit: str) -> tuple[Path, Path
         current_pair = _discover_release_evidence_pair(source_tree_commit)
         if current_pair is not None:
             return current_pair
+        marker = _source_snapshot_marker_for_source_tree(source_tree_commit)
+        if marker is not None:
+            runtime_subject_commit = str(marker.get("runtime_subject_commit_sha") or "")
+            marker_pair = _discover_release_evidence_pair(runtime_subject_commit)
+            if marker_pair is not None:
+                return marker_pair
+    configured_runtime_pair = _discover_release_evidence_pair(RUNTIME_SUBJECT_COMMIT_SHA)
+    if configured_runtime_pair is not None:
+        return configured_runtime_pair
     latest_pair = _discover_latest_release_evidence_pair()
     if latest_pair is not None:
         return latest_pair
