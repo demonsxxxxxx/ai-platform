@@ -462,11 +462,17 @@ def test_capacity_docs_record_machine_readable_gate_evidence_contract():
         assert "does not raise production concurrency defaults" in text
         assert "tools/capacity_bounded_load_harness.py" in text
         assert "ai-platform.capacity-bounded-load-harness.v1" in text
-        assert "queue_depth_and_lease_latency" in text
-        assert (
-            "currently supports `api_read_write_burst`, `queue_depth_and_lease_latency`, "
-            "and `model_gateway_timeout_and_backpressure`"
-        ) in text
+        assert "all seven #21 load-test gates" in text
+        for gate in (
+            "api_read_write_burst",
+            "run_creation_burst_by_tenant_and_user",
+            "worker_processing_throughput",
+            "queue_depth_and_lease_latency",
+            "cancel_retry_resume_under_load",
+            "sandbox_lease_creation_under_load",
+            "model_gateway_timeout_and_backpressure",
+        ):
+            assert gate in text
         assert "include_maintenance_cleanup=false" in text
         assert "probe_only_not_recorded" in text
         assert "not accepted by `tools/capacity_gate_readiness.py` as recorded gate evidence" in text

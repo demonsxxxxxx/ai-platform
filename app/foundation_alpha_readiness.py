@@ -24,6 +24,7 @@ _RUNTIME_NEUTRAL_PATH_PREFIXES = (
 )
 _RUNTIME_NEUTRAL_EXACT_PATHS = {
     ".gitignore",
+    "app/capacity_bounded_load_harness.py",
     "app/foundation_alpha_readiness.py",
     "tools/foundation_alpha_readiness.py",
     "tools/verify_auth_rbac_smoke.py",

@@ -6,10 +6,16 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
+from app.capacity_baseline import LOAD_TEST_GATES
+
 
 CAPACITY_BOUNDED_LOAD_HARNESS_SCHEMA = "ai-platform.capacity-bounded-load-harness.v1"
 OPERATOR_ACKNOWLEDGEMENT = "send-bounded-load-without-default-raise"
 _DEFAULT_GATE = "api_read_write_burst"
+_ADMIN_RUNTIME_OVERVIEW_ENDPOINT = {
+    "path": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+    "method": "GET",
+}
 _GATE_ENDPOINTS = {
     "api_read_write_burst": (
         {
@@ -18,27 +24,48 @@ _GATE_ENDPOINTS = {
             "purpose": "read-only API health probe",
         },
         {
-            "path": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
-            "method": "GET",
+            **_ADMIN_RUNTIME_OVERVIEW_ENDPOINT,
             "purpose": "read-only Admin Runtime capacity/backpressure projection probe with maintenance cleanup disabled",
+        },
+    ),
+    "run_creation_burst_by_tenant_and_user": (
+        {
+            **_ADMIN_RUNTIME_OVERVIEW_ENDPOINT,
+            "purpose": "read-only Admin Runtime admission, tenant/user active-run saturation, and queue projection probe with maintenance cleanup disabled",
+        },
+    ),
+    "worker_processing_throughput": (
+        {
+            **_ADMIN_RUNTIME_OVERVIEW_ENDPOINT,
+            "purpose": "read-only Admin Runtime worker heartbeat, active-run ceiling, and throughput projection probe with maintenance cleanup disabled",
         },
     ),
     "queue_depth_and_lease_latency": (
         {
-            "path": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
-            "method": "GET",
+            **_ADMIN_RUNTIME_OVERVIEW_ENDPOINT,
             "purpose": "read-only Admin Runtime queue depth, lease, and backpressure projection probe with maintenance cleanup disabled",
+        },
+    ),
+    "cancel_retry_resume_under_load": (
+        {
+            **_ADMIN_RUNTIME_OVERVIEW_ENDPOINT,
+            "purpose": "read-only Admin Runtime run lifecycle, retry/cancel pressure, and event/error projection probe with maintenance cleanup disabled",
+        },
+    ),
+    "sandbox_lease_creation_under_load": (
+        {
+            **_ADMIN_RUNTIME_OVERVIEW_ENDPOINT,
+            "purpose": "read-only Admin Runtime sandbox lease, container, cleanup, and backpressure projection probe with maintenance cleanup disabled",
         },
     ),
     "model_gateway_timeout_and_backpressure": (
         {
-            "path": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
-            "method": "GET",
+            **_ADMIN_RUNTIME_OVERVIEW_ENDPOINT,
             "purpose": "read-only Admin Runtime model gateway limit, timeout taxonomy, and backpressure projection probe with maintenance cleanup disabled",
         },
     ),
 }
-_SUPPORTED_GATES = tuple(_GATE_ENDPOINTS)
+_SUPPORTED_GATES = tuple(gate for gate in LOAD_TEST_GATES if gate in _GATE_ENDPOINTS)
 _LOAD_TEST_EVIDENCE_STATUS = "probe_only_not_recorded"
 _MODEL_GATEWAY_GATE = "model_gateway_timeout_and_backpressure"
 _MODEL_GATEWAY_REQUIRED_PROJECTION_FIELDS = (

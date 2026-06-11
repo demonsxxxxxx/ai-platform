@@ -166,6 +166,7 @@ def _write_release_evidence_pair(
 def test_foundation_alpha_readiness_classifies_source_metadata_paths_as_runtime_neutral():
     assert foundation_alpha_readiness._is_runtime_affecting_path(".gitignore") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("app/foundation_alpha_readiness.py") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("app/capacity_bounded_load_harness.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("docs/release-evidence/README.md") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("tests/test_foundation_alpha_readiness.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("tools/verify_auth_rbac_smoke.py") is False

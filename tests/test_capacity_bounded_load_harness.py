@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 
 from app.capacity_baseline import build_capacity_gate_readiness
+from app.capacity_baseline import LOAD_TEST_GATES
 from app.capacity_bounded_load_harness import (
     CAPACITY_BOUNDED_LOAD_HARNESS_SCHEMA,
     OPERATOR_ACKNOWLEDGEMENT,
@@ -25,11 +26,7 @@ def test_capacity_bounded_load_harness_dry_run_is_safe_and_not_gate_evidence():
     assert plan["schema_version"] == CAPACITY_BOUNDED_LOAD_HARNESS_SCHEMA
     assert plan["status"] == "dry_run"
     assert plan["gate"] == "api_read_write_burst"
-    assert plan["supported_gates"] == [
-        "api_read_write_burst",
-        "queue_depth_and_lease_latency",
-        "model_gateway_timeout_and_backpressure",
-    ]
+    assert plan["supported_gates"] == LOAD_TEST_GATES
     assert plan["base_url"] == "https://ai-platform.internal/api"
     assert plan["request_count"] == 12
     assert plan["concurrency"] == 3
@@ -47,6 +44,35 @@ def test_capacity_bounded_load_harness_dry_run_is_safe_and_not_gate_evidence():
     assert "user:token" not in serialized
     assert "api_key" not in serialized
     assert "secret" not in serialized
+
+
+def test_capacity_bounded_load_harness_covers_each_capacity_gate_with_read_only_admin_projection():
+    admin_projection_only_gates = [
+        gate
+        for gate in LOAD_TEST_GATES
+        if gate != "api_read_write_burst"
+    ]
+
+    for gate in admin_projection_only_gates:
+        plan = build_capacity_bounded_load_harness_plan(
+            base_url="https://ai-platform.internal",
+            gate=gate,
+            request_count=8,
+            concurrency=2,
+        )
+
+        assert plan["status"] == "dry_run"
+        assert plan["gate"] == gate
+        assert plan["supported_gates"] == LOAD_TEST_GATES
+        assert plan["load_test_evidence_status"] == "probe_only_not_recorded"
+        assert plan["gate_evidence_compatibility"] == "not_accepted_by_capacity_gate_readiness"
+        assert plan["does_not_raise_defaults"] is True
+        assert plan["does_not_mark_gate_recorded"] is True
+        assert plan["writes_runtime_state"] is False
+        assert [endpoint["method"] for endpoint in plan["endpoints"]] == ["GET"]
+        assert [endpoint["path"] for endpoint in plan["endpoints"]] == [
+            "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"
+        ]
 
 
 def test_capacity_bounded_load_harness_queue_gate_dry_run_is_safe():
@@ -810,11 +836,7 @@ def test_capacity_bounded_load_harness_cli_queue_gate_dry_run_outputs_supported_
     assert payload["schema_version"] == CAPACITY_BOUNDED_LOAD_HARNESS_SCHEMA
     assert payload["status"] == "dry_run"
     assert payload["gate"] == "queue_depth_and_lease_latency"
-    assert payload["supported_gates"] == [
-        "api_read_write_burst",
-        "queue_depth_and_lease_latency",
-        "model_gateway_timeout_and_backpressure",
-    ]
+    assert payload["supported_gates"] == LOAD_TEST_GATES
     assert [endpoint["path"] for endpoint in payload["endpoints"]] == [
         "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
     ]
@@ -845,11 +867,7 @@ def test_capacity_bounded_load_harness_cli_model_gateway_gate_dry_run_outputs_su
     assert payload["schema_version"] == CAPACITY_BOUNDED_LOAD_HARNESS_SCHEMA
     assert payload["status"] == "dry_run"
     assert payload["gate"] == "model_gateway_timeout_and_backpressure"
-    assert payload["supported_gates"] == [
-        "api_read_write_burst",
-        "queue_depth_and_lease_latency",
-        "model_gateway_timeout_and_backpressure",
-    ]
+    assert payload["supported_gates"] == LOAD_TEST_GATES
     assert [endpoint["path"] for endpoint in payload["endpoints"]] == [
         "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
     ]

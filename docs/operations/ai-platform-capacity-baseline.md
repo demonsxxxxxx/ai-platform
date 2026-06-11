@@ -24,7 +24,11 @@ python tools/capacity_profile_readiness.py --snapshot-json <capacity-evidence-sn
 python tools/capacity_profile_readiness.py --snapshot-json <capacity-evidence-snapshot.json> --format json
 python tools/capacity_runtime_evidence.py --base-url http://127.0.0.1:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha <deployed-commit> --runtime-profile <profile> --format json
 python tools/capacity_bounded_load_harness.py --base-url http://127.0.0.1:8020 --gate api_read_write_burst --requests 10 --concurrency 2 --format json
+python tools/capacity_bounded_load_harness.py --base-url http://127.0.0.1:8020 --gate run_creation_burst_by_tenant_and_user --requests 10 --concurrency 2 --format json
+python tools/capacity_bounded_load_harness.py --base-url http://127.0.0.1:8020 --gate worker_processing_throughput --requests 10 --concurrency 2 --format json
 python tools/capacity_bounded_load_harness.py --base-url http://127.0.0.1:8020 --gate queue_depth_and_lease_latency --requests 10 --concurrency 2 --format json
+python tools/capacity_bounded_load_harness.py --base-url http://127.0.0.1:8020 --gate cancel_retry_resume_under_load --requests 10 --concurrency 2 --format json
+python tools/capacity_bounded_load_harness.py --base-url http://127.0.0.1:8020 --gate sandbox_lease_creation_under_load --requests 10 --concurrency 2 --format json
 python tools/capacity_bounded_load_harness.py --base-url http://127.0.0.1:8020 --gate model_gateway_timeout_and_backpressure --requests 10 --concurrency 2 --format json
 ```
 
@@ -229,27 +233,27 @@ operator harness entrypoint for that real-load step. It emits schema
 `ai-platform.capacity-bounded-load-harness.v1`, defaults to dry-run, and only
 sends requests when `--execute` is paired with
 `--operator-acknowledgement send-bounded-load-without-default-raise`. The
-harness currently supports `api_read_write_burst` and
-`queue_depth_and_lease_latency`, and
-`model_gateway_timeout_and_backpressure`. The API gate is a bounded read-only probe
-against `GET /api/ai/health` and
+harness currently supports all seven #21 load-test gates as bounded read-only
+probe entrypoints. The API gate probes `GET /api/ai/health` plus
 `GET /api/ai/admin/runtime/overview?include_maintenance_cleanup=false`; the
-queue-depth gate is a bounded read-only probe against
-`GET /api/ai/admin/runtime/overview?include_maintenance_cleanup=false` only, so
-it can observe queue, admission, backpressure, DB-pool, sandbox, and
-observability sections without creating runs or triggering Admin Runtime
-sandbox/container maintenance cleanup. The model-gateway gate is also a
-bounded read-only probe against the Admin Runtime overview only; it observes
-the source-level model-gateway limit, timeout taxonomy, and backpressure
-projection without sending model calls, reading gateway secrets, or marking the
-gate recorded. Its output records only observed model-gateway projection field
-paths, and missing required projection fields trigger
+other six gates probe the same Admin Runtime overview only, with maintenance
+cleanup disabled. This lets operators observe admission, worker heartbeat,
+queue depth, retry/cancel pressure, sandbox lease/container counts, DB-pool,
+backpressure, observability, and model-gateway projection fields without
+creating runs, sending model calls, reading gateway secrets, triggering
+sandbox/container maintenance cleanup, or marking a gate recorded. The
+model-gateway gate records only observed model-gateway projection field paths,
+and missing required projection fields trigger
 `model_gateway_projection_fields_missing` instead of producing a successful
 probe. The taxonomy requirement is the `observability.error_categories`
 container itself, so a healthy runtime with zero model-gateway errors is not
 treated as missing projection evidence.
 
-Machine-readable doc check: the harness currently supports `api_read_write_burst`, `queue_depth_and_lease_latency`, and `model_gateway_timeout_and_backpressure`.
+Machine-readable doc check: the harness currently supports
+`api_read_write_burst`, `run_creation_burst_by_tenant_and_user`,
+`worker_processing_throughput`, `queue_depth_and_lease_latency`,
+`cancel_retry_resume_under_load`, `sandbox_lease_creation_under_load`, and
+`model_gateway_timeout_and_backpressure`.
 
 The harness output is intentionally marked `probe_only_not_recorded`,
 `does_not_raise_defaults = true`, and `does_not_mark_gate_recorded = true`. It
