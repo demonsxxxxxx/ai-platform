@@ -24,6 +24,7 @@ _SDK_AVAILABLE_TOOLS = ["Read", "Glob", "LS", "Bash"]
 _SDK_AUTO_ALLOWED_TOOLS = {"Read", "Glob", "LS"}
 _SDK_PLATFORM_DISALLOWED_TOOLS = ["Write", "Edit", "NotebookEdit"]
 _SDK_PROJECT_SETTING_FILES = (".claude/settings.json", ".claude/settings.local.json")
+_SDK_FULL_ACCESS_MIN_TIMEOUT_SECONDS = 1800.0
 _SHELL_UNSAFE_CHARS = set("$`;&|<>{}[]*?!\n\r")
 _QA_REVIEW_PREFLIGHT_LS_FLAGS = {"-l", "-la", "-al"}
 _QA_REVIEW_PREFLIGHT_LS_PATHS = (
@@ -539,6 +540,9 @@ async def run_claude_agent_sdk(
         getattr(settings, "claude_agent_disallowed_tools", ""),
         full_access=full_access,
     )
+    timeout_seconds = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 120.0))
+    if full_access:
+        timeout_seconds = max(timeout_seconds, _SDK_FULL_ACCESS_MIN_TIMEOUT_SECONDS)
 
     async def record_used_skill(skill_name: str, metadata: dict[str, Any]) -> None:
         if allowed_skill_names and skill_name not in allowed_skill_names:
@@ -700,7 +704,7 @@ async def run_claude_agent_sdk(
         disallowed_tools=disallowed_tools,
         env=build_sdk_env(cwd=cwd),
         skills=configured_skills,
-        max_turns=max(1, int(getattr(settings, "claude_agent_sdk_max_turns", 12))),
+        max_turns=max(1, int(getattr(settings, "claude_agent_sdk_max_turns", 48))),
         can_use_tool=can_use_tool,
         hooks=hooks,
         setting_sources=["project"],
@@ -743,7 +747,7 @@ async def run_claude_agent_sdk(
         )
 
     try:
-        return await asyncio.wait_for(consume(), timeout=settings.claude_agent_sdk_timeout_seconds)
+        return await asyncio.wait_for(consume(), timeout=timeout_seconds)
     except asyncio.CancelledError:
         raise
     except TimeoutError:

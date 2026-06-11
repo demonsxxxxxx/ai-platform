@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     claude_agent_model: str = Field(default="deepseek-v4-flash")
     claude_agent_sdk_enabled: bool = Field(default=False)
     claude_agent_sdk_timeout_seconds: float = Field(default=120.0)
-    claude_agent_sdk_max_turns: int = Field(default=12)
+    claude_agent_sdk_max_turns: int = Field(default=48)
     claude_agent_allowed_tools: str = Field(default="Read,Glob,LS")
     claude_agent_disallowed_tools: str = Field(default="Write,Edit,NotebookEdit")
     claude_agent_permission_mode: str = Field(default="dontAsk")

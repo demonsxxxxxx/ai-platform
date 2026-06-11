@@ -1,0 +1,131 @@
+# GitHub Issue And PR Workflow
+
+This workflow applies to goal-sized ai-platform work, gate closures, and newly
+discovered defects. Keep `AGENTS.md` as the short entry point and update this
+file when the issue/PR workflow needs more detail.
+
+## Closure Loop
+
+Use this sequence by default:
+
+1. Create or update issue.
+2. Implement on a branch.
+3. Open PR.
+4. Run local verification.
+5. Request and resolve review.
+6. Merge.
+7. Deploy and smoke on 211 when required.
+8. Close the issue with evidence.
+
+## Status Language
+
+Use precise status labels. Do not let an earlier status imply a later one.
+
+- `local partial`: targeted tests or one focused smoke passed.
+- `PR ready`: code, focused tests, and docs are ready for review, but the PR has
+  not merged and runtime evidence may still be missing.
+- `reviewed`: independent review has run, and every finding is fixed, rejected
+  with evidence, or tracked as a follow-up issue.
+- `211 verified`: deployed runtime has been checked on 211 with the correct
+  container, image, route, principal, and contract behavior.
+- `gate closable`: issue, PR, review, tests, docs or roadmap updates, and
+  required 211 evidence are all complete.
+
+Never describe `local partial`, `PR ready`, or `reviewed` work as deployed,
+closed, or gate-complete.
+
+## Issue Triage
+
+Before implementation, read the relevant PRD, roadmap, guardrails, current code,
+fresh 211 state, and the existing GitHub issue.
+
+If the problem is new, create or update a GitHub issue with:
+
+- scope;
+- affected gate or roadmap section;
+- acceptance criteria;
+- local verification requirement;
+- review requirement;
+- 211 deployment or smoke requirement when relevant;
+- known blockers or missing evidence.
+
+Do not hide blockers in chat. If review, tests, 211 smoke, source authority,
+auth, tenant quota, sandbox, or frontend projection evidence is missing, record
+it on the issue or PR before pausing.
+
+## Branch And PR Rules
+
+- Keep one coherent PR per issue or gate slice.
+- Use a branch name that includes the issue number or gate name.
+- A PR may close multiple issues only when their acceptance criteria are truly
+  covered by the same slice.
+- Direct commits to `main` are exceptions. Use them only when the user
+  explicitly requests direct-main work or when operational recovery requires it.
+  Still record the issue/PR exception and final evidence.
+
+## PR Description Requirements
+
+Every PR should state:
+
+- linked issue or gate;
+- changed modules;
+- user-visible or operator-visible behavior;
+- tests run;
+- review status;
+- docs or roadmap updates;
+- 211 deployment or smoke evidence, or why it is not required.
+
+Use `Closes #N` or `Fixes #N` only when the issue acceptance criteria are
+covered by code, tests, docs or roadmap updates, review, and required 211 smoke.
+Otherwise link the issue without auto-closing language.
+
+## Review And Verification
+
+- High-risk or stage-gate work requires independent review when the available
+  delegation path is suitable.
+- Validate review findings against current PRD, roadmap, guardrails, code,
+  tests, and 211 evidence before changing code.
+- Every review finding must be handled in one of three ways: fixed with tests,
+  rejected with a written evidence-backed reason, or moved to a follow-up issue.
+  Do not leave review findings only in chat.
+- Before PR, deployment, merge, or stage-gate closure, run full local pytest and
+  relevant smoke checks unless the task is explicitly documented as no-code.
+- For public/admin projection changes, verify the correct principal and route.
+  Admin checks do not prove ordinary-user behavior.
+- For 211 deployment, prove current deployed containers, image identity, API
+  health, and the relevant contract behavior after deployment.
+- If deployment needs `docker cp`, runtime-only rebase, `--no-build`, or another
+  workaround, label it as a workaround in the PR or issue. If the same workaround
+  is needed repeatedly, open a follow-up issue for the release path.
+
+## Shortcut Prevention Checklist
+
+Before saying `complete`, `closed`, `deployed`, `passed`, or `ready to merge`,
+confirm:
+
+- there is an issue or explicit gate;
+- a PR exists, or a direct-main exception is recorded;
+- the correct local test level ran;
+- review ran when required, and findings were fixed, rejected with evidence, or
+  tracked as follow-up issues;
+- 211 smoke ran when required, with the correct principal, route, container, and
+  image evidence;
+- docs or roadmap updates are present when the slice changes gate status;
+- deployment workarounds are labeled as workarounds;
+- the issue can be closed without relying on chat-only evidence.
+
+## Issue Closure
+
+Close after evidence, not after intent.
+
+An issue is closed only after:
+
+- the linked PR has merged, or a no-code decision is recorded;
+- required local verification is posted;
+- required review is posted;
+- required docs or roadmap updates are present;
+- required 211 deployment or smoke evidence is posted.
+
+For no-code issues, close with a comment that cites the verification or decision
+evidence. Do not use auto-close wording on a PR if any issue acceptance item is
+still pending.

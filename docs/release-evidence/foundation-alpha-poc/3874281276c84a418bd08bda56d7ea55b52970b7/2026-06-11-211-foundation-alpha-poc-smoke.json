@@ -1,0 +1,106 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-06-11-211-foundation-alpha-poc-smoke",
+  "commit_sha": "3874281276c84a418bd08bda56d7ea55b52970b7",
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#15",
+    "#16",
+    "#17",
+    "#21",
+    "#22",
+    "#23"
+  ],
+  "artifact_kind": "211_runtime_smoke",
+  "captured_at": "2026-06-11T10:30:05+08:00",
+  "source_ref": {
+    "branch": "main",
+    "local_head": "3874281276c84a418bd08bda56d7ea55b52970b7",
+    "runtime_source_marker": "3874281276c84a418bd08bda56d7ea55b52970b7",
+    "image": "ai-platform:3874281-foundation-alpha-poc",
+    "image_labels": {
+      "ai-platform.source-branch": "main",
+      "ai-platform.source-revision": "3874281276c84a418bd08bda56d7ea55b52970b7",
+      "ai-platform.source_note": "foundation-alpha-poc-preview-route",
+      "org.opencontainers.image.revision": "3874281276c84a418bd08bda56d7ea55b52970b7"
+    },
+    "compose_working_dir": "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform",
+    "compose_config_file": "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/docker-compose.yml",
+    "compose_env_source": "existing 211 runtime env path, not copied or printed"
+  },
+  "evidence_ref": {
+    "verifier": "tools/verify_poc_gate.py",
+    "command": "python3 tools/verify_poc_gate.py --frontend-url http://127.0.0.1:18001 --api-url http://127.0.0.1:8020 --frontend-dist /home/xinlin.jiang/lambchat-poc/frontend-dist-ai-platform --env-path /home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/.env --api-container ai-platform-api --postgres-container ai-platform-postgres --postgres-user ai_platform --postgres-db ai_platform --allow-missing-auth-audit",
+    "result": "ok:true",
+    "runtime_checks": {
+      "frontend_http_status": 200,
+      "same_origin_api_health": "ok",
+      "api_health": "ok",
+      "openapi_preview_route": "/api/ai/artifacts/{artifact_id}/preview",
+      "frontend_dist_forbidden_reference_count": 0,
+      "company_auth_bridge": "invalid-login-probe-returned-unsuccessfully",
+      "runtime_config": {
+        "claude_agent_sdk_enabled": true,
+        "models": [
+          "deepseek-v4-flash"
+        ],
+        "skills_present": [
+          "baoyu-translate",
+          "general-chat",
+          "qa-file-reviewer"
+        ]
+      },
+      "general_chat_run": "succeeded",
+      "document_review_attachment_run": {
+        "status": "succeeded",
+        "skill_id": "qa-file-reviewer",
+        "artifact_types": [
+          "result_json",
+          "reviewed_docx",
+          "report_txt"
+        ],
+        "playback_contract_version": "ai-platform.run-playback.v1",
+        "playback_download_url_count": 3,
+        "playback_preview_url_count": 1,
+        "private_payload_leaked": false
+      },
+      "artifact_download_isolation": {
+        "checked_artifacts": 2,
+        "owner_status": 200,
+        "cross_user_status": 404
+      },
+      "artifact_preview_isolation": {
+        "checked_artifacts": 1,
+        "owner_status": 200,
+        "cross_user_status": 404,
+        "cache_control": "no-store",
+        "x_content_type_options": "nosniff"
+      },
+      "company_login_audit": {
+        "ordinary_user_count": 12,
+        "admin_user_count": 33,
+        "source": "company-login"
+      },
+      "admin_capacity_projection_seen": {
+        "max_active_worker_runs": 3,
+        "available_worker_slots": 2,
+        "queue_lease_scan_limit": 50,
+        "queued_scan_limit": 500
+      }
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "This entry is a redacted summary of the 211 verifier output, not the raw runtime payload.",
+    "No secret-bearing environment values, credential header values, DSNs, raw storage keys, sandbox workdirs, executor private payloads, or personal Windows paths are included.",
+    "This evidence supports Foundation Alpha POC smoke only. It does not close production concurrency, Docker sandbox hardening, ordinary-user multi-agent, department rollout, runtime export, or release-evidence retention gates."
+  ],
+  "open_followups": [
+    "#21 recorded multi-tenant capacity/load evidence remains required before raising production concurrency defaults.",
+    "G7 Docker sandbox hardening and Docker-capable sandbox smoke remain blocked.",
+    "G8 ordinary-user multi-agent exposure remains feature-flagged/internal only.",
+    "G9 release-evidence runtime export and retention runtime acceptance remain open.",
+    "Packaged frontend image smoke/release acceptance remains separate from this thin-shell POC smoke."
+  ]
+}

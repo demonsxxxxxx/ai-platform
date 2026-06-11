@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from tools import verify_poc_gate
 
 
@@ -19,6 +21,16 @@ def test_api_compat_gate_requires_user_and_admin_permissions(monkeypatch):
 
     assert gate.ok is False
     assert gate.evidence["missing_permissions"] == ["admin:status", "agent:admin", "model:admin", "settings:manage"]
+
+
+def test_poc_gate_cli_bootstraps_repo_root_for_direct_script_execution():
+    script_text = Path("tools/verify_poc_gate.py").read_text(encoding="utf-8")
+    watcher_text = Path("tools/watch_poc_gate.py").read_text(encoding="utf-8")
+
+    required = 'sys.path.insert(0, str(Path(__file__).resolve().parents[1]))'
+    assert "import sys" in script_text
+    assert required in script_text
+    assert required in watcher_text
 
 
 def test_artifact_download_isolation_gate_accepts_owner_and_denies_cross_user(monkeypatch):
@@ -255,6 +267,113 @@ def test_company_auth_bridge_gate_requires_existing_login_backend(monkeypatch):
     assert gate.ok is True
     assert gate.evidence["login_probe_status"] == 200
     assert gate.evidence["login_probe_payload_status"] == "unsuccessfully!"
+
+
+def test_container_env_reads_only_poc_whitelisted_runtime_keys(monkeypatch):
+    completed = type(
+        "Completed",
+        (),
+        {
+            "returncode": 0,
+            "stdout": (
+                "CLAUDE_AGENT_SDK_ENABLED=true\n"
+                "CLAUDE_AGENT_MODEL=deepseek-v4-flash\n"
+                "OPENAI_MODEL=deepseek-v4-flash\n"
+                "ANTHROPIC_MODEL=deepseek-v4-flash\n"
+                "CLAUDE_AGENT_SDK_SKILLS=general-chat,qa-file-reviewer,baoyu-translate\n"
+                "EXISTING_AUTH_BASE_URL=http://10.56.0.25:7263\n"
+                "ANTHROPIC_AUTH_TOKEN=secret-token\n"
+            ),
+            "stderr": "",
+        },
+    )()
+
+    def fake_run(command, check=False, capture_output=True, text=True, timeout=30):
+        assert command[:4] == ["sudo", "-n", "docker", "exec"]
+        return completed
+
+    monkeypatch.setattr(verify_poc_gate.subprocess, "run", fake_run)
+
+    values = verify_poc_gate.read_container_runtime_env("ai-platform-api")
+
+    assert values == {
+        "CLAUDE_AGENT_SDK_ENABLED": "true",
+        "CLAUDE_AGENT_MODEL": "deepseek-v4-flash",
+        "OPENAI_MODEL": "deepseek-v4-flash",
+        "ANTHROPIC_MODEL": "deepseek-v4-flash",
+        "CLAUDE_AGENT_SDK_SKILLS": "general-chat,qa-file-reviewer,baoyu-translate",
+        "EXISTING_AUTH_BASE_URL": "http://10.56.0.25:7263",
+    }
+
+
+def test_runtime_env_values_prefers_live_container_over_env_file(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "CLAUDE_AGENT_SDK_ENABLED=true",
+                "CLAUDE_AGENT_MODEL=stale-model",
+                "OPENAI_MODEL=stale-model",
+                "ANTHROPIC_MODEL=stale-model",
+                "CLAUDE_AGENT_SDK_SKILLS=general-chat",
+                "EXISTING_AUTH_BASE_URL=http://stale-auth.local",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "read_container_runtime_env",
+        lambda container: {
+            "CLAUDE_AGENT_SDK_ENABLED": "true",
+            "CLAUDE_AGENT_MODEL": "deepseek-v4-flash",
+            "OPENAI_MODEL": "deepseek-v4-flash",
+            "ANTHROPIC_MODEL": "deepseek-v4-flash",
+            "CLAUDE_AGENT_SDK_SKILLS": "general-chat,qa-file-reviewer,baoyu-translate",
+            "EXISTING_AUTH_BASE_URL": "",
+        },
+    )
+
+    values = verify_poc_gate.runtime_env_values(str(env_path), "ai-platform-api")
+
+    assert values["CLAUDE_AGENT_MODEL"] == "deepseek-v4-flash"
+    assert values["EXISTING_AUTH_BASE_URL"] == ""
+    assert values["CLAUDE_AGENT_SDK_SKILLS"] == "general-chat,qa-file-reviewer,baoyu-translate"
+
+
+def test_runtime_env_values_uses_env_file_only_when_container_env_unavailable(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("EXISTING_AUTH_BASE_URL=http://auth.local\n", encoding="utf-8")
+    monkeypatch.setattr(verify_poc_gate, "read_container_runtime_env", lambda container: {})
+
+    values = verify_poc_gate.runtime_env_values(str(env_path), "ai-platform-api")
+
+    assert values["EXISTING_AUTH_BASE_URL"] == "http://auth.local"
+
+
+def test_container_auth_url_source_of_truth_can_fail_gate_despite_valid_env_file(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("EXISTING_AUTH_BASE_URL=http://auth.local\n", encoding="utf-8")
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "read_container_runtime_env",
+        lambda container: {"EXISTING_AUTH_BASE_URL": "/api/Login/"},
+    )
+
+    values = verify_poc_gate.runtime_env_values(str(env_path), "ai-platform-api")
+    gate = verify_poc_gate.check_company_auth_bridge(values.get("EXISTING_AUTH_BASE_URL", ""))
+
+    assert gate.ok is False
+    assert gate.evidence["error"] == "missing_or_invalid_existing_auth_base_url"
+
+
+def test_company_auth_bridge_gate_rejects_missing_login_backend_without_traceback():
+    gate = verify_poc_gate.check_company_auth_bridge("")
+
+    assert gate.name == "company_auth_bridge"
+    assert gate.ok is False
+    assert gate.evidence["configured"] is False
+    assert gate.evidence["login_url"] is None
 
 
 def test_company_auth_bridge_gate_rejects_wrong_login_backend(monkeypatch):
