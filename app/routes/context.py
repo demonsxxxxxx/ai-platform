@@ -86,6 +86,7 @@ def _snapshot_response(
         memory_record_count=len(row.get("included_memory_record_ids") or []),
         memory_policy_source="not_recorded",
         long_term_memory_read=False,
+        preserve_stored_input_keys=True,
     )
     return {
         "context_snapshot_id": str(row["id"]),

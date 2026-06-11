@@ -217,10 +217,63 @@ def public_context_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
     return cleaned if isinstance(cleaned, dict) else {}
 
 
+def _is_public_context_input_key(value: object) -> bool:
+    key_text = str(value).strip() if isinstance(value, str) else ""
+    if not key_text:
+        return False
+    normalized_keys, decode_budget_exhausted = _normalized_public_context_key_candidates(key_text)
+    if decode_budget_exhausted:
+        return False
+    if any(normalized_key in PUBLIC_CONTEXT_PROVENANCE_KEY_ALIASES for normalized_key in normalized_keys):
+        return False
+    if any(normalized_key in PUBLIC_CONTEXT_SUMMARY_KEY_ALIASES for normalized_key in normalized_keys):
+        return False
+    if any(
+        normalized_key.startswith(prefix)
+        for normalized_key in normalized_keys
+        for prefix in PUBLIC_CONTEXT_SUMMARY_PREFIX_ALIASES
+    ):
+        return False
+    if any(normalized_key in PUBLIC_CONTEXT_FORBIDDEN_KEY_ALIASES for normalized_key in normalized_keys):
+        return False
+    if any(normalized_key in PUBLIC_CONTEXT_FORBIDDEN_ID_KEY_ALIASES for normalized_key in normalized_keys):
+        return False
+    if any(
+        _has_public_context_forbidden_id_tokens(token_candidate)
+        for token_candidate in _public_context_key_token_candidates(key_text)
+    ):
+        return False
+    preview = sanitize_public_payload({key_text: True})
+    return isinstance(preview, dict) and key_text in preview
+
+
+def _safe_public_context_input_keys(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    keys: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        key = item.strip()
+        if key and _is_public_context_input_key(key):
+            keys.append(key)
+    return sorted(set(keys))
+
+
+def _stored_public_context_input_keys(payload: dict[str, Any]) -> list[str]:
+    used_summary = payload.get("used_context_summary")
+    if isinstance(used_summary, dict):
+        input_keys = _safe_public_context_input_keys(used_summary.get("input_keys"))
+        if input_keys:
+            return input_keys
+    return _safe_public_context_input_keys(payload.get("input_keys"))
+
+
 def public_context_provenance(
     *,
     source: str,
     input_payload: dict[str, Any] | None = None,
+    input_keys: list[str] | None = None,
     message_count: int = 0,
     file_count: int = 0,
     artifact_count: int = 0,
@@ -233,7 +286,9 @@ def public_context_provenance(
 ) -> dict[str, Any]:
     """Build the user-visible context provenance contract without exposing raw ids."""
     sanitized_input = public_context_payload(input_payload or {})
-    input_keys = sorted(str(key) for key in sanitized_input.keys())
+    safe_input_keys = _safe_public_context_input_keys(input_keys) if input_keys is not None else []
+    if not safe_input_keys:
+        safe_input_keys = sorted(str(key) for key in sanitized_input.keys())
     return {
         "referenced_materials": {
             "message_count": max(0, int(message_count)),
@@ -243,7 +298,7 @@ def public_context_provenance(
         },
         "used_context_summary": {
             "source": str(source),
-            "input_keys": input_keys,
+            "input_keys": safe_input_keys,
             "memory_policy_source": str(memory_policy_source or "not_recorded"),
             "long_term_memory_read": bool(long_term_memory_read),
         },
@@ -263,11 +318,14 @@ def ensure_public_context_provenance(
     memory_record_count: int = 0,
     memory_policy_source: str = "not_recorded",
     long_term_memory_read: bool = False,
+    preserve_stored_input_keys: bool = False,
 ) -> dict[str, Any]:
     sanitized_payload = public_context_payload(payload)
+    input_keys = _stored_public_context_input_keys(payload) if preserve_stored_input_keys else None
     provenance = public_context_provenance(
         source=source,
         input_payload=sanitized_payload,
+        input_keys=input_keys,
         message_count=message_count,
         file_count=file_count,
         artifact_count=artifact_count,

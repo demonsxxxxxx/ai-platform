@@ -267,6 +267,59 @@ def test_context_snapshot_response_omits_raw_material_ids_from_public_projection
     assert "memory-sensitive" not in serialized
 
 
+def test_context_snapshot_response_preserves_stored_safe_summary_input_keys(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {"id": run_id, "workspace_id": "workspace-a", "session_id": "session-a", "trace_id": "trace-a"}
+
+    async def fake_list_context_snapshots(conn, *, tenant_id, user_id, run_id):
+        return [
+            {
+                "id": "ctx-stored-summary",
+                "tenant_id": tenant_id,
+                "workspace_id": "workspace-a",
+                "user_id": user_id,
+                "session_id": "session-a",
+                "run_id": run_id,
+                "trace_id": "trace-a",
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "context_kind": "executor",
+                "included_message_ids": ["msg-a"],
+                "included_file_ids": ["file-a"],
+                "included_artifact_ids": [],
+                "included_memory_record_ids": [],
+                "redaction_summary_json": {},
+                "payload_json": {
+                    "used_context_summary": {
+                        "source": "runs_api",
+                        "input_keys": ["message", "attachments", "raw_storage_key"],
+                        "memory_policy_source": "stored",
+                        "long_term_memory_read": False,
+                    }
+                },
+                "created_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.context.repositories.list_context_snapshots", fake_list_context_snapshots)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-a/context/snapshots", headers=headers())
+
+    assert response.status_code == 200
+    payload = response.json()["context_snapshots"][0]["payload"]
+    assert payload["used_context_summary"] == {
+        "source": "stored_context_snapshot",
+        "input_keys": ["attachments", "message"],
+        "memory_policy_source": "not_recorded",
+        "long_term_memory_read": False,
+    }
+    serialized = response.text.lower()
+    assert "raw_storage_key" not in serialized
+
+
 def test_create_context_snapshot_rejects_forged_public_provenance_and_forbidden_aliases(monkeypatch):
     calls = []
 
