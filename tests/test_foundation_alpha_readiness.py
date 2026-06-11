@@ -10,7 +10,7 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
-ACTIVE_RUNTIME_SUBJECT_SHA = "9b02836262fb0f238a7f90b9705bf39a8b298158"
+ACTIVE_RUNTIME_SUBJECT_SHA = "458f6056dd0fa533162e780a303d79ce1b3d0eec"
 HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
@@ -448,6 +448,20 @@ def test_foundation_alpha_readiness_uses_valid_source_snapshot_marker_when_git_i
     }
     assert readiness["verified_runtime_subject"]["evidence_scope"] == "current_runtime_relevant_source"
     assert readiness["decision"]["current_source_verified_by_running_runtime"] is True
+
+
+def test_foundation_alpha_readiness_prefers_git_head_over_stale_source_revision_marker(monkeypatch, tmp_path):
+    marker_path = tmp_path / ".ai-platform-source-revision"
+    marker_path.write_text(f"{RUNTIME_SUBJECT_SHA}\n", encoding="utf-8")
+    monkeypatch.setattr(foundation_alpha_readiness, "_SOURCE_REVISION_MARKER", marker_path, raising=False)
+
+    def git_head(command, **_kwargs):
+        assert command == ["git", "rev-parse", "HEAD"]
+        return subprocess.CompletedProcess(command, 0, stdout=f"{ACTIVE_RUNTIME_SUBJECT_SHA}\n", stderr="")
+
+    monkeypatch.setattr(foundation_alpha_readiness.subprocess, "run", git_head)
+
+    assert foundation_alpha_readiness._resolve_source_tree_revision() == ACTIVE_RUNTIME_SUBJECT_SHA
 
 
 def test_foundation_alpha_readiness_rejects_source_snapshot_marker_for_wrong_commit(
