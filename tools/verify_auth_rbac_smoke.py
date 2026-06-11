@@ -100,10 +100,15 @@ def _principal_headers(*, user_id: str, roles: str, tenant_id: str, gateway_secr
     return headers
 
 
-def _detail(payload: Any) -> str:
+def _detail(payload: Any, *, redactions: tuple[str, ...] = ()) -> str:
     if isinstance(payload, dict):
-        return str(payload.get("detail") or payload.get("error") or "")
-    return str(payload or "")[:120]
+        detail = str(payload.get("detail") or payload.get("error") or "")
+    else:
+        detail = str(payload or "")[:120]
+    for marker in redactions:
+        if marker:
+            detail = detail.replace(marker, "[redacted]")
+    return detail
 
 
 def _normalized_label(value: str) -> str:
@@ -136,7 +141,22 @@ def _contains_forbidden_projection_term(payload: Any) -> bool:
     return walk(payload)
 
 
-def _admin_runtime_summary(payload: Any) -> dict[str, object]:
+def _principal_summary(payload: Any, *, expected_user_id: str, expected_tenant_id: str) -> dict[str, object]:
+    body = payload if isinstance(payload, dict) else {}
+    user_id = str(body.get("user_id") or "")
+    tenant_id = str(body.get("tenant_id") or "")
+    return {
+        "user_id": user_id,
+        "tenant_id": tenant_id,
+        "source": str(body.get("source") or ""),
+        "is_admin": bool(body.get("is_admin")) if "is_admin" in body else None,
+        "user_matches_requested": user_id == expected_user_id,
+        "tenant_matches_requested": tenant_id == expected_tenant_id,
+        "forbidden_projection_terms_present": _contains_forbidden_projection_term(payload),
+    }
+
+
+def _admin_runtime_summary(payload: Any, *, expected_tenant_id: str) -> dict[str, object]:
     body = payload if isinstance(payload, dict) else {}
     missing_sections = [section for section in REQUIRED_ADMIN_RUNTIME_SECTIONS if section not in body]
     queue = body.get("queue") if isinstance(body.get("queue"), dict) else {}
@@ -148,10 +168,18 @@ def _admin_runtime_summary(payload: Any) -> dict[str, object]:
         "required_sections_present": not missing_sections,
         "missing_sections": missing_sections,
         "tenant_id": str(body.get("tenant_id") or ""),
+        "tenant_matches_requested": str(body.get("tenant_id") or "") == expected_tenant_id,
         "queue_lease_scan_limit": capacity.get("queue_lease_scan_limit"),
         "sandbox_active_leases": leases.get("active"),
         "forbidden_projection_terms_present": _contains_forbidden_projection_term(payload),
     }
+
+
+def _invalid_gateway_secret(gateway_secret: str) -> str:
+    candidate = "__ai_platform_smoke_invalid_gateway_secret__"
+    if gateway_secret and candidate == gateway_secret:
+        return f"{candidate}_invalid"
+    return candidate
 
 
 def build_auth_rbac_smoke(
@@ -168,6 +196,27 @@ def build_auth_rbac_smoke(
     safe_base_url = sanitize_base_url(base_url)
     auth_me_status, auth_me_payload = _request_json(
         f"{safe_base_url}/api/auth/me",
+        timeout_seconds=timeout_seconds,
+    )
+    authenticated_auth_me_status, authenticated_auth_me_payload = _request_json(
+        f"{safe_base_url}/api/auth/me",
+        headers=_principal_headers(
+            user_id=admin_user_id,
+            roles="admin",
+            tenant_id=tenant_id,
+            gateway_secret=gateway_secret,
+        ),
+        timeout_seconds=timeout_seconds,
+    )
+    invalid_secret = _invalid_gateway_secret(gateway_secret)
+    invalid_gateway_secret_status, invalid_gateway_secret_payload = _request_json(
+        f"{safe_base_url}/api/auth/me",
+        headers=_principal_headers(
+            user_id=admin_user_id,
+            roles="admin",
+            tenant_id=tenant_id,
+            gateway_secret=invalid_secret,
+        ),
         timeout_seconds=timeout_seconds,
     )
     ordinary_status, ordinary_payload = _request_json(
@@ -190,18 +239,44 @@ def build_auth_rbac_smoke(
         ),
         timeout_seconds=timeout_seconds,
     )
-    admin_summary = _admin_runtime_summary(admin_payload)
+    auth_me_summary = _principal_summary(
+        authenticated_auth_me_payload,
+        expected_user_id=admin_user_id,
+        expected_tenant_id=tenant_id,
+    )
+    admin_summary = _admin_runtime_summary(admin_payload, expected_tenant_id=tenant_id)
+    redaction_failed = any(
+        [
+            _contains_forbidden_projection_term(auth_me_payload),
+            auth_me_summary["forbidden_projection_terms_present"],
+            _contains_forbidden_projection_term(invalid_gateway_secret_payload),
+            _contains_forbidden_projection_term(ordinary_payload),
+            admin_summary["forbidden_projection_terms_present"],
+        ]
+    )
     checks = {
         "unauthenticated_auth_me": {
             "route": "/api/auth/me",
             "status": auth_me_status,
-            "detail": _detail(auth_me_payload),
+            "detail": _detail(auth_me_payload, redactions=(gateway_secret, invalid_secret)),
             "expected_status": 401,
+        },
+        "authenticated_auth_me": {
+            "route": "/api/auth/me",
+            "status": authenticated_auth_me_status,
+            "expected_status": 200,
+            **auth_me_summary,
+        },
+        "invalid_gateway_secret_auth_me": {
+            "route": "/api/auth/me",
+            "status": invalid_gateway_secret_status,
+            "detail": _detail(invalid_gateway_secret_payload, redactions=(gateway_secret, invalid_secret)),
+            "expected_status": 403,
         },
         "ordinary_admin_runtime": {
             "route": ADMIN_RUNTIME_ROUTE,
             "status": ordinary_status,
-            "detail": _detail(ordinary_payload),
+            "detail": _detail(ordinary_payload, redactions=(gateway_secret, invalid_secret)),
             "expected_status": 403,
         },
         "admin_runtime": {
@@ -214,15 +289,24 @@ def build_auth_rbac_smoke(
     ok = (
         auth_me_status == 401
         and checks["unauthenticated_auth_me"]["detail"] == "missing_authenticated_principal"
+        and authenticated_auth_me_status == 200
+        and bool(auth_me_summary["user_matches_requested"])
+        and bool(auth_me_summary["tenant_matches_requested"])
+        and not bool(auth_me_summary["forbidden_projection_terms_present"])
+        and invalid_gateway_secret_status == 403
+        and checks["invalid_gateway_secret_auth_me"]["detail"] == "invalid_gateway_principal_secret"
         and ordinary_status == 403
         and checks["ordinary_admin_runtime"]["detail"] == "not_ai_admin"
         and admin_status == 200
         and bool(admin_summary["required_sections_present"])
+        and bool(admin_summary["tenant_matches_requested"])
         and not bool(admin_summary["forbidden_projection_terms_present"])
+        and not redaction_failed
     )
     return {
         "schema_version": SCHEMA_VERSION,
         "ok": ok,
+        "redaction_scan_status": "failed" if redaction_failed else "passed",
         "source": {
             "base_url": safe_base_url,
             "commit_sha": commit_sha,

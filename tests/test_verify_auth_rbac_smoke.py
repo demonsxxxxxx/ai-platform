@@ -21,9 +21,32 @@ class AuthRbacHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         if self.path == "/api/auth/me":
-            self._send_json(401, {"detail": "missing_authenticated_principal"})
+            user_id = self.headers.get("X-AI-User-ID", "")
+            if not user_id:
+                self._send_json(401, {"detail": "missing_authenticated_principal"})
+                return
+            if self.headers.get("X-AI-Gateway-Secret", "") != "test-secret":
+                self._send_json(403, {"detail": "invalid_gateway_principal_secret"})
+                return
+            roles = [role.strip() for role in self.headers.get("X-AI-Roles", "").split(",") if role.strip()]
+            self._send_json(
+                200,
+                {
+                    "user_id": user_id,
+                    "user_name": user_id,
+                    "display_name": self.headers.get("X-AI-User-Name", user_id),
+                    "tenant_id": self.headers.get("X-AI-Tenant-ID", "default"),
+                    "roles": roles,
+                    "permissions": [],
+                    "is_admin": "admin" in roles,
+                    "source": "trusted-header",
+                },
+            )
             return
         if self.path.startswith("/api/ai/admin/runtime/overview"):
+            if self.headers.get("X-AI-Gateway-Secret", "") != "test-secret":
+                self._send_json(403, {"detail": "invalid_gateway_principal_secret"})
+                return
             roles = self.headers.get("X-AI-Roles", "")
             if "admin" not in roles:
                 self._send_json(403, {"detail": "not_ai_admin"})
@@ -108,6 +131,57 @@ class LeakyBearerValueHandler(AuthRbacHandler):
         super().do_GET()
 
 
+class TenantMismatchHandler(AuthRbacHandler):
+    def do_GET(self):  # noqa: N802
+        if self.path == "/api/auth/me" and self.headers.get("X-AI-User-ID", ""):
+            self._send_json(
+                200,
+                {
+                    "user_id": self.headers.get("X-AI-User-ID", ""),
+                    "tenant_id": "foreign-tenant",
+                    "roles": ["admin"],
+                    "permissions": [],
+                    "is_admin": True,
+                    "source": "trusted-header",
+                },
+            )
+            return
+        if self.path.startswith("/api/ai/admin/runtime/overview") and "admin" in self.headers.get("X-AI-Roles", ""):
+            self._send_json(
+                200,
+                {
+                    "tenant_id": "foreign-tenant",
+                    "queue": {"tenant_insight": {"capacity": {"queue_lease_scan_limit": 50}}},
+                    "sandbox": {"leases": {"active": 0}},
+                    "capacity": {"max_active_worker_runs": 3},
+                    "observability": {"error_count": 0},
+                    "governance": {"tool_policy": "visible"},
+                    "database_pool": {"open": True},
+                    "backpressure": {"reasons": []},
+                },
+            )
+            return
+        super().do_GET()
+
+
+class InvalidGatewayAcceptedHandler(AuthRbacHandler):
+    def do_GET(self):  # noqa: N802
+        if self.path == "/api/auth/me" and self.headers.get("X-AI-User-ID", ""):
+            self._send_json(
+                200,
+                {
+                    "user_id": self.headers.get("X-AI-User-ID", ""),
+                    "tenant_id": self.headers.get("X-AI-Tenant-ID", "default"),
+                    "roles": ["admin"],
+                    "permissions": [],
+                    "is_admin": True,
+                    "source": "trusted-header",
+                },
+            )
+            return
+        super().do_GET()
+
+
 def test_sanitize_base_url_strips_credentials_query_and_fragment():
     assert sanitize_base_url("https://user:token@example.com:8443/path?api_key=secret#x") == "https://example.com:8443/path"
 
@@ -129,10 +203,16 @@ def test_auth_rbac_smoke_checks_unauthenticated_ordinary_admin_and_redaction():
     assert payload["schema_version"] == "ai-platform.auth-rbac-smoke.v1"
     assert payload["source"]["gateway_secret_supplied"] is True
     assert payload["checks"]["unauthenticated_auth_me"]["status"] == 401
+    assert payload["checks"]["authenticated_auth_me"]["status"] == 200
+    assert payload["checks"]["authenticated_auth_me"]["tenant_matches_requested"] is True
+    assert payload["checks"]["authenticated_auth_me"]["user_matches_requested"] is True
+    assert payload["checks"]["invalid_gateway_secret_auth_me"]["status"] == 403
     assert payload["checks"]["ordinary_admin_runtime"]["status"] == 403
     assert payload["checks"]["admin_runtime"]["status"] == 200
     assert payload["checks"]["admin_runtime"]["required_sections_present"] is True
+    assert payload["checks"]["admin_runtime"]["tenant_matches_requested"] is True
     assert payload["checks"]["admin_runtime"]["forbidden_projection_terms_present"] is False
+    assert payload["redaction_scan_status"] == "passed"
     serialized = json.dumps(payload, ensure_ascii=False).lower()
     assert "test-secret" not in serialized
     assert "executor_private_payload" not in serialized
@@ -155,6 +235,7 @@ def test_auth_rbac_smoke_fails_closed_on_admin_projection_private_payload_leak()
     assert payload["ok"] is False
     assert payload["checks"]["admin_runtime"]["status"] == 200
     assert payload["checks"]["admin_runtime"]["forbidden_projection_terms_present"] is True
+    assert payload["redaction_scan_status"] == "failed"
 
 
 def test_auth_rbac_smoke_allows_governance_policy_text_forbidden_class_names():
@@ -191,3 +272,40 @@ def test_auth_rbac_smoke_fails_closed_on_bearer_credential_value():
     assert payload["ok"] is False
     assert payload["checks"]["admin_runtime"]["status"] == 200
     assert payload["checks"]["admin_runtime"]["forbidden_projection_terms_present"] is True
+
+
+def test_auth_rbac_smoke_fails_closed_on_principal_or_admin_tenant_mismatch():
+    server = run_server(TenantMismatchHandler)
+    try:
+        payload = build_auth_rbac_smoke(
+            base_url=f"http://127.0.0.1:{server.server_port}",
+            gateway_secret="test-secret",
+            tenant_id="tenant-a",
+            commit_sha="bf20432f9889efa8b367afdf512c641068ba30bc",
+            image="ai-platform:bf20432-foundation-alpha-poc",
+            timeout_seconds=5,
+        )
+    finally:
+        server.shutdown()
+
+    assert payload["ok"] is False
+    assert payload["checks"]["authenticated_auth_me"]["tenant_matches_requested"] is False
+    assert payload["checks"]["admin_runtime"]["tenant_matches_requested"] is False
+
+
+def test_auth_rbac_smoke_fails_closed_when_invalid_gateway_secret_is_accepted():
+    server = run_server(InvalidGatewayAcceptedHandler)
+    try:
+        payload = build_auth_rbac_smoke(
+            base_url=f"http://127.0.0.1:{server.server_port}",
+            gateway_secret="test-secret",
+            commit_sha="bf20432f9889efa8b367afdf512c641068ba30bc",
+            image="ai-platform:bf20432-foundation-alpha-poc",
+            timeout_seconds=5,
+        )
+    finally:
+        server.shutdown()
+
+    assert payload["ok"] is False
+    assert payload["checks"]["invalid_gateway_secret_auth_me"]["status"] == 200
+    assert payload["checks"]["invalid_gateway_secret_auth_me"]["expected_status"] == 403
