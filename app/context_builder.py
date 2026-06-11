@@ -320,6 +320,14 @@ def _stored_public_context_source(payload: dict[str, Any]) -> str | None:
     return source if source in PUBLIC_CONTEXT_SOURCE_VALUES else None
 
 
+def _stored_public_context_top_level_source(payload: dict[str, Any]) -> str | None:
+    source = payload.get("source")
+    if not isinstance(source, str):
+        return None
+    source = source.strip()
+    return source if source in PUBLIC_CONTEXT_SOURCE_VALUES else None
+
+
 def _safe_public_context_string(value: object) -> str | None:
     if not isinstance(value, str):
         return None
@@ -425,7 +433,11 @@ def ensure_public_context_provenance(
 ) -> dict[str, Any]:
     sanitized_payload = public_context_payload(payload)
     input_keys = _stored_public_context_input_keys(payload) if preserve_stored_input_keys else None
-    stored_source = _stored_public_context_source(payload) if preserve_stored_input_keys else None
+    stored_source = (
+        _stored_public_context_source(payload) or _stored_public_context_top_level_source(payload)
+        if preserve_stored_input_keys
+        else None
+    )
     stored_memory_policy_source = (
         _stored_public_context_memory_policy_source(payload) if preserve_stored_input_keys else None
     )

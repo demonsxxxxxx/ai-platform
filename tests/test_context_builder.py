@@ -150,6 +150,34 @@ def test_ensure_public_context_provenance_preserves_stored_safe_explainability_f
     assert "raw_storage_key" not in serialized
 
 
+def test_ensure_public_context_provenance_preserves_safe_top_level_legacy_source():
+    payload = {
+        "source": "chat_stream",
+        "message": "hello",
+        "context_pack_generated_at": "2026-06-12T01:23:45Z",
+    }
+
+    projected = ensure_public_context_provenance(
+        payload,
+        source="stored_context_snapshot",
+        message_count=1,
+        file_count=0,
+        artifact_count=0,
+        memory_record_count=0,
+        preserve_stored_input_keys=True,
+    )
+
+    assert projected["used_context_summary"] == {
+        "source": "chat_stream",
+        "input_keys": ["message"],
+        "memory_policy_source": "not_recorded",
+        "long_term_memory_read": False,
+    }
+    assert projected["context_pack_generated_at"] == "2026-06-12T01:23:45Z"
+    serialized = str(projected).lower()
+    assert "stored_context_snapshot" not in serialized
+
+
 def test_ensure_public_context_provenance_rejects_unsafe_stored_explainability_fields():
     payload = {
         "window": "current",
