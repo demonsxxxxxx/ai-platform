@@ -27,6 +27,27 @@ FORBIDDEN_PROJECTION_TERMS = (
     "bearer ",
     "sk-",
 )
+ALLOWED_POLICY_CLASS_LABELS = {
+    "api key",
+    "api_key",
+    "bearer token",
+    "database url",
+    "database_url",
+    "executor private payload",
+    "executor_private_payload",
+    "private payload",
+    "private_payload",
+    "raw storage key",
+    "raw_storage_key",
+    "redis url",
+    "redis_url",
+    "runtime private payload",
+    "runtime_private_payload",
+    "sandbox workdir",
+    "sandbox_workdir",
+    "storage key",
+    "storage_key",
+}
 REQUIRED_ADMIN_RUNTIME_SECTIONS = (
     "tenant_id",
     "queue",
@@ -85,9 +106,34 @@ def _detail(payload: Any) -> str:
     return str(payload or "")[:120]
 
 
+def _normalized_label(value: str) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _is_allowed_policy_class_label(value: str) -> bool:
+    return _normalized_label(value) in ALLOWED_POLICY_CLASS_LABELS
+
+
 def _contains_forbidden_projection_term(payload: Any) -> bool:
-    text = json.dumps(payload, ensure_ascii=False, sort_keys=True).lower()
-    return any(term in text for term in FORBIDDEN_PROJECTION_TERMS)
+    def walk(value: Any) -> bool:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                key_text = str(key).lower()
+                if any(term in key_text for term in FORBIDDEN_PROJECTION_TERMS):
+                    return True
+                if walk(child):
+                    return True
+            return False
+        if isinstance(value, list):
+            return any(walk(item) for item in value)
+        if isinstance(value, str):
+            if _is_allowed_policy_class_label(value):
+                return False
+            value_text = value.lower()
+            return any(term in value_text for term in FORBIDDEN_PROJECTION_TERMS)
+        return False
+
+    return walk(payload)
 
 
 def _admin_runtime_summary(payload: Any) -> dict[str, object]:

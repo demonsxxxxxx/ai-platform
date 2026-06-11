@@ -61,6 +61,53 @@ class LeakyAdminHandler(AuthRbacHandler):
         super().do_GET()
 
 
+class GovernancePolicyTextHandler(AuthRbacHandler):
+    def do_GET(self):  # noqa: N802
+        if self.path.startswith("/api/ai/admin/runtime/overview") and "admin" in self.headers.get("X-AI-Roles", ""):
+            self._send_json(
+                200,
+                {
+                    "tenant_id": "default",
+                    "queue": {"tenant_insight": {"capacity": {"queue_lease_scan_limit": 50}}},
+                    "sandbox": {"leases": {"active": 0}},
+                    "capacity": {"max_active_worker_runs": 3},
+                    "observability": {"error_count": 0},
+                    "governance": {
+                        "release_evidence": {
+                            "forbidden_marker_classes": [
+                                "bearer token",
+                                "secret-bearing environment value",
+                            ]
+                        }
+                    },
+                    "database_pool": {"open": True},
+                    "backpressure": {"reasons": []},
+                },
+            )
+            return
+        super().do_GET()
+
+
+class LeakyBearerValueHandler(AuthRbacHandler):
+    def do_GET(self):  # noqa: N802
+        if self.path.startswith("/api/ai/admin/runtime/overview") and "admin" in self.headers.get("X-AI-Roles", ""):
+            self._send_json(
+                200,
+                {
+                    "tenant_id": "default",
+                    "queue": {"tenant_insight": {"capacity": {"queue_lease_scan_limit": 50}}},
+                    "sandbox": {"leases": {"active": 0}},
+                    "capacity": {"max_active_worker_runs": 3},
+                    "observability": {"error_count": 0},
+                    "governance": {"header_sample": "Authorization: Bearer abcdefgh12345678"},
+                    "database_pool": {"open": True},
+                    "backpressure": {"reasons": []},
+                },
+            )
+            return
+        super().do_GET()
+
+
 def test_sanitize_base_url_strips_credentials_query_and_fragment():
     assert sanitize_base_url("https://user:token@example.com:8443/path?api_key=secret#x") == "https://example.com:8443/path"
 
@@ -94,6 +141,42 @@ def test_auth_rbac_smoke_checks_unauthenticated_ordinary_admin_and_redaction():
 
 def test_auth_rbac_smoke_fails_closed_on_admin_projection_private_payload_leak():
     server = run_server(LeakyAdminHandler)
+    try:
+        payload = build_auth_rbac_smoke(
+            base_url=f"http://127.0.0.1:{server.server_port}",
+            gateway_secret="test-secret",
+            commit_sha="bf20432f9889efa8b367afdf512c641068ba30bc",
+            image="ai-platform:bf20432-foundation-alpha-poc",
+            timeout_seconds=5,
+        )
+    finally:
+        server.shutdown()
+
+    assert payload["ok"] is False
+    assert payload["checks"]["admin_runtime"]["status"] == 200
+    assert payload["checks"]["admin_runtime"]["forbidden_projection_terms_present"] is True
+
+
+def test_auth_rbac_smoke_allows_governance_policy_text_forbidden_class_names():
+    server = run_server(GovernancePolicyTextHandler)
+    try:
+        payload = build_auth_rbac_smoke(
+            base_url=f"http://127.0.0.1:{server.server_port}",
+            gateway_secret="test-secret",
+            commit_sha="bf20432f9889efa8b367afdf512c641068ba30bc",
+            image="ai-platform:bf20432-foundation-alpha-poc",
+            timeout_seconds=5,
+        )
+    finally:
+        server.shutdown()
+
+    assert payload["ok"] is True
+    assert payload["checks"]["admin_runtime"]["status"] == 200
+    assert payload["checks"]["admin_runtime"]["forbidden_projection_terms_present"] is False
+
+
+def test_auth_rbac_smoke_fails_closed_on_bearer_credential_value():
+    server = run_server(LeakyBearerValueHandler)
     try:
         payload = build_auth_rbac_smoke(
             base_url=f"http://127.0.0.1:{server.server_port}",
