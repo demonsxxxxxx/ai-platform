@@ -835,6 +835,45 @@ def test_context_snapshot_public_projection_gate_rejects_counts_only_summary(mon
     ]
 
 
+def test_context_snapshot_public_projection_gate_rejects_blank_memory_policy_source(monkeypatch):
+    def fake_get(url: str, headers: dict[str, str], timeout: float = 15.0):
+        return 200, {
+            "run_id": "run_review_gate_1",
+            "context_snapshots": [
+                {
+                    "context_snapshot_id": "ctx_blank_memory_policy",
+                    "payload": {
+                        "referenced_materials": {
+                            "message_count": 1,
+                            "file_count": 1,
+                            "artifact_count": 0,
+                            "memory_record_count": 0,
+                        },
+                        "used_context_summary": {
+                            "source": "stored_context_snapshot",
+                            "input_keys": ["message"],
+                            "memory_policy_source": " ",
+                            "long_term_memory_read": False,
+                        },
+                        "execution_tier": "sdk_only_writing",
+                        "context_pack_generated_at": "2026-06-12T01:00:00Z",
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr(verify_poc_gate, "http_json_get_with_headers", fake_get)
+
+    gate = verify_poc_gate.check_context_snapshot_public_projection(
+        "http://api.local",
+        {"run_id": "run_review_gate_1", "file_ids": ["file_review_gate_1"], "artifact_count": 1},
+        headers=verify_poc_gate.principal_headers("upload-review-gate-user", "Upload Review Gate User"),
+    )
+
+    assert gate.ok is False
+    assert "memory_policy_source" in gate.evidence["missing_public_summary_fields"]
+
+
 def test_context_snapshot_public_projection_gate_rejects_raw_id_and_private_leaks(monkeypatch):
     def fake_get(url: str, headers: dict[str, str], timeout: float = 15.0):
         return 200, {
@@ -917,6 +956,46 @@ def test_context_snapshot_public_projection_gate_rejects_empty_or_invalid_input_
     assert "input_keys" in gate.evidence["missing_public_summary_fields"]
 
 
+def test_context_snapshot_public_projection_gate_rejects_mixed_invalid_input_keys(monkeypatch):
+    def fake_get(url: str, headers: dict[str, str], timeout: float = 15.0):
+        return 200, {
+            "run_id": "run_review_gate_1",
+            "context_snapshots": [
+                {
+                    "context_snapshot_id": "ctx_mixed_input_keys",
+                    "payload": {
+                        "referenced_materials": {
+                            "message_count": 1,
+                            "file_count": 1,
+                            "artifact_count": 0,
+                            "memory_record_count": 0,
+                        },
+                        "used_context_summary": {
+                            "source": "stored_context_snapshot",
+                            "input_keys": ["message", 123, "  "],
+                            "memory_policy_source": "stored",
+                            "long_term_memory_read": False,
+                        },
+                        "execution_tier": "sdk_only_writing",
+                        "context_pack_generated_at": "2026-06-12T01:00:00Z",
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr(verify_poc_gate, "http_json_get_with_headers", fake_get)
+
+    gate = verify_poc_gate.check_context_snapshot_public_projection(
+        "http://api.local",
+        {"run_id": "run_review_gate_1", "file_ids": ["file_review_gate_1"], "artifact_count": 1},
+        headers=verify_poc_gate.principal_headers("upload-review-gate-user", "Upload Review Gate User"),
+    )
+
+    assert gate.ok is False
+    assert gate.evidence["input_keys"] == []
+    assert "input_keys" in gate.evidence["missing_public_summary_fields"]
+
+
 def test_context_snapshot_public_projection_gate_rejects_camel_case_raw_id_aliases(monkeypatch):
     def fake_get(url: str, headers: dict[str, str], timeout: float = 15.0):
         return 200, {
@@ -957,6 +1036,99 @@ def test_context_snapshot_public_projection_gate_rejects_camel_case_raw_id_alias
     assert gate.ok is False
     assert gate.evidence["raw_material_id_fields_present"] is True
     assert "rawStorageKey" in gate.evidence["forbidden_projection_leaks"]
+
+
+def test_context_snapshot_public_projection_gate_rejects_later_counts_only_snapshot(monkeypatch):
+    def fake_get(url: str, headers: dict[str, str], timeout: float = 15.0):
+        return 200, {
+            "run_id": "run_review_gate_1",
+            "context_snapshots": [
+                {
+                    "context_snapshot_id": "ctx_public_1",
+                    "payload": {
+                        "referenced_materials": {
+                            "message_count": 1,
+                            "file_count": 1,
+                            "artifact_count": 0,
+                            "memory_record_count": 0,
+                        },
+                        "used_context_summary": {
+                            "source": "stored_context_snapshot",
+                            "input_keys": ["message"],
+                            "memory_policy_source": "stored",
+                            "long_term_memory_read": False,
+                        },
+                        "execution_tier": "sdk_only_writing",
+                        "context_pack_generated_at": "2026-06-12T01:00:00Z",
+                    },
+                },
+                {
+                    "context_snapshot_id": "ctx_counts_only_2",
+                    "payload": {
+                        "referenced_materials": {
+                            "message_count": 1,
+                            "file_count": 1,
+                            "artifact_count": 0,
+                            "memory_record_count": 0,
+                        }
+                    },
+                },
+            ],
+        }
+
+    monkeypatch.setattr(verify_poc_gate, "http_json_get_with_headers", fake_get)
+
+    gate = verify_poc_gate.check_context_snapshot_public_projection(
+        "http://api.local",
+        {"run_id": "run_review_gate_1", "file_ids": ["file_review_gate_1"], "artifact_count": 1},
+        headers=verify_poc_gate.principal_headers("upload-review-gate-user", "Upload Review Gate User"),
+    )
+
+    assert gate.ok is False
+    assert gate.evidence["snapshot_count"] == 2
+    assert "summary_source" in gate.evidence["missing_public_summary_fields"]
+
+
+def test_context_snapshot_public_projection_gate_rejects_memory_id_and_executor_payload_aliases(monkeypatch):
+    def fake_get(url: str, headers: dict[str, str], timeout: float = 15.0):
+        return 200, {
+            "run_id": "run_review_gate_1",
+            "context_snapshots": [
+                {
+                    "context_snapshot_id": "ctx_alias_leaky",
+                    "payload": {
+                        "referenced_materials": {
+                            "message_count": 1,
+                            "file_count": 1,
+                            "artifact_count": 0,
+                            "memory_record_count": 1,
+                        },
+                        "used_context_summary": {
+                            "source": "stored_context_snapshot",
+                            "input_keys": ["message"],
+                            "memory_policy_source": "stored",
+                            "long_term_memory_read": False,
+                        },
+                        "execution_tier": "sdk_only_writing",
+                        "context_pack_generated_at": "2026-06-12T01:00:00Z",
+                        "memoryIds": ["memory-secret"],
+                        "executorPayload": {"adapter": "hidden"},
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr(verify_poc_gate, "http_json_get_with_headers", fake_get)
+
+    gate = verify_poc_gate.check_context_snapshot_public_projection(
+        "http://api.local",
+        {"run_id": "run_review_gate_1", "file_ids": ["file_review_gate_1"], "artifact_count": 1},
+        headers=verify_poc_gate.principal_headers("upload-review-gate-user", "Upload Review Gate User"),
+    )
+
+    assert gate.ok is False
+    assert gate.evidence["raw_material_id_fields_present"] is True
+    assert "executorPayload" in gate.evidence["forbidden_projection_leaks"]
 
 
 
