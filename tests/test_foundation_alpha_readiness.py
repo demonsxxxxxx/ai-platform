@@ -172,7 +172,13 @@ def test_foundation_alpha_readiness_selects_current_source_release_evidence_pair
     assert readiness["status"] == "211_verified_followups_open"
     assert readiness["source_tree_commit_sha"] == CURRENT_SOURCE_SHA
     assert readiness["runtime_subject_commit_sha"] == CURRENT_SOURCE_SHA
-    assert readiness["runtime_image"] == "ai-platform:a3f1d73-foundation-alpha-poc"
+    assert "runtime_image" not in readiness
+    assert readiness["verified_runtime_subject"] == {
+        "commit_sha": CURRENT_SOURCE_SHA,
+        "image": "ai-platform:a3f1d73-foundation-alpha-poc",
+        "image_id": f"sha256:{CURRENT_SOURCE_SHA[:12]}",
+        "evidence_scope": "current_source_tree",
+    }
     assert readiness["runtime_source_relation"] == {
         "source_tree_commit_sha": CURRENT_SOURCE_SHA,
         "source_tree_dirty": False,
@@ -212,7 +218,7 @@ def test_foundation_alpha_readiness_does_not_overclaim_dirty_source_tree(monkeyp
 
     readiness = build_foundation_alpha_readiness(SecretBearingSettings())
 
-    assert readiness["status"] == "211_source_synced_runtime_pending_followups_open"
+    assert readiness["status"] == "source_tree_uncommitted_changes_pending_followups_open"
     assert readiness["source_tree_commit_sha"] == CURRENT_SOURCE_SHA
     assert readiness["source_tree_dirty"] is True
     assert readiness["runtime_subject_commit_sha"] == CURRENT_SOURCE_SHA
@@ -261,10 +267,16 @@ def test_foundation_alpha_readiness_falls_back_to_latest_reviewed_runtime_eviden
 
     readiness = build_foundation_alpha_readiness(SecretBearingSettings())
 
-    assert readiness["status"] == "211_source_synced_runtime_pending_followups_open"
+    assert readiness["status"] == "source_synced_runtime_pending_followups_open"
     assert readiness["source_tree_commit_sha"] == NEWER_SOURCE_SHA
     assert readiness["runtime_subject_commit_sha"] == CURRENT_SOURCE_SHA
-    assert readiness["runtime_image"] == "ai-platform:a3f1d73-foundation-alpha-poc"
+    assert "runtime_image" not in readiness
+    assert readiness["verified_runtime_subject"] == {
+        "commit_sha": CURRENT_SOURCE_SHA,
+        "image": "ai-platform:a3f1d73-foundation-alpha-poc",
+        "image_id": f"sha256:{CURRENT_SOURCE_SHA[:12]}",
+        "evidence_scope": "reviewed_historical_runtime_evidence",
+    }
     assert readiness["runtime_source_relation"] == {
         "source_tree_commit_sha": NEWER_SOURCE_SHA,
         "source_tree_dirty": False,
@@ -275,6 +287,8 @@ def test_foundation_alpha_readiness_falls_back_to_latest_reviewed_runtime_eviden
     }
     assert readiness["decision"]["current_source_verified_by_running_runtime"] is False
     assert readiness["decision"]["runtime_rollout_required_for_current_source"] is True
+    assert readiness["decision"]["controlled_poc_loop_verified_for_current_source"] is False
+    assert readiness["decision"]["reviewed_poc_loop_evidence_available"] is True
     assert CURRENT_SOURCE_SHA in readiness["evidence_entries"]["poc_smoke"]
     assert RUNTIME_SUBJECT_SHA not in readiness["evidence_entries"]["poc_smoke"]
 
@@ -304,7 +318,8 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "status": "runtime_current_for_source_tree",
     }
     assert readiness["decision"] == {
-        "controlled_poc_loop_verified": True,
+        "reviewed_poc_loop_evidence_available": True,
+        "controlled_poc_loop_verified_for_current_source": True,
         "current_source_verified_by_running_runtime": True,
         "runtime_rollout_required_for_current_source": False,
         "can_enter_next_stage_without_restrictions": False,
@@ -365,7 +380,7 @@ def test_foundation_alpha_readiness_marks_source_synced_runtime_pending_without_
 
     readiness = build_foundation_alpha_readiness(SecretBearingSettings())
 
-    assert readiness["status"] == "211_source_synced_runtime_pending_followups_open"
+    assert readiness["status"] == "source_synced_runtime_pending_followups_open"
     assert readiness["source_tree_commit_sha"] == NEWER_SOURCE_SHA
     assert readiness["runtime_subject_commit_sha"] == CURRENT_SOURCE_SHA
     assert readiness["runtime_source_relation"] == {
@@ -384,7 +399,8 @@ def test_foundation_alpha_readiness_marks_source_synced_runtime_pending_without_
         readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["runtime_source_relation"]
         == "source_synced_runtime_pending"
     )
-    assert readiness["decision"]["controlled_poc_loop_verified"] is True
+    assert readiness["decision"]["reviewed_poc_loop_evidence_available"] is True
+    assert readiness["decision"]["controlled_poc_loop_verified_for_current_source"] is False
     assert readiness["decision"]["current_source_verified_by_running_runtime"] is False
     assert readiness["decision"]["runtime_rollout_required_for_current_source"] is True
     assert readiness["decision"]["production_claim_allowed"] is False
@@ -407,6 +423,8 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeyp
     assert "Schema: `ai-platform.foundation-alpha-poc-readiness.v1`" in markdown
     assert "Status: `211_verified_followups_open`" in markdown
     assert f"Source tree: `{RUNTIME_SUBJECT_SHA}`" in markdown
+    assert "Verified Runtime Subject" in markdown
+    assert "Evidence scope: `current_source_tree`" in markdown
     assert "Current decision" in markdown
     assert "`current_source_verified_by_running_runtime`: `True`" in markdown
     assert "Runtime source relation: `runtime_current_for_source_tree`" in markdown
@@ -421,7 +439,10 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeyp
     )
     payload = json.loads(json_result.stdout)
     assert payload["schema_version"] == "ai-platform.foundation-alpha-poc-readiness.v1"
-    assert payload["decision"]["controlled_poc_loop_verified"] is True
+    assert payload["decision"]["reviewed_poc_loop_evidence_available"] is True
+    assert payload["decision"]["controlled_poc_loop_verified_for_current_source"] is False
+    assert "runtime_image" not in payload
+    assert payload["verified_runtime_subject"]["evidence_scope"] == "reviewed_historical_runtime_evidence"
 
     markdown_result = subprocess.run(
         [sys.executable, "tools/foundation_alpha_readiness.py", "--format", "markdown"],

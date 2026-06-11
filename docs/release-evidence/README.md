@@ -27,6 +27,14 @@ the summary as context. If it reports `source_synced_runtime_pending` and
 describes the verified runtime subject, while newer source commits still require
 rollout and smoke evidence before they are runtime-verified.
 
+The summary exposes that recorded evidence subject as
+`verified_runtime_subject`. When its `evidence_scope` is
+`reviewed_historical_runtime_evidence`, the image and commit identify the latest
+reviewed, redacted 211 evidence record, not a live runtime claim for the current
+source tree. Use
+`controlled_poc_loop_verified_for_current_source=true` before treating the
+controlled POC loop as verified for the current source revision.
+
 The readiness schema is `ai-platform.release-evidence-readiness.v1`. The entry
 schema is `ai-platform.release-evidence-entry.v1`. The retention policy schema
 is `ai-platform.release-evidence-retention-policy.v1`.

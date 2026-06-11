@@ -226,6 +226,16 @@ def _runtime_source_relation(
     }
 
 
+def _verified_runtime_subject(smoke: dict[str, Any], evidence_scope: str) -> dict[str, Any]:
+    source_ref = smoke["source_ref"]
+    return {
+        "commit_sha": smoke["runtime_subject_commit_sha"],
+        "image": source_ref.get("image") or source_ref.get("runtime_image"),
+        "image_id": source_ref.get("image_id"),
+        "evidence_scope": evidence_scope,
+    }
+
+
 def _safe_runtime_check(value: Any) -> dict[str, Any]:
     return deepcopy(value) if isinstance(value, dict) else {}
 
@@ -292,6 +302,12 @@ def _observability_dependency_unavailable_summary(exc: ModuleNotFoundError) -> d
     return summary
 
 
+def _top_level_status(runtime_relation_status: str, runtime_matches_source_tree: bool) -> str:
+    if runtime_matches_source_tree:
+        return "211_verified_followups_open"
+    return f"{runtime_relation_status}_followups_open"
+
+
 def _build_governance_summary(settings: object | None) -> dict[str, Any]:
     try:
         from app.governance_readiness import build_governance_readiness
@@ -347,6 +363,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         runtime_source_marker=runtime_source_marker,
     )
     runtime_matches_source_tree = runtime_relation["runtime_matches_source_tree"]
+    evidence_scope = "current_source_tree" if runtime_matches_source_tree else "reviewed_historical_runtime_evidence"
     domains = {
         "g0_g1_source_authority_security": {
             "status": "poc_verified_keep_under_regression"
@@ -439,20 +456,19 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     return {
         "schema_version": SCHEMA_VERSION,
         "stage": STAGE_NAME,
-        "status": "211_verified_followups_open"
-        if runtime_matches_source_tree
-        else "211_source_synced_runtime_pending_followups_open",
+        "status": _top_level_status(runtime_relation["status"], runtime_matches_source_tree),
         "source_tree_commit_sha": source_tree_commit,
         "source_tree_dirty": source_tree_dirty,
         "runtime_subject_commit_sha": runtime_subject_commit,
         "runtime_source_relation": runtime_relation,
-        "runtime_image": smoke["source_ref"]["image"],
+        "verified_runtime_subject": _verified_runtime_subject(smoke, evidence_scope),
         "evidence_entries": {
             "poc_smoke": _path_for_output(smoke_evidence_path),
             "auth_rbac_smoke": _path_for_output(auth_rbac_evidence_path),
         },
         "decision": {
-            "controlled_poc_loop_verified": True,
+            "reviewed_poc_loop_evidence_available": True,
+            "controlled_poc_loop_verified_for_current_source": runtime_matches_source_tree,
             "current_source_verified_by_running_runtime": runtime_matches_source_tree,
             "runtime_rollout_required_for_current_source": not runtime_matches_source_tree,
             "can_enter_next_stage_without_restrictions": False,
@@ -470,6 +486,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
 def render_foundation_alpha_readiness_markdown(readiness: dict[str, Any]) -> str:
     """Render Foundation Alpha POC readiness as operator-readable Markdown."""
     decision = readiness["decision"]
+    verified_runtime_subject = readiness["verified_runtime_subject"]
     decision_lines = "\n".join(f"- `{key}`: `{value}`" for key, value in decision.items())
     followups = "\n".join(f"- {item}" for item in readiness["open_followups"])
     domain_sections: list[str] = []
@@ -489,6 +506,11 @@ def render_foundation_alpha_readiness_markdown(readiness: dict[str, Any]) -> str
         f"Source tree: `{readiness['source_tree_commit_sha']}`\n\n"
         f"Runtime subject: `{readiness['runtime_subject_commit_sha']}`\n\n"
         f"Runtime source relation: `{readiness['runtime_source_relation']['status']}`\n\n"
+        "## Verified Runtime Subject\n\n"
+        f"Commit: `{verified_runtime_subject['commit_sha']}`\n\n"
+        f"Image: `{verified_runtime_subject['image']}`\n\n"
+        f"Image ID: `{verified_runtime_subject['image_id']}`\n\n"
+        f"Evidence scope: `{verified_runtime_subject['evidence_scope']}`\n\n"
         "## Current decision\n\n"
         f"{decision_lines}\n\n"
         "## Open Followups\n\n"
