@@ -505,9 +505,12 @@ safe input keys, tier, and generated time only; raw message/file/artifact/memory
 IDs remain outside the public provenance fields, while the owner-scoped context
 snapshot debug response can still return `included_*_ids` to authorized run
 owners. Executor private payloads, raw storage keys, sandbox workdirs, and
-secret-like values remain outside the public projection. This narrows the G6/#22
-context output gap but does not close executor context-pack injection, frontend
-context provenance acceptance, long-term memory, sandbox, or multi-agent gates.
+secret-like values remain outside the public projection. Worker execution
+resolves existing context snapshots from the scoped DB row and regenerates
+public provenance/counts rather than trusting queue copies or stored payload
+provenance. This narrows the G6/#22 context output gap but does not close
+executor context-pack injection, frontend context provenance acceptance,
+long-term memory, sandbox, or multi-agent gates.
 
 The 2026-06-08 frontend projection audit follow-up makes the remaining frontend
 G6/G9 blockers machine-actionable through

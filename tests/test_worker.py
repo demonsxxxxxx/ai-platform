@@ -1016,8 +1016,223 @@ async def test_worker_uses_scoped_db_context_snapshot_instead_of_queue_copy(monk
 
     assert outcome.status == "succeeded"
     assert captured["payload"].context_snapshot_id == "ctx-existing"
-    assert captured["payload"].context_snapshot["source"] == "db_scoped"
+    assert captured["payload"].context_snapshot["source"] == "stored_context_snapshot"
+    assert captured["payload"].context_snapshot["used_context_summary"]["source"] == "stored_context_snapshot"
     assert "tampered_queue_copy" not in json.dumps(captured["payload"].context_snapshot, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_worker_uses_scoped_db_context_snapshot_when_queue_copy_missing(monkeypatch):
+    captured = {}
+
+    class CaptureAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            captured["payload"] = payload
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="capture-adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="capture/1",
+                capabilities={},
+                result={"message": "done"},
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        return "evt-context-id-only"
+
+    async def get_context_snapshot_for_worker(conn, **kwargs):
+        assert kwargs["context_snapshot_id"] == "ctx-existing"
+        return {
+            "id": "ctx-existing",
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "session_id": kwargs["session_id"],
+            "run_id": kwargs["run_id"],
+            "trace_id": "trace_run_a",
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_kind": "executor",
+            "included_message_ids": ["msg-a"],
+            "included_file_ids": ["file-a"],
+            "included_artifact_ids": [],
+            "included_memory_record_ids": [],
+            "redaction_summary_json": {},
+            "payload_json": {"window": "current"},
+            "created_at": None,
+        }
+
+    async def fail_record_context(*args, **kwargs):
+        raise AssertionError("context_snapshot_id-only payload must resolve scoped DB snapshot")
+
+    async def complete_run(conn, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr("app.worker.record_initial_context_snapshot", fail_record_context)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    outcome = await process_run_payload(
+        base_payload(
+            executor_type="claude-agent-worker",
+            context_snapshot_id="ctx-existing",
+            context_snapshot={},
+        ),
+        AdapterRegistry({"claude-agent-worker": CaptureAdapter()}),
+    )
+
+    assert outcome.status == "succeeded"
+    assert captured["payload"].context_snapshot_id == "ctx-existing"
+    assert captured["payload"].context_snapshot["used_context_summary"] == {
+        "source": "stored_context_snapshot",
+        "input_keys": ["window"],
+        "memory_policy_source": "not_recorded",
+        "long_term_memory_read": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_worker_rebuilds_db_context_snapshot_with_public_provenance(monkeypatch):
+    captured = {}
+
+    class CaptureAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            captured["payload"] = payload
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="capture-adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="capture/1",
+                capabilities={},
+                result={"message": "done"},
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        return "evt-context"
+
+    async def get_context_snapshot_for_worker(conn, **kwargs):
+        return {
+            "id": "ctx-existing",
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "trace_id": "trace_run_a",
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_kind": "executor",
+            "included_message_ids": ["msg-a"],
+            "included_file_ids": ["file-a"],
+            "included_artifact_ids": ["artifact-a"],
+            "included_memory_record_ids": [],
+            "redaction_summary_json": {},
+            "payload_json": {
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "source": "forged_db_source",
+                "agent_id": "general-agent",
+                "input_keys": ["raw_storage_key"],
+                "message_count": 99,
+                "file_count": 99,
+                "artifact_count": 99,
+                "memory_record_count": 99,
+                "memory_policy": {
+                    "source": "stored forged-source",
+                    "memory_enabled": False,
+                    "long_term_memory_enabled": True,
+                    "retention_days": "bad",
+                },
+                "memoryPolicy": {
+                    "source": "forged-camel-memory-policy",
+                    "memory_enabled": True,
+                    "retention_days": 1,
+                },
+                "window": "current",
+                "used_context_summary": {
+                    "source": "forged_nested_source",
+                    "input_keys": ["storage_key"],
+                    "long_term_memory_read": True,
+                },
+                "provenance": {"source": "forged-provenance"},
+                "Provenance": {"source": "forged-title-provenance"},
+                "provenance%5Fsummary": {"source": "forged-encoded-provenance"},
+                "summary": "legacy summary",
+                "Summary": "legacy title summary",
+                "summary%5Fpayload": {"source": "forged-encoded-summary"},
+                "raw_storage_key": "tenant/private/object",
+                "raw%5Fstorage%5Fkey": "s3://encoded/private",
+                "sandbox%5Fworkdir": "/tmp/encoded-private",
+                "executor%5Fprivate%5Fpayload": {"token": "encoded-private"},
+                "used%5Fcontext%5Fsummary": {"source": "forged-encoded"},
+            },
+            "created_at": None,
+        }
+
+    async def fail_record_context(*args, **kwargs):
+        raise AssertionError("verified queue snapshots must be reconstructed from DB scope")
+
+    async def complete_run(conn, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr("app.worker.record_initial_context_snapshot", fail_record_context)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    outcome = await process_run_payload(
+        base_payload(executor_type="claude-agent-worker"),
+        AdapterRegistry({"claude-agent-worker": CaptureAdapter()}),
+    )
+
+    assert outcome.status == "succeeded"
+    context_snapshot = captured["payload"].context_snapshot
+    assert context_snapshot["source"] == "stored_context_snapshot"
+    assert context_snapshot["referenced_materials"] == {
+        "message_count": 1,
+        "file_count": 1,
+        "artifact_count": 1,
+        "memory_record_count": 0,
+    }
+    assert context_snapshot["used_context_summary"] == {
+        "source": "stored_context_snapshot",
+        "input_keys": ["window"],
+        "memory_policy_source": "not_recorded",
+        "long_term_memory_read": False,
+    }
+    assert context_snapshot["latest_artifact_version"] is None
+    assert context_snapshot["execution_tier"] == "sdk_only_writing"
+    assert context_snapshot["context_pack_generated_at"]
+    assert context_snapshot["memory_policy"] == {
+        "source": "stored",
+        "memory_enabled": False,
+        "long_term_memory_enabled": False,
+        "retention_days": 90,
+    }
+    serialized = json.dumps(context_snapshot, ensure_ascii=False)
+    assert "forged_db_source" not in serialized
+    assert "forged_nested_source" not in serialized
+    assert "forged-encoded" not in serialized
+    assert "forged-provenance" not in serialized
+    assert "legacy summary" not in serialized
+    assert "raw_storage_key" not in serialized
+    assert "tenant/private/object" not in serialized
+    assert "raw%5Fstorage%5Fkey" not in serialized
+    assert "s3://encoded/private" not in serialized
+    assert "sandbox%5Fworkdir" not in serialized
+    assert "encoded-private" not in serialized
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,7 @@
 import pytest
 from datetime import datetime
 
-from app.context_builder import initial_context_summary, record_initial_context_snapshot
+from app.context_builder import initial_context_summary, public_context_payload, record_initial_context_snapshot
 
 
 def test_initial_context_summary_strips_context_private_aliases_from_input_keys():
@@ -32,6 +32,51 @@ def test_initial_context_summary_strips_context_private_aliases_from_input_keys(
     assert "storage-key-value" not in serialized
     assert "relative-workdir" not in serialized
     assert "nested-storage-key" not in serialized
+
+
+def test_public_context_payload_strips_legacy_context_summary_fields():
+    payload = {
+        "schema_version": "ai-platform.context-snapshot.v1",
+        "source": "runs_api",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "capability_id": "general_chat",
+        "input_keys": ["message", "raw_storage_key"],
+        "message_count": 99,
+        "file_count": 99,
+        "artifact_count": 99,
+        "memory_record_count": 99,
+        "included_message_ids": ["msg-secret"],
+        "included_file_ids": ["file-secret"],
+        "included_artifact_ids": ["artifact-secret"],
+        "included_memory_record_ids": ["memory-secret"],
+        "context_snapshot_id": "ctx-secret",
+        "schemaVersion": "forged",
+        "agentId": "forged-agent",
+        "messageCount": 123,
+        "contextSnapshotId": "ctx-forged",
+        "usedContextSummary": {"source": "forged-camel"},
+        "referencedMaterials": {"messageCount": 123},
+        "provenance": {"source": "forged"},
+        "Provenance": {"source": "forged-title"},
+        "provenance%5Fsummary": {"source": "forged-encoded"},
+        "summary": "legacy summary",
+        "Summary": "legacy title summary",
+        "summary%5Fpayload": {"source": "forged-encoded-summary"},
+        "raw%5Fstorage%5Fkey": "s3://encoded/private",
+        "sandbox%5Fworkdir": "/tmp/encoded-private",
+        "executor%5Fprivate%5Fpayload": {"token": "encoded-private"},
+        "used%5Fcontext%5Fsummary": {"source": "forged-encoded"},
+        "memory_policy": {"source": "stored"},
+        "memoryPolicy": {"source": "forged-camel"},
+        "window": "current",
+        "nested": {"safe": "kept"},
+    }
+
+    assert public_context_payload(payload) == {
+        "window": "current",
+        "nested": {"safe": "kept"},
+    }
 
 
 def test_initial_context_summary_includes_public_context_provenance_contract():

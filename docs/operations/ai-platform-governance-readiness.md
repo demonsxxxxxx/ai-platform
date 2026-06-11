@@ -269,10 +269,12 @@ carry source-level public provenance fields for `referenced_materials`,
 and generated time rather than raw message/file/artifact/memory IDs. The
 owner-scoped context snapshot debug response may still include `included_*_ids`
 for authorized run inspection; those IDs are not part of the frontend public
-provenance contract. This still does not persist versioned context packs, inject
-them into executor prompts, enable long-term cross-session memory, start Docker
-for lightweight office tasks, provide frontend acceptance, or expand G8/G10
-multi-agent exposure.
+provenance contract. Worker-side executor `context_ref` reconstruction resolves
+the scoped DB snapshot by id and regenerates public provenance/counts instead of
+trusting queue copies or stored payload provenance. This still does not persist
+versioned context packs, inject them into executor prompts, enable long-term
+cross-session memory, start Docker for lightweight office tasks, provide frontend
+acceptance, or expand G8/G10 multi-agent exposure.
 
 On 2026-06-08, commit `f7c6b0d9114748fa249acb88da6584851c48aa96` was synced to
 the 211 repo-local source target and deployed to API/worker with image

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import unquote, unquote_plus
 
 from app import repositories
 from app.control_plane_contracts import CONTEXT_SNAPSHOT_SCHEMA_VERSION, sanitize_public_payload
@@ -9,12 +10,32 @@ from app.projection_redaction import capability_id_from_skill
 
 
 PUBLIC_CONTEXT_PROVENANCE_KEYS = {
+    "provenance",
     "referenced_materials",
     "used_context_summary",
     "latest_artifact_version",
     "execution_tier",
     "context_pack_generated_at",
     "source",
+}
+
+PUBLIC_CONTEXT_SUMMARY_KEYS = {
+    "agent_id",
+    "artifact_count",
+    "capability_id",
+    "context_snapshot_id",
+    "file_count",
+    "included_artifact_ids",
+    "included_file_ids",
+    "included_memory_record_ids",
+    "included_message_ids",
+    "input_keys",
+    "memory_policy",
+    "memory_record_count",
+    "message_count",
+    "schema_version",
+    "skill_id",
+    "summary",
 }
 
 PUBLIC_CONTEXT_FORBIDDEN_KEY_ALIASES = {
@@ -33,10 +54,44 @@ PUBLIC_CONTEXT_MATERIAL_COUNT_KEYS = {
     "artifact_count",
     "memory_record_count",
 }
+PUBLIC_CONTEXT_KEY_DECODE_DEPTH = 8
 
 
 def _normalized_public_context_key(value: object) -> str:
     return "".join(ch for ch in str(value) if ch.isalnum()).lower()
+
+
+def _normalized_public_context_key_candidates(value: object) -> tuple[str, ...]:
+    raw = str(value)
+    candidates: list[str] = []
+    pending: list[tuple[str, int]] = [(raw, 0)]
+    while pending:
+        current, depth = pending.pop(0)
+        normalized = _normalized_public_context_key(current)
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+        if depth >= PUBLIC_CONTEXT_KEY_DECODE_DEPTH:
+            continue
+        for decoded in {unquote(current), unquote_plus(current)}:
+            if decoded != current:
+                pending.append((decoded, depth + 1))
+    return tuple(candidates)
+
+
+PUBLIC_CONTEXT_PROVENANCE_KEY_ALIASES = {
+    _normalized_public_context_key(key)
+    for key in PUBLIC_CONTEXT_PROVENANCE_KEYS
+}
+
+PUBLIC_CONTEXT_SUMMARY_KEY_ALIASES = {
+    _normalized_public_context_key(key)
+    for key in PUBLIC_CONTEXT_SUMMARY_KEYS
+}
+
+PUBLIC_CONTEXT_SUMMARY_PREFIX_ALIASES = {
+    "provenance",
+    "summary",
+}
 
 
 def _utc_now_iso() -> str:
@@ -54,9 +109,18 @@ def _strip_context_private_fields(value: Any) -> Any:
         cleaned: dict[str, Any] = {}
         for key, item in value.items():
             key_text = str(key)
-            if key_text in PUBLIC_CONTEXT_PROVENANCE_KEYS:
+            normalized_keys = _normalized_public_context_key_candidates(key_text)
+            if any(normalized_key in PUBLIC_CONTEXT_PROVENANCE_KEY_ALIASES for normalized_key in normalized_keys):
                 continue
-            if _normalized_public_context_key(key_text) in PUBLIC_CONTEXT_FORBIDDEN_KEY_ALIASES:
+            if any(normalized_key in PUBLIC_CONTEXT_SUMMARY_KEY_ALIASES for normalized_key in normalized_keys):
+                continue
+            if any(
+                normalized_key.startswith(prefix)
+                for normalized_key in normalized_keys
+                for prefix in PUBLIC_CONTEXT_SUMMARY_PREFIX_ALIASES
+            ):
+                continue
+            if any(normalized_key in PUBLIC_CONTEXT_FORBIDDEN_KEY_ALIASES for normalized_key in normalized_keys):
                 continue
             cleaned_item = _strip_context_private_fields(item)
             if cleaned_item is not None:
