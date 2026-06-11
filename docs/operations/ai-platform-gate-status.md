@@ -43,11 +43,12 @@ For source-only docs/tests/evidence syncs, write a local-only
 empty. Missing, stale, or malformed snapshot markers intentionally fail closed.
 
 On 2026-06-11, runtime subject commit
-`faa7ad6aa61637cbcdf3a22ce81de119762e96bf` was synced to 211 source and the
-211 API and worker ran `ai-platform:faa7ad6-foundation-alpha-poc` with image ID
-`sha256:531a63640cadb917874d74e2379fe16bf76cb2da3f548e8e18a42043dbdd075f`.
+`8f454696be0e9c532fa86bc61ef353e4d3dec4f8` was synced to 211 source and the
+211 API and worker ran `ai-platform:8f45469-foundation-alpha-readiness` with
+image ID
+`sha256:144c90709996f768b7b975b121fce41244fa96606a890b2d133fc455659b9cf3`.
 Both runtime source labels pointed to
-`faa7ad6aa61637cbcdf3a22ce81de119762e96bf`. Runtime labels pointed to the
+`8f454696be0e9c532fa86bc61ef353e4d3dec4f8`. Runtime labels pointed to the
 repo-local compose file under
 `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform`,
 API health returned `ok`, and OpenAPI exposed
@@ -65,21 +66,22 @@ document review attachment run, artifact download isolation, artifact preview
 isolation, playback with preview URL and no private payload leakage, company
 login audit, and Admin capacity/backpressure fields. The current reviewed,
 redacted release-evidence entry is
-`docs/release-evidence/foundation-alpha-poc/faa7ad6aa61637cbcdf3a22ce81de119762e96bf/2026-06-11-211-foundation-alpha-poc-faa7ad6-smoke.json`.
+`docs/release-evidence/foundation-alpha-poc/8f454696be0e9c532fa86bc61ef353e4d3dec4f8/2026-06-11-211-foundation-alpha-poc-8f45469-smoke.json`.
 
 The focused Auth/RBAC verifier `tools/verify_auth_rbac_smoke.py` also returned
 `ok: true` on 211 against the same current-main runtime. The refreshed
-2026-06-11 17:39 +08:00 smoke used verifier source `2e9b363` while the running
-runtime subject remained `faa7ad6`. It verified unauthenticated `/api/auth/me`
+2026-06-11 18:12 +08:00 smoke used verifier source `8f45469` while the running
+runtime subject remained `8f45469`. It verified unauthenticated `/api/auth/me`
 returns 401, platform `/api/ai/auth/me` returns the trusted principal with
 tenant match, invalid gateway secret access to `/api/ai/auth/me` fails with
 403, ordinary trusted principals are denied from Admin Runtime with 403, admin
 trusted principals can read the required same-tenant Admin Runtime sections with
 200, and the projection scan did not find private or secret-like values. The
 current reviewed, redacted Auth/RBAC evidence entry is
-`docs/release-evidence/foundation-alpha-poc/faa7ad6aa61637cbcdf3a22ce81de119762e96bf/2026-06-11-211-foundation-alpha-poc-faa7ad6-auth-rbac-smoke.json`.
+`docs/release-evidence/foundation-alpha-poc/8f454696be0e9c532fa86bc61ef353e4d3dec4f8/2026-06-11-211-foundation-alpha-poc-8f45469-auth-rbac-smoke.json`.
 
 Earlier smoke evidence for
+`faa7ad6aa61637cbcdf3a22ce81de119762e96bf`,
 `a3f1d739e12686cba2e0b309de26a4e1127bd3a5`,
 `8c0cffca63bc747fad0a5771f209acc8a608ab9e`,
 `bf20432f9889efa8b367afdf512c641068ba30bc`, and

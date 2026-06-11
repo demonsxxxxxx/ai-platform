@@ -1,0 +1,104 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-06-11-211-foundation-alpha-poc-8f45469-auth-rbac-smoke",
+  "commit_sha": "8f454696be0e9c532fa86bc61ef353e4d3dec4f8",
+  "runtime_subject_commit_sha": "8f454696be0e9c532fa86bc61ef353e4d3dec4f8",
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#15",
+    "#16",
+    "#17",
+    "#21",
+    "#22",
+    "#23",
+    "#24"
+  ],
+  "artifact_kind": "211_runtime_smoke",
+  "captured_at": "2026-06-11T18:12:12+08:00",
+  "source_ref": {
+    "branch": "main",
+    "runtime_commit": "8f454696be0e9c532fa86bc61ef353e4d3dec4f8",
+    "runtime_source_marker": "8f454696be0e9c532fa86bc61ef353e4d3dec4f8",
+    "verifier_source_commit_sha": "8f454696be0e9c532fa86bc61ef353e4d3dec4f8",
+    "runtime_affecting_changes_since_runtime_subject": [],
+    "runtime_image": "ai-platform:8f45469-foundation-alpha-readiness",
+    "image_id": "sha256:144c90709996f768b7b975b121fce41244fa96606a890b2d133fc455659b9cf3",
+    "image_labels": {
+      "ai-platform.source-revision": "8f454696be0e9c532fa86bc61ef353e4d3dec4f8",
+      "ai-platform.source_note": "foundation-alpha-readiness-context",
+      "org.opencontainers.image.revision": "8f454696be0e9c532fa86bc61ef353e4d3dec4f8"
+    },
+    "containers": [
+      "ai-platform-api"
+    ],
+    "compose_working_dir": "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform",
+    "compose_config_file": "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/docker-compose.yml",
+    "compose_env_source": "existing 211 runtime env path, not copied or printed",
+    "gateway_secret_supplied": true
+  },
+  "evidence_ref": {
+    "verifier": "tools/verify_auth_rbac_smoke.py",
+    "command": "AI_PLATFORM_GATEWAY_SECRET=<redacted> python3 tools/verify_auth_rbac_smoke.py --base-url http://127.0.0.1:8020 --commit-sha 8f454696be0e9c532fa86bc61ef353e4d3dec4f8 --image ai-platform:8f45469-foundation-alpha-readiness --gateway-secret-env AI_PLATFORM_GATEWAY_SECRET --timeout-seconds 10",
+    "result": "ok:true",
+    "schema_version": "ai-platform.auth-rbac-smoke.v1",
+    "runtime_checks": {
+      "unauthenticated_auth_me": {
+        "route": "/api/auth/me",
+        "status": 401,
+        "detail": "missing_authenticated_principal",
+        "expected_status": 401
+      },
+      "authenticated_auth_me": {
+        "route": "/api/ai/auth/me",
+        "status": 200,
+        "expected_status": 200,
+        "tenant_id": "default",
+        "source": "frontend-poc",
+        "is_admin": true,
+        "user_matches_requested": true,
+        "tenant_matches_requested": true,
+        "forbidden_projection_terms_present": false
+      },
+      "invalid_gateway_secret_auth_me": {
+        "route": "/api/ai/auth/me",
+        "status": 403,
+        "detail": "invalid_gateway_principal_secret",
+        "expected_status": 403
+      },
+      "ordinary_admin_runtime": {
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "status": 403,
+        "detail": "not_ai_admin",
+        "expected_status": 403
+      },
+      "admin_runtime": {
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "status": 200,
+        "expected_status": 200,
+        "required_sections_present": true,
+        "missing_sections": [],
+        "tenant_id": "default",
+        "tenant_matches_requested": true,
+        "queue_lease_scan_limit": 50,
+        "sandbox_active_leases": 0,
+        "forbidden_projection_terms_present": false
+      }
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "This entry records a redacted Auth/RBAC smoke summary for the 8f45469 Foundation Alpha POC runtime.",
+    "The API container reported image ai-platform:8f45469-foundation-alpha-readiness with matching source revision labels before the smoke was recorded.",
+    "The reviewed summary omits credentials, DSNs, object locators, executor internals, runtime workspace paths, storage locators, user identifiers, and personal workstation paths.",
+    "This evidence supports the Foundation Alpha POC security baseline only. It does not close production auth rollout, capacity, sandbox hardening, ordinary-user multi-agent, department rollout, runtime export, or release-evidence retention gates."
+  ],
+  "open_followups": [
+    "Broader auth/session/RBAC/tenant/redaction regression remains required before production gate closure.",
+    "#21 recorded multi-tenant capacity/load evidence remains required before raising production concurrency defaults.",
+    "G7 Docker sandbox hardening and Docker-capable sandbox smoke remain blocked.",
+    "G8 ordinary-user multi-agent exposure remains feature-flagged/internal only.",
+    "G9 release-evidence runtime export and retention runtime acceptance remain open.",
+    "Packaged frontend image smoke/release acceptance remains separate from this thin-shell POC smoke."
+  ]
+}
