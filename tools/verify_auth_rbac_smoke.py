@@ -13,6 +13,8 @@ from urllib.request import Request, urlopen
 
 
 SCHEMA_VERSION = "ai-platform.auth-rbac-smoke.v1"
+PLATFORM_AUTH_ME_ROUTE = "/api/ai/auth/me"
+COMPAT_AUTH_ME_ROUTE = "/api/auth/me"
 ADMIN_RUNTIME_ROUTE = "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"
 FORBIDDEN_PROJECTION_TERMS = (
     "executor_private_payload",
@@ -195,11 +197,11 @@ def build_auth_rbac_smoke(
 ) -> dict[str, object]:
     safe_base_url = sanitize_base_url(base_url)
     auth_me_status, auth_me_payload = _request_json(
-        f"{safe_base_url}/api/auth/me",
+        f"{safe_base_url}{COMPAT_AUTH_ME_ROUTE}",
         timeout_seconds=timeout_seconds,
     )
     authenticated_auth_me_status, authenticated_auth_me_payload = _request_json(
-        f"{safe_base_url}/api/auth/me",
+        f"{safe_base_url}{PLATFORM_AUTH_ME_ROUTE}",
         headers=_principal_headers(
             user_id=admin_user_id,
             roles="admin",
@@ -210,7 +212,7 @@ def build_auth_rbac_smoke(
     )
     invalid_secret = _invalid_gateway_secret(gateway_secret)
     invalid_gateway_secret_status, invalid_gateway_secret_payload = _request_json(
-        f"{safe_base_url}/api/auth/me",
+        f"{safe_base_url}{PLATFORM_AUTH_ME_ROUTE}",
         headers=_principal_headers(
             user_id=admin_user_id,
             roles="admin",
@@ -256,19 +258,19 @@ def build_auth_rbac_smoke(
     )
     checks = {
         "unauthenticated_auth_me": {
-            "route": "/api/auth/me",
+            "route": COMPAT_AUTH_ME_ROUTE,
             "status": auth_me_status,
             "detail": _detail(auth_me_payload, redactions=(gateway_secret, invalid_secret)),
             "expected_status": 401,
         },
         "authenticated_auth_me": {
-            "route": "/api/auth/me",
+            "route": PLATFORM_AUTH_ME_ROUTE,
             "status": authenticated_auth_me_status,
             "expected_status": 200,
             **auth_me_summary,
         },
         "invalid_gateway_secret_auth_me": {
-            "route": "/api/auth/me",
+            "route": PLATFORM_AUTH_ME_ROUTE,
             "status": invalid_gateway_secret_status,
             "detail": _detail(invalid_gateway_secret_payload, redactions=(gateway_secret, invalid_secret)),
             "expected_status": 403,

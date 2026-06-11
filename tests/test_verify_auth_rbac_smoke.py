@@ -21,6 +21,9 @@ class AuthRbacHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         if self.path == "/api/auth/me":
+            self._send_json(401, {"detail": "missing_authenticated_principal"})
+            return
+        if self.path == "/api/ai/auth/me":
             user_id = self.headers.get("X-AI-User-ID", "")
             if not user_id:
                 self._send_json(401, {"detail": "missing_authenticated_principal"})
@@ -133,7 +136,7 @@ class LeakyBearerValueHandler(AuthRbacHandler):
 
 class TenantMismatchHandler(AuthRbacHandler):
     def do_GET(self):  # noqa: N802
-        if self.path == "/api/auth/me" and self.headers.get("X-AI-User-ID", ""):
+        if self.path == "/api/ai/auth/me" and self.headers.get("X-AI-User-ID", ""):
             self._send_json(
                 200,
                 {
@@ -166,7 +169,7 @@ class TenantMismatchHandler(AuthRbacHandler):
 
 class InvalidGatewayAcceptedHandler(AuthRbacHandler):
     def do_GET(self):  # noqa: N802
-        if self.path == "/api/auth/me" and self.headers.get("X-AI-User-ID", ""):
+        if self.path == "/api/ai/auth/me" and self.headers.get("X-AI-User-ID", ""):
             self._send_json(
                 200,
                 {
@@ -203,9 +206,11 @@ def test_auth_rbac_smoke_checks_unauthenticated_ordinary_admin_and_redaction():
     assert payload["schema_version"] == "ai-platform.auth-rbac-smoke.v1"
     assert payload["source"]["gateway_secret_supplied"] is True
     assert payload["checks"]["unauthenticated_auth_me"]["status"] == 401
+    assert payload["checks"]["authenticated_auth_me"]["route"] == "/api/ai/auth/me"
     assert payload["checks"]["authenticated_auth_me"]["status"] == 200
     assert payload["checks"]["authenticated_auth_me"]["tenant_matches_requested"] is True
     assert payload["checks"]["authenticated_auth_me"]["user_matches_requested"] is True
+    assert payload["checks"]["invalid_gateway_secret_auth_me"]["route"] == "/api/ai/auth/me"
     assert payload["checks"]["invalid_gateway_secret_auth_me"]["status"] == 403
     assert payload["checks"]["ordinary_admin_runtime"]["status"] == 403
     assert payload["checks"]["admin_runtime"]["status"] == 200
