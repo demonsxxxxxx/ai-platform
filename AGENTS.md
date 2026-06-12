@@ -79,6 +79,9 @@ entry file.
 
 ## Multi-Agent Delegation
 
+- Use `docs/agent-rules/multi-agent-context-workflow.md` for the working
+  pattern, including the main-agent 120k-token context target, sub-agent output
+  summarization, and context checkpoint rules.
 - Do not require per-agent `model` or `reasoning_effort` fields for `spawn_agent`.
 - When the delegation tool exposes per-agent `model` or `reasoning_effort`
   fields, set them deliberately according to task complexity.
@@ -93,9 +96,10 @@ entry file.
   review as inherited/default only; do not mark that explicit gate closed until
   the requirement is revised or a suitable review path is available.
 - Do not delegate write, deployment, remote runtime, or long-running operational tasks unless the delegation path is confirmed to inherit the same filesystem, network, approval, and permission posture as the main session. Keep those tasks in the main session when inheritance cannot be proven.
-- Complex or high-risk coding must use multi-agent collaboration and review
-  when the available delegation path is suitable. Lightweight documentation,
-  wording, and single-point fixes do not require multi-agent review.
+- Complex or high-risk coding should use multi-agent collaboration and review
+  when the active user request and available delegation path permit it.
+  Lightweight documentation, wording, and single-point fixes do not require
+  multi-agent review.
 
 ## Verification Strategy
 
@@ -134,5 +138,3 @@ report results inline:
 4. **Diff summary** – Output a one-paragraph plain-English summary of what changed and why.
 
 Only after all four steps pass does the agent proceed to `git add` + `git commit`.
-
-### Commit convention
