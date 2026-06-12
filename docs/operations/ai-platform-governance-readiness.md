@@ -1,6 +1,6 @@
 # ai-platform G6 Governance Readiness
 
-Date: 2026-06-08
+Date: 2026-06-12
 
 This document records the current G6 Tool / Skill / Memory Governance baseline.
 It is an operator readiness snapshot, not a gate-closure claim. G6 remains
@@ -28,6 +28,7 @@ python tools/memory_erasure_readiness.py --format markdown
 python tools/memory_erasure_readiness.py --format json
 python tools/office_context_readiness.py --format markdown
 python tools/office_context_readiness.py --format json
+python tools/verify_governance_runtime_smoke.py --base-url http://127.0.0.1:8020 --commit-sha <source-tree-commit> --runtime-subject-commit-sha <runtime-subject-commit> --image <runtime-image>
 ```
 
 The script intentionally does not print callback tokens, sandbox workspace
@@ -117,6 +118,28 @@ internals. Route enforcement/remap for legacy frontend surfaces, Admin
 dashboard acceptance, and 211 runtime smoke remain required before gate closure.
 
 ## 211 Acceptance Evidence
+
+On 2026-06-12, `tools/verify_governance_runtime_smoke.py` returned `ok: true`
+on the 211 API for runtime subject commit
+`2384e19dcac2e39fbcf9c27dc990f5774d391422` and image
+`ai-platform:2384e19-context-source-provenance`, using operator verifier source
+`820669037978237182ecd2fd27c2ffa10a953c0b`. The smoke verified ordinary-user
+Admin Runtime denial, same-tenant admin access, governance schema
+`ai-platform.governance-readiness.v1`, required tool/skill/memory governance
+domains, tool policy taxonomy and bulk-review signals, skill release/dashboard
+signals with `dashboard_contract` trimmed from the overview projection, memory
+fail-closed/context-provenance/office-context signals, and no forbidden
+projection terms in the reviewed summary. The synced 211 source snapshot marked
+the new verifier as runtime-neutral and declared no runtime-affecting delta from
+the running `2384e19` image. The reviewed release evidence entry is
+`docs/release-evidence/foundation-alpha-poc/2384e19dcac2e39fbcf9c27dc990f5774d391422/2026-06-12-211-foundation-alpha-poc-2384e19-governance-runtime-smoke.json`.
+
+This smoke records only the focused Admin Runtime governance projection proof for
+the Foundation Alpha POC. It does not close ordinary-user confirmation-card UX,
+full Admin dashboard/visual acceptance, signed-package/SBOM review evidence,
+dependency vulnerability/license evidence, office context-pack persistence and
+executor injection, frontend context provenance acceptance, or broader
+production governance rollout.
 
 On 2026-06-08, the 211 source snapshot and API/worker runtime were updated to
 commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` with image

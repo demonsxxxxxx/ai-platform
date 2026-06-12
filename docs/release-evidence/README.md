@@ -1,6 +1,6 @@
 # ai-platform Release Evidence Index
 
-Date: 2026-06-08
+Date: 2026-06-12
 
 This directory is the repository-owned location for reviewed, redacted release
 evidence entries. It is an index and contract baseline only. This contract
@@ -112,6 +112,7 @@ image labels must all point to the same runtime subject commit.
 
 | Date | Gate | Commit | Evidence | Status |
 | --- | --- | --- | --- | --- |
+| 2026-06-12 | Foundation Alpha POC | `2384e19dcac2e39fbcf9c27dc990f5774d391422` | [`2026-06-12-211-foundation-alpha-poc-2384e19-governance-runtime-smoke.json`](foundation-alpha-poc/2384e19dcac2e39fbcf9c27dc990f5774d391422/2026-06-12-211-foundation-alpha-poc-2384e19-governance-runtime-smoke.json) | Active 211 Admin Runtime governance smoke passed against `ai-platform:2384e19-context-source-provenance` using operator verifier source `8206690`; G6 remains partial and not production gate closure. |
 | 2026-06-12 | Foundation Alpha POC | `2384e19dcac2e39fbcf9c27dc990f5774d391422` | [`2026-06-12-211-foundation-alpha-poc-2384e19-context-source-provenance-auth-rbac-smoke.json`](foundation-alpha-poc/2384e19dcac2e39fbcf9c27dc990f5774d391422/2026-06-12-211-foundation-alpha-poc-2384e19-context-source-provenance-auth-rbac-smoke.json) | Active 211 Auth/RBAC smoke passed against `ai-platform:2384e19-context-source-provenance`; not production gate closure. |
 | 2026-06-12 | Foundation Alpha POC | `2384e19dcac2e39fbcf9c27dc990f5774d391422` | [`2026-06-12-211-foundation-alpha-poc-2384e19-context-source-provenance-smoke.json`](foundation-alpha-poc/2384e19dcac2e39fbcf9c27dc990f5774d391422/2026-06-12-211-foundation-alpha-poc-2384e19-context-source-provenance-smoke.json) | Active 211 runtime smoke passed for the controlled context snapshot source-provenance slice; context public projection returned `summary_source=chat_stream`; not G9 or production closure. |
 | 2026-06-12 | Foundation Alpha POC | `e274d78b21c22fdf4f56a8cf8b31a0480d42c22f` | [`2026-06-12-211-foundation-alpha-poc-e274d78-auth-rbac-smoke.json`](foundation-alpha-poc/e274d78b21c22fdf4f56a8cf8b31a0480d42c22f/2026-06-12-211-foundation-alpha-poc-e274d78-auth-rbac-smoke.json) | Historical 211 Auth/RBAC smoke passed against `ai-platform:e274d78-g9-runtime-readiness-tools`; superseded by `2384e19`. |

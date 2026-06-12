@@ -1,0 +1,117 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-06-12-211-foundation-alpha-poc-2384e19-governance-runtime-smoke",
+  "commit_sha": "2384e19dcac2e39fbcf9c27dc990f5774d391422",
+  "runtime_subject_commit_sha": "2384e19dcac2e39fbcf9c27dc990f5774d391422",
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#15",
+    "#16",
+    "#17",
+    "#21",
+    "#22",
+    "#23",
+    "#24"
+  ],
+  "pr_refs": [],
+  "artifact_kind": "211_runtime_smoke",
+  "captured_at": "2026-06-12T08:37:08+08:00",
+  "source_ref": {
+    "branch": "main",
+    "runtime_commit": "2384e19dcac2e39fbcf9c27dc990f5774d391422",
+    "runtime_source_marker": "2384e19dcac2e39fbcf9c27dc990f5774d391422",
+    "source_tree_commit_sha": "820669037978237182ecd2fd27c2ffa10a953c0b",
+    "operator_verifier_source_commit_sha": "820669037978237182ecd2fd27c2ffa10a953c0b",
+    "source_snapshot_marker": {
+      "source_tree_commit_sha": "820669037978237182ecd2fd27c2ffa10a953c0b",
+      "runtime_subject_commit_sha": "2384e19dcac2e39fbcf9c27dc990f5774d391422",
+      "source_tree_dirty": false,
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": []
+    },
+    "image": "ai-platform:2384e19-context-source-provenance",
+    "image_id": "sha256:2fde0184a1212332eeb15ff657b9a82ac96575a450becd6ac190ad22f8d589a4",
+    "image_labels": {
+      "ai-platform.source-revision": "2384e19dcac2e39fbcf9c27dc990f5774d391422",
+      "org.opencontainers.image.revision": "2384e19dcac2e39fbcf9c27dc990f5774d391422"
+    },
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "compose_env_source": "existing 211 runtime env path, not copied or printed",
+    "repo_local_env_present": false,
+    "compose_location": "repo-local 211 deploy composition"
+  },
+  "evidence_ref": {
+    "verifier": "tools/verify_governance_runtime_smoke.py",
+    "command": "python3 tools/verify_governance_runtime_smoke.py --base-url http://127.0.0.1:8020 --commit-sha 820669037978237182ecd2fd27c2ffa10a953c0b --runtime-subject-commit-sha 2384e19dcac2e39fbcf9c27dc990f5774d391422 --image ai-platform:2384e19-context-source-provenance",
+    "result": "ok:true",
+    "schema_version": "ai-platform.governance-runtime-smoke.v1",
+    "runtime_checks": {
+      "ordinary_admin_runtime": {
+        "detail": "not_ai_admin",
+        "expected_status": 403,
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "status": 403
+      },
+      "admin_runtime_governance": {
+        "expected_status": 200,
+        "forbidden_projection_terms_present": false,
+        "governance_schema_version": "ai-platform.governance-readiness.v1",
+        "governance_status": "partial_blocked",
+        "governance_status_allowed": true,
+        "memory_governance": {
+          "context_provenance_present": true,
+          "domain_status": "partial_blocked",
+          "gap_count": 5,
+          "long_term_fail_closed_present": true,
+          "office_context_readiness_present": true
+        },
+        "missing_domains": [],
+        "open_gap_count": 18,
+        "required_domains_present": true,
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "skill_governance": {
+          "dashboard_contract_exposed": false,
+          "dashboard_present": true,
+          "domain_status": "partial_blocked",
+          "gap_count": 6,
+          "implemented_snapshot_lock": true,
+          "implemented_version_registry": true,
+          "release_readiness_present": true
+        },
+        "status": 200,
+        "tenant_id": "default",
+        "tenant_matches_requested": true,
+        "tool_permission": {
+          "bulk_review_present": true,
+          "domain_status": "partial_blocked",
+          "gap_count": 4,
+          "implemented_bulk_review_dashboard": true,
+          "implemented_policy_taxonomy": true,
+          "taxonomy_present": true
+        }
+      }
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "This entry records a reviewed Admin Runtime governance projection smoke for the 2384e19 Foundation Alpha POC runtime.",
+    "The operator verifier source was synced at 8206690 and classified as runtime-neutral; the API and worker runtime image remained ai-platform:2384e19-context-source-provenance with matching runtime subject labels.",
+    "The smoke verified ordinary-user Admin Runtime denial, same-tenant admin access, G6 governance schema visibility, required tool/skill/memory domains, implemented control signals, trimmed skill dashboard contract output, and no forbidden projection terms in the reviewed summary.",
+    "Policy and contract text may name forbidden payload classes as denylist labels; that is distinct from exposing private payload fields or credential-shaped values, and both the allowed-label and private-value cases are covered by verifier regression tests.",
+    "This evidence supports G6/Admin Runtime governance projection acceptance only. It does not close G6 ordinary-user UX acceptance, signed package or SBOM review evidence, office context-pack runtime injection, production capacity, Docker sandbox hardening, ordinary-user multi-agent exposure, G9 runtime export, or packaged frontend image release gates."
+  ],
+  "open_followups": [
+    "Legacy frontend route remap or policy enforcement remains required before ordinary-user governance acceptance.",
+    "Skill release governance still needs signed package or SBOM review evidence plus dependency vulnerability and license evidence.",
+    "Memory governance still needs runtime context-pack persistence, executor injection, document-centric follow-up state, and frontend context provenance acceptance.",
+    "#21 recorded multi-tenant capacity/load evidence remains required before raising production concurrency defaults.",
+    "G7 Docker sandbox hardening and Docker-capable sandbox smoke remain blocked.",
+    "G8 ordinary-user multi-agent exposure remains feature-flagged/internal only.",
+    "G9 release-evidence runtime export and retention runtime acceptance remain open.",
+    "Packaged frontend image smoke/release acceptance remains separate from this thin-shell POC smoke."
+  ]
+}

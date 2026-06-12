@@ -29,6 +29,7 @@ _RUNTIME_NEUTRAL_EXACT_PATHS = {
     "tools/foundation_alpha_readiness.py",
     "tools/frontend_release_traceability.py",
     "tools/verify_auth_rbac_smoke.py",
+    "tools/verify_governance_runtime_smoke.py",
     "tests/test_source_authority_docs.py",
 }
 
