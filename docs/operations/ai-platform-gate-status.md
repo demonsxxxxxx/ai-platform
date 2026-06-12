@@ -34,7 +34,11 @@ only valid when `runtime_affecting_dirty_paths` and
 `runtime_affecting_changes_since_runtime_subject` are empty. In that case,
 docs/tests/evidence/readiness record changes may be newer than the image, so
 `current_source_exact_runtime_commit_match=false` can coexist with
-`current_source_verified_by_running_runtime=true`.
+`runtime_relevant_source_verified_by_running_runtime=true`. It must not be read
+as exact current-source runtime verification:
+`current_source_verified_by_running_runtime` and
+`controlled_poc_loop_verified_for_current_source` stay false until the running
+image matches the current source tree.
 
 The 211 source directory is often a synced archive rather than a Git worktree.
 For source-only docs/tests/evidence syncs, write a local-only

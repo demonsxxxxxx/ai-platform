@@ -66,14 +66,17 @@ fresh 211 gate closure.
 
 S1 operator summary: run
 `python tools/foundation_alpha_readiness.py --format json`. The readiness output
-may mark `controlled_poc_loop_verified_for_current_source=true`, but S1 remains
-constrained until its `open_followups` are explicitly accepted or moved to later
-gates. If `current_source_exact_runtime_commit_match=false`, operators must read
-`runtime_source_relation`; only
+may mark `runtime_relevant_source_verified_by_running_runtime=true`, but S1
+remains constrained until its `open_followups` are explicitly accepted or moved
+to later gates. If `current_source_exact_runtime_commit_match=false`, operators
+must read `runtime_source_relation`; only
 `runtime_current_for_runtime_relevant_source` with empty
 `runtime_affecting_dirty_paths` and empty
-`runtime_affecting_changes_since_runtime_subject` allows the controlled POC
-loop to remain current without another runtime rollout.
+`runtime_affecting_changes_since_runtime_subject` allows the controlled core
+POC loop to remain runtime-relevant without another runtime rollout.
+`current_source_verified_by_running_runtime` and
+`controlled_poc_loop_verified_for_current_source` stay false until the running
+image matches the exact current source tree.
 
 ### 3.2 Auth, RBAC, Tenant Isolation
 

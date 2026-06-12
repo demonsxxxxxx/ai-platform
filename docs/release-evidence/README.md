@@ -48,12 +48,16 @@ The summary exposes that recorded evidence subject as
 reviewed, redacted 211 evidence record, not a live runtime claim for the current
 source tree. Use
 `controlled_poc_loop_verified_for_current_source=true` before treating the
-controlled POC loop as verified for the current source revision. If
+controlled POC loop as verified for the exact current source revision. If
 `current_source_exact_runtime_commit_match=false` but
 `runtime_source_relation.status=runtime_current_for_runtime_relevant_source`,
-the runtime subject has verified all runtime-affecting source while later
-docs/tests/evidence/readiness records remain outside the running image. Any
-non-empty `runtime_affecting_dirty_paths` must still block that claim.
+then only `runtime_relevant_source_verified_by_running_runtime=true` may be
+used: the runtime subject has verified all runtime-affecting source while later
+docs/tests/evidence/readiness records remain outside the running image.
+`current_source_verified_by_running_runtime` and
+`controlled_poc_loop_verified_for_current_source` must remain false in that
+state, and any non-empty `runtime_affecting_dirty_paths` must still block the
+runtime-relevant claim.
 
 On 211 source archives that are not Git worktrees, the summary may use a
 local-only `.ai-platform-source-snapshot.json` marker to preserve that same

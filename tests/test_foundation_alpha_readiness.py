@@ -353,7 +353,8 @@ def test_foundation_alpha_readiness_accepts_runtime_neutral_uncommitted_records(
         "status": "runtime_current_for_runtime_relevant_source",
     }
     assert readiness["verified_runtime_subject"]["evidence_scope"] == "current_runtime_relevant_source"
-    assert readiness["decision"]["current_source_verified_by_running_runtime"] is True
+    assert readiness["decision"]["runtime_relevant_source_verified_by_running_runtime"] is True
+    assert readiness["decision"]["current_source_verified_by_running_runtime"] is False
     assert readiness["decision"]["current_source_exact_runtime_commit_match"] is False
     assert readiness["decision"]["runtime_rollout_required_for_current_source"] is False
 
@@ -469,7 +470,64 @@ def test_foundation_alpha_readiness_uses_valid_source_snapshot_marker_when_git_i
         "status": "runtime_current_for_runtime_relevant_source",
     }
     assert readiness["verified_runtime_subject"]["evidence_scope"] == "current_runtime_relevant_source"
-    assert readiness["decision"]["current_source_verified_by_running_runtime"] is True
+    assert readiness["decision"]["runtime_relevant_source_verified_by_running_runtime"] is True
+    assert readiness["decision"]["current_source_verified_by_running_runtime"] is False
+
+
+def test_foundation_alpha_readiness_distinguishes_runtime_relevant_source_from_stage_closure(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    old_smoke_path, old_auth_path = _write_release_evidence_pair(
+        evidence_root,
+        RUNTIME_SUBJECT_SHA,
+        image="ai-platform:8c0cffc-foundation-alpha-poc",
+        smoke_captured_at="2026-06-11T10:00:00+08:00",
+        auth_captured_at="2026-06-11T10:01:00+08:00",
+    )
+    _write_release_evidence_pair(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image="ai-platform:a3f1d73-foundation-alpha-poc",
+        smoke_captured_at="2026-06-11T15:19:22+08:00",
+        auth_captured_at="2026-06-11T15:18:58+08:00",
+    )
+    marker = {
+        "schema_version": foundation_alpha_readiness.SOURCE_SNAPSHOT_SCHEMA_VERSION,
+        "source_tree_commit_sha": NEWER_SOURCE_SHA,
+        "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
+        "source_tree_dirty": False,
+        "runtime_affecting_changes_since_runtime_subject": [],
+        "runtime_affecting_dirty_paths": [],
+    }
+    marker_path = tmp_path / ".ai-platform-source-snapshot.json"
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", old_smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", old_auth_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SOURCE_SNAPSHOT_MARKER", marker_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_read_source_revision_marker",
+        lambda: NEWER_SOURCE_SHA,
+        raising=False,
+    )
+
+    def git_unavailable(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(128, "git")
+
+    monkeypatch.setattr(foundation_alpha_readiness.subprocess, "run", git_unavailable)
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert readiness["decision"]["runtime_relevant_source_verified_by_running_runtime"] is True
+    assert readiness["decision"]["current_source_verified_by_running_runtime"] is False
+    assert readiness["decision"]["foundation_alpha_stage_complete"] is False
+    assert readiness["decision"]["foundation_alpha_stage_status"] == "core_poc_loop_verified_followups_open"
+    assert "runtime_admin_dashboard_acceptance_for_governance" in readiness["decision"]["stage_acceptance_blockers"]
+    assert readiness["operator_context"]["poc_loop_status"] == "core_loop_verified_for_runtime_relevant_source"
+    assert readiness["operator_context"]["stage_acceptance_status"] == "core_poc_loop_verified_followups_open"
 
 
 def test_foundation_alpha_readiness_prefers_git_head_over_stale_source_revision_marker(monkeypatch, tmp_path):
@@ -703,7 +761,8 @@ def test_foundation_alpha_readiness_accepts_evidence_only_record_commit_without_
         readiness["domains"]["g0_g1_source_authority_security"]["status"]
         == "runtime_current_for_runtime_relevant_source"
     )
-    assert readiness["decision"]["current_source_verified_by_running_runtime"] is True
+    assert readiness["decision"]["runtime_relevant_source_verified_by_running_runtime"] is True
+    assert readiness["decision"]["current_source_verified_by_running_runtime"] is False
     assert readiness["decision"]["current_source_exact_runtime_commit_match"] is False
     assert readiness["decision"]["runtime_rollout_required_for_current_source"] is False
 
@@ -722,6 +781,22 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         raising=False,
     )
     monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        lambda: {
+            "status": "verified_packaged_release_followup_open",
+            "dist_status": "built",
+            "dist_build_provenance_status": "verified",
+            "dist_build_verified_same_commit": True,
+            "ci_verify_includes_projection_audit": True,
+            "workflow_status": "present",
+            "packaged_frontend_image_status": "configured",
+            "blockers": [],
+            "open_gap_count": 0,
+        },
+        raising=False,
+    )
 
     readiness = build_foundation_alpha_readiness(SecretBearingSettings())
 
@@ -744,9 +819,19 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert readiness["decision"] == {
         "reviewed_poc_loop_evidence_available": True,
         "controlled_poc_loop_verified_for_current_source": True,
+        "controlled_core_poc_loop_verified_for_runtime_relevant_source": True,
+        "runtime_relevant_source_verified_by_running_runtime": True,
         "current_source_verified_by_running_runtime": True,
         "current_source_exact_runtime_commit_match": True,
         "runtime_rollout_required_for_current_source": False,
+        "foundation_alpha_stage_complete": False,
+        "foundation_alpha_stage_status": "core_poc_loop_verified_followups_open",
+        "stage_acceptance_blockers": [
+            "runtime_admin_dashboard_acceptance_for_governance",
+            "signed_skill_package_or_sbom_review_evidence",
+            "g9_runtime_export_and_retention_acceptance",
+            "alert_delivery_and_trace_export_211_acceptance",
+        ],
         "can_enter_next_stage_without_restrictions": False,
         "production_claim_allowed": False,
         "ordinary_user_multi_agent_allowed": False,
@@ -755,8 +840,9 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     }
     assert readiness["operator_context"] == {
         "poc_scope": "foundation_alpha_controlled_internal_poc",
-        "poc_loop_status": "verified_for_current_source",
+        "poc_loop_status": "core_loop_verified_for_current_source_tree",
         "current_runtime_relation": "runtime_current_for_source_tree",
+        "stage_acceptance_status": "core_poc_loop_verified_followups_open",
         "stage_gate": "foundation_alpha_poc_not_production",
         "verified_poc_capabilities": [
             "source_authority_security_baseline",
@@ -1242,7 +1328,8 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeyp
     assert "`current_source_verified_by_running_runtime`: `True`" in markdown
     assert "`controlled_poc_loop_verified_for_current_source`: `True`" in markdown
     assert "Runtime source relation: `runtime_current_for_source_tree`" in markdown
-    assert "POC loop status: `verified_for_current_source`" in markdown
+    assert "POC loop status: `core_loop_verified_for_current_source_tree`" in markdown
+    assert "Stage acceptance status: `core_poc_loop_verified_followups_open`" in markdown
     assert "Context snapshot public projection: `verified_public_context_projection`" in markdown
     assert "Context referenced material counts: `message=1, file=1, artifact=0, memory=0`" in markdown
     assert "Frontend release traceability: `verified_packaged_release_followup_open`" in markdown

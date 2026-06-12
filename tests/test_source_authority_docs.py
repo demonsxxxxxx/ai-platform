@@ -161,6 +161,7 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "source_synced_runtime_pending" in gate_status_text
     assert "runtime_source_relation" in release_evidence_text
     assert "current_source_verified_by_running_runtime" in release_evidence_text
+    assert "runtime_relevant_source_verified_by_running_runtime" in release_evidence_text
     assert "verified_runtime_subject" in release_evidence_text
     assert "controlled_poc_loop_verified_for_current_source" in release_evidence_text
     assert "reviewed_historical_runtime_evidence" in release_evidence_text

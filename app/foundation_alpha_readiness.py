@@ -40,6 +40,17 @@ _OPEN_FOLLOWUPS = [
     "packaged_frontend_image_release_acceptance",
     "broader_auth_session_rbac_tenant_redaction_regression",
 ]
+_FOUNDATION_ALPHA_STAGE_BLOCKER_ORDER = [
+    "runtime_admin_dashboard_acceptance_for_governance",
+    "signed_skill_package_or_sbom_review_evidence",
+    "g9_runtime_export_and_retention_acceptance",
+    "alert_delivery_and_trace_export_211_acceptance",
+    "ordinary_user_acceptance_for_quarantined_legacy_routes",
+]
+_STAGE_BLOCKING_DOMAIN_STATUSES = {
+    "dependency_unavailable",
+    "partial_followups_open",
+}
 
 
 class _ReadinessDefaultSettings:
@@ -696,7 +707,9 @@ def _top_level_status(runtime_relation_status: str, runtime_matches_source_tree:
 
 def _poc_loop_status(runtime_relation: dict[str, Any]) -> str:
     if runtime_relation.get("runtime_relevant_source_matches"):
-        return "verified_for_current_source"
+        if runtime_relation.get("runtime_matches_source_tree"):
+            return "core_loop_verified_for_current_source_tree"
+        return "core_loop_verified_for_runtime_relevant_source"
     if runtime_relation.get("runtime_affecting_dirty_paths"):
         return "runtime_affecting_uncommitted_changes_pending"
     if runtime_relation.get("status") == "source_tree_uncommitted_changes_pending":
@@ -704,7 +717,50 @@ def _poc_loop_status(runtime_relation: dict[str, Any]) -> str:
     return "runtime_rollout_required"
 
 
-def _operator_context(runtime_relation: dict[str, Any], *, context_projection_verified: bool = True) -> dict[str, Any]:
+def _ordered_stage_blockers(domains: dict[str, dict[str, Any]]) -> list[str]:
+    blockers: set[str] = set()
+    for name, domain in domains.items():
+        if domain.get("status") not in _STAGE_BLOCKING_DOMAIN_STATUSES:
+            continue
+        domain_blockers: list[str] = []
+        for item in domain.get("open_followups", []):
+            if isinstance(item, str) and item.strip():
+                domain_blockers.append(item.strip())
+        if domain_blockers:
+            blockers.update(domain_blockers)
+        else:
+            blockers.add(f"{name}_{domain.get('status')}")
+
+    ordered: list[str] = []
+    for item in _FOUNDATION_ALPHA_STAGE_BLOCKER_ORDER:
+        if item in blockers:
+            ordered.append(item)
+            blockers.remove(item)
+    ordered.extend(sorted(blockers))
+    return ordered
+
+
+def _stage_acceptance_status(
+    *,
+    runtime_relevant_source_matches: bool,
+    context_projection_verified: bool,
+    stage_acceptance_blockers: list[str],
+) -> str:
+    if not runtime_relevant_source_matches:
+        return "runtime_rollout_required"
+    if not context_projection_verified:
+        return "context_snapshot_public_summary_followup_required"
+    if stage_acceptance_blockers:
+        return "core_poc_loop_verified_followups_open"
+    return "foundation_alpha_stage_complete"
+
+
+def _operator_context(
+    runtime_relation: dict[str, Any],
+    *,
+    context_projection_verified: bool = True,
+    stage_acceptance_status: str,
+) -> dict[str, Any]:
     poc_loop_status = _poc_loop_status(runtime_relation)
     if runtime_relation.get("runtime_relevant_source_matches") and not context_projection_verified:
         poc_loop_status = "context_snapshot_public_summary_followup_required"
@@ -712,6 +768,7 @@ def _operator_context(runtime_relation: dict[str, Any], *, context_projection_ve
         "poc_scope": "foundation_alpha_controlled_internal_poc",
         "poc_loop_status": poc_loop_status,
         "current_runtime_relation": runtime_relation["status"],
+        "stage_acceptance_status": stage_acceptance_status,
         "stage_gate": "foundation_alpha_poc_not_production",
         "verified_poc_capabilities": [
             "source_authority_security_baseline",
@@ -911,7 +968,14 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         isinstance(context_projection_summary, dict)
         and context_projection_summary.get("status") == "verified_public_context_projection"
     )
-    poc_loop_verified_for_current_source = runtime_relevant_source_matches and context_projection_verified
+    stage_acceptance_blockers = _ordered_stage_blockers(domains)
+    stage_acceptance_status = _stage_acceptance_status(
+        runtime_relevant_source_matches=runtime_relevant_source_matches,
+        context_projection_verified=context_projection_verified,
+        stage_acceptance_blockers=stage_acceptance_blockers,
+    )
+    poc_loop_verified_for_runtime_relevant_source = runtime_relevant_source_matches and context_projection_verified
+    poc_loop_verified_for_current_source = runtime_matches_source_tree and context_projection_verified
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -929,13 +993,21 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         "operator_context": _operator_context(
             runtime_relation,
             context_projection_verified=context_projection_verified,
+            stage_acceptance_status=stage_acceptance_status,
         ),
         "decision": {
             "reviewed_poc_loop_evidence_available": True,
             "controlled_poc_loop_verified_for_current_source": poc_loop_verified_for_current_source,
-            "current_source_verified_by_running_runtime": runtime_relevant_source_matches,
+            "controlled_core_poc_loop_verified_for_runtime_relevant_source": (
+                poc_loop_verified_for_runtime_relevant_source
+            ),
+            "runtime_relevant_source_verified_by_running_runtime": runtime_relevant_source_matches,
+            "current_source_verified_by_running_runtime": runtime_matches_source_tree,
             "current_source_exact_runtime_commit_match": runtime_matches_source_tree,
             "runtime_rollout_required_for_current_source": not runtime_relevant_source_matches,
+            "foundation_alpha_stage_complete": stage_acceptance_status == "foundation_alpha_stage_complete",
+            "foundation_alpha_stage_status": stage_acceptance_status,
+            "stage_acceptance_blockers": stage_acceptance_blockers,
             "can_enter_next_stage_without_restrictions": False,
             "production_claim_allowed": False,
             "ordinary_user_multi_agent_allowed": False,
@@ -1034,6 +1106,7 @@ def render_foundation_alpha_readiness_markdown(readiness: dict[str, Any]) -> str
         "## Operator Context\n\n"
         f"POC scope: `{operator_context['poc_scope']}`\n\n"
         f"POC loop status: `{operator_context['poc_loop_status']}`\n\n"
+        f"Stage acceptance status: `{operator_context['stage_acceptance_status']}`\n\n"
         f"Stage gate: `{operator_context['stage_gate']}`\n\n"
         "Verified POC capabilities:\n\n"
         f"{verified_capabilities}\n\n"
