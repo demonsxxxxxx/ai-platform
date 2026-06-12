@@ -350,6 +350,95 @@ def _write_release_evidence_runtime_acceptance(
     return path
 
 
+def _minimal_frontend_packaged_runtime_smoke_payload(
+    commit_sha: str,
+    *,
+    image: str,
+    captured_at: str = "2026-06-11T10:04:00+08:00",
+    runtime_host: str = "211",
+) -> dict:
+    smoke = {
+        "commit_sha": commit_sha,
+        "runtime_host": runtime_host,
+        "image_tag": f"ai-platform-frontend:{commit_sha[:7]}-smoke",
+        "docker_build": {"exit_code": 0, "log_tail": "wrote frontend/web/dist/ai-platform-build-provenance.json"},
+        "image_inspect": {"revision": commit_sha},
+        "build_provenance": {
+            "schema_version": "ai-platform.frontend-build-provenance.v1",
+            "git": {"commit": commit_sha, "dirty": False},
+            "source_hashes": {
+                "package_json_sha256": "a" * 64,
+                "pnpm_lock_sha256": "b" * 64,
+            },
+        },
+        "runtime_smoke": {
+            "network": "ai-platform-phaseb_default",
+            "healthz": {"status_code": 200, "body": "ok"},
+            "index": {"status_code": 200},
+            "api_health": {"status_code": 200, "body": {"status": "ok"}},
+            "build_provenance_endpoint": {"status_code": 200},
+        },
+        "leak_scan": {"status": "passed", "forbidden_markers": []},
+        "cleanup": {"container_removed": True},
+    }
+    return {
+        "schema_version": "ai-platform.release-evidence-entry.v1",
+        "evidence_id": f"{commit_sha[:7]}-frontend-packaged-runtime-smoke",
+        "commit_sha": commit_sha,
+        "runtime_subject_commit_sha": commit_sha,
+        "gate": "Foundation Alpha POC",
+        "artifact_kind": "frontend_packaged_runtime_smoke",
+        "captured_at": captured_at,
+        "source_ref": {
+            "branch": "main",
+            "runtime_commit": commit_sha,
+            "runtime_source_marker": commit_sha,
+            "image": image,
+            "image_id": f"sha256:{commit_sha[:12]}",
+            "image_labels": {
+                "ai-platform.source-revision": commit_sha,
+                "org.opencontainers.image.revision": commit_sha,
+            },
+            "repo_local_env_present": False,
+        },
+        "evidence_ref": {
+            "verifier": "tools/frontend_packaged_runtime_smoke.py",
+            "result": "ok:true",
+            "schema_version": "ai-platform.frontend-packaged-runtime-smoke.v1",
+            "runtime_checks": {
+                "frontend_packaged_runtime_smoke": smoke,
+            },
+        },
+        "redaction_scan_status": "passed",
+        "review_status": "reviewed",
+    }
+
+
+def _write_frontend_packaged_runtime_smoke(
+    base_root,
+    commit_sha: str,
+    *,
+    image: str,
+    captured_at: str = "2026-06-11T10:04:00+08:00",
+    runtime_host: str = "211",
+):
+    commit_root = base_root / commit_sha
+    commit_root.mkdir(parents=True, exist_ok=True)
+    path = commit_root / f"{commit_sha[:7]}-frontend-packaged-runtime-smoke.json"
+    path.write_text(
+        json.dumps(
+            _minimal_frontend_packaged_runtime_smoke_payload(
+                commit_sha,
+                image=image,
+                captured_at=captured_at,
+                runtime_host=runtime_host,
+            )
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def _write_release_evidence_pair(
     base_root,
     commit_sha: str,
@@ -1226,6 +1315,8 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "stage_acceptance_blockers": [
             "signed_skill_package_or_sbom_review_evidence",
             "alert_delivery_and_trace_export_211_acceptance",
+            "ordinary_user_acceptance_for_quarantined_legacy_routes",
+            "packaged_frontend_image_release_acceptance",
         ],
         "can_enter_next_stage_without_restrictions": False,
         "production_claim_allowed": False,
@@ -1328,6 +1419,8 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert "g7_docker_sandbox_hardening" in readiness["open_followups"]
     assert "g8_ordinary_user_multi_agent_exposure" in readiness["open_followups"]
     assert "g9_runtime_export_and_retention_acceptance" not in readiness["open_followups"]
+    assert "packaged_frontend_image_release_acceptance" in readiness["open_followups"]
+    assert "ordinary_user_acceptance_for_quarantined_legacy_routes" in readiness["open_followups"]
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
     assert "callback-secret" not in serialized
@@ -1468,6 +1561,103 @@ def test_foundation_alpha_readiness_embeds_frontend_release_traceability_summary
         readiness["domains"]["frontend_poc"]["evidence"]["frontend_release_traceability"]
         == frontend_traceability_summary
     )
+
+
+def test_foundation_alpha_readiness_accepts_211_packaged_frontend_runtime_smoke(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    image = "ai-platform:a3f1d73-foundation-alpha-poc"
+    smoke_path, auth_path = _write_release_evidence_pair(evidence_root, CURRENT_SOURCE_SHA, image=image)
+    _write_governance_evidence(evidence_root, CURRENT_SOURCE_SHA, image=image)
+    _write_release_evidence_runtime_acceptance(evidence_root, CURRENT_SOURCE_SHA, image=image)
+    packaged_path = _write_frontend_packaged_runtime_smoke(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image=image,
+        runtime_host="211",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: CURRENT_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        lambda: {
+            "status": "verified_packaged_release_followup_open",
+            "open_gap_count": 0,
+            "blockers": [],
+        },
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    frontend = readiness["domains"]["frontend_poc"]
+    packaged = frontend["evidence"]["frontend_packaged_runtime_smoke"]
+    assert packaged["status"] == "ready_for_operator_review"
+    assert packaged["verified"] is True
+    assert "211_packaged_frontend_runtime_smoke" in packaged["closed_evidence_items"]
+    assert "packaged_frontend_image_release_acceptance" not in frontend["open_followups"]
+    assert "packaged_frontend_image_release_acceptance" not in readiness["decision"]["stage_acceptance_blockers"]
+    assert "packaged_frontend_image_release_acceptance" not in readiness["open_followups"]
+    assert readiness["evidence_entries"]["frontend_packaged_runtime_smoke"] == (
+        foundation_alpha_readiness._path_for_output(packaged_path)
+    )
+
+
+def test_foundation_alpha_readiness_keeps_packaged_frontend_blocker_without_211_smoke(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    image = "ai-platform:a3f1d73-foundation-alpha-poc"
+    smoke_path, auth_path = _write_release_evidence_pair(evidence_root, CURRENT_SOURCE_SHA, image=image)
+    _write_frontend_packaged_runtime_smoke(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image=image,
+        runtime_host="docker-lab",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: CURRENT_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        lambda: {
+            "status": "verified_packaged_release_followup_open",
+            "open_gap_count": 0,
+            "blockers": [],
+        },
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    frontend = readiness["domains"]["frontend_poc"]
+    packaged = frontend["evidence"]["frontend_packaged_runtime_smoke"]
+    assert packaged["status"] == "ready_for_operator_review"
+    assert packaged["verified"] is False
+    assert "docker_lab_packaged_frontend_runtime_smoke" in packaged["closed_evidence_items"]
+    assert "211_packaged_frontend_runtime_smoke" not in packaged["closed_evidence_items"]
+    assert "packaged_frontend_image_release_acceptance" in frontend["open_followups"]
+    assert "packaged_frontend_image_release_acceptance" in readiness["decision"]["stage_acceptance_blockers"]
 
 
 def test_context_projection_summary_verifies_file_context_only_with_attachment_signal():

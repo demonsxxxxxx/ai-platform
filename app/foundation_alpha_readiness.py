@@ -215,7 +215,7 @@ def _resolve_runtime_affecting_dirty_paths() -> list[str] | None:
     return [path for path in dirty_paths if _is_runtime_affecting_path(path)]
 
 
-def _release_evidence_entry_is_valid(payload: dict[str, Any], commit_sha: str) -> bool:
+def _release_evidence_entry_base_is_valid(payload: dict[str, Any], commit_sha: str) -> bool:
     source_ref = payload.get("source_ref")
     evidence_ref = payload.get("evidence_ref")
     if not isinstance(source_ref, dict) or not isinstance(evidence_ref, dict):
@@ -225,7 +225,6 @@ def _release_evidence_entry_is_valid(payload: dict[str, Any], commit_sha: str) -
     return (
         payload.get("schema_version") == "ai-platform.release-evidence-entry.v1"
         and payload.get("gate") == STAGE_NAME
-        and payload.get("artifact_kind") == "211_runtime_smoke"
         and payload.get("commit_sha") == commit_sha
         and payload.get("runtime_subject_commit_sha") == commit_sha
         and payload.get("redaction_scan_status") == "passed"
@@ -236,6 +235,13 @@ def _release_evidence_entry_is_valid(payload: dict[str, Any], commit_sha: str) -
         and labels.get("org.opencontainers.image.revision") == commit_sha
         and evidence_ref.get("result") == "ok:true"
         and isinstance(evidence_ref.get("runtime_checks"), dict)
+    )
+
+
+def _release_evidence_entry_is_valid(payload: dict[str, Any], commit_sha: str) -> bool:
+    return (
+        _release_evidence_entry_base_is_valid(payload, commit_sha)
+        and payload.get("artifact_kind") == "211_runtime_smoke"
     )
 
 
@@ -432,6 +438,36 @@ def _discover_release_evidence_runtime_acceptance_evidence(commit_sha: str) -> P
         if not _release_evidence_entry_is_valid(payload, commit_sha):
             continue
         if _is_release_evidence_runtime_acceptance_evidence(payload):
+            entries.append((path, payload))
+
+    if entries:
+        path, _ = max(entries, key=lambda item: _release_evidence_sort_key(item[0], item[1]))
+        return path
+    return None
+
+
+def _discover_frontend_packaged_runtime_smoke_evidence(commit_sha: str) -> Path | None:
+    commit_root = _EVIDENCE_BASE_ROOT / commit_sha
+    if not commit_root.is_dir():
+        return None
+
+    entries: list[tuple[Path, dict[str, Any]]] = []
+    for path in sorted(commit_root.glob("*.json")):
+        try:
+            payload = _load_json(path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not _release_evidence_entry_base_is_valid(payload, commit_sha):
+            continue
+        evidence_ref = payload.get("evidence_ref") if isinstance(payload, dict) else {}
+        runtime_checks = evidence_ref.get("runtime_checks") if isinstance(evidence_ref, dict) else {}
+        smoke = runtime_checks.get("frontend_packaged_runtime_smoke") if isinstance(runtime_checks, dict) else None
+        if (
+            payload.get("artifact_kind") == "frontend_packaged_runtime_smoke"
+            and evidence_ref.get("verifier") == "tools/frontend_packaged_runtime_smoke.py"
+            and evidence_ref.get("schema_version") == "ai-platform.frontend-packaged-runtime-smoke.v1"
+            and isinstance(smoke, dict)
+        ):
             entries.append((path, payload))
 
     if entries:
@@ -869,9 +905,15 @@ def _ordered_stage_blockers(domains: dict[str, dict[str, Any]]) -> list[str]:
     return ordered
 
 
-def _top_level_open_followups(stage_acceptance_blockers: list[str]) -> list[str]:
+def _top_level_open_followups(
+    stage_acceptance_blockers: list[str],
+    *,
+    excluded_static_followups: set[str] | None = None,
+) -> list[str]:
+    excluded_static_followups = excluded_static_followups or set()
     ordered: list[str] = []
-    for item in [*_OPEN_FOLLOWUPS, *stage_acceptance_blockers]:
+    static_followups = [item for item in _OPEN_FOLLOWUPS if item not in excluded_static_followups]
+    for item in [*static_followups, *stage_acceptance_blockers]:
         if item not in ordered:
             ordered.append(item)
     return ordered
@@ -899,6 +941,7 @@ def _operator_context(
     stage_acceptance_status: str,
     governance_runtime_smoke_verified: bool = False,
     release_evidence_runtime_acceptance_verified: bool = False,
+    frontend_packaged_runtime_smoke_verified: bool = False,
 ) -> dict[str, Any]:
     poc_loop_status = _poc_loop_status(runtime_relation)
     if runtime_relation.get("runtime_relevant_source_matches") and not context_projection_verified:
@@ -913,6 +956,10 @@ def _operator_context(
     if release_evidence_runtime_acceptance_verified:
         next_recommended_slices = [
             item for item in next_recommended_slices if item != "g9_runtime_export_and_retention_acceptance"
+        ]
+    if frontend_packaged_runtime_smoke_verified:
+        next_recommended_slices = [
+            item for item in next_recommended_slices if item != "packaged_frontend_image_release_acceptance"
         ]
     return {
         "poc_scope": "foundation_alpha_controlled_internal_poc",
@@ -1044,6 +1091,39 @@ def _release_evidence_runtime_acceptance_summary(payload: dict[str, Any] | None)
     }
 
 
+def _frontend_packaged_runtime_smoke_summary(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if payload is None:
+        return {
+            "status": "missing_frontend_packaged_runtime_smoke",
+            "runtime_host": None,
+            "closed_evidence_items": [],
+            "verified": False,
+        }
+
+    evidence_ref = payload.get("evidence_ref") if isinstance(payload, dict) else {}
+    runtime_checks = evidence_ref.get("runtime_checks") if isinstance(evidence_ref, dict) else {}
+    evidence = runtime_checks.get("frontend_packaged_runtime_smoke") if isinstance(runtime_checks, dict) else None
+    if not isinstance(evidence, dict):
+        return {
+            "status": "frontend_packaged_runtime_smoke_followup_required",
+            "runtime_host": None,
+            "closed_evidence_items": [],
+            "verified": False,
+        }
+
+    from tools.frontend_packaged_runtime_smoke import build_frontend_packaged_runtime_smoke_readiness
+
+    readiness = build_frontend_packaged_runtime_smoke_readiness(evidence)
+    closed_items = readiness.get("closed_evidence_items")
+    closed_items = closed_items if isinstance(closed_items, list) else []
+    return {
+        "status": readiness.get("status"),
+        "runtime_host": evidence.get("runtime_host"),
+        "closed_evidence_items": [item for item in closed_items if isinstance(item, str)],
+        "verified": "211_packaged_frontend_runtime_smoke" in closed_items,
+    }
+
+
 def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str, Any]:
     """Build a secret-safe Foundation Alpha POC readiness summary for operators."""
     source_tree_commit = _resolve_source_tree_revision()
@@ -1078,6 +1158,18 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     release_evidence_runtime_acceptance_verified = (
         release_evidence_runtime_acceptance_summary["verified"] is True
     )
+    frontend_packaged_runtime_smoke_path = _discover_frontend_packaged_runtime_smoke_evidence(
+        runtime_subject_commit
+    )
+    frontend_packaged_runtime_smoke_payload = (
+        _load_json(frontend_packaged_runtime_smoke_path)
+        if frontend_packaged_runtime_smoke_path is not None
+        else None
+    )
+    frontend_packaged_runtime_smoke = _frontend_packaged_runtime_smoke_summary(
+        frontend_packaged_runtime_smoke_payload
+    )
+    frontend_packaged_runtime_smoke_verified = frontend_packaged_runtime_smoke["verified"] is True
     try:
         governance_summary = _build_governance_summary(settings)
     except ModuleNotFoundError as exc:
@@ -1128,6 +1220,12 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     ]
     if release_evidence_runtime_acceptance_verified:
         g9_open_followups.remove("g9_runtime_export_and_retention_acceptance")
+
+    frontend_open_followups = [
+        "ordinary_user_acceptance_for_quarantined_legacy_routes",
+    ]
+    if not frontend_packaged_runtime_smoke_verified:
+        frontend_open_followups.insert(0, "packaged_frontend_image_release_acceptance")
 
     domains = {
         "g0_g1_source_authority_security": {
@@ -1206,16 +1304,14 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         },
         "frontend_poc": {
             "status": "partial_followups_open"
-            if frontend_traceability_summary.get("open_gap_count")
+            if frontend_traceability_summary.get("open_gap_count") or frontend_open_followups
             else "poc_verified_packaged_release_followup_open",
             "evidence": {
                 **_projection_summary(smoke_checks),
                 "frontend_release_traceability": frontend_traceability_summary,
+                "frontend_packaged_runtime_smoke": frontend_packaged_runtime_smoke,
             },
-            "open_followups": [
-                "packaged_frontend_image_release_acceptance",
-                "ordinary_user_acceptance_for_quarantined_legacy_routes",
-            ],
+            "open_followups": frontend_open_followups,
         },
     }
     context_projection_summary = domains["g6_poc_governance"]["evidence"]["context_snapshot_public_projection"]
@@ -1264,6 +1360,10 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         evidence_entries["release_evidence_runtime_acceptance"] = _path_for_output(
             release_evidence_runtime_acceptance_path
         )
+    if frontend_packaged_runtime_smoke_path is not None and frontend_packaged_runtime_smoke_verified:
+        evidence_entries["frontend_packaged_runtime_smoke"] = _path_for_output(
+            frontend_packaged_runtime_smoke_path
+        )
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -1295,10 +1395,18 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             stage_acceptance_status=stage_acceptance_status,
             governance_runtime_smoke_verified=governance_runtime_smoke_verified,
             release_evidence_runtime_acceptance_verified=release_evidence_runtime_acceptance_verified,
+            frontend_packaged_runtime_smoke_verified=frontend_packaged_runtime_smoke_verified,
         ),
         "decision": decision_summary,
         "domains": domains,
-        "open_followups": _top_level_open_followups(stage_acceptance_blockers),
+        "open_followups": _top_level_open_followups(
+            stage_acceptance_blockers,
+            excluded_static_followups=(
+                {"packaged_frontend_image_release_acceptance"}
+                if frontend_packaged_runtime_smoke_verified
+                else set()
+            ),
+        ),
         "evidence_policy": "source_docs_tests_211_smoke_and_release_evidence_required_before_stage_closure",
     }
 
