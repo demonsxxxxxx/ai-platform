@@ -157,7 +157,8 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "do_not_raise_without_recorded_load_test_evidence" in gate_status_text
     assert "packaged frontend image smoke/release acceptance" in gate_status_text
     assert "Foundation Alpha POC Smoke" in gate_status_text
-    assert "211 verified for Foundation Alpha POC" in gate_status_text
+    assert "historical 211 POC smoke reviewed" in gate_status_text
+    assert "current context public-summary" in gate_status_text
     assert "source_synced_runtime_pending" in gate_status_text
     assert "runtime_source_relation" in release_evidence_text
     assert "current_source_verified_by_running_runtime" in release_evidence_text

@@ -11,7 +11,8 @@ issue -> PR -> review -> merge -> 211 deploy/smoke -> close issue workflow in
 
 ## Foundation Alpha POC Smoke
 
-Status: `211 verified for Foundation Alpha POC`, not production gate closure.
+Status: historical 211 POC smoke reviewed; current context public-summary
+contract refresh required, not production gate closure.
 
 Generate the current operator readiness summary with:
 
@@ -56,11 +57,16 @@ Both runtime source labels pointed to
 repo-local 211 deploy composition, API health returned `ok`, container-side
 `python -m compileall -q app tools scripts` passed for API and worker, and the
 aggregate verifier `tools/verify_poc_gate.py` returned `ok: true` on 211 for
-the controlled context source-provenance slice. The smoke specifically verified
-that the context snapshot public projection now reports
+the controlled context source-provenance slice. That smoke verified
 `summary_source=chat_stream`, safe `input_keys=["message"]`, memory policy
 source, execution tier, generated-at presence, and no raw material IDs or
-forbidden projection leaks. The reviewed, redacted release-evidence entry is
+forbidden projection leaks. A later source-level contract tightened file-context
+provenance: when `file_count > 0`, public `input_keys` must include the safe
+`attachments` signal. Therefore this older 211 evidence remains reviewed
+historical proof for the controlled loop, but it no longer closes the current
+context public-summary verifier until the 211 smoke is rerun with
+`input_keys=["attachments","message"]` or equivalent. The reviewed, redacted
+release-evidence entry is
 `docs/release-evidence/foundation-alpha-poc/2384e19dcac2e39fbcf9c27dc990f5774d391422/2026-06-12-211-foundation-alpha-poc-2384e19-context-source-provenance-smoke.json`.
 
 The focused Auth/RBAC verifier `tools/verify_auth_rbac_smoke.py` also returned
@@ -113,10 +119,14 @@ isolation, playback with preview URL and no private payload leakage, company
 login audit, Admin capacity/backpressure fields, and context snapshot public
 projection with `summary_source=chat_stream`, safe `input_keys=["message"]`,
 memory policy source, execution tier, generated-at presence, and no raw
-material IDs. `tools/foundation_alpha_readiness.py`
-promotes that context projection into the G6 evidence summary and fails closed
-as `missing_context_snapshot_public_projection` when an older smoke record lacks
-it. The reviewed, redacted release-evidence entry is
+material IDs. The current verifier now also requires `attachments` in
+`input_keys` whenever `file_count > 0`, so this historical smoke must be
+refreshed before it can satisfy the current context public-summary contract.
+`tools/foundation_alpha_readiness.py` promotes that context projection into the
+G6 evidence summary and fails closed as
+`missing_context_snapshot_public_projection` when an older smoke record lacks
+it, or as `attachments_input_key` when file-context provenance lacks the
+attachment signal. The reviewed, redacted release-evidence entry is
 `docs/release-evidence/foundation-alpha-poc/e274d78b21c22fdf4f56a8cf8b31a0480d42c22f/2026-06-12-211-foundation-alpha-poc-e274d78-runtime-readiness-tools-smoke.json`.
 
 The focused Auth/RBAC verifier `tools/verify_auth_rbac_smoke.py` also returned

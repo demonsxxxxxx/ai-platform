@@ -21,6 +21,7 @@ from urllib import error, request
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.context_builder import public_context_input_key_findings
 from app.validation import assert_safe_id
 
 
@@ -651,18 +652,12 @@ CONTEXT_FORBIDDEN_PROJECTION_KEY_ALIAS_SET = frozenset(
 )
 
 
-def _safe_context_input_keys(value: object) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    keys: list[str] = []
-    for item in value:
-        if not isinstance(item, str):
-            return []
-        stripped = item.strip()
-        if not stripped:
-            return []
-        keys.append(stripped)
-    return sorted(keys)
+def _context_material_count(value: object) -> tuple[int, bool]:
+    if type(value) is not int:
+        return 0, False
+    if value < 0:
+        return 0, False
+    return value, True
 
 
 def _safe_non_empty_string(value: object) -> str | None:
@@ -703,15 +698,35 @@ def _context_public_projection_findings(value: Any) -> tuple[bool, list[str]]:
 
 def _context_missing_public_summary_fields(payload: dict[str, Any]) -> list[str]:
     missing: list[str] = []
+    referenced_materials = (
+        payload.get("referenced_materials")
+        if isinstance(payload.get("referenced_materials"), dict)
+        else {}
+    )
     used_summary = payload.get("used_context_summary")
+    input_keys = (
+        public_context_input_key_findings(used_summary.get("input_keys"))[0]
+        if isinstance(used_summary, dict)
+        else []
+    )
+    unsafe_input_keys = (
+        public_context_input_key_findings(used_summary.get("input_keys"))[1]
+        if isinstance(used_summary, dict)
+        else []
+    )
     if not isinstance(used_summary, dict) or _safe_non_empty_string(used_summary.get("source")) is None:
         missing.append("summary_source")
     if (
         not isinstance(used_summary, dict)
         or not isinstance(used_summary.get("input_keys"), list)
-        or not _safe_context_input_keys(used_summary.get("input_keys"))
+        or not input_keys
     ):
         missing.append("input_keys")
+    file_count, file_count_valid = _context_material_count(referenced_materials.get("file_count"))
+    if file_count_valid and file_count > 0 and "attachments" not in input_keys:
+        missing.append("attachments_input_key")
+    if unsafe_input_keys:
+        missing.append("unsafe_input_keys")
     if not isinstance(used_summary, dict) or _safe_non_empty_string(used_summary.get("memory_policy_source")) is None:
         missing.append("memory_policy_source")
     if not isinstance(used_summary, dict) or not isinstance(used_summary.get("long_term_memory_read"), bool):
@@ -732,8 +747,8 @@ def _context_snapshot_payload_summary(snapshot_payload: dict[str, Any]) -> dict[
     counts: dict[str, int] = {}
     counts_valid = True
     for key in CONTEXT_PUBLIC_REQUIRED_COUNTS:
-        value = referenced_materials.get(key)
-        if not isinstance(value, int) or value < 0:
+        value, valid = _context_material_count(referenced_materials.get(key))
+        if not valid:
             counts_valid = False
             counts[key] = 0
         else:
@@ -744,12 +759,19 @@ def _context_snapshot_payload_summary(snapshot_payload: dict[str, Any]) -> dict[
         else {}
     )
     input_keys = used_summary.get("input_keys") if isinstance(used_summary.get("input_keys"), list) else []
-    safe_input_keys = _safe_context_input_keys(input_keys)
+    safe_input_keys, unsafe_input_keys = public_context_input_key_findings(input_keys)
+    invalid_count_fields = [
+        key
+        for key in CONTEXT_PUBLIC_REQUIRED_COUNTS
+        if not _context_material_count(referenced_materials.get(key))[1]
+    ]
     return {
         "counts": counts,
         "counts_valid": counts_valid,
+        "invalid_count_fields": invalid_count_fields,
         "summary_source": _safe_non_empty_string(used_summary.get("source")),
         "input_keys": safe_input_keys,
+        "unsafe_input_keys": unsafe_input_keys,
         "memory_policy_source": _safe_non_empty_string(used_summary.get("memory_policy_source")),
         "long_term_memory_read": used_summary.get("long_term_memory_read")
         if isinstance(used_summary.get("long_term_memory_read"), bool)
@@ -807,6 +829,22 @@ def check_context_snapshot_public_projection(
         }
         or set(primary_summary["missing_public_summary_fields"])
     )
+    invalid_count_fields = sorted(
+        {
+            field
+            for summary in snapshot_payload_summaries
+            for field in summary["invalid_count_fields"]
+        }
+        or set(primary_summary["invalid_count_fields"])
+    )
+    unsafe_input_keys = sorted(
+        {
+            key
+            for summary in snapshot_payload_summaries
+            for key in summary["unsafe_input_keys"]
+        }
+        or set(primary_summary["unsafe_input_keys"])
+    )
     raw_material_id_fields_present, forbidden_leaks = _context_public_projection_findings(payload)
     ok = (
         status == 200
@@ -832,6 +870,10 @@ def check_context_snapshot_public_projection(
         "execution_tier": primary_summary["execution_tier"],
         "context_pack_generated_at_present": primary_summary["context_pack_generated_at_present"],
     }
+    if invalid_count_fields:
+        evidence["invalid_referenced_material_count_fields"] = invalid_count_fields
+    if unsafe_input_keys:
+        evidence["unsafe_input_keys"] = unsafe_input_keys
     if missing_public_summary_fields:
         evidence["missing_public_summary_fields"] = missing_public_summary_fields
     return Gate("context_snapshot_public_projection", ok, evidence)

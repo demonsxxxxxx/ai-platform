@@ -1092,7 +1092,7 @@ async def test_worker_uses_scoped_db_context_snapshot_when_queue_copy_missing(mo
     assert captured["payload"].context_snapshot_id == "ctx-existing"
     assert captured["payload"].context_snapshot["used_context_summary"] == {
         "source": "stored_context_snapshot",
-        "input_keys": ["window"],
+        "input_keys": ["attachments", "window"],
         "memory_policy_source": "not_recorded",
         "long_term_memory_read": False,
     }
@@ -1387,7 +1387,7 @@ async def test_worker_rebuilds_db_context_snapshot_with_public_provenance(monkey
     }
     assert context_snapshot["used_context_summary"] == {
         "source": "stored_context_snapshot",
-        "input_keys": ["window"],
+        "input_keys": ["attachments", "window"],
         "memory_policy_source": "not_recorded",
         "long_term_memory_read": False,
     }

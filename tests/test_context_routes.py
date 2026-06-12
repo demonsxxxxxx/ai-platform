@@ -190,7 +190,7 @@ def test_create_context_snapshot_records_snapshot_and_event(monkeypatch):
     }
     assert body["payload"]["used_context_summary"] == {
         "source": "manual_context_snapshot",
-        "input_keys": ["window"],
+        "input_keys": ["attachments", "window"],
         "memory_policy_source": "not_recorded",
         "long_term_memory_read": False,
     }
@@ -738,7 +738,7 @@ def test_list_context_snapshots_replaces_malformed_legacy_provenance(monkeypatch
     }
     assert payload["used_context_summary"] == {
         "source": "stored_context_snapshot",
-        "input_keys": ["window"],
+        "input_keys": ["attachments", "window"],
         "memory_policy_source": "not_recorded",
         "long_term_memory_read": False,
     }

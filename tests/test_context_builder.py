@@ -139,7 +139,7 @@ def test_ensure_public_context_provenance_preserves_stored_safe_explainability_f
 
     assert projected["used_context_summary"] == {
         "source": "chat_stream",
-        "input_keys": ["message"],
+        "input_keys": ["attachments", "message"],
         "memory_policy_source": "stored",
         "long_term_memory_read": True,
     }
@@ -204,7 +204,7 @@ def test_ensure_public_context_provenance_rejects_unsafe_stored_explainability_f
 
     assert projected["used_context_summary"] == {
         "source": "stored_context_snapshot",
-        "input_keys": ["window"],
+        "input_keys": ["attachments", "window"],
         "memory_policy_source": "not_recorded",
         "long_term_memory_read": False,
     }
@@ -242,7 +242,7 @@ def test_initial_context_summary_includes_public_context_provenance_contract():
     }
     assert summary["used_context_summary"] == {
         "source": "runs_api",
-        "input_keys": ["message"],
+        "input_keys": ["attachments", "message"],
         "memory_policy_source": "stored",
         "long_term_memory_read": False,
     }
@@ -254,6 +254,23 @@ def test_initial_context_summary_includes_public_context_provenance_contract():
     assert "file-a" not in serialized
     assert "mem-a" not in serialized
     assert "private_payload" not in serialized
+
+
+def test_initial_context_summary_adds_attachment_signal_for_file_context():
+    summary = initial_context_summary(
+        source="chat_stream",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        input_payload={"message": "review this document"},
+        message_ids=["msg-a"],
+        file_ids=["file-a"],
+    )
+
+    assert summary["referenced_materials"]["file_count"] == 1
+    assert summary["used_context_summary"]["input_keys"] == ["attachments", "message"]
+    serialized = str(summary).lower()
+    assert "file-a" not in serialized
+    assert "raw_storage_key" not in serialized
 
 
 @pytest.mark.asyncio

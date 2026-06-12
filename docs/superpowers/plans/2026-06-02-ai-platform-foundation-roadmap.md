@@ -524,13 +524,21 @@ provenance. This narrows the G6/#22 context output gap but does not close
 executor context-pack injection, frontend context provenance acceptance,
 long-term memory, sandbox, or multi-agent gates.
 
+The current context public-summary verifier treats file-context provenance as
+incomplete unless `file_count > 0` is paired with the safe
+`used_context_summary.input_keys` value `attachments`. This is a public
+presence signal only; file IDs, storage locators, raw upload keys, and sandbox
+paths remain forbidden in public/admin projections and release evidence.
+
 The Foundation Alpha readiness summary now also promotes reviewed 211
 `context_snapshot_public_projection` smoke evidence into the G6 POC governance
 domain. The promoted summary is intentionally bounded to status, referenced
 material counts, raw-ID presence, forbidden-leak count, and summary source; it
 does not echo raw message/file/artifact/memory IDs, executor private payloads,
 storage locators, or workspace paths. Older smoke records without that runtime
-projection stay fail-closed as `missing_context_snapshot_public_projection`.
+projection stay fail-closed as `missing_context_snapshot_public_projection`;
+records with file counts but no `attachments` input signal stay fail-closed as
+`attachments_input_key` until refreshed by a current 211 smoke.
 
 The 2026-06-08 frontend projection audit follow-up makes the remaining frontend
 G6/G9 blockers machine-actionable through

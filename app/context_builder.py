@@ -275,6 +275,36 @@ def _safe_public_context_input_keys(value: object) -> list[str]:
     return sorted(set(keys))
 
 
+def public_context_input_key_findings(value: object) -> tuple[list[str], list[str]]:
+    """Classify public context input keys with the same predicate used by producers."""
+    if not isinstance(value, list):
+        return [], []
+    safe_keys: list[str] = []
+    unsafe_keys: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            return [], []
+        key = item.strip()
+        if not key:
+            return [], []
+        if _is_public_context_input_key(key):
+            safe_keys.append(key)
+        else:
+            unsafe_keys.append(key)
+    return sorted(set(safe_keys)), sorted(set(unsafe_keys))
+
+
+def _public_context_input_keys_with_material_signals(
+    keys: list[str],
+    *,
+    file_count: int,
+) -> list[str]:
+    public_keys = set(keys)
+    if file_count > 0:
+        public_keys.add("attachments")
+    return sorted(public_keys)
+
+
 def _stored_public_context_input_keys(payload: dict[str, Any]) -> list[str]:
     used_summary = payload.get("used_context_summary")
     if isinstance(used_summary, dict):
@@ -400,6 +430,10 @@ def public_context_provenance(
     safe_input_keys = _safe_public_context_input_keys(input_keys) if input_keys is not None else []
     if not safe_input_keys:
         safe_input_keys = sorted(str(key) for key in sanitized_input.keys())
+    safe_input_keys = _public_context_input_keys_with_material_signals(
+        safe_input_keys,
+        file_count=max(0, int(file_count)),
+    )
     return {
         "referenced_materials": {
             "message_count": max(0, int(message_count)),
@@ -482,7 +516,10 @@ def initial_context_summary(
     memory_ids = list(memory_record_ids or [])
     memory_policy_source = str((memory_policy or {}).get("source") or "not_recorded")
     sanitized_input = public_context_payload(input_payload)
-    input_keys = sorted(str(key) for key in sanitized_input.keys())
+    input_keys = _public_context_input_keys_with_material_signals(
+        sorted(str(key) for key in sanitized_input.keys()),
+        file_count=len(file_ids),
+    )
     summary = {
         "schema_version": CONTEXT_SNAPSHOT_SCHEMA_VERSION,
         "source": source,

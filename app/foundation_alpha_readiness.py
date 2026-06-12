@@ -6,6 +6,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from app.context_builder import public_context_input_key_findings
+
 
 SCHEMA_VERSION = "ai-platform.foundation-alpha-poc-readiness.v1"
 SOURCE_SNAPSHOT_SCHEMA_VERSION = "ai-platform.source-snapshot.v1"
@@ -414,18 +416,12 @@ def _safe_runtime_check(value: Any) -> dict[str, Any]:
     return deepcopy(value) if isinstance(value, dict) else {}
 
 
-def _safe_context_input_keys(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    keys: list[str] = []
-    for item in value:
-        if not isinstance(item, str):
-            return []
-        stripped = item.strip()
-        if not stripped:
-            return []
-        keys.append(stripped)
-    return sorted(keys)
+def _context_material_count(value: Any) -> tuple[int, bool]:
+    if type(value) is not int:
+        return 0, False
+    if value < 0:
+        return 0, False
+    return value, True
 
 
 def _artifact_review_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
@@ -598,7 +594,7 @@ def _context_projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any
     forbidden_leaks = projection.get("forbidden_projection_leaks")
     forbidden_leak_count = len(forbidden_leaks) if isinstance(forbidden_leaks, list) else None
     raw_material_id_fields_present = projection.get("raw_material_id_fields_present")
-    input_keys = _safe_context_input_keys(projection.get("input_keys"))
+    input_keys, unsafe_input_keys = public_context_input_key_findings(projection.get("input_keys"))
     summary_source = projection.get("summary_source") if isinstance(projection.get("summary_source"), str) else None
     memory_policy_source = (
         projection.get("memory_policy_source") if isinstance(projection.get("memory_policy_source"), str) else None
@@ -613,6 +609,29 @@ def _context_projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any
         missing_public_summary_fields.append("summary_source")
     if not input_keys:
         missing_public_summary_fields.append("input_keys")
+    counts = projection.get("referenced_material_counts")
+    invalid_count_fields: list[str] = []
+    count_keys = (
+        "message_count",
+        "file_count",
+        "artifact_count",
+        "memory_record_count",
+    )
+    if not isinstance(counts, dict):
+        invalid_count_fields = list(count_keys)
+    else:
+        invalid_count_fields = [
+            key for key in count_keys if not _context_material_count(counts.get(key))[1]
+        ]
+    file_count = 0
+    if isinstance(counts, dict):
+        file_count = _context_material_count(counts.get("file_count"))[0]
+    if invalid_count_fields:
+        missing_public_summary_fields.append("referenced_material_counts")
+    if file_count > 0 and "attachments" not in input_keys:
+        missing_public_summary_fields.append("attachments_input_key")
+    if unsafe_input_keys:
+        missing_public_summary_fields.append("unsafe_input_keys")
     if memory_policy_source is None:
         missing_public_summary_fields.append("memory_policy_source")
     if long_term_memory_read is None:
@@ -633,8 +652,7 @@ def _context_projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any
         and not missing_public_summary_fields
         else "context_snapshot_public_projection_followup_required"
     )
-    counts = projection.get("referenced_material_counts")
-    return {
+    summary = {
         "status": status,
         "referenced_material_counts": deepcopy(counts) if isinstance(counts, dict) else {},
         "raw_material_id_fields_present": raw_material_id_fields_present
@@ -649,6 +667,11 @@ def _context_projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any
         "context_pack_generated_at_present": generated_at_present,
         "missing_public_summary_fields": missing_public_summary_fields,
     }
+    if unsafe_input_keys:
+        summary["unsafe_input_keys"] = unsafe_input_keys
+    if invalid_count_fields:
+        summary["invalid_referenced_material_count_fields"] = sorted(invalid_count_fields)
+    return summary
 
 
 def _auth_rbac_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
