@@ -658,6 +658,61 @@ def test_foundation_alpha_readiness_accepts_governance_runtime_smoke_for_same_ru
     ]
 
 
+def test_foundation_alpha_readiness_removes_signed_skill_followup_when_release_evidence_gap_is_closed(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    smoke_path, auth_path = _write_release_evidence_pair(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image="ai-platform:a3f1d73-foundation-alpha-poc",
+    )
+    _write_governance_evidence(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image="ai-platform:a3f1d73-foundation-alpha-poc",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: CURRENT_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        lambda: {
+            "status": "verified_packaged_release_followup_open",
+            "open_gap_count": 0,
+            "blockers": [],
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_governance_summary",
+        lambda _settings: {
+            "governance_readiness_status": "partial_blocked",
+            "ordinary_user_policy": "fail_closed_until_projection_mapping_and_acceptance_pass",
+            "open_gap_count": 1,
+            "open_gaps": ["admin_skill_release_dashboard_211_acceptance"],
+        },
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    g6_followups = readiness["domains"]["g6_poc_governance"]["open_followups"]
+    assert g6_followups == []
+    assert "signed_skill_package_or_sbom_review_evidence" not in g6_followups
+    assert "signed_skill_package_or_sbom_review_evidence" not in readiness["decision"]["stage_acceptance_blockers"]
+
+
 def test_foundation_alpha_readiness_keeps_governance_runtime_blocker_without_valid_smoke(
     monkeypatch,
     tmp_path,

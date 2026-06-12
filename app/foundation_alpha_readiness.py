@@ -1082,7 +1082,34 @@ def _build_governance_summary(settings: object | None) -> dict[str, Any]:
         "governance_readiness_status": governance["status"],
         "ordinary_user_policy": governance["ordinary_user_policy"],
         "open_gap_count": len(governance["open_gaps"]),
+        "open_gaps": [
+            item
+            for item in governance["open_gaps"]
+            if isinstance(item, str) and item.strip()
+        ],
     }
+
+
+def _g6_open_followups(
+    governance_summary: dict[str, Any],
+    *,
+    governance_runtime_smoke_verified: bool,
+) -> list[str]:
+    followups: list[str] = []
+    if not governance_runtime_smoke_verified:
+        followups.append("runtime_admin_dashboard_acceptance_for_governance")
+    for gap in governance_summary.get("open_gaps", []):
+        if not isinstance(gap, str) or not gap.strip():
+            continue
+        if gap == "signed_skill_package_or_sbom_release_gate":
+            followups.append("signed_skill_package_or_sbom_review_evidence")
+    if (
+        "open_gaps" not in governance_summary
+        and governance_summary.get("open_gap_count")
+        and "signed_skill_package_or_sbom_review_evidence" not in followups
+    ):
+        followups.append("signed_skill_package_or_sbom_review_evidence")
+    return list(dict.fromkeys(followups))
 
 
 def _build_observability_summary(
@@ -1302,9 +1329,10 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             else "reviewed_historical_runtime_evidence"
         )
     )
-    g6_open_followups = ["signed_skill_package_or_sbom_review_evidence"]
-    if not governance_runtime_smoke_verified:
-        g6_open_followups.insert(0, "runtime_admin_dashboard_acceptance_for_governance")
+    g6_open_followups = _g6_open_followups(
+        governance_summary,
+        governance_runtime_smoke_verified=governance_runtime_smoke_verified,
+    )
     g9_open_followups = [
         "g9_runtime_export_and_retention_acceptance",
         "alert_delivery_and_trace_export_211_acceptance",
