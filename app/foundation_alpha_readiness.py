@@ -1080,6 +1080,7 @@ def _operator_context(
     *,
     context_projection_verified: bool = True,
     stage_acceptance_status: str,
+    stage_acceptance_blockers: list[str] | None = None,
     governance_runtime_smoke_verified: bool = False,
     release_evidence_runtime_acceptance_verified: bool = False,
     alert_trace_export_runtime_acceptance_verified: bool = False,
@@ -1110,6 +1111,9 @@ def _operator_context(
         next_recommended_slices = [
             item for item in next_recommended_slices if item != "packaged_frontend_image_release_acceptance"
         ]
+    for blocker in reversed(stage_acceptance_blockers or []):
+        if blocker not in next_recommended_slices:
+            next_recommended_slices.insert(0, blocker)
     return {
         "poc_scope": "foundation_alpha_controlled_internal_poc",
         "poc_loop_status": poc_loop_status,
@@ -1649,6 +1653,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             runtime_relation,
             context_projection_verified=context_projection_verified,
             stage_acceptance_status=stage_acceptance_status,
+            stage_acceptance_blockers=stage_acceptance_blockers,
             governance_runtime_smoke_verified=governance_runtime_smoke_verified,
             release_evidence_runtime_acceptance_verified=release_evidence_runtime_acceptance_verified,
             alert_trace_export_runtime_acceptance_verified=alert_trace_export_runtime_acceptance_verified,

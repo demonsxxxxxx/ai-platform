@@ -886,6 +886,10 @@ def test_foundation_alpha_readiness_accepts_governance_runtime_smoke_for_same_ru
     assert "g6_runtime_admin_dashboard_acceptance_for_governance" not in readiness["operator_context"][
         "next_recommended_slices"
     ]
+    assert (
+        "signed_skill_package_or_sbom_review_evidence"
+        in readiness["operator_context"]["next_recommended_slices"]
+    )
 
 
 def test_foundation_alpha_readiness_removes_signed_skill_followup_when_release_evidence_gap_is_closed(
@@ -1666,6 +1670,9 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
             "department_rollout",
         ],
         "next_recommended_slices": [
+            "signed_skill_package_or_sbom_review_evidence",
+            "ordinary_user_acceptance_for_quarantined_legacy_routes",
+            "g9_admin_runtime_observability_partial_followups_open",
             "packaged_frontend_image_release_acceptance",
             "broader_auth_session_rbac_tenant_redaction_regression",
         ],
