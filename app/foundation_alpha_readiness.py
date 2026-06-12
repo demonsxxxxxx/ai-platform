@@ -715,6 +715,8 @@ def _frontend_projection_audit_dependency_unavailable_summary(exc: BaseException
         "status": "dependency_unavailable",
         "ordinary_user_acceptance": "blocked_projection_audit_dependency_unavailable",
         "active_legacy_route_count": None,
+        "ordinary_user_reachable_legacy_route_count": None,
+        "permission_gated_active_legacy_route_count": None,
         "active_forbidden_projection_violation_count": None,
         "ci_verify_includes_projection_audit": False,
         "open_gap_count": 1,
@@ -730,6 +732,20 @@ def _frontend_projection_audit_summary(audit: dict[str, Any]) -> dict[str, Any]:
     )
     active_legacy_routes = active_route_inventory.get("legacy_route_policies")
     active_legacy_route_count = len(active_legacy_routes) if isinstance(active_legacy_routes, list) else None
+    ordinary_user_reachable_legacy_routes = active_route_inventory.get(
+        "ordinary_user_reachable_legacy_route_policies"
+    )
+    ordinary_user_reachable_legacy_route_count = (
+        len(ordinary_user_reachable_legacy_routes)
+        if isinstance(ordinary_user_reachable_legacy_routes, list)
+        else active_legacy_route_count
+    )
+    permission_gated_active_legacy_route_count = (
+        active_legacy_route_count - ordinary_user_reachable_legacy_route_count
+        if isinstance(active_legacy_route_count, int)
+        and isinstance(ordinary_user_reachable_legacy_route_count, int)
+        else None
+    )
     active_forbidden_terms = (
         active_entry.get("forbidden_projection_terms")
         if isinstance(active_entry.get("forbidden_projection_terms"), dict)
@@ -746,7 +762,7 @@ def _frontend_projection_audit_summary(audit: dict[str, Any]) -> dict[str, Any]:
     ]
     ordinary_user_accepted = (
         ci_verify_includes_projection_audit
-        and active_legacy_route_count == 0
+        and ordinary_user_reachable_legacy_route_count == 0
         and active_forbidden_violation_count == 0
         and audit.get("status") in {"pass", "pass_with_policy_gaps"}
     )
@@ -754,10 +770,16 @@ def _frontend_projection_audit_summary(audit: dict[str, Any]) -> dict[str, Any]:
         "status": audit.get("status"),
         "schema_version": audit.get("schema_version"),
         "frontend_path": audit.get("frontend_path"),
-        "ordinary_user_acceptance": "accepted_active_legacy_routes_clear"
-        if ordinary_user_accepted
-        else "blocked_active_legacy_routes_or_projection_audit",
+        "ordinary_user_acceptance": (
+            "accepted_active_legacy_routes_clear"
+            if ordinary_user_accepted and active_legacy_route_count == 0
+            else "accepted_active_legacy_routes_permission_gated"
+            if ordinary_user_accepted
+            else "blocked_active_legacy_routes_or_projection_audit"
+        ),
         "active_legacy_route_count": active_legacy_route_count,
+        "ordinary_user_reachable_legacy_route_count": ordinary_user_reachable_legacy_route_count,
+        "permission_gated_active_legacy_route_count": permission_gated_active_legacy_route_count,
         "active_forbidden_projection_violation_count": active_forbidden_violation_count,
         "ci_verify_includes_projection_audit": ci_verify_includes_projection_audit,
         "open_gap_count": len(open_gaps),
@@ -1293,7 +1315,10 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     frontend_open_followups = []
     if (
         frontend_projection_audit_summary.get("ordinary_user_acceptance")
-        != "accepted_active_legacy_routes_clear"
+        not in {
+            "accepted_active_legacy_routes_clear",
+            "accepted_active_legacy_routes_permission_gated",
+        }
     ):
         frontend_open_followups.append("ordinary_user_acceptance_for_quarantined_legacy_routes")
     if not frontend_packaged_runtime_smoke_verified:
@@ -1554,6 +1579,7 @@ def render_foundation_alpha_readiness_markdown(readiness: dict[str, Any]) -> str
                     f"status={frontend_projection_audit.get('status')}, "
                     f"ordinary_user={frontend_projection_audit.get('ordinary_user_acceptance')}, "
                     f"active_legacy_routes={frontend_projection_audit.get('active_legacy_route_count')}, "
+                    f"ordinary_reachable_legacy_routes={frontend_projection_audit.get('ordinary_user_reachable_legacy_route_count')}, "
                     f"active_forbidden_terms={frontend_projection_audit.get('active_forbidden_projection_violation_count')}, "
                     f"ci_projection_audit={frontend_projection_audit.get('ci_verify_includes_projection_audit')}`\n\n"
                 )

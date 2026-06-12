@@ -67,6 +67,8 @@ export function ChatAppContent({
   const [searchParams, setSearchParams] = useSearchParams();
   const { enableSkills, availableModels, defaultModel } = useSettingsContext();
   const { hasPermission, isAuthenticated } = useAuth();
+  const canReadSkills = hasPermission(Permission.SKILL_READ);
+  const canReadMcpTools = hasPermission(Permission.MCP_READ);
 
   const { isPageDragging, pageDragAttachments, setPageDragAttachments } =
     useDragAndDrop();
@@ -85,7 +87,7 @@ export function ChatAppContent({
     totalCount: totalToolsCount,
     getDisabledToolNames,
     refreshToolsForAgent,
-  } = useTools();
+  } = useTools({ enabled: canReadMcpTools });
 
   const {
     skills,
@@ -93,7 +95,7 @@ export function ChatAppContent({
     pendingSkillNames,
     isMutating: skillsMutating,
     fetchSkills,
-  } = useSkills({ enabled: enableSkills });
+  } = useSkills({ enabled: enableSkills && canReadSkills });
 
   const canReadPersonaPresets = hasPermission(Permission.PERSONA_PRESET_READ);
   const canManagePersonaPresets =

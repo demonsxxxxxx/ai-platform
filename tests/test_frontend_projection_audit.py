@@ -57,6 +57,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         "same_origin_compat_routes",
         "legacy_policy_required_routes",
         "legacy_route_policies",
+        "ordinary_user_reachable_legacy_route_policies",
     }
     active_policy_routes = {
         route["route_prefix"]: route
@@ -67,6 +68,11 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     assert "/api/agent/models" not in active_policy_routes
     assert "/api/channels" not in active_policy_routes
     assert active_policy_routes["/api/mcp"]["route_scope"] == "active_browser_entry"
+    assert active_route_inventory["ordinary_user_reachable_legacy_route_policies"] == []
+    assert all(
+        route["active_browser_access"] == "permission_gated"
+        for route in active_route_inventory["legacy_route_policies"]
+    )
     policy_routes = {
         route["route_prefix"]: route
         for route in audit["route_inventory"]["legacy_route_policies"]
@@ -81,6 +87,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     )
     assert policy_routes["/api/mcp"]["governance_gate"] == "G6"
     assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
+    assert "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap" not in audit["open_gaps"]
     assert "legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
     assert "quarantined_legacy_sources_need_ai_platform_projection_remap" in audit["open_gaps"]
     gap_details = {item["gap"]: item for item in audit["open_gap_details"]}
@@ -231,6 +238,319 @@ def test_frontend_projection_audit_treats_model_public_routes_as_safe_projection
     assert audit["status"] == "pass"
     assert audit["route_inventory"]["legacy_policy_required_routes"] == []
     assert audit["active_browser_entry"]["route_inventory"]["legacy_route_policies"] == []
+
+
+def test_frontend_projection_audit_tracks_permission_gated_active_legacy_routes(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src"
+    services_root = source_root / "services" / "api"
+    hooks_root = source_root / "hooks"
+    services_root.mkdir(parents=True)
+    hooks_root.mkdir(parents=True)
+    (source_root / "main.tsx").write_text('import "./App";\n', encoding="utf-8")
+    (source_root / "App.tsx").write_text(
+        'import { useSkills } from "./hooks/useSkills";\n'
+        'import { legacySettingsApi } from "./services/api/settings";\n'
+        "function App() {\n"
+        "  const canReadSkills = hasPermission(Permission.SKILL_READ);\n"
+        "  useSkills({ enabled: canReadSkills });\n"
+        "  legacySettingsApi.load();\n"
+        "  return null;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (hooks_root / "useSkills.ts").write_text(
+        'import { skillApi } from "../services/api/skill";\n'
+        "export function useSkills(options: { enabled?: boolean }) {\n"
+        "  if (options.enabled) void skillApi.list();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (services_root / "skill.ts").write_text(
+        "export const skillApi = { list: () => fetch('/api/skills') };\n",
+        encoding="utf-8",
+    )
+    (services_root / "settings.ts").write_text(
+        "export const legacySettingsApi = { load: () => fetch('/api/settings') };\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+    active_inventory = audit["active_browser_entry"]["route_inventory"]
+    active_routes = {
+        route["route_prefix"]: route
+        for route in active_inventory["legacy_route_policies"]
+    }
+    ordinary_routes = {
+        route["route_prefix"]: route
+        for route in active_inventory["ordinary_user_reachable_legacy_route_policies"]
+    }
+
+    assert active_routes["/api/skills"]["active_browser_access"] == "permission_gated"
+    assert active_routes["/api/skills"]["required_permissions"] == ["SKILL_READ"]
+    assert active_routes["/api/settings"]["active_browser_access"] == "ordinary_user_reachable"
+    assert set(ordinary_routes) == {"/api/settings"}
+    assert "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
+
+
+def test_frontend_projection_audit_tracks_permission_gated_enabled_expressions(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src"
+    services_root = source_root / "services" / "api"
+    hooks_root = source_root / "hooks"
+    services_root.mkdir(parents=True)
+    hooks_root.mkdir(parents=True)
+    (source_root / "main.tsx").write_text('import "./App";\n', encoding="utf-8")
+    (source_root / "App.tsx").write_text(
+        'import { useSkills } from "./hooks/useSkills";\n'
+        "function App() {\n"
+        "  const canReadSkills = hasPermission(Permission.SKILL_READ);\n"
+        "  useSkills({ enabled: enableSkills && canReadSkills });\n"
+        "  return null;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (hooks_root / "useSkills.ts").write_text(
+        'import { skillApi } from "../services/api/skill";\n'
+        "export function useSkills(options: { enabled?: boolean }) {\n"
+        "  if (options.enabled) void skillApi.list();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (services_root / "skill.ts").write_text(
+        "export const skillApi = { list: () => fetch('/api/skills') };\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+    active_routes = {
+        route["route_prefix"]: route
+        for route in audit["active_browser_entry"]["route_inventory"]["legacy_route_policies"]
+    }
+
+    assert active_routes["/api/skills"]["active_browser_access"] == "permission_gated"
+    assert active_routes["/api/skills"]["required_permissions"] == ["SKILL_READ"]
+
+
+def test_frontend_projection_audit_treats_baseline_user_permissions_as_ordinary_reachable(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src"
+    services_root = source_root / "services" / "api"
+    services_root.mkdir(parents=True)
+    (source_root / "main.tsx").write_text('import "./App";\n', encoding="utf-8")
+    (source_root / "App.tsx").write_text(
+        'const MemoryPanel = lazy(() => import("./MemoryPanel"));\n'
+        "function App() {\n"
+        "  return (\n"
+        "    <ProtectedRoute permissions={[Permission.CHAT_READ, Permission.SESSION_READ]}>\n"
+        "      <MemoryPanel />\n"
+        "    </ProtectedRoute>\n"
+        "  );\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (source_root / "MemoryPanel.tsx").write_text(
+        'import { memoryApi } from "./services/api/memory";\n'
+        "export default function MemoryPanel() { memoryApi.list(); return null; }\n",
+        encoding="utf-8",
+    )
+    (services_root / "memory.ts").write_text(
+        "export const memoryApi = { list: () => fetch('/api/memory') };\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+    active_routes = {
+        route["route_prefix"]: route
+        for route in audit["active_browser_entry"]["route_inventory"]["legacy_route_policies"]
+    }
+    ordinary_routes = {
+        route["route_prefix"]: route
+        for route in audit["active_browser_entry"]["route_inventory"][
+            "ordinary_user_reachable_legacy_route_policies"
+        ]
+    }
+
+    assert active_routes["/api/memory"]["required_permissions"] == ["CHAT_READ", "SESSION_READ"]
+    assert active_routes["/api/memory"]["active_browser_access"] == "ordinary_user_reachable"
+    assert set(ordinary_routes) == {"/api/memory"}
+
+
+def test_frontend_projection_audit_ignores_route_like_relative_import_specifiers(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src"
+    services_root = source_root / "services" / "api"
+    services_root.mkdir(parents=True)
+    (source_root / "main.tsx").write_text('import "./App";\n', encoding="utf-8")
+    (source_root / "App.tsx").write_text(
+        'import {\n'
+        "  fetchMemoryPolicy,\n"
+        '} from "./services/api/memory";\n'
+        "function App() {\n"
+        "  void fetchMemoryPolicy();\n"
+        "  return null;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (services_root / "memory.ts").write_text(
+        "export function fetchMemoryPolicy() {\n"
+        "  return fetch('/api/ai/memory/policy');\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+
+    assert audit["active_browser_entry"]["route_inventory"]["legacy_route_policies"] == []
+
+
+def test_frontend_projection_audit_tracks_protected_route_lazy_panel_permissions(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src"
+    services_root = source_root / "services" / "api"
+    panels_root = source_root / "components" / "panels"
+    services_root.mkdir(parents=True)
+    panels_root.mkdir(parents=True)
+    (source_root / "main.tsx").write_text('import "./App";\n', encoding="utf-8")
+    (source_root / "App.tsx").write_text(
+        'const SettingsPanel = lazy(() => import("./components/panels/SettingsPanel"));\n'
+        "function App() {\n"
+        "  return <ProtectedRoute permissions={[Permission.SETTINGS_MANAGE]}><SettingsPanel /></ProtectedRoute>;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (panels_root / "SettingsPanel.tsx").write_text(
+        'import { settingsApi } from "../../services/api/settings";\n'
+        "export default function SettingsPanel() { settingsApi.list(); return null; }\n",
+        encoding="utf-8",
+    )
+    (services_root / "settings.ts").write_text(
+        "export const settingsApi = { list: () => fetch('/api/settings') };\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+    active_routes = {
+        route["route_prefix"]: route
+        for route in audit["active_browser_entry"]["route_inventory"]["legacy_route_policies"]
+    }
+
+    assert active_routes["/api/settings"]["active_browser_access"] == "permission_gated"
+    assert active_routes["/api/settings"]["required_permissions"] == ["SETTINGS_MANAGE"]
+    assert audit["active_browser_entry"]["route_inventory"]["ordinary_user_reachable_legacy_route_policies"] == []
+
+
+def test_frontend_projection_audit_tracks_protected_active_tab_panel_permissions(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src"
+    app_content_root = source_root / "components" / "layout" / "AppContent"
+    panels_root = source_root / "components" / "panels"
+    services_root = source_root / "services" / "api"
+    app_content_root.mkdir(parents=True)
+    panels_root.mkdir(parents=True)
+    services_root.mkdir(parents=True)
+    (source_root / "main.tsx").write_text('import "./App";\n', encoding="utf-8")
+    (source_root / "App.tsx").write_text(
+        'import { AppContent } from "./components/layout/AppContent";\n'
+        "function SettingsPage() { return <AppContent activeTab=\"settings\" />; }\n"
+        "function App() {\n"
+        "  return <ProtectedRoute permissions={[Permission.SETTINGS_MANAGE]}><SettingsPage /></ProtectedRoute>;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (app_content_root / "index.tsx").write_text(
+        'import { TabContent } from "./TabContent";\n'
+        "export function AppContent({ activeTab }: { activeTab: string }) { return <TabContent activeTab={activeTab} />; }\n",
+        encoding="utf-8",
+    )
+    (app_content_root / "TabContent.tsx").write_text(
+        'const SettingsPanel = lazy(() => import("../../panels/SettingsPanel"));\n'
+        "const panelMap = { settings: SettingsPanel };\n"
+        "export function TabContent({ activeTab }: { activeTab: string }) {\n"
+        "  const Panel = panelMap[activeTab];\n"
+        "  return <Panel />;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (panels_root / "SettingsPanel.tsx").write_text(
+        'import { settingsApi } from "../../services/api/settings";\n'
+        "export default function SettingsPanel() { settingsApi.list(); return null; }\n",
+        encoding="utf-8",
+    )
+    (services_root / "settings.ts").write_text(
+        "export const settingsApi = { list: () => fetch('/api/settings') };\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+    active_routes = {
+        route["route_prefix"]: route
+        for route in audit["active_browser_entry"]["route_inventory"]["legacy_route_policies"]
+    }
+
+    assert active_routes["/api/settings"]["active_browser_access"] == "permission_gated"
+    assert active_routes["/api/settings"]["required_permissions"] == ["SETTINGS_MANAGE"]
+    assert audit["active_browser_entry"]["route_inventory"]["ordinary_user_reachable_legacy_route_policies"] == []
 
 
 def test_frontend_projection_audit_follows_re_exported_active_modules(tmp_path):

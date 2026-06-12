@@ -465,7 +465,12 @@ function App() {
             <Route
               path="/agents"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute
+                  permissions={[Permission.AGENT_ADMIN]}
+                  redirectTo="/chat"
+                  showToast
+                  toastMessage={t("errors.noPermission")}
+                >
                   <AgentsPage />
                 </ProtectedRoute>
               }
@@ -481,7 +486,16 @@ function App() {
             <Route
               path="/persona"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute
+                  permissions={[
+                    Permission.PERSONA_PRESET_READ,
+                    Permission.PERSONA_PRESET_WRITE,
+                    Permission.PERSONA_PRESET_ADMIN,
+                  ]}
+                  redirectTo="/chat"
+                  showToast
+                  toastMessage={t("errors.noPermission")}
+                >
                   <PersonaPage />
                 </ProtectedRoute>
               }
@@ -510,7 +524,15 @@ function App() {
             <Route
               path="/memory"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute
+                  permissions={[
+                    Permission.CHAT_READ,
+                    Permission.SESSION_READ,
+                  ]}
+                  redirectTo="/chat"
+                  showToast
+                  toastMessage={t("errors.noPermission")}
+                >
                   <MemoryPage />
                 </ProtectedRoute>
               }

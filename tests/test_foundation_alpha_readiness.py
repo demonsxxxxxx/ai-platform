@@ -1713,6 +1713,73 @@ def test_foundation_alpha_readiness_accepts_clean_ordinary_user_frontend_project
     )
 
 
+def test_foundation_alpha_readiness_accepts_permission_gated_active_legacy_routes(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    image = "ai-platform:a3f1d73-foundation-alpha-poc"
+    smoke_path, auth_path = _write_release_evidence_pair(evidence_root, CURRENT_SOURCE_SHA, image=image)
+    _write_frontend_packaged_runtime_smoke(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image=image,
+        runtime_host="211",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: CURRENT_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        lambda: {
+            "status": "verified_packaged_release_followup_open",
+            "open_gap_count": 0,
+            "blockers": [],
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_projection_audit_summary",
+        lambda: {
+            "status": "pass_with_policy_gaps",
+            "ordinary_user_acceptance": "accepted_active_legacy_routes_permission_gated",
+            "active_legacy_route_count": 14,
+            "ordinary_user_reachable_legacy_route_count": 0,
+            "permission_gated_active_legacy_route_count": 14,
+            "active_forbidden_projection_violation_count": 0,
+            "ci_verify_includes_projection_audit": True,
+            "open_gap_count": 2,
+            "open_gaps": [
+                "legacy_routes_need_policy_enforcement_or_ai_platform_remap",
+                "quarantined_legacy_sources_need_ai_platform_projection_remap",
+            ],
+        },
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    frontend = readiness["domains"]["frontend_poc"]
+    assert frontend["evidence"]["frontend_projection_audit"]["ordinary_user_acceptance"] == (
+        "accepted_active_legacy_routes_permission_gated"
+    )
+    assert "ordinary_user_acceptance_for_quarantined_legacy_routes" not in frontend["open_followups"]
+    assert "ordinary_user_acceptance_for_quarantined_legacy_routes" not in readiness["open_followups"]
+    assert (
+        "ordinary_user_acceptance_for_quarantined_legacy_routes"
+        not in readiness["decision"]["stage_acceptance_blockers"]
+    )
+
+
 def test_foundation_alpha_readiness_keeps_packaged_frontend_blocker_without_211_smoke(
     monkeypatch,
     tmp_path,
@@ -2021,6 +2088,8 @@ def test_foundation_alpha_readiness_frontend_projection_audit_fails_closed_when_
         "status": "dependency_unavailable",
         "ordinary_user_acceptance": "blocked_projection_audit_dependency_unavailable",
         "active_legacy_route_count": None,
+        "ordinary_user_reachable_legacy_route_count": None,
+        "permission_gated_active_legacy_route_count": None,
         "active_forbidden_projection_violation_count": None,
         "ci_verify_includes_projection_audit": False,
         "open_gap_count": 1,

@@ -4,7 +4,8 @@ import type { ToolState, ToolCategory } from "../types";
 
 const API_BASE = "/api";
 
-export function useTools() {
+export function useTools(options?: { enabled?: boolean }) {
+  const hookEnabled = options?.enabled !== false;
   const [tools, setTools] = useState<ToolState[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -13,6 +14,7 @@ export function useTools() {
   // 切换 MCP 工具的启用状态（调用 MCP API）
   const toggleMcpTool = useCallback(
     async (toolName: string, serverName: string, enabled: boolean) => {
+      if (!hookEnabled) return;
       try {
         const baseName = toolName.includes(":")
           ? toolName.split(":")[1]
@@ -32,11 +34,17 @@ export function useTools() {
         throw err;
       }
     },
-    [],
+    [hookEnabled],
   );
 
   // 获取工具列表
   const fetchTools = useCallback(async () => {
+    if (!hookEnabled) {
+      setTools([]);
+      setIsLoading(false);
+      setError(null);
+      return;
+    }
     setIsLoading(true);
     setError(null);
     try {
@@ -47,7 +55,7 @@ export function useTools() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [hookEnabled]);
 
   // 切换单个工具
   const toggleTool = useCallback(
