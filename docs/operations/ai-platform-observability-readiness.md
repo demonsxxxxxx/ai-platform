@@ -233,10 +233,14 @@ acceptance verifier for the same evidence tree. It emits only the safe
 `ai-platform.release-evidence-runtime-acceptance.v1` summary: reviewed-index
 counts, blocked-entry count, retention-policy status, and `does_not_close_g9`.
 `observability_readiness` can accept that summary to remove the two nested
-release-evidence runtime gaps, but Foundation Alpha readiness consumes it only
-after a reviewed, redacted 211 runtime evidence entry records the same runtime
-subject. The 2026-06-12 `b96d02e` evidence entry records that reviewed 211
-runtime acceptance, so Foundation Alpha readiness removes the narrower
+release-evidence runtime gaps. The standalone
+`tools/observability_readiness.py` entry point now loads the newest reviewed,
+redacted release-evidence runtime acceptance summary from `docs/release-evidence`
+by default; it still emits only the safe summary, not raw evidence refs or
+runtime payloads. Foundation Alpha readiness consumes the same class of evidence
+only after a reviewed, redacted 211 runtime evidence entry records the same
+runtime subject. The 2026-06-12 `b96d02e` evidence entry records that reviewed
+211 runtime acceptance, so Foundation Alpha readiness removes the narrower
 `g9_runtime_export_and_retention_acceptance` blocker for that runtime subject.
 G9 remains partial because alert delivery, SLO calibration, trace/audit export,
 dashboard, recorded capacity, model-gateway, golden-set, and taxonomy

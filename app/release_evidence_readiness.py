@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 from app.release_evidence_export_acceptance import build_release_evidence_export_acceptance
@@ -85,6 +87,8 @@ _OPEN_GAPS = [
     "release_evidence_runtime_export_acceptance",
     "release_evidence_retention_runtime_acceptance",
 ]
+_ROOT = Path(__file__).resolve().parents[1]
+_DEFAULT_EVIDENCE_ROOT = _ROOT / "docs/release-evidence"
 
 
 def _runtime_acceptance_is_valid(runtime_acceptance: dict[str, Any]) -> bool:
@@ -133,6 +137,65 @@ def _runtime_acceptance_summary(runtime_acceptance: dict[str, Any]) -> dict[str,
         ),
         "does_not_close_g9": runtime_acceptance.get("does_not_close_g9"),
     }
+
+
+def load_latest_reviewed_runtime_acceptance(
+    evidence_root: Path | None = None,
+) -> dict[str, Any] | None:
+    """Return the newest reviewed, redacted release-evidence runtime acceptance summary."""
+    root = evidence_root or _DEFAULT_EVIDENCE_ROOT
+    if not root.is_dir():
+        return None
+
+    candidates: list[tuple[tuple[str, str], dict[str, Any]]] = []
+    for path in sorted(root.rglob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        evidence_ref = payload.get("evidence_ref")
+        runtime_checks = evidence_ref.get("runtime_checks") if isinstance(evidence_ref, dict) else {}
+        acceptance = (
+            runtime_checks.get("release_evidence_runtime_acceptance")
+            if isinstance(runtime_checks, dict)
+            else None
+        )
+        if not isinstance(acceptance, dict):
+            continue
+        if not _reviewed_runtime_acceptance_entry_is_valid(payload, acceptance):
+            continue
+        sort_key = (str(payload.get("captured_at", "")), path.as_posix())
+        candidates.append((sort_key, _runtime_acceptance_summary(acceptance)))
+
+    if not candidates:
+        return None
+    _, acceptance = max(candidates, key=lambda item: item[0])
+    return acceptance
+
+
+def _reviewed_runtime_acceptance_entry_is_valid(
+    payload: dict[str, Any],
+    acceptance: dict[str, Any],
+) -> bool:
+    evidence_ref = payload.get("evidence_ref")
+    if not isinstance(evidence_ref, dict):
+        return False
+    commit_sha = payload.get("commit_sha")
+    return (
+        payload.get("schema_version") == ENTRY_SCHEMA_VERSION
+        and payload.get("artifact_kind") == "211_runtime_smoke"
+        and isinstance(commit_sha, str)
+        and commit_sha
+        and payload.get("runtime_subject_commit_sha") == commit_sha
+        and payload.get("redaction_scan_status") == "passed"
+        and payload.get("review_status") in {"reviewed", "accepted"}
+        and evidence_ref.get("verifier") == "tools/verify_release_evidence_runtime_acceptance.py"
+        and evidence_ref.get("schema_version") == "ai-platform.release-evidence-runtime-acceptance.v1"
+        and evidence_ref.get("result") == "ok:true"
+        and _runtime_acceptance_is_valid(acceptance)
+    )
 
 
 def build_release_evidence_readiness(
