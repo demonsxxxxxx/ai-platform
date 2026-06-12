@@ -249,6 +249,10 @@ def test_foundation_alpha_readiness_selects_current_source_release_evidence_pair
         "status": "runtime_current_for_source_tree",
     }
     assert readiness["decision"]["current_source_verified_by_running_runtime"] is True
+    assert readiness["current_source_verified_by_running_runtime"] is True
+    assert readiness["controlled_poc_loop_verified_for_current_source"] is True
+    assert readiness["runtime_relevant_source_verified_by_running_runtime"] is True
+    assert readiness["foundation_alpha_stage_complete"] is False
     assert CURRENT_SOURCE_SHA in readiness["evidence_entries"]["poc_smoke"]
     assert CURRENT_SOURCE_SHA in readiness["evidence_entries"]["auth_rbac_smoke"]
     assert RUNTIME_SUBJECT_SHA not in readiness["evidence_entries"]["poc_smoke"]
@@ -1451,6 +1455,16 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeyp
     payload = json.loads(json_result.stdout)
     assert payload["schema_version"] == "ai-platform.foundation-alpha-poc-readiness.v1"
     assert payload["decision"]["reviewed_poc_loop_evidence_available"] is True
+    assert payload["current_source_verified_by_running_runtime"] == payload["decision"]["current_source_verified_by_running_runtime"]
+    assert (
+        payload["runtime_relevant_source_verified_by_running_runtime"]
+        == payload["decision"]["runtime_relevant_source_verified_by_running_runtime"]
+    )
+    assert (
+        payload["controlled_poc_loop_verified_for_current_source"]
+        == payload["decision"]["controlled_poc_loop_verified_for_current_source"]
+    )
+    assert payload["foundation_alpha_stage_complete"] == payload["decision"]["foundation_alpha_stage_complete"]
     assert "runtime_image" not in payload
     assert payload["verified_runtime_subject"]["evidence_scope"] in {
         "current_source_tree",

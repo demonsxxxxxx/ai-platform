@@ -999,6 +999,25 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     )
     poc_loop_verified_for_runtime_relevant_source = runtime_relevant_source_matches and context_projection_verified
     poc_loop_verified_for_current_source = runtime_matches_source_tree and context_projection_verified
+    decision_summary = {
+        "reviewed_poc_loop_evidence_available": True,
+        "controlled_poc_loop_verified_for_current_source": poc_loop_verified_for_current_source,
+        "controlled_core_poc_loop_verified_for_runtime_relevant_source": (
+            poc_loop_verified_for_runtime_relevant_source
+        ),
+        "runtime_relevant_source_verified_by_running_runtime": runtime_relevant_source_matches,
+        "current_source_verified_by_running_runtime": runtime_matches_source_tree,
+        "current_source_exact_runtime_commit_match": runtime_matches_source_tree,
+        "runtime_rollout_required_for_current_source": not runtime_relevant_source_matches,
+        "foundation_alpha_stage_complete": stage_acceptance_status == "foundation_alpha_stage_complete",
+        "foundation_alpha_stage_status": stage_acceptance_status,
+        "stage_acceptance_blockers": stage_acceptance_blockers,
+        "can_enter_next_stage_without_restrictions": False,
+        "production_claim_allowed": False,
+        "ordinary_user_multi_agent_allowed": False,
+        "docker_sandbox_hardened_claim_allowed": False,
+        "capacity_default_increase_allowed": False,
+    }
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -1007,6 +1026,20 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         "source_tree_commit_sha": source_tree_commit,
         "source_tree_dirty": source_tree_dirty,
         "runtime_subject_commit_sha": runtime_subject_commit,
+        "current_source_verified_by_running_runtime": decision_summary[
+            "current_source_verified_by_running_runtime"
+        ],
+        "runtime_relevant_source_verified_by_running_runtime": decision_summary[
+            "runtime_relevant_source_verified_by_running_runtime"
+        ],
+        "controlled_poc_loop_verified_for_current_source": decision_summary[
+            "controlled_poc_loop_verified_for_current_source"
+        ],
+        "controlled_core_poc_loop_verified_for_runtime_relevant_source": decision_summary[
+            "controlled_core_poc_loop_verified_for_runtime_relevant_source"
+        ],
+        "foundation_alpha_stage_complete": decision_summary["foundation_alpha_stage_complete"],
+        "foundation_alpha_stage_status": decision_summary["foundation_alpha_stage_status"],
         "runtime_source_relation": runtime_relation,
         "verified_runtime_subject": _verified_runtime_subject(smoke, evidence_scope),
         "evidence_entries": {
@@ -1018,25 +1051,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             context_projection_verified=context_projection_verified,
             stage_acceptance_status=stage_acceptance_status,
         ),
-        "decision": {
-            "reviewed_poc_loop_evidence_available": True,
-            "controlled_poc_loop_verified_for_current_source": poc_loop_verified_for_current_source,
-            "controlled_core_poc_loop_verified_for_runtime_relevant_source": (
-                poc_loop_verified_for_runtime_relevant_source
-            ),
-            "runtime_relevant_source_verified_by_running_runtime": runtime_relevant_source_matches,
-            "current_source_verified_by_running_runtime": runtime_matches_source_tree,
-            "current_source_exact_runtime_commit_match": runtime_matches_source_tree,
-            "runtime_rollout_required_for_current_source": not runtime_relevant_source_matches,
-            "foundation_alpha_stage_complete": stage_acceptance_status == "foundation_alpha_stage_complete",
-            "foundation_alpha_stage_status": stage_acceptance_status,
-            "stage_acceptance_blockers": stage_acceptance_blockers,
-            "can_enter_next_stage_without_restrictions": False,
-            "production_claim_allowed": False,
-            "ordinary_user_multi_agent_allowed": False,
-            "docker_sandbox_hardened_claim_allowed": False,
-            "capacity_default_increase_allowed": False,
-        },
+        "decision": decision_summary,
         "domains": domains,
         "open_followups": list(_OPEN_FOLLOWUPS),
         "evidence_policy": "source_docs_tests_211_smoke_and_release_evidence_required_before_stage_closure",

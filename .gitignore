@@ -6,6 +6,7 @@ __pycache__/
 .pytest-tmp-*/
 .codex-tmp/
 .tmp/
+dirty-work/
 ai-platform-*.tar
 .ai-platform-source-revision
 .ai-platform-source-snapshot.json
