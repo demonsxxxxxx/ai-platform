@@ -68,6 +68,7 @@ _STAGE_BLOCKING_DOMAIN_STATUSES = {
     "dependency_unavailable",
     "partial_followups_open",
 }
+_DENIED_HTTP_STATUSES = {401, 403, 404}
 
 
 class _ReadinessDefaultSettings:
@@ -627,6 +628,27 @@ def _safe_runtime_check(value: Any) -> dict[str, Any]:
     return deepcopy(value) if isinstance(value, dict) else {}
 
 
+def _status_values_from_check(check: dict[str, Any], summary_key: str, result_key: str) -> list[int]:
+    values = check.get(summary_key)
+    if isinstance(values, list):
+        return [item for item in values if type(item) is int]
+    results = check.get("results")
+    if not isinstance(results, list):
+        return []
+    statuses: list[int] = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        status = item.get(result_key)
+        if type(status) is int:
+            statuses.append(status)
+    return statuses
+
+
+def _all_denied(statuses: list[int]) -> bool:
+    return bool(statuses) and all(status in _DENIED_HTTP_STATUSES for status in statuses)
+
+
 def _context_material_count(value: Any) -> tuple[int, bool]:
     if type(value) is not int:
         return 0, False
@@ -971,9 +993,52 @@ def _context_projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any
     return summary
 
 
-def _auth_rbac_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
+def _auth_rbac_summary(
+    runtime_checks: dict[str, Any],
+    artifact_checks: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     admin_runtime = _safe_runtime_check(runtime_checks.get("admin_runtime"))
     authenticated_auth_me = _safe_runtime_check(runtime_checks.get("authenticated_auth_me"))
+    artifact_checks = artifact_checks or runtime_checks
+    artifact_download = _safe_runtime_check(artifact_checks.get("artifact_download_isolation"))
+    artifact_preview = _safe_runtime_check(artifact_checks.get("artifact_preview_isolation"))
+    download_cross_user_statuses = _status_values_from_check(
+        artifact_download,
+        "cross_user_statuses",
+        "cross_user_status",
+    )
+    download_cross_tenant_statuses = _status_values_from_check(
+        artifact_download,
+        "cross_tenant_statuses",
+        "cross_tenant_status",
+    )
+    preview_cross_user_statuses = _status_values_from_check(
+        artifact_preview,
+        "cross_user_statuses",
+        "cross_user_status",
+    )
+    preview_cross_tenant_statuses = _status_values_from_check(
+        artifact_preview,
+        "cross_tenant_statuses",
+        "cross_tenant_status",
+    )
+    broader_regression_verified = (
+        _safe_runtime_check(runtime_checks.get("unauthenticated_auth_me")).get("status") == 401
+        and authenticated_auth_me.get("status") == 200
+        and authenticated_auth_me.get("tenant_matches_requested") is True
+        and authenticated_auth_me.get("user_matches_requested") is True
+        and authenticated_auth_me.get("forbidden_projection_terms_present") is False
+        and _safe_runtime_check(runtime_checks.get("invalid_gateway_secret_auth_me")).get("status") == 403
+        and _safe_runtime_check(runtime_checks.get("ordinary_admin_runtime")).get("status") == 403
+        and admin_runtime.get("status") == 200
+        and admin_runtime.get("required_sections_present") is True
+        and admin_runtime.get("tenant_matches_requested") is True
+        and admin_runtime.get("forbidden_projection_terms_present") is False
+        and _all_denied(download_cross_user_statuses)
+        and _all_denied(download_cross_tenant_statuses)
+        and _all_denied(preview_cross_user_statuses)
+        and _all_denied(preview_cross_tenant_statuses)
+    )
     return {
         "unauthenticated_auth_me_status": _safe_runtime_check(runtime_checks.get("unauthenticated_auth_me")).get(
             "status"
@@ -995,6 +1060,11 @@ def _auth_rbac_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
         "admin_required_sections_present": admin_runtime.get("required_sections_present"),
         "admin_tenant_matches_requested": admin_runtime.get("tenant_matches_requested"),
         "admin_forbidden_projection_terms_present": admin_runtime.get("forbidden_projection_terms_present"),
+        "artifact_download_cross_user_statuses": download_cross_user_statuses,
+        "artifact_download_cross_tenant_statuses": download_cross_tenant_statuses,
+        "artifact_preview_cross_user_statuses": preview_cross_user_statuses,
+        "artifact_preview_cross_tenant_statuses": preview_cross_tenant_statuses,
+        "broader_auth_session_rbac_tenant_redaction_regression_verified": broader_regression_verified,
     }
 
 
@@ -1106,6 +1176,7 @@ def _operator_context(
     release_evidence_runtime_acceptance_verified: bool = False,
     alert_trace_export_runtime_acceptance_verified: bool = False,
     frontend_packaged_runtime_smoke_verified: bool = False,
+    broader_auth_regression_verified: bool = False,
 ) -> dict[str, Any]:
     poc_loop_status = _poc_loop_status(runtime_relation)
     if runtime_relation.get("runtime_relevant_source_matches") and not context_projection_verified:
@@ -1131,6 +1202,12 @@ def _operator_context(
     if frontend_packaged_runtime_smoke_verified:
         next_recommended_slices = [
             item for item in next_recommended_slices if item != "packaged_frontend_image_release_acceptance"
+        ]
+    if broader_auth_regression_verified:
+        next_recommended_slices = [
+            item
+            for item in next_recommended_slices
+            if item != "broader_auth_session_rbac_tenant_redaction_regression"
         ]
     next_recommended_slices = [
         item
@@ -1384,6 +1461,10 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     auth_rbac = _load_json(auth_rbac_evidence_path)
     smoke_checks = smoke["evidence_ref"]["runtime_checks"]
     auth_checks = auth_rbac["evidence_ref"]["runtime_checks"]
+    auth_rbac_summary = _auth_rbac_summary(auth_checks, artifact_checks=smoke_checks)
+    broader_auth_regression_verified = bool(
+        auth_rbac_summary.get("broader_auth_session_rbac_tenant_redaction_regression_verified")
+    )
     runtime_subject_commit = smoke["runtime_subject_commit_sha"]
     governance_runtime_evidence_path = _discover_governance_runtime_evidence(runtime_subject_commit)
     governance_runtime_payload = (
@@ -1519,10 +1600,12 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
                 "image": smoke["source_ref"]["image"],
                 "image_id": smoke["source_ref"]["image_id"],
                 "api_worker_label_revision": smoke["source_ref"]["image_labels"]["ai-platform.source-revision"],
-                "auth_rbac": _auth_rbac_summary(auth_checks),
+                "auth_rbac": auth_rbac_summary,
                 "repo_local_env_present": smoke["source_ref"]["repo_local_env_present"],
             },
-            "open_followups": [
+            "open_followups": []
+            if broader_auth_regression_verified
+            else [
                 "broader_auth_session_rbac_tenant_redaction_regression",
             ],
         },
@@ -1684,6 +1767,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             release_evidence_runtime_acceptance_verified=release_evidence_runtime_acceptance_verified,
             alert_trace_export_runtime_acceptance_verified=alert_trace_export_runtime_acceptance_verified,
             frontend_packaged_runtime_smoke_verified=frontend_packaged_runtime_smoke_verified,
+            broader_auth_regression_verified=broader_auth_regression_verified,
         ),
         "decision": decision_summary,
         "domains": domains,
@@ -1692,6 +1776,11 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             excluded_static_followups=(
                 {"packaged_frontend_image_release_acceptance"}
                 if frontend_packaged_runtime_smoke_verified
+                else set()
+            )
+            | (
+                {"broader_auth_session_rbac_tenant_redaction_regression"}
+                if broader_auth_regression_verified
                 else set()
             ),
         ),
