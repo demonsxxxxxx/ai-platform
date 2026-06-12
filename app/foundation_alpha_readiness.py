@@ -271,6 +271,40 @@ def _is_poc_smoke_evidence(payload: dict[str, Any]) -> bool:
     )
 
 
+def _is_governance_runtime_evidence(payload: dict[str, Any]) -> bool:
+    evidence_ref = payload.get("evidence_ref") if isinstance(payload, dict) else {}
+    runtime_checks = evidence_ref.get("runtime_checks") if isinstance(evidence_ref, dict) else {}
+    if not isinstance(runtime_checks, dict):
+        return False
+
+    ordinary_admin_runtime = _safe_runtime_check(runtime_checks.get("ordinary_admin_runtime"))
+    admin_runtime_governance = _safe_runtime_check(runtime_checks.get("admin_runtime_governance"))
+    tool_permission = _safe_runtime_check(admin_runtime_governance.get("tool_permission"))
+    skill_governance = _safe_runtime_check(admin_runtime_governance.get("skill_governance"))
+    memory_governance = _safe_runtime_check(admin_runtime_governance.get("memory_governance"))
+    missing_domains = admin_runtime_governance.get("missing_domains")
+    return (
+        evidence_ref.get("verifier") == "tools/verify_governance_runtime_smoke.py"
+        and evidence_ref.get("schema_version") == "ai-platform.governance-runtime-smoke.v1"
+        and ordinary_admin_runtime.get("status") == 403
+        and admin_runtime_governance.get("status") == 200
+        and admin_runtime_governance.get("tenant_matches_requested") is True
+        and admin_runtime_governance.get("governance_schema_version")
+        == "ai-platform.governance-readiness.v1"
+        and admin_runtime_governance.get("governance_status_allowed") is True
+        and admin_runtime_governance.get("required_domains_present") is True
+        and admin_runtime_governance.get("forbidden_projection_terms_present") is False
+        and missing_domains == []
+        and tool_permission.get("taxonomy_present") is True
+        and tool_permission.get("bulk_review_present") is True
+        and skill_governance.get("release_readiness_present") is True
+        and skill_governance.get("dashboard_present") is True
+        and memory_governance.get("long_term_fail_closed_present") is True
+        and memory_governance.get("context_provenance_present") is True
+        and memory_governance.get("office_context_readiness_present") is True
+    )
+
+
 def _release_evidence_sort_key(path: Path, payload: dict[str, Any]) -> tuple[str, str]:
     return (str(payload.get("captured_at", "")), path.name)
 
@@ -333,6 +367,28 @@ def _discover_latest_release_evidence_pair() -> tuple[Path, Path] | None:
         return None
     _, smoke_path, auth_path = max(candidates, key=lambda item: item[0])
     return smoke_path, auth_path
+
+
+def _discover_governance_runtime_evidence(commit_sha: str) -> Path | None:
+    commit_root = _EVIDENCE_BASE_ROOT / commit_sha
+    if not commit_root.is_dir():
+        return None
+
+    entries: list[tuple[Path, dict[str, Any]]] = []
+    for path in sorted(commit_root.glob("*.json")):
+        try:
+            payload = _load_json(path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not _release_evidence_entry_is_valid(payload, commit_sha):
+            continue
+        if _is_governance_runtime_evidence(payload):
+            entries.append((path, payload))
+
+    if entries:
+        path, _ = max(entries, key=lambda item: _release_evidence_sort_key(item[0], item[1]))
+        return path
+    return None
 
 
 def _resolve_release_evidence_paths(source_tree_commit: str) -> tuple[Path, Path]:
@@ -784,10 +840,18 @@ def _operator_context(
     *,
     context_projection_verified: bool = True,
     stage_acceptance_status: str,
+    governance_runtime_smoke_verified: bool = False,
 ) -> dict[str, Any]:
     poc_loop_status = _poc_loop_status(runtime_relation)
     if runtime_relation.get("runtime_relevant_source_matches") and not context_projection_verified:
         poc_loop_status = "context_snapshot_public_summary_followup_required"
+    next_recommended_slices = [
+        "g9_runtime_export_and_retention_acceptance",
+        "packaged_frontend_image_release_acceptance",
+        "broader_auth_session_rbac_tenant_redaction_regression",
+    ]
+    if not governance_runtime_smoke_verified:
+        next_recommended_slices.insert(0, "g6_runtime_admin_dashboard_acceptance_for_governance")
     return {
         "poc_scope": "foundation_alpha_controlled_internal_poc",
         "poc_loop_status": poc_loop_status,
@@ -806,12 +870,7 @@ def _operator_context(
             "ordinary_user_multi_agent_exposure",
             "department_rollout",
         ],
-        "next_recommended_slices": [
-            "g6_runtime_admin_dashboard_acceptance_for_governance",
-            "g9_runtime_export_and_retention_acceptance",
-            "packaged_frontend_image_release_acceptance",
-            "broader_auth_session_rbac_tenant_redaction_regression",
-        ],
+        "next_recommended_slices": next_recommended_slices,
     }
 
 
@@ -845,6 +904,40 @@ def _build_observability_summary(settings: object | None) -> dict[str, Any]:
     }
 
 
+def _governance_runtime_smoke_summary(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if payload is None:
+        return {
+            "status": "missing_governance_runtime_smoke",
+            "schema_version": None,
+            "ordinary_admin_runtime_status": None,
+            "admin_runtime_governance_status": None,
+            "governance_schema_version": None,
+            "required_domains_present": None,
+            "forbidden_projection_terms_present": None,
+            "verified": False,
+        }
+
+    evidence_ref = payload.get("evidence_ref") if isinstance(payload, dict) else {}
+    runtime_checks = evidence_ref.get("runtime_checks") if isinstance(evidence_ref, dict) else {}
+    ordinary_admin_runtime = _safe_runtime_check(runtime_checks.get("ordinary_admin_runtime"))
+    admin_runtime_governance = _safe_runtime_check(runtime_checks.get("admin_runtime_governance"))
+    verified = _is_governance_runtime_evidence(payload)
+    return {
+        "status": "verified_admin_runtime_governance_projection"
+        if verified
+        else "governance_runtime_smoke_followup_required",
+        "schema_version": evidence_ref.get("schema_version") if isinstance(evidence_ref, dict) else None,
+        "ordinary_admin_runtime_status": ordinary_admin_runtime.get("status"),
+        "admin_runtime_governance_status": admin_runtime_governance.get("status"),
+        "governance_schema_version": admin_runtime_governance.get("governance_schema_version"),
+        "required_domains_present": admin_runtime_governance.get("required_domains_present"),
+        "forbidden_projection_terms_present": admin_runtime_governance.get(
+            "forbidden_projection_terms_present"
+        ),
+        "verified": verified,
+    }
+
+
 def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str, Any]:
     """Build a secret-safe Foundation Alpha POC readiness summary for operators."""
     source_tree_commit = _resolve_source_tree_revision()
@@ -855,6 +948,13 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     auth_rbac = _load_json(auth_rbac_evidence_path)
     smoke_checks = smoke["evidence_ref"]["runtime_checks"]
     auth_checks = auth_rbac["evidence_ref"]["runtime_checks"]
+    runtime_subject_commit = smoke["runtime_subject_commit_sha"]
+    governance_runtime_evidence_path = _discover_governance_runtime_evidence(runtime_subject_commit)
+    governance_runtime_payload = (
+        _load_json(governance_runtime_evidence_path) if governance_runtime_evidence_path is not None else None
+    )
+    governance_runtime_smoke = _governance_runtime_smoke_summary(governance_runtime_payload)
+    governance_runtime_smoke_verified = governance_runtime_smoke["verified"] is True
     try:
         governance_summary = _build_governance_summary(settings)
     except ModuleNotFoundError as exc:
@@ -868,7 +968,6 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     except (ModuleNotFoundError, OSError, json.JSONDecodeError, RuntimeError) as exc:
         frontend_traceability_summary = _frontend_traceability_dependency_unavailable_summary(exc)
 
-    runtime_subject_commit = smoke["runtime_subject_commit_sha"]
     runtime_source_marker = smoke["source_ref"]["runtime_source_marker"]
     runtime_affecting_changes = (
         []
@@ -894,6 +993,10 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             else "reviewed_historical_runtime_evidence"
         )
     )
+    g6_open_followups = ["signed_skill_package_or_sbom_review_evidence"]
+    if not governance_runtime_smoke_verified:
+        g6_open_followups.insert(0, "runtime_admin_dashboard_acceptance_for_governance")
+
     domains = {
         "g0_g1_source_authority_security": {
             "status": "poc_verified_keep_under_regression"
@@ -954,11 +1057,9 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
                 "tool_permission_decision_audit_required": True,
                 "memory_long_term_default_fail_closed": True,
                 "context_snapshot_public_projection": _context_projection_summary(smoke_checks),
+                "governance_runtime_smoke": governance_runtime_smoke,
             },
-            "open_followups": [
-                "runtime_admin_dashboard_acceptance_for_governance",
-                "signed_skill_package_or_sbom_review_evidence",
-            ],
+            "open_followups": g6_open_followups,
         },
         "g9_admin_runtime_observability": {
             "status": "partial_followups_open"
@@ -1020,6 +1121,13 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         "capacity_default_increase_allowed": False,
     }
 
+    evidence_entries = {
+        "poc_smoke": _path_for_output(smoke_evidence_path),
+        "auth_rbac_smoke": _path_for_output(auth_rbac_evidence_path),
+    }
+    if governance_runtime_evidence_path is not None and governance_runtime_smoke_verified:
+        evidence_entries["governance_runtime_smoke"] = _path_for_output(governance_runtime_evidence_path)
+
     return {
         "schema_version": SCHEMA_VERSION,
         "stage": STAGE_NAME,
@@ -1043,14 +1151,12 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         "foundation_alpha_stage_status": decision_summary["foundation_alpha_stage_status"],
         "runtime_source_relation": runtime_relation,
         "verified_runtime_subject": _verified_runtime_subject(smoke, evidence_scope),
-        "evidence_entries": {
-            "poc_smoke": _path_for_output(smoke_evidence_path),
-            "auth_rbac_smoke": _path_for_output(auth_rbac_evidence_path),
-        },
+        "evidence_entries": evidence_entries,
         "operator_context": _operator_context(
             runtime_relation,
             context_projection_verified=context_projection_verified,
             stage_acceptance_status=stage_acceptance_status,
+            governance_runtime_smoke_verified=governance_runtime_smoke_verified,
         ),
         "decision": decision_summary,
         "domains": domains,

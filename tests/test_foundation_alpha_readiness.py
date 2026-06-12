@@ -161,6 +161,88 @@ def _minimal_auth_payload(commit_sha: str, *, image: str, captured_at: str = "20
     }
 
 
+def _minimal_governance_payload(
+    commit_sha: str,
+    *,
+    image: str,
+    captured_at: str = "2026-06-11T10:02:00+08:00",
+) -> dict:
+    return {
+        "schema_version": "ai-platform.release-evidence-entry.v1",
+        "evidence_id": f"{commit_sha[:7]}-governance-runtime-smoke",
+        "commit_sha": commit_sha,
+        "runtime_subject_commit_sha": commit_sha,
+        "gate": "Foundation Alpha POC",
+        "artifact_kind": "211_runtime_smoke",
+        "captured_at": captured_at,
+        "source_ref": {
+            "branch": "main",
+            "runtime_commit": commit_sha,
+            "runtime_source_marker": commit_sha,
+            "image": image,
+            "image_id": f"sha256:{commit_sha[:12]}",
+            "image_labels": {
+                "ai-platform.source-revision": commit_sha,
+                "org.opencontainers.image.revision": commit_sha,
+            },
+            "repo_local_env_present": False,
+        },
+        "evidence_ref": {
+            "verifier": "tools/verify_governance_runtime_smoke.py",
+            "result": "ok:true",
+            "schema_version": "ai-platform.governance-runtime-smoke.v1",
+            "runtime_checks": {
+                "ordinary_admin_runtime": {
+                    "status": 403,
+                    "expected_status": 403,
+                },
+                "admin_runtime_governance": {
+                    "status": 200,
+                    "expected_status": 200,
+                    "tenant_matches_requested": True,
+                    "governance_schema_version": "ai-platform.governance-readiness.v1",
+                    "governance_status_allowed": True,
+                    "required_domains_present": True,
+                    "forbidden_projection_terms_present": False,
+                    "missing_domains": [],
+                    "tool_permission": {
+                        "taxonomy_present": True,
+                        "bulk_review_present": True,
+                    },
+                    "skill_governance": {
+                        "release_readiness_present": True,
+                        "dashboard_present": True,
+                    },
+                    "memory_governance": {
+                        "long_term_fail_closed_present": True,
+                        "context_provenance_present": True,
+                        "office_context_readiness_present": True,
+                    },
+                },
+            },
+        },
+        "redaction_scan_status": "passed",
+        "review_status": "reviewed",
+    }
+
+
+def _write_governance_evidence(
+    base_root,
+    commit_sha: str,
+    *,
+    image: str,
+    captured_at: str = "2026-06-11T10:02:00+08:00",
+):
+    commit_root = base_root / commit_sha
+    commit_root.mkdir(parents=True, exist_ok=True)
+    path = commit_root / f"{commit_sha[:7]}-governance-runtime-smoke.json"
+    path.write_text(
+        json.dumps(_minimal_governance_payload(commit_sha, image=image, captured_at=captured_at)),
+        encoding="utf-8",
+    )
+    return path
+
+
 def _write_release_evidence_pair(
     base_root,
     commit_sha: str,
@@ -182,6 +264,100 @@ def _write_release_evidence_pair(
         encoding="utf-8",
     )
     return smoke_path, auth_path
+
+
+def test_foundation_alpha_readiness_accepts_governance_runtime_smoke_for_same_runtime_subject(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    smoke_path, auth_path = _write_release_evidence_pair(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image="ai-platform:a3f1d73-foundation-alpha-poc",
+    )
+    governance_path = _write_governance_evidence(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image="ai-platform:a3f1d73-foundation-alpha-poc",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: CURRENT_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        lambda: {
+            "status": "verified_packaged_release_followup_open",
+            "open_gap_count": 0,
+            "blockers": [],
+        },
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert (
+        readiness["domains"]["g6_poc_governance"]["evidence"]["governance_runtime_smoke"]["status"]
+        == "verified_admin_runtime_governance_projection"
+    )
+    assert "governance_runtime_smoke" in readiness["evidence_entries"]
+    assert readiness["evidence_entries"]["governance_runtime_smoke"] == foundation_alpha_readiness._path_for_output(
+        governance_path
+    )
+    assert (
+        "runtime_admin_dashboard_acceptance_for_governance"
+        not in readiness["domains"]["g6_poc_governance"]["open_followups"]
+    )
+    assert "runtime_admin_dashboard_acceptance_for_governance" not in readiness["decision"]["stage_acceptance_blockers"]
+    assert "signed_skill_package_or_sbom_review_evidence" in readiness["decision"]["stage_acceptance_blockers"]
+    assert "g6_runtime_admin_dashboard_acceptance_for_governance" not in readiness["operator_context"][
+        "next_recommended_slices"
+    ]
+
+
+def test_foundation_alpha_readiness_keeps_governance_runtime_blocker_without_valid_smoke(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    smoke_path, auth_path = _write_release_evidence_pair(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image="ai-platform:a3f1d73-foundation-alpha-poc",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: CURRENT_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert (
+        readiness["domains"]["g6_poc_governance"]["evidence"]["governance_runtime_smoke"]["status"]
+        == "missing_governance_runtime_smoke"
+    )
+    assert "governance_runtime_smoke" not in readiness["evidence_entries"]
+    assert "runtime_admin_dashboard_acceptance_for_governance" in readiness["domains"]["g6_poc_governance"][
+        "open_followups"
+    ]
+    assert "runtime_admin_dashboard_acceptance_for_governance" in readiness["decision"]["stage_acceptance_blockers"]
+    assert "g6_runtime_admin_dashboard_acceptance_for_governance" in readiness["operator_context"][
+        "next_recommended_slices"
+    ]
 
 
 def test_foundation_alpha_readiness_classifies_source_metadata_paths_as_runtime_neutral():
@@ -834,7 +1010,6 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "foundation_alpha_stage_complete": False,
         "foundation_alpha_stage_status": "core_poc_loop_verified_followups_open",
         "stage_acceptance_blockers": [
-            "runtime_admin_dashboard_acceptance_for_governance",
             "signed_skill_package_or_sbom_review_evidence",
             "g9_runtime_export_and_retention_acceptance",
             "alert_delivery_and_trace_export_211_acceptance",
@@ -864,7 +1039,6 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
             "department_rollout",
         ],
         "next_recommended_slices": [
-            "g6_runtime_admin_dashboard_acceptance_for_governance",
             "g9_runtime_export_and_retention_acceptance",
             "packaged_frontend_image_release_acceptance",
             "broader_auth_session_rbac_tenant_redaction_regression",
@@ -1532,6 +1706,16 @@ def test_foundation_alpha_readiness_fails_closed_when_optional_readiness_depende
                 "memory_policy_source",
                 "summary_source",
             ],
+        },
+        "governance_runtime_smoke": {
+            "status": "missing_governance_runtime_smoke",
+            "schema_version": None,
+            "ordinary_admin_runtime_status": None,
+            "admin_runtime_governance_status": None,
+            "governance_schema_version": None,
+            "required_domains_present": None,
+            "forbidden_projection_terms_present": None,
+            "verified": False,
         },
     }
     assert readiness["domains"]["g9_admin_runtime_observability"]["evidence"] == {
