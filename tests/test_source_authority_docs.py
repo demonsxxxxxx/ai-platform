@@ -21,13 +21,16 @@ OBSERVABILITY_READINESS_DOC = ROOT / "docs/operations/ai-platform-observability-
 GOVERNANCE_READINESS_DOC = ROOT / "docs/operations/ai-platform-governance-readiness.md"
 GATE_STATUS_DOC = ROOT / "docs/operations/ai-platform-gate-status.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
-ACTIVE_RUNTIME_SUBJECT_SHA = "b96d02e232176bade455f2af2bc3080f8f372206"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:b96d02e-release-evidence-runtime-acceptance"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:e0ae05720b77eecacb20d5b646ec9bab536da4cb6073a22b0495d8735f744009"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-b96d02e-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-b96d02e-auth-rbac-smoke"
+ACTIVE_RUNTIME_SUBJECT_SHA = "6088d5d179c422a6d753e1b77079410503e58925"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:6088d5d-alert-trace-acceptance"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:c8585918ccaeb4f9128c2c9301c8f8ac0d0c40002dc5b4febcafa2813b28bedf"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-6088d5d-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-6088d5d-auth-rbac-smoke"
 ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-12-211-foundation-alpha-poc-b96d02e-release-evidence-runtime-acceptance"
+    "2026-06-12-211-foundation-alpha-poc-6088d5d-release-evidence-runtime-acceptance"
+)
+ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = (
+    "2026-06-12-211-foundation-alpha-poc-6088d5d-alert-trace-export-runtime-acceptance"
 )
 FOUNDATION_ALPHA_POC_EVIDENCE = (
     ROOT
@@ -62,6 +65,13 @@ FOUNDATION_ALPHA_POC_ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE = (
     / (
         "docs/release-evidence/foundation-alpha-poc/"
         f"{ACTIVE_RUNTIME_SUBJECT_SHA}/{ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID}.json"
+    )
+)
+FOUNDATION_ALPHA_POC_ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE = (
+    ROOT
+    / (
+        "docs/release-evidence/foundation-alpha-poc/"
+        f"{ACTIVE_RUNTIME_SUBJECT_SHA}/{ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID}.json"
     )
 )
 SCHEMA = ROOT / "app/schema.sql"
@@ -210,6 +220,7 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert FOUNDATION_ALPHA_POC_ACTIVE_SMOKE_EVIDENCE.exists()
     assert FOUNDATION_ALPHA_POC_ACTIVE_AUTH_RBAC_EVIDENCE.exists()
     assert FOUNDATION_ALPHA_POC_ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE.exists()
+    assert FOUNDATION_ALPHA_POC_ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE.exists()
     assert FOUNDATION_ALPHA_POC_CURRENT_MAIN_SMOKE_EVIDENCE.exists()
     assert FOUNDATION_ALPHA_POC_CURRENT_MAIN_AUTH_RBAC_EVIDENCE.exists()
     assert FOUNDATION_ALPHA_POC_AUTH_RBAC_EVIDENCE.exists()
@@ -253,13 +264,14 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert payload["evidence_ref"]["runtime_checks"]["artifact_download_isolation"]["checked_artifacts"] == 2
     assert payload["evidence_ref"]["runtime_checks"]["artifact_preview_isolation"]["checked_artifacts"] == 1
     smoke_followups = "\n".join(payload["open_followups"])
-    assert "alert_delivery_and_trace_export_211_acceptance" in smoke_followups
+    assert "alert_delivery_and_trace_export_211_acceptance" not in smoke_followups
     assert "Signed package or SBOM review evidence" in smoke_followups
 
     release_evidence_index = read(RELEASE_EVIDENCE_INDEX)
     assert f"{ACTIVE_AUTH_RBAC_EVIDENCE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_POC_SMOKE_EVIDENCE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID}.json" in release_evidence_index
+    assert f"{ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID}.json" in release_evidence_index
     assert "2026-06-12-211-foundation-alpha-poc-d95107d-auth-rbac-smoke.json" in release_evidence_index
     assert "2026-06-12-211-foundation-alpha-poc-d95107d-context-projection-smoke.json" in release_evidence_index
     assert "2026-06-12-211-foundation-alpha-poc-a63dbbd-auth-rbac-smoke.json" in release_evidence_index
@@ -359,6 +371,33 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     lowered_runtime_acceptance = runtime_acceptance_text.lower()
     for marker in forbidden_markers:
         assert marker.lower() not in lowered_runtime_acceptance
+
+    alert_trace_text = read(FOUNDATION_ALPHA_POC_ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE)
+    alert_trace_payload = json.loads(alert_trace_text)
+    alert_trace_acceptance = alert_trace_payload["evidence_ref"]["runtime_checks"][
+        "alert_trace_export_runtime_acceptance"
+    ]
+    alert_checks = alert_trace_acceptance["checks"]
+    assert alert_trace_payload["evidence_id"] == ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID
+    assert alert_trace_payload["commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert alert_trace_payload["runtime_subject_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert alert_trace_payload["source_ref"]["image"] == ACTIVE_RUNTIME_IMAGE
+    assert alert_trace_payload["source_ref"]["image_id"] == ACTIVE_RUNTIME_IMAGE_ID
+    assert alert_trace_payload["evidence_ref"]["result"] == "ok:true"
+    assert alert_trace_acceptance["schema_version"] == "ai-platform.alert-trace-export-runtime-acceptance.v1"
+    assert alert_trace_acceptance["ok"] is True
+    assert alert_trace_acceptance["status"] == "accepted_for_operator_review"
+    assert alert_trace_acceptance["does_not_enable_alert_delivery"] is True
+    assert alert_trace_acceptance["does_not_export_raw_runtime_payloads"] is True
+    assert alert_trace_acceptance["does_not_close_g9"] is True
+    assert alert_checks["ordinary_admin_runtime"]["status"] == 403
+    assert alert_checks["admin_runtime_alerts_and_exports"]["status"] == 200
+    assert alert_checks["admin_runtime_alerts_and_exports"]["alert_delivery_not_enabled"] is True
+    assert alert_checks["admin_runtime_alerts_and_exports"]["trace_export_sources_public_only"] is True
+    assert alert_checks["admin_runtime_alerts_and_exports"]["forbidden_projection_terms_present"] is False
+    lowered_alert_trace = alert_trace_text.lower()
+    for marker in forbidden_markers:
+        assert marker.lower() not in lowered_alert_trace
 
     gate_status_text = read(GATE_STATUS_DOC)
     assert "`/api/ai/auth/me`" in gate_status_text

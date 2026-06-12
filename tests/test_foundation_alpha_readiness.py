@@ -10,7 +10,7 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
-ACTIVE_RUNTIME_SUBJECT_SHA = "b96d02e232176bade455f2af2bc3080f8f372206"
+ACTIVE_RUNTIME_SUBJECT_SHA = "6088d5d179c422a6d753e1b77079410503e58925"
 HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
@@ -1618,8 +1618,8 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "foundation_alpha_stage_status": "core_poc_loop_verified_followups_open",
         "stage_acceptance_blockers": [
             "signed_skill_package_or_sbom_review_evidence",
-            "alert_delivery_and_trace_export_211_acceptance",
             "ordinary_user_acceptance_for_quarantined_legacy_routes",
+            "g9_admin_runtime_observability_partial_followups_open",
             "packaged_frontend_image_release_acceptance",
         ],
         "can_enter_next_stage_without_restrictions": False,
@@ -1647,7 +1647,6 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
             "department_rollout",
         ],
         "next_recommended_slices": [
-            "alert_delivery_and_trace_export_211_acceptance",
             "packaged_frontend_image_release_acceptance",
             "broader_auth_session_rbac_tenant_redaction_regression",
         ],
