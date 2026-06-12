@@ -21,6 +21,7 @@ _AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-12-211-foundation-alpha-poc-b96d
 _SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
 _SOURCE_SNAPSHOT_MARKER = _ROOT / ".ai-platform-source-snapshot.json"
 _RUNTIME_NEUTRAL_PATH_PREFIXES = (
+    "assets/ai-platform-architecture-illustrations/",
     "docs/",
     "tests/",
 )
