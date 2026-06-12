@@ -43,6 +43,37 @@ For source-only docs/tests/evidence syncs, write a local-only
 empty. Missing, stale, or malformed snapshot markers intentionally fail closed.
 
 On 2026-06-12, runtime subject commit
+`2384e19dcac2e39fbcf9c27dc990f5774d391422` was synced to the 211 runtime
+subject and the 211 API and worker ran
+`ai-platform:2384e19-context-source-provenance` with image ID
+`sha256:2fde0184a1212332eeb15ff657b9a82ac96575a450becd6ac190ad22f8d589a4`.
+Both runtime source labels pointed to
+`2384e19dcac2e39fbcf9c27dc990f5774d391422`. Runtime labels pointed to the
+repo-local 211 deploy composition, API health returned `ok`, container-side
+`python -m compileall -q app tools scripts` passed for API and worker, and the
+aggregate verifier `tools/verify_poc_gate.py` returned `ok: true` on 211 for
+the controlled context source-provenance slice. The smoke specifically verified
+that the context snapshot public projection now reports
+`summary_source=chat_stream`, safe `input_keys=["message"]`, memory policy
+source, execution tier, generated-at presence, and no raw material IDs or
+forbidden projection leaks. The reviewed, redacted release-evidence entry is
+`docs/release-evidence/foundation-alpha-poc/2384e19dcac2e39fbcf9c27dc990f5774d391422/2026-06-12-211-foundation-alpha-poc-2384e19-context-source-provenance-smoke.json`.
+
+The focused Auth/RBAC verifier `tools/verify_auth_rbac_smoke.py` also returned
+`ok: true` on 211 against `2384e19`. It verified unauthenticated auth rejection,
+trusted platform principal projection, invalid gateway secret rejection,
+ordinary-user Admin Runtime denial, and same-tenant Admin Runtime access for an
+admin smoke principal. The reviewed, redacted Auth/RBAC evidence entry is
+`docs/release-evidence/foundation-alpha-poc/2384e19dcac2e39fbcf9c27dc990f5774d391422/2026-06-12-211-foundation-alpha-poc-2384e19-context-source-provenance-auth-rbac-smoke.json`.
+
+This 2384e19 rollout used a runtime-only image rebased from the previous
+healthy image because a full Docker build stalled on dependency installation.
+Treat that as a deployment workaround, not the preferred release path. The
+repo-local 211 deploy directory still lacks a committed or copied real `.env`;
+compose used the existing external runtime env path without printing or copying
+secret values.
+
+Immediately before that slice, runtime subject commit
 `e274d78b21c22fdf4f56a8cf8b31a0480d42c22f` was synced to the 211 runtime
 subject and the 211 API and worker ran
 `ai-platform:e274d78-g9-runtime-readiness-tools` with image ID
@@ -66,7 +97,7 @@ memory policy source, execution tier, generated-at presence, and no raw
 material IDs. `tools/foundation_alpha_readiness.py`
 promotes that context projection into the G6 evidence summary and fails closed
 as `missing_context_snapshot_public_projection` when an older smoke record lacks
-it. The current reviewed, redacted release-evidence entry is
+it. The reviewed, redacted release-evidence entry is
 `docs/release-evidence/foundation-alpha-poc/e274d78b21c22fdf4f56a8cf8b31a0480d42c22f/2026-06-12-211-foundation-alpha-poc-e274d78-runtime-readiness-tools-smoke.json`.
 
 The focused Auth/RBAC verifier `tools/verify_auth_rbac_smoke.py` also returned
@@ -80,10 +111,11 @@ trusted principals can read the required same-tenant Admin Runtime sections with
 PR #26 verifier fix allows legitimate Admin Runtime observability/readiness
 metric text such as token/cost/error summaries while continuing to fail closed
 on secret-like keys and credential-shaped values. The
-current reviewed, redacted Auth/RBAC evidence entry is
+reviewed, redacted Auth/RBAC evidence entry is
 `docs/release-evidence/foundation-alpha-poc/e274d78b21c22fdf4f56a8cf8b31a0480d42c22f/2026-06-12-211-foundation-alpha-poc-e274d78-auth-rbac-smoke.json`.
 
 Earlier smoke evidence for
+`e274d78b21c22fdf4f56a8cf8b31a0480d42c22f`,
 `a63dbbd0b474cce3702b3485e6589f86155cf5aa`,
 `d95107da2b5691781518bdbb8c4e5e76409869f3`,
 `458f6056dd0fa533162e780a303d79ce1b3d0eec`,

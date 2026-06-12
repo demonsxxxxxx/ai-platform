@@ -1,0 +1,165 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-06-12-211-foundation-alpha-poc-2384e19-context-source-provenance-smoke",
+  "commit_sha": "2384e19dcac2e39fbcf9c27dc990f5774d391422",
+  "runtime_subject_commit_sha": "2384e19dcac2e39fbcf9c27dc990f5774d391422",
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#15",
+    "#16",
+    "#17",
+    "#21",
+    "#22",
+    "#23",
+    "#24"
+  ],
+  "pr_refs": [],
+  "artifact_kind": "211_runtime_smoke",
+  "captured_at": "2026-06-12T08:03:12+08:00",
+  "source_ref": {
+    "branch": "main",
+    "runtime_commit": "2384e19dcac2e39fbcf9c27dc990f5774d391422",
+    "runtime_source_marker": "2384e19dcac2e39fbcf9c27dc990f5774d391422",
+    "source_snapshot_marker": {
+      "source_tree_commit_sha": "2384e19dcac2e39fbcf9c27dc990f5774d391422",
+      "runtime_subject_commit_sha": "2384e19dcac2e39fbcf9c27dc990f5774d391422",
+      "source_tree_dirty": false,
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": []
+    },
+    "image": "ai-platform:2384e19-context-source-provenance",
+    "image_id": "sha256:2fde0184a1212332eeb15ff657b9a82ac96575a450becd6ac190ad22f8d589a4",
+    "image_labels": {
+      "ai-platform.source-revision": "2384e19dcac2e39fbcf9c27dc990f5774d391422",
+      "org.opencontainers.image.revision": "2384e19dcac2e39fbcf9c27dc990f5774d391422"
+    },
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "compose_env_source": "existing 211 runtime env path, not copied or printed",
+    "repo_local_env_present": false,
+    "compose_location": "repo-local 211 deploy composition",
+    "deployment_note": "runtime-only rebase from the previous healthy image because full Docker build stalled on dependency installation; this is a workaround, not the preferred release path"
+  },
+  "evidence_ref": {
+    "verifier": "tools/verify_poc_gate.py",
+    "command": "python3 tools/verify_poc_gate.py --api-url http://127.0.0.1:8020 --frontend-url http://127.0.0.1:18001 --env-path <existing-211-runtime-env-path>",
+    "result": "ok:true",
+    "runtime_checks": {
+      "lambchat_frontend": {
+        "status": 200
+      },
+      "frontend_dist_api_boundary": {
+        "forbidden_reference_count": 0
+      },
+      "same_origin_api_health": {
+        "status": 200,
+        "payload_status": "ok"
+      },
+      "lambchat_api_compat": {
+        "all_required_routes_http_200": true,
+        "registration_enabled": false,
+        "default_model_id": "deepseek-v4-flash",
+        "missing_permissions": []
+      },
+      "runtime_config": {
+        "claude_agent_sdk_enabled": "true",
+        "skills_present": [
+          "baoyu-translate",
+          "general-chat",
+          "qa-file-reviewer"
+        ]
+      },
+      "company_auth_bridge": "invalid-login-probe-returned-unsuccessfully",
+      "general_chat_run": "succeeded",
+      "review_artifact_run": {
+        "status": "succeeded",
+        "skill_id": "qa-file-reviewer",
+        "artifact_content_type": "application/json"
+      },
+      "translate_artifact_run": {
+        "status": "succeeded",
+        "skill_id": "baoyu-translate",
+        "artifact_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      },
+      "upload_attachment_chat": {
+        "upload_status": 200,
+        "chat_status": 200,
+        "run_status": "succeeded",
+        "executor_type": "claude-agent-worker"
+      },
+      "document_review_attachment_run": {
+        "upload_status": 200,
+        "chat_status": 200,
+        "status": "succeeded",
+        "agent_id": "qa-word-review",
+        "skill_id": "qa-file-reviewer",
+        "artifact_count": 3,
+        "artifact_types": [
+          "report_txt",
+          "result_json",
+          "reviewed_docx"
+        ],
+        "playback_status": 200,
+        "playback_contract_version": "ai-platform.run-playback.v1",
+        "playback_artifact_count": 3,
+        "playback_download_url_count": 3,
+        "playback_preview_url_count": 1,
+        "matched_download_artifact_count": 1,
+        "matched_preview_artifact_count": 1,
+        "private_payload_leaked": false
+      },
+      "artifact_download_isolation": {
+        "checked_artifacts": 2
+      },
+      "artifact_preview_isolation": {
+        "checked_artifacts": 1
+      },
+      "company_login_audit": {
+        "ordinary_user_count": 12,
+        "admin_user_count": 34,
+        "source": "company-login"
+      },
+      "context_snapshot_public_projection": {
+        "status": 200,
+        "ok": true,
+        "snapshot_count": 1,
+        "referenced_material_counts": {
+          "message_count": 1,
+          "file_count": 1,
+          "artifact_count": 0,
+          "memory_record_count": 0
+        },
+        "raw_material_id_fields_present": false,
+        "forbidden_projection_leaks": [],
+        "summary_source": "chat_stream",
+        "input_keys": [
+          "message"
+        ],
+        "memory_policy_source": "default",
+        "long_term_memory_read": false,
+        "execution_tier": "sdk_only_writing",
+        "context_pack_generated_at_present": true
+      }
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "This entry is a reviewed summary of the 2384e19 211 aggregate verifier output, not a raw runtime dump.",
+    "The API and worker containers reported image ai-platform:2384e19-context-source-provenance with matching source revision labels before the smoke was recorded.",
+    "The reviewed summary omits credentials, DSNs, object locators, workspace filesystem paths, executor-only internals, run identifiers, file identifiers, artifact identifiers, raw storage keys, and personal workstation paths.",
+    "The smoke confirms the context snapshot public projection now reports summary_source=chat_stream for the controlled document-review path and does not leak raw material IDs or forbidden projection terms.",
+    "This evidence supports the Foundation Alpha POC context-source-provenance slice only. It does not close production concurrency, Docker sandbox hardening, ordinary-user multi-agent, department rollout, runtime export, or release-evidence retention gates."
+  ],
+  "open_followups": [
+    "#21 recorded multi-tenant capacity/load evidence remains required before raising production concurrency defaults.",
+    "G7 Docker sandbox hardening and Docker-capable sandbox smoke remain blocked.",
+    "G8 ordinary-user multi-agent exposure remains feature-flagged/internal only.",
+    "G9 release-evidence runtime export and retention runtime acceptance remain open.",
+    "Packaged frontend image smoke/release acceptance remains separate from this thin-shell POC smoke.",
+    "Repo-local 211 deploy .env remains absent; compose still uses the existing external runtime env path without printing or copying it.",
+    "The runtime-only rebase workaround should be replaced by the normal Docker build/release path once package installation is stable."
+  ]
+}
