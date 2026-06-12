@@ -298,12 +298,12 @@ The same source-level readiness snapshot now also embeds
 `ai-platform.release-evidence-retention-policy.v1` as a contract-only
 retention policy with a 180-day default, 30-day minimum, reviewed-delete
 requirement, and reviewed/redacted-entry-only delete scope. The later
-2026-06-12 `00e4e6b950709439850749fe26af9c0943f6a07c` 211 runtime evidence
+2026-06-12 `d4486ebf5a33ce23a632a69bcf07ef1220b61ea3` 211 runtime evidence
 records reviewed runtime export, retention, and alert/trace export runtime
 acceptance for the active Foundation Alpha POC runtime subject, so the narrower
 `g9_runtime_export_and_retention_acceptance` and
 `alert_delivery_and_trace_export_211_acceptance` blockers are no longer the
-next Foundation Alpha slices for that runtime. The earlier
+next Foundation Alpha slices for that runtime. The earlier `00e4e6b` and
 `b96d02e232176bade455f2af2bc3080f8f372206` evidence remains historical. This
 does not close G9; signed Skill package or SBOM review evidence,
 ordinary-user legacy-route acceptance, packaged frontend image release
@@ -405,13 +405,15 @@ could not resolve the Dockerfile frontend, and a no-syntax probe could not pull
 the final packaged image. The verifier classified the redacted attempt as
 `blocked_environment` with `docker_registry_proxy_unreachable` and
 `base_image_pull_failed`, so it is not release acceptance and does not close
-`packaged_frontend_image_release_acceptance`. A later 2026-06-12 211 recheck
-for active runtime subject `00e4e6b` confirmed the same blocker after the
-skill-release pending-evidence hardening rollout: source marker and snapshot
-pointed to `00e4e6b`, frontend image sources were present, but the Docker
-daemon still could not pull required base images, and no target
-`ai-platform-frontend:*` image was cached. The reviewed redacted evidence is
-`2026-06-12-211-foundation-alpha-poc-00e4e6b-frontend-packaged-runtime-smoke-blocked.json`;
+`packaged_frontend_image_release_acceptance`. The same packaged-frontend blocker
+was later preserved as reviewed blocker evidence during the `6088d5d` refresh.
+A later 2026-06-12 211 recheck
+for active runtime subject `d4486eb` confirmed the same blocker after the
+observability evidence loader rollout: source marker pointed to `d4486eb`,
+frontend image sources were present, but the Docker daemon still could not pull
+required base-image metadata, and no target `ai-platform-frontend:*` image was
+cached. The reviewed redacted evidence is
+`2026-06-12-211-foundation-alpha-poc-d4486eb-frontend-packaged-runtime-smoke-blocked.json`;
 it is blocker evidence only and does not close
 `packaged_frontend_image_release_acceptance`. The projection
 audit records the current production-source route inventory, active-browser
@@ -513,20 +515,20 @@ disabled registry or tenant-policy cases. Admin tool policy governance now also
 has a bounded same-tenant change-history projection through
 `GET /api/ai/admin/tool-policies/history`, backed by the existing
 `admin.tool_policy.updated` audit log and allowlisted public policy fields.
-The skill-release pending-evidence hardening slice was deployed to 211 on
-2026-06-12 as `00e4e6b950709439850749fe26af9c0943f6a07c` with image
-`ai-platform:00e4e6b-skill-release-evidence`. API/worker source revision labels, the 211 source marker, source snapshot,
-OCI revision labels, and image internal source marker pointed to `00e4e6b`;
-API health returned `ok`; and the repo-local compose labels were in use.
-Runtime-subject/runtime-rollout labels still carried prior `6088d5d` rollout
-metadata, and the compose environment-file label still recorded the old external
-env-file path. A focused `tools/verify_governance_runtime_smoke.py` run returned
-`ok: true` and is recorded as
-`docs/release-evidence/foundation-alpha-poc/00e4e6b950709439850749fe26af9c0943f6a07c/2026-06-12-211-foundation-alpha-poc-00e4e6b-governance-runtime-smoke.json`.
-The same `00e4e6b` evidence directory now also records runtime POC, Auth/RBAC,
+The observability evidence loader slice was deployed to 211 on
+2026-06-12 as `d4486ebf5a33ce23a632a69bcf07ef1220b61ea3` with image
+`ai-platform:d4486eb-observability-evidence-loader`. API/worker source revision labels, the 211 source marker, OCI
+revision labels, and image internal source marker pointed to `d4486eb`; API
+health returned `ok`; and the repo-local compose labels were in use. Inherited
+runtime-subject/runtime-rollout/source_revision alias labels and the compose
+environment-file label still recorded prior rollout metadata. A focused
+`tools/verify_governance_runtime_smoke.py` run returned `ok: true` and is
+recorded as
+`docs/release-evidence/foundation-alpha-poc/d4486ebf5a33ce23a632a69bcf07ef1220b61ea3/2026-06-12-211-foundation-alpha-poc-d4486eb-governance-runtime-smoke.json`.
+The same `d4486eb` evidence directory now also records runtime POC, Auth/RBAC,
 release-evidence runtime acceptance, alert/trace export runtime acceptance, and
 packaged frontend blocker evidence for the current runtime subject. This
-refresh verifies the controlled POC loop for `00e4e6b` but does not close
+refresh verifies the controlled POC loop for `d4486eb` but does not close
 Foundation Alpha.
 The Admin bulk-review dashboard baseline is now split into a contract-only
 readiness artifact through `tools/tool_policy_bulk_review_readiness.py` with

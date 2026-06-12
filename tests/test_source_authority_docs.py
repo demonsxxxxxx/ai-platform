@@ -21,19 +21,19 @@ OBSERVABILITY_READINESS_DOC = ROOT / "docs/operations/ai-platform-observability-
 GOVERNANCE_READINESS_DOC = ROOT / "docs/operations/ai-platform-governance-readiness.md"
 GATE_STATUS_DOC = ROOT / "docs/operations/ai-platform-gate-status.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
-ACTIVE_RUNTIME_SUBJECT_SHA = "00e4e6b950709439850749fe26af9c0943f6a07c"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:00e4e6b-skill-release-evidence"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:e8ecc5d90113d41e9bd416538926d7bdba20824d498c91b7f447f7f17c4f813d"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-00e4e6b-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-00e4e6b-auth-rbac-smoke"
+ACTIVE_RUNTIME_SUBJECT_SHA = "d4486ebf5a33ce23a632a69bcf07ef1220b61ea3"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:d4486eb-observability-evidence-loader"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:0d3c89127d278bee7c2a64384fbd67560ec9300536571c1e6845a8b00376cdb5"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-d4486eb-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-d4486eb-auth-rbac-smoke"
 ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-12-211-foundation-alpha-poc-00e4e6b-release-evidence-runtime-acceptance"
+    "2026-06-12-211-foundation-alpha-poc-d4486eb-release-evidence-runtime-acceptance"
 )
 ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-12-211-foundation-alpha-poc-00e4e6b-alert-trace-export-runtime-acceptance"
+    "2026-06-12-211-foundation-alpha-poc-d4486eb-alert-trace-export-runtime-acceptance"
 )
 ACTIVE_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
-    "2026-06-12-211-foundation-alpha-poc-00e4e6b-frontend-packaged-runtime-smoke-blocked"
+    "2026-06-12-211-foundation-alpha-poc-d4486eb-frontend-packaged-runtime-smoke-blocked"
 )
 FOUNDATION_ALPHA_POC_EVIDENCE = (
     ROOT
@@ -282,7 +282,7 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert f"{ACTIVE_POC_SMOKE_EVIDENCE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID}.json" in release_evidence_index
-    assert "2026-06-12-211-foundation-alpha-poc-00e4e6b-governance-runtime-smoke.json" in release_evidence_index
+    assert "2026-06-12-211-foundation-alpha-poc-d4486eb-governance-runtime-smoke.json" in release_evidence_index
     assert "2026-06-12-211-foundation-alpha-poc-d95107d-auth-rbac-smoke.json" in release_evidence_index
     assert "2026-06-12-211-foundation-alpha-poc-d95107d-context-projection-smoke.json" in release_evidence_index
     assert "2026-06-12-211-foundation-alpha-poc-a63dbbd-auth-rbac-smoke.json" in release_evidence_index
@@ -433,7 +433,7 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     )
     assert frontend_blocked_smoke["commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
     assert frontend_blocked_smoke["runtime_host"] == "211"
-    assert frontend_blocked_smoke["image_tag"] == "ai-platform-frontend:00e4e6b-smoke"
+    assert frontend_blocked_smoke["image_tag"] == "ai-platform-frontend:d4486eb-smoke"
     assert frontend_blocked_smoke["docker_build"]["exit_code"] == 1
     assert "proxyconnect" in frontend_blocked_smoke["docker_build"]["log_tail"]
     assert "resolve source metadata" in frontend_blocked_smoke["docker_build"]["log_tail"]

@@ -121,8 +121,8 @@ dashboard acceptance, and 211 runtime smoke remain required before gate closure.
 
 On 2026-06-12, `tools/verify_governance_runtime_smoke.py` returned `ok: true`
 on the 211 API for runtime subject commit
-`00e4e6b950709439850749fe26af9c0943f6a07c` and image
-`ai-platform:00e4e6b-skill-release-evidence`. The smoke verified ordinary-user
+`d4486ebf5a33ce23a632a69bcf07ef1220b61ea3` and image
+`ai-platform:d4486eb-observability-evidence-loader`. The smoke verified ordinary-user
 Admin Runtime denial, same-tenant admin access, governance schema
 `ai-platform.governance-readiness.v1`, required tool/skill/memory governance
 domains, tool policy taxonomy and bulk-review signals, skill release/dashboard
@@ -130,15 +130,15 @@ signals with `dashboard_contract` trimmed from the overview projection, memory
 fail-closed/context-provenance/office-context signals, and no forbidden
 projection terms in the reviewed summary. The 211 source marker, source snapshot, source revision labels, OCI revision
 labels, and image internal source marker pointed to
-`00e4e6b950709439850749fe26af9c0943f6a07c`, and the compose config label
-pointed to the repo-local 211 deploy composition. Runtime-subject and
-runtime-rollout labels still carried prior `6088d5d` rollout metadata, and the
-compose environment-file label still recorded the old external env-file path. The
-reviewed release evidence entry is
-`docs/release-evidence/foundation-alpha-poc/00e4e6b950709439850749fe26af9c0943f6a07c/2026-06-12-211-foundation-alpha-poc-00e4e6b-governance-runtime-smoke.json`.
+`d4486ebf5a33ce23a632a69bcf07ef1220b61ea3`, and the compose config label pointed to the repo-local 211 deploy
+composition. Runtime-subject, runtime-rollout, and source_revision alias labels
+still carried prior rollout metadata, and the compose environment-file label
+still recorded the old external env-file path. The reviewed release evidence
+entry is
+`docs/release-evidence/foundation-alpha-poc/d4486ebf5a33ce23a632a69bcf07ef1220b61ea3/2026-06-12-211-foundation-alpha-poc-d4486eb-governance-runtime-smoke.json`.
 
 This smoke records the focused Admin Runtime governance projection proof for
-the current `00e4e6b` Foundation Alpha POC runtime subject. It does not close
+the current `d4486eb` Foundation Alpha POC runtime subject. It does not close
 ordinary-user confirmation-card UX, full Admin dashboard/visual acceptance,
 signed-package/SBOM review evidence, dependency vulnerability/license evidence,
 office context-pack persistence and executor injection, frontend context
