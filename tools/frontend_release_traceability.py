@@ -136,6 +136,47 @@ def _git_dirty(repo_root: Path) -> bool | None:
     return bool(result.stdout.strip())
 
 
+def _source_snapshot_identity(repo_root: Path) -> dict[str, object] | None:
+    marker_path = repo_root / ".ai-platform-source-snapshot.json"
+    marker = _load_json(marker_path) if marker_path.exists() else None
+    if not marker:
+        revision_path = repo_root / ".ai-platform-source-revision"
+        try:
+            revision = revision_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            revision = ""
+        if not revision:
+            return None
+        return {"commit": revision, "dirty": None, "source": "source_revision_marker"}
+
+    commit = marker.get("source_tree_commit_sha")
+    dirty = marker.get("source_tree_dirty")
+    if not isinstance(commit, str) or not commit.strip():
+        return None
+    return {
+        "commit": commit.strip(),
+        "dirty": dirty if isinstance(dirty, bool) else None,
+        "source": "source_snapshot_marker",
+    }
+
+
+def _git_identity(repo_root: Path) -> dict[str, object]:
+    git_root = _git_value(repo_root, "rev-parse", "--show-toplevel")
+    if git_root:
+        try:
+            if Path(git_root).resolve() == repo_root.resolve():
+                commit = _git_value(repo_root, "rev-parse", "HEAD") or "unknown"
+                return {"commit": commit, "dirty": _git_dirty(repo_root), "source": "git"}
+        except OSError:
+            pass
+
+    return _source_snapshot_identity(repo_root) or {
+        "commit": "unknown",
+        "dirty": None,
+        "source": "unknown",
+    }
+
+
 def _load_json(path: Path) -> dict[str, object] | None:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -148,6 +189,7 @@ def _dist_provenance_status(
     provenance: dict[str, object] | None,
     *,
     git_commit: str,
+    source_dirty: bool | None,
     package_json_sha256: str,
     pnpm_lock_sha256: str,
 ) -> dict[str, object]:
@@ -169,6 +211,10 @@ def _dist_provenance_status(
         blockers.append("dist_build_commit_unknown")
     elif build_commit != git_commit:
         blockers.append("dist_build_commit_mismatch")
+    if source_dirty is True:
+        blockers.append("source_tree_dirty")
+    elif source_dirty is None:
+        blockers.append("source_tree_dirty_state_unknown")
     dirty = git.get("dirty")
     if dirty is True:
         blockers.append("dist_built_from_dirty_worktree")
@@ -191,6 +237,7 @@ def _dist_manifest(
     dist_root: Path,
     *,
     git_commit: str,
+    source_dirty: bool | None,
     package_json_sha256: str,
     pnpm_lock_sha256: str,
 ) -> dict[str, object]:
@@ -200,6 +247,7 @@ def _dist_manifest(
     provenance_status = _dist_provenance_status(
         provenance,
         git_commit=git_commit,
+        source_dirty=source_dirty,
         package_json_sha256=package_json_sha256,
         pnpm_lock_sha256=pnpm_lock_sha256,
     )
@@ -392,7 +440,9 @@ def build_frontend_release_traceability(repo_root: Path | None = None) -> dict[s
         for name in ("lint", "build", "projection:audit", "ci:verify")
         if isinstance(scripts.get(name), str)
     }
-    git_commit = _git_value(root, "rev-parse", "HEAD") or "unknown"
+    git_identity = _git_identity(root)
+    git_commit = str(git_identity.get("commit") or "unknown")
+    source_dirty = git_identity.get("dirty") if isinstance(git_identity.get("dirty"), bool) else None
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -401,8 +451,7 @@ def build_frontend_release_traceability(repo_root: Path | None = None) -> dict[s
         "package_version": str(package_json.get("version") or ""),
         "package_manager": str(package_json.get("packageManager") or ""),
         "git": {
-            "commit": git_commit,
-            "dirty": _git_dirty(root),
+            **git_identity,
         },
         "source_hashes": {
             "package_json_sha256": package_json_sha256,
@@ -414,6 +463,7 @@ def build_frontend_release_traceability(repo_root: Path | None = None) -> dict[s
         "dist": _dist_manifest(
             dist_root,
             git_commit=git_commit,
+            source_dirty=source_dirty,
             package_json_sha256=package_json_sha256,
             pnpm_lock_sha256=pnpm_lock_sha256,
         ),

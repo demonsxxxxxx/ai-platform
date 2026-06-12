@@ -90,6 +90,7 @@ def test_frontend_release_traceability_records_static_dist_manifest(tmp_path):
     (frontend_root / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n", encoding="utf-8")
     (dist_root / "index.html").write_text("<script src='/assets/app.js'></script>", encoding="utf-8")
     (assets_root / "app.js").write_text("console.log('release')", encoding="utf-8")
+    (tmp_path / ".gitignore").write_text("frontend/web/dist/\n", encoding="utf-8")
     git_commit = initialize_git_repo(tmp_path)
     (dist_root / DIST_BUILD_PROVENANCE_FILENAME).write_text(
         json.dumps(
@@ -127,6 +128,55 @@ def test_frontend_release_traceability_records_static_dist_manifest(tmp_path):
     serialized = json.dumps(trace, ensure_ascii=False).lower()
     assert str(tmp_path).lower() not in serialized
     assert "secret" not in serialized
+
+
+def test_frontend_release_traceability_uses_source_marker_when_git_metadata_is_absent(tmp_path):
+    frontend_root = tmp_path / "frontend" / "web"
+    dist_root = frontend_root / "dist"
+    dist_root.mkdir(parents=True)
+    write_frontend_package(frontend_root)
+    source_commit = "0d9fd4dbc9645577ea6149aa731b7d3cb7d719b8"
+    (tmp_path / ".ai-platform-source-revision").write_text(f"{source_commit}\n", encoding="utf-8")
+    (tmp_path / ".ai-platform-source-snapshot.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.source-snapshot.v1",
+                "source_tree_commit_sha": source_commit,
+                "runtime_subject_commit_sha": "2384e19dcac2e39fbcf9c27dc990f5774d391422",
+                "source_tree_dirty": False,
+                "runtime_affecting_changes_since_runtime_subject": [],
+                "runtime_affecting_dirty_paths": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (dist_root / "index.html").write_text("<main>source archive frontend</main>", encoding="utf-8")
+    (dist_root / DIST_BUILD_PROVENANCE_FILENAME).write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.frontend-build-provenance.v1",
+                "frontend_path": "frontend/web",
+                "git": {"commit": source_commit, "dirty": False},
+                "source_hashes": {
+                    "package_json_sha256": trace_package_json_sha256(frontend_root),
+                    "pnpm_lock_sha256": trace_pnpm_lock_sha256(frontend_root),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    trace = build_frontend_release_traceability(repo_root=tmp_path)
+
+    assert trace["git"] == {
+        "commit": source_commit,
+        "dirty": False,
+        "source": "source_snapshot_marker",
+    }
+    assert trace["dist"]["status"] == "built"
+    assert trace["dist"]["build_provenance"]["status"] == "verified"
+    assert trace["dist"]["build_provenance"]["verified_same_commit"] is True
+    assert trace["dist"]["release_trace"]["backend_worker_commit"] == source_commit
 
 
 def test_frontend_release_traceability_fails_closed_for_missing_dist_provenance(tmp_path):
@@ -240,6 +290,37 @@ def test_frontend_release_traceability_fails_closed_for_unknown_dirty_state(tmp_
     assert trace["dist"]["build_provenance"]["status"] == "mismatch"
     assert trace["dist"]["build_provenance"]["verified_same_commit"] is False
     assert "dist_build_dirty_state_unknown" in trace["dist"]["blockers"]
+
+
+def test_frontend_release_traceability_fails_closed_when_current_source_is_dirty(tmp_path):
+    frontend_root = tmp_path / "frontend" / "web"
+    dist_root = frontend_root / "dist"
+    dist_root.mkdir(parents=True)
+    write_frontend_package(frontend_root)
+    git_commit = initialize_git_repo(tmp_path)
+    (frontend_root / "dirty-source.ts").write_text("export const dirty = true;\n", encoding="utf-8")
+    (dist_root / "index.html").write_text("<main>dirty source dist</main>", encoding="utf-8")
+    (dist_root / DIST_BUILD_PROVENANCE_FILENAME).write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.frontend-build-provenance.v1",
+                "frontend_path": "frontend/web",
+                "git": {"commit": git_commit, "dirty": False},
+                "source_hashes": {
+                    "package_json_sha256": trace_package_json_sha256(frontend_root),
+                    "pnpm_lock_sha256": trace_pnpm_lock_sha256(frontend_root),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    trace = build_frontend_release_traceability(repo_root=tmp_path)
+
+    assert trace["git"]["dirty"] is True
+    assert trace["dist"]["status"] == "built_unverified"
+    assert trace["dist"]["build_provenance"]["verified_same_commit"] is False
+    assert "source_tree_dirty" in trace["dist"]["blockers"]
 
 
 def test_frontend_release_traceability_cli_outputs_json():
@@ -451,7 +532,15 @@ def missing_plain_dockerfile_copy_sources(dockerfile: str, repo_root: Path | Non
 
 def initialize_git_repo(repo_root):
     subprocess.run(["git", "init"], cwd=repo_root, check=True, capture_output=True, text=True)
-    subprocess.run(["git", "add", "frontend/web/package.json", "frontend/web/pnpm-lock.yaml"], cwd=repo_root, check=True)
+    add_paths = ["frontend/web/package.json", "frontend/web/pnpm-lock.yaml"]
+    if (repo_root / ".gitignore").exists():
+        add_paths.append(".gitignore")
+    subprocess.run(["git", "add", *add_paths], cwd=repo_root, check=True)
+    return commit_all(repo_root, message="test frontend release traceability")
+
+
+def commit_all(repo_root, *, message):
+    subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
     subprocess.run(
         [
             "git",
@@ -461,7 +550,7 @@ def initialize_git_repo(repo_root):
             "user.email=traceability.test@example.invalid",
             "commit",
             "-m",
-            "test frontend release traceability",
+            message,
         ],
         cwd=repo_root,
         check=True,
