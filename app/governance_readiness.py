@@ -123,7 +123,9 @@ def build_governance_readiness(
 ) -> dict[str, Any]:
     """Build a secret-safe G6 governance readiness baseline for Admin Runtime and CLI use."""
     resolved_settings = settings or _default_settings()
-    skill_release_readiness = build_skill_release_readiness()
+    skill_release_readiness = build_skill_release_readiness(
+        skill_release_evidence_root="docs/release-evidence/skill-release"
+    )
     skill_release_dashboard = skill_release_readiness["admin_skill_release_dashboard"]
     tool_policy_readiness = build_tool_policy_readiness()
     bulk_review_evidence = tool_policy_readiness["evidence"]["admin_policy_bulk_review_dashboard"]
@@ -181,6 +183,7 @@ def build_governance_readiness(
                 "skill_snapshot_and_release_decision_lock",
                 "skill_release_readiness_evidence_snapshot",
                 "skill_release_review_template_entrypoint",
+                "skill_release_external_evidence_scaffold_entrypoint",
                 "skill_dependency_review_policy_contract",
                 "skill_signed_package_evidence_contract",
                 "skill_signed_package_evidence_source_validation",
@@ -196,6 +199,7 @@ def build_governance_readiness(
                 "release_readiness": {
                     "schema_version": skill_release_readiness["schema_version"],
                     "status": skill_release_readiness["status"],
+                    "source": skill_release_readiness["source"],
                     "summary": skill_release_readiness["summary"],
                     "dependency_review_policy": skill_release_readiness[
                         "dependency_review_policy"

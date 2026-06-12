@@ -100,6 +100,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "skill_dependency_policy_materialization" in domains["skill_governance"]["implemented"]
     assert "skill_release_readiness_evidence_snapshot" in domains["skill_governance"]["implemented"]
     assert "skill_release_review_template_entrypoint" in domains["skill_governance"]["implemented"]
+    assert "skill_release_external_evidence_scaffold_entrypoint" in domains["skill_governance"]["implemented"]
     assert "skill_dependency_review_policy_contract" in domains["skill_governance"]["implemented"]
     assert "skill_signed_package_evidence_contract" in domains["skill_governance"]["implemented"]
     assert "skill_signed_package_evidence_source_validation" in domains["skill_governance"]["implemented"]
@@ -113,6 +114,11 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     release_evidence = domains["skill_governance"]["evidence"]["release_readiness"]
     assert release_evidence["schema_version"] == "ai-platform.skill-release-readiness.v1"
     assert release_evidence["status"] == "partial_blocked"
+    assert release_evidence["source"]["external_evidence"] == {
+        "mode": "optional_external_release_evidence",
+        "root": "docs/release-evidence/skill-release",
+        "present": False,
+    }
     assert release_evidence["summary"]["total_skills"] >= 1
     assert release_evidence["dependency_review_policy"]["schema_version"] == (
         "ai-platform.skill-dependency-review-policy.v1"

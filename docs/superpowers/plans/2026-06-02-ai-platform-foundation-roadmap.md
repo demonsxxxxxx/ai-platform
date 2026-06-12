@@ -441,6 +441,12 @@ contract-only Admin Skill release dashboard readiness through
 readiness as `admin_skill_release_dashboard_contract`,
 pending Skill release review-manifest template generation through
 `tools/skill_release_readiness.py --review-template --skill-id <skill-id>`,
+external pending Skill release evidence scaffold generation through
+`tools/skill_release_readiness.py --write-evidence-scaffold --skill-id <skill-id>
+--evidence-root docs/release-evidence/skill-release` with schema
+`ai-platform.skill-release-evidence-scaffold.v1` and
+`external-release-evidence/<skill-id>/...` references that do not change Skill
+content hashes or close G6 by themselves,
 fail-closed review-manifest evidence-file validation that rejects empty,
 placeholder, secret-like, or unmatched SBOM/license/vulnerability references,
 source-level `ai-platform.skill-dependency-review-policy.v1` contract

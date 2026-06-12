@@ -194,6 +194,14 @@ closed as `skill_dependency_policy_blocked`; and SBOM/license/vulnerability
 filenames do not clear release governance unless an explicit review manifest
 marks the evidence as passed and its `evidence_files` entries are non-empty,
 non-placeholder, secret-safe, and matched to actual Skill evidence files.
+The CLI can also write external pending review inputs under the repository
+release-evidence tree with
+`python tools/skill_release_readiness.py --write-evidence-scaffold --skill-id <skill-id> --evidence-root docs/release-evidence/skill-release --format json`.
+That scaffold uses schema `ai-platform.skill-release-evidence-scaffold.v1`,
+binds SBOM, license-policy, vulnerability, and pending review-manifest
+references to `external-release-evidence/<skill-id>/...`, and keeps
+`status = pending_review`; it is an operator handoff artifact and does not
+change the Skill content hash or close G6 by itself.
 The same snapshot now embeds the source-level
 `ai-platform.skill-dependency-review-policy.v1` contract. That contract binds
 the required review manifest schema to `ai-platform.skill-release-review.v1`,

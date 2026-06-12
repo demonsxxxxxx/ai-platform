@@ -5,6 +5,7 @@ import sys
 
 from app.skills.release_readiness import (
     build_skill_release_readiness,
+    write_skill_release_evidence_scaffold,
     build_skill_release_review_template,
     render_skill_release_readiness_markdown,
 )
@@ -956,3 +957,196 @@ def test_skill_release_review_manifest_rejects_placeholder_actual_evidence_paths
     assert "placeholder/sbom.json" not in serialized
     assert "todo/LICENSE" not in serialized
     assert "replace-me/npm-audit.json" not in serialized
+
+
+def test_skill_release_evidence_scaffold_records_external_evidence_without_clearing_gate(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(skills_root, "general-chat", "Default chat capability.")
+    evidence_root = tmp_path / "release-evidence" / "skill-release"
+
+    scaffold = write_skill_release_evidence_scaffold(
+        skills_root=skills_root,
+        evidence_root=evidence_root,
+        skill_id="general-chat",
+        generated_at="2026-06-12T10:00:00Z",
+    )
+
+    assert scaffold["schema_version"] == "ai-platform.skill-release-evidence-scaffold.v1"
+    assert scaffold["status"] == "pending_review"
+    assert scaffold["skill_id"] == "general-chat"
+    assert scaffold["does_not_close_gate_by_itself"] is True
+    assert scaffold["written_files"] == [
+        "external-release-evidence/general-chat/ai-platform-skill-release-review.json",
+        "external-release-evidence/general-chat/sbom.json",
+        "external-release-evidence/general-chat/third-party-notices.txt",
+        "external-release-evidence/general-chat/vulnerability-report.json",
+    ]
+
+    skill_evidence_dir = evidence_root / "general-chat"
+    review = json.loads(
+        (skill_evidence_dir / "ai-platform-skill-release-review.json").read_text(encoding="utf-8")
+    )
+    assert review["status"] == "pending"
+    assert review["sbom_reviewed"] is False
+    assert review["license_policy_reviewed"] is False
+    assert review["vulnerability_reviewed"] is False
+    assert review["evidence_files"] == {
+        "sbom_or_signed_package": ["external-release-evidence/general-chat/sbom.json"],
+        "license_policy": ["external-release-evidence/general-chat/third-party-notices.txt"],
+        "vulnerability_scan": ["external-release-evidence/general-chat/vulnerability-report.json"],
+    }
+
+    readiness = build_skill_release_readiness(
+        skills_root=skills_root,
+        skill_release_evidence_root=evidence_root,
+    )
+
+    assert readiness["status"] == "partial_blocked"
+    assert readiness["summary"]["skills_with_sbom_evidence"] == 1
+    assert readiness["summary"]["skills_with_license_evidence"] == 1
+    assert readiness["summary"]["skills_with_vulnerability_evidence"] == 1
+    assert "signed_skill_package_or_sbom_release_gate" in readiness["open_gaps"]
+    assert "dependency_vulnerability_or_license_policy" in readiness["open_gaps"]
+    skill = readiness["skills"][0]
+    assert skill["release_review"]["status"] == "invalid_or_incomplete"
+    assert "signed_package_or_sbom_evidence_missing" not in skill["blockers"]
+    assert "dependency_license_policy_evidence_missing" not in skill["blockers"]
+    assert "dependency_vulnerability_evidence_missing" not in skill["blockers"]
+    assert "signed_package_or_sbom_review_not_verified" in skill["blockers"]
+    assert "dependency_license_policy_review_not_verified" in skill["blockers"]
+    assert "dependency_vulnerability_review_not_verified" in skill["blockers"]
+    serialized = json.dumps(readiness, ensure_ascii=False)
+    assert str(tmp_path) not in serialized
+    assert "token=secret" not in serialized
+
+
+def test_skill_release_readiness_cli_can_write_external_evidence_scaffold(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(skills_root, "general-chat", "Default chat capability.")
+    evidence_root = tmp_path / "release-evidence" / "skill-release"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/skill_release_readiness.py",
+            "--skills-root",
+            str(skills_root),
+            "--evidence-root",
+            str(evidence_root),
+            "--write-evidence-scaffold",
+            "--skill-id",
+            "general-chat",
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "ai-platform.skill-release-evidence-scaffold.v1"
+    assert payload["status"] == "pending_review"
+    assert (evidence_root / "general-chat" / "sbom.json").is_file()
+    assert (evidence_root / "general-chat" / "third-party-notices.txt").is_file()
+    assert (evidence_root / "general-chat" / "vulnerability-report.json").is_file()
+    assert (evidence_root / "general-chat" / "ai-platform-skill-release-review.json").is_file()
+
+    readiness_result = subprocess.run(
+        [
+            sys.executable,
+            "tools/skill_release_readiness.py",
+            "--skills-root",
+            str(skills_root),
+            "--evidence-root",
+            str(evidence_root),
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    readiness = json.loads(readiness_result.stdout)
+    skill = readiness["skills"][0]
+    assert skill["skill_id"] == "general-chat"
+    assert "signed_package_or_sbom_evidence_missing" not in skill["blockers"]
+    assert "signed_package_or_sbom_review_not_verified" in skill["blockers"]
+    assert str(tmp_path) not in readiness_result.stdout
+
+
+def test_skill_release_evidence_scaffold_rejects_invalid_or_unknown_skill_id(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(skills_root, "general-chat", "Default chat capability.")
+
+    for skill_id, expected in (
+        ("../general-chat", "Invalid skill_id"),
+        ("unknown-skill", "Unknown skill_id"),
+    ):
+        try:
+            write_skill_release_evidence_scaffold(
+                skills_root=skills_root,
+                evidence_root=tmp_path / "release-evidence" / "skill-release",
+                skill_id=skill_id,
+            )
+        except ValueError as exc:
+            assert expected in str(exc)
+        else:
+            raise AssertionError(f"expected {skill_id} to be rejected")
+
+
+def test_skill_release_evidence_scaffold_refuses_to_overwrite_existing_evidence(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(skills_root, "general-chat", "Default chat capability.")
+    evidence_root = tmp_path / "release-evidence" / "skill-release"
+
+    write_skill_release_evidence_scaffold(
+        skills_root=skills_root,
+        evidence_root=evidence_root,
+        skill_id="general-chat",
+        generated_at="2026-06-12T10:00:00Z",
+    )
+
+    try:
+        write_skill_release_evidence_scaffold(
+            skills_root=skills_root,
+            evidence_root=evidence_root,
+            skill_id="general-chat",
+            generated_at="2026-06-12T10:01:00Z",
+        )
+    except FileExistsError as exc:
+        assert "skill_release_evidence_scaffold_exists" in str(exc)
+    else:
+        raise AssertionError("expected scaffold generation to refuse overwriting existing evidence")
+
+    review = json.loads(
+        (evidence_root / "general-chat" / "ai-platform-skill-release-review.json").read_text(encoding="utf-8")
+    )
+    assert review["reviewed_at"] == "2026-06-12T10:00:00Z"
+
+
+def test_skill_release_readiness_cli_refuses_to_overwrite_external_evidence_scaffold(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(skills_root, "general-chat", "Default chat capability.")
+    evidence_root = tmp_path / "release-evidence" / "skill-release"
+    command = [
+        sys.executable,
+        "tools/skill_release_readiness.py",
+        "--skills-root",
+        str(skills_root),
+        "--evidence-root",
+        str(evidence_root),
+        "--write-evidence-scaffold",
+        "--skill-id",
+        "general-chat",
+        "--format",
+        "json",
+    ]
+
+    subprocess.run(command, check=True, capture_output=True, text=True)
+    result = subprocess.run(command, check=False, capture_output=True, text=True)
+
+    assert result.returncode == 2
+    assert "skill_release_evidence_scaffold_exists" in result.stderr
+    assert "Traceback" not in result.stderr

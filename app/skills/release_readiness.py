@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from datetime import UTC, datetime
+import hashlib
 from pathlib import Path
 import re
 from typing import Any
@@ -22,6 +24,8 @@ DEPENDENCY_REVIEW_POLICY_SCHEMA_VERSION = "ai-platform.skill-dependency-review-p
 SIGNED_PACKAGE_EVIDENCE_CONTRACT_SCHEMA_VERSION = "ai-platform.skill-signed-package-evidence-contract.v1"
 GATE_NAME = "G6 Skill Release / Dependency Governance"
 DEPENDENCY_REVIEW_POLICY_RUNTIME_GAP = "skill_dependency_review_policy_runtime_acceptance"
+EVIDENCE_SCAFFOLD_SCHEMA_VERSION = "ai-platform.skill-release-evidence-scaffold.v1"
+_EXTERNAL_EVIDENCE_PREFIX = "external-release-evidence"
 
 _PACKAGE_METADATA_FILES = {"_meta.json", ".clawhub/origin.json"}
 _REQUIREMENTS_FILES = {
@@ -250,6 +254,21 @@ def _relative_file_names(skill_dir: Path) -> list[str]:
     return names
 
 
+def _relative_external_evidence_file_names(evidence_root: Path | None, skill_id: str) -> list[str]:
+    if evidence_root is None:
+        return []
+    skill_evidence_dir = evidence_root / skill_id
+    if not skill_evidence_dir.is_dir() or skill_evidence_dir.is_symlink():
+        return []
+    names: list[str] = []
+    for item in sorted(skill_evidence_dir.rglob("*")):
+        if not item.is_file() or item.is_symlink():
+            continue
+        relative_path = item.relative_to(skill_evidence_dir).as_posix()
+        names.append(f"{_EXTERNAL_EVIDENCE_PREFIX}/{skill_id}/{relative_path}")
+    return names
+
+
 def _basename(relative_path: str) -> str:
     return relative_path.replace("\\", "/").rsplit("/", 1)[-1]
 
@@ -298,6 +317,20 @@ def _matched_evidence_paths(ref: str, allowed_paths: list[str]) -> list[str]:
 
 def _is_signed_package_evidence_path(relative_path: str) -> bool:
     return _basename(_normalize_relative_path(relative_path)) in _SIGNED_PACKAGE_EVIDENCE_NAMES
+
+
+def _resolve_release_file_path(
+    relative_path: str,
+    *,
+    skill_dir: Path,
+    evidence_root: Path | None,
+    skill_id: str,
+) -> Path:
+    normalized = relative_path.replace("\\", "/")
+    external_prefix = f"{_EXTERNAL_EVIDENCE_PREFIX}/{skill_id}/"
+    if evidence_root is not None and normalized.startswith(external_prefix):
+        return evidence_root / skill_id / normalized[len(external_prefix) :]
+    return skill_dir / normalized
 
 
 def _is_safe_signed_package_reference(value: str) -> bool:
@@ -363,12 +396,36 @@ def _signed_package_evidence_errors(evidence_path: Path) -> list[str]:
     return sorted(set(errors))
 
 
-def _valid_signed_package_evidence_paths(skill_dir: Path, relative_files: list[str]) -> list[str]:
+def _valid_signed_package_evidence_paths(
+    skill_dir: Path,
+    relative_files: list[str],
+    *,
+    evidence_root: Path | None,
+    skill_id: str,
+) -> list[str]:
     paths = _matching_file_paths(relative_files, _SIGNED_PACKAGE_EVIDENCE_NAMES)
-    return [path for path in paths if not _signed_package_evidence_errors(skill_dir / path)]
+    return [
+        path
+        for path in paths
+        if not _signed_package_evidence_errors(
+            _resolve_release_file_path(
+                path,
+                skill_dir=skill_dir,
+                evidence_root=evidence_root,
+                skill_id=skill_id,
+            )
+        )
+    ]
 
 
-def _review_evidence_file_errors(payload: dict[str, Any], relative_files: list[str], *, skill_dir: Path) -> list[str]:
+def _review_evidence_file_errors(
+    payload: dict[str, Any],
+    relative_files: list[str],
+    *,
+    skill_dir: Path,
+    evidence_root: Path | None,
+    skill_id: str,
+) -> list[str]:
     evidence_files = payload.get("evidence_files")
     if not isinstance(evidence_files, dict):
         return ["evidence_files_missing_or_invalid"]
@@ -404,7 +461,16 @@ def _review_evidence_file_errors(payload: dict[str, Any], relative_files: list[s
             if category == "sbom_or_signed_package":
                 for path in matched_paths:
                     if _is_signed_package_evidence_path(path):
-                        errors.extend(_signed_package_evidence_errors(skill_dir / path))
+                        errors.extend(
+                            _signed_package_evidence_errors(
+                                _resolve_release_file_path(
+                                    path,
+                                    skill_dir=skill_dir,
+                                    evidence_root=evidence_root,
+                                    skill_id=skill_id,
+                                )
+                            )
+                        )
     return sorted(set(errors))
 
 
@@ -415,8 +481,19 @@ def _review_flag_errors(payload: dict[str, Any]) -> list[str]:
     return ["review_flags_missing_or_invalid"]
 
 
-def _package_evidence(skill_dir: Path, relative_files: list[str]) -> dict[str, list[str]]:
-    signed_package_paths = _valid_signed_package_evidence_paths(skill_dir, relative_files)
+def _package_evidence(
+    skill_dir: Path,
+    relative_files: list[str],
+    *,
+    evidence_root: Path | None,
+    skill_id: str,
+) -> dict[str, list[str]]:
+    signed_package_paths = _valid_signed_package_evidence_paths(
+        skill_dir,
+        relative_files,
+        evidence_root=evidence_root,
+        skill_id=skill_id,
+    )
     return {
         "metadata_files": _matching_files(relative_files, _PACKAGE_METADATA_FILES),
         "requirements_files": _matching_files(relative_files, _REQUIREMENTS_FILES),
@@ -427,7 +504,13 @@ def _package_evidence(skill_dir: Path, relative_files: list[str]) -> dict[str, l
     }
 
 
-def _release_review(skill_dir: Path, relative_files: list[str], *, skill_id: str) -> dict[str, Any]:
+def _release_review(
+    skill_dir: Path,
+    relative_files: list[str],
+    *,
+    skill_id: str,
+    evidence_root: Path | None,
+) -> dict[str, Any]:
     review_paths = _matching_file_paths(relative_files, _RELEASE_REVIEW_FILE_NAMES)
     review_files = sorted({_basename(path) for path in review_paths})
     if not review_paths:
@@ -445,7 +528,14 @@ def _release_review(skill_dir: Path, relative_files: list[str], *, skill_id: str
     review_flag_errors: list[str] = []
     for relative_path in review_paths:
         try:
-            payload = json.loads((skill_dir / relative_path).read_text(encoding="utf-8"))
+            payload = json.loads(
+                _resolve_release_file_path(
+                    relative_path,
+                    skill_dir=skill_dir,
+                    evidence_root=evidence_root,
+                    skill_id=skill_id,
+                ).read_text(encoding="utf-8")
+            )
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             invalid_files.append(_basename(relative_path))
             continue
@@ -462,7 +552,13 @@ def _release_review(skill_dir: Path, relative_files: list[str], *, skill_id: str
             invalid_files.append(_basename(relative_path))
             continue
         current_review_flag_errors = _review_flag_errors(payload)
-        current_evidence_file_errors = _review_evidence_file_errors(payload, relative_files, skill_dir=skill_dir)
+        current_evidence_file_errors = _review_evidence_file_errors(
+            payload,
+            relative_files,
+            skill_dir=skill_dir,
+            evidence_root=evidence_root,
+            skill_id=skill_id,
+        )
         if current_review_flag_errors or current_evidence_file_errors:
             invalid_files.append(_basename(relative_path))
             evidence_file_errors.extend(current_evidence_file_errors)
@@ -545,17 +641,35 @@ def _open_gaps(skills: list[dict[str, Any]], *, inventory_present: bool) -> list
     return gaps
 
 
-def build_skill_release_readiness(*, skills_root: str | Path = "skills") -> dict[str, Any]:
+def build_skill_release_readiness(
+    *,
+    skills_root: str | Path = "skills",
+    skill_release_evidence_root: str | Path | None = None,
+) -> dict[str, Any]:
     """Build a secret-safe, offline skill release governance evidence snapshot."""
     root = Path(skills_root)
+    evidence_root = Path(skill_release_evidence_root) if skill_release_evidence_root is not None else None
     dashboard_readiness = build_skill_release_dashboard_readiness()
     builtin_skills = BuiltinSkillRegistry(root).list_builtin_skills()
     available_skill_ids = {skill.name for skill in builtin_skills}
     skill_items: list[dict[str, Any]] = []
     for skill in builtin_skills:
-        relative_files = _relative_file_names(skill.path)
-        evidence = _package_evidence(skill.path, relative_files)
-        release_review = _release_review(skill.path, relative_files, skill_id=skill.name)
+        relative_files = [
+            *_relative_file_names(skill.path),
+            *_relative_external_evidence_file_names(evidence_root, skill.name),
+        ]
+        evidence = _package_evidence(
+            skill.path,
+            relative_files,
+            evidence_root=evidence_root,
+            skill_id=skill.name,
+        )
+        release_review = _release_review(
+            skill.path,
+            relative_files,
+            skill_id=skill.name,
+            evidence_root=evidence_root,
+        )
         dependency_policy = skill_dependency_policy(skill.name, available_skill_ids)
         blockers = _skill_blockers(evidence, release_review, dependency_policy)
         skill_items.append(
@@ -590,6 +704,11 @@ def build_skill_release_readiness(*, skills_root: str | Path = "skills") -> dict
             "mode": "offline_repo_skill_inventory",
             "root": "skills",
             "inventory_present": inventory_present,
+            "external_evidence": {
+                "mode": "optional_external_release_evidence",
+                "root": f"docs/release-evidence/skill-release",
+                "present": bool(evidence_root is not None and evidence_root.is_dir()),
+            },
         },
         "summary": {
             "total_skills": len(skill_items),
@@ -622,6 +741,158 @@ def build_skill_release_readiness(*, skills_root: str | Path = "skills") -> dict
         "evidence_policy": (
             "SBOM or signed-package evidence plus dependency license and vulnerability review "
             "are required before closing the skill release governance gate"
+        ),
+    }
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _scaffold_relative_path(skill_id: str, filename: str) -> str:
+    return f"{_EXTERNAL_EVIDENCE_PREFIX}/{skill_id}/{filename}"
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"{json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)}\n",
+        encoding="utf-8",
+    )
+
+
+def _write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def write_skill_release_evidence_scaffold(
+    *,
+    skills_root: str | Path = "skills",
+    evidence_root: str | Path = "docs/release-evidence/skill-release",
+    skill_id: str,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """Write pending external Skill release evidence inputs without clearing the review gate."""
+    normalized_skill_id = _validate_skill_id(skill_id)
+    root = Path(skills_root)
+    evidence_base = Path(evidence_root)
+    skills = BuiltinSkillRegistry(root).list_builtin_skills()
+    skill = next((item for item in skills if item.name == normalized_skill_id), None)
+    if skill is None:
+        raise ValueError("Unknown skill_id for release evidence scaffold")
+
+    timestamp = generated_at or _utc_now_iso()
+    skill_evidence_dir = evidence_base / normalized_skill_id
+    sbom_ref = _scaffold_relative_path(normalized_skill_id, "sbom.json")
+    license_ref = _scaffold_relative_path(normalized_skill_id, "third-party-notices.txt")
+    vulnerability_ref = _scaffold_relative_path(normalized_skill_id, "vulnerability-report.json")
+    review_ref = _scaffold_relative_path(normalized_skill_id, "ai-platform-skill-release-review.json")
+
+    skill_files = _relative_file_names(skill.path)
+    file_components = []
+    for relative_path in skill_files:
+        content = (skill.path / relative_path).read_bytes()
+        file_components.append(
+            {
+                "type": "file",
+                "name": relative_path,
+                "hashes": [{"alg": "SHA-256", "content": hashlib.sha256(content).hexdigest()}],
+            }
+        )
+    sbom = {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "schema_version": "ai-platform.skill-release-source-sbom.v1",
+        "metadata": {
+            "timestamp": timestamp,
+            "component": {
+                "type": "application",
+                "name": normalized_skill_id,
+                "version": skill.version,
+                "description": skill.description,
+            },
+            "properties": [
+                {"name": "ai-platform.skill_id", "value": normalized_skill_id},
+                {"name": "ai-platform.skill_content_hash", "value": skill.version},
+                {"name": "ai-platform.evidence_status", "value": "pending_review"},
+            ],
+        },
+        "components": file_components,
+    }
+    vulnerability_report = {
+        "schema_version": "ai-platform.skill-vulnerability-evidence.v1",
+        "status": "pending_review",
+        "skill_id": normalized_skill_id,
+        "skill_content_hash": skill.version,
+        "generated_at": timestamp,
+        "scan_scope": "repository_skill_inventory",
+        "dependency_files": _matching_file_paths(skill_files, _REQUIREMENTS_FILES),
+        "finding_count": 0,
+        "findings": [],
+        "review_required": True,
+        "notes": [
+            "This scaffold records repository-declared dependency inputs only.",
+            "An operator must replace or review this evidence before marking vulnerability_reviewed=true.",
+        ],
+    }
+    license_notice = (
+        "ai-platform Skill release license-policy evidence\n\n"
+        f"Skill: {normalized_skill_id}\n"
+        f"Skill content hash: {skill.version}\n"
+        f"Generated at: {timestamp}\n\n"
+        "Repository-declared dependency files:\n"
+    )
+    dependency_files = _matching_file_paths(skill_files, _REQUIREMENTS_FILES)
+    if dependency_files:
+        license_notice += "".join(f"- {path}\n" for path in dependency_files)
+    else:
+        license_notice += "- none\n"
+    license_notice += (
+        "\nStatus: pending_review\n"
+        "Operator action: confirm third-party license policy before setting license_policy_reviewed=true.\n"
+    )
+
+    review = build_skill_release_review_template(skill_id=normalized_skill_id)
+    review["evidence_files"] = {
+        "sbom_or_signed_package": [sbom_ref],
+        "license_policy": [license_ref],
+        "vulnerability_scan": [vulnerability_ref],
+    }
+    review["reviewed_at"] = timestamp
+
+    outputs = {
+        "sbom.json": sbom,
+        "third-party-notices.txt": license_notice,
+        "vulnerability-report.json": vulnerability_report,
+        "ai-platform-skill-release-review.json": review,
+    }
+    existing_outputs = [filename for filename in outputs if (skill_evidence_dir / filename).exists()]
+    if existing_outputs:
+        raise FileExistsError(
+            "skill_release_evidence_scaffold_exists: "
+            + ", ".join(sorted(existing_outputs))
+        )
+    for filename, payload in outputs.items():
+        target = skill_evidence_dir / filename
+        if isinstance(payload, dict):
+            _write_json(target, payload)
+        else:
+            _write_text(target, payload)
+
+    written_files = [review_ref, sbom_ref, license_ref, vulnerability_ref]
+    return {
+        "schema_version": EVIDENCE_SCAFFOLD_SCHEMA_VERSION,
+        "status": "pending_review",
+        "skill_id": normalized_skill_id,
+        "skill_content_hash": skill.version,
+        "generated_at": timestamp,
+        "evidence_root": "docs/release-evidence/skill-release",
+        "written_files": sorted(written_files),
+        "does_not_close_gate_by_itself": True,
+        "next_operator_action": (
+            "Review the scaffolded SBOM, license, and vulnerability evidence; "
+            "only then set the review manifest status to passed and all review flags to true."
         ),
     }
 

@@ -615,6 +615,10 @@ def test_governance_docs_record_skill_dependency_review_policy_without_closing_g
 
     for text in (governance_text, roadmap_text):
         assert "tools/skill_release_readiness.py" in text
+        assert "--write-evidence-scaffold" in text
+        assert "--evidence-root docs/release-evidence/skill-release" in text
+        assert "ai-platform.skill-release-evidence-scaffold.v1" in text
+        assert "external-release-evidence/<skill-id>/..." in text
         assert "tools/skill_release_dashboard_readiness.py" in text
         assert "ai-platform.skill-release-readiness.v1" in text
         assert "ai-platform.skill-release-dashboard-readiness.v1" in text
