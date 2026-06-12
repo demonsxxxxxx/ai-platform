@@ -121,8 +121,8 @@ dashboard acceptance, and 211 runtime smoke remain required before gate closure.
 
 On 2026-06-12, `tools/verify_governance_runtime_smoke.py` returned `ok: true`
 on the 211 API for runtime subject commit
-`948179c73734aa61ed764fb3485f5415fca8f193` and image
-`ai-platform:948179c-skill-release-scaffold`. The smoke verified ordinary-user
+`b96d02e232176bade455f2af2bc3080f8f372206` and image
+`ai-platform:b96d02e-release-evidence-runtime-acceptance`. The smoke verified ordinary-user
 Admin Runtime denial, same-tenant admin access, governance schema
 `ai-platform.governance-readiness.v1`, required tool/skill/memory governance
 domains, tool policy taxonomy and bulk-review signals, skill release/dashboard
@@ -131,15 +131,21 @@ fail-closed/context-provenance/office-context signals, and no forbidden
 projection terms in the reviewed summary. The 211 API and worker labels matched
 the runtime subject, and the compose config label pointed to the repo-local 211
 deploy composition. The reviewed release evidence entry is
-`docs/release-evidence/foundation-alpha-poc/948179c73734aa61ed764fb3485f5415fca8f193/2026-06-12-211-foundation-alpha-poc-948179c-governance-runtime-smoke.json`.
+`docs/release-evidence/foundation-alpha-poc/b96d02e232176bade455f2af2bc3080f8f372206/2026-06-12-211-foundation-alpha-poc-b96d02e-governance-runtime-smoke.json`.
 
 This smoke records only the focused Admin Runtime governance projection proof
-for the Foundation Alpha POC and the skill-release-scaffold rollout. It does
+for the Foundation Alpha POC and the release-evidence-runtime-acceptance
+rollout. It does
 not close ordinary-user confirmation-card UX, full Admin dashboard/visual
 acceptance, signed-package/SBOM review evidence, dependency
 vulnerability/license evidence, office context-pack persistence and executor
 injection, frontend context provenance acceptance, or broader production
 governance rollout.
+
+The immediately superseded `948179c73734aa61ed764fb3485f5415fca8f193`
+governance smoke remains historical reviewed evidence for the
+skill-release-scaffold rollout at
+`docs/release-evidence/foundation-alpha-poc/948179c73734aa61ed764fb3485f5415fca8f193/2026-06-12-211-foundation-alpha-poc-948179c-governance-runtime-smoke.json`.
 
 On 2026-06-12, `tools/verify_governance_runtime_smoke.py` returned `ok: true`
 on the 211 API for runtime subject commit

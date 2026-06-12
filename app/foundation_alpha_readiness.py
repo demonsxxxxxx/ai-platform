@@ -12,12 +12,12 @@ from app.public_context_keys import public_context_input_key_findings
 SCHEMA_VERSION = "ai-platform.foundation-alpha-poc-readiness.v1"
 SOURCE_SNAPSHOT_SCHEMA_VERSION = "ai-platform.source-snapshot.v1"
 STAGE_NAME = "Foundation Alpha POC"
-RUNTIME_SUBJECT_COMMIT_SHA = "948179c73734aa61ed764fb3485f5415fca8f193"
+RUNTIME_SUBJECT_COMMIT_SHA = "b96d02e232176bade455f2af2bc3080f8f372206"
 _ROOT = Path(__file__).resolve().parents[1]
 _EVIDENCE_BASE_ROOT = _ROOT / "docs/release-evidence/foundation-alpha-poc"
 _EVIDENCE_ROOT = _EVIDENCE_BASE_ROOT / RUNTIME_SUBJECT_COMMIT_SHA
-_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-12-211-foundation-alpha-poc-948179c-skill-release-scaffold-smoke.json"
-_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-12-211-foundation-alpha-poc-948179c-auth-rbac-smoke.json"
+_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-12-211-foundation-alpha-poc-b96d02e-runtime-poc-smoke.json"
+_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-12-211-foundation-alpha-poc-b96d02e-auth-rbac-smoke.json"
 _SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
 _SOURCE_SNAPSHOT_MARKER = _ROOT / ".ai-platform-source-snapshot.json"
 _RUNTIME_NEUTRAL_PATH_PREFIXES = (
@@ -39,7 +39,6 @@ _RUNTIME_NEUTRAL_EXACT_PATHS = {
 _OPEN_FOLLOWUPS = [
     "g7_docker_sandbox_hardening",
     "g8_ordinary_user_multi_agent_exposure",
-    "g9_runtime_export_and_retention_acceptance",
     "packaged_frontend_image_release_acceptance",
     "broader_auth_session_rbac_tenant_redaction_regression",
 ]
@@ -870,6 +869,14 @@ def _ordered_stage_blockers(domains: dict[str, dict[str, Any]]) -> list[str]:
     return ordered
 
 
+def _top_level_open_followups(stage_acceptance_blockers: list[str]) -> list[str]:
+    ordered: list[str] = []
+    for item in [*_OPEN_FOLLOWUPS, *stage_acceptance_blockers]:
+        if item not in ordered:
+            ordered.append(item)
+    return ordered
+
+
 def _stage_acceptance_status(
     *,
     runtime_relevant_source_matches: bool,
@@ -1291,7 +1298,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         ),
         "decision": decision_summary,
         "domains": domains,
-        "open_followups": list(_OPEN_FOLLOWUPS),
+        "open_followups": _top_level_open_followups(stage_acceptance_blockers),
         "evidence_policy": "source_docs_tests_211_smoke_and_release_evidence_required_before_stage_closure",
     }
 

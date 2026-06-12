@@ -48,33 +48,33 @@ For source-only docs/tests/evidence syncs, write a local-only
 empty. Missing, stale, or malformed snapshot markers intentionally fail closed.
 
 On 2026-06-12, runtime subject commit
-`948179c73734aa61ed764fb3485f5415fca8f193` was synced to the 211 runtime
-subject and the 211 API and worker ran
-`ai-platform:948179c-skill-release-scaffold` with image ID
-`sha256:1f9e5bdfd6788486ad36c31fc543a7806b3028c8e3261442c3262e55a46ef94e`.
+`b96d02e232176bade455f2af2bc3080f8f372206` was synced to the 211 source
+target and the 211 API and worker ran
+`ai-platform:b96d02e-release-evidence-runtime-acceptance` with image ID
+`sha256:e0ae05720b77eecacb20d5b646ec9bab536da4cb6073a22b0495d8735f744009`.
 The `ai-platform.source-revision`, `ai-platform.runtime-subject`, and
 `org.opencontainers.image.revision` labels all pointed to
-`948179c73734aa61ed764fb3485f5415fca8f193`. API health returned `ok`; the
+`b96d02e232176bade455f2af2bc3080f8f372206`. API health returned `ok`; the
 compose config label pointed to the repo-local deploy composition; and the
 aggregate verifier `tools/verify_poc_gate.py` returned `ok: true` on 211 for
-the controlled context public-projection and skill-release-scaffold rollout
-slice. That smoke verified `summary_source=chat_stream`, safe
+the controlled context public-projection and release-evidence-runtime-acceptance
+rollout slice. That smoke verified `summary_source=chat_stream`, safe
 `input_keys=["attachments","message"]` for a file-backed run, memory policy
 source, execution tier, generated-at presence, and no raw material IDs or
 forbidden projection leaks. The reviewed, redacted release-evidence entry is
-`docs/release-evidence/foundation-alpha-poc/948179c73734aa61ed764fb3485f5415fca8f193/2026-06-12-211-foundation-alpha-poc-948179c-skill-release-scaffold-smoke.json`.
+`docs/release-evidence/foundation-alpha-poc/b96d02e232176bade455f2af2bc3080f8f372206/2026-06-12-211-foundation-alpha-poc-b96d02e-runtime-poc-smoke.json`.
 
 The focused Auth/RBAC verifier `tools/verify_auth_rbac_smoke.py` also returned
-`ok: true` on 211 against `948179c`. It verified unauthenticated auth
+`ok: true` on 211 against `b96d02e`. It verified unauthenticated auth
 rejection, trusted platform principal projection, invalid gateway secret
 rejection, ordinary-user Admin Runtime denial, and same-tenant Admin Runtime
 access for an admin smoke principal. The reviewed, redacted Auth/RBAC evidence
 entry is
-`docs/release-evidence/foundation-alpha-poc/948179c73734aa61ed764fb3485f5415fca8f193/2026-06-12-211-foundation-alpha-poc-948179c-auth-rbac-smoke.json`.
+`docs/release-evidence/foundation-alpha-poc/b96d02e232176bade455f2af2bc3080f8f372206/2026-06-12-211-foundation-alpha-poc-b96d02e-auth-rbac-smoke.json`.
 
 The focused governance verifier
 `tools/verify_governance_runtime_smoke.py` returned `ok: true` on 211 against
-the same `948179c` runtime subject. It verified ordinary-user Admin Runtime
+the same `b96d02e` runtime subject. It verified ordinary-user Admin Runtime
 denial, same-tenant admin access, G6 governance schema
 `ai-platform.governance-readiness.v1`, required tool/skill/memory governance
 domains, tool policy taxonomy and bulk-review signals, skill release/dashboard
@@ -82,7 +82,15 @@ signals with `dashboard_contract` trimmed from the overview projection, memory
 fail-closed/context-provenance/office-context signals, and no forbidden
 projection terms in the reviewed summary. The reviewed, redacted governance
 smoke evidence entry is
-`docs/release-evidence/foundation-alpha-poc/948179c73734aa61ed764fb3485f5415fca8f193/2026-06-12-211-foundation-alpha-poc-948179c-governance-runtime-smoke.json`.
+`docs/release-evidence/foundation-alpha-poc/b96d02e232176bade455f2af2bc3080f8f372206/2026-06-12-211-foundation-alpha-poc-b96d02e-governance-runtime-smoke.json`.
+
+The runtime-packaged release evidence verifier
+`tools/verify_release_evidence_runtime_acceptance.py` returned `ok: true`
+inside the `b96d02e` API container. It verified the safe reviewed index with
+`safe_entry_count=26`, `blocked_entry_count=0`, `excluded_entry_count=3`, and
+the review-first retention policy. The reviewed, redacted runtime acceptance
+evidence entry is
+`docs/release-evidence/foundation-alpha-poc/b96d02e232176bade455f2af2bc3080f8f372206/2026-06-12-211-foundation-alpha-poc-b96d02e-release-evidence-runtime-acceptance.json`.
 
 This rollout used the repo-local 211 deploy composition while reusing the
 existing external runtime env file without printing or copying secret values.
@@ -91,6 +99,14 @@ dependencies did not change. Treat that as a deployment workaround, not the
 preferred release path.
 
 The immediately superseded runtime subject commit
+`948179c73734aa61ed764fb3485f5415fca8f193` remains historical reviewed
+evidence for the skill-release-scaffold slice. Its reviewed, redacted smoke
+evidence entries are
+`docs/release-evidence/foundation-alpha-poc/948179c73734aa61ed764fb3485f5415fca8f193/2026-06-12-211-foundation-alpha-poc-948179c-skill-release-scaffold-smoke.json`,
+`docs/release-evidence/foundation-alpha-poc/948179c73734aa61ed764fb3485f5415fca8f193/2026-06-12-211-foundation-alpha-poc-948179c-auth-rbac-smoke.json`, and
+`docs/release-evidence/foundation-alpha-poc/948179c73734aa61ed764fb3485f5415fca8f193/2026-06-12-211-foundation-alpha-poc-948179c-governance-runtime-smoke.json`.
+
+The earlier superseded runtime subject commit
 `b7689d0cbc6fa3913de47aea3aded1036f0ea0ae` remains historical reviewed
 evidence for the context public-projection slice. Its reviewed, redacted smoke
 evidence entries are
@@ -185,13 +201,13 @@ Earlier smoke evidence for
 `a3f1d739e12686cba2e0b309de26a4e1127bd3a5`,
 `8c0cffca63bc747fad0a5771f209acc8a608ab9e`,
 `bf20432f9889efa8b367afdf512c641068ba30bc`, and
-`3874281276c84a418bd08bda56d7ea55b52970b7` remains retained as historical evidence only; the current-main evidence above is the active Foundation Alpha POC reference.
-The immediately superseded runtime image was `ai-platform:3ead61c-g9-release-evidence-runtime-docs`.
+`3874281276c84a418bd08bda56d7ea55b52970b7` remains retained as historical evidence only; the `b96d02e` evidence above is the active Foundation Alpha POC reference.
+The immediately superseded runtime image was `ai-platform:948179c-skill-release-scaffold`.
 
 This smoke does not close #21 capacity, G7 Docker sandbox hardening, ordinary
-user multi-agent exposure, department rollout, release-evidence runtime export,
-release-evidence retention runtime acceptance, or packaged frontend image
-release acceptance.
+user multi-agent exposure, department rollout, alert/trace export acceptance,
+signed Skill package or SBOM review evidence, ordinary-user legacy-route
+acceptance, or packaged frontend image release acceptance.
 
 ## Current Gate Status
 
@@ -203,7 +219,7 @@ release acceptance.
 | G6 Tool / Skill / Memory Governance | Admin Runtime governance projection now has focused 211 smoke evidence for the POC runtime, but G6 remains partial and ordinary-user expansion remains blocked. | Tool policy taxonomy/history, public permission-card projection, skill release/dependency policy contracts, memory delete/retention/redaction/export readiness, office context-pack architecture readiness, context snapshot public provenance projection contract, governance readiness CLI, POC runs using governed skills, and 2026-06-12 governance runtime smoke evidence. | Legacy frontend route remap/policy enforcement, signed package or SBOM review evidence, dependency vulnerability/license evidence, context-pack persistence/executor injection/frontend provenance acceptance, full dashboard/visual acceptance, and broader 211 acceptance. |
 | G7 Sandbox / Resource Hardening | Blocked for high-risk expansion. | Fake provider remains local/test-only; capacity docs expose sandbox limits and missing hardening warnings. | Docker provider hardening, egress/quota policy, orphan cleanup, container security options, and Docker-capable 211 smoke. |
 | G8 Multi-Agent Controlled Beta | Feature-flagged only. | Dispatcher and child-run admission work exists behind current controls. | Tenant-aware scheduling quota/backpressure, #21 capacity evidence, observability, sandbox, and tool governance gates must pass before ordinary-user exposure. |
-| G9 Observability / Quality / Ops | Foundation Alpha POC release evidence exists; G9 remains partial. | Admin Runtime overview, capacity/governance/observability readiness docs and tools, error taxonomy/dashboard contracts, release-evidence contracts, release-evidence runtime acceptance verifier wiring, trace/audit export contracts, frontend projection audit, and reviewed 211 POC smoke entry. | Runtime dashboard acceptance, recorded capacity evidence, model-gateway backpressure evidence, golden-set eval runtime, alert delivery/runtime calibration, trace/export 211 acceptance, and reviewed 211 release-evidence runtime export/retention acceptance. |
+| G9 Observability / Quality / Ops | Foundation Alpha POC release evidence exists; G9 remains partial. | Admin Runtime overview, capacity/governance/observability readiness docs and tools, error taxonomy/dashboard contracts, release-evidence contracts, reviewed 211 release-evidence runtime export/retention acceptance for `b96d02e`, trace/audit export contracts, frontend projection audit, and reviewed 211 POC smoke entry. | Runtime dashboard acceptance, recorded capacity evidence, model-gateway backpressure evidence, golden-set eval runtime, alert delivery/runtime calibration, and trace/export 211 acceptance. |
 | G10 Internal Beta / Department Rollout | Blocked. | Candidate internal workflows are named only as examples in roadmap. | Select 1-2 real internal workflow owners, complete prior gates, record cost/quality/audit/rollback evidence, and pass 211 acceptance. |
 
 ## Issue-Driven Thin Spots

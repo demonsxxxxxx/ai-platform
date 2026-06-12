@@ -292,11 +292,16 @@ runtime subject commits instead of treating them as current safe export rows.
 The same source-level readiness snapshot now also embeds
 `ai-platform.release-evidence-retention-policy.v1` as a contract-only
 retention policy with a 180-day default, 30-day minimum, reviewed-delete
-requirement, and reviewed/redacted-entry-only delete scope. The remaining
-release-evidence gaps are `release_evidence_runtime_export_acceptance` and
-`release_evidence_retention_runtime_acceptance`, which stay open until runtime
-export acceptance, runtime retention enforcement/acceptance, review workflow,
-and deployment evidence are proven.
+requirement, and reviewed/redacted-entry-only delete scope. The 2026-06-12
+`b96d02e232176bade455f2af2bc3080f8f372206` 211 runtime evidence records
+reviewed runtime export and retention acceptance for the active Foundation
+Alpha POC runtime subject, so the narrower
+`g9_runtime_export_and_retention_acceptance` blocker is no longer the next
+Foundation Alpha slice for that runtime. This does not close G9;
+`alert_delivery_and_trace_export_211_acceptance`, signed Skill package or SBOM
+review evidence, ordinary-user legacy-route acceptance, packaged frontend image
+release acceptance, review/PR closure, and broader auth/session/RBAC regression
+remain separate blockers.
 
 `tools/verify_release_evidence_runtime_acceptance.py` is now the focused
 runtime-packaged verifier for that path. It may produce the safe

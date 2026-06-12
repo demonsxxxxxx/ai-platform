@@ -10,7 +10,7 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
-ACTIVE_RUNTIME_SUBJECT_SHA = "948179c73734aa61ed764fb3485f5415fca8f193"
+ACTIVE_RUNTIME_SUBJECT_SHA = "b96d02e232176bade455f2af2bc3080f8f372206"
 HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
@@ -418,6 +418,7 @@ def test_foundation_alpha_readiness_accepts_release_evidence_runtime_acceptance_
     assert "alert_delivery_and_trace_export_211_acceptance" in g9["open_followups"]
     assert "g9_runtime_export_and_retention_acceptance" not in readiness["decision"]["stage_acceptance_blockers"]
     assert "alert_delivery_and_trace_export_211_acceptance" in readiness["decision"]["stage_acceptance_blockers"]
+    assert "g9_runtime_export_and_retention_acceptance" not in readiness["open_followups"]
     assert "g9_runtime_export_and_retention_acceptance" not in readiness["operator_context"][
         "next_recommended_slices"
     ]
@@ -470,6 +471,7 @@ def test_foundation_alpha_readiness_keeps_g9_runtime_blocker_without_valid_relea
     g9 = readiness["domains"]["g9_admin_runtime_observability"]
     assert "g9_runtime_export_and_retention_acceptance" in g9["open_followups"]
     assert "g9_runtime_export_and_retention_acceptance" in readiness["decision"]["stage_acceptance_blockers"]
+    assert "g9_runtime_export_and_retention_acceptance" in readiness["open_followups"]
     assert (
         g9["evidence"]["release_evidence_runtime_acceptance"]["status"]
         == "missing_release_evidence_runtime_acceptance"
@@ -1223,7 +1225,6 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "foundation_alpha_stage_status": "core_poc_loop_verified_followups_open",
         "stage_acceptance_blockers": [
             "signed_skill_package_or_sbom_review_evidence",
-            "g9_runtime_export_and_retention_acceptance",
             "alert_delivery_and_trace_export_211_acceptance",
         ],
         "can_enter_next_stage_without_restrictions": False,
@@ -1251,7 +1252,6 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
             "department_rollout",
         ],
         "next_recommended_slices": [
-            "g9_runtime_export_and_retention_acceptance",
             "packaged_frontend_image_release_acceptance",
             "broader_auth_session_rbac_tenant_redaction_regression",
         ],
@@ -1327,7 +1327,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert "#21_recorded_capacity_evidence" not in readiness["open_followups"]
     assert "g7_docker_sandbox_hardening" in readiness["open_followups"]
     assert "g8_ordinary_user_multi_agent_exposure" in readiness["open_followups"]
-    assert "g9_runtime_export_and_retention_acceptance" in readiness["open_followups"]
+    assert "g9_runtime_export_and_retention_acceptance" not in readiness["open_followups"]
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
     assert "callback-secret" not in serialized
@@ -1854,6 +1854,10 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeyp
         == payload["decision"]["controlled_poc_loop_verified_for_current_source"]
     )
     assert payload["foundation_alpha_stage_complete"] == payload["decision"]["foundation_alpha_stage_complete"]
+    assert payload["runtime_subject_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert payload["verified_runtime_subject"]["commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert "release_evidence_runtime_acceptance" in payload["evidence_entries"]
+    assert "g9_runtime_export_and_retention_acceptance" not in payload["decision"]["stage_acceptance_blockers"]
     assert "runtime_image" not in payload
     assert payload["verified_runtime_subject"]["evidence_scope"] in {
         "current_source_tree",

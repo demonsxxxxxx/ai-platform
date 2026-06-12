@@ -1,0 +1,96 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-06-12-211-foundation-alpha-poc-b96d02e-release-evidence-runtime-acceptance",
+  "commit_sha": "b96d02e232176bade455f2af2bc3080f8f372206",
+  "runtime_subject_commit_sha": "b96d02e232176bade455f2af2bc3080f8f372206",
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#15",
+    "#16",
+    "#17",
+    "#21",
+    "#22",
+    "#23",
+    "#24"
+  ],
+  "pr_refs": [],
+  "artifact_kind": "211_runtime_smoke",
+  "captured_at": "2026-06-12T15:22:36+08:00",
+  "source_ref": {
+    "branch": "main",
+    "runtime_commit": "b96d02e232176bade455f2af2bc3080f8f372206",
+    "runtime_source_marker": "b96d02e232176bade455f2af2bc3080f8f372206",
+    "source_archive_sha256": "5911052f48e2c48bd25db4fa6a6d7a0417e3dcf6e82da13c4dc477e388cc401b",
+    "image": "ai-platform:b96d02e-release-evidence-runtime-acceptance",
+    "image_id": "sha256:e0ae05720b77eecacb20d5b646ec9bab536da4cb6073a22b0495d8735f744009",
+    "image_labels": {
+      "ai-platform.source-revision": "b96d02e232176bade455f2af2bc3080f8f372206",
+      "org.opencontainers.image.revision": "b96d02e232176bade455f2af2bc3080f8f372206",
+      "ai-platform.runtime-subject": "b96d02e232176bade455f2af2bc3080f8f372206",
+      "ai-platform.source_note": "release-evidence-runtime-acceptance",
+      "ai-platform.runtime-rollout": "foundation-alpha-release-evidence-runtime-acceptance"
+    },
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "repo_local_env_present": false,
+    "gateway_secret_supplied": true,
+    "compose_location": "repo-local 211 deploy composition",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "deployment_note": "runtime-only image rebased from the previous healthy image because dependencies did not change; compose used --no-build with the reviewed image tag"
+  },
+  "evidence_ref": {
+    "verifier": "tools/verify_release_evidence_runtime_acceptance.py",
+    "command": "docker exec ai-platform-api python tools/verify_release_evidence_runtime_acceptance.py --format json --commit-sha b96d02e232176bade455f2af2bc3080f8f372206 --runtime-subject-commit-sha b96d02e232176bade455f2af2bc3080f8f372206 --image ai-platform:b96d02e-release-evidence-runtime-acceptance",
+    "result": "ok:true",
+    "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
+    "runtime_checks": {
+      "release_evidence_runtime_acceptance": {
+        "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
+        "ok": true,
+        "status": "accepted_for_operator_review",
+        "checks": {
+          "runtime_export_acceptance": {
+            "blocked_entry_count": 0,
+            "does_not_export_raw_runtime_payloads": true,
+            "excluded_entry_count": 3,
+            "export_policy": "safe_reviewed_index_only_not_runtime_export",
+            "safe_entry_count": 26,
+            "safe_entry_fields_only": true,
+            "status": "ready_for_operator_review"
+          },
+          "retention_runtime_acceptance": {
+            "default_retention_days": 180,
+            "delete_only_reviewed_redacted_entries": true,
+            "forbidden_delete_targets_present": true,
+            "minimum_retention_days": 30,
+            "policy_status": "contract_only_not_runtime_enforced",
+            "requires_review_before_delete": true,
+            "schema_version": "ai-platform.release-evidence-retention-policy.v1",
+            "status": "accepted_review_first_policy"
+          }
+        },
+        "open_gaps": [],
+        "does_not_export_raw_runtime_payloads": true,
+        "does_not_close_g9": true
+      }
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "This entry records a reviewed release-evidence runtime acceptance summary produced inside the b96d02e API container.",
+    "The verifier confirmed safe reviewed-index export behavior and review-first retention policy acceptance with no runtime export blockers.",
+    "The inner runtime acceptance payload is a safe summary only and omits raw evidence roots, raw runtime payloads, object locators, workspace filesystem paths, executor-only internals, run identifiers, file identifiers, artifact identifiers, and personal workstation paths.",
+    "This focused evidence removes the G9 runtime export and retention acceptance blocker for the b96d02e Foundation Alpha POC runtime only. It does not close alert delivery and trace export 211 acceptance, signed Skill package/SBOM, ordinary-user legacy route acceptance, packaged frontend image release acceptance, or broader auth/session/RBAC regression gates."
+  ],
+  "open_followups": [
+    "Alert delivery and trace export 211 acceptance remain open.",
+    "Signed package or SBOM review evidence for Skill release remains open.",
+    "Ordinary-user acceptance for quarantined legacy routes remains open.",
+    "Packaged frontend image release acceptance remains open.",
+    "Broader auth/session/RBAC/tenant/redaction regression remains required before production gate closure."
+  ]
+}

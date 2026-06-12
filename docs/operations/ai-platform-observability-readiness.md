@@ -8,9 +8,11 @@ remains partial until latency percentile per-surface split and dashboard
 acceptance, model-gateway pressure controls and recorded capacity load-test
 evidence, error taxonomy dashboard runtime, visual, and 211 acceptance,
 golden-set evaluation runtime and 211 acceptance, alert/SLO runtime acceptance,
-trace/audit export runtime, dashboard, and 211 acceptance, release evidence
-runtime export acceptance, and release evidence retention runtime acceptance
-have code, tests, docs, review, and runtime evidence.
+and trace/audit export runtime, dashboard, and 211 acceptance have code, tests,
+docs, review, and runtime evidence. The narrower release-evidence runtime
+export and retention acceptance blocker has reviewed 211 evidence for runtime
+subject `b96d02e232176bade455f2af2bc3080f8f372206`, but that evidence does not
+close the broader G9 gate.
 
 Generate the current readiness snapshot from the repository root:
 
@@ -57,7 +59,7 @@ or ordinary-user private content.
 | Runtime metrics | Admin Runtime observability summary, token/cost/latency/error counts, `latency_percentiles_p50_p95_p99_admin_projection`, queue/admission/DB-pool backpressure summary, config-visible model-gateway request limit status, capacity runtime evidence capture | `latency_percentile_per_surface_split_and_dashboard_acceptance` across API, queue lease, worker, model, sandbox, artifact, cancel, retry, and resume; enforced model-gateway request-limit/backpressure gate plus recorded model-gateway load-test evidence; recorded capacity load-test evidence |
 | Error taxonomy | Formal `ai-platform.error-taxonomy.v1` contract, category mapping for executor/tool/sandbox/model-gateway/queue/database/memory/artifact/auth failures, source-level `ai-platform.error-taxonomy-dashboard-readiness.v1` as `error_taxonomy_dashboard_contract`, Admin Runtime `error_categories`, run event error count projection, and redacted recent failure projection | `error_taxonomy_dashboard_runtime_acceptance`, `error_taxonomy_dashboard_visual_acceptance`, and `error_taxonomy_dashboard_211_acceptance` for taxonomy-driven operations |
 | Quality evaluation | Run trace/audit linkage baseline, source-level `ai-platform.quality-golden-set-readiness.v1` contract, and `ai-platform.quality-score.v1` score schema | Golden-set evaluation runtime and 211 acceptance, office workflow acceptance dataset, quality threshold calibration, dashboard acceptance |
-| Alerts and exports | Admin Runtime overview projection, fail-closed capacity gate readiness verdict, source-level `ai-platform.alert-slo-readiness.v1` rule template evidence for queue, database, worker, model gateway, sandbox, error-taxonomy, and capacity gates, source-level `ai-platform.alert-delivery-channel-policy.v1` as `alert_delivery_channel_policy_contract`, source-level `ai-platform.trace-audit-export-readiness.v1` as `trace_audit_export_contract`, plus source-level `ai-platform.release-evidence-readiness.v1` export-location contract, `ai-platform.release-evidence-export-acceptance.v1` safe-index preflight, and `ai-platform.release-evidence-retention-policy.v1` retention policy contract | Alert runtime dashboard and 211 acceptance, `alert_delivery_channel_runtime_acceptance`, runtime SLO calibration, `trace_audit_export_runtime_acceptance`, `trace_audit_export_dashboard_acceptance`, `trace_audit_export_211_acceptance`, `release_evidence_runtime_export_acceptance`, and `release_evidence_retention_runtime_acceptance` |
+| Alerts and exports | Admin Runtime overview projection, fail-closed capacity gate readiness verdict, source-level `ai-platform.alert-slo-readiness.v1` rule template evidence for queue, database, worker, model gateway, sandbox, error-taxonomy, and capacity gates, source-level `ai-platform.alert-delivery-channel-policy.v1` as `alert_delivery_channel_policy_contract`, source-level `ai-platform.trace-audit-export-readiness.v1` as `trace_audit_export_contract`, source-level `ai-platform.release-evidence-readiness.v1` export-location contract, `ai-platform.release-evidence-export-acceptance.v1` safe-index preflight, `ai-platform.release-evidence-retention-policy.v1` retention policy contract, and reviewed 211 `ai-platform.release-evidence-runtime-acceptance.v1` evidence for `b96d02e` | Alert runtime dashboard and 211 acceptance, `alert_delivery_channel_runtime_acceptance`, runtime SLO calibration, `trace_audit_export_runtime_acceptance`, `trace_audit_export_dashboard_acceptance`, and `trace_audit_export_211_acceptance` |
 
 ## Quality Golden-Set Contract Baseline
 
@@ -222,10 +224,6 @@ safe reviewed-evidence index, excludes older reviewed runtime smoke entries
 missing `runtime_subject_commit_sha`, and fails closed on raw/private payload
 markers. It is a review precondition only, not runtime export acceptance.
 
-Remaining release-evidence blockers are
-`release_evidence_runtime_export_acceptance` and
-`release_evidence_retention_runtime_acceptance`.
-
 `tools/verify_release_evidence_runtime_acceptance.py` is the runtime-packaged
 acceptance verifier for the same evidence tree. It emits only the safe
 `ai-platform.release-evidence-runtime-acceptance.v1` summary: reviewed-index
@@ -233,8 +231,13 @@ counts, blocked-entry count, retention-policy status, and `does_not_close_g9`.
 `observability_readiness` can accept that summary to remove the two nested
 release-evidence runtime gaps, but Foundation Alpha readiness consumes it only
 after a reviewed, redacted 211 runtime evidence entry records the same runtime
-subject. Until that reviewed 211 evidence exists, the Foundation Alpha G9
-followup `g9_runtime_export_and_retention_acceptance` remains open.
+subject. The 2026-06-12 `b96d02e` evidence entry records that reviewed 211
+runtime acceptance, so Foundation Alpha readiness removes the narrower
+`g9_runtime_export_and_retention_acceptance` blocker for that runtime subject.
+G9 remains partial because alert delivery, SLO calibration, trace/audit export,
+dashboard, recorded capacity, model-gateway, golden-set, and taxonomy
+acceptance evidence are still separate blockers, including
+`alert_delivery_and_trace_export_211_acceptance`.
 
 ## 211 Runtime Evidence - 2026-06-08
 

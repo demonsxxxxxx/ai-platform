@@ -21,11 +21,14 @@ OBSERVABILITY_READINESS_DOC = ROOT / "docs/operations/ai-platform-observability-
 GOVERNANCE_READINESS_DOC = ROOT / "docs/operations/ai-platform-governance-readiness.md"
 GATE_STATUS_DOC = ROOT / "docs/operations/ai-platform-gate-status.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
-ACTIVE_RUNTIME_SUBJECT_SHA = "948179c73734aa61ed764fb3485f5415fca8f193"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:948179c-skill-release-scaffold"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:1f9e5bdfd6788486ad36c31fc543a7806b3028c8e3261442c3262e55a46ef94e"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-948179c-skill-release-scaffold-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-948179c-auth-rbac-smoke"
+ACTIVE_RUNTIME_SUBJECT_SHA = "b96d02e232176bade455f2af2bc3080f8f372206"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:b96d02e-release-evidence-runtime-acceptance"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:e0ae05720b77eecacb20d5b646ec9bab536da4cb6073a22b0495d8735f744009"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-b96d02e-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-b96d02e-auth-rbac-smoke"
+ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
+    "2026-06-12-211-foundation-alpha-poc-b96d02e-release-evidence-runtime-acceptance"
+)
 FOUNDATION_ALPHA_POC_EVIDENCE = (
     ROOT
     / "docs/release-evidence/foundation-alpha-poc/3874281276c84a418bd08bda56d7ea55b52970b7/2026-06-11-211-foundation-alpha-poc-smoke.json"
@@ -53,6 +56,13 @@ FOUNDATION_ALPHA_POC_ACTIVE_SMOKE_EVIDENCE = (
 FOUNDATION_ALPHA_POC_ACTIVE_AUTH_RBAC_EVIDENCE = (
     ROOT
     / f"docs/release-evidence/foundation-alpha-poc/{ACTIVE_RUNTIME_SUBJECT_SHA}/{ACTIVE_AUTH_RBAC_EVIDENCE_ID}.json"
+)
+FOUNDATION_ALPHA_POC_ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE = (
+    ROOT
+    / (
+        "docs/release-evidence/foundation-alpha-poc/"
+        f"{ACTIVE_RUNTIME_SUBJECT_SHA}/{ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID}.json"
+    )
 )
 SCHEMA = ROOT / "app/schema.sql"
 
@@ -168,6 +178,7 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "controlled_poc_loop_verified_for_current_source" in release_evidence_text
     assert "reviewed_historical_runtime_evidence" in release_evidence_text
     assert "tools/foundation_alpha_readiness.py --format json" in gate_status_text
+    assert ACTIVE_RUNTIME_SUBJECT_SHA in gate_status_text
     assert "d95107da2b5691781518bdbb8c4e5e76409869f3" in gate_status_text
     assert ACTIVE_RUNTIME_IMAGE in gate_status_text
     assert ACTIVE_RUNTIME_IMAGE_ID in gate_status_text
@@ -198,6 +209,7 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert FOUNDATION_ALPHA_POC_EVIDENCE.exists()
     assert FOUNDATION_ALPHA_POC_ACTIVE_SMOKE_EVIDENCE.exists()
     assert FOUNDATION_ALPHA_POC_ACTIVE_AUTH_RBAC_EVIDENCE.exists()
+    assert FOUNDATION_ALPHA_POC_ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE.exists()
     assert FOUNDATION_ALPHA_POC_CURRENT_MAIN_SMOKE_EVIDENCE.exists()
     assert FOUNDATION_ALPHA_POC_CURRENT_MAIN_AUTH_RBAC_EVIDENCE.exists()
     assert FOUNDATION_ALPHA_POC_AUTH_RBAC_EVIDENCE.exists()
@@ -240,11 +252,14 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["private_payload_leaked"] is False
     assert payload["evidence_ref"]["runtime_checks"]["artifact_download_isolation"]["checked_artifacts"] == 2
     assert payload["evidence_ref"]["runtime_checks"]["artifact_preview_isolation"]["checked_artifacts"] == 1
-    assert "G9 release-evidence runtime export" in "\n".join(payload["open_followups"])
+    smoke_followups = "\n".join(payload["open_followups"])
+    assert "alert_delivery_and_trace_export_211_acceptance" in smoke_followups
+    assert "Signed package or SBOM review evidence" in smoke_followups
 
     release_evidence_index = read(RELEASE_EVIDENCE_INDEX)
     assert f"{ACTIVE_AUTH_RBAC_EVIDENCE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_POC_SMOKE_EVIDENCE_ID}.json" in release_evidence_index
+    assert f"{ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID}.json" in release_evidence_index
     assert "2026-06-12-211-foundation-alpha-poc-d95107d-auth-rbac-smoke.json" in release_evidence_index
     assert "2026-06-12-211-foundation-alpha-poc-d95107d-context-projection-smoke.json" in release_evidence_index
     assert "2026-06-12-211-foundation-alpha-poc-a63dbbd-auth-rbac-smoke.json" in release_evidence_index
@@ -317,6 +332,33 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     lowered_auth_rbac = auth_rbac_text.lower()
     for marker in forbidden_markers:
         assert marker.lower() not in lowered_auth_rbac
+
+    runtime_acceptance_text = read(FOUNDATION_ALPHA_POC_ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE)
+    runtime_acceptance_payload = json.loads(runtime_acceptance_text)
+    acceptance = runtime_acceptance_payload["evidence_ref"]["runtime_checks"][
+        "release_evidence_runtime_acceptance"
+    ]
+    runtime_export = acceptance["checks"]["runtime_export_acceptance"]
+    retention = acceptance["checks"]["retention_runtime_acceptance"]
+    assert runtime_acceptance_payload["evidence_id"] == ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID
+    assert runtime_acceptance_payload["commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert runtime_acceptance_payload["runtime_subject_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert runtime_acceptance_payload["source_ref"]["image"] == ACTIVE_RUNTIME_IMAGE
+    assert runtime_acceptance_payload["source_ref"]["image_id"] == ACTIVE_RUNTIME_IMAGE_ID
+    assert runtime_acceptance_payload["evidence_ref"]["result"] == "ok:true"
+    assert acceptance["schema_version"] == "ai-platform.release-evidence-runtime-acceptance.v1"
+    assert acceptance["ok"] is True
+    assert acceptance["status"] == "accepted_for_operator_review"
+    assert acceptance["open_gaps"] == []
+    assert acceptance["does_not_close_g9"] is True
+    assert runtime_export["status"] == "ready_for_operator_review"
+    assert runtime_export["blocked_entry_count"] == 0
+    assert runtime_export["safe_entry_fields_only"] is True
+    assert retention["status"] == "accepted_review_first_policy"
+    assert retention["schema_version"] == "ai-platform.release-evidence-retention-policy.v1"
+    lowered_runtime_acceptance = runtime_acceptance_text.lower()
+    for marker in forbidden_markers:
+        assert marker.lower() not in lowered_runtime_acceptance
 
     gate_status_text = read(GATE_STATUS_DOC)
     assert "`/api/ai/auth/me`" in gate_status_text
@@ -580,8 +622,9 @@ def test_observability_docs_record_quality_golden_set_contract_without_closing_g
         assert "docs/release-evidence/" in text
         assert "ai-platform.release-evidence-entry.v1" in text
         assert "ai-platform.release-evidence-retention-policy.v1" in text
-        assert "release_evidence_runtime_export_acceptance" in text
-        assert "release_evidence_retention_runtime_acceptance" in text
+        assert "ai-platform.release-evidence-runtime-acceptance.v1" in text
+        assert "g9_runtime_export_and_retention_acceptance" in text
+        assert "alert_delivery_and_trace_export_211_acceptance" in text
         assert "`release_evidence_retention_policy`" not in text
         assert "does not close G9" in text
         assert "executor_private_payload" not in text
