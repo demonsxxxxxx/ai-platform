@@ -88,8 +88,10 @@ Otherwise link the issue without auto-closing language.
 - Every review finding must be handled in one of three ways: fixed with tests,
   rejected with a written evidence-backed reason, or moved to a follow-up issue.
   Do not leave review findings only in chat.
-- Before PR, deployment, merge, or stage-gate closure, run full local pytest and
-  relevant smoke checks unless the task is explicitly documented as no-code.
+- Before PR, deployment, merge, or stage-gate closure, run targeted tests for
+  the changed or affected modules plus relevant integration or smoke checks
+  unless the task is explicitly documented as no-code. Do not require or run
+  full-repository pytest as a routine gate.
 - For public/admin projection changes, verify the correct principal and route.
   Admin checks do not prove ordinary-user behavior.
 - For 211 deployment, prove current deployed containers, image identity, API

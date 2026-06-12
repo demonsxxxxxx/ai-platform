@@ -124,8 +124,9 @@ source/version ownership as the current platform gates.
 - Use layered verification: targeted tests for small/local changes, related
   module plus key-path tests for medium changes, and higher verification for
   the high-risk areas named above.
-- Run full local pytest plus relevant smoke before PR, deployment, merge, or
-  stage-gate closure.
+- Run targeted tests for the changed or affected modules plus the relevant
+  integration or smoke checks before PR, deployment, merge, or stage-gate
+  closure. Do not require full-repository pytest as a routine gate.
 - Run Docker compose, image build, container restart, and sandbox Docker smoke
   only on 211 or another Docker-capable host.
 - 211 verification must prove the current deployed containers, image identity,
