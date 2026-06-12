@@ -10,7 +10,7 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
-ACTIVE_RUNTIME_SUBJECT_SHA = "d4486ebf5a33ce23a632a69bcf07ef1220b61ea3"
+ACTIVE_RUNTIME_SUBJECT_SHA = "18454a9ccd890dd6b9636a04604b6a100cba31e7"
 HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
@@ -1871,7 +1871,6 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         ],
         "next_recommended_slices": [
             "ordinary_user_acceptance_for_quarantined_legacy_routes",
-            "broader_auth_session_rbac_tenant_redaction_regression",
         ],
     }
 
@@ -1887,6 +1886,15 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["auth_rbac"][
         "unauthenticated_auth_me_status"
     ] == 401
+    assert readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["auth_rbac"][
+        "artifact_download_cross_tenant_statuses"
+    ] == [404, 404]
+    assert readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["auth_rbac"][
+        "artifact_preview_cross_tenant_statuses"
+    ] == [404]
+    assert readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["auth_rbac"][
+        "broader_auth_session_rbac_tenant_redaction_regression_verified"
+    ] is True
     assert readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["auth_rbac"][
         "ordinary_admin_runtime_status"
     ] == 403
@@ -2324,7 +2332,7 @@ def test_foundation_alpha_readiness_records_211_packaged_frontend_environment_bl
     tmp_path,
 ):
     evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
-    image = "ai-platform:d4486eb-observability-evidence-loader"
+    image = "ai-platform:18454a9-cross-tenant-isolation"
     smoke_path, auth_path = _write_release_evidence_pair(
         evidence_root,
         ACTIVE_RUNTIME_SUBJECT_SHA,

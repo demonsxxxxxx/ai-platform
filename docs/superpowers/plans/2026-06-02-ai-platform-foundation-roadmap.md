@@ -408,14 +408,17 @@ the final packaged image. The verifier classified the redacted attempt as
 `packaged_frontend_image_release_acceptance`. The same packaged-frontend blocker
 was later preserved as reviewed blocker evidence during the `6088d5d` refresh.
 A later 2026-06-12 211 recheck
-for active runtime subject `d4486eb` confirmed the same blocker after the
+for then-active runtime subject `d4486eb` confirmed the same blocker after the
 observability evidence loader rollout: source marker pointed to `d4486eb`,
 frontend image sources were present, but the Docker daemon still could not pull
 required base-image metadata, and no target `ai-platform-frontend:*` image was
 cached. The reviewed redacted evidence is
 `2026-06-12-211-foundation-alpha-poc-d4486eb-frontend-packaged-runtime-smoke-blocked.json`;
 it is blocker evidence only and does not close
-`packaged_frontend_image_release_acceptance`. The projection
+`packaged_frontend_image_release_acceptance`. A 2026-06-13 recheck for
+runtime subject `18454a9` recorded the same `blocked_environment` status in
+`2026-06-13-211-foundation-alpha-poc-18454a9-frontend-packaged-runtime-smoke-blocked.json`.
+The projection
 audit records the current production-source route inventory, active-browser
 route inventory, active browser entry graph, active-browser legacy route policy
 mapping, quarantined inactive legacy source findings, private/secret-like
