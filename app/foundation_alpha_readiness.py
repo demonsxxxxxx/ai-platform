@@ -40,7 +40,6 @@ _RUNTIME_NEUTRAL_EXACT_PATHS = {
 _OPEN_FOLLOWUPS = [
     "g7_docker_sandbox_hardening",
     "g8_ordinary_user_multi_agent_exposure",
-    "packaged_frontend_image_release_acceptance",
     "broader_auth_session_rbac_tenant_redaction_regression",
 ]
 _FOUNDATION_ALPHA_STAGE_BLOCKER_ORDER = [
@@ -54,6 +53,9 @@ _FOUNDATION_ALPHA_NON_STAGE_FOLLOWUPS = {
     # Reviewed signed/SBOM/license/vulnerability evidence closes later G6/S2
     # production-release governance, not the Foundation Alpha POC loop.
     "signed_skill_package_or_sbom_review_evidence",
+    # S1 requires public/admin projection safety and reproducible frontend
+    # source checks. Packaged frontend image smoke is S2 delivery evidence.
+    "packaged_frontend_image_release_acceptance",
 }
 _STAGE_BLOCKING_DOMAIN_STATUSES = {
     "dependency_unavailable",
@@ -1120,6 +1122,11 @@ def _operator_context(
         next_recommended_slices = [
             item for item in next_recommended_slices if item != "packaged_frontend_image_release_acceptance"
         ]
+    next_recommended_slices = [
+        item
+        for item in next_recommended_slices
+        if item not in _FOUNDATION_ALPHA_NON_STAGE_FOLLOWUPS
+    ]
     for blocker in reversed(stage_acceptance_blockers or []):
         if blocker not in next_recommended_slices:
             next_recommended_slices.insert(0, blocker)

@@ -71,7 +71,9 @@ packaged frontend blocker evidence:
 `docs/release-evidence/foundation-alpha-poc/d4486ebf5a33ce23a632a69bcf07ef1220b61ea3/2026-06-12-211-foundation-alpha-poc-d4486eb-alert-trace-export-runtime-acceptance.json`, and
 `docs/release-evidence/foundation-alpha-poc/d4486ebf5a33ce23a632a69bcf07ef1220b61ea3/2026-06-12-211-foundation-alpha-poc-d4486eb-frontend-packaged-runtime-smoke-blocked.json`.
 This refresh verifies the controlled POC loop for the d4486eb runtime subject
-but does not close Foundation Alpha.
+but does not close Foundation Alpha. The packaged frontend blocker evidence is
+retained as S2 delivery follow-up evidence, not as an independent Foundation
+Alpha S1 stage blocker.
 
 The immediately superseded runtime subject commit
 `00e4e6b950709439850749fe26af9c0943f6a07c` remains historical reviewed evidence for the skill-release
@@ -254,7 +256,9 @@ package or SBOM review evidence remains a G6/S2 production Skill release
 follow-up; Foundation Alpha S1 acceptance requires the current fail-closed
 production release posture, governed pinned snapshots, and reviewed POC
 governance evidence rather than treating that production release evidence as an
-independent S1 stage blocker.
+independent S1 stage blocker. Packaged frontend image release acceptance remains
+an S2 delivery follow-up; S1 frontend acceptance is limited to active browser
+public/admin projection safety and reproducible source checks or exact blockers.
 
 On 2026-06-12, commit `83a500ef082a47db0a01b4fb9679e67bf2b24fc4` was synced to
 the 211 source target for the packaged frontend image slice. The source archive
@@ -278,7 +282,8 @@ evidence entry is
 `docs/release-evidence/foundation-alpha-poc/d4486ebf5a33ce23a632a69bcf07ef1220b61ea3/2026-06-12-211-foundation-alpha-poc-d4486eb-frontend-packaged-runtime-smoke-blocked.json`.
 It records `blocked_environment` with `docker_registry_proxy_unreachable` and
 `base_image_pull_failed`, has no closed evidence items, and still does not
-close `packaged_frontend_image_release_acceptance`.
+close `packaged_frontend_image_release_acceptance`. That remains a frontend
+delivery follow-up for S2 instead of a standalone S1 stage blocker.
 
 ## Current Gate Status
 

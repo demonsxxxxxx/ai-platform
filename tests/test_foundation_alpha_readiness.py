@@ -1646,7 +1646,6 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "stage_acceptance_blockers": [
             "ordinary_user_acceptance_for_quarantined_legacy_routes",
             "g9_admin_runtime_observability_partial_followups_open",
-            "packaged_frontend_image_release_acceptance",
         ],
         "can_enter_next_stage_without_restrictions": False,
         "production_claim_allowed": False,
@@ -1675,7 +1674,6 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "next_recommended_slices": [
             "ordinary_user_acceptance_for_quarantined_legacy_routes",
             "g9_admin_runtime_observability_partial_followups_open",
-            "packaged_frontend_image_release_acceptance",
             "broader_auth_session_rbac_tenant_redaction_regression",
         ],
     }
@@ -1751,7 +1749,11 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert "g7_docker_sandbox_hardening" in readiness["open_followups"]
     assert "g8_ordinary_user_multi_agent_exposure" in readiness["open_followups"]
     assert "g9_runtime_export_and_retention_acceptance" not in readiness["open_followups"]
-    assert "packaged_frontend_image_release_acceptance" in readiness["open_followups"]
+    assert "packaged_frontend_image_release_acceptance" not in readiness["open_followups"]
+    assert (
+        "packaged_frontend_image_release_acceptance"
+        in readiness["domains"]["frontend_poc"]["open_followups"]
+    )
     assert "ordinary_user_acceptance_for_quarantined_legacy_routes" in readiness["open_followups"]
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
@@ -2117,7 +2119,7 @@ def test_foundation_alpha_readiness_keeps_packaged_frontend_blocker_without_211_
     assert "docker_lab_packaged_frontend_runtime_smoke" in packaged["closed_evidence_items"]
     assert "211_packaged_frontend_runtime_smoke" not in packaged["closed_evidence_items"]
     assert "packaged_frontend_image_release_acceptance" in frontend["open_followups"]
-    assert "packaged_frontend_image_release_acceptance" in readiness["decision"]["stage_acceptance_blockers"]
+    assert "packaged_frontend_image_release_acceptance" not in readiness["decision"]["stage_acceptance_blockers"]
 
 
 def test_foundation_alpha_readiness_records_211_packaged_frontend_environment_blocker(
@@ -2173,8 +2175,8 @@ def test_foundation_alpha_readiness_records_211_packaged_frontend_environment_bl
     assert packaged["verified"] is False
     assert packaged["closed_evidence_items"] == []
     assert "packaged_frontend_image_release_acceptance" in frontend["open_followups"]
-    assert "packaged_frontend_image_release_acceptance" in readiness["decision"]["stage_acceptance_blockers"]
-    assert "packaged_frontend_image_release_acceptance" in readiness["open_followups"]
+    assert "packaged_frontend_image_release_acceptance" not in readiness["decision"]["stage_acceptance_blockers"]
+    assert "packaged_frontend_image_release_acceptance" not in readiness["open_followups"]
     assert "frontend_packaged_runtime_smoke" not in readiness["evidence_entries"]
     assert foundation_alpha_readiness._discover_frontend_packaged_runtime_smoke_evidence(
         ACTIVE_RUNTIME_SUBJECT_SHA
@@ -2189,8 +2191,9 @@ def test_current_foundation_alpha_readiness_discovers_active_packaged_frontend_b
     assert packaged["runtime_host"] == "211"
     assert packaged["verified"] is False
     assert packaged["closed_evidence_items"] == []
-    assert "packaged_frontend_image_release_acceptance" in readiness["decision"]["stage_acceptance_blockers"]
-    assert "packaged_frontend_image_release_acceptance" in readiness["open_followups"]
+    assert "packaged_frontend_image_release_acceptance" in readiness["domains"]["frontend_poc"]["open_followups"]
+    assert "packaged_frontend_image_release_acceptance" not in readiness["decision"]["stage_acceptance_blockers"]
+    assert "packaged_frontend_image_release_acceptance" not in readiness["open_followups"]
     assert "frontend_packaged_runtime_smoke" not in readiness["evidence_entries"]
 
 
