@@ -787,6 +787,76 @@ def test_foundation_alpha_readiness_accepts_alert_trace_export_runtime_acceptanc
     assert "raw_storage_key" not in serialized
 
 
+def test_foundation_alpha_readiness_treats_remaining_g9_partial_gaps_as_later_stage_followups(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    image = "ai-platform:a3f1d73-foundation-alpha-poc"
+    smoke_path, auth_path = _write_release_evidence_pair(evidence_root, CURRENT_SOURCE_SHA, image=image)
+    _write_governance_evidence(evidence_root, CURRENT_SOURCE_SHA, image=image)
+    _write_release_evidence_runtime_acceptance(evidence_root, CURRENT_SOURCE_SHA, image=image)
+    _write_alert_trace_export_runtime_acceptance(evidence_root, CURRENT_SOURCE_SHA, image=image)
+    _write_frontend_packaged_runtime_smoke(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image=image,
+        runtime_host="211",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: CURRENT_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        lambda: {
+            "status": "verified_packaged_release_followup_open",
+            "open_gap_count": 0,
+            "blockers": [],
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_projection_audit_summary",
+        lambda: {
+            "status": "pass_with_policy_gaps",
+            "ordinary_user_acceptance": "accepted_active_legacy_routes_permission_gated",
+            "active_legacy_route_count": 11,
+            "ordinary_user_reachable_legacy_route_count": 0,
+            "permission_gated_active_legacy_route_count": 11,
+            "active_forbidden_projection_violation_count": 0,
+            "ci_verify_includes_projection_audit": True,
+            "open_gap_count": 3,
+            "open_gaps": [
+                "legacy_routes_need_policy_enforcement_or_ai_platform_remap",
+                "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap",
+                "quarantined_legacy_sources_need_ai_platform_projection_remap",
+            ],
+        },
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    g9 = readiness["domains"]["g9_admin_runtime_observability"]
+    assert g9["status"] == "partial_followups_open"
+    assert g9["evidence"]["observability_readiness_status"] == "partial_blocked"
+    assert g9["open_followups"] == []
+    assert "g9_admin_runtime_observability_partial_followups_open" not in readiness["decision"]["stage_acceptance_blockers"]
+    assert "g9_admin_runtime_observability_partial_followups_open" not in readiness["open_followups"]
+    assert "g9_admin_runtime_observability_partial_followups_open" not in readiness["operator_context"][
+        "next_recommended_slices"
+    ]
+
+
 def test_foundation_alpha_readiness_keeps_alert_trace_blocker_without_valid_runtime_acceptance(
     monkeypatch,
     tmp_path,
@@ -1645,7 +1715,6 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "foundation_alpha_stage_status": "core_poc_loop_verified_followups_open",
         "stage_acceptance_blockers": [
             "ordinary_user_acceptance_for_quarantined_legacy_routes",
-            "g9_admin_runtime_observability_partial_followups_open",
         ],
         "can_enter_next_stage_without_restrictions": False,
         "production_claim_allowed": False,
@@ -1673,7 +1742,6 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         ],
         "next_recommended_slices": [
             "ordinary_user_acceptance_for_quarantined_legacy_routes",
-            "g9_admin_runtime_observability_partial_followups_open",
             "broader_auth_session_rbac_tenant_redaction_regression",
         ],
     }

@@ -57,6 +57,13 @@ _FOUNDATION_ALPHA_NON_STAGE_FOLLOWUPS = {
     # source checks. Packaged frontend image smoke is S2 delivery evidence.
     "packaged_frontend_image_release_acceptance",
 }
+_FOUNDATION_ALPHA_NON_STAGE_PARTIAL_DOMAINS = {
+    # S1 needs enough redacted Admin Runtime visibility for controlled
+    # operation. The remaining G9 observability readiness gaps are S2
+    # dashboard/capacity/golden-set/alert/export operational acceptance unless
+    # explicit S1 followups are present in the domain.
+    "g9_admin_runtime_observability",
+}
 _STAGE_BLOCKING_DOMAIN_STATUSES = {
     "dependency_unavailable",
     "partial_followups_open",
@@ -1045,7 +1052,10 @@ def _ordered_stage_blockers(domains: dict[str, dict[str, Any]]) -> list[str]:
                     domain_blockers.append(followup)
         if domain_blockers:
             blockers.update(domain_blockers)
-        elif not saw_named_followup:
+        elif (
+            not saw_named_followup
+            and name not in _FOUNDATION_ALPHA_NON_STAGE_PARTIAL_DOMAINS
+        ):
             blockers.add(f"{name}_{domain.get('status')}")
 
     ordered: list[str] = []
