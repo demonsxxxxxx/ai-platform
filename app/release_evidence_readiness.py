@@ -86,13 +86,71 @@ _OPEN_GAPS = [
 ]
 
 
-def build_release_evidence_readiness() -> dict[str, Any]:
+def _runtime_acceptance_is_valid(runtime_acceptance: dict[str, Any]) -> bool:
+    checks = runtime_acceptance.get("checks")
+    if not isinstance(checks, dict):
+        return False
+    runtime_export = checks.get("runtime_export_acceptance")
+    retention = checks.get("retention_runtime_acceptance")
+    if not isinstance(runtime_export, dict) or not isinstance(retention, dict):
+        return False
+    return (
+        runtime_acceptance.get("schema_version") == "ai-platform.release-evidence-runtime-acceptance.v1"
+        and runtime_acceptance.get("ok") is True
+        and runtime_acceptance.get("status") == "accepted_for_operator_review"
+        and runtime_acceptance.get("open_gaps") == []
+        and runtime_acceptance.get("does_not_export_raw_runtime_payloads") is True
+        and runtime_acceptance.get("does_not_close_g9") is True
+        and runtime_export.get("status") == "ready_for_operator_review"
+        and runtime_export.get("export_policy") == "safe_reviewed_index_only_not_runtime_export"
+        and runtime_export.get("blocked_entry_count") == 0
+        and runtime_export.get("safe_entry_fields_only") is True
+        and runtime_export.get("does_not_export_raw_runtime_payloads") is True
+        and retention.get("status") == "accepted_review_first_policy"
+        and retention.get("schema_version") == RETENTION_POLICY_SCHEMA_VERSION
+        and retention.get("policy_status") == "contract_only_not_runtime_enforced"
+        and retention.get("requires_review_before_delete") is True
+        and retention.get("delete_only_reviewed_redacted_entries") is True
+        and retention.get("forbidden_delete_targets_present") is True
+    )
+
+
+def _runtime_acceptance_summary(runtime_acceptance: dict[str, Any]) -> dict[str, Any]:
+    checks = runtime_acceptance.get("checks")
+    checks = checks if isinstance(checks, dict) else {}
+    return {
+        "schema_version": runtime_acceptance.get("schema_version"),
+        "ok": runtime_acceptance.get("ok"),
+        "status": runtime_acceptance.get("status"),
+        "checks": {
+            "runtime_export_acceptance": deepcopy(checks.get("runtime_export_acceptance") or {}),
+            "retention_runtime_acceptance": deepcopy(checks.get("retention_runtime_acceptance") or {}),
+        },
+        "open_gaps": list(runtime_acceptance.get("open_gaps") or []),
+        "does_not_export_raw_runtime_payloads": runtime_acceptance.get(
+            "does_not_export_raw_runtime_payloads"
+        ),
+        "does_not_close_g9": runtime_acceptance.get("does_not_close_g9"),
+    }
+
+
+def build_release_evidence_readiness(
+    *,
+    runtime_acceptance: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Build the source-level G9 release evidence export-location contract."""
     export_acceptance = build_release_evidence_export_acceptance()
-    return {
+    open_gaps = list(_OPEN_GAPS)
+    runtime_acceptance_valid = (
+        isinstance(runtime_acceptance, dict) and _runtime_acceptance_is_valid(runtime_acceptance)
+    )
+    if runtime_acceptance_valid:
+        open_gaps = []
+
+    readiness = {
         "schema_version": SCHEMA_VERSION,
         "gate": GATE_NAME,
-        "status": "partial_blocked",
+        "status": "partial_blocked" if open_gaps else "ready_for_verification",
         "active_export_policy": "location_contract_only_not_runtime_export",
         "export_location": deepcopy(_EXPORT_LOCATION),
         "evidence_contract": {
@@ -110,6 +168,9 @@ def build_release_evidence_readiness() -> dict[str, Any]:
         },
         "export_acceptance": export_acceptance,
         "retention_policy": deepcopy(_RETENTION_POLICY),
-        "open_gaps": list(_OPEN_GAPS),
+        "open_gaps": open_gaps,
         "does_not_close_g9": True,
     }
+    if runtime_acceptance_valid:
+        readiness["runtime_acceptance"] = _runtime_acceptance_summary(runtime_acceptance)
+    return readiness

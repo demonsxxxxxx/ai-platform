@@ -26,6 +26,44 @@ class SecretBearingSettings:
     multi_agent_dispatch_worker_enabled = False
 
 
+def _valid_release_evidence_runtime_acceptance() -> dict:
+    return {
+        "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
+        "ok": True,
+        "status": "accepted_for_operator_review",
+        "source": {
+            "commit_sha": "948179c73734aa61ed764fb3485f5415fca8f193",
+            "runtime_subject_commit_sha": "948179c73734aa61ed764fb3485f5415fca8f193",
+            "image": "ai-platform:948179c-skill-release-scaffold",
+            "evidence_root": "docs/release-evidence",
+        },
+        "checks": {
+            "runtime_export_acceptance": {
+                "status": "ready_for_operator_review",
+                "export_policy": "safe_reviewed_index_only_not_runtime_export",
+                "safe_entry_count": 1,
+                "blocked_entry_count": 0,
+                "excluded_entry_count": 0,
+                "safe_entry_fields_only": True,
+                "does_not_export_raw_runtime_payloads": True,
+            },
+            "retention_runtime_acceptance": {
+                "status": "accepted_review_first_policy",
+                "schema_version": "ai-platform.release-evidence-retention-policy.v1",
+                "policy_status": "contract_only_not_runtime_enforced",
+                "default_retention_days": 180,
+                "minimum_retention_days": 30,
+                "requires_review_before_delete": True,
+                "delete_only_reviewed_redacted_entries": True,
+                "forbidden_delete_targets_present": True,
+            },
+        },
+        "open_gaps": [],
+        "does_not_export_raw_runtime_payloads": True,
+        "does_not_close_g9": True,
+    }
+
+
 def test_observability_readiness_import_is_runtime_dependency_neutral():
     script = (
         "import builtins\n"
@@ -370,6 +408,52 @@ def test_release_evidence_readiness_contract_defines_safe_export_location_withou
     assert "sk-secret" not in serialized
 
 
+def test_release_evidence_readiness_accepts_runtime_acceptance_without_closing_g9():
+    acceptance = _valid_release_evidence_runtime_acceptance()
+    acceptance["source"]["evidence_root"] = "C:\\workspace\\ai-platform\\docs\\release-evidence"
+    readiness = build_release_evidence_readiness(runtime_acceptance=acceptance)
+
+    assert readiness["schema_version"] == "ai-platform.release-evidence-readiness.v1"
+    assert readiness["status"] == "ready_for_verification"
+    assert readiness["runtime_acceptance"]["schema_version"] == "ai-platform.release-evidence-runtime-acceptance.v1"
+    assert readiness["runtime_acceptance"]["status"] == "accepted_for_operator_review"
+    assert readiness["runtime_acceptance"]["open_gaps"] == []
+    assert "source" not in readiness["runtime_acceptance"]
+    assert readiness["open_gaps"] == []
+    assert readiness["does_not_close_g9"] is True
+
+    serialized = json.dumps(readiness, ensure_ascii=False).lower()
+    assert "c:\\users" not in serialized
+    runtime_serialized = json.dumps(readiness["runtime_acceptance"], ensure_ascii=False).lower()
+    assert "source_ref" not in runtime_serialized
+    assert "evidence_ref" not in runtime_serialized
+    assert "executor_private_payload" not in runtime_serialized
+    assert "raw_storage_key" not in runtime_serialized
+    assert "api_key" not in runtime_serialized
+
+
+def test_release_evidence_readiness_rejects_invalid_runtime_acceptance_without_leaking_payload():
+    invalid = _valid_release_evidence_runtime_acceptance()
+    invalid["ok"] = False
+    invalid["open_gaps"] = ["release_evidence_runtime_export_acceptance"]
+    invalid["source_ref"] = {"raw_storage_key": "tenants/default/raw-secret"}
+    invalid["evidence_ref"] = {"executor_private_payload": {"api_key": "sk-secret"}}
+
+    readiness = build_release_evidence_readiness(runtime_acceptance=invalid)
+
+    assert readiness["status"] == "partial_blocked"
+    assert "runtime_acceptance" not in readiness
+    assert readiness["open_gaps"] == [
+        "release_evidence_runtime_export_acceptance",
+        "release_evidence_retention_runtime_acceptance",
+    ]
+
+    serialized = json.dumps(readiness, ensure_ascii=False).lower()
+    assert "raw-secret" not in serialized
+    assert "executor_private_payload" not in serialized
+    assert "api_key" not in serialized
+
+
 def test_trace_audit_export_readiness_contract_defines_safe_public_export_without_closing_g9():
     readiness = build_trace_audit_export_readiness()
 
@@ -460,6 +544,34 @@ def test_observability_readiness_includes_release_evidence_contract_without_clos
     ]
     assert "release_evidence_runtime_export_acceptance" in readiness["open_gaps"]
     assert "release_evidence_retention_runtime_acceptance" in readiness["open_gaps"]
+
+
+def test_observability_readiness_accepts_release_evidence_runtime_acceptance_without_closing_g9():
+    readiness = build_observability_readiness(
+        SecretBearingSettings(),
+        release_evidence_runtime_acceptance=_valid_release_evidence_runtime_acceptance(),
+    )
+
+    alerts = readiness["domains"]["alerts_and_exports"]
+    assert "release_evidence_runtime_export_acceptance" not in alerts["gaps"]
+    assert "release_evidence_retention_runtime_acceptance" not in alerts["gaps"]
+    assert "release_evidence_runtime_acceptance" in alerts["implemented"]
+    assert alerts["status"] == "partial_blocked"
+
+    evidence = alerts["evidence"]["release_evidence"]
+    assert evidence["runtime_acceptance"]["status"] == "accepted_for_operator_review"
+    assert evidence["status"] == "ready_for_verification"
+    assert "release_evidence_runtime_export_acceptance" not in readiness["open_gaps"]
+    assert "release_evidence_retention_runtime_acceptance" not in readiness["open_gaps"]
+    assert readiness["status"] == "partial_blocked"
+    assert readiness["evidence_policy"] == (
+        "admin_runtime_projection_plus_tests_docs_and_211_smoke_required_before_gate_closure"
+    )
+
+    serialized = json.dumps(evidence["runtime_acceptance"], ensure_ascii=False).lower()
+    assert "source_ref" not in serialized
+    assert "evidence_ref" not in serialized
+    assert "raw_storage_key" not in serialized
 
 
 def test_observability_readiness_includes_trace_audit_export_contract_without_closing_g9():

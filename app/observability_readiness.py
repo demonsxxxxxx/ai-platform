@@ -68,13 +68,19 @@ def _domain(
     return domain
 
 
-def build_observability_readiness(settings: object | None = None) -> dict[str, Any]:
+def build_observability_readiness(
+    settings: object | None = None,
+    *,
+    release_evidence_runtime_acceptance: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Build a secret-safe G9 observability readiness baseline for Admin Runtime and CLI use."""
     resolved_settings = settings or _default_settings()
     alert_slo_readiness = build_alert_slo_readiness()
     error_taxonomy_dashboard_readiness = build_error_taxonomy_dashboard_readiness()
     quality_golden_set_readiness = build_quality_golden_set_readiness()
-    release_evidence_readiness = build_release_evidence_readiness()
+    release_evidence_readiness = build_release_evidence_readiness(
+        runtime_acceptance=release_evidence_runtime_acceptance
+    )
     trace_audit_export_readiness = build_trace_audit_export_readiness()
     model_gateway_backpressure_policy = _model_gateway_backpressure_policy()
     model_gateway_request_concurrency_limit = _positive_int_setting(
@@ -164,6 +170,11 @@ def build_observability_readiness(settings: object | None = None) -> dict[str, A
                 "release_evidence_export_location_contract",
                 "release_evidence_export_acceptance_preflight",
                 "release_evidence_retention_policy_contract",
+                *(
+                    ["release_evidence_runtime_acceptance"]
+                    if "runtime_acceptance" in release_evidence_readiness
+                    else []
+                ),
             ],
             gaps=[
                 *alert_slo_readiness["open_gaps"],

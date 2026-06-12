@@ -226,6 +226,88 @@ def _minimal_governance_payload(
     }
 
 
+def _valid_release_evidence_runtime_acceptance() -> dict:
+    return {
+        "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
+        "ok": True,
+        "status": "accepted_for_operator_review",
+        "source": {
+            "commit_sha": CURRENT_SOURCE_SHA,
+            "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
+            "image": "ai-platform:a3f1d73-foundation-alpha-poc",
+            "evidence_root": "C:\\workspace\\ai-platform\\docs\\release-evidence",
+        },
+        "checks": {
+            "runtime_export_acceptance": {
+                "status": "ready_for_operator_review",
+                "export_policy": "safe_reviewed_index_only_not_runtime_export",
+                "safe_entry_count": 1,
+                "blocked_entry_count": 0,
+                "excluded_entry_count": 0,
+                "safe_entry_fields_only": True,
+                "does_not_export_raw_runtime_payloads": True,
+            },
+            "retention_runtime_acceptance": {
+                "status": "accepted_review_first_policy",
+                "schema_version": "ai-platform.release-evidence-retention-policy.v1",
+                "policy_status": "contract_only_not_runtime_enforced",
+                "default_retention_days": 180,
+                "minimum_retention_days": 30,
+                "requires_review_before_delete": True,
+                "delete_only_reviewed_redacted_entries": True,
+                "forbidden_delete_targets_present": True,
+            },
+        },
+        "open_gaps": [],
+        "does_not_export_raw_runtime_payloads": True,
+        "does_not_close_g9": True,
+    }
+
+
+def _minimal_release_evidence_runtime_acceptance_payload(
+    commit_sha: str,
+    *,
+    image: str,
+    captured_at: str = "2026-06-11T10:03:00+08:00",
+    acceptance: dict | None = None,
+) -> dict:
+    acceptance = acceptance or _valid_release_evidence_runtime_acceptance()
+    acceptance["source"]["commit_sha"] = commit_sha
+    acceptance["source"]["runtime_subject_commit_sha"] = commit_sha
+    acceptance["source"]["image"] = image
+    return {
+        "schema_version": "ai-platform.release-evidence-entry.v1",
+        "evidence_id": f"{commit_sha[:7]}-release-evidence-runtime-acceptance",
+        "commit_sha": commit_sha,
+        "runtime_subject_commit_sha": commit_sha,
+        "gate": "Foundation Alpha POC",
+        "artifact_kind": "211_runtime_smoke",
+        "captured_at": captured_at,
+        "source_ref": {
+            "branch": "main",
+            "runtime_commit": commit_sha,
+            "runtime_source_marker": commit_sha,
+            "image": image,
+            "image_id": f"sha256:{commit_sha[:12]}",
+            "image_labels": {
+                "ai-platform.source-revision": commit_sha,
+                "org.opencontainers.image.revision": commit_sha,
+            },
+            "repo_local_env_present": False,
+        },
+        "evidence_ref": {
+            "verifier": "tools/verify_release_evidence_runtime_acceptance.py",
+            "result": "ok:true",
+            "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
+            "runtime_checks": {
+                "release_evidence_runtime_acceptance": acceptance,
+            },
+        },
+        "redaction_scan_status": "passed",
+        "review_status": "reviewed",
+    }
+
+
 def _write_governance_evidence(
     base_root,
     commit_sha: str,
@@ -238,6 +320,31 @@ def _write_governance_evidence(
     path = commit_root / f"{commit_sha[:7]}-governance-runtime-smoke.json"
     path.write_text(
         json.dumps(_minimal_governance_payload(commit_sha, image=image, captured_at=captured_at)),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _write_release_evidence_runtime_acceptance(
+    base_root,
+    commit_sha: str,
+    *,
+    image: str,
+    captured_at: str = "2026-06-11T10:03:00+08:00",
+    acceptance: dict | None = None,
+):
+    commit_root = base_root / commit_sha
+    commit_root.mkdir(parents=True, exist_ok=True)
+    path = commit_root / f"{commit_sha[:7]}-release-evidence-runtime-acceptance.json"
+    path.write_text(
+        json.dumps(
+            _minimal_release_evidence_runtime_acceptance_payload(
+                commit_sha,
+                image=image,
+                captured_at=captured_at,
+                acceptance=acceptance,
+            )
+        ),
         encoding="utf-8",
     )
     return path
@@ -264,6 +371,111 @@ def _write_release_evidence_pair(
         encoding="utf-8",
     )
     return smoke_path, auth_path
+
+
+def test_foundation_alpha_readiness_accepts_release_evidence_runtime_acceptance_for_same_runtime_subject(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    image = "ai-platform:a3f1d73-foundation-alpha-poc"
+    smoke_path, auth_path = _write_release_evidence_pair(evidence_root, CURRENT_SOURCE_SHA, image=image)
+    _write_governance_evidence(evidence_root, CURRENT_SOURCE_SHA, image=image)
+    runtime_acceptance_path = _write_release_evidence_runtime_acceptance(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image=image,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: CURRENT_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        lambda: {
+            "status": "verified_packaged_release_followup_open",
+            "open_gap_count": 0,
+            "blockers": [],
+        },
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert "release_evidence_runtime_acceptance" in readiness["evidence_entries"]
+    assert readiness["evidence_entries"][
+        "release_evidence_runtime_acceptance"
+    ] == foundation_alpha_readiness._path_for_output(runtime_acceptance_path)
+    g9 = readiness["domains"]["g9_admin_runtime_observability"]
+    assert "g9_runtime_export_and_retention_acceptance" not in g9["open_followups"]
+    assert "alert_delivery_and_trace_export_211_acceptance" in g9["open_followups"]
+    assert "g9_runtime_export_and_retention_acceptance" not in readiness["decision"]["stage_acceptance_blockers"]
+    assert "alert_delivery_and_trace_export_211_acceptance" in readiness["decision"]["stage_acceptance_blockers"]
+    assert "g9_runtime_export_and_retention_acceptance" not in readiness["operator_context"][
+        "next_recommended_slices"
+    ]
+    assert (
+        g9["evidence"]["release_evidence_runtime_acceptance"]["status"]
+        == "verified_release_evidence_runtime_acceptance"
+    )
+    assert g9["evidence"]["release_evidence_runtime_acceptance"]["verified"] is True
+    assert g9["evidence"]["release_evidence_runtime_acceptance"]["safe_entry_count"] == 1
+
+    serialized = json.dumps(readiness, ensure_ascii=False).lower()
+    assert "c:\\users" not in serialized
+    assert "source_ref" not in json.dumps(
+        g9["evidence"]["release_evidence_runtime_acceptance"],
+        ensure_ascii=False,
+    ).lower()
+    assert "raw_storage_key" not in serialized
+
+
+def test_foundation_alpha_readiness_keeps_g9_runtime_blocker_without_valid_release_acceptance(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    image = "ai-platform:a3f1d73-foundation-alpha-poc"
+    smoke_path, auth_path = _write_release_evidence_pair(evidence_root, CURRENT_SOURCE_SHA, image=image)
+    invalid_acceptance = _valid_release_evidence_runtime_acceptance()
+    invalid_acceptance["ok"] = False
+    invalid_acceptance["open_gaps"] = ["release_evidence_runtime_export_acceptance"]
+    _write_release_evidence_runtime_acceptance(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image=image,
+        acceptance=invalid_acceptance,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: CURRENT_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert "release_evidence_runtime_acceptance" not in readiness["evidence_entries"]
+    g9 = readiness["domains"]["g9_admin_runtime_observability"]
+    assert "g9_runtime_export_and_retention_acceptance" in g9["open_followups"]
+    assert "g9_runtime_export_and_retention_acceptance" in readiness["decision"]["stage_acceptance_blockers"]
+    assert (
+        g9["evidence"]["release_evidence_runtime_acceptance"]["status"]
+        == "missing_release_evidence_runtime_acceptance"
+    )
+    serialized = json.dumps(readiness, ensure_ascii=False).lower()
+    assert "raw_storage_key" not in serialized
 
 
 def test_foundation_alpha_readiness_accepts_governance_runtime_smoke_for_same_runtime_subject(
@@ -1670,7 +1882,11 @@ def test_foundation_alpha_readiness_fails_closed_when_optional_readiness_depende
     def missing_governance(_: object | None = None):
         raise ModuleNotFoundError("No module named 'pydantic'")
 
-    def missing_observability(_: object | None = None):
+    def missing_observability(
+        _: object | None = None,
+        *,
+        release_evidence_runtime_acceptance: dict | None = None,
+    ):
         raise ModuleNotFoundError("No module named 'pydantic'")
 
     monkeypatch.setattr(foundation_alpha_readiness, "_build_governance_summary", missing_governance)
@@ -1724,6 +1940,15 @@ def test_foundation_alpha_readiness_fails_closed_when_optional_readiness_depende
         "open_gap_count": 1,
         "dependency_error_class": "ModuleNotFoundError",
         "release_evidence_result": "ok:true",
+        "release_evidence_runtime_acceptance": {
+            "status": "missing_release_evidence_runtime_acceptance",
+            "schema_version": None,
+            "runtime_export_status": None,
+            "retention_status": None,
+            "safe_entry_count": None,
+            "blocked_entry_count": None,
+            "verified": False,
+        },
     }
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()

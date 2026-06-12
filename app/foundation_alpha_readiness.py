@@ -305,6 +305,34 @@ def _is_governance_runtime_evidence(payload: dict[str, Any]) -> bool:
     )
 
 
+def _release_evidence_runtime_acceptance_from_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    evidence_ref = payload.get("evidence_ref") if isinstance(payload, dict) else {}
+    runtime_checks = evidence_ref.get("runtime_checks") if isinstance(evidence_ref, dict) else {}
+    if not isinstance(runtime_checks, dict):
+        return None
+    acceptance = runtime_checks.get("release_evidence_runtime_acceptance")
+    if not isinstance(acceptance, dict):
+        return None
+    if (
+        evidence_ref.get("verifier") != "tools/verify_release_evidence_runtime_acceptance.py"
+        or evidence_ref.get("schema_version") != "ai-platform.release-evidence-runtime-acceptance.v1"
+    ):
+        return None
+
+    from app.release_evidence_readiness import (
+        _runtime_acceptance_is_valid,
+        _runtime_acceptance_summary,
+    )
+
+    if not _runtime_acceptance_is_valid(acceptance):
+        return None
+    return _runtime_acceptance_summary(acceptance)
+
+
+def _is_release_evidence_runtime_acceptance_evidence(payload: dict[str, Any]) -> bool:
+    return _release_evidence_runtime_acceptance_from_payload(payload) is not None
+
+
 def _release_evidence_sort_key(path: Path, payload: dict[str, Any]) -> tuple[str, str]:
     return (str(payload.get("captured_at", "")), path.name)
 
@@ -383,6 +411,28 @@ def _discover_governance_runtime_evidence(commit_sha: str) -> Path | None:
         if not _release_evidence_entry_is_valid(payload, commit_sha):
             continue
         if _is_governance_runtime_evidence(payload):
+            entries.append((path, payload))
+
+    if entries:
+        path, _ = max(entries, key=lambda item: _release_evidence_sort_key(item[0], item[1]))
+        return path
+    return None
+
+
+def _discover_release_evidence_runtime_acceptance_evidence(commit_sha: str) -> Path | None:
+    commit_root = _EVIDENCE_BASE_ROOT / commit_sha
+    if not commit_root.is_dir():
+        return None
+
+    entries: list[tuple[Path, dict[str, Any]]] = []
+    for path in sorted(commit_root.glob("*.json")):
+        try:
+            payload = _load_json(path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not _release_evidence_entry_is_valid(payload, commit_sha):
+            continue
+        if _is_release_evidence_runtime_acceptance_evidence(payload):
             entries.append((path, payload))
 
     if entries:
@@ -841,6 +891,7 @@ def _operator_context(
     context_projection_verified: bool = True,
     stage_acceptance_status: str,
     governance_runtime_smoke_verified: bool = False,
+    release_evidence_runtime_acceptance_verified: bool = False,
 ) -> dict[str, Any]:
     poc_loop_status = _poc_loop_status(runtime_relation)
     if runtime_relation.get("runtime_relevant_source_matches") and not context_projection_verified:
@@ -852,6 +903,10 @@ def _operator_context(
     ]
     if not governance_runtime_smoke_verified:
         next_recommended_slices.insert(0, "g6_runtime_admin_dashboard_acceptance_for_governance")
+    if release_evidence_runtime_acceptance_verified:
+        next_recommended_slices = [
+            item for item in next_recommended_slices if item != "g9_runtime_export_and_retention_acceptance"
+        ]
     return {
         "poc_scope": "foundation_alpha_controlled_internal_poc",
         "poc_loop_status": poc_loop_status,
@@ -889,14 +944,21 @@ def _build_governance_summary(settings: object | None) -> dict[str, Any]:
     }
 
 
-def _build_observability_summary(settings: object | None) -> dict[str, Any]:
+def _build_observability_summary(
+    settings: object | None,
+    *,
+    release_evidence_runtime_acceptance: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
         from app.observability_readiness import build_observability_readiness
     except ModuleNotFoundError as exc:
         return _observability_dependency_unavailable_summary(exc)
 
     settings = settings or _ReadinessDefaultSettings()
-    observability = build_observability_readiness(settings)
+    observability = build_observability_readiness(
+        settings,
+        release_evidence_runtime_acceptance=release_evidence_runtime_acceptance,
+    )
     return {
         "observability_readiness_status": observability["status"],
         "admin_runtime_projection": observability["admin_runtime_projection"],
@@ -938,6 +1000,43 @@ def _governance_runtime_smoke_summary(payload: dict[str, Any] | None) -> dict[st
     }
 
 
+def _release_evidence_runtime_acceptance_summary(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if payload is None:
+        return {
+            "status": "missing_release_evidence_runtime_acceptance",
+            "schema_version": None,
+            "runtime_export_status": None,
+            "retention_status": None,
+            "safe_entry_count": None,
+            "blocked_entry_count": None,
+            "verified": False,
+        }
+
+    acceptance = _release_evidence_runtime_acceptance_from_payload(payload)
+    if acceptance is None:
+        return {
+            "status": "release_evidence_runtime_acceptance_followup_required",
+            "schema_version": None,
+            "runtime_export_status": None,
+            "retention_status": None,
+            "safe_entry_count": None,
+            "blocked_entry_count": None,
+            "verified": False,
+        }
+    checks = acceptance["checks"]
+    runtime_export = checks["runtime_export_acceptance"]
+    retention = checks["retention_runtime_acceptance"]
+    return {
+        "status": "verified_release_evidence_runtime_acceptance",
+        "schema_version": acceptance["schema_version"],
+        "runtime_export_status": runtime_export.get("status"),
+        "retention_status": retention.get("status"),
+        "safe_entry_count": runtime_export.get("safe_entry_count"),
+        "blocked_entry_count": runtime_export.get("blocked_entry_count"),
+        "verified": True,
+    }
+
+
 def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str, Any]:
     """Build a secret-safe Foundation Alpha POC readiness summary for operators."""
     source_tree_commit = _resolve_source_tree_revision()
@@ -955,12 +1054,32 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     )
     governance_runtime_smoke = _governance_runtime_smoke_summary(governance_runtime_payload)
     governance_runtime_smoke_verified = governance_runtime_smoke["verified"] is True
+    release_evidence_runtime_acceptance_path = _discover_release_evidence_runtime_acceptance_evidence(
+        runtime_subject_commit
+    )
+    release_evidence_runtime_acceptance_payload = (
+        _load_json(release_evidence_runtime_acceptance_path)
+        if release_evidence_runtime_acceptance_path is not None
+        else None
+    )
+    release_evidence_runtime_acceptance = _release_evidence_runtime_acceptance_from_payload(
+        release_evidence_runtime_acceptance_payload
+    ) if release_evidence_runtime_acceptance_payload is not None else None
+    release_evidence_runtime_acceptance_summary = _release_evidence_runtime_acceptance_summary(
+        release_evidence_runtime_acceptance_payload
+    )
+    release_evidence_runtime_acceptance_verified = (
+        release_evidence_runtime_acceptance_summary["verified"] is True
+    )
     try:
         governance_summary = _build_governance_summary(settings)
     except ModuleNotFoundError as exc:
         governance_summary = _governance_dependency_unavailable_summary(exc)
     try:
-        observability_summary = _build_observability_summary(settings)
+        observability_summary = _build_observability_summary(
+            settings,
+            release_evidence_runtime_acceptance=release_evidence_runtime_acceptance,
+        )
     except ModuleNotFoundError as exc:
         observability_summary = _observability_dependency_unavailable_summary(exc)
     try:
@@ -996,6 +1115,12 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     g6_open_followups = ["signed_skill_package_or_sbom_review_evidence"]
     if not governance_runtime_smoke_verified:
         g6_open_followups.insert(0, "runtime_admin_dashboard_acceptance_for_governance")
+    g9_open_followups = [
+        "g9_runtime_export_and_retention_acceptance",
+        "alert_delivery_and_trace_export_211_acceptance",
+    ]
+    if release_evidence_runtime_acceptance_verified:
+        g9_open_followups.remove("g9_runtime_export_and_retention_acceptance")
 
     domains = {
         "g0_g1_source_authority_security": {
@@ -1068,11 +1193,9 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             "evidence": {
                 **observability_summary,
                 "release_evidence_result": smoke["evidence_ref"]["result"],
+                "release_evidence_runtime_acceptance": release_evidence_runtime_acceptance_summary,
             },
-            "open_followups": [
-                "g9_runtime_export_and_retention_acceptance",
-                "alert_delivery_and_trace_export_211_acceptance",
-            ],
+            "open_followups": g9_open_followups,
         },
         "frontend_poc": {
             "status": "partial_followups_open"
@@ -1127,6 +1250,13 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     }
     if governance_runtime_evidence_path is not None and governance_runtime_smoke_verified:
         evidence_entries["governance_runtime_smoke"] = _path_for_output(governance_runtime_evidence_path)
+    if (
+        release_evidence_runtime_acceptance_path is not None
+        and release_evidence_runtime_acceptance_verified
+    ):
+        evidence_entries["release_evidence_runtime_acceptance"] = _path_for_output(
+            release_evidence_runtime_acceptance_path
+        )
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -1157,6 +1287,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             context_projection_verified=context_projection_verified,
             stage_acceptance_status=stage_acceptance_status,
             governance_runtime_smoke_verified=governance_runtime_smoke_verified,
+            release_evidence_runtime_acceptance_verified=release_evidence_runtime_acceptance_verified,
         ),
         "decision": decision_summary,
         "domains": domains,

@@ -213,6 +213,22 @@ The policy forbids deleting raw runtime payloads, executor private payloads,
 raw storage keys, sandbox work directories, secret material, or unreviewed
 evidence drafts through this reviewed release-evidence path.
 
+## Runtime Acceptance Verifier
+
+`tools/verify_release_evidence_runtime_acceptance.py` verifies a
+runtime-packaged `docs/release-evidence/` tree can emit a safe reviewed index
+and that the retention policy still requires reviewed, redacted, delete-safe
+handling. The verifier emits
+`ai-platform.release-evidence-runtime-acceptance.v1` with safe counts and
+policy status only; it does not export raw runtime payloads, `source_ref`,
+`evidence_ref`, storage keys, sandbox paths, or secret-like values.
+
+`tools/foundation_alpha_readiness.py` may consume this result only when it is
+wrapped in a reviewed, redacted `ai-platform.release-evidence-entry.v1` 211
+runtime-smoke evidence entry for the same runtime subject. A local verifier
+pass is a preflight and does not by itself close the G9 release-evidence
+runtime blocker.
+
 ## Open Gaps
 
 - `release_evidence_runtime_export_acceptance`

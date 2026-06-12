@@ -196,6 +196,7 @@ python tools/release_evidence_readiness.py --format markdown
 python tools/release_evidence_readiness.py --format json
 python tools/release_evidence_export_acceptance.py --format markdown
 python tools/release_evidence_export_acceptance.py --format json
+python tools/verify_release_evidence_runtime_acceptance.py --format json
 ```
 
 The export location is `docs/release-evidence/`, with index
@@ -224,6 +225,16 @@ markers. It is a review precondition only, not runtime export acceptance.
 Remaining release-evidence blockers are
 `release_evidence_runtime_export_acceptance` and
 `release_evidence_retention_runtime_acceptance`.
+
+`tools/verify_release_evidence_runtime_acceptance.py` is the runtime-packaged
+acceptance verifier for the same evidence tree. It emits only the safe
+`ai-platform.release-evidence-runtime-acceptance.v1` summary: reviewed-index
+counts, blocked-entry count, retention-policy status, and `does_not_close_g9`.
+`observability_readiness` can accept that summary to remove the two nested
+release-evidence runtime gaps, but Foundation Alpha readiness consumes it only
+after a reviewed, redacted 211 runtime evidence entry records the same runtime
+subject. Until that reviewed 211 evidence exists, the Foundation Alpha G9
+followup `g9_runtime_export_and_retention_acceptance` remains open.
 
 ## 211 Runtime Evidence - 2026-06-08
 

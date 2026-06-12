@@ -298,6 +298,14 @@ release-evidence gaps are `release_evidence_runtime_export_acceptance` and
 export acceptance, runtime retention enforcement/acceptance, review workflow,
 and deployment evidence are proven.
 
+`tools/verify_release_evidence_runtime_acceptance.py` is now the focused
+runtime-packaged verifier for that path. It may produce the safe
+`ai-platform.release-evidence-runtime-acceptance.v1` summary and can feed
+`observability_readiness` without raw `source_ref`, `evidence_ref`, storage key,
+sandbox path, or secret-like payloads. Foundation Alpha readiness does not clear
+the G9 release-evidence followup from a local verifier pass alone; it requires a
+reviewed, redacted 211 runtime evidence entry for the same runtime subject.
+
 The source-level capacity baseline now includes
 `MODEL_GATEWAY_REQUEST_CONCURRENCY_LIMIT` as a model-gateway pressure-control
 setting. Its default remains `0`, meaning no platform-level model gateway
