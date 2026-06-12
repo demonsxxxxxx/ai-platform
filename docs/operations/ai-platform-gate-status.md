@@ -47,6 +47,22 @@ For source-only docs/tests/evidence syncs, write a local-only
 `tools/foundation_alpha_readiness.py` can prove the runtime-affecting delta is
 empty. Missing, stale, or malformed snapshot markers intentionally fail closed.
 
+Current live 211 API/worker runtime is newer than the active POC evidence set:
+on 2026-06-12, source and API/worker were advanced to
+`00e4e6b950709439850749fe26af9c0943f6a07c` with image
+`ai-platform:00e4e6b-skill-release-evidence` and image ID
+`sha256:e8ecc5d90113d41e9bd416538926d7bdba20824d498c91b7f447f7f17c4f813d`.
+The 211 source marker, source snapshot, API/worker labels, image labels, and
+image internal source marker all pointed to `00e4e6b`; API health returned
+`ok`; and the compose labels pointed to the repo-local deploy composition. The
+focused governance verifier returned `ok: true`, and the reviewed redacted
+evidence entry is
+`docs/release-evidence/foundation-alpha-poc/00e4e6b950709439850749fe26af9c0943f6a07c/2026-06-12-211-foundation-alpha-poc-00e4e6b-governance-runtime-smoke.json`.
+This is current 211 hardening-slice evidence only: it does not refresh the full
+runtime/Auth/RBAC/release-evidence/alert-trace/frontend POC evidence set, does
+not replace the active `6088d5d` Foundation Alpha POC reference below, and
+does not close Foundation Alpha.
+
 On 2026-06-12, runtime subject commit
 `6088d5d179c422a6d753e1b77079410503e58925` was synced to the 211 source
 target and the 211 API and worker ran

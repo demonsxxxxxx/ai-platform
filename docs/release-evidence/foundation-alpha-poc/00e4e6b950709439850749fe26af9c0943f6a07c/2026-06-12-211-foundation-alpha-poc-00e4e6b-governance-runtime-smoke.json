@@ -1,0 +1,116 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-06-12-211-foundation-alpha-poc-00e4e6b-governance-runtime-smoke",
+  "commit_sha": "00e4e6b950709439850749fe26af9c0943f6a07c",
+  "runtime_subject_commit_sha": "00e4e6b950709439850749fe26af9c0943f6a07c",
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#15",
+    "#16",
+    "#17",
+    "#21",
+    "#22",
+    "#23",
+    "#24"
+  ],
+  "pr_refs": [],
+  "artifact_kind": "211_runtime_smoke",
+  "captured_at": "2026-06-12T21:24:05+08:00",
+  "source_ref": {
+    "branch": "main",
+    "runtime_commit": "00e4e6b950709439850749fe26af9c0943f6a07c",
+    "runtime_source_marker": "00e4e6b950709439850749fe26af9c0943f6a07c",
+    "source_snapshot": {
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "commit_sha": "00e4e6b950709439850749fe26af9c0943f6a07c",
+      "source_target": "services/ai-platform",
+      "created_at": "2026-06-12T13:21:29.728102+00:00",
+      "archive": "ai-platform-00e4e6b-source.tar"
+    },
+    "image": "ai-platform:00e4e6b-skill-release-evidence",
+    "image_id": "sha256:e8ecc5d90113d41e9bd416538926d7bdba20824d498c91b7f447f7f17c4f813d",
+    "image_labels": {
+      "ai-platform.source-revision": "00e4e6b950709439850749fe26af9c0943f6a07c",
+      "org.opencontainers.image.revision": "00e4e6b950709439850749fe26af9c0943f6a07c",
+      "ai-platform.source_note": "skill-release-pending-evidence-hardening"
+    },
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "repo_local_env_present": false,
+    "gateway_secret_supplied": true,
+    "compose_location": "repo-local 211 deploy composition",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "deployment_note": "runtime-only image rebased from the previous healthy image because dependencies did not change; compose used --no-build with the reviewed image tag. This focused rollout refreshed Admin Runtime governance smoke for the skill-release pending-evidence hardening slice but did not refresh the full Foundation Alpha POC evidence set."
+  },
+  "evidence_ref": {
+    "verifier": "tools/verify_governance_runtime_smoke.py",
+    "command": "AI_PLATFORM_GATEWAY_SECRET=<redacted> python3 tools/verify_governance_runtime_smoke.py --base-url http://127.0.0.1:8020 --commit-sha 00e4e6b950709439850749fe26af9c0943f6a07c --runtime-subject-commit-sha 00e4e6b950709439850749fe26af9c0943f6a07c --image ai-platform:00e4e6b-skill-release-evidence --gateway-secret-env AI_PLATFORM_GATEWAY_SECRET",
+    "result": "ok:true",
+    "schema_version": "ai-platform.governance-runtime-smoke.v1",
+    "runtime_checks": {
+      "admin_runtime_governance": {
+        "expected_status": 200,
+        "forbidden_projection_terms_present": false,
+        "governance_schema_version": "ai-platform.governance-readiness.v1",
+        "governance_status": "partial_blocked",
+        "governance_status_allowed": true,
+        "memory_governance": {
+          "context_provenance_present": true,
+          "domain_status": "partial_blocked",
+          "gap_count": 5,
+          "long_term_fail_closed_present": true,
+          "office_context_readiness_present": true
+        },
+        "missing_domains": [],
+        "open_gap_count": 18,
+        "required_domains_present": true,
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "skill_governance": {
+          "dashboard_contract_exposed": false,
+          "dashboard_present": true,
+          "domain_status": "partial_blocked",
+          "gap_count": 6,
+          "implemented_snapshot_lock": true,
+          "implemented_version_registry": true,
+          "release_readiness_present": true
+        },
+        "status": 200,
+        "tenant_id": "default",
+        "tenant_matches_requested": true,
+        "tool_permission": {
+          "bulk_review_present": true,
+          "domain_status": "partial_blocked",
+          "gap_count": 4,
+          "implemented_bulk_review_dashboard": true,
+          "implemented_policy_taxonomy": true,
+          "taxonomy_present": true
+        }
+      },
+      "ordinary_admin_runtime": {
+        "detail": "not_ai_admin",
+        "expected_status": 403,
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "status": 403
+      }
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "This entry records a reviewed Admin Runtime governance smoke summary for the 00e4e6b skill-release pending-evidence hardening runtime.",
+    "The smoke verified ordinary-user Admin Runtime denial, same-tenant admin governance projection access, required governance domains, and no forbidden projection terms in the reviewed summary.",
+    "The 211 source marker, source snapshot, API container label, worker container label, image label, and image internal source marker all pointed to 00e4e6b before this evidence was recorded.",
+    "This focused evidence supports the G6 Admin Runtime governance projection path for the hardening slice but does not replace the active 6088d5d Foundation Alpha POC reference or close signed Skill package/SBOM, dependency vulnerability/license, visual dashboard, ordinary-user G9, production governance rollout, alert export, packaged frontend image release acceptance, or Foundation Alpha."
+  ],
+  "open_followups": [
+    "Signed package or SBOM review evidence for Skill release remains open.",
+    "Dependency vulnerability/license evidence remains open.",
+    "Admin Skill release dashboard runtime, visual, and 211 acceptance remain open.",
+    "Ordinary-user G9 acceptance for quarantined legacy routes remains open.",
+    "Packaged frontend image smoke/release acceptance remains open.",
+    "Full Foundation Alpha POC runtime, Auth/RBAC, release-evidence, alert-trace, and packaged-frontend evidence were not refreshed for 00e4e6b."
+  ]
+}

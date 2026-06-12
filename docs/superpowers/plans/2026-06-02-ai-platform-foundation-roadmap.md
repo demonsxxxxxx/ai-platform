@@ -297,16 +297,18 @@ release evidence and does not close G9 by itself.
 The same source-level readiness snapshot now also embeds
 `ai-platform.release-evidence-retention-policy.v1` as a contract-only
 retention policy with a 180-day default, 30-day minimum, reviewed-delete
-requirement, and reviewed/redacted-entry-only delete scope. The 2026-06-12
-`b96d02e232176bade455f2af2bc3080f8f372206` 211 runtime evidence records
-reviewed runtime export and retention acceptance for the active Foundation
-Alpha POC runtime subject, so the narrower
-`g9_runtime_export_and_retention_acceptance` blocker is no longer the next
-Foundation Alpha slice for that runtime. This does not close G9;
-`alert_delivery_and_trace_export_211_acceptance`, signed Skill package or SBOM
-review evidence, ordinary-user legacy-route acceptance, packaged frontend image
-release acceptance, review/PR closure, and broader auth/session/RBAC regression
-remain separate blockers.
+requirement, and reviewed/redacted-entry-only delete scope. The later
+2026-06-12 `6088d5d179c422a6d753e1b77079410503e58925` 211 runtime evidence
+records reviewed runtime export, retention, and alert/trace export runtime
+acceptance for the active Foundation Alpha POC runtime subject, so the narrower
+`g9_runtime_export_and_retention_acceptance` and
+`alert_delivery_and_trace_export_211_acceptance` blockers are no longer the
+next Foundation Alpha slices for that runtime. The earlier
+`b96d02e232176bade455f2af2bc3080f8f372206` evidence remains historical. This
+does not close G9; signed Skill package or SBOM review evidence,
+ordinary-user legacy-route acceptance, packaged frontend image release
+acceptance, review/PR closure, G9 Admin Runtime observability follow-ups, and
+broader auth/session/RBAC regression remain separate blockers.
 
 `tools/verify_release_evidence_runtime_acceptance.py` is now the focused
 runtime-packaged verifier for that path. It may produce the safe
@@ -511,6 +513,18 @@ disabled registry or tenant-policy cases. Admin tool policy governance now also
 has a bounded same-tenant change-history projection through
 `GET /api/ai/admin/tool-policies/history`, backed by the existing
 `admin.tool_policy.updated` audit log and allowlisted public policy fields.
+The skill-release pending-evidence hardening slice was deployed to 211 on
+2026-06-12 as `00e4e6b950709439850749fe26af9c0943f6a07c` with image
+`ai-platform:00e4e6b-skill-release-evidence`. API/worker labels, the 211
+source marker, source snapshot, image labels, and image internal source marker
+all pointed to `00e4e6b`; API health returned `ok`; and the repo-local compose
+labels were in use. A focused `tools/verify_governance_runtime_smoke.py` run
+returned `ok: true` and is recorded as
+`docs/release-evidence/foundation-alpha-poc/00e4e6b950709439850749fe26af9c0943f6a07c/2026-06-12-211-foundation-alpha-poc-00e4e6b-governance-runtime-smoke.json`.
+This verifies the Admin Runtime governance projection for the hardening slice
+only. It does not refresh the full Foundation Alpha POC runtime/Auth/RBAC,
+release-evidence, alert-trace, or packaged-frontend evidence set and does not
+close Foundation Alpha.
 The Admin bulk-review dashboard baseline is now split into a contract-only
 readiness artifact through `tools/tool_policy_bulk_review_readiness.py` with
 schema `ai-platform.tool-policy-bulk-review-readiness.v1` and nested
