@@ -339,6 +339,35 @@ def _is_release_evidence_runtime_acceptance_evidence(payload: dict[str, Any]) ->
     return _release_evidence_runtime_acceptance_from_payload(payload) is not None
 
 
+def _alert_trace_export_runtime_acceptance_from_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    evidence_ref = payload.get("evidence_ref") if isinstance(payload, dict) else {}
+    runtime_checks = evidence_ref.get("runtime_checks") if isinstance(evidence_ref, dict) else {}
+    if not isinstance(runtime_checks, dict):
+        return None
+    acceptance = runtime_checks.get("alert_trace_export_runtime_acceptance")
+    if not isinstance(acceptance, dict):
+        return None
+    if (
+        evidence_ref.get("verifier") != "tools/verify_alert_trace_export_runtime_acceptance.py"
+        or evidence_ref.get("schema_version")
+        != "ai-platform.alert-trace-export-runtime-acceptance.v1"
+    ):
+        return None
+
+    from app.alert_trace_export_runtime_acceptance import (
+        acceptance_is_valid,
+        acceptance_summary,
+    )
+
+    if not acceptance_is_valid(acceptance):
+        return None
+    return acceptance_summary(acceptance)
+
+
+def _is_alert_trace_export_runtime_acceptance_evidence(payload: dict[str, Any]) -> bool:
+    return _alert_trace_export_runtime_acceptance_from_payload(payload) is not None
+
+
 def _release_evidence_sort_key(path: Path, payload: dict[str, Any]) -> tuple[str, str]:
     return (str(payload.get("captured_at", "")), path.name)
 
@@ -439,6 +468,31 @@ def _discover_release_evidence_runtime_acceptance_evidence(commit_sha: str) -> P
         if not _release_evidence_entry_is_valid(payload, commit_sha):
             continue
         if _is_release_evidence_runtime_acceptance_evidence(payload):
+            entries.append((path, payload))
+
+    if entries:
+        path, _ = max(entries, key=lambda item: _release_evidence_sort_key(item[0], item[1]))
+        return path
+    return None
+
+
+def _discover_alert_trace_export_runtime_acceptance_evidence(commit_sha: str) -> Path | None:
+    commit_root = _EVIDENCE_BASE_ROOT / commit_sha
+    if not commit_root.is_dir():
+        return None
+
+    entries: list[tuple[Path, dict[str, Any]]] = []
+    for path in sorted(commit_root.glob("*.json")):
+        try:
+            payload = _load_json(path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not _release_evidence_entry_base_is_valid(payload, commit_sha):
+            continue
+        if (
+            payload.get("artifact_kind") == "alert_trace_export_runtime_acceptance"
+            and _is_alert_trace_export_runtime_acceptance_evidence(payload)
+        ):
             entries.append((path, payload))
 
     if entries:
@@ -1028,12 +1082,14 @@ def _operator_context(
     stage_acceptance_status: str,
     governance_runtime_smoke_verified: bool = False,
     release_evidence_runtime_acceptance_verified: bool = False,
+    alert_trace_export_runtime_acceptance_verified: bool = False,
     frontend_packaged_runtime_smoke_verified: bool = False,
 ) -> dict[str, Any]:
     poc_loop_status = _poc_loop_status(runtime_relation)
     if runtime_relation.get("runtime_relevant_source_matches") and not context_projection_verified:
         poc_loop_status = "context_snapshot_public_summary_followup_required"
     next_recommended_slices = [
+        "alert_delivery_and_trace_export_211_acceptance",
         "g9_runtime_export_and_retention_acceptance",
         "packaged_frontend_image_release_acceptance",
         "broader_auth_session_rbac_tenant_redaction_regression",
@@ -1043,6 +1099,12 @@ def _operator_context(
     if release_evidence_runtime_acceptance_verified:
         next_recommended_slices = [
             item for item in next_recommended_slices if item != "g9_runtime_export_and_retention_acceptance"
+        ]
+    if alert_trace_export_runtime_acceptance_verified:
+        next_recommended_slices = [
+            item
+            for item in next_recommended_slices
+            if item != "alert_delivery_and_trace_export_211_acceptance"
         ]
     if frontend_packaged_runtime_smoke_verified:
         next_recommended_slices = [
@@ -1205,6 +1267,50 @@ def _release_evidence_runtime_acceptance_summary(payload: dict[str, Any] | None)
     }
 
 
+def _alert_trace_export_runtime_acceptance_summary(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if payload is None:
+        return {
+            "status": "missing_alert_trace_export_runtime_acceptance",
+            "schema_version": None,
+            "redaction_scan_status": None,
+            "ordinary_admin_runtime_status": None,
+            "admin_runtime_status": None,
+            "alert_delivery_not_enabled": None,
+            "trace_export_sources_public_only": None,
+            "verified": False,
+        }
+
+    acceptance = _alert_trace_export_runtime_acceptance_from_payload(payload)
+    if acceptance is None:
+        return {
+            "status": "alert_trace_export_runtime_acceptance_followup_required",
+            "schema_version": None,
+            "redaction_scan_status": None,
+            "ordinary_admin_runtime_status": None,
+            "admin_runtime_status": None,
+            "alert_delivery_not_enabled": None,
+            "trace_export_sources_public_only": None,
+            "verified": False,
+        }
+    return {
+        "status": "verified_alert_trace_export_runtime_acceptance",
+        "schema_version": acceptance["schema_version"],
+        "redaction_scan_status": acceptance.get("redaction_scan_status"),
+        "ordinary_admin_runtime_status": acceptance.get("ordinary_admin_runtime_status"),
+        "admin_runtime_status": acceptance.get("admin_runtime_status"),
+        "alert_delivery_policy_status": acceptance.get("alert_delivery_policy_status"),
+        "alert_delivery_not_enabled": acceptance.get("alert_delivery_not_enabled"),
+        "trace_export_contract_schema_version": acceptance.get(
+            "trace_export_contract_schema_version"
+        ),
+        "trace_export_not_raw_runtime_payloads": acceptance.get(
+            "trace_export_not_raw_runtime_payloads"
+        ),
+        "trace_export_sources_public_only": acceptance.get("trace_export_sources_public_only"),
+        "verified": True,
+    }
+
+
 def _frontend_packaged_runtime_smoke_summary(payload: dict[str, Any] | None) -> dict[str, Any]:
     if payload is None:
         return {
@@ -1271,6 +1377,20 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     )
     release_evidence_runtime_acceptance_verified = (
         release_evidence_runtime_acceptance_summary["verified"] is True
+    )
+    alert_trace_export_runtime_acceptance_path = _discover_alert_trace_export_runtime_acceptance_evidence(
+        runtime_subject_commit
+    )
+    alert_trace_export_runtime_acceptance_payload = (
+        _load_json(alert_trace_export_runtime_acceptance_path)
+        if alert_trace_export_runtime_acceptance_path is not None
+        else None
+    )
+    alert_trace_export_runtime_acceptance_summary = _alert_trace_export_runtime_acceptance_summary(
+        alert_trace_export_runtime_acceptance_payload
+    )
+    alert_trace_export_runtime_acceptance_verified = (
+        alert_trace_export_runtime_acceptance_summary["verified"] is True
     )
     frontend_packaged_runtime_smoke_path = _discover_frontend_packaged_runtime_smoke_evidence(
         runtime_subject_commit
@@ -1339,6 +1459,8 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     ]
     if release_evidence_runtime_acceptance_verified:
         g9_open_followups.remove("g9_runtime_export_and_retention_acceptance")
+    if alert_trace_export_runtime_acceptance_verified:
+        g9_open_followups.remove("alert_delivery_and_trace_export_211_acceptance")
 
     frontend_open_followups = []
     if (
@@ -1424,6 +1546,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
                 **observability_summary,
                 "release_evidence_result": smoke["evidence_ref"]["result"],
                 "release_evidence_runtime_acceptance": release_evidence_runtime_acceptance_summary,
+                "alert_trace_export_runtime_acceptance": alert_trace_export_runtime_acceptance_summary,
             },
             "open_followups": g9_open_followups,
         },
@@ -1486,6 +1609,13 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         evidence_entries["release_evidence_runtime_acceptance"] = _path_for_output(
             release_evidence_runtime_acceptance_path
         )
+    if (
+        alert_trace_export_runtime_acceptance_path is not None
+        and alert_trace_export_runtime_acceptance_verified
+    ):
+        evidence_entries["alert_trace_export_runtime_acceptance"] = _path_for_output(
+            alert_trace_export_runtime_acceptance_path
+        )
     if frontend_packaged_runtime_smoke_path is not None and frontend_packaged_runtime_smoke_verified:
         evidence_entries["frontend_packaged_runtime_smoke"] = _path_for_output(
             frontend_packaged_runtime_smoke_path
@@ -1521,6 +1651,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             stage_acceptance_status=stage_acceptance_status,
             governance_runtime_smoke_verified=governance_runtime_smoke_verified,
             release_evidence_runtime_acceptance_verified=release_evidence_runtime_acceptance_verified,
+            alert_trace_export_runtime_acceptance_verified=alert_trace_export_runtime_acceptance_verified,
             frontend_packaged_runtime_smoke_verified=frontend_packaged_runtime_smoke_verified,
         ),
         "decision": decision_summary,

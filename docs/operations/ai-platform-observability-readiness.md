@@ -221,8 +221,12 @@ The same readiness snapshot now embeds the source-level export acceptance
 preflight `ai-platform.release-evidence-export-acceptance.v1` as
 `export_acceptance`. The preflight scans `docs/release-evidence`, emits only a
 safe reviewed-evidence index, excludes older reviewed runtime smoke entries
-missing `runtime_subject_commit_sha`, and fails closed on raw/private payload
-markers. It is a review precondition only, not runtime export acceptance.
+missing `runtime_subject_commit_sha`, excludes non-entry `skill-release/*`
+scaffold JSON, and fails closed on raw/private payload markers. It is a review
+precondition only, not runtime export acceptance. The release evidence entry
+contract accepts `alert_trace_export_runtime_acceptance` as the redacted
+artifact kind for reviewed alert-delivery and trace-export runtime acceptance
+records, but that artifact kind by itself does not close G9.
 
 `tools/verify_release_evidence_runtime_acceptance.py` is the runtime-packaged
 acceptance verifier for the same evidence tree. It emits only the safe

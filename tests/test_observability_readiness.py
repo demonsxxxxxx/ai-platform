@@ -361,6 +361,15 @@ def test_release_evidence_readiness_contract_defines_safe_export_location_withou
             "runtime_subject_commit_sha",
         ]
     }
+    assert readiness["evidence_contract"]["accepted_artifact_kinds"] == [
+        "211_runtime_smoke",
+        "capacity_gate_readiness",
+        "frontend_packaged_runtime_smoke",
+        "frontend_release_traceability",
+        "governance_readiness",
+        "observability_readiness",
+        "alert_trace_export_runtime_acceptance",
+    ]
     assert readiness["evidence_contract"]["forbidden_marker_classes"] == [
         "executor private payload",
         "raw storage key",

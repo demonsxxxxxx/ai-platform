@@ -62,6 +62,7 @@ _ACCEPTED_ARTIFACT_KINDS = [
     "frontend_release_traceability",
     "governance_readiness",
     "observability_readiness",
+    "alert_trace_export_runtime_acceptance",
 ]
 _RETENTION_POLICY = {
     "schema_version": RETENTION_POLICY_SCHEMA_VERSION,

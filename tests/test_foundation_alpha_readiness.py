@@ -340,6 +340,95 @@ def _minimal_release_evidence_runtime_acceptance_payload(
     }
 
 
+def _valid_alert_trace_export_runtime_acceptance() -> dict:
+    return {
+        "schema_version": "ai-platform.alert-trace-export-runtime-acceptance.v1",
+        "ok": True,
+        "status": "accepted_for_operator_review",
+        "redaction_scan_status": "passed",
+        "source": {
+            "commit_sha": CURRENT_SOURCE_SHA,
+            "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
+            "image": "ai-platform:a3f1d73-foundation-alpha-poc",
+            "tenant_id": "default",
+            "gateway_secret_supplied": True,
+        },
+        "checks": {
+            "ordinary_admin_runtime": {
+                "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+                "status": 403,
+                "expected_status": 403,
+            },
+            "admin_runtime_alerts_and_exports": {
+                "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+                "status": 200,
+                "expected_status": 200,
+                "tenant_matches_requested": True,
+                "observability_schema_version": "ai-platform.observability-readiness.v1",
+                "alerts_domain_status": "partial_blocked",
+                "alert_rules_status": "partial_blocked",
+                "alert_rule_count": 7,
+                "alert_delivery_policy_status": "contract_only_not_enabled",
+                "alert_delivery_not_enabled": True,
+                "slo_threshold_runtime_calibration_gap_present": True,
+                "trace_export_status": "partial_blocked",
+                "trace_export_contract_schema_version": "ai-platform.trace-audit-export-contract.v1",
+                "trace_export_not_raw_runtime_payloads": True,
+                "trace_export_sources_public_only": True,
+                "forbidden_projection_terms_present": False,
+            },
+        },
+        "open_gaps": [],
+        "does_not_enable_alert_delivery": True,
+        "does_not_export_raw_runtime_payloads": True,
+        "does_not_close_g9": True,
+    }
+
+
+def _minimal_alert_trace_export_runtime_acceptance_payload(
+    commit_sha: str,
+    *,
+    image: str,
+    captured_at: str = "2026-06-11T10:04:00+08:00",
+    acceptance: dict | None = None,
+) -> dict:
+    acceptance = acceptance or _valid_alert_trace_export_runtime_acceptance()
+    acceptance["source"]["commit_sha"] = commit_sha
+    acceptance["source"]["runtime_subject_commit_sha"] = commit_sha
+    acceptance["source"]["image"] = image
+    return {
+        "schema_version": "ai-platform.release-evidence-entry.v1",
+        "evidence_id": f"{commit_sha[:7]}-alert-trace-export-runtime-acceptance",
+        "commit_sha": commit_sha,
+        "runtime_subject_commit_sha": commit_sha,
+        "gate": "Foundation Alpha POC",
+        "artifact_kind": "alert_trace_export_runtime_acceptance",
+        "captured_at": captured_at,
+        "source_ref": {
+            "branch": "main",
+            "runtime_commit": commit_sha,
+            "runtime_source_marker": commit_sha,
+            "image": image,
+            "image_id": f"sha256:{commit_sha[:12]}",
+            "image_labels": {
+                "ai-platform.source-revision": commit_sha,
+                "org.opencontainers.image.revision": commit_sha,
+            },
+            "repo_local_env_present": False,
+        },
+        "evidence_ref": {
+            "verifier": "tools/verify_alert_trace_export_runtime_acceptance.py",
+            "result": "ok:true",
+            "schema_version": "ai-platform.alert-trace-export-runtime-acceptance.v1",
+            "runtime_checks": {
+                "alert_trace_export_runtime_acceptance": acceptance,
+            },
+        },
+        "redaction_scan_status": "passed",
+        "review_status": "reviewed",
+    }
+
+
 def _write_governance_evidence(
     base_root,
     commit_sha: str,
@@ -367,10 +456,35 @@ def _write_release_evidence_runtime_acceptance(
 ):
     commit_root = base_root / commit_sha
     commit_root.mkdir(parents=True, exist_ok=True)
-    path = commit_root / f"{commit_sha[:7]}-release-evidence-runtime-acceptance.json"
+    path = commit_root / "release-evidence-runtime-acceptance.json"
     path.write_text(
         json.dumps(
             _minimal_release_evidence_runtime_acceptance_payload(
+                commit_sha,
+                image=image,
+                captured_at=captured_at,
+                acceptance=acceptance,
+            )
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _write_alert_trace_export_runtime_acceptance(
+    base_root,
+    commit_sha: str,
+    *,
+    image: str,
+    captured_at: str = "2026-06-11T10:04:00+08:00",
+    acceptance: dict | None = None,
+):
+    commit_root = base_root / commit_sha
+    commit_root.mkdir(parents=True, exist_ok=True)
+    path = commit_root / "alert-trace-export-runtime-acceptance.json"
+    path.write_text(
+        json.dumps(
+            _minimal_alert_trace_export_runtime_acceptance_payload(
                 commit_sha,
                 image=image,
                 captured_at=captured_at,
@@ -596,6 +710,103 @@ def test_foundation_alpha_readiness_keeps_g9_runtime_blocker_without_valid_relea
     assert (
         g9["evidence"]["release_evidence_runtime_acceptance"]["status"]
         == "missing_release_evidence_runtime_acceptance"
+    )
+    serialized = json.dumps(readiness, ensure_ascii=False).lower()
+    assert "raw_storage_key" not in serialized
+
+
+def test_foundation_alpha_readiness_accepts_alert_trace_export_runtime_acceptance_for_same_runtime_subject(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    image = "ai-platform:a3f1d73-foundation-alpha-poc"
+    smoke_path, auth_path = _write_release_evidence_pair(evidence_root, CURRENT_SOURCE_SHA, image=image)
+    alert_trace_path = _write_alert_trace_export_runtime_acceptance(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image=image,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: CURRENT_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert "alert_trace_export_runtime_acceptance" in readiness["evidence_entries"]
+    assert readiness["evidence_entries"][
+        "alert_trace_export_runtime_acceptance"
+    ] == foundation_alpha_readiness._path_for_output(alert_trace_path)
+    g9 = readiness["domains"]["g9_admin_runtime_observability"]
+    assert "alert_delivery_and_trace_export_211_acceptance" not in g9["open_followups"]
+    assert "alert_delivery_and_trace_export_211_acceptance" not in readiness["decision"]["stage_acceptance_blockers"]
+    assert "alert_delivery_and_trace_export_211_acceptance" not in readiness["open_followups"]
+    assert "alert_delivery_and_trace_export_211_acceptance" not in readiness["operator_context"][
+        "next_recommended_slices"
+    ]
+    assert (
+        g9["evidence"]["alert_trace_export_runtime_acceptance"]["status"]
+        == "verified_alert_trace_export_runtime_acceptance"
+    )
+    assert g9["evidence"]["alert_trace_export_runtime_acceptance"]["verified"] is True
+    assert g9["evidence"]["alert_trace_export_runtime_acceptance"]["alert_delivery_not_enabled"] is True
+    assert g9["evidence"]["alert_trace_export_runtime_acceptance"]["trace_export_sources_public_only"] is True
+
+    serialized = json.dumps(readiness, ensure_ascii=False).lower()
+    assert "c:\\users" not in serialized
+    assert "source_ref" not in json.dumps(
+        g9["evidence"]["alert_trace_export_runtime_acceptance"],
+        ensure_ascii=False,
+    ).lower()
+    assert "raw_storage_key" not in serialized
+
+
+def test_foundation_alpha_readiness_keeps_alert_trace_blocker_without_valid_runtime_acceptance(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    image = "ai-platform:a3f1d73-foundation-alpha-poc"
+    smoke_path, auth_path = _write_release_evidence_pair(evidence_root, CURRENT_SOURCE_SHA, image=image)
+    invalid_acceptance = _valid_alert_trace_export_runtime_acceptance()
+    invalid_acceptance["ok"] = False
+    invalid_acceptance["checks"]["admin_runtime_alerts_and_exports"][
+        "forbidden_projection_terms_present"
+    ] = True
+    invalid_acceptance["open_gaps"] = ["trace_audit_export_211_acceptance"]
+    _write_alert_trace_export_runtime_acceptance(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image=image,
+        acceptance=invalid_acceptance,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: CURRENT_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert "alert_trace_export_runtime_acceptance" not in readiness["evidence_entries"]
+    g9 = readiness["domains"]["g9_admin_runtime_observability"]
+    assert "alert_delivery_and_trace_export_211_acceptance" in g9["open_followups"]
+    assert "alert_delivery_and_trace_export_211_acceptance" in readiness["decision"]["stage_acceptance_blockers"]
+    assert (
+        g9["evidence"]["alert_trace_export_runtime_acceptance"]["status"]
+        == "missing_alert_trace_export_runtime_acceptance"
     )
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
     assert "raw_storage_key" not in serialized
@@ -1436,6 +1647,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
             "department_rollout",
         ],
         "next_recommended_slices": [
+            "alert_delivery_and_trace_export_211_acceptance",
             "packaged_frontend_image_release_acceptance",
             "broader_auth_session_rbac_tenant_redaction_regression",
         ],
@@ -2401,6 +2613,16 @@ def test_foundation_alpha_readiness_fails_closed_when_optional_readiness_depende
             "retention_status": None,
             "safe_entry_count": None,
             "blocked_entry_count": None,
+            "verified": False,
+        },
+        "alert_trace_export_runtime_acceptance": {
+            "status": "missing_alert_trace_export_runtime_acceptance",
+            "schema_version": None,
+            "redaction_scan_status": None,
+            "ordinary_admin_runtime_status": None,
+            "admin_runtime_status": None,
+            "alert_delivery_not_enabled": None,
+            "trace_export_sources_public_only": None,
             "verified": False,
         },
     }

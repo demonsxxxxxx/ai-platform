@@ -623,6 +623,7 @@ def test_observability_docs_record_quality_golden_set_contract_without_closing_g
         assert "ai-platform.release-evidence-entry.v1" in text
         assert "ai-platform.release-evidence-retention-policy.v1" in text
         assert "ai-platform.release-evidence-runtime-acceptance.v1" in text
+        assert "alert_trace_export_runtime_acceptance" in text
         assert "g9_runtime_export_and_retention_acceptance" in text
         assert "alert_delivery_and_trace_export_211_acceptance" in text
         assert "`release_evidence_retention_policy`" not in text

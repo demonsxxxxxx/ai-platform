@@ -177,6 +177,7 @@ Accepted artifact kinds currently include:
 - `frontend_release_traceability`
 - `governance_readiness`
 - `observability_readiness`
+- `alert_trace_export_runtime_acceptance`
 
 ## Trace / Audit Export Contract
 

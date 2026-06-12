@@ -64,6 +64,7 @@ _ALLOWED_REDACTED_MARKERS = (
     "[redacted]",
     "[redacted-secret]",
 )
+_COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _path_for_output(path: Path, root: Path) -> str:
@@ -79,6 +80,15 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _is_release_evidence_entry_path(path: Path, root: Path) -> bool:
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return False
+    parts = relative.parts
+    return len(parts) >= 3 and _COMMIT_SHA_RE.fullmatch(parts[-2]) is not None
 
 
 def _normalized_key(value: str) -> str:
@@ -162,6 +172,14 @@ def build_release_evidence_export_acceptance(
 
     for path in sorted(root.rglob("*.json")) if root.exists() else []:
         entry_count += 1
+        if not _is_release_evidence_entry_path(path, root):
+            excluded_entries.append(
+                {
+                    "path": _path_for_output(path, root),
+                    "reasons": ["non_release_evidence_entry_path"],
+                }
+            )
+            continue
         payload = _read_json(path)
         if payload is None:
             blockers.append(
