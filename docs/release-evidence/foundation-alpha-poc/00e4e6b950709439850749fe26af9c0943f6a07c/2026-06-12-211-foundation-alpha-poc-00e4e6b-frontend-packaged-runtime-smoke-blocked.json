@@ -1,0 +1,114 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-06-12-211-foundation-alpha-poc-00e4e6b-frontend-packaged-runtime-smoke-blocked",
+  "commit_sha": "00e4e6b950709439850749fe26af9c0943f6a07c",
+  "runtime_subject_commit_sha": "00e4e6b950709439850749fe26af9c0943f6a07c",
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#15",
+    "#16",
+    "#17",
+    "#21",
+    "#22",
+    "#23",
+    "#24"
+  ],
+  "pr_refs": [],
+  "artifact_kind": "frontend_packaged_runtime_smoke",
+  "captured_at": "2026-06-12T22:06:00+08:00",
+  "source_ref": {
+    "branch": "main",
+    "runtime_commit": "00e4e6b950709439850749fe26af9c0943f6a07c",
+    "runtime_source_marker": "00e4e6b950709439850749fe26af9c0943f6a07c",
+    "source_snapshot": {
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "commit_sha": "00e4e6b950709439850749fe26af9c0943f6a07c",
+      "source_target": "services/ai-platform",
+      "created_at": "2026-06-12T13:21:29.728102+00:00",
+      "archive": "ai-platform-00e4e6b-source.tar"
+    },
+    "image": "ai-platform:00e4e6b-skill-release-evidence",
+    "image_id": "sha256:e8ecc5d90113d41e9bd416538926d7bdba20824d498c91b7f447f7f17c4f813d",
+    "image_labels": {
+      "ai-platform.source-revision": "00e4e6b950709439850749fe26af9c0943f6a07c",
+      "org.opencontainers.image.revision": "00e4e6b950709439850749fe26af9c0943f6a07c",
+      "ai-platform.source_revision": "00e4e6b950709439850749fe26af9c0943f6a07c",
+      "ai-platform.runtime-subject": "6088d5d179c422a6d753e1b77079410503e58925",
+      "ai-platform.runtime-rollout": "foundation-alpha-alert-trace-acceptance",
+      "ai-platform.source_note": "skill-release-pending-evidence-hardening"
+    },
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "api_health": {
+      "route": "/api/ai/health",
+      "status": "ok"
+    },
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "compose_env_layout_status": "stale_external_env_label_present",
+    "runtime_subject_label_status": "stale_runtime_subject_label_present",
+    "repo_local_env_present": false,
+    "gateway_secret_supplied": true,
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "deployment_note": "runtime-only image rebased from the previous healthy image because dependencies did not change; compose used --no-build with the reviewed image tag. Source revision and OCI revision labels point to 00e4e6b, but runtime-subject and runtime-rollout labels still carry the prior 6088d5d alert-trace rollout metadata, so this evidence must not be used as G0 source-authority closure.",
+    "runtime_image": "ai-platform:00e4e6b-skill-release-evidence",
+    "source_files_present": {
+      "frontend_web_dockerfile": true,
+      "repo_local_frontend_compose": true
+    },
+    "docker_host": "211",
+    "docker_proxy_status": "configured_registry_proxy_unreachable",
+    "target_base_images_cached": {
+      "node_22_alpine": false,
+      "nginx_1_27_alpine": false,
+      "ai_platform_frontend": false
+    },
+    "non_target_image_cache_note": "node:20 may be present locally, but it does not satisfy the frontend/web/Dockerfile node:22-alpine requirement."
+  },
+  "evidence_ref": {
+    "verifier": "tools/frontend_packaged_runtime_smoke.py",
+    "command": "python3 tools/frontend_packaged_runtime_smoke.py --evidence-json <redacted-operator-evidence> --format json",
+    "result": "ok:true",
+    "schema_version": "ai-platform.frontend-packaged-runtime-smoke.v1",
+    "runtime_checks": {
+      "frontend_packaged_runtime_smoke": {
+        "commit_sha": "00e4e6b950709439850749fe26af9c0943f6a07c",
+        "runtime_host": "211",
+        "image_tag": "ai-platform-frontend:00e4e6b-smoke",
+        "docker_build": {
+          "exit_code": 1,
+          "log_tail": "#0 building with \"default\" instance using docker driver  #1 [internal] load build definition from Dockerfile #1 transferring dockerfile: 1.95kB done #1 DONE 0.1s  #2 resolve image config for docker-image://docker.io/docker/dockerfile:1.7 #2 ERROR: failed to do request: Head \"<redacted-url> proxyconnect tcp: dial tcp <redacted-host>: connect: connection refused ------  > resolve image config for docker-image://docker.io/docker/dockerfile:1.7: ------ Dockerfile:1 --------------------    1 | >>> # syntax=docker/dockerfile:1.7    2 |         3 |     ARG AI_PLATFORM_BUILD_COMMIT=unknown -------------------- ERROR: failed to solve: failed to resolve source metadata for docker.io/docker/dockerfile:1.7: failed to do request: Head \"<redacted-url> proxyconnect tcp: dial tcp <redacted-host>: connect: connection refused"
+        },
+        "image_inspect": {
+          "status": "not_built"
+        },
+        "build_provenance": {
+          "status": "not_available"
+        },
+        "runtime_smoke": {
+          "status": "not_run"
+        },
+        "leak_scan": {
+          "status": "not_run"
+        },
+        "cleanup": {
+          "container_removed": true
+        }
+      }
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "notes": [
+    "The 211 packaged frontend smoke was rechecked for runtime subject 00e4e6b and remains blocked_environment with docker_registry_proxy_unreachable and base_image_pull_failed.",
+    "This is reviewed blocker evidence only, not release acceptance. It records that the source files and compose overlay are present, but the Docker-capable host cannot pull node:22-alpine or nginx:1.27-alpine and no target frontend image is cached.",
+    "The evidence intentionally redacts the registry proxy endpoint, raw daemon failure text, host paths, env-file values, credentials, and secret-like runtime material.",
+    "Source revision and OCI revision labels point to 00e4e6b, but stale runtime-subject/runtime-rollout labels and the old external env-file compose label remain open source-authority follow-ups."
+  ],
+  "open_followups": [
+    "Restore or bypass the 211 Docker registry proxy, or stage reviewed node:22-alpine and nginx:1.27-alpine base images on a Docker-capable host.",
+    "After the environment is fixed, rerun tools/frontend_packaged_runtime_smoke.py with a complete operator evidence JSON and record ready_for_operator_review evidence before closing packaged_frontend_image_release_acceptance.",
+    "This evidence does not close G6, G9, #17 packaged frontend release acceptance, compose one-command startup, G0 source-authority parity, or any production rollout gate."
+  ]
+}

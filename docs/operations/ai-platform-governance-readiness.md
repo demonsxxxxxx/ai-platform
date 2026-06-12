@@ -128,22 +128,22 @@ Admin Runtime denial, same-tenant admin access, governance schema
 domains, tool policy taxonomy and bulk-review signals, skill release/dashboard
 signals with `dashboard_contract` trimmed from the overview projection, memory
 fail-closed/context-provenance/office-context signals, and no forbidden
-projection terms in the reviewed summary. The 211 source marker, source
-snapshot, API/worker labels, runtime image labels, and image internal source
-marker all pointed to `00e4e6b950709439850749fe26af9c0943f6a07c`, and the
-compose config label pointed to the repo-local 211 deploy composition. The
+projection terms in the reviewed summary. The 211 source marker, source snapshot, source revision labels, OCI revision
+labels, and image internal source marker pointed to
+`00e4e6b950709439850749fe26af9c0943f6a07c`, and the compose config label
+pointed to the repo-local 211 deploy composition. Runtime-subject and
+runtime-rollout labels still carried prior `6088d5d` rollout metadata, and the
+compose environment-file label still recorded the old external env-file path. The
 reviewed release evidence entry is
 `docs/release-evidence/foundation-alpha-poc/00e4e6b950709439850749fe26af9c0943f6a07c/2026-06-12-211-foundation-alpha-poc-00e4e6b-governance-runtime-smoke.json`.
 
-This smoke records only the focused Admin Runtime governance projection proof
-for the skill-release pending-evidence hardening slice. It does not replace the
-active `6088d5d` Foundation Alpha POC reference, does not refresh the full POC
-runtime/Auth/RBAC/release-evidence/alert-trace/frontend evidence set, and does
-not close ordinary-user confirmation-card UX, full Admin dashboard/visual
-acceptance, signed-package/SBOM review evidence, dependency
-vulnerability/license evidence, office context-pack persistence and executor
-injection, frontend context provenance acceptance, or broader production
-governance rollout.
+This smoke records the focused Admin Runtime governance projection proof for
+the current `00e4e6b` Foundation Alpha POC runtime subject. It does not close
+ordinary-user confirmation-card UX, full Admin dashboard/visual acceptance,
+signed-package/SBOM review evidence, dependency vulnerability/license evidence,
+office context-pack persistence and executor injection, frontend context
+provenance acceptance, stale runtime labels, or broader production governance
+rollout.
 
 On 2026-06-12, `tools/verify_governance_runtime_smoke.py` returned `ok: true`
 on the 211 API for runtime subject commit

@@ -21,19 +21,19 @@ OBSERVABILITY_READINESS_DOC = ROOT / "docs/operations/ai-platform-observability-
 GOVERNANCE_READINESS_DOC = ROOT / "docs/operations/ai-platform-governance-readiness.md"
 GATE_STATUS_DOC = ROOT / "docs/operations/ai-platform-gate-status.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
-ACTIVE_RUNTIME_SUBJECT_SHA = "6088d5d179c422a6d753e1b77079410503e58925"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:6088d5d-alert-trace-acceptance"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:c8585918ccaeb4f9128c2c9301c8f8ac0d0c40002dc5b4febcafa2813b28bedf"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-6088d5d-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-6088d5d-auth-rbac-smoke"
+ACTIVE_RUNTIME_SUBJECT_SHA = "00e4e6b950709439850749fe26af9c0943f6a07c"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:00e4e6b-skill-release-evidence"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:e8ecc5d90113d41e9bd416538926d7bdba20824d498c91b7f447f7f17c4f813d"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-00e4e6b-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-00e4e6b-auth-rbac-smoke"
 ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-12-211-foundation-alpha-poc-6088d5d-release-evidence-runtime-acceptance"
+    "2026-06-12-211-foundation-alpha-poc-00e4e6b-release-evidence-runtime-acceptance"
 )
 ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-12-211-foundation-alpha-poc-6088d5d-alert-trace-export-runtime-acceptance"
+    "2026-06-12-211-foundation-alpha-poc-00e4e6b-alert-trace-export-runtime-acceptance"
 )
 ACTIVE_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
-    "2026-06-12-211-foundation-alpha-poc-6088d5d-frontend-packaged-runtime-smoke-blocked"
+    "2026-06-12-211-foundation-alpha-poc-00e4e6b-frontend-packaged-runtime-smoke-blocked"
 )
 FOUNDATION_ALPHA_POC_EVIDENCE = (
     ROOT
@@ -433,10 +433,10 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     )
     assert frontend_blocked_smoke["commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
     assert frontend_blocked_smoke["runtime_host"] == "211"
-    assert frontend_blocked_smoke["image_tag"] == "ai-platform-frontend:6088d5d-smoke"
+    assert frontend_blocked_smoke["image_tag"] == "ai-platform-frontend:00e4e6b-smoke"
     assert frontend_blocked_smoke["docker_build"]["exit_code"] == 1
     assert "proxyconnect" in frontend_blocked_smoke["docker_build"]["log_tail"]
-    assert "node:22-alpine" in frontend_blocked_smoke["docker_build"]["log_tail"]
+    assert "resolve source metadata" in frontend_blocked_smoke["docker_build"]["log_tail"]
     assert frontend_blocked_smoke["image_inspect"]["status"] == "not_built"
     assert frontend_blocked_smoke["build_provenance"]["status"] == "not_available"
     assert frontend_blocked_smoke["runtime_smoke"]["status"] == "not_run"
@@ -444,6 +444,8 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert frontend_blocked_smoke["cleanup"]["container_removed"] is True
     assert "docker_registry_proxy_unreachable" in frontend_blocked_payload["notes"][0]
     assert "base_image_pull_failed" in frontend_blocked_payload["notes"][0]
+    assert "node:22-alpine" in frontend_blocked_payload["notes"][1]
+    assert "nginx:1.27-alpine" in frontend_blocked_payload["notes"][1]
     assert "not release acceptance" in frontend_blocked_payload["notes"][1]
     assert frontend_blocked_payload["redaction_scan_status"] == "passed"
     assert frontend_blocked_payload["review_status"] == "reviewed"
@@ -474,6 +476,7 @@ def test_foundation_alpha_runtime_evidence_subject_commit_parity_without_self_re
         assert source_ref["runtime_source_marker"] == payload["runtime_subject_commit_sha"]
         assert labels["ai-platform.source-revision"] == payload["runtime_subject_commit_sha"]
         assert labels["org.opencontainers.image.revision"] == payload["runtime_subject_commit_sha"]
+        assert source_ref["runtime_subject_label_status"] == "stale_runtime_subject_label_present"
 
 
 def test_source_authority_docs_keep_current_repo_and_211_deploy_boundary():

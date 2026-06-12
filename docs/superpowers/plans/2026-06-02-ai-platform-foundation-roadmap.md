@@ -298,7 +298,7 @@ The same source-level readiness snapshot now also embeds
 `ai-platform.release-evidence-retention-policy.v1` as a contract-only
 retention policy with a 180-day default, 30-day minimum, reviewed-delete
 requirement, and reviewed/redacted-entry-only delete scope. The later
-2026-06-12 `6088d5d179c422a6d753e1b77079410503e58925` 211 runtime evidence
+2026-06-12 `00e4e6b950709439850749fe26af9c0943f6a07c` 211 runtime evidence
 records reviewed runtime export, retention, and alert/trace export runtime
 acceptance for the active Foundation Alpha POC runtime subject, so the narrower
 `g9_runtime_export_and_retention_acceptance` and
@@ -406,12 +406,12 @@ the final packaged image. The verifier classified the redacted attempt as
 `blocked_environment` with `docker_registry_proxy_unreachable` and
 `base_image_pull_failed`, so it is not release acceptance and does not close
 `packaged_frontend_image_release_acceptance`. A later 2026-06-12 211 recheck
-for active runtime subject `6088d5d` confirmed the same blocker after the
-alert/trace runtime acceptance rollout: source marker and snapshot pointed to
-`6088d5d`, frontend image sources were present, but the Docker daemon still
-could not pull `node:22-alpine` or `nginx:1.27-alpine`, and no target
+for active runtime subject `00e4e6b` confirmed the same blocker after the
+skill-release pending-evidence hardening rollout: source marker and snapshot
+pointed to `00e4e6b`, frontend image sources were present, but the Docker
+daemon still could not pull required base images, and no target
 `ai-platform-frontend:*` image was cached. The reviewed redacted evidence is
-`2026-06-12-211-foundation-alpha-poc-6088d5d-frontend-packaged-runtime-smoke-blocked.json`;
+`2026-06-12-211-foundation-alpha-poc-00e4e6b-frontend-packaged-runtime-smoke-blocked.json`;
 it is blocker evidence only and does not close
 `packaged_frontend_image_release_acceptance`. The projection
 audit records the current production-source route inventory, active-browser
@@ -515,16 +515,19 @@ has a bounded same-tenant change-history projection through
 `admin.tool_policy.updated` audit log and allowlisted public policy fields.
 The skill-release pending-evidence hardening slice was deployed to 211 on
 2026-06-12 as `00e4e6b950709439850749fe26af9c0943f6a07c` with image
-`ai-platform:00e4e6b-skill-release-evidence`. API/worker labels, the 211
-source marker, source snapshot, image labels, and image internal source marker
-all pointed to `00e4e6b`; API health returned `ok`; and the repo-local compose
-labels were in use. A focused `tools/verify_governance_runtime_smoke.py` run
-returned `ok: true` and is recorded as
+`ai-platform:00e4e6b-skill-release-evidence`. API/worker source revision labels, the 211 source marker, source snapshot,
+OCI revision labels, and image internal source marker pointed to `00e4e6b`;
+API health returned `ok`; and the repo-local compose labels were in use.
+Runtime-subject/runtime-rollout labels still carried prior `6088d5d` rollout
+metadata, and the compose environment-file label still recorded the old external
+env-file path. A focused `tools/verify_governance_runtime_smoke.py` run returned
+`ok: true` and is recorded as
 `docs/release-evidence/foundation-alpha-poc/00e4e6b950709439850749fe26af9c0943f6a07c/2026-06-12-211-foundation-alpha-poc-00e4e6b-governance-runtime-smoke.json`.
-This verifies the Admin Runtime governance projection for the hardening slice
-only. It does not refresh the full Foundation Alpha POC runtime/Auth/RBAC,
-release-evidence, alert-trace, or packaged-frontend evidence set and does not
-close Foundation Alpha.
+The same `00e4e6b` evidence directory now also records runtime POC, Auth/RBAC,
+release-evidence runtime acceptance, alert/trace export runtime acceptance, and
+packaged frontend blocker evidence for the current runtime subject. This
+refresh verifies the controlled POC loop for `00e4e6b` but does not close
+Foundation Alpha.
 The Admin bulk-review dashboard baseline is now split into a contract-only
 readiness artifact through `tools/tool_policy_bulk_review_readiness.py` with
 schema `ai-platform.tool-policy-bulk-review-readiness.v1` and nested
