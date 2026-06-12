@@ -6,7 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from app.context_builder import public_context_input_key_findings
+from app.public_context_keys import public_context_input_key_findings
 
 
 SCHEMA_VERSION = "ai-platform.foundation-alpha-poc-readiness.v1"

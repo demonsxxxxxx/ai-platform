@@ -21,7 +21,7 @@ from urllib import error, request
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.context_builder import public_context_input_key_findings
+from app.public_context_keys import public_context_input_key_findings
 from app.validation import assert_safe_id
 
 
