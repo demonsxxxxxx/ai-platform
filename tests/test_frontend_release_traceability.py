@@ -400,6 +400,7 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "ARG AI_PLATFORM_BUILD_COMMIT=unknown" in dockerfile
     assert "ENV AI_PLATFORM_BUILD_COMMIT=${AI_PLATFORM_BUILD_COMMIT}" in dockerfile
     assert "org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT" in dockerfile
+    assert "ai-platform.source-revision=$AI_PLATFORM_BUILD_COMMIT" in dockerfile
     assert "corepack pnpm run ci:verify" in dockerfile
     assert "COPY tools ./tools" in dockerfile
     assert "COPY --from=build /workspace/frontend/web/dist" in dockerfile
@@ -449,6 +450,7 @@ def test_frontend_release_traceability_flags_packaged_delivery_missing_required_
     contract_findings = trace["packaged_frontend_image"]["contract_scan"]["contract_findings"]
     assert {"path": "frontend/web/Dockerfile", "rule_id": "dockerfile_build_commit_arg_required"} in contract_findings
     assert {"path": "frontend/web/Dockerfile", "rule_id": "dockerfile_build_dirty_arg_required"} in contract_findings
+    assert {"path": "frontend/web/Dockerfile", "rule_id": "dockerfile_source_revision_label_required"} in contract_findings
     assert {"path": "frontend/web/Dockerfile", "rule_id": "dockerfile_build_dirty_env_required"} in contract_findings
     assert {"path": "frontend/web/nginx.conf.template", "rule_id": "nginx_upload_body_size_required"} in contract_findings
     assert {"path": "frontend/web/nginx.conf.template", "rule_id": "nginx_proxy_timeouts_required"} in contract_findings

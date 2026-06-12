@@ -75,6 +75,7 @@ PACKAGED_DELIVERY_REQUIRED_TERMS = {
         "dockerfile_build_commit_env_required": "ENV AI_PLATFORM_BUILD_COMMIT=${AI_PLATFORM_BUILD_COMMIT}",
         "dockerfile_build_dirty_env_required": "ENV AI_PLATFORM_BUILD_DIRTY=${AI_PLATFORM_BUILD_DIRTY}",
         "dockerfile_revision_label_required": "org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT",
+        "dockerfile_source_revision_label_required": "ai-platform.source-revision=$AI_PLATFORM_BUILD_COMMIT",
         "dockerfile_ci_verify_required": "corepack pnpm run ci:verify",
         "dockerfile_tools_context_required": "COPY tools ./tools",
         "dockerfile_dist_copy_required": "COPY --from=build /workspace/frontend/web/dist",
