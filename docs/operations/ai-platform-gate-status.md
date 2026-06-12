@@ -249,7 +249,12 @@ The immediately superseded runtime image was `ai-platform:948179c-skill-release-
 This smoke does not close #21 capacity, G7 Docker sandbox hardening, ordinary
 user multi-agent exposure, department rollout, alert delivery enablement,
 signed Skill package or SBOM review evidence, G9 Admin Runtime observability
-partial follow-ups, or packaged frontend image release acceptance.
+partial follow-ups, or packaged frontend image release acceptance. Signed Skill
+package or SBOM review evidence remains a G6/S2 production Skill release
+follow-up; Foundation Alpha S1 acceptance requires the current fail-closed
+production release posture, governed pinned snapshots, and reviewed POC
+governance evidence rather than treating that production release evidence as an
+independent S1 stage blocker.
 
 On 2026-06-12, commit `83a500ef082a47db0a01b4fb9679e67bf2b24fc4` was synced to
 the 211 source target for the packaged frontend image slice. The source archive

@@ -882,13 +882,17 @@ def test_foundation_alpha_readiness_accepts_governance_runtime_smoke_for_same_ru
         not in readiness["domains"]["g6_poc_governance"]["open_followups"]
     )
     assert "runtime_admin_dashboard_acceptance_for_governance" not in readiness["decision"]["stage_acceptance_blockers"]
-    assert "signed_skill_package_or_sbom_review_evidence" in readiness["decision"]["stage_acceptance_blockers"]
+    assert (
+        "signed_skill_package_or_sbom_review_evidence"
+        in readiness["domains"]["g6_poc_governance"]["open_followups"]
+    )
+    assert "signed_skill_package_or_sbom_review_evidence" not in readiness["decision"]["stage_acceptance_blockers"]
     assert "g6_runtime_admin_dashboard_acceptance_for_governance" not in readiness["operator_context"][
         "next_recommended_slices"
     ]
     assert (
         "signed_skill_package_or_sbom_review_evidence"
-        in readiness["operator_context"]["next_recommended_slices"]
+        not in readiness["operator_context"]["next_recommended_slices"]
     )
 
 
@@ -1640,7 +1644,6 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "foundation_alpha_stage_complete": False,
         "foundation_alpha_stage_status": "core_poc_loop_verified_followups_open",
         "stage_acceptance_blockers": [
-            "signed_skill_package_or_sbom_review_evidence",
             "ordinary_user_acceptance_for_quarantined_legacy_routes",
             "g9_admin_runtime_observability_partial_followups_open",
             "packaged_frontend_image_release_acceptance",
@@ -1670,7 +1673,6 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
             "department_rollout",
         ],
         "next_recommended_slices": [
-            "signed_skill_package_or_sbom_review_evidence",
             "ordinary_user_acceptance_for_quarantined_legacy_routes",
             "g9_admin_runtime_observability_partial_followups_open",
             "packaged_frontend_image_release_acceptance",

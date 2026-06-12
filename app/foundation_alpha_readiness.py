@@ -45,11 +45,16 @@ _OPEN_FOLLOWUPS = [
 ]
 _FOUNDATION_ALPHA_STAGE_BLOCKER_ORDER = [
     "runtime_admin_dashboard_acceptance_for_governance",
-    "signed_skill_package_or_sbom_review_evidence",
     "g9_runtime_export_and_retention_acceptance",
     "alert_delivery_and_trace_export_211_acceptance",
     "ordinary_user_acceptance_for_quarantined_legacy_routes",
 ]
+_FOUNDATION_ALPHA_NON_STAGE_FOLLOWUPS = {
+    # S1 requires governed pinned snapshots and fail-closed production release.
+    # Reviewed signed/SBOM/license/vulnerability evidence closes later G6/S2
+    # production-release governance, not the Foundation Alpha POC loop.
+    "signed_skill_package_or_sbom_review_evidence",
+}
 _STAGE_BLOCKING_DOMAIN_STATUSES = {
     "dependency_unavailable",
     "partial_followups_open",
@@ -1029,12 +1034,16 @@ def _ordered_stage_blockers(domains: dict[str, dict[str, Any]]) -> list[str]:
         if domain.get("status") not in _STAGE_BLOCKING_DOMAIN_STATUSES:
             continue
         domain_blockers: list[str] = []
+        saw_named_followup = False
         for item in domain.get("open_followups", []):
             if isinstance(item, str) and item.strip():
-                domain_blockers.append(item.strip())
+                saw_named_followup = True
+                followup = item.strip()
+                if followup not in _FOUNDATION_ALPHA_NON_STAGE_FOLLOWUPS:
+                    domain_blockers.append(followup)
         if domain_blockers:
             blockers.update(domain_blockers)
-        else:
+        elif not saw_named_followup:
             blockers.add(f"{name}_{domain.get('status')}")
 
     ordered: list[str] = []
