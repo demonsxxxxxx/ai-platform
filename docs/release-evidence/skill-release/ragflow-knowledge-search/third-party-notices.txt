@@ -1,0 +1,11 @@
+ai-platform Skill release license-policy evidence
+
+Skill: ragflow-knowledge-search
+Skill content hash: c3ff089dcc8eedbea5da4e5db33f0ff3a7fabb8d600dfcfd683336514a952c24
+Generated at: 2026-06-12T10:32:57Z
+
+Repository-declared dependency files:
+- none
+
+Status: pending_review
+Operator action: confirm third-party license policy before setting license_policy_reviewed=true.

@@ -524,6 +524,7 @@ def _release_review(
         }
 
     invalid_files: list[str] = []
+    pending_files: list[str] = []
     evidence_file_errors: list[str] = []
     review_flag_errors: list[str] = []
     for relative_path in review_paths:
@@ -545,9 +546,6 @@ def _release_review(
         if payload.get("schema_version") != _RELEASE_REVIEW_SCHEMA_VERSION:
             invalid_files.append(_basename(relative_path))
             continue
-        if payload.get("status") != "passed":
-            invalid_files.append(_basename(relative_path))
-            continue
         if str(payload.get("skill_id") or "") != skill_id:
             invalid_files.append(_basename(relative_path))
             continue
@@ -560,9 +558,16 @@ def _release_review(
             skill_id=skill_id,
         )
         if current_review_flag_errors or current_evidence_file_errors:
-            invalid_files.append(_basename(relative_path))
-            evidence_file_errors.extend(current_evidence_file_errors)
-            review_flag_errors.extend(current_review_flag_errors)
+            if payload.get("status") == "passed" or current_evidence_file_errors:
+                invalid_files.append(_basename(relative_path))
+                evidence_file_errors.extend(current_evidence_file_errors)
+                review_flag_errors.extend(current_review_flag_errors)
+            else:
+                pending_files.append(_basename(relative_path))
+                review_flag_errors.extend(current_review_flag_errors)
+            continue
+        if payload.get("status") != "passed":
+            pending_files.append(_basename(relative_path))
             continue
         return {
             "status": "passed",
@@ -572,6 +577,20 @@ def _release_review(
             "sbom_reviewed": True,
             "license_policy_reviewed": True,
             "vulnerability_reviewed": True,
+        }
+
+    if pending_files and not invalid_files and not evidence_file_errors:
+        return {
+            "status": "pending_review",
+            "files": review_files,
+            "invalid_files": [],
+            "pending_files": sorted(set(pending_files)),
+            "evidence_files_verified": True,
+            "evidence_file_errors": [],
+            "review_flag_errors": sorted(set(review_flag_errors)),
+            "sbom_reviewed": False,
+            "license_policy_reviewed": False,
+            "vulnerability_reviewed": False,
         }
 
     return {

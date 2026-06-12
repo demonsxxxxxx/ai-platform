@@ -1,0 +1,60 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "f9abbf66cb95ae223cfdd43a0d4dad4d6a7a4e7f3b4859c43978552fe0540e9b"
+        }
+      ],
+      "name": "scripts/__pycache__/run_translation.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "053bb995e0ded562cf7181cf4ea1e1c107512f2fecec9d7b4d9740620b333aad"
+        }
+      ],
+      "name": "scripts/run_translation.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "46a3f6f3bcb5d8d0c78b4551916612029b703038a6f887cb9362bd114adae4d1"
+        }
+      ],
+      "name": "SKILL.md",
+      "type": "file"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "description": "Use when the user asks to translate, localize, polish, or bilingual-review text or documents.",
+      "name": "baoyu-translate",
+      "type": "application",
+      "version": "f3ebefb086343a6a447328059890e44bd63c869c41acb82d08565a30a6475533"
+    },
+    "properties": [
+      {
+        "name": "ai-platform.skill_id",
+        "value": "baoyu-translate"
+      },
+      {
+        "name": "ai-platform.skill_content_hash",
+        "value": "f3ebefb086343a6a447328059890e44bd63c869c41acb82d08565a30a6475533"
+      },
+      {
+        "name": "ai-platform.evidence_status",
+        "value": "pending_review"
+      }
+    ],
+    "timestamp": "2026-06-12T10:32:56Z"
+  },
+  "schema_version": "ai-platform.skill-release-source-sbom.v1",
+  "specVersion": "1.5"
+}

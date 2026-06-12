@@ -1,0 +1,11 @@
+ai-platform Skill release license-policy evidence
+
+Skill: general-chat
+Skill content hash: 01b108550e4d4e0f55e6ad7eecfd884ac75f93889a4111b9f0f304dd87536238
+Generated at: 2026-06-12T10:32:56Z
+
+Repository-declared dependency files:
+- none
+
+Status: pending_review
+Operator action: confirm third-party license policy before setting license_policy_reviewed=true.

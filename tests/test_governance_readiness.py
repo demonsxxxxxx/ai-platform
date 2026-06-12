@@ -117,9 +117,14 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert release_evidence["source"]["external_evidence"] == {
         "mode": "optional_external_release_evidence",
         "root": "docs/release-evidence/skill-release",
-        "present": False,
+        "present": True,
     }
     assert release_evidence["summary"]["total_skills"] >= 1
+    assert release_evidence["summary"]["skills_with_sbom_evidence"] == release_evidence["summary"]["total_skills"]
+    assert release_evidence["summary"]["skills_with_license_evidence"] == release_evidence["summary"]["total_skills"]
+    assert release_evidence["summary"]["skills_with_vulnerability_evidence"] == release_evidence["summary"][
+        "total_skills"
+    ]
     assert release_evidence["dependency_review_policy"]["schema_version"] == (
         "ai-platform.skill-dependency-review-policy.v1"
     )

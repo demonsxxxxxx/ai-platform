@@ -1,0 +1,220 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "4e927064abd78b03e3c575cb38f609ef453c2150027e4d274c44db07d67eedb0"
+        }
+      ],
+      "name": "references/agent-output-acceptance-examples.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "f6373cb1e7dbd5a085fe2a057eb22a85ba4842806e3ccfa2e70133f9cd7c9c80"
+        }
+      ],
+      "name": "references/branch_agents.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "6e7071bfa8683f2e3fc377a4c491bf3eed1fb03a93c45a912cc8eb696df3c183"
+        }
+      ],
+      "name": "references/commenting_workflow.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "82d8beb09f903478609e6cb282fe42575cf2a24c7a304e0847cd306a17aac3fb"
+        }
+      ],
+      "name": "references/company-review-standards.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "ced77256515e1bd29dd173aec9d4a23f313296b96dbb9f7a6a71f2cd9258a344"
+        }
+      ],
+      "name": "references/prompt_templates.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "fbd62a11d6f065b6be1f942ab7e1868859e412fb7d3ebaf8da38e347ec02fb10"
+        }
+      ],
+      "name": "references/review-schema.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "6708e1e2929ef1a313a488233bd9e681ea08b4e6bfe0312d18b8263a6d2590ad"
+        }
+      ],
+      "name": "references/rule-source-boundaries.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8b1b47107982fa647b5613c88efefb80d6e65ca1e232fc71b5aa375250a977b8"
+        }
+      ],
+      "name": "references/workflow_guide.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "ae6d404804f85e50a1bca3e9b71a379efde97d5e28d30d6f816c478b858c5ad6"
+        }
+      ],
+      "name": "scripts/__pycache__/add_word_comments_v3.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "81544451755c6ad9ee1471ffe004af5e7b7a6f9e675c3ad0905ccc8fe04a36ce"
+        }
+      ],
+      "name": "scripts/__pycache__/export_agent_review_context.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8c12684fbc5112f8735ca3dfaa8e5a909767c48ef9ec23db84887d4670864c7a"
+        }
+      ],
+      "name": "scripts/__pycache__/qa_comment_adjudicator.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "ea5ef7db65db0003d474d7ced7258b7fcbf288d77c814ccfda26912ef64042a3"
+        }
+      ],
+      "name": "scripts/__pycache__/run_qa_review.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "f273f1cd02f4aa903112e9e34eec45ec626f5c5ce658bb757ac608dda012b8a7"
+        }
+      ],
+      "name": "scripts/__pycache__/validate_pipeline_gate.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "370b08478c2a7dbb922d69f6fc87bf211bdebeb2b976b2fa8dfac4a35c2f8e5d"
+        }
+      ],
+      "name": "scripts/add_word_comments_v3.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "ed40eaf5b2dddb66025d475853904feb3655361b66f09ba8df2fc725492b1280"
+        }
+      ],
+      "name": "scripts/export_agent_review_context.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0f9f6457d56765ec61d4b3262fcdee1bf49dbe936a808c09b0501c8bdd328c62"
+        }
+      ],
+      "name": "scripts/qa_comment_adjudicator.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "291c5cc5d40be21d87745234eb1b5f486ed3a1158928134ed8c6f2a5f79693da"
+        }
+      ],
+      "name": "scripts/run_qa_review.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "24c90b4ed670455368843a3b9b94be464f9f3c988e4ecf095fe0798431c79453"
+        }
+      ],
+      "name": "scripts/validate_pipeline_gate.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "480ed70f47457449eb9b234c89c399b8ab6f361d4f58df1cae76151ab6259b8b"
+        }
+      ],
+      "name": "SKILL.md",
+      "type": "file"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "description": "Use when the user asks to review, QA check, compliance check, bilingual check, or add comments to a Word .docx document. Produces a reviewed Word document with visible comments and a concise findings summary.",
+      "name": "qa-file-reviewer",
+      "type": "application",
+      "version": "91ecc526f44795f243327d838faad51631c92e85a7a7febfe7076fb9298ba26c"
+    },
+    "properties": [
+      {
+        "name": "ai-platform.skill_id",
+        "value": "qa-file-reviewer"
+      },
+      {
+        "name": "ai-platform.skill_content_hash",
+        "value": "91ecc526f44795f243327d838faad51631c92e85a7a7febfe7076fb9298ba26c"
+      },
+      {
+        "name": "ai-platform.evidence_status",
+        "value": "pending_review"
+      }
+    ],
+    "timestamp": "2026-06-12T10:32:56Z"
+  },
+  "schema_version": "ai-platform.skill-release-source-sbom.v1",
+  "specVersion": "1.5"
+}

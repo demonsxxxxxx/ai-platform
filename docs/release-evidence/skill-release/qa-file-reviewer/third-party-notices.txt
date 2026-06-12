@@ -1,0 +1,11 @@
+ai-platform Skill release license-policy evidence
+
+Skill: qa-file-reviewer
+Skill content hash: 91ecc526f44795f243327d838faad51631c92e85a7a7febfe7076fb9298ba26c
+Generated at: 2026-06-12T10:32:56Z
+
+Repository-declared dependency files:
+- none
+
+Status: pending_review
+Operator action: confirm third-party license policy before setting license_policy_reviewed=true.

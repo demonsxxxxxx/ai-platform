@@ -1,0 +1,11 @@
+ai-platform Skill release license-policy evidence
+
+Skill: baoyu-translate
+Skill content hash: f3ebefb086343a6a447328059890e44bd63c869c41acb82d08565a30a6475533
+Generated at: 2026-06-12T10:32:56Z
+
+Repository-declared dependency files:
+- none
+
+Status: pending_review
+Operator action: confirm third-party license policy before setting license_policy_reviewed=true.

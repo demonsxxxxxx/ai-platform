@@ -1008,7 +1008,11 @@ def test_skill_release_evidence_scaffold_records_external_evidence_without_clear
     assert "signed_skill_package_or_sbom_release_gate" in readiness["open_gaps"]
     assert "dependency_vulnerability_or_license_policy" in readiness["open_gaps"]
     skill = readiness["skills"][0]
-    assert skill["release_review"]["status"] == "invalid_or_incomplete"
+    assert skill["release_review"]["status"] == "pending_review"
+    assert skill["release_review"]["evidence_files_verified"] is True
+    assert skill["release_review"]["invalid_files"] == []
+    assert skill["release_review"]["evidence_file_errors"] == []
+    assert skill["release_review"]["review_flag_errors"] == ["review_flags_missing_or_invalid"]
     assert "signed_package_or_sbom_evidence_missing" not in skill["blockers"]
     assert "dependency_license_policy_evidence_missing" not in skill["blockers"]
     assert "dependency_vulnerability_evidence_missing" not in skill["blockers"]
