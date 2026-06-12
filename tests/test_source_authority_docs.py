@@ -705,8 +705,10 @@ def test_frontend_docs_record_packaged_runtime_smoke_contract_and_211_blocker():
         assert "ai-platform.frontend-packaged-runtime-smoke-evidence.v1" in text
         assert "frontend_release.packaged_runtime_smoke.<commit_sha>" in text
         assert "305bc40" in text
+        assert "83a500e" in text
         assert "docker_registry_proxy_unreachable" in text
         assert "base_image_pull_failed" in text
+        assert "Docker daemon" in text
         assert "node:22-alpine" in text
         assert "nginx:1.27-alpine" in text
         assert "not release acceptance" in text

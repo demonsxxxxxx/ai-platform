@@ -388,7 +388,17 @@ current API/thin-shell health, but packaged image build failed before runtime
 smoke because required `node:22-alpine` and `nginx:1.27-alpine` base image
 metadata could not be pulled or found locally. The classified blockers are
 `docker_registry_proxy_unreachable` and `base_image_pull_failed`; this is an
-environment/build-host blocker, not release acceptance. The projection
+environment/build-host blocker, not release acceptance. A 2026-06-12 211
+attempt for commit `83a500e` synced the current source archive, added the
+frontend image `ai-platform.source-revision` label contract, and verified the
+source with `python3 -m compileall -q app tools scripts`, but the Docker daemon
+still used a stale registry proxy and failed before runtime smoke. BuildKit
+could not resolve the Dockerfile frontend, and a no-syntax probe could not pull
+`node:22-alpine`; `nginx:1.27-alpine` remains a required uncached base image for
+the final packaged image. The verifier classified the redacted attempt as
+`blocked_environment` with `docker_registry_proxy_unreachable` and
+`base_image_pull_failed`, so it is not release acceptance and does not close
+`packaged_frontend_image_release_acceptance`. The projection
 audit records the current production-source route inventory, active-browser
 route inventory, active browser entry graph, active-browser legacy route policy
 mapping, quarantined inactive legacy source findings, private/secret-like

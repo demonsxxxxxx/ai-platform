@@ -209,6 +209,18 @@ user multi-agent exposure, department rollout, alert/trace export acceptance,
 signed Skill package or SBOM review evidence, ordinary-user legacy-route
 acceptance, or packaged frontend image release acceptance.
 
+On 2026-06-12, commit `83a500ef082a47db0a01b4fb9679e67bf2b24fc4` was synced to
+the 211 source target for the packaged frontend image slice. The source archive
+included the frontend image `ai-platform.source-revision` label contract and
+passed `python3 -m compileall -q app tools scripts` on 211. The packaged
+frontend runtime smoke did not reach image runtime: the Docker daemon still had
+a stale registry proxy, BuildKit could not resolve the Dockerfile frontend, and
+a no-syntax probe could not pull `node:22-alpine`; `nginx:1.27-alpine` also
+remains required for the final image. The verifier classified the redacted
+attempt as `blocked_environment` with `docker_registry_proxy_unreachable` and
+`base_image_pull_failed`, with no closed evidence items. This is 211-verified
+blocker evidence only; it is not packaged frontend image release acceptance.
+
 ## Current Gate Status
 
 | Gate | Current status | Evidence now in repository | Remaining blocker before closure |
