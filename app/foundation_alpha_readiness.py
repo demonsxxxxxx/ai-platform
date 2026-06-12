@@ -451,6 +451,115 @@ def _projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _safe_blockers(*values: Any) -> list[str]:
+    blockers: list[str] = []
+    for value in values:
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                blockers.append(item.strip())
+    return sorted(set(blockers))
+
+
+def _frontend_traceability_dependency_unavailable_summary(exc: BaseException) -> dict[str, Any]:
+    return {
+        "status": "dependency_unavailable",
+        "open_gap_count": 1,
+        "dependency_error_class": exc.__class__.__name__,
+        "ci_verify_script_present": False,
+        "ci_verify_includes_projection_audit": False,
+        "dist_build_verified_same_commit": False,
+        "blockers": ["frontend_release_traceability_dependency_unavailable"],
+    }
+
+
+def _frontend_release_traceability_summary(trace: dict[str, Any]) -> dict[str, Any]:
+    scripts = trace.get("scripts") if isinstance(trace.get("scripts"), dict) else {}
+    ci_verify_script = scripts.get("ci:verify") if isinstance(scripts.get("ci:verify"), str) else ""
+    projection_audit_script = (
+        scripts.get("projection:audit") if isinstance(scripts.get("projection:audit"), str) else ""
+    )
+    git = trace.get("git") if isinstance(trace.get("git"), dict) else {}
+    workflow = trace.get("workflow") if isinstance(trace.get("workflow"), dict) else {}
+    dist = trace.get("dist") if isinstance(trace.get("dist"), dict) else {}
+    build_provenance = (
+        dist.get("build_provenance") if isinstance(dist.get("build_provenance"), dict) else {}
+    )
+    packaged = (
+        trace.get("packaged_frontend_image")
+        if isinstance(trace.get("packaged_frontend_image"), dict)
+        else {}
+    )
+    contract_scan = (
+        packaged.get("contract_scan") if isinstance(packaged.get("contract_scan"), dict) else {}
+    )
+    blockers = _safe_blockers(
+        workflow.get("blockers"),
+        dist.get("blockers"),
+        build_provenance.get("blockers"),
+        packaged.get("blockers"),
+    )
+    dist_build_verified_same_commit = build_provenance.get("verified_same_commit") is True
+    if not ci_verify_script:
+        blockers.append("frontend_ci_verify_script_missing")
+    if "frontend_projection_audit.py" not in ci_verify_script:
+        blockers.append("frontend_ci_verify_projection_audit_missing")
+    if dist.get("status") != "built":
+        blockers.append("frontend_dist_not_built")
+    if not dist_build_verified_same_commit:
+        blockers.append("frontend_dist_build_provenance_not_verified")
+    if workflow.get("status") != "present":
+        blockers.append("frontend_workflow_not_present")
+    if packaged.get("status") not in {"configured", "configured_with_policy_gaps"}:
+        blockers.append("frontend_packaged_image_not_configured")
+    if contract_scan.get("status") != "pass":
+        blockers.append("frontend_packaged_contract_scan_failed")
+    blockers = sorted(set(blockers))
+    status = (
+        "verified_packaged_release_followup_open"
+        if dist.get("status") == "built"
+        and dist_build_verified_same_commit
+        and workflow.get("status") == "present"
+        and "frontend_projection_audit.py" in ci_verify_script
+        and not blockers
+        else "frontend_release_traceability_followup_required"
+    )
+    return {
+        "status": status,
+        "schema_version": trace.get("schema_version"),
+        "frontend_path": trace.get("frontend_path"),
+        "package_name": trace.get("package_name"),
+        "package_version": trace.get("package_version"),
+        "package_manager": trace.get("package_manager"),
+        "git_commit": git.get("commit"),
+        "git_dirty": git.get("dirty") if isinstance(git.get("dirty"), bool) else None,
+        "ci_verify_script_present": bool(ci_verify_script),
+        "ci_verify_includes_projection_audit": "frontend_projection_audit.py" in ci_verify_script,
+        "projection_audit_script_present": bool(projection_audit_script),
+        "dist_status": dist.get("status"),
+        "dist_file_count": dist.get("file_count") if isinstance(dist.get("file_count"), int) else None,
+        "dist_build_provenance_status": build_provenance.get("status"),
+        "dist_build_commit": build_provenance.get("build_commit"),
+        "dist_build_verified_same_commit": dist_build_verified_same_commit,
+        "workflow_status": workflow.get("status"),
+        "workflow_path": workflow.get("path"),
+        "packaged_frontend_image_status": packaged.get("status"),
+        "packaged_contract_scan_status": contract_scan.get("status"),
+        "blockers": blockers,
+        "open_gap_count": len(blockers),
+    }
+
+
+def _build_frontend_traceability_summary() -> dict[str, Any]:
+    try:
+        from tools.frontend_release_traceability import build_frontend_release_traceability
+    except ModuleNotFoundError as exc:
+        return _frontend_traceability_dependency_unavailable_summary(exc)
+
+    return _frontend_release_traceability_summary(build_frontend_release_traceability(_ROOT))
+
+
 def _context_projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     projection = _safe_runtime_check(runtime_checks.get("context_snapshot_public_projection"))
     if not projection:
@@ -673,6 +782,10 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         observability_summary = _build_observability_summary(settings)
     except ModuleNotFoundError as exc:
         observability_summary = _observability_dependency_unavailable_summary(exc)
+    try:
+        frontend_traceability_summary = _build_frontend_traceability_summary()
+    except (ModuleNotFoundError, OSError, json.JSONDecodeError, RuntimeError) as exc:
+        frontend_traceability_summary = _frontend_traceability_dependency_unavailable_summary(exc)
 
     runtime_subject_commit = smoke["runtime_subject_commit_sha"]
     runtime_source_marker = smoke["source_ref"]["runtime_source_marker"]
@@ -780,8 +893,13 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             ],
         },
         "frontend_poc": {
-            "status": "poc_verified_packaged_release_followup_open",
-            "evidence": _projection_summary(smoke_checks),
+            "status": "partial_followups_open"
+            if frontend_traceability_summary.get("open_gap_count")
+            else "poc_verified_packaged_release_followup_open",
+            "evidence": {
+                **_projection_summary(smoke_checks),
+                "frontend_release_traceability": frontend_traceability_summary,
+            },
             "open_followups": [
                 "packaged_frontend_image_release_acceptance",
                 "ordinary_user_acceptance_for_quarantined_legacy_routes",
@@ -875,6 +993,24 @@ def render_foundation_alpha_readiness_markdown(readiness: dict[str, Any]) -> str
                 if isinstance(missing_fields, list) and missing_fields:
                     missing_summary = ",".join(str(item) for item in missing_fields)
                     evidence_lines += f"Missing context public summary fields: `{missing_summary}`\n\n"
+        if name == "frontend_poc":
+            frontend_traceability = domain.get("evidence", {}).get("frontend_release_traceability")
+            if isinstance(frontend_traceability, dict):
+                evidence_lines = (
+                    "\n"
+                    f"Frontend release traceability: `{frontend_traceability.get('status')}`\n\n"
+                    "Frontend build summary: `"
+                    f"dist={frontend_traceability.get('dist_status')}, "
+                    f"provenance={frontend_traceability.get('dist_build_provenance_status')}, "
+                    f"same_commit={frontend_traceability.get('dist_build_verified_same_commit')}, "
+                    f"ci_projection_audit={frontend_traceability.get('ci_verify_includes_projection_audit')}, "
+                    f"workflow={frontend_traceability.get('workflow_status')}, "
+                    f"packaged_image={frontend_traceability.get('packaged_frontend_image_status')}`\n\n"
+                )
+                frontend_blockers = frontend_traceability.get("blockers")
+                if isinstance(frontend_blockers, list) and frontend_blockers:
+                    blocker_summary = ",".join(str(item) for item in frontend_blockers)
+                    evidence_lines += f"Frontend traceability blockers: `{blocker_summary}`\n\n"
         domain_sections.append(
             f"### {name}\n\n"
             f"Status: `{domain['status']}`\n\n"

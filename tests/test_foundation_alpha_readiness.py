@@ -862,6 +862,266 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert "c:\\users" not in serialized
 
 
+def test_frontend_release_traceability_summary_is_secret_safe_and_operator_sized():
+    trace = {
+        "schema_version": "ai-platform.frontend-release-traceability.v1",
+        "frontend_path": "frontend/web",
+        "package_name": "lamb-agent-frontend",
+        "package_version": "2.3.0",
+        "package_manager": "pnpm@10.32.1",
+        "git": {"commit": ACTIVE_RUNTIME_SUBJECT_SHA, "dirty": False},
+        "source_hashes": {"package_json_sha256": "package-hash", "pnpm_lock_sha256": "lock-hash"},
+        "scripts": {
+            "lint": "eslint .",
+            "build": "tsc -b && vite build && node scripts/write-build-provenance.mjs",
+            "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+            "ci:verify": (
+                "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json "
+                "&& eslint . && tsc -b && vite build && node scripts/write-build-provenance.mjs"
+            ),
+        },
+        "workflow": {
+            "path": ".github/workflows/ai-platform-frontend.yml",
+            "status": "present",
+            "sha256": "workflow-hash",
+            "blockers": [],
+        },
+        "dist": {
+            "status": "built",
+            "file_count": 283,
+            "total_bytes": 123456,
+            "manifest_sha256": "dist-manifest-hash",
+            "files": [{"path": "assets/index.js", "sha256": "asset-hash"}],
+            "build_provenance": {
+                "path": "dist/ai-platform-build-provenance.json",
+                "status": "verified",
+                "verified_same_commit": True,
+                "build_commit": ACTIVE_RUNTIME_SUBJECT_SHA,
+                "blockers": [],
+            },
+            "blockers": [],
+        },
+        "packaged_frontend_image": {
+            "status": "configured",
+            "dockerfile": {"path": "frontend/web/Dockerfile", "sha256": "dockerfile-hash"},
+            "compose_overlay": {
+                "path": "deploy/ai-platform/docker-compose.frontend.yml",
+                "sha256": "compose-hash",
+            },
+            "contract_scan": {"status": "pass", "forbidden_findings": []},
+            "blockers": [],
+        },
+        "release_policy": "tie_frontend_api_worker_artifacts_to_same_git_commit",
+    }
+
+    summary = foundation_alpha_readiness._frontend_release_traceability_summary(trace)
+
+    assert summary == {
+        "status": "verified_packaged_release_followup_open",
+        "schema_version": "ai-platform.frontend-release-traceability.v1",
+        "frontend_path": "frontend/web",
+        "package_name": "lamb-agent-frontend",
+        "package_version": "2.3.0",
+        "package_manager": "pnpm@10.32.1",
+        "git_commit": ACTIVE_RUNTIME_SUBJECT_SHA,
+        "git_dirty": False,
+        "ci_verify_script_present": True,
+        "ci_verify_includes_projection_audit": True,
+        "projection_audit_script_present": True,
+        "dist_status": "built",
+        "dist_file_count": 283,
+        "dist_build_provenance_status": "verified",
+        "dist_build_commit": ACTIVE_RUNTIME_SUBJECT_SHA,
+        "dist_build_verified_same_commit": True,
+        "workflow_status": "present",
+        "workflow_path": ".github/workflows/ai-platform-frontend.yml",
+        "packaged_frontend_image_status": "configured",
+        "packaged_contract_scan_status": "pass",
+        "blockers": [],
+        "open_gap_count": 0,
+    }
+    serialized = json.dumps(summary, ensure_ascii=False).lower()
+    assert "assets/index.js" not in serialized
+    assert "asset-hash" not in serialized
+    assert "package-hash" not in serialized
+    assert "dockerfile-hash" not in serialized
+    assert "executor_private_payload" not in serialized
+    assert "raw_storage_key" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "c:\\users" not in serialized
+
+
+def test_foundation_alpha_readiness_embeds_frontend_release_traceability_summary(monkeypatch):
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: ACTIVE_RUNTIME_SUBJECT_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    frontend_traceability_summary = {
+        "status": "verified_packaged_release_followup_open",
+        "frontend_path": "frontend/web",
+        "package_manager": "pnpm@10.32.1",
+        "git_commit": ACTIVE_RUNTIME_SUBJECT_SHA,
+        "git_dirty": False,
+        "ci_verify_script_present": True,
+        "ci_verify_includes_projection_audit": True,
+        "dist_status": "built",
+        "dist_build_provenance_status": "verified",
+        "dist_build_verified_same_commit": True,
+        "workflow_status": "present",
+        "packaged_frontend_image_status": "configured",
+        "packaged_contract_scan_status": "pass",
+        "blockers": [],
+        "open_gap_count": 0,
+    }
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        lambda: frontend_traceability_summary,
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert (
+        readiness["domains"]["frontend_poc"]["evidence"]["frontend_release_traceability"]
+        == frontend_traceability_summary
+    )
+
+
+def test_foundation_alpha_readiness_downgrades_frontend_poc_when_traceability_has_open_gaps(monkeypatch):
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: ACTIVE_RUNTIME_SUBJECT_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        lambda: {
+            "status": "frontend_release_traceability_followup_required",
+            "ci_verify_script_present": True,
+            "ci_verify_includes_projection_audit": True,
+            "dist_status": "built_unverified",
+            "dist_build_provenance_status": "mismatch",
+            "dist_build_verified_same_commit": False,
+            "workflow_status": "present",
+            "packaged_frontend_image_status": "configured",
+            "blockers": ["dist_built_from_dirty_worktree"],
+            "open_gap_count": 1,
+        },
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert readiness["domains"]["frontend_poc"]["status"] == "partial_followups_open"
+
+
+def test_frontend_release_traceability_summary_adds_policy_blockers_for_missing_contracts():
+    summary = foundation_alpha_readiness._frontend_release_traceability_summary(
+        {
+            "schema_version": "ai-platform.frontend-release-traceability.v1",
+            "frontend_path": "frontend/web",
+            "scripts": {"lint": "eslint ."},
+            "git": {"commit": ACTIVE_RUNTIME_SUBJECT_SHA, "dirty": False},
+            "workflow": {"status": "missing", "blockers": []},
+            "dist": {
+                "status": "built_unverified",
+                "build_provenance": {
+                    "status": "mismatch",
+                    "verified_same_commit": False,
+                    "blockers": [],
+                },
+                "blockers": [],
+            },
+            "packaged_frontend_image": {
+                "status": "not_configured",
+                "contract_scan": {"status": "fail"},
+                "blockers": [],
+            },
+        }
+    )
+
+    assert summary["status"] == "frontend_release_traceability_followup_required"
+    assert summary["open_gap_count"] == 7
+    assert summary["blockers"] == [
+        "frontend_ci_verify_projection_audit_missing",
+        "frontend_ci_verify_script_missing",
+        "frontend_dist_build_provenance_not_verified",
+        "frontend_dist_not_built",
+        "frontend_packaged_contract_scan_failed",
+        "frontend_packaged_image_not_configured",
+        "frontend_workflow_not_present",
+    ]
+
+
+def test_foundation_alpha_readiness_frontend_traceability_fails_closed_when_dependency_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: ACTIVE_RUNTIME_SUBJECT_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+
+    def missing_frontend_traceability():
+        raise ModuleNotFoundError("No module named 'node_modules'")
+
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        missing_frontend_traceability,
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert readiness["domains"]["frontend_poc"]["evidence"]["frontend_release_traceability"] == {
+        "status": "dependency_unavailable",
+        "open_gap_count": 1,
+        "dependency_error_class": "ModuleNotFoundError",
+        "ci_verify_script_present": False,
+        "ci_verify_includes_projection_audit": False,
+        "dist_build_verified_same_commit": False,
+        "blockers": ["frontend_release_traceability_dependency_unavailable"],
+    }
+
+
+def test_foundation_alpha_readiness_frontend_traceability_fails_closed_when_traceability_errors(monkeypatch):
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: ACTIVE_RUNTIME_SUBJECT_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+
+    def broken_frontend_traceability():
+        raise FileNotFoundError("C:\\Users\\person\\secret\\frontend\\package.json")
+
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        broken_frontend_traceability,
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    summary = readiness["domains"]["frontend_poc"]["evidence"]["frontend_release_traceability"]
+    assert summary["status"] == "dependency_unavailable"
+    assert summary["dependency_error_class"] == "FileNotFoundError"
+    assert summary["blockers"] == ["frontend_release_traceability_dependency_unavailable"]
+    serialized = json.dumps(summary, ensure_ascii=False).lower()
+    assert "c:\\users" not in serialized
+    assert "secret" not in serialized
+
+
 def test_foundation_alpha_readiness_marks_source_synced_runtime_pending_without_overclaiming(
     monkeypatch,
     tmp_path,
@@ -953,6 +1213,21 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeyp
         raising=False,
     )
     monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        lambda: {
+            "status": "verified_packaged_release_followup_open",
+            "dist_status": "built",
+            "dist_build_provenance_status": "verified",
+            "dist_build_verified_same_commit": True,
+            "ci_verify_includes_projection_audit": True,
+            "workflow_status": "present",
+            "packaged_frontend_image_status": "configured",
+            "blockers": [],
+        },
+        raising=False,
+    )
 
     readiness = build_foundation_alpha_readiness(SecretBearingSettings())
     markdown = render_foundation_alpha_readiness_markdown(readiness)
@@ -970,6 +1245,8 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeyp
     assert "POC loop status: `verified_for_current_source`" in markdown
     assert "Context snapshot public projection: `verified_public_context_projection`" in markdown
     assert "Context referenced material counts: `message=1, file=1, artifact=0, memory=0`" in markdown
+    assert "Frontend release traceability: `verified_packaged_release_followup_open`" in markdown
+    assert "Frontend build summary:" in markdown
     assert "Missing context public summary fields:" not in markdown
     assert "`production_claim_allowed`: `False`" in markdown
     assert "`capacity_default_increase_allowed`: `False`" in markdown
