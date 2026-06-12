@@ -53,6 +53,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     active_route_inventory = audit["active_browser_entry"]["route_inventory"]
     assert set(active_route_inventory) == {
         "ai_platform_projection_routes",
+        "safe_public_projection_routes",
         "same_origin_compat_routes",
         "legacy_policy_required_routes",
         "legacy_route_policies",
@@ -63,6 +64,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     }
     assert "/api/mcp" in active_policy_routes
     assert "/api/env-vars" in active_policy_routes
+    assert "/api/agent/models" not in active_policy_routes
     assert "/api/channels" not in active_policy_routes
     assert active_policy_routes["/api/mcp"]["route_scope"] == "active_browser_entry"
     policy_routes = {
@@ -194,6 +196,41 @@ def test_frontend_projection_audit_quarantines_legacy_secret_sources(tmp_path):
         }
     ]
     assert "quarantined_legacy_sources_need_ai_platform_projection_remap" in audit["open_gaps"]
+
+
+def test_frontend_projection_audit_treats_model_public_routes_as_safe_projection(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src"
+    api_root = source_root / "services" / "api"
+    api_root.mkdir(parents=True)
+    (source_root / "main.tsx").write_text(
+        'import { modelPublicApi } from "./services/api/modelPublic";\n'
+        "export const providers = modelPublicApi.listProviders;\n",
+        encoding="utf-8",
+    )
+    (api_root / "modelPublic.ts").write_text(
+        "export const modelPublicApi = {\n"
+        "  listAvailable: () => fetch('/api/agent/models/available'),\n"
+        "  listProviders: () => fetch('/api/agent/models/providers/list'),\n"
+        "};\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+
+    assert audit["status"] == "pass"
+    assert audit["route_inventory"]["legacy_policy_required_routes"] == []
+    assert audit["active_browser_entry"]["route_inventory"]["legacy_route_policies"] == []
 
 
 def test_frontend_projection_audit_follows_re_exported_active_modules(tmp_path):

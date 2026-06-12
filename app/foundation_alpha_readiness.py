@@ -710,6 +710,70 @@ def _build_frontend_traceability_summary() -> dict[str, Any]:
     return _frontend_release_traceability_summary(build_frontend_release_traceability(_ROOT))
 
 
+def _frontend_projection_audit_dependency_unavailable_summary(exc: BaseException) -> dict[str, Any]:
+    return {
+        "status": "dependency_unavailable",
+        "ordinary_user_acceptance": "blocked_projection_audit_dependency_unavailable",
+        "active_legacy_route_count": None,
+        "active_forbidden_projection_violation_count": None,
+        "ci_verify_includes_projection_audit": False,
+        "open_gap_count": 1,
+        "open_gaps": ["frontend_projection_audit_dependency_unavailable"],
+        "dependency_error_class": exc.__class__.__name__,
+    }
+
+
+def _frontend_projection_audit_summary(audit: dict[str, Any]) -> dict[str, Any]:
+    active_entry = audit.get("active_browser_entry") if isinstance(audit.get("active_browser_entry"), dict) else {}
+    active_route_inventory = (
+        active_entry.get("route_inventory") if isinstance(active_entry.get("route_inventory"), dict) else {}
+    )
+    active_legacy_routes = active_route_inventory.get("legacy_route_policies")
+    active_legacy_route_count = len(active_legacy_routes) if isinstance(active_legacy_routes, list) else None
+    active_forbidden_terms = (
+        active_entry.get("forbidden_projection_terms")
+        if isinstance(active_entry.get("forbidden_projection_terms"), dict)
+        else {}
+    )
+    active_violations = active_forbidden_terms.get("violations")
+    active_forbidden_violation_count = len(active_violations) if isinstance(active_violations, list) else None
+    ci = audit.get("ci_integration") if isinstance(audit.get("ci_integration"), dict) else {}
+    ci_verify_includes_projection_audit = ci.get("ci_verify_includes_projection_audit") is True
+    open_gaps = [
+        str(item)
+        for item in audit.get("open_gaps", [])
+        if isinstance(item, str) and item.strip()
+    ]
+    ordinary_user_accepted = (
+        ci_verify_includes_projection_audit
+        and active_legacy_route_count == 0
+        and active_forbidden_violation_count == 0
+        and audit.get("status") in {"pass", "pass_with_policy_gaps"}
+    )
+    return {
+        "status": audit.get("status"),
+        "schema_version": audit.get("schema_version"),
+        "frontend_path": audit.get("frontend_path"),
+        "ordinary_user_acceptance": "accepted_active_legacy_routes_clear"
+        if ordinary_user_accepted
+        else "blocked_active_legacy_routes_or_projection_audit",
+        "active_legacy_route_count": active_legacy_route_count,
+        "active_forbidden_projection_violation_count": active_forbidden_violation_count,
+        "ci_verify_includes_projection_audit": ci_verify_includes_projection_audit,
+        "open_gap_count": len(open_gaps),
+        "open_gaps": open_gaps,
+    }
+
+
+def _build_frontend_projection_audit_summary() -> dict[str, Any]:
+    try:
+        from tools.frontend_projection_audit import build_frontend_projection_audit
+    except ModuleNotFoundError as exc:
+        return _frontend_projection_audit_dependency_unavailable_summary(exc)
+
+    return _frontend_projection_audit_summary(build_frontend_projection_audit(_ROOT))
+
+
 def _context_projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     projection = _safe_runtime_check(runtime_checks.get("context_snapshot_public_projection"))
     if not projection:
@@ -1186,6 +1250,10 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         frontend_traceability_summary = _build_frontend_traceability_summary()
     except (ModuleNotFoundError, OSError, json.JSONDecodeError, RuntimeError) as exc:
         frontend_traceability_summary = _frontend_traceability_dependency_unavailable_summary(exc)
+    try:
+        frontend_projection_audit_summary = _build_frontend_projection_audit_summary()
+    except (ModuleNotFoundError, OSError, json.JSONDecodeError, RuntimeError) as exc:
+        frontend_projection_audit_summary = _frontend_projection_audit_dependency_unavailable_summary(exc)
 
     runtime_source_marker = smoke["source_ref"]["runtime_source_marker"]
     runtime_affecting_changes = (
@@ -1222,9 +1290,12 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     if release_evidence_runtime_acceptance_verified:
         g9_open_followups.remove("g9_runtime_export_and_retention_acceptance")
 
-    frontend_open_followups = [
-        "ordinary_user_acceptance_for_quarantined_legacy_routes",
-    ]
+    frontend_open_followups = []
+    if (
+        frontend_projection_audit_summary.get("ordinary_user_acceptance")
+        != "accepted_active_legacy_routes_clear"
+    ):
+        frontend_open_followups.append("ordinary_user_acceptance_for_quarantined_legacy_routes")
     if not frontend_packaged_runtime_smoke_verified:
         frontend_open_followups.insert(0, "packaged_frontend_image_release_acceptance")
 
@@ -1310,6 +1381,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             "evidence": {
                 **_projection_summary(smoke_checks),
                 "frontend_release_traceability": frontend_traceability_summary,
+                "frontend_projection_audit": frontend_projection_audit_summary,
                 "frontend_packaged_runtime_smoke": frontend_packaged_runtime_smoke,
             },
             "open_followups": frontend_open_followups,
@@ -1475,6 +1547,16 @@ def render_foundation_alpha_readiness_markdown(readiness: dict[str, Any]) -> str
                 if isinstance(frontend_blockers, list) and frontend_blockers:
                     blocker_summary = ",".join(str(item) for item in frontend_blockers)
                     evidence_lines += f"Frontend traceability blockers: `{blocker_summary}`\n\n"
+            frontend_projection_audit = domain.get("evidence", {}).get("frontend_projection_audit")
+            if isinstance(frontend_projection_audit, dict):
+                evidence_lines += (
+                    "Frontend projection audit: `"
+                    f"status={frontend_projection_audit.get('status')}, "
+                    f"ordinary_user={frontend_projection_audit.get('ordinary_user_acceptance')}, "
+                    f"active_legacy_routes={frontend_projection_audit.get('active_legacy_route_count')}, "
+                    f"active_forbidden_terms={frontend_projection_audit.get('active_forbidden_projection_violation_count')}, "
+                    f"ci_projection_audit={frontend_projection_audit.get('ci_verify_includes_projection_audit')}`\n\n"
+                )
         domain_sections.append(
             f"### {name}\n\n"
             f"Status: `{domain['status']}`\n\n"

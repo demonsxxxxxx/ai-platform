@@ -15,6 +15,15 @@ HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
 NEWER_SOURCE_SHA = "78362bcb380da67408ff7298cbdf24978d370992"
+DEFAULT_FRONTEND_PROJECTION_AUDIT_SUMMARY = {
+    "status": "test_default_blocked",
+    "ordinary_user_acceptance": "blocked_active_legacy_routes_or_projection_audit",
+    "active_legacy_route_count": None,
+    "active_forbidden_projection_violation_count": None,
+    "ci_verify_includes_projection_audit": False,
+    "open_gap_count": 1,
+    "open_gaps": ["frontend_projection_audit_not_exercised_in_unit_default"],
+}
 
 
 class SecretBearingSettings:
@@ -37,6 +46,29 @@ def _default_no_runtime_affecting_dirty_paths(monkeypatch):
         lambda: [],
         raising=False,
     )
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_projection_audit_summary",
+        _default_frontend_projection_audit_summary,
+        raising=False,
+    )
+
+
+def _default_frontend_projection_audit_summary() -> dict:
+    return {
+        **DEFAULT_FRONTEND_PROJECTION_AUDIT_SUMMARY,
+        "open_gaps": list(DEFAULT_FRONTEND_PROJECTION_AUDIT_SUMMARY["open_gaps"]),
+    }
+
+
+def test_foundation_alpha_readiness_unit_default_uses_blocked_projection_audit_stub():
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert (
+        readiness["domains"]["frontend_poc"]["evidence"]["frontend_projection_audit"]
+        == DEFAULT_FRONTEND_PROJECTION_AUDIT_SUMMARY
+    )
+    assert "ordinary_user_acceptance_for_quarantined_legacy_routes" in readiness["open_followups"]
 
 
 def _minimal_smoke_payload(commit_sha: str, *, image: str, captured_at: str = "2026-06-11T10:00:00+08:00") -> dict:
@@ -1620,6 +1652,67 @@ def test_foundation_alpha_readiness_accepts_211_packaged_frontend_runtime_smoke(
     )
 
 
+def test_foundation_alpha_readiness_accepts_clean_ordinary_user_frontend_projection(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    image = "ai-platform:a3f1d73-foundation-alpha-poc"
+    smoke_path, auth_path = _write_release_evidence_pair(evidence_root, CURRENT_SOURCE_SHA, image=image)
+    _write_frontend_packaged_runtime_smoke(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image=image,
+        runtime_host="211",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: CURRENT_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        lambda: {
+            "status": "verified_packaged_release_followup_open",
+            "open_gap_count": 0,
+            "blockers": [],
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_projection_audit_summary",
+        lambda: {
+            "status": "pass_with_policy_gaps",
+            "ordinary_user_acceptance": "accepted_active_legacy_routes_clear",
+            "active_legacy_route_count": 0,
+            "ci_verify_includes_projection_audit": True,
+            "open_gap_count": 1,
+            "open_gaps": ["quarantined_legacy_sources_need_ai_platform_projection_remap"],
+        },
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    frontend = readiness["domains"]["frontend_poc"]
+    assert frontend["evidence"]["frontend_projection_audit"]["ordinary_user_acceptance"] == (
+        "accepted_active_legacy_routes_clear"
+    )
+    assert "ordinary_user_acceptance_for_quarantined_legacy_routes" not in frontend["open_followups"]
+    assert "ordinary_user_acceptance_for_quarantined_legacy_routes" not in readiness["open_followups"]
+    assert (
+        "ordinary_user_acceptance_for_quarantined_legacy_routes"
+        not in readiness["decision"]["stage_acceptance_blockers"]
+    )
+
+
 def test_foundation_alpha_readiness_keeps_packaged_frontend_blocker_without_211_smoke(
     monkeypatch,
     tmp_path,
@@ -1898,6 +1991,43 @@ def test_foundation_alpha_readiness_frontend_traceability_fails_closed_when_trac
     serialized = json.dumps(summary, ensure_ascii=False).lower()
     assert "c:\\users" not in serialized
     assert "secret" not in serialized
+
+
+def test_foundation_alpha_readiness_frontend_projection_audit_fails_closed_when_dependency_unavailable(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: ACTIVE_RUNTIME_SUBJECT_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+
+    def missing_frontend_projection_audit():
+        raise ModuleNotFoundError("No module named 'tools.frontend_projection_audit'")
+
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_projection_audit_summary",
+        missing_frontend_projection_audit,
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    summary = readiness["domains"]["frontend_poc"]["evidence"]["frontend_projection_audit"]
+    assert summary == {
+        "status": "dependency_unavailable",
+        "ordinary_user_acceptance": "blocked_projection_audit_dependency_unavailable",
+        "active_legacy_route_count": None,
+        "active_forbidden_projection_violation_count": None,
+        "ci_verify_includes_projection_audit": False,
+        "open_gap_count": 1,
+        "open_gaps": ["frontend_projection_audit_dependency_unavailable"],
+        "dependency_error_class": "ModuleNotFoundError",
+    }
+    assert "ordinary_user_acceptance_for_quarantined_legacy_routes" in readiness["open_followups"]
 
 
 def test_foundation_alpha_readiness_marks_source_synced_runtime_pending_without_overclaiming(

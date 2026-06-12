@@ -86,6 +86,10 @@ AI_PLATFORM_ROUTE_PREFIXES = [
     "/api/ai/memory/",
     "/api/ai/runs/",
 ]
+SAFE_PUBLIC_ROUTE_PREFIXES = [
+    "/api/agent/models/available",
+    "/api/agent/models/providers/list",
+]
 COMPAT_ROUTE_PREFIXES = [
     "/api/auth",
     "/api/chat",
@@ -535,8 +539,15 @@ def _merge_route_hit(existing: dict[str, dict[str, object]], root: Path, path: P
         references.append({"path": _relative_path(root, path), "line": line_number})
 
 
-def _scan_routes(root: Path, files: list[Path], prefixes: list[str]) -> list[dict[str, object]]:
+def _scan_routes(
+    root: Path,
+    files: list[Path],
+    prefixes: list[str],
+    *,
+    excluded_prefixes: list[str] | None = None,
+) -> list[dict[str, object]]:
     hits: dict[str, dict[str, object]] = {}
+    excluded_prefixes = excluded_prefixes or []
     for path in files:
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
@@ -544,7 +555,7 @@ def _scan_routes(root: Path, files: list[Path], prefixes: list[str]) -> list[dic
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         for line_number, line in enumerate(lines, start=1):
             for prefix in prefixes:
-                if prefix in line:
+                if prefix in line and not any(excluded in line for excluded in excluded_prefixes):
                     _merge_route_hit(hits, root, path, line_number, prefix)
     return [hits[prefix] for prefix in prefixes if prefix in hits]
 
@@ -587,9 +598,15 @@ def _legacy_route_policies(
 
 
 def _route_inventory(root: Path, files: list[Path], *, route_scope: str) -> dict[str, object]:
-    legacy_routes = _scan_routes(root, files, LEGACY_POLICY_REQUIRED_ROUTE_PREFIXES)
+    legacy_routes = _scan_routes(
+        root,
+        files,
+        LEGACY_POLICY_REQUIRED_ROUTE_PREFIXES,
+        excluded_prefixes=SAFE_PUBLIC_ROUTE_PREFIXES,
+    )
     return {
         "ai_platform_projection_routes": _scan_routes(root, files, AI_PLATFORM_ROUTE_PREFIXES),
+        "safe_public_projection_routes": _scan_routes(root, files, SAFE_PUBLIC_ROUTE_PREFIXES),
         "same_origin_compat_routes": _scan_routes(root, files, COMPAT_ROUTE_PREFIXES),
         "legacy_policy_required_routes": legacy_routes,
         "legacy_route_policies": _legacy_route_policies(legacy_routes, route_scope=route_scope),
