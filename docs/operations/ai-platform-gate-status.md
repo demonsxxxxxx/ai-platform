@@ -231,6 +231,19 @@ attempt as `blocked_environment` with `docker_registry_proxy_unreachable` and
 `base_image_pull_failed`, with no closed evidence items. This is 211-verified
 blocker evidence only; it is not packaged frontend image release acceptance.
 
+After the active `6088d5d179c422a6d753e1b77079410503e58925` alert/trace
+runtime acceptance rollout, the packaged frontend blocker was rechecked on
+211. The source marker and source snapshot both pointed to `6088d5d`, the
+frontend Dockerfile and repo-local frontend compose overlay were present, and
+the Docker daemon still had an unreachable registry proxy. Pull probes for
+`node:22-alpine` and `nginx:1.27-alpine` failed, and no target
+`ai-platform-frontend:*` image was cached. The reviewed, redacted blocker
+evidence entry is
+`docs/release-evidence/foundation-alpha-poc/6088d5d179c422a6d753e1b77079410503e58925/2026-06-12-211-foundation-alpha-poc-6088d5d-frontend-packaged-runtime-smoke-blocked.json`.
+It records `blocked_environment` with `docker_registry_proxy_unreachable` and
+`base_image_pull_failed`, has no closed evidence items, and still does not
+close `packaged_frontend_image_release_acceptance`.
+
 ## Current Gate Status
 
 | Gate | Current status | Evidence now in repository | Remaining blocker before closure |

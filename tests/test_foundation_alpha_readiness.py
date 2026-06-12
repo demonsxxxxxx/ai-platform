@@ -502,13 +502,24 @@ def _minimal_frontend_packaged_runtime_smoke_payload(
     image: str,
     captured_at: str = "2026-06-11T10:04:00+08:00",
     runtime_host: str = "211",
+    docker_build_exit_code: int = 0,
+    docker_build_log_tail: str | None = None,
 ) -> dict:
+    build_succeeded = docker_build_exit_code == 0
     smoke = {
         "commit_sha": commit_sha,
         "runtime_host": runtime_host,
         "image_tag": f"ai-platform-frontend:{commit_sha[:7]}-smoke",
-        "docker_build": {"exit_code": 0, "log_tail": "wrote frontend/web/dist/ai-platform-build-provenance.json"},
-        "image_inspect": {"revision": commit_sha},
+        "docker_build": {
+            "exit_code": docker_build_exit_code,
+            "log_tail": docker_build_log_tail
+            or (
+                "wrote frontend/web/dist/ai-platform-build-provenance.json"
+                if build_succeeded
+                else "failed to resolve source metadata for docker.io/library/node:22-alpine: proxyconnect"
+            ),
+        },
+        "image_inspect": {"revision": commit_sha} if build_succeeded else {"status": "not_built"},
         "build_provenance": {
             "schema_version": "ai-platform.frontend-build-provenance.v1",
             "git": {"commit": commit_sha, "dirty": False},
@@ -516,15 +527,19 @@ def _minimal_frontend_packaged_runtime_smoke_payload(
                 "package_json_sha256": "a" * 64,
                 "pnpm_lock_sha256": "b" * 64,
             },
-        },
+        }
+        if build_succeeded
+        else {"status": "not_available"},
         "runtime_smoke": {
             "network": "ai-platform-phaseb_default",
             "healthz": {"status_code": 200, "body": "ok"},
             "index": {"status_code": 200},
             "api_health": {"status_code": 200, "body": {"status": "ok"}},
             "build_provenance_endpoint": {"status_code": 200},
-        },
-        "leak_scan": {"status": "passed", "forbidden_markers": []},
+        }
+        if build_succeeded
+        else {"status": "not_run"},
+        "leak_scan": {"status": "passed", "forbidden_markers": []} if build_succeeded else {"status": "not_run"},
         "cleanup": {"container_removed": True},
     }
     return {
@@ -567,6 +582,8 @@ def _write_frontend_packaged_runtime_smoke(
     image: str,
     captured_at: str = "2026-06-11T10:04:00+08:00",
     runtime_host: str = "211",
+    docker_build_exit_code: int = 0,
+    docker_build_log_tail: str | None = None,
 ):
     commit_root = base_root / commit_sha
     commit_root.mkdir(parents=True, exist_ok=True)
@@ -578,6 +595,8 @@ def _write_frontend_packaged_runtime_smoke(
                 image=image,
                 captured_at=captured_at,
                 runtime_host=runtime_host,
+                docker_build_exit_code=docker_build_exit_code,
+                docker_build_log_tail=docker_build_log_tail,
             )
         ),
         encoding="utf-8",
@@ -2090,6 +2109,80 @@ def test_foundation_alpha_readiness_keeps_packaged_frontend_blocker_without_211_
     assert "211_packaged_frontend_runtime_smoke" not in packaged["closed_evidence_items"]
     assert "packaged_frontend_image_release_acceptance" in frontend["open_followups"]
     assert "packaged_frontend_image_release_acceptance" in readiness["decision"]["stage_acceptance_blockers"]
+
+
+def test_foundation_alpha_readiness_records_211_packaged_frontend_environment_blocker(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    image = "ai-platform:6088d5d-alert-trace-acceptance"
+    smoke_path, auth_path = _write_release_evidence_pair(
+        evidence_root,
+        ACTIVE_RUNTIME_SUBJECT_SHA,
+        image=image,
+    )
+    _write_governance_evidence(evidence_root, ACTIVE_RUNTIME_SUBJECT_SHA, image=image)
+    _write_release_evidence_runtime_acceptance(evidence_root, ACTIVE_RUNTIME_SUBJECT_SHA, image=image)
+    blocked_path = _write_frontend_packaged_runtime_smoke(
+        evidence_root,
+        ACTIVE_RUNTIME_SUBJECT_SHA,
+        image=image,
+        runtime_host="211",
+        docker_build_exit_code=1,
+        docker_build_log_tail=(
+            "failed to resolve source metadata for docker.io/library/node:22-alpine: proxyconnect"
+        ),
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: ACTIVE_RUNTIME_SUBJECT_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        lambda: {
+            "status": "verified_packaged_release_followup_open",
+            "open_gap_count": 0,
+            "blockers": [],
+        },
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    frontend = readiness["domains"]["frontend_poc"]
+    packaged = frontend["evidence"]["frontend_packaged_runtime_smoke"]
+    assert packaged["status"] == "blocked_environment"
+    assert packaged["runtime_host"] == "211"
+    assert packaged["verified"] is False
+    assert packaged["closed_evidence_items"] == []
+    assert "packaged_frontend_image_release_acceptance" in frontend["open_followups"]
+    assert "packaged_frontend_image_release_acceptance" in readiness["decision"]["stage_acceptance_blockers"]
+    assert "packaged_frontend_image_release_acceptance" in readiness["open_followups"]
+    assert "frontend_packaged_runtime_smoke" not in readiness["evidence_entries"]
+    assert foundation_alpha_readiness._discover_frontend_packaged_runtime_smoke_evidence(
+        ACTIVE_RUNTIME_SUBJECT_SHA
+    ) == blocked_path
+
+
+def test_current_foundation_alpha_readiness_discovers_active_packaged_frontend_blocked_evidence():
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    packaged = readiness["domains"]["frontend_poc"]["evidence"]["frontend_packaged_runtime_smoke"]
+    assert packaged["status"] == "blocked_environment"
+    assert packaged["runtime_host"] == "211"
+    assert packaged["verified"] is False
+    assert packaged["closed_evidence_items"] == []
+    assert "packaged_frontend_image_release_acceptance" in readiness["decision"]["stage_acceptance_blockers"]
+    assert "packaged_frontend_image_release_acceptance" in readiness["open_followups"]
+    assert "frontend_packaged_runtime_smoke" not in readiness["evidence_entries"]
 
 
 def test_context_projection_summary_verifies_file_context_only_with_attachment_signal():

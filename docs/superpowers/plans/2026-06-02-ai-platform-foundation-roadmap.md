@@ -403,6 +403,14 @@ could not resolve the Dockerfile frontend, and a no-syntax probe could not pull
 the final packaged image. The verifier classified the redacted attempt as
 `blocked_environment` with `docker_registry_proxy_unreachable` and
 `base_image_pull_failed`, so it is not release acceptance and does not close
+`packaged_frontend_image_release_acceptance`. A later 2026-06-12 211 recheck
+for active runtime subject `6088d5d` confirmed the same blocker after the
+alert/trace runtime acceptance rollout: source marker and snapshot pointed to
+`6088d5d`, frontend image sources were present, but the Docker daemon still
+could not pull `node:22-alpine` or `nginx:1.27-alpine`, and no target
+`ai-platform-frontend:*` image was cached. The reviewed redacted evidence is
+`2026-06-12-211-foundation-alpha-poc-6088d5d-frontend-packaged-runtime-smoke-blocked.json`;
+it is blocker evidence only and does not close
 `packaged_frontend_image_release_acceptance`. The projection
 audit records the current production-source route inventory, active-browser
 route inventory, active browser entry graph, active-browser legacy route policy

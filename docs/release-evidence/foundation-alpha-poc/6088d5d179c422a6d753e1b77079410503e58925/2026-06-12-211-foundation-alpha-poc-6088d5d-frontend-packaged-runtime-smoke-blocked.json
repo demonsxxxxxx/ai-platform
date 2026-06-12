@@ -1,0 +1,88 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-06-12-211-foundation-alpha-poc-6088d5d-frontend-packaged-runtime-smoke-blocked",
+  "commit_sha": "6088d5d179c422a6d753e1b77079410503e58925",
+  "runtime_subject_commit_sha": "6088d5d179c422a6d753e1b77079410503e58925",
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#17"
+  ],
+  "pr_refs": [],
+  "artifact_kind": "frontend_packaged_runtime_smoke",
+  "captured_at": "2026-06-12T20:47:00+08:00",
+  "source_ref": {
+    "branch": "main",
+    "runtime_commit": "6088d5d179c422a6d753e1b77079410503e58925",
+    "runtime_source_marker": "6088d5d179c422a6d753e1b77079410503e58925",
+    "source_snapshot": {
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "commit_sha": "6088d5d179c422a6d753e1b77079410503e58925",
+      "source_target": "services/ai-platform",
+      "created_at": "2026-06-12T19:31:48+0800",
+      "archive": "ai-platform-6088d5d.tar"
+    },
+    "runtime_image": "ai-platform:6088d5d-alert-trace-acceptance",
+    "source_files_present": {
+      "frontend_web_dockerfile": true,
+      "repo_local_frontend_compose": true
+    },
+    "image_labels": {
+      "ai-platform.source-revision": "6088d5d179c422a6d753e1b77079410503e58925",
+      "org.opencontainers.image.revision": "6088d5d179c422a6d753e1b77079410503e58925",
+      "ai-platform.runtime-subject": "6088d5d179c422a6d753e1b77079410503e58925"
+    },
+    "docker_host": "211",
+    "docker_proxy_status": "configured_registry_proxy_unreachable",
+    "target_base_images_cached": {
+      "node_22_alpine": false,
+      "nginx_1_27_alpine": false,
+      "ai_platform_frontend": false
+    },
+    "non_target_image_cache_note": "node:20 was present locally, but it does not satisfy the frontend/web/Dockerfile node:22-alpine requirement.",
+    "repo_local_env_present": false
+  },
+  "evidence_ref": {
+    "verifier": "tools/frontend_packaged_runtime_smoke.py",
+    "command": "python3 tools/frontend_packaged_runtime_smoke.py --evidence-json <redacted-operator-evidence> --format json",
+    "result": "ok:true",
+    "schema_version": "ai-platform.frontend-packaged-runtime-smoke.v1",
+    "runtime_checks": {
+      "frontend_packaged_runtime_smoke": {
+        "commit_sha": "6088d5d179c422a6d753e1b77079410503e58925",
+        "runtime_host": "211",
+        "image_tag": "ai-platform-frontend:6088d5d-smoke",
+        "docker_build": {
+          "exit_code": 1,
+          "log_tail": "failed to resolve source metadata for docker.io/library/node:22-alpine: proxyconnect tcp: registry proxy unavailable"
+        },
+        "image_inspect": {
+          "status": "not_built"
+        },
+        "build_provenance": {
+          "status": "not_available"
+        },
+        "runtime_smoke": {
+          "status": "not_run"
+        },
+        "leak_scan": {
+          "status": "not_run"
+        },
+        "cleanup": {
+          "container_removed": true
+        }
+      }
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "notes": [
+    "The 211 packaged frontend smoke was rechecked for runtime subject 6088d5d and remains blocked_environment with docker_registry_proxy_unreachable and base_image_pull_failed.",
+    "This is reviewed blocker evidence only, not release acceptance. It records that the source files and compose overlay are present, but the Docker-capable host cannot pull node:22-alpine or nginx:1.27-alpine and no target frontend image is cached.",
+    "The evidence intentionally redacts the registry proxy endpoint, raw daemon failure text, host paths, env-file values, credentials, and secret-like runtime material."
+  ],
+  "open_followups": [
+    "Restore or bypass the 211 Docker registry proxy, or stage reviewed node:22-alpine and nginx:1.27-alpine base images on a Docker-capable host.",
+    "After the environment is fixed, rerun tools/frontend_packaged_runtime_smoke.py with a complete operator evidence JSON and record ready_for_operator_review evidence before closing packaged_frontend_image_release_acceptance.",
+    "This evidence does not close G6, G9, #17 packaged frontend release acceptance, compose one-command startup, or any production rollout gate."
+  ]
+}

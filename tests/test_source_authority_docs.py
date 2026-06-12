@@ -32,6 +32,9 @@ ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
 ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = (
     "2026-06-12-211-foundation-alpha-poc-6088d5d-alert-trace-export-runtime-acceptance"
 )
+ACTIVE_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
+    "2026-06-12-211-foundation-alpha-poc-6088d5d-frontend-packaged-runtime-smoke-blocked"
+)
 FOUNDATION_ALPHA_POC_EVIDENCE = (
     ROOT
     / "docs/release-evidence/foundation-alpha-poc/3874281276c84a418bd08bda56d7ea55b52970b7/2026-06-11-211-foundation-alpha-poc-smoke.json"
@@ -72,6 +75,13 @@ FOUNDATION_ALPHA_POC_ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE = (
     / (
         "docs/release-evidence/foundation-alpha-poc/"
         f"{ACTIVE_RUNTIME_SUBJECT_SHA}/{ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID}.json"
+    )
+)
+FOUNDATION_ALPHA_POC_ACTIVE_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE = (
+    ROOT
+    / (
+        "docs/release-evidence/foundation-alpha-poc/"
+        f"{ACTIVE_RUNTIME_SUBJECT_SHA}/{ACTIVE_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID}.json"
     )
 )
 SCHEMA = ROOT / "app/schema.sql"
@@ -398,6 +408,47 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     lowered_alert_trace = alert_trace_text.lower()
     for marker in forbidden_markers:
         assert marker.lower() not in lowered_alert_trace
+
+    frontend_blocked_text = read(FOUNDATION_ALPHA_POC_ACTIVE_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE)
+    frontend_blocked_payload = json.loads(frontend_blocked_text)
+    frontend_blocked_smoke = frontend_blocked_payload["evidence_ref"]["runtime_checks"][
+        "frontend_packaged_runtime_smoke"
+    ]
+    assert frontend_blocked_payload["evidence_id"] == ACTIVE_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID
+    assert frontend_blocked_payload["artifact_kind"] == "frontend_packaged_runtime_smoke"
+    assert frontend_blocked_payload["commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert frontend_blocked_payload["runtime_subject_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert frontend_blocked_payload["source_ref"]["runtime_commit"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert frontend_blocked_payload["source_ref"]["runtime_source_marker"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert frontend_blocked_payload["source_ref"]["image_labels"]["ai-platform.source-revision"] == (
+        ACTIVE_RUNTIME_SUBJECT_SHA
+    )
+    assert frontend_blocked_payload["source_ref"]["image_labels"]["org.opencontainers.image.revision"] == (
+        ACTIVE_RUNTIME_SUBJECT_SHA
+    )
+    assert frontend_blocked_payload["evidence_ref"]["result"] == "ok:true"
+    assert frontend_blocked_payload["evidence_ref"]["schema_version"] == (
+        "ai-platform.frontend-packaged-runtime-smoke.v1"
+    )
+    assert frontend_blocked_smoke["commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert frontend_blocked_smoke["runtime_host"] == "211"
+    assert frontend_blocked_smoke["image_tag"] == "ai-platform-frontend:6088d5d-smoke"
+    assert frontend_blocked_smoke["docker_build"]["exit_code"] == 1
+    assert "proxyconnect" in frontend_blocked_smoke["docker_build"]["log_tail"]
+    assert "node:22-alpine" in frontend_blocked_smoke["docker_build"]["log_tail"]
+    assert frontend_blocked_smoke["image_inspect"]["status"] == "not_built"
+    assert frontend_blocked_smoke["build_provenance"]["status"] == "not_available"
+    assert frontend_blocked_smoke["runtime_smoke"]["status"] == "not_run"
+    assert frontend_blocked_smoke["leak_scan"]["status"] == "not_run"
+    assert frontend_blocked_smoke["cleanup"]["container_removed"] is True
+    assert "docker_registry_proxy_unreachable" in frontend_blocked_payload["notes"][0]
+    assert "base_image_pull_failed" in frontend_blocked_payload["notes"][0]
+    assert "not release acceptance" in frontend_blocked_payload["notes"][1]
+    assert frontend_blocked_payload["redaction_scan_status"] == "passed"
+    assert frontend_blocked_payload["review_status"] == "reviewed"
+    lowered_frontend_blocked = frontend_blocked_text.lower()
+    for marker in forbidden_markers:
+        assert marker.lower() not in lowered_frontend_blocked
 
     gate_status_text = read(GATE_STATUS_DOC)
     assert "`/api/ai/auth/me`" in gate_status_text
@@ -746,6 +797,7 @@ def test_frontend_docs_record_packaged_runtime_smoke_contract_and_211_blocker():
         assert "frontend_release.packaged_runtime_smoke.<commit_sha>" in text
         assert "305bc40" in text
         assert "83a500e" in text
+        assert "6088d5d" in text
         assert "docker_registry_proxy_unreachable" in text
         assert "base_image_pull_failed" in text
         assert "Docker daemon" in text
