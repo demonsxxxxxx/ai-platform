@@ -80,6 +80,7 @@ _RELEASE_REVIEW_FILE_NAMES = {
     "skill-release-review.json",
 }
 _RELEASE_REVIEW_SCHEMA_VERSION = "ai-platform.skill-release-review.v1"
+_PENDING_REVIEW_STATUSES = {"pending", "pending_review", "pending-review"}
 _SIGNED_PACKAGE_REQUIRED_FIELDS = (
     "package_artifact_ref",
     "package_digest_sha256",
@@ -396,6 +397,55 @@ def _signed_package_evidence_errors(evidence_path: Path) -> list[str]:
     return sorted(set(errors))
 
 
+def _json_has_pending_review_marker(value: Any) -> bool:
+    if isinstance(value, dict):
+        property_name = str(value.get("name") or "").strip().lower()
+        property_value = str(value.get("value") or "").strip().lower()
+        if (
+            property_name == "ai-platform.evidence_status"
+            and property_value in _PENDING_REVIEW_STATUSES
+        ):
+            return True
+        for key, item in value.items():
+            normalized_key = str(key).strip().lower()
+            if (
+                normalized_key in {"status", "review_status", "evidence_status"}
+                and isinstance(item, str)
+                and item.strip().lower() in _PENDING_REVIEW_STATUSES
+            ):
+                return True
+            if normalized_key == "review_required" and item is True:
+                return True
+            if _json_has_pending_review_marker(item):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_json_has_pending_review_marker(item) for item in value)
+    return False
+
+
+def _reviewed_evidence_file_errors(evidence_path: Path, *, category: str) -> list[str]:
+    error_name = f"{category}_evidence_not_reviewed"
+    try:
+        text = evidence_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return [f"{category}_evidence_file_unreadable"]
+
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        payload = None
+    if _json_has_pending_review_marker(payload):
+        return [error_name]
+
+    normalized_text = text.lower()
+    if "status: pending_review" in normalized_text or "status: pending-review" in normalized_text:
+        return [error_name]
+    if "operator action:" in normalized_text and "_reviewed=true" in normalized_text:
+        return [error_name]
+    return []
+
+
 def _valid_signed_package_evidence_paths(
     skill_dir: Path,
     relative_files: list[str],
@@ -431,6 +481,10 @@ def _review_evidence_file_errors(
         return ["evidence_files_missing_or_invalid"]
 
     errors: list[str] = []
+    requires_reviewed_evidence = payload.get("status") == "passed" or any(
+        payload.get(flag_name) is True
+        for flag_name in ("sbom_reviewed", "license_policy_reviewed", "vulnerability_reviewed")
+    )
     for category, allowed_names in _RELEASE_EVIDENCE_CATEGORIES.items():
         category_refs = evidence_files.get(category)
         if not isinstance(category_refs, list) or not category_refs:
@@ -471,6 +525,32 @@ def _review_evidence_file_errors(
                                 )
                             )
                         )
+                    else:
+                        if requires_reviewed_evidence:
+                            errors.extend(
+                                _reviewed_evidence_file_errors(
+                                    _resolve_release_file_path(
+                                        path,
+                                        skill_dir=skill_dir,
+                                        evidence_root=evidence_root,
+                                        skill_id=skill_id,
+                                    ),
+                                    category=category,
+                                )
+                            )
+            elif requires_reviewed_evidence:
+                for path in matched_paths:
+                    errors.extend(
+                        _reviewed_evidence_file_errors(
+                            _resolve_release_file_path(
+                                path,
+                                skill_dir=skill_dir,
+                                evidence_root=evidence_root,
+                                skill_id=skill_id,
+                            ),
+                            category=category,
+                        )
+                    )
     return sorted(set(errors))
 
 

@@ -1024,6 +1024,44 @@ def test_skill_release_evidence_scaffold_records_external_evidence_without_clear
     assert "token=secret" not in serialized
 
 
+def test_skill_release_review_manifest_rejects_pending_scaffold_evidence_even_with_review_flags(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(skills_root, "general-chat", "Default chat capability.")
+    evidence_root = tmp_path / "release-evidence" / "skill-release"
+    write_skill_release_evidence_scaffold(
+        skills_root=skills_root,
+        evidence_root=evidence_root,
+        skill_id="general-chat",
+        generated_at="2026-06-12T10:00:00Z",
+    )
+    review_path = evidence_root / "general-chat" / "ai-platform-skill-release-review.json"
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    review["status"] = "passed"
+    review["reviewer"] = "release-admin"
+    review["sbom_reviewed"] = True
+    review["license_policy_reviewed"] = True
+    review["vulnerability_reviewed"] = True
+    review_path.write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
+
+    readiness = build_skill_release_readiness(
+        skills_root=skills_root,
+        skill_release_evidence_root=evidence_root,
+    )
+
+    skill = readiness["skills"][0]
+    assert readiness["status"] == "partial_blocked"
+    assert "signed_skill_package_or_sbom_release_gate" in readiness["open_gaps"]
+    assert "dependency_vulnerability_or_license_policy" in readiness["open_gaps"]
+    assert skill["release_review"]["status"] == "invalid_or_incomplete"
+    assert skill["release_review"]["evidence_files_verified"] is False
+    assert "sbom_or_signed_package_evidence_not_reviewed" in skill["release_review"]["evidence_file_errors"]
+    assert "license_policy_evidence_not_reviewed" in skill["release_review"]["evidence_file_errors"]
+    assert "vulnerability_scan_evidence_not_reviewed" in skill["release_review"]["evidence_file_errors"]
+    assert "signed_package_or_sbom_review_not_verified" in skill["blockers"]
+    assert "dependency_license_policy_review_not_verified" in skill["blockers"]
+    assert "dependency_vulnerability_review_not_verified" in skill["blockers"]
+
+
 def test_skill_release_readiness_cli_can_write_external_evidence_scaffold(tmp_path):
     skills_root = tmp_path / "skills"
     _write_skill(skills_root, "general-chat", "Default chat capability.")

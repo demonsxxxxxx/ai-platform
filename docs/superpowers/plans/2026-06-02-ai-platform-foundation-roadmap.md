@@ -484,7 +484,9 @@ external pending Skill release evidence scaffold generation through
 `external-release-evidence/<skill-id>/...` references that do not change Skill
 content hashes or close G6 by themselves,
 fail-closed review-manifest evidence-file validation that rejects empty,
-placeholder, secret-like, or unmatched SBOM/license/vulnerability references,
+placeholder, secret-like, unmatched, or still-pending scaffold
+SBOM/license/vulnerability references when review manifests claim `passed` or
+set review flags to true,
 source-level `ai-platform.skill-dependency-review-policy.v1` contract
 evidence for the required SBOM/signed-package, license-policy, and
 vulnerability-scan categories and the `ai-platform.skill-release-review.v1`

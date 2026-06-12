@@ -230,6 +230,10 @@ binds SBOM, license-policy, vulnerability, and pending review-manifest
 references to `external-release-evidence/<skill-id>/...`, and keeps
 `status = pending_review`; it is an operator handoff artifact and does not
 change the Skill content hash or close G6 by itself.
+If an operator prematurely changes the review manifest to `passed` or sets
+review flags to true while the referenced SBOM/license/vulnerability files still
+carry scaffold markers such as `pending_review` or `review_required`, readiness
+fails closed with category-specific evidence-not-reviewed errors.
 The same snapshot now embeds the source-level
 `ai-platform.skill-dependency-review-policy.v1` contract. That contract binds
 the required review manifest schema to `ai-platform.skill-release-review.v1`,
