@@ -48,34 +48,57 @@ For source-only docs/tests/evidence syncs, write a local-only
 empty. Missing, stale, or malformed snapshot markers intentionally fail closed.
 
 On 2026-06-12, runtime subject commit
-`b7689d0cbc6fa3913de47aea3aded1036f0ea0ae` was synced to the 211 runtime
+`948179c73734aa61ed764fb3485f5415fca8f193` was synced to the 211 runtime
 subject and the 211 API and worker ran
-`ai-platform:b7689d0-context-public-projection-v2` with image ID
-`sha256:b9ed9399368339033058627a0506b1649706999e8743ff73ecba0313f9cb221e`.
+`ai-platform:948179c-skill-release-scaffold` with image ID
+`sha256:1f9e5bdfd6788486ad36c31fc543a7806b3028c8e3261442c3262e55a46ef94e`.
 The `ai-platform.source-revision`, `ai-platform.runtime-subject`, and
 `org.opencontainers.image.revision` labels all pointed to
-`b7689d0cbc6fa3913de47aea3aded1036f0ea0ae`. API health returned `ok`, local
-and host-side compile/import checks passed, and the aggregate verifier
-`tools/verify_poc_gate.py` returned `ok: true` on 211 for the controlled context
-public-projection slice. That smoke verified `summary_source=chat_stream`, safe
+`948179c73734aa61ed764fb3485f5415fca8f193`. API health returned `ok`; the
+compose config label pointed to the repo-local deploy composition; and the
+aggregate verifier `tools/verify_poc_gate.py` returned `ok: true` on 211 for
+the controlled context public-projection and skill-release-scaffold rollout
+slice. That smoke verified `summary_source=chat_stream`, safe
 `input_keys=["attachments","message"]` for a file-backed run, memory policy
 source, execution tier, generated-at presence, and no raw material IDs or
 forbidden projection leaks. The reviewed, redacted release-evidence entry is
-`docs/release-evidence/foundation-alpha-poc/b7689d0cbc6fa3913de47aea3aded1036f0ea0ae/2026-06-12-211-foundation-alpha-poc-b7689d0-context-public-projection-smoke.json`.
+`docs/release-evidence/foundation-alpha-poc/948179c73734aa61ed764fb3485f5415fca8f193/2026-06-12-211-foundation-alpha-poc-948179c-skill-release-scaffold-smoke.json`.
 
 The focused Auth/RBAC verifier `tools/verify_auth_rbac_smoke.py` also returned
-`ok: true` on 211 against `b7689d0`. It verified unauthenticated auth
+`ok: true` on 211 against `948179c`. It verified unauthenticated auth
 rejection, trusted platform principal projection, invalid gateway secret
 rejection, ordinary-user Admin Runtime denial, and same-tenant Admin Runtime
 access for an admin smoke principal. The reviewed, redacted Auth/RBAC evidence
 entry is
-`docs/release-evidence/foundation-alpha-poc/b7689d0cbc6fa3913de47aea3aded1036f0ea0ae/2026-06-12-211-foundation-alpha-poc-b7689d0-auth-rbac-smoke.json`.
+`docs/release-evidence/foundation-alpha-poc/948179c73734aa61ed764fb3485f5415fca8f193/2026-06-12-211-foundation-alpha-poc-948179c-auth-rbac-smoke.json`.
 
-This rollout used the existing external 211 deploy composition because the
-repo-local 211 deploy directory still lacks a real `.env`. Compose used that
-existing runtime env path without printing or copying secret values.
+The focused governance verifier
+`tools/verify_governance_runtime_smoke.py` returned `ok: true` on 211 against
+the same `948179c` runtime subject. It verified ordinary-user Admin Runtime
+denial, same-tenant admin access, G6 governance schema
+`ai-platform.governance-readiness.v1`, required tool/skill/memory governance
+domains, tool policy taxonomy and bulk-review signals, skill release/dashboard
+signals with `dashboard_contract` trimmed from the overview projection, memory
+fail-closed/context-provenance/office-context signals, and no forbidden
+projection terms in the reviewed summary. The reviewed, redacted governance
+smoke evidence entry is
+`docs/release-evidence/foundation-alpha-poc/948179c73734aa61ed764fb3485f5415fca8f193/2026-06-12-211-foundation-alpha-poc-948179c-governance-runtime-smoke.json`.
+
+This rollout used the repo-local 211 deploy composition while reusing the
+existing external runtime env file without printing or copying secret values.
+It used a runtime-only image rebased from the previous healthy image because
+dependencies did not change. Treat that as a deployment workaround, not the
+preferred release path.
 
 The immediately superseded runtime subject commit
+`b7689d0cbc6fa3913de47aea3aded1036f0ea0ae` remains historical reviewed
+evidence for the context public-projection slice. Its reviewed, redacted smoke
+evidence entries are
+`docs/release-evidence/foundation-alpha-poc/b7689d0cbc6fa3913de47aea3aded1036f0ea0ae/2026-06-12-211-foundation-alpha-poc-b7689d0-context-public-projection-smoke.json`
+and
+`docs/release-evidence/foundation-alpha-poc/b7689d0cbc6fa3913de47aea3aded1036f0ea0ae/2026-06-12-211-foundation-alpha-poc-b7689d0-auth-rbac-smoke.json`.
+
+The earlier superseded runtime subject commit
 `2384e19dcac2e39fbcf9c27dc990f5774d391422` remains historical reviewed
 evidence for the context source-provenance and governance slices. Its reviewed,
 redacted smoke evidence entries are

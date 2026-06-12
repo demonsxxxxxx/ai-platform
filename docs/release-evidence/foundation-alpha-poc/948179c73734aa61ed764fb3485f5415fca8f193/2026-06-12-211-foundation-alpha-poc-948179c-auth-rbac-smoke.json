@@ -1,0 +1,117 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-06-12-211-foundation-alpha-poc-948179c-auth-rbac-smoke",
+  "commit_sha": "948179c73734aa61ed764fb3485f5415fca8f193",
+  "runtime_subject_commit_sha": "948179c73734aa61ed764fb3485f5415fca8f193",
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#15",
+    "#16",
+    "#17",
+    "#21",
+    "#22",
+    "#23",
+    "#24"
+  ],
+  "pr_refs": [],
+  "artifact_kind": "211_runtime_smoke",
+  "captured_at": "2026-06-12T14:08:52+08:00",
+  "source_ref": {
+    "branch": "main",
+    "runtime_commit": "948179c73734aa61ed764fb3485f5415fca8f193",
+    "runtime_source_marker": "948179c73734aa61ed764fb3485f5415fca8f193",
+    "source_snapshot_marker": {
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "source_tree_commit_sha": "948179c73734aa61ed764fb3485f5415fca8f193",
+      "runtime_subject_commit_sha": "948179c73734aa61ed764fb3485f5415fca8f193",
+      "source_tree_dirty": false,
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "source_archive_sha256": "4efa7bdc745ef04ad86eb7ddf8ef4e9807fc2884bf92cc32b4d9107471850e07"
+    },
+    "image": "ai-platform:948179c-skill-release-scaffold",
+    "image_id": "sha256:1f9e5bdfd6788486ad36c31fc543a7806b3028c8e3261442c3262e55a46ef94e",
+    "image_labels": {
+      "ai-platform.source-revision": "948179c73734aa61ed764fb3485f5415fca8f193",
+      "org.opencontainers.image.revision": "948179c73734aa61ed764fb3485f5415fca8f193",
+      "ai-platform.runtime-subject": "948179c73734aa61ed764fb3485f5415fca8f193",
+      "ai-platform.source_note": "skill-release-evidence-scaffold",
+      "ai-platform.runtime-rollout": "foundation-alpha-skill-release-scaffold"
+    },
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "compose_env_source": "existing 211 runtime env path, not copied or printed",
+    "repo_local_env_present": false,
+    "gateway_secret_supplied": true,
+    "compose_location": "repo-local 211 deploy composition",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "deployment_note": "runtime-only image rebased from the previous healthy image because dependencies did not change; compose used the existing external runtime env file without printing or copying secret values"
+  },
+  "evidence_ref": {
+    "verifier": "tools/verify_auth_rbac_smoke.py",
+    "command": "python3 tools/verify_auth_rbac_smoke.py --base-url http://127.0.0.1:8020 --commit-sha 948179c73734aa61ed764fb3485f5415fca8f193 --image ai-platform:948179c-skill-release-scaffold",
+    "result": "ok:true",
+    "schema_version": "ai-platform.auth-rbac-smoke.v1",
+    "runtime_checks": {
+      "admin_runtime": {
+        "expected_status": 200,
+        "forbidden_projection_terms_present": false,
+        "missing_sections": [],
+        "queue_lease_scan_limit": 50,
+        "required_sections_present": true,
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "sandbox_active_leases": 0,
+        "status": 200,
+        "tenant_id": "default",
+        "tenant_matches_requested": true
+      },
+      "authenticated_auth_me": {
+        "expected_status": 200,
+        "forbidden_projection_terms_present": false,
+        "is_admin": true,
+        "route": "/api/ai/auth/me",
+        "source": "trusted-header",
+        "status": 200,
+        "tenant_id": "default",
+        "tenant_matches_requested": true,
+        "user_id": "poc-admin-smoke",
+        "user_matches_requested": true
+      },
+      "invalid_gateway_secret_auth_me": {
+        "detail": "invalid_gateway_principal_secret",
+        "expected_status": 403,
+        "route": "/api/ai/auth/me",
+        "status": 403
+      },
+      "ordinary_admin_runtime": {
+        "detail": "not_ai_admin",
+        "expected_status": 403,
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "status": 403
+      },
+      "unauthenticated_auth_me": {
+        "detail": "missing_authenticated_principal",
+        "expected_status": 401,
+        "route": "/api/auth/me",
+        "status": 401
+      }
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "This entry records a reviewed Auth/RBAC smoke summary for the 948179c Foundation Alpha POC runtime.",
+    "The API and worker containers reported image ai-platform:948179c-skill-release-scaffold with matching source revision, runtime subject, and OCI revision labels before the smoke was recorded.",
+    "The reviewed summary omits credentials, DSNs, object locators, executor-only internals, runtime workspace paths, user identifiers beyond synthetic smoke IDs, and personal workstation paths.",
+    "This evidence supports the Foundation Alpha POC security baseline only. It does not close production auth rollout, capacity, sandbox hardening, ordinary-user multi-agent, department rollout, runtime export, or release-evidence retention gates."
+  ],
+  "open_followups": [
+    "Broader auth/session/RBAC/tenant/redaction regression remains required before production gate closure.",
+    "#21 recorded multi-tenant capacity/load evidence remains required before raising production concurrency defaults.",
+    "G7 Docker sandbox hardening and Docker-capable sandbox smoke remain blocked.",
+    "G8 ordinary-user multi-agent exposure remains feature-flagged/internal only.",
+    "G9 release-evidence runtime export and retention runtime acceptance remain open.",
+    "Packaged frontend image smoke/release acceptance remains separate from this thin-shell POC smoke."
+  ]
+}

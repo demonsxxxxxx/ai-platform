@@ -21,11 +21,11 @@ OBSERVABILITY_READINESS_DOC = ROOT / "docs/operations/ai-platform-observability-
 GOVERNANCE_READINESS_DOC = ROOT / "docs/operations/ai-platform-governance-readiness.md"
 GATE_STATUS_DOC = ROOT / "docs/operations/ai-platform-gate-status.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
-ACTIVE_RUNTIME_SUBJECT_SHA = "b7689d0cbc6fa3913de47aea3aded1036f0ea0ae"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:b7689d0-context-public-projection-v2"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:b9ed9399368339033058627a0506b1649706999e8743ff73ecba0313f9cb221e"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-b7689d0-context-public-projection-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-b7689d0-auth-rbac-smoke"
+ACTIVE_RUNTIME_SUBJECT_SHA = "948179c73734aa61ed764fb3485f5415fca8f193"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:948179c-skill-release-scaffold"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:1f9e5bdfd6788486ad36c31fc543a7806b3028c8e3261442c3262e55a46ef94e"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-948179c-skill-release-scaffold-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-948179c-auth-rbac-smoke"
 FOUNDATION_ALPHA_POC_EVIDENCE = (
     ROOT
     / "docs/release-evidence/foundation-alpha-poc/3874281276c84a418bd08bda56d7ea55b52970b7/2026-06-11-211-foundation-alpha-poc-smoke.json"

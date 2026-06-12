@@ -121,6 +121,28 @@ dashboard acceptance, and 211 runtime smoke remain required before gate closure.
 
 On 2026-06-12, `tools/verify_governance_runtime_smoke.py` returned `ok: true`
 on the 211 API for runtime subject commit
+`948179c73734aa61ed764fb3485f5415fca8f193` and image
+`ai-platform:948179c-skill-release-scaffold`. The smoke verified ordinary-user
+Admin Runtime denial, same-tenant admin access, governance schema
+`ai-platform.governance-readiness.v1`, required tool/skill/memory governance
+domains, tool policy taxonomy and bulk-review signals, skill release/dashboard
+signals with `dashboard_contract` trimmed from the overview projection, memory
+fail-closed/context-provenance/office-context signals, and no forbidden
+projection terms in the reviewed summary. The 211 API and worker labels matched
+the runtime subject, and the compose config label pointed to the repo-local 211
+deploy composition. The reviewed release evidence entry is
+`docs/release-evidence/foundation-alpha-poc/948179c73734aa61ed764fb3485f5415fca8f193/2026-06-12-211-foundation-alpha-poc-948179c-governance-runtime-smoke.json`.
+
+This smoke records only the focused Admin Runtime governance projection proof
+for the Foundation Alpha POC and the skill-release-scaffold rollout. It does
+not close ordinary-user confirmation-card UX, full Admin dashboard/visual
+acceptance, signed-package/SBOM review evidence, dependency
+vulnerability/license evidence, office context-pack persistence and executor
+injection, frontend context provenance acceptance, or broader production
+governance rollout.
+
+On 2026-06-12, `tools/verify_governance_runtime_smoke.py` returned `ok: true`
+on the 211 API for runtime subject commit
 `2384e19dcac2e39fbcf9c27dc990f5774d391422` and image
 `ai-platform:2384e19-context-source-provenance`, using operator verifier source
 `820669037978237182ecd2fd27c2ffa10a953c0b`. The smoke verified ordinary-user

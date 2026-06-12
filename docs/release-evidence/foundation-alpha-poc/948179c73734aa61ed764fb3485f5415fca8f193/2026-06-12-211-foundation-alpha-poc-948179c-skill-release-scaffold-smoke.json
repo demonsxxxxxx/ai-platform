@@ -1,0 +1,173 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-06-12-211-foundation-alpha-poc-948179c-skill-release-scaffold-smoke",
+  "commit_sha": "948179c73734aa61ed764fb3485f5415fca8f193",
+  "runtime_subject_commit_sha": "948179c73734aa61ed764fb3485f5415fca8f193",
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#15",
+    "#16",
+    "#17",
+    "#21",
+    "#22",
+    "#23",
+    "#24"
+  ],
+  "pr_refs": [],
+  "artifact_kind": "211_runtime_smoke",
+  "captured_at": "2026-06-12T14:08:52+08:00",
+  "source_ref": {
+    "branch": "main",
+    "runtime_commit": "948179c73734aa61ed764fb3485f5415fca8f193",
+    "runtime_source_marker": "948179c73734aa61ed764fb3485f5415fca8f193",
+    "source_snapshot_marker": {
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "source_tree_commit_sha": "948179c73734aa61ed764fb3485f5415fca8f193",
+      "runtime_subject_commit_sha": "948179c73734aa61ed764fb3485f5415fca8f193",
+      "source_tree_dirty": false,
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "source_archive_sha256": "4efa7bdc745ef04ad86eb7ddf8ef4e9807fc2884bf92cc32b4d9107471850e07"
+    },
+    "image": "ai-platform:948179c-skill-release-scaffold",
+    "image_id": "sha256:1f9e5bdfd6788486ad36c31fc543a7806b3028c8e3261442c3262e55a46ef94e",
+    "image_labels": {
+      "ai-platform.source-revision": "948179c73734aa61ed764fb3485f5415fca8f193",
+      "org.opencontainers.image.revision": "948179c73734aa61ed764fb3485f5415fca8f193",
+      "ai-platform.runtime-subject": "948179c73734aa61ed764fb3485f5415fca8f193",
+      "ai-platform.source_note": "skill-release-evidence-scaffold",
+      "ai-platform.runtime-rollout": "foundation-alpha-skill-release-scaffold"
+    },
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "compose_env_source": "existing 211 runtime env path, not copied or printed",
+    "repo_local_env_present": false,
+    "gateway_secret_supplied": true,
+    "compose_location": "repo-local 211 deploy composition",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "deployment_note": "runtime-only image rebased from the previous healthy image because dependencies did not change; compose used the existing external runtime env file without printing or copying secret values"
+  },
+  "evidence_ref": {
+    "verifier": "tools/verify_poc_gate.py",
+    "command": "python3 tools/verify_poc_gate.py --api-url http://127.0.0.1:8020 --frontend-url http://10.56.0.211:18001 --frontend-dist <existing-211-frontend-dist> --env-path <existing-211-runtime-env>",
+    "result": "ok:true",
+    "runtime_checks": {
+      "lambchat_frontend": {
+        "status": 200
+      },
+      "frontend_dist_api_boundary": {
+        "api_reference_count": 154,
+        "forbidden_reference_count": 0
+      },
+      "same_origin_api_health": {
+        "status": 200,
+        "payload_status": "ok"
+      },
+      "lambchat_api_compat": {
+        "all_required_routes_http_200": true,
+        "registration_enabled": false,
+        "default_model_id": "deepseek-v4-flash",
+        "missing_permissions": []
+      },
+      "runtime_config": {
+        "claude_agent_sdk_enabled": "true",
+        "skills_present": [
+          "baoyu-translate",
+          "general-chat",
+          "qa-file-reviewer"
+        ]
+      },
+      "company_auth_bridge": "invalid-login-probe-returned-unsuccessfully",
+      "general_chat_run": "succeeded",
+      "review_artifact_run": {
+        "status": "succeeded",
+        "skill_id": "qa-file-reviewer",
+        "artifact_content_type": "application/json"
+      },
+      "translate_artifact_run": {
+        "status": "succeeded",
+        "skill_id": "baoyu-translate",
+        "artifact_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      },
+      "upload_attachment_chat": {
+        "upload_status": 200,
+        "chat_status": 200,
+        "run_status": "succeeded",
+        "executor_type": "claude-agent-worker"
+      },
+      "document_review_attachment_run": {
+        "upload_status": 200,
+        "chat_status": 200,
+        "status": "succeeded",
+        "agent_id": "qa-word-review",
+        "skill_id": "qa-file-reviewer",
+        "artifact_count": 3,
+        "artifact_types": [
+          "report_txt",
+          "result_json",
+          "reviewed_docx"
+        ],
+        "playback_status": 200,
+        "playback_contract_version": "ai-platform.run-playback.v1",
+        "playback_artifact_count": 3,
+        "playback_download_url_count": 3,
+        "playback_preview_url_count": 1,
+        "matched_download_artifact_count": 1,
+        "matched_preview_artifact_count": 1,
+        "private_payload_leaked": false
+      },
+      "artifact_download_isolation": {
+        "checked_artifacts": 2
+      },
+      "artifact_preview_isolation": {
+        "checked_artifacts": 1
+      },
+      "company_login_audit": {
+        "ordinary_user_count": 12,
+        "admin_user_count": 34,
+        "source": "company-login"
+      },
+      "context_snapshot_public_projection": {
+        "status": 200,
+        "ok": true,
+        "snapshot_count": 1,
+        "referenced_material_counts": {
+          "message_count": 1,
+          "file_count": 1,
+          "artifact_count": 0,
+          "memory_record_count": 0
+        },
+        "raw_material_id_fields_present": false,
+        "forbidden_projection_leaks": [],
+        "summary_source": "chat_stream",
+        "input_keys": [
+          "attachments",
+          "message"
+        ],
+        "memory_policy_source": "default",
+        "long_term_memory_read": false,
+        "execution_tier": "sdk_only_writing",
+        "context_pack_generated_at_present": true
+      }
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "This entry is a reviewed summary of the 948179c 211 aggregate verifier output, not a raw runtime dump.",
+    "The API and worker containers reported image ai-platform:948179c-skill-release-scaffold with matching source revision, runtime subject, and OCI revision labels before the smoke was recorded.",
+    "The compose config label pointed to the repo-local deploy composition; the existing external runtime env file was used without printing or copying secret values.",
+    "The reviewed summary omits credentials, DSNs, object locators, workspace filesystem paths, executor-only internals, run identifiers, file identifiers, artifact identifiers, storage locators, and personal workstation paths.",
+    "The smoke confirms the context snapshot public projection reports summary_source=chat_stream and safe input_keys including attachments and message for a file-backed run without leaking raw material IDs or forbidden projection terms.",
+    "This evidence supports the Foundation Alpha POC context public projection and skill-release-scaffold runtime rollout only. It does not close production concurrency, Docker sandbox hardening, ordinary-user multi-agent, department rollout, runtime export, release-evidence retention, or signed Skill package/SBOM gates."
+  ],
+  "open_followups": [
+    "#21 recorded multi-tenant capacity/load evidence remains required before raising production concurrency defaults.",
+    "G7 Docker sandbox hardening and Docker-capable sandbox smoke remain blocked.",
+    "G8 ordinary-user multi-agent exposure remains feature-flagged/internal only.",
+    "G9 release-evidence runtime export and retention runtime acceptance remain open.",
+    "Packaged frontend image smoke/release acceptance remains separate from this thin-shell POC smoke.",
+    "Signed package or SBOM review evidence for Skill release remains open; the current rollout only exposes scaffold entrypoints."
+  ]
+}
