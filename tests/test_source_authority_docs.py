@@ -21,11 +21,11 @@ OBSERVABILITY_READINESS_DOC = ROOT / "docs/operations/ai-platform-observability-
 GOVERNANCE_READINESS_DOC = ROOT / "docs/operations/ai-platform-governance-readiness.md"
 GATE_STATUS_DOC = ROOT / "docs/operations/ai-platform-gate-status.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
-ACTIVE_RUNTIME_SUBJECT_SHA = "e274d78b21c22fdf4f56a8cf8b31a0480d42c22f"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:e274d78-g9-runtime-readiness-tools"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:a8873641808cbf15f919a12a2d4a540a2cbf309557a15f8f832e0dbb0801f4ab"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-e274d78-runtime-readiness-tools-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-e274d78-auth-rbac-smoke"
+ACTIVE_RUNTIME_SUBJECT_SHA = "b7689d0cbc6fa3913de47aea3aded1036f0ea0ae"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:b7689d0-context-public-projection-v2"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:b9ed9399368339033058627a0506b1649706999e8743ff73ecba0313f9cb221e"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-b7689d0-context-public-projection-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-12-211-foundation-alpha-poc-b7689d0-auth-rbac-smoke"
 FOUNDATION_ALPHA_POC_EVIDENCE = (
     ROOT
     / "docs/release-evidence/foundation-alpha-poc/3874281276c84a418bd08bda56d7ea55b52970b7/2026-06-11-211-foundation-alpha-poc-smoke.json"
@@ -157,7 +157,8 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "do_not_raise_without_recorded_load_test_evidence" in gate_status_text
     assert "packaged frontend image smoke/release acceptance" in gate_status_text
     assert "Foundation Alpha POC Smoke" in gate_status_text
-    assert "historical 211 POC smoke reviewed" in gate_status_text
+    assert "211 POC smoke refreshed for the current context public-summary" in gate_status_text
+    assert "contract; not production gate closure" in gate_status_text
     assert "current context public-summary" in gate_status_text
     assert "source_synced_runtime_pending" in gate_status_text
     assert "runtime_source_relation" in release_evidence_text
@@ -223,7 +224,10 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert payload["evidence_ref"]["runtime_checks"]["same_origin_api_health"]["payload_status"] == "ok"
     assert payload["evidence_ref"]["runtime_checks"]["lambchat_api_compat"]["all_required_routes_http_200"] is True
     assert payload["evidence_ref"]["runtime_checks"]["context_snapshot_public_projection"]["summary_source"] == "chat_stream"
-    assert payload["evidence_ref"]["runtime_checks"]["context_snapshot_public_projection"]["input_keys"] == ["message"]
+    assert payload["evidence_ref"]["runtime_checks"]["context_snapshot_public_projection"]["input_keys"] == [
+        "attachments",
+        "message",
+    ]
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["status"] == "succeeded"
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["artifact_types"] == [
         "report_txt",

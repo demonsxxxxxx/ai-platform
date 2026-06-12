@@ -12,12 +12,12 @@ from app.public_context_keys import public_context_input_key_findings
 SCHEMA_VERSION = "ai-platform.foundation-alpha-poc-readiness.v1"
 SOURCE_SNAPSHOT_SCHEMA_VERSION = "ai-platform.source-snapshot.v1"
 STAGE_NAME = "Foundation Alpha POC"
-RUNTIME_SUBJECT_COMMIT_SHA = "2384e19dcac2e39fbcf9c27dc990f5774d391422"
+RUNTIME_SUBJECT_COMMIT_SHA = "b7689d0cbc6fa3913de47aea3aded1036f0ea0ae"
 _ROOT = Path(__file__).resolve().parents[1]
 _EVIDENCE_BASE_ROOT = _ROOT / "docs/release-evidence/foundation-alpha-poc"
 _EVIDENCE_ROOT = _EVIDENCE_BASE_ROOT / RUNTIME_SUBJECT_COMMIT_SHA
-_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-12-211-foundation-alpha-poc-2384e19-context-source-provenance-smoke.json"
-_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-12-211-foundation-alpha-poc-2384e19-context-source-provenance-auth-rbac-smoke.json"
+_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-12-211-foundation-alpha-poc-b7689d0-context-public-projection-smoke.json"
+_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-12-211-foundation-alpha-poc-b7689d0-auth-rbac-smoke.json"
 _SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
 _SOURCE_SNAPSHOT_MARKER = _ROOT / ".ai-platform-source-snapshot.json"
 _RUNTIME_NEUTRAL_PATH_PREFIXES = (

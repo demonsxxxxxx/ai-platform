@@ -11,8 +11,8 @@ issue -> PR -> review -> merge -> 211 deploy/smoke -> close issue workflow in
 
 ## Foundation Alpha POC Smoke
 
-Status: historical 211 POC smoke reviewed; current context public-summary
-contract refresh required, not production gate closure.
+Status: 211 POC smoke refreshed for the current context public-summary
+contract; not production gate closure.
 
 Generate the current operator readiness summary with:
 
@@ -48,32 +48,39 @@ For source-only docs/tests/evidence syncs, write a local-only
 empty. Missing, stale, or malformed snapshot markers intentionally fail closed.
 
 On 2026-06-12, runtime subject commit
-`2384e19dcac2e39fbcf9c27dc990f5774d391422` was synced to the 211 runtime
+`b7689d0cbc6fa3913de47aea3aded1036f0ea0ae` was synced to the 211 runtime
 subject and the 211 API and worker ran
-`ai-platform:2384e19-context-source-provenance` with image ID
-`sha256:2fde0184a1212332eeb15ff657b9a82ac96575a450becd6ac190ad22f8d589a4`.
-Both runtime source labels pointed to
-`2384e19dcac2e39fbcf9c27dc990f5774d391422`. Runtime labels pointed to the
-repo-local 211 deploy composition, API health returned `ok`, container-side
-`python -m compileall -q app tools scripts` passed for API and worker, and the
-aggregate verifier `tools/verify_poc_gate.py` returned `ok: true` on 211 for
-the controlled context source-provenance slice. That smoke verified
-`summary_source=chat_stream`, safe `input_keys=["message"]`, memory policy
+`ai-platform:b7689d0-context-public-projection-v2` with image ID
+`sha256:b9ed9399368339033058627a0506b1649706999e8743ff73ecba0313f9cb221e`.
+The `ai-platform.source-revision`, `ai-platform.runtime-subject`, and
+`org.opencontainers.image.revision` labels all pointed to
+`b7689d0cbc6fa3913de47aea3aded1036f0ea0ae`. API health returned `ok`, local
+and host-side compile/import checks passed, and the aggregate verifier
+`tools/verify_poc_gate.py` returned `ok: true` on 211 for the controlled context
+public-projection slice. That smoke verified `summary_source=chat_stream`, safe
+`input_keys=["attachments","message"]` for a file-backed run, memory policy
 source, execution tier, generated-at presence, and no raw material IDs or
-forbidden projection leaks. A later source-level contract tightened file-context
-provenance: when `file_count > 0`, public `input_keys` must include the safe
-`attachments` signal. Therefore this older 211 evidence remains reviewed
-historical proof for the controlled loop, but it no longer closes the current
-context public-summary verifier until the 211 smoke is rerun with
-`input_keys=["attachments","message"]` or equivalent. The reviewed, redacted
-release-evidence entry is
-`docs/release-evidence/foundation-alpha-poc/2384e19dcac2e39fbcf9c27dc990f5774d391422/2026-06-12-211-foundation-alpha-poc-2384e19-context-source-provenance-smoke.json`.
+forbidden projection leaks. The reviewed, redacted release-evidence entry is
+`docs/release-evidence/foundation-alpha-poc/b7689d0cbc6fa3913de47aea3aded1036f0ea0ae/2026-06-12-211-foundation-alpha-poc-b7689d0-context-public-projection-smoke.json`.
 
 The focused Auth/RBAC verifier `tools/verify_auth_rbac_smoke.py` also returned
-`ok: true` on 211 against `2384e19`. It verified unauthenticated auth rejection,
-trusted platform principal projection, invalid gateway secret rejection,
-ordinary-user Admin Runtime denial, and same-tenant Admin Runtime access for an
-admin smoke principal. The reviewed, redacted Auth/RBAC evidence entry is
+`ok: true` on 211 against `b7689d0`. It verified unauthenticated auth
+rejection, trusted platform principal projection, invalid gateway secret
+rejection, ordinary-user Admin Runtime denial, and same-tenant Admin Runtime
+access for an admin smoke principal. The reviewed, redacted Auth/RBAC evidence
+entry is
+`docs/release-evidence/foundation-alpha-poc/b7689d0cbc6fa3913de47aea3aded1036f0ea0ae/2026-06-12-211-foundation-alpha-poc-b7689d0-auth-rbac-smoke.json`.
+
+This rollout used the existing external 211 deploy composition because the
+repo-local 211 deploy directory still lacks a real `.env`. Compose used that
+existing runtime env path without printing or copying secret values.
+
+The immediately superseded runtime subject commit
+`2384e19dcac2e39fbcf9c27dc990f5774d391422` remains historical reviewed
+evidence for the context source-provenance and governance slices. Its reviewed,
+redacted smoke evidence entries are
+`docs/release-evidence/foundation-alpha-poc/2384e19dcac2e39fbcf9c27dc990f5774d391422/2026-06-12-211-foundation-alpha-poc-2384e19-context-source-provenance-smoke.json`
+and
 `docs/release-evidence/foundation-alpha-poc/2384e19dcac2e39fbcf9c27dc990f5774d391422/2026-06-12-211-foundation-alpha-poc-2384e19-context-source-provenance-auth-rbac-smoke.json`.
 
 The focused governance verifier
