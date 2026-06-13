@@ -140,6 +140,11 @@ def _minimal_smoke_payload(commit_sha: str, *, image: str, captured_at: str = "2
                     "cross_tenant_statuses": [404],
                     "cache_control": "no-store",
                 },
+                "company_login_audit": {
+                    "ordinary_user_count": 1,
+                    "admin_user_count": 1,
+                    "source": "company-login",
+                },
                 "context_snapshot_public_projection": {
                     "status": 200,
                     "ok": True,
@@ -3402,11 +3407,16 @@ def test_auth_rbac_summary_reports_platform_principal_tenant_and_gateway_checks(
         "artifact_download_cross_tenant_statuses": [],
         "artifact_preview_cross_user_statuses": [],
         "artifact_preview_cross_tenant_statuses": [],
+        "company_login_audit_count": 0,
+        "ordinary_company_login_audit_count": 0,
+        "admin_company_login_audit_count": 0,
+        "company_login_audit_missing_requirements": [],
+        "company_login_audit_verified": False,
         "broader_auth_session_rbac_tenant_redaction_regression_verified": False,
     }
 
 
-def test_auth_rbac_summary_marks_broader_regression_verified_with_cross_tenant_denials():
+def test_auth_rbac_summary_keeps_broader_regression_open_without_company_login_audit():
     summary = foundation_alpha_readiness._auth_rbac_summary(
         {
             "unauthenticated_auth_me": {"route": "/api/auth/me", "status": 401},
@@ -3443,6 +3453,94 @@ def test_auth_rbac_summary_marks_broader_regression_verified_with_cross_tenant_d
     assert summary["artifact_download_cross_tenant_statuses"] == [404, 403]
     assert summary["artifact_preview_cross_user_statuses"] == [404]
     assert summary["artifact_preview_cross_tenant_statuses"] == [404]
+    assert summary["company_login_audit_verified"] is False
+    assert summary["broader_auth_session_rbac_tenant_redaction_regression_verified"] is False
+
+
+def test_auth_rbac_summary_requires_company_login_audit_counts_for_s1_evidence():
+    summary = foundation_alpha_readiness._auth_rbac_summary(
+        {
+            "unauthenticated_auth_me": {"route": "/api/auth/me", "status": 401},
+            "authenticated_auth_me": {
+                "route": "/api/ai/auth/me",
+                "status": 200,
+                "tenant_matches_requested": True,
+                "user_matches_requested": True,
+                "forbidden_projection_terms_present": False,
+            },
+            "invalid_gateway_secret_auth_me": {"route": "/api/ai/auth/me", "status": 403},
+            "ordinary_admin_runtime": {"status": 403},
+            "admin_runtime": {
+                "status": 200,
+                "required_sections_present": True,
+                "tenant_matches_requested": True,
+                "forbidden_projection_terms_present": False,
+            },
+        },
+        artifact_checks={
+            "artifact_download_isolation": {
+                "results": [{"cross_user_status": 404, "cross_tenant_status": 404}]
+            },
+            "artifact_preview_isolation": {
+                "results": [{"cross_user_status": 404, "cross_tenant_status": 404}]
+            },
+            "company_login_audit": {
+                "count": 2,
+                "ordinary_user_count": 1,
+                "admin_user_count": 1,
+                "missing_requirements": [],
+            },
+        },
+    )
+
+    assert summary["company_login_audit_count"] == 2
+    assert summary["ordinary_company_login_audit_count"] == 1
+    assert summary["admin_company_login_audit_count"] == 1
+    assert summary["company_login_audit_missing_requirements"] == []
+    assert summary["company_login_audit_verified"] is True
+    assert summary["broader_auth_session_rbac_tenant_redaction_regression_verified"] is True
+
+
+def test_auth_rbac_summary_accepts_redacted_company_login_audit_without_total_count():
+    summary = foundation_alpha_readiness._auth_rbac_summary(
+        {
+            "unauthenticated_auth_me": {"route": "/api/auth/me", "status": 401},
+            "authenticated_auth_me": {
+                "route": "/api/ai/auth/me",
+                "status": 200,
+                "tenant_matches_requested": True,
+                "user_matches_requested": True,
+                "forbidden_projection_terms_present": False,
+            },
+            "invalid_gateway_secret_auth_me": {"route": "/api/ai/auth/me", "status": 403},
+            "ordinary_admin_runtime": {"status": 403},
+            "admin_runtime": {
+                "status": 200,
+                "required_sections_present": True,
+                "tenant_matches_requested": True,
+                "forbidden_projection_terms_present": False,
+            },
+        },
+        artifact_checks={
+            "artifact_download_isolation": {
+                "results": [{"cross_user_status": 404, "cross_tenant_status": 404}]
+            },
+            "artifact_preview_isolation": {
+                "results": [{"cross_user_status": 404, "cross_tenant_status": 404}]
+            },
+            "company_login_audit": {
+                "ordinary_user_count": 12,
+                "admin_user_count": 36,
+                "source": "company-login",
+            },
+        },
+    )
+
+    assert summary["company_login_audit_count"] == 48
+    assert summary["ordinary_company_login_audit_count"] == 12
+    assert summary["admin_company_login_audit_count"] == 36
+    assert summary["company_login_audit_missing_requirements"] == []
+    assert summary["company_login_audit_verified"] is True
     assert summary["broader_auth_session_rbac_tenant_redaction_regression_verified"] is True
 
 

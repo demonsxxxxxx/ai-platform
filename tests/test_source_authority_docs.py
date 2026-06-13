@@ -523,6 +523,16 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert "invalid gateway secret" in gate_status_text
 
 
+def test_gate_status_snapshot_records_company_login_audit_readiness_fields():
+    gate_status_text = read(GATE_STATUS_DOC)
+
+    assert "company_login_audit_verified=true" in gate_status_text
+    assert "ordinary_company_login_audit_count=12" in gate_status_text
+    assert "admin_company_login_audit_count=36" in gate_status_text
+    assert "broader auth/session/RBAC/tenant/redaction regression" in gate_status_text
+    assert "not production gate closure" in gate_status_text
+
+
 def test_foundation_alpha_runtime_evidence_subject_commit_parity_without_self_referential_record_commit():
     import json
 
