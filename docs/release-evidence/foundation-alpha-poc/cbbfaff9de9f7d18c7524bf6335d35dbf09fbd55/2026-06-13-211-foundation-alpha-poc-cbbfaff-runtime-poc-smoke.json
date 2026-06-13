@@ -63,6 +63,14 @@
   "evidence_ref": {
     "verifier": "tools/verify_poc_gate.py",
     "command": "python3 tools/verify_poc_gate.py --allow-missing-auth-audit",
+    "followup_verifiers": [
+      {
+        "verifier": "tools/verify_poc_gate.py (PR #35 governed-skill candidate)",
+        "command": "PYTHONPATH=<repo-root> python3 <pr35-candidate-verify_poc_gate.py> --api-url http://127.0.0.1:8020 --frontend-url http://127.0.0.1:18001 --env-path <existing-211-runtime-env-path>",
+        "captured_at": "2026-06-13T12:16:22+08:00",
+        "result": "ok:true"
+      }
+    ],
     "result": "ok:true",
     "runtime_checks": {
       "lambchat_frontend": {
@@ -101,6 +109,26 @@
         "status": "succeeded",
         "skill_id": "baoyu-translate",
         "artifact_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      },
+      "governed_skill_runs": {
+        "verified": true,
+        "real_task_statuses": {
+          "qa-file-reviewer": "succeeded",
+          "baoyu-translate": "succeeded"
+        },
+        "run_skill_snapshots": {
+          "row_count": 2,
+          "used_count": 2,
+          "used_skill_ids": [
+            "qa-file-reviewer",
+            "baoyu-translate"
+          ],
+          "used_skills_source": "executor_hook",
+          "pinned_snapshot_count": 2,
+          "pinned_snapshot_source": "release_decision",
+          "missing_pinned_snapshots": [],
+          "mismatched_pinned_snapshots": []
+        }
       },
       "upload_attachment_chat": {
         "upload_status": 200,
@@ -196,6 +224,7 @@
     "The smoke confirmed artifact download and preview owner access while denying cross-user and cross-tenant access with safe denial statuses.",
     "The reviewed summary omits credentials, connection strings, object locators, workspace filesystem paths, executor-only internals, run identifiers, file identifiers, artifact identifiers, storage locators, real user identifiers, runtime env-file paths, and personal workstation paths.",
     "Source revision, OCI revision, runtime-subject, and source_revision alias labels point to cbbfaff. The external env-file compose label remains a deployment-layout follow-up and must not be read as committed env content.",
+    "A 2026-06-13 PR #35 candidate verifier run on the same cbbfaff 211 runtime confirmed governed qa-file-reviewer and baoyu-translate task runs had used run_skill_snapshots pinned to release_decision with no missing or mismatched snapshots.",
     "This evidence refreshes the Foundation Alpha POC runtime loop for cbbfaff only. It does not close packaged frontend image release acceptance, signed Skill package/SBOM, production concurrency, Docker sandbox hardening, ordinary-user multi-agent, department rollout, or Foundation Alpha."
   ],
   "open_followups": [

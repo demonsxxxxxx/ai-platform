@@ -569,6 +569,7 @@ def check_governed_skill_runs(
                     "pinned_snapshot_count": 0,
                     "pinned_snapshot_source": "release_decision",
                     "missing_pinned_snapshots": sorted(real_task_statuses),
+                    "mismatched_pinned_snapshots": [],
                 },
             },
         )
@@ -581,7 +582,14 @@ with target_runs(tenant_id, run_id, skill_id) as (
   values {values}
 ),
 snapshots as (
-  select rss.tenant_id, rss.run_id, rss.skill_id, rss.used, rss.used_skills_source
+  select
+    rss.tenant_id,
+    rss.run_id,
+    rss.skill_id,
+    rss.skill_version,
+    rss.content_hash,
+    rss.used,
+    rss.used_skills_source
   from run_skill_snapshots rss
   join target_runs target
     on target.tenant_id = rss.tenant_id
@@ -589,7 +597,11 @@ snapshots as (
    and target.skill_id = rss.skill_id
 ),
 pinned_runs as (
-  select r.tenant_id, r.id as run_id, r.skill_id
+  select
+    r.tenant_id,
+    r.id as run_id,
+    r.skill_id,
+    r.input_json->'release_decision'->>'selected_version' as selected_version
   from runs r
   join target_runs target
     on target.tenant_id = r.tenant_id
@@ -618,6 +630,11 @@ select json_build_object(
       on snapshot.tenant_id = pinned.tenant_id
      and snapshot.run_id = pinned.run_id
      and snapshot.skill_id = pinned.skill_id
+     and snapshot.used
+     and (
+       snapshot.skill_version = pinned.selected_version
+       or snapshot.content_hash = pinned.selected_version
+     )
   ),
   'missing_pinned_snapshots', coalesce(
     (
@@ -628,6 +645,21 @@ select json_build_object(
        and snapshot.run_id = pinned.run_id
        and snapshot.skill_id = pinned.skill_id
       where snapshot.skill_id is null
+    ),
+    '[]'::json
+  ),
+  'mismatched_pinned_snapshots', coalesce(
+    (
+      select json_agg(pinned.skill_id order by pinned.skill_id)
+      from pinned_runs pinned
+      join snapshots snapshot
+        on snapshot.tenant_id = pinned.tenant_id
+       and snapshot.run_id = pinned.run_id
+       and snapshot.skill_id = pinned.skill_id
+      where not (
+        snapshot.skill_version = pinned.selected_version
+        or snapshot.content_hash = pinned.selected_version
+      )
     ),
     '[]'::json
   )
@@ -641,6 +673,9 @@ select json_build_object(
     missing_pinned_snapshots = snapshot_summary.get("missing_pinned_snapshots")
     if not isinstance(missing_pinned_snapshots, list):
         missing_pinned_snapshots = []
+    mismatched_pinned_snapshots = snapshot_summary.get("mismatched_pinned_snapshots")
+    if not isinstance(mismatched_pinned_snapshots, list):
+        mismatched_pinned_snapshots = []
     used_skills_sources = snapshot_summary.get("used_skills_sources")
     if not isinstance(used_skills_sources, list):
         used_skills_sources = []
@@ -660,6 +695,7 @@ select json_build_object(
         and sorted(str(item) for item in used_skill_ids) == sorted(expected_used_skill_ids)
         and pinned_snapshot_count >= len(scopes)
         and not missing_pinned_snapshots
+        and not mismatched_pinned_snapshots
     )
     evidence = {
         "verified": ok,
@@ -677,6 +713,9 @@ select json_build_object(
             "pinned_snapshot_source": "release_decision",
             "missing_pinned_snapshots": [
                 str(item) for item in missing_pinned_snapshots if isinstance(item, str)
+            ],
+            "mismatched_pinned_snapshots": [
+                str(item) for item in mismatched_pinned_snapshots if isinstance(item, str)
             ],
         },
     }

@@ -576,6 +576,7 @@ def test_governed_skill_runs_gate_summarizes_real_task_snapshot_pins(monkeypatch
             "pinned_snapshot_count": 2,
             "pinned_snapshot_source": "release_decision",
             "missing_pinned_snapshots": [],
+            "mismatched_pinned_snapshots": [],
         },
     }
     assert "run_review_gate_1" in queries[0]
@@ -614,6 +615,41 @@ def test_governed_skill_runs_gate_fails_closed_when_pinned_snapshot_is_missing(m
     assert gate.evidence["verified"] is False
     assert gate.evidence["real_task_statuses"] == {"qa-file-reviewer": "succeeded"}
     assert gate.evidence["run_skill_snapshots"]["missing_pinned_snapshots"] == ["qa-file-reviewer"]
+
+
+def test_governed_skill_runs_gate_fails_closed_when_snapshot_version_does_not_match_release_decision(
+    monkeypatch,
+):
+    run_rows = [
+        {
+            "run_id": "run_review_gate_1",
+            "tenant_id": "default",
+            "skill_id": "qa-file-reviewer",
+            "status": "succeeded",
+        }
+    ]
+
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "psql_rows",
+        lambda *args, **kwargs: [
+            {
+                "row_count": 1,
+                "used_count": 1,
+                "used_skill_ids": ["qa-file-reviewer"],
+                "used_skills_sources": ["executor_hook"],
+                "pinned_snapshot_count": 0,
+                "missing_pinned_snapshots": [],
+                "mismatched_pinned_snapshots": ["qa-file-reviewer"],
+            }
+        ],
+    )
+
+    gate = verify_poc_gate.check_governed_skill_runs("postgres", "user", "db", run_rows)
+
+    assert gate.ok is False
+    assert gate.evidence["verified"] is False
+    assert gate.evidence["run_skill_snapshots"]["mismatched_pinned_snapshots"] == ["qa-file-reviewer"]
 
 
 def test_context_snapshot_public_projection_gate_requires_safe_explainable_summary(monkeypatch):

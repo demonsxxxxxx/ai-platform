@@ -679,6 +679,9 @@ def _governed_skill_runs_summary(runtime_checks: dict[str, Any]) -> dict[str, An
     missing_pinned_snapshots = snapshots.get("missing_pinned_snapshots")
     if not isinstance(missing_pinned_snapshots, list):
         missing_pinned_snapshots = []
+    mismatched_pinned_snapshots = snapshots.get("mismatched_pinned_snapshots")
+    if not isinstance(mismatched_pinned_snapshots, list):
+        mismatched_pinned_snapshots = []
     used_skill_ids = snapshots.get("used_skill_ids")
     if not isinstance(used_skill_ids, list):
         used_skill_ids = []
@@ -698,6 +701,9 @@ def _governed_skill_runs_summary(runtime_checks: dict[str, Any]) -> dict[str, An
             "pinned_snapshot_source": snapshots.get("pinned_snapshot_source"),
             "missing_pinned_snapshots": [
                 str(item) for item in missing_pinned_snapshots if isinstance(item, str)
+            ],
+            "mismatched_pinned_snapshots": [
+                str(item) for item in mismatched_pinned_snapshots if isinstance(item, str)
             ],
         },
     }
@@ -1296,10 +1302,13 @@ def _g6_open_followups(
     governance_summary: dict[str, Any],
     *,
     governance_runtime_smoke_verified: bool,
+    governed_skill_runs_verified: bool,
 ) -> list[str]:
     followups: list[str] = []
     if not governance_runtime_smoke_verified:
         followups.append("runtime_admin_dashboard_acceptance_for_governance")
+    if not governed_skill_runs_verified:
+        followups.append("governed_skill_runs_runtime_evidence")
     for gap in governance_summary.get("open_gaps", []):
         if not isinstance(gap, str) or not gap.strip():
             continue
@@ -1593,9 +1602,12 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             else "reviewed_historical_runtime_evidence"
         )
     )
+    governed_skill_runs_summary = _governed_skill_runs_summary(smoke_checks)
+    governed_skill_runs_verified = governed_skill_runs_summary.get("verified") is True
     g6_open_followups = _g6_open_followups(
         governance_summary,
         governance_runtime_smoke_verified=governance_runtime_smoke_verified,
+        governed_skill_runs_verified=governed_skill_runs_verified,
     )
     g9_open_followups = [
         "g9_runtime_export_and_retention_acceptance",
@@ -1672,12 +1684,12 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         },
         "g6_poc_governance": {
             "status": "partial_followups_open"
-            if governance_summary["open_gap_count"]
+            if governance_summary["open_gap_count"] or g6_open_followups
             else "poc_verified_keep_under_regression",
             "evidence": {
                 **governance_summary,
-                "skill_snapshot_run_seen": True,
-                "governed_skill_runs": _governed_skill_runs_summary(smoke_checks),
+                "skill_snapshot_run_seen": governed_skill_runs_verified,
+                "governed_skill_runs": governed_skill_runs_summary,
                 "tool_permission_decision_audit_required": True,
                 "memory_long_term_default_fail_closed": True,
                 "context_snapshot_public_projection": _context_projection_summary(smoke_checks),
