@@ -1,0 +1,40 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9ea86066caa0c824927853988bb9763bda2b2b5dff8268434784efa369686880"
+        }
+      ],
+      "name": "SKILL.md",
+      "type": "file"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "description": "Use for read-only company SOP and policy knowledge answering through the platform-managed RAGFlow adapter.",
+      "name": "ragflow-knowledge-search",
+      "type": "application",
+      "version": "c3ff089dcc8eedbea5da4e5db33f0ff3a7fabb8d600dfcfd683336514a952c24"
+    },
+    "properties": [
+      {
+        "name": "ai-platform.skill_id",
+        "value": "ragflow-knowledge-search"
+      },
+      {
+        "name": "ai-platform.skill_content_hash",
+        "value": "c3ff089dcc8eedbea5da4e5db33f0ff3a7fabb8d600dfcfd683336514a952c24"
+      },
+      {
+        "name": "ai-platform.evidence_status",
+        "value": "pending_review"
+      }
+    ],
+    "timestamp": "2026-06-12T10:32:57Z"
+  },
+  "schema_version": "ai-platform.skill-release-source-sbom.v1",
+  "specVersion": "1.5"
+}

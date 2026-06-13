@@ -1,0 +1,40 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "891a84b92b4164c23e4bcabf922a031a1b7dac15db4241bd51f6c025dc492344"
+        }
+      ],
+      "name": "SKILL.md",
+      "type": "file"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "description": "Use as the platform-managed default chat capability when no specialized Skill is required.",
+      "name": "general-chat",
+      "type": "application",
+      "version": "01b108550e4d4e0f55e6ad7eecfd884ac75f93889a4111b9f0f304dd87536238"
+    },
+    "properties": [
+      {
+        "name": "ai-platform.skill_id",
+        "value": "general-chat"
+      },
+      {
+        "name": "ai-platform.skill_content_hash",
+        "value": "01b108550e4d4e0f55e6ad7eecfd884ac75f93889a4111b9f0f304dd87536238"
+      },
+      {
+        "name": "ai-platform.evidence_status",
+        "value": "pending_review"
+      }
+    ],
+    "timestamp": "2026-06-12T10:32:56Z"
+  },
+  "schema_version": "ai-platform.skill-release-source-sbom.v1",
+  "specVersion": "1.5"
+}

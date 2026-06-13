@@ -1,0 +1,640 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b8c1cec0bc6737dc1bc524964457802588abded2273946501f54e100b1db1ebb"
+        }
+      ],
+      "name": ".clawhub/origin.json",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "990d3ac04f1b053b64a7a3722e365be0edb51568eeba7ee1d8fc77c5c620acc8"
+        }
+      ],
+      "name": "__pycache__/docx_engine.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7d211a495a04cdf0f21290e07a7ef286f0bb3aa94a52b473d26ece9e6251ba4f"
+        }
+      ],
+      "name": "_meta.json",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "040e054519fb76d46288d391e7467518b25fce2c12c0484623a474b42bce5a1b"
+        }
+      ],
+      "name": "check/__init__.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7524328d269fb32b9d6aa21a1fffe1f1768629e29d5305972ec93b4001935d4d"
+        }
+      ],
+      "name": "check/__pycache__/__init__.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "dcba360fb75ca72de9e0a8f534f705e8dea8bbb74c05d9d2081af243c018b880"
+        }
+      ],
+      "name": "check/__pycache__/detectors.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "3b9520d458d5f569d046b90026f9c3041c7a39c174972ffc2b9b5dc324ed7385"
+        }
+      ],
+      "name": "check/__pycache__/pipeline.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "56a386720c6a1109b71f6dff8cf7b1e2e038daed2c1be21e21785c58d0d28a93"
+        }
+      ],
+      "name": "check/__pycache__/report.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e62f4ddd488e2eb5ba655248449a36f3c56ca273260a3119913681e4776cec1b"
+        }
+      ],
+      "name": "check/detectors.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0c06d9c8b52d914f86ae93ae1339554e5413a112f0a427a67deda143e8b0a3ed"
+        }
+      ],
+      "name": "check/pipeline.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "4f23caed93b1971b585a36892ffe55974425a9a1b392dd0671ace7236c7a2229"
+        }
+      ],
+      "name": "check/report.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "2082c75b3052437bc7e103f83c8fdcdf918d0e9567d0196871122926743cba72"
+        }
+      ],
+      "name": "diagnostics/__init__.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "883b635b11b2be9a41d56beccaa49a6120d403ad4b0167ff99b16a58f649545a"
+        }
+      ],
+      "name": "diagnostics/__pycache__/__init__.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "00df42adc1e61b34befa99b9a8288404bc4b60ddb9ae296f6a22d4682b6072ff"
+        }
+      ],
+      "name": "diagnostics/__pycache__/compiler.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "bef56a61f9a7a9140225f12ce027557993af15198926bf47f5e6112efd206d16"
+        }
+      ],
+      "name": "diagnostics/compiler.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "417729245ee2eb23ab6b9c5594c50fff3bb868694df70f4ff29f56eb64135344"
+        }
+      ],
+      "name": "docx_engine.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "f4903f50951f5736635b27839d2c02e47e6fd62fc4477cdfb7882ee0a1a78d65"
+        }
+      ],
+      "name": "guides/best-practices.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "32c112a190a1625cbe27f237d2484f4cc32bbd23ab36107806b7b1268c490232"
+        }
+      ],
+      "name": "guides/create-workflow.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "74df7a634c538e31cbdaf99370107c0916bb70731f767348ba5d12d6a936add6"
+        }
+      ],
+      "name": "guides/development.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "85ea737920cdc12fcefc1c4fcc0c65fa6e71171f300f1b1d2f9adb36b8e359dd"
+        }
+      ],
+      "name": "guides/doc-input-normalization.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8cc5267f54c8796b4cb5a5db139d480a7502f1ab00f6d1d11adad30872e2cddd"
+        }
+      ],
+      "name": "guides/styling.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9bff620105e499cc82bf2bdcaabe6fe725f33a6043adcbdc0b0708df7becde67"
+        }
+      ],
+      "name": "guides/template-apply-dynamic-gates.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e4c1e44cac088784e02673ea669291ab525721b064076a661eb50a40c987f4c5"
+        }
+      ],
+      "name": "guides/template-apply-workflow.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "1ab11e46fb076e3230b7dec39ada914b471d079dee2c53786edddeaa9f59bf2b"
+        }
+      ],
+      "name": "guides/template-driven-content-rewrite.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b62c0ffcd2cb22cfa7827e69fea108bdf49d5b78a40303a169b5b42eef62bb5f"
+        }
+      ],
+      "name": "guides/troubleshooting.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b214d55ab17956f8e2d935df7dc30f089b60852c7b81b44d03d961c3a9432f46"
+        }
+      ],
+      "name": "render/__init__.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e05c5541d35d367c3d13c0efc27a08e5f353d45776324750314a851c3035ded0"
+        }
+      ],
+      "name": "render/__pycache__/__init__.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "12f6b150572fd3a9bf70f44c8ee909800784de19a721ebd772a67d8da9ecffdb"
+        }
+      ],
+      "name": "render/__pycache__/data_plot.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b437b5633c4666f35e9926e1cbbc14c8391c2eeec4c3403feb3aa06d11f346e2"
+        }
+      ],
+      "name": "render/__pycache__/html_canvas.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8d393708c548ab39145dcc1adb111abe1631c055a40926f9a0a44a93da467d07"
+        }
+      ],
+      "name": "render/__pycache__/page_art.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "3d9776e20ab33d575d53e5c85a68c15f25ba056fa590a8f432689bb6c65dcb97"
+        }
+      ],
+      "name": "render/__pycache__/themes.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "4eaf7da294a981d85ea4206afa2b3f7284791c41249f85e9dc6749771efafbbb"
+        }
+      ],
+      "name": "render/data_plot.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0cab2db6ed149142c6aaa1b3d8c35f7143370f2f577775219ae78bf07f697edf"
+        }
+      ],
+      "name": "render/html_canvas.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "c20cf0fb2adbb2050fe8a159cd4ed29528fa5d88f4e792756c9598570e3b92b4"
+        }
+      ],
+      "name": "render/page_art.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "d30bfcc787580e0039e03f9c8725c41bfd1b206d4bf46a97cf8c57a310131dfc"
+        }
+      ],
+      "name": "render/themes.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0d248acd5240beed2dfe9b5c895b8f28c072eb29ee1edef84390161f17b428d5"
+        }
+      ],
+      "name": "requirements.txt",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "5af5e80e17af2eb435f229f2eac4fa3dad4a90a700164e9bd4d8de6ecb22a673"
+        }
+      ],
+      "name": "schemas/mapping.schema.json",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e399ae50be26be55253cc09a8e01addabf369705d4ac09e1d341a360a711f380"
+        }
+      ],
+      "name": "SKILL.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7c575298fc606d29d7235c46e060c7c5e48dbdc507167de08d634e8b6ffeb0ae"
+        }
+      ],
+      "name": "spec/__init__.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "d7e28cfff9c0f678f366eeb1f502c7a8059b28647f82e289e74d09ec1ac8b641"
+        }
+      ],
+      "name": "spec/__pycache__/__init__.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "24886036ac24fc55bc8d220ed7cd02b1af487e81eac006d77249a42f32681199"
+        }
+      ],
+      "name": "spec/__pycache__/document_repair.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e773385fcde79f59e938aeb5d729f2b217743257f368e5c727b9b01c13a761e7"
+        }
+      ],
+      "name": "spec/__pycache__/ns.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "c68a0c33fe0c52f4a3a718f22bc2ead487abb51276da0bf46a0c323a31737579"
+        }
+      ],
+      "name": "spec/__pycache__/ooxml_order.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "827f861d71d66909981dfdfd094458e9aeb0f5dae5dea810a091fe71585a1556"
+        }
+      ],
+      "name": "spec/__pycache__/tree_fixer.cpython-313.pyc",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e9ba55e893cc58eb1f1f629d722f4e53b450a1c279220704ad72d13848164f44"
+        }
+      ],
+      "name": "spec/document_repair.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "ab1122975e3463c1ced46fe9c7d434be0525402269bdb1b6bf43761531fe3538"
+        }
+      ],
+      "name": "spec/ns.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "d419bc0c343d513064cc81ae3132cdd8022616070e97a424b189156711def21a"
+        }
+      ],
+      "name": "spec/ooxml_order.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "464fd804269cc615b2899bdfc6ef70769283b0121fc6779e6ac434967d593f83"
+        }
+      ],
+      "name": "spec/tree_fixer.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "a98b340f3f09a546bb38deece12ddedf09b09ad66345e520e6e52337d7128cdf"
+        }
+      ],
+      "name": "src/Core/Fields.cs",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "87bed512073ad9b00db5172ebbc843fcd9b7cecef31d44d94b370a917b95910f"
+        }
+      ],
+      "name": "src/Core/Layout.cs",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "113abbbf5918eadafe36c80d55e52ac61176a9709d50f807cf20bc90e4d8ca2f"
+        }
+      ],
+      "name": "src/Core/Media.cs",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9e8a175ed452ab53671c0a6366ea1aefd68f98e25f1d829dd40e0a4dd8b3c37a"
+        }
+      ],
+      "name": "src/Core/Metrics.cs",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "75e5189730c8102dc26c9aed5117b6acf4764eb4451569bc5c4414b128345948"
+        }
+      ],
+      "name": "src/Core/Primitives.cs",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "68a9f0cffe71aacda042ef8dc2ee8c302b9cf0f38274b9c7974a044f5f094266"
+        }
+      ],
+      "name": "src/Program.cs",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8d2043716f9740602c863514e04c8d7162bf8ac7e52e5cee30371bdd3808104b"
+        }
+      ],
+      "name": "src/TemplateDriven/TemplateAnalyzer.cs",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9a8c220384c7203939c6f0ad4e0c47924fd5a53738618ba3b0ad021c754a2cb6"
+        }
+      ],
+      "name": "src/TemplateDriven/TemplateAssembler.cs",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b36dfc85f942e142cd4b9daf83e0548593ee4457c56e5d38b0c2abee449b7621"
+        }
+      ],
+      "name": "src/TemplateDriven/TemplateProfile.cs",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "ace834c24693ba1f421aabd4aeb81c246f88eda76fc0dfd5b68b8a5cf6835707"
+        }
+      ],
+      "name": "src/Templates/AcademicPaper.cs",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "4c5a241624f641af7c80948521008c47c677092b3e2a827825aa2effbc820db9"
+        }
+      ],
+      "name": "src/Templates/PoetryCollection.cs",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "c1a5171da77bfd3093ce0dc07c88bc6236a98ab6f1496e6d7caa5b16ca1bc71e"
+        }
+      ],
+      "name": "src/Templates/TechManual.cs",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "69406e86fb41f4ad9c3cedf3b66be0dee27ad9a0e64793b3e3e59f530709c62c"
+        }
+      ],
+      "name": "src/Templates/Themes.cs",
+      "type": "file"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "description": "Enterprise-grade Word document generation. Creates validated .docx files with professional formatting, visual hierarchy, and cross-application compatibility.",
+      "name": "minimax-docx",
+      "type": "application",
+      "version": "7e5a523f1e2ea5130150cd9d09f59655e7dd41a1374afae6b90187496978f747"
+    },
+    "properties": [
+      {
+        "name": "ai-platform.skill_id",
+        "value": "minimax-docx"
+      },
+      {
+        "name": "ai-platform.skill_content_hash",
+        "value": "7e5a523f1e2ea5130150cd9d09f59655e7dd41a1374afae6b90187496978f747"
+      },
+      {
+        "name": "ai-platform.evidence_status",
+        "value": "pending_review"
+      }
+    ],
+    "timestamp": "2026-06-12T10:32:56Z"
+  },
+  "schema_version": "ai-platform.skill-release-source-sbom.v1",
+  "specVersion": "1.5"
+}

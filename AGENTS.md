@@ -10,7 +10,11 @@ This file applies to the current `ai-platform` repository root.
 - For local readiness, prefer repository-native checks such as:
   - `python -m compileall -q app tools scripts`
   - `python -m pytest tests/test_runtime_launch_script.py -q --basetemp .pytest-tmp`
-  - `python -m pytest -q --basetemp .pytest-tmp`
+  - `python -m pytest <changed-or-affected-tests> -q --basetemp .pytest-tmp`
+  - relevant integration or smoke checks for the changed path
+- Do not run or require full-repository pytest by default. Full pytest is
+  prohibited as a routine gate because it wastes time; run it only if the user
+  explicitly requests it for a specific risk decision.
 - Run `docker compose` validation, image builds, container restarts, and runtime smoke checks only on a Docker-capable environment, normally the 211 deployment host.
 - On the 211 host, invoke repository Python checks with `python3`; bare `python` is Python 2.7 there and will misreport modern type annotations as syntax errors.
 - On the 211 host, verifier scripts that need Docker must use `--docker-cmd "sudo -n docker"` because the login user cannot access `/var/run/docker.sock` directly.
@@ -23,7 +27,7 @@ This file applies to the current `ai-platform` repository root.
 - If pytest fails because a stale child under `.pytest-tmp/` is unreadable or cannot be removed, pass a fresh non-existing child path under `.pytest-tmp/`, such as `--basetemp .pytest-tmp\run-verify-211-<timestamp>`, and report the reason.
 - Always pass `--basetemp .pytest-tmp` to every local pytest invocation; never rely on the
   system default temp path. Example:
-    python -m pytest -q --basetemp .pytest-tmp
+    python -m pytest tests/test_changed_path.py -q --basetemp .pytest-tmp
   The `.pytest-tmp/` directory is workspace-local, git-ignored, and owned entirely by pytest.
   Do not create top-level ad-hoc `--basetemp` variants (e.g. `.pytest-tmp-run-verify-211`);
   consolidate all temporary test artifacts under `.pytest-tmp/`.
@@ -112,8 +116,9 @@ Use layered verification during normal coding:
   isolation, queue, worker maintenance, run lifecycle, sandbox, schema, shared
   contracts, multi-agent runtime, frontend-backend auth/session contracts, and
   211 deployment paths.
-- Before PR, deployment, merge, or stage-gate closure: run full local pytest and
-  the relevant smoke checks, then record evidence.
+- Before PR, deployment, merge, or stage-gate closure: run targeted tests for
+  the changed or affected modules plus the relevant integration or smoke checks,
+  then record evidence. Do not substitute full pytest for focused verification.
 - Do not claim tests, review, 211 smoke, or deployment passed unless the command
   was actually run and the result was observed.
 
@@ -129,7 +134,9 @@ Before committing a large feature, the agent must complete all of the following 
 report results inline:
 
 1. **Compile check** – `python -m compileall -q app tools scripts` exits 0.
-2. **Full local test suite** – `python -m pytest -q --basetemp .pytest-tmp` exits 0.
+2. **Changed-scope tests plus integration check** – targeted pytest for the
+   changed or affected modules exits 0, and the relevant integration or smoke
+   check exits 0.
 3. **Self-review checklist** (confirm each item explicitly):
    - [ ] No secrets, real `.env` values, or personal paths in staged files.
    - [ ] New public functions/classes have docstrings.

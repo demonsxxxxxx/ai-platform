@@ -33,6 +33,7 @@ ARG AI_PLATFORM_BUILD_DIRTY=unknown
 
 LABEL org.opencontainers.image.title=ai-platform-frontend
 LABEL org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT
+LABEL ai-platform.source-revision=$AI_PLATFORM_BUILD_COMMIT
 
 ENV AI_PLATFORM_API_UPSTREAM=http://api:8020
 ENV AI_PLATFORM_FRONTEND_MAX_BODY_SIZE=50m

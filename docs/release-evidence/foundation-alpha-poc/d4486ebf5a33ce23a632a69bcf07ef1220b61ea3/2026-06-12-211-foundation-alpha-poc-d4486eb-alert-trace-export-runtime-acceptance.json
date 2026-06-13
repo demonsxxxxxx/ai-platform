@@ -1,0 +1,128 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-06-12-211-foundation-alpha-poc-d4486eb-alert-trace-export-runtime-acceptance",
+  "commit_sha": "d4486ebf5a33ce23a632a69bcf07ef1220b61ea3",
+  "runtime_subject_commit_sha": "d4486ebf5a33ce23a632a69bcf07ef1220b61ea3",
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#15",
+    "#16",
+    "#17",
+    "#21",
+    "#22",
+    "#23",
+    "#24"
+  ],
+  "pr_refs": [],
+  "artifact_kind": "alert_trace_export_runtime_acceptance",
+  "captured_at": "2026-06-12T22:52:02+08:00",
+  "source_ref": {
+    "branch": "main",
+    "runtime_commit": "d4486ebf5a33ce23a632a69bcf07ef1220b61ea3",
+    "runtime_source_marker": "d4486ebf5a33ce23a632a69bcf07ef1220b61ea3",
+    "source_snapshot": {
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "commit_sha": "d4486ebf5a33ce23a632a69bcf07ef1220b61ea3",
+      "source_target": "services/ai-platform",
+      "created_at": "2026-06-12T14:45:43.540684+00:00",
+      "archive": "ai-platform-d4486eb-source.tar"
+    },
+    "image": "ai-platform:d4486eb-observability-evidence-loader",
+    "image_id": "sha256:0d3c89127d278bee7c2a64384fbd67560ec9300536571c1e6845a8b00376cdb5",
+    "image_labels": {
+      "ai-platform.source-revision": "d4486ebf5a33ce23a632a69bcf07ef1220b61ea3",
+      "org.opencontainers.image.revision": "d4486ebf5a33ce23a632a69bcf07ef1220b61ea3",
+      "ai-platform.source_revision": "00e4e6b950709439850749fe26af9c0943f6a07c",
+      "ai-platform.runtime-subject": "6088d5d179c422a6d753e1b77079410503e58925",
+      "ai-platform.runtime-rollout": "foundation-alpha-alert-trace-acceptance",
+      "ai-platform.source_note": "observability-evidence-loader"
+    },
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "api_health": {
+      "route": "/api/ai/health",
+      "status": "ok"
+    },
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "compose_env_layout_status": "stale_external_env_label_present",
+    "runtime_subject_label_status": "stale_runtime_subject_label_present",
+    "source_revision_alias_label_status": "stale_source_revision_alias_label_present",
+    "repo_local_env_present": false,
+    "gateway_secret_supplied": false,
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "deployment_note": "runtime-only image rebased from the previous healthy image because dependencies did not change; compose used --no-build with the reviewed image tag. Source revision and OCI revision labels point to d4486eb, but inherited runtime-subject/runtime-rollout/source_revision alias labels and the external env-file compose label remain stale, so this evidence must not be used as G0 source-authority closure."
+  },
+  "evidence_ref": {
+    "verifier": "tools/verify_alert_trace_export_runtime_acceptance.py",
+    "command": "AI_PLATFORM_GATEWAY_SECRET=<redacted> python3 tools/verify_alert_trace_export_runtime_acceptance.py --base-url http://127.0.0.1:8020 --commit-sha d4486ebf5a33ce23a632a69bcf07ef1220b61ea3 --runtime-subject-commit-sha d4486ebf5a33ce23a632a69bcf07ef1220b61ea3 --image ai-platform:d4486eb-observability-evidence-loader --gateway-secret-env AI_PLATFORM_GATEWAY_SECRET --timeout-seconds 10",
+    "result": "ok:true",
+    "schema_version": "ai-platform.alert-trace-export-runtime-acceptance.v1",
+    "runtime_checks": {
+      "alert_trace_export_runtime_acceptance": {
+        "checks": {
+          "admin_runtime_alerts_and_exports": {
+            "alert_delivery_not_enabled": true,
+            "alert_delivery_policy_status": "contract_only_not_enabled",
+            "alert_rule_count": 7,
+            "alert_rules_status": "partial_blocked",
+            "alerts_domain_status": "partial_blocked",
+            "expected_status": 200,
+            "forbidden_projection_terms_present": false,
+            "implemented_alert_delivery_policy": true,
+            "implemented_alert_template": true,
+            "implemented_trace_export_contract": true,
+            "observability_schema_version": "ai-platform.observability-readiness.v1",
+            "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+            "slo_threshold_runtime_calibration_gap_present": true,
+            "status": 200,
+            "tenant_id": "default",
+            "tenant_matches_requested": true,
+            "trace_export_contract_schema_version": "ai-platform.trace-audit-export-contract.v1",
+            "trace_export_not_raw_runtime_payloads": true,
+            "trace_export_sources_public_only": true,
+            "trace_export_status": "partial_blocked"
+          },
+          "ordinary_admin_runtime": {
+            "detail": "not_ai_admin",
+            "expected_status": 403,
+            "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+            "status": 403
+          }
+        },
+        "does_not_close_g9": true,
+        "does_not_enable_alert_delivery": true,
+        "does_not_export_raw_runtime_payloads": true,
+        "ok": true,
+        "open_gaps": [],
+        "redaction_scan_status": "passed",
+        "schema_version": "ai-platform.alert-trace-export-runtime-acceptance.v1",
+        "source": {
+          "base_url": "http://127.0.0.1:8020",
+          "commit_sha": "d4486ebf5a33ce23a632a69bcf07ef1220b61ea3",
+          "runtime_subject_commit_sha": "d4486ebf5a33ce23a632a69bcf07ef1220b61ea3",
+          "image": "ai-platform:d4486eb-observability-evidence-loader",
+          "tenant_id": "default",
+          "gateway_secret_supplied": false
+        },
+        "status": "accepted_for_operator_review"
+      }
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "This entry records a reviewed 211 alert/trace export runtime acceptance summary produced for the d4486eb runtime subject.",
+    "The verifier confirmed ordinary-user Admin Runtime denial, same-tenant admin observability access, alert rule/template exposure, alert delivery policy not enabled, and trace export contract limited to public/admin reviewed sources.",
+    "The inner runtime acceptance payload is a safe summary only and omits raw runtime payloads, executor-private payloads, object locator values, sandbox work directories, credential-bearing auth headers, database connection strings, Redis connection strings, runtime env-file paths, and secret material.",
+    "This focused evidence removes the alert_delivery_and_trace_export_211_acceptance blocker for the d4486eb Foundation Alpha POC runtime subject only. It does not close G9, enable alert delivery, close signed Skill package/SBOM, close packaged frontend image release acceptance, or close G0 source-authority parity while stale labels remain."
+  ],
+  "open_followups": [
+    "Signed package or SBOM review evidence for Skill release remains open.",
+    "Packaged frontend image release acceptance remains open.",
+    "Broader auth/session/RBAC/tenant/redaction regression remains required before production gate closure.",
+    "Stale runtime-subject/runtime-rollout/source_revision alias labels and external env-file compose label must be reconciled before G0 source-authority closure.",
+    "Alert delivery remains intentionally not enabled; this evidence only accepts the current contract and reviewed trace export source restrictions."
+  ]
+}

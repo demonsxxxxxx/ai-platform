@@ -121,6 +121,60 @@ dashboard acceptance, and 211 runtime smoke remain required before gate closure.
 
 On 2026-06-12, `tools/verify_governance_runtime_smoke.py` returned `ok: true`
 on the 211 API for runtime subject commit
+`d4486ebf5a33ce23a632a69bcf07ef1220b61ea3` and image
+`ai-platform:d4486eb-observability-evidence-loader`. The smoke verified ordinary-user
+Admin Runtime denial, same-tenant admin access, governance schema
+`ai-platform.governance-readiness.v1`, required tool/skill/memory governance
+domains, tool policy taxonomy and bulk-review signals, skill release/dashboard
+signals with `dashboard_contract` trimmed from the overview projection, memory
+fail-closed/context-provenance/office-context signals, and no forbidden
+projection terms in the reviewed summary. The 211 source marker, source snapshot, source revision labels, OCI revision
+labels, and image internal source marker pointed to
+`d4486ebf5a33ce23a632a69bcf07ef1220b61ea3`, and the compose config label pointed to the repo-local 211 deploy
+composition. Runtime-subject, runtime-rollout, and source_revision alias labels
+still carried prior rollout metadata, and the compose environment-file label
+still recorded the old external env-file path. The reviewed release evidence
+entry is
+`docs/release-evidence/foundation-alpha-poc/d4486ebf5a33ce23a632a69bcf07ef1220b61ea3/2026-06-12-211-foundation-alpha-poc-d4486eb-governance-runtime-smoke.json`.
+
+This smoke records the focused Admin Runtime governance projection proof for
+the current `d4486eb` Foundation Alpha POC runtime subject. It does not close
+ordinary-user confirmation-card UX, full Admin dashboard/visual acceptance,
+signed-package/SBOM review evidence, dependency vulnerability/license evidence,
+office context-pack persistence and executor injection, frontend context
+provenance acceptance, stale runtime labels, or broader production governance
+rollout.
+
+On 2026-06-12, `tools/verify_governance_runtime_smoke.py` returned `ok: true`
+on the 211 API for runtime subject commit
+`b96d02e232176bade455f2af2bc3080f8f372206` and image
+`ai-platform:b96d02e-release-evidence-runtime-acceptance`. The smoke verified ordinary-user
+Admin Runtime denial, same-tenant admin access, governance schema
+`ai-platform.governance-readiness.v1`, required tool/skill/memory governance
+domains, tool policy taxonomy and bulk-review signals, skill release/dashboard
+signals with `dashboard_contract` trimmed from the overview projection, memory
+fail-closed/context-provenance/office-context signals, and no forbidden
+projection terms in the reviewed summary. The 211 API and worker labels matched
+the runtime subject, and the compose config label pointed to the repo-local 211
+deploy composition. The reviewed release evidence entry is
+`docs/release-evidence/foundation-alpha-poc/b96d02e232176bade455f2af2bc3080f8f372206/2026-06-12-211-foundation-alpha-poc-b96d02e-governance-runtime-smoke.json`.
+
+This smoke records only the focused Admin Runtime governance projection proof
+for the Foundation Alpha POC and the release-evidence-runtime-acceptance
+rollout. It does
+not close ordinary-user confirmation-card UX, full Admin dashboard/visual
+acceptance, signed-package/SBOM review evidence, dependency
+vulnerability/license evidence, office context-pack persistence and executor
+injection, frontend context provenance acceptance, or broader production
+governance rollout.
+
+The immediately superseded `948179c73734aa61ed764fb3485f5415fca8f193`
+governance smoke remains historical reviewed evidence for the
+skill-release-scaffold rollout at
+`docs/release-evidence/foundation-alpha-poc/948179c73734aa61ed764fb3485f5415fca8f193/2026-06-12-211-foundation-alpha-poc-948179c-governance-runtime-smoke.json`.
+
+On 2026-06-12, `tools/verify_governance_runtime_smoke.py` returned `ok: true`
+on the 211 API for runtime subject commit
 `2384e19dcac2e39fbcf9c27dc990f5774d391422` and image
 `ai-platform:2384e19-context-source-provenance`, using operator verifier source
 `820669037978237182ecd2fd27c2ffa10a953c0b`. The smoke verified ordinary-user
@@ -194,6 +248,18 @@ closed as `skill_dependency_policy_blocked`; and SBOM/license/vulnerability
 filenames do not clear release governance unless an explicit review manifest
 marks the evidence as passed and its `evidence_files` entries are non-empty,
 non-placeholder, secret-safe, and matched to actual Skill evidence files.
+The CLI can also write external pending review inputs under the repository
+release-evidence tree with
+`python tools/skill_release_readiness.py --write-evidence-scaffold --skill-id <skill-id> --evidence-root docs/release-evidence/skill-release --format json`.
+That scaffold uses schema `ai-platform.skill-release-evidence-scaffold.v1`,
+binds SBOM, license-policy, vulnerability, and pending review-manifest
+references to `external-release-evidence/<skill-id>/...`, and keeps
+`status = pending_review`; it is an operator handoff artifact and does not
+change the Skill content hash or close G6 by itself.
+If an operator prematurely changes the review manifest to `passed` or sets
+review flags to true while the referenced SBOM/license/vulnerability files still
+carry scaffold markers such as `pending_review` or `review_required`, readiness
+fails closed with category-specific evidence-not-reviewed errors.
 The same snapshot now embeds the source-level
 `ai-platform.skill-dependency-review-policy.v1` contract. That contract binds
 the required review manifest schema to `ai-platform.skill-release-review.v1`,

@@ -38,7 +38,7 @@ def test_artifact_download_isolation_gate_accepts_owner_and_denies_cross_user(mo
 
     def fake_http_get_with_headers(url: str, headers: dict[str, str], timeout: float = 15.0):
         calls.append((url, headers))
-        if headers["X-AI-User-ID"] == "artifact-owner":
+        if headers["X-AI-User-ID"] == "artifact-owner" and headers["X-AI-Tenant-ID"] == "default":
             return 200, b"artifact-bytes"
         return 404, b""
 
@@ -61,7 +61,9 @@ def test_artifact_download_isolation_gate_accepts_owner_and_denies_cross_user(mo
     assert gate.evidence["checked_artifacts"] == 1
     assert gate.evidence["results"][0]["owner_status"] == 200
     assert gate.evidence["results"][0]["cross_user_status"] == 404
+    assert gate.evidence["results"][0]["cross_tenant_status"] == 404
     assert calls[0][0] == "http://api.local/api/ai/artifacts/art_1/download"
+    assert calls[2][1]["X-AI-Tenant-ID"] == "tenant-b"
 
 
 def test_artifact_download_isolation_gate_rejects_cross_user_access(monkeypatch):
@@ -86,6 +88,33 @@ def test_artifact_download_isolation_gate_rejects_cross_user_access(monkeypatch)
     assert gate.evidence["results"][0]["cross_user_status"] == 200
 
 
+def test_artifact_download_isolation_gate_rejects_cross_tenant_access(monkeypatch):
+    def fake_http_get_with_headers(url: str, headers: dict[str, str], timeout: float = 15.0):
+        if headers["X-AI-Tenant-ID"] == "tenant-b":
+            return 200, b"foreign-tenant-bytes"
+        if headers["X-AI-User-ID"] == "artifact-owner":
+            return 200, b"artifact-bytes"
+        return 404, b""
+
+    monkeypatch.setattr(verify_poc_gate, "http_get_with_headers", fake_http_get_with_headers)
+
+    gate = verify_poc_gate.check_artifact_download_isolation(
+        "http://api.local",
+        [
+            {
+                "artifact_id": "art_1",
+                "user_id": "artifact-owner",
+                "artifact_size_bytes": 10,
+                "artifact_storage_key": "tenants/default/workspaces/default/artifacts/file.docx",
+            }
+        ],
+    )
+
+    assert gate.ok is False
+    assert gate.evidence["results"][0]["cross_user_status"] == 404
+    assert gate.evidence["results"][0]["cross_tenant_status"] == 200
+
+
 def test_artifact_preview_isolation_gate_accepts_owner_preview_and_denies_cross_user(monkeypatch):
     calls: list[tuple[str, dict[str, str]]] = []
 
@@ -95,7 +124,7 @@ def test_artifact_preview_isolation_gate_accepts_owner_preview_and_denies_cross_
         timeout: float = 15.0,
     ):
         calls.append((url, headers))
-        if headers["X-AI-User-ID"] == "artifact-owner":
+        if headers["X-AI-User-ID"] == "artifact-owner" and headers["X-AI-Tenant-ID"] == "default":
             return (
                 200,
                 b"preview-bytes",
@@ -130,7 +159,9 @@ def test_artifact_preview_isolation_gate_accepts_owner_preview_and_denies_cross_
     assert gate.evidence["checked_artifacts"] == 1
     assert gate.evidence["results"][0]["owner_status"] == 200
     assert gate.evidence["results"][0]["cross_user_status"] == 404
+    assert gate.evidence["results"][0]["cross_tenant_status"] == 404
     assert calls[0][0] == "http://api.local/api/ai/artifacts/art_1/preview"
+    assert calls[2][1]["X-AI-Tenant-ID"] == "tenant-b"
 
 
 def test_artifact_preview_isolation_gate_rejects_missing_security_headers(monkeypatch):

@@ -1,0 +1,70 @@
+{
+  "does_not_close_gate_by_itself": true,
+  "evidence_files": {
+    "license_policy": [
+      "external-release-evidence/minimax-docx/third-party-notices.txt"
+    ],
+    "sbom_or_signed_package": [
+      "external-release-evidence/minimax-docx/sbom.json"
+    ],
+    "vulnerability_scan": [
+      "external-release-evidence/minimax-docx/vulnerability-report.json"
+    ]
+  },
+  "license_policy_reviewed": false,
+  "operator_instructions": "Keep status pending until real evidence files are present and reviewed. Only change status to passed after all review booleans are true.",
+  "required_evidence": {
+    "license_policy": [
+      "copying",
+      "licence",
+      "licence.md",
+      "licence.txt",
+      "license",
+      "license.md",
+      "license.txt",
+      "notice",
+      "third-party-notices.txt"
+    ],
+    "sbom_or_signed_package": [
+      "ai-platform-signed-package-evidence.json",
+      "bom.json",
+      "cyclonedx-sbom.json",
+      "cyclonedx.json",
+      "sbom.json",
+      "sbom.spdx.json",
+      "signed-package-evidence.json"
+    ],
+    "vulnerability_scan": [
+      "npm-audit.json",
+      "osv-scanner.json",
+      "pip-audit.json",
+      "pnpm-audit.json",
+      "safety-report.json",
+      "vulnerability-report.json"
+    ]
+  },
+  "review_checklist": [
+    {
+      "id": "sbom_or_signed_package",
+      "notes": "Confirm package provenance and SBOM or signed-package evidence before setting sbom_reviewed=true. Signed-package evidence is source-validated but still needs real reviewed evidence before it can clear this gate.",
+      "passed": false
+    },
+    {
+      "id": "license_policy",
+      "notes": "Confirm third-party license policy evidence before setting license_policy_reviewed=true.",
+      "passed": false
+    },
+    {
+      "id": "vulnerability_scan",
+      "notes": "Confirm dependency vulnerability scan evidence before setting vulnerability_reviewed=true.",
+      "passed": false
+    }
+  ],
+  "reviewed_at": "2026-06-12T10:32:56Z",
+  "reviewer": "",
+  "sbom_reviewed": false,
+  "schema_version": "ai-platform.skill-release-review.v1",
+  "skill_id": "minimax-docx",
+  "status": "pending",
+  "vulnerability_reviewed": false
+}

@@ -126,6 +126,35 @@ def test_release_evidence_export_acceptance_fails_closed_on_private_payload(tmp_
     assert "raw_storage_key" not in serialized
 
 
+def test_release_evidence_export_acceptance_excludes_non_entry_evidence_namespaces(tmp_path):
+    _write_entry(tmp_path, _valid_entry())
+    skill_release_dir = tmp_path / "skill-release" / "qa-file-reviewer"
+    skill_release_dir.mkdir(parents=True, exist_ok=True)
+    (skill_release_dir / "sbom.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.skill-release-source-sbom.v1",
+                "skill": "qa-file-reviewer",
+                "review_status": "generated",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    acceptance = build_release_evidence_export_acceptance(evidence_root=tmp_path)
+
+    assert acceptance["status"] == "ready_for_operator_review"
+    assert acceptance["safe_entry_count"] == 1
+    assert acceptance["blocked_entry_count"] == 0
+    assert acceptance["excluded_entry_count"] == 1
+    assert acceptance["excluded_entries"] == [
+        {
+            "path": "skill-release/qa-file-reviewer/sbom.json",
+            "reasons": ["non_release_evidence_entry_path"],
+        }
+    ]
+
+
 def test_release_evidence_export_acceptance_cli_outputs_safe_json(tmp_path):
     _write_entry(tmp_path, _valid_entry())
 

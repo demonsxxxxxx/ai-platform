@@ -11,6 +11,7 @@ from app.observability_readiness import (  # noqa: E402
     build_observability_readiness,
     render_observability_readiness_markdown,
 )
+from app.release_evidence_readiness import load_latest_reviewed_runtime_acceptance  # noqa: E402
 
 
 def main() -> None:
@@ -23,7 +24,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    readiness = build_observability_readiness()
+    readiness = build_observability_readiness(
+        release_evidence_runtime_acceptance=load_latest_reviewed_runtime_acceptance()
+    )
     if args.format == "json":
         print(json.dumps(readiness, ensure_ascii=False, indent=2, sort_keys=True))
         return

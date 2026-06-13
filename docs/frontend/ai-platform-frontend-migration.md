@@ -362,6 +362,28 @@ Current local and CI-contract evidence on 2026-06-08:
   This is an environment/build-host blocker and explicitly not release
   acceptance; #17 remains open until the packaged frontend image is built and
   smoked on 211 or another Docker-capable host.
+- A 2026-06-12 211 packaged frontend runtime smoke attempt for commit
+  `83a500e` synced the current source archive to
+  `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform`, added the
+  frontend image `ai-platform.source-revision` label contract, and verified the
+  source with `python3 -m compileall -q app tools scripts`. The Docker daemon
+  still used a stale registry proxy and failed before runtime smoke: the
+  BuildKit path could not resolve the Dockerfile frontend, and the no-syntax
+  probe could not pull `node:22-alpine`. The verifier classified the redacted
+  attempt as `blocked_environment` with `docker_registry_proxy_unreachable` and
+  `base_image_pull_failed`, so it is not release acceptance and does not close
+  `packaged_frontend_image_release_acceptance`. `nginx:1.27-alpine` also
+  remains a required uncached base image for the final packaged image.
+- A later 2026-06-12 211 recheck for active runtime subject `6088d5d` confirmed
+  the same environment blocker after the alert/trace runtime acceptance
+  rollout. The source marker and source snapshot both pointed to `6088d5d`, the
+  frontend Dockerfile and repo-local frontend compose overlay were present, but
+  the Docker daemon still used the unreachable registry proxy. Pull probes for
+  `node:22-alpine` and `nginx:1.27-alpine` failed, and no target
+  `ai-platform-frontend:*` image was cached. The reviewed redacted evidence is
+  recorded as
+  `2026-06-12-211-foundation-alpha-poc-6088d5d-frontend-packaged-runtime-smoke-blocked.json`;
+  it remains blocker evidence, not release acceptance.
 
 These warnings do not block the source migration, but they remain frontend
 hardening work before broader Agent Frontend V1 rollout. Generated `dist/` is

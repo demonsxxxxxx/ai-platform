@@ -326,11 +326,11 @@ def psql_rows(container: str, db_user: str, db_name: str, sql: str) -> list[dict
     return rows
 
 
-def principal_headers(user_id: str, display_name: str = "") -> dict[str, str]:
+def principal_headers(user_id: str, display_name: str = "", *, tenant_id: str = "default") -> dict[str, str]:
     return {
         "X-AI-User-ID": user_id,
         "X-AI-User-Name": display_name or user_id,
-        "X-AI-Tenant-ID": "default",
+        "X-AI-Tenant-ID": tenant_id,
         "X-AI-Roles": "user",
         "X-AI-Permissions": "agent:use,chat:read,chat:write,session:read,session:write,artifact:download,file:upload,file:upload:document",
     }
@@ -534,6 +534,10 @@ def check_artifact_download_isolation(api_url: str, artifact_rows: list[dict[str
         owner_status, owner_body = http_get_with_headers(url, principal_headers(owner_id, "Artifact Owner"))
         cross_user_id = f"{owner_id}-cross-check"
         cross_status, _ = http_get_with_headers(url, principal_headers(cross_user_id, "Artifact Cross Check"))
+        cross_tenant_status, _ = http_get_with_headers(
+            url,
+            principal_headers(owner_id, "Artifact Cross Tenant Check", tenant_id="tenant-b"),
+        )
         results.append(
             {
                 "artifact_id": artifact_id,
@@ -541,9 +545,16 @@ def check_artifact_download_isolation(api_url: str, artifact_rows: list[dict[str
                 "owner_status": owner_status,
                 "owner_bytes": len(owner_body),
                 "cross_user_status": cross_status,
+                "cross_tenant_status": cross_tenant_status,
             }
         )
-    ok = bool(results) and all(item["owner_status"] == 200 and item["owner_bytes"] > 0 and item["cross_user_status"] in denied_statuses for item in results)
+    ok = bool(results) and all(
+        item["owner_status"] == 200
+        and item["owner_bytes"] > 0
+        and item["cross_user_status"] in denied_statuses
+        and item["cross_tenant_status"] in denied_statuses
+        for item in results
+    )
     return Gate("artifact_download_isolation", ok, {"checked_artifacts": len(results), "results": results})
 
 
@@ -578,6 +589,10 @@ def check_artifact_preview_isolation(api_url: str, artifact_rows: list[dict[str,
             url,
             principal_headers(cross_user_id, "Artifact Cross Check"),
         )
+        cross_tenant_status, _, _ = http_get_with_headers_and_response_headers(
+            url,
+            principal_headers(owner_id, "Artifact Cross Tenant Check", tenant_id="tenant-b"),
+        )
         cache_control = _header_value(owner_headers, "Cache-Control")
         owner_content_type = _normalized_content_type(_header_value(owner_headers, "Content-Type"))
         content_disposition = _header_value(owner_headers, "Content-Disposition")
@@ -594,6 +609,7 @@ def check_artifact_preview_isolation(api_url: str, artifact_rows: list[dict[str,
                 "owner_content_disposition": content_disposition,
                 "owner_x_content_type_options": x_content_type_options,
                 "cross_user_status": cross_status,
+                "cross_tenant_status": cross_tenant_status,
             }
         )
     ok = bool(results) and all(
@@ -604,6 +620,7 @@ def check_artifact_preview_isolation(api_url: str, artifact_rows: list[dict[str,
         and str(item["owner_content_disposition"]).lower().startswith("inline")
         and str(item["owner_x_content_type_options"]).lower() == "nosniff"
         and item["cross_user_status"] in denied_statuses
+        and item["cross_tenant_status"] in denied_statuses
         for item in results
     )
     return Gate("artifact_preview_isolation", ok, {"checked_artifacts": len(results), "results": results})
