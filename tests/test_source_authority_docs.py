@@ -233,6 +233,30 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "/home/xinlin.jiang/" not in gate_status_text
 
 
+def test_gate_status_snapshot_records_s1_post_merge_211_verification_requirements():
+    gate_status_text = read(GATE_STATUS_DOC)
+
+    assert "S1 post-merge 211 verification requirements" in gate_status_text
+    assert "after the reviewed #34-#39 stack is merged" in gate_status_text
+    assert "211 source snapshot directory is not a Git worktree" in gate_status_text
+    assert ".ai-platform-source-revision" in gate_status_text
+    assert ".ai-platform-source-snapshot.json" in gate_status_text
+    assert "repo-local deploy composition" in gate_status_text
+    assert "container image labels" in gate_status_text
+    assert "runtime subject" in gate_status_text
+    assert "source tree commit" in gate_status_text
+    assert "release-evidence runtime subject" in gate_status_text
+    assert "governed_skill_runs" in gate_status_text
+    assert "mcp_tool_permission_runtime_controls" in gate_status_text
+    assert "memory_context_controls" in gate_status_text
+    assert "runtime_rollout_required" in gate_status_text
+    assert "reviewDecision" in gate_status_text
+    assert "ordinary_user_multi_agent_allowed=false" in gate_status_text
+    assert "production_claim_allowed=false" in gate_status_text
+    assert "docker_sandbox_hardened_claim_allowed=false" in gate_status_text
+    assert "capacity_default_increase_allowed=false" in gate_status_text
+
+
 def test_committed_source_runtime_relation_manifest_keeps_clean_checkout_readiness_truthful():
     import json
 
