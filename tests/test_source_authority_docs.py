@@ -191,6 +191,10 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "issue -> PR -> review -> merge -> 211 deploy/smoke -> close issue" in gate_status_text
     assert "#17 frontend source migration" in gate_status_text
     assert "#21 capacity baseline" in gate_status_text
+    assert "Foundation Runtime concurrency evidence" in gate_status_text
+    assert "foundation_runtime_concurrency_evidence" in gate_status_text
+    assert "10+ concurrent" in gate_status_text
+    assert "does not raise production concurrency defaults" in gate_status_text
     assert "#21 is currently closed in GitHub" in gate_status_text
     assert "#21 remains open" not in gate_status_text
     assert "do_not_raise_without_recorded_load_test_evidence" in gate_status_text
@@ -348,6 +352,12 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert f"{ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID}.json" in release_evidence_index
+    assert "Foundation Runtime Concurrency" in release_evidence_index
+    assert "foundation-runtime-concurrency-evidence-211-20260614-013347.json" in release_evidence_index
+    assert "foundation-runtime-concurrency-readiness-211-20260614-013347.json" in release_evidence_index
+    assert "verified for 2 tenants, 4 users, and 12 concurrent" in release_evidence_index
+    assert "does not raise production concurrency defaults" in release_evidence_index
+    assert "open ordinary-user multi-agent" in release_evidence_index
     assert "2026-06-13-211-foundation-alpha-poc-cbbfaff-governance-runtime-smoke.json" in release_evidence_index
     assert "2026-06-13-211-foundation-alpha-poc-cbbfaff-frontend-packaged-runtime-smoke-blocked.json" in release_evidence_index
     assert "2026-06-12-211-foundation-alpha-poc-d4486eb-governance-runtime-smoke.json" in release_evidence_index

@@ -1418,14 +1418,17 @@ def test_foundation_alpha_readiness_classifies_source_metadata_paths_as_runtime_
     assert foundation_alpha_readiness._is_runtime_affecting_path("AGENTS.md") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("app/foundation_alpha_readiness.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("app/capacity_bounded_load_harness.py") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("app/foundation_runtime_concurrency.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("docs/agent-rules/ai-platform-guardrails.md") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("docs/agent-rules/github-issue-pr-workflow.md") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("docs/release-evidence/README.md") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("tests/test_foundation_alpha_readiness.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("tests/test_source_authority_docs.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("tools/frontend_release_traceability.py") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("tools/foundation_runtime_concurrency.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("tools/verify_auth_rbac_smoke.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("tools/verify_governance_runtime_smoke.py") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("tools/verify_multiuser_poc.py") is False
     assert (
         foundation_alpha_readiness._is_runtime_affecting_path(
             "assets/ai-platform-architecture-illustrations/01-controlled-execution-cabin.svg"
@@ -2322,6 +2325,12 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         readiness["domains"]["g5_run_lifecycle_worker_runtime"]["status"]
         == "poc_verified_capacity_baseline_keep_defaults_locked"
     )
+    assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"]["foundation_runtime_concurrency"][
+        "status"
+    ] == "verified_foundation_runtime_concurrency"
+    assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"]["foundation_runtime_concurrency"][
+        "verified"
+    ] is True
     assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["open_followups"] == []
     assert (
         readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"]["capacity_default_policy"]
@@ -2373,6 +2382,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         in readiness["domains"]["frontend_poc"]["open_followups"]
     )
     assert "ordinary_user_acceptance_for_quarantined_legacy_routes" in readiness["open_followups"]
+    assert "foundation_runtime_concurrency_evidence" not in readiness["open_followups"]
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
     assert "callback-secret" not in serialized
@@ -2473,6 +2483,106 @@ def test_frontend_release_traceability_summary_is_secret_safe_and_operator_sized
     assert "raw_storage_key" not in serialized
     assert "sandbox_workdir" not in serialized
     assert "c:\\users" not in serialized
+
+
+def test_foundation_alpha_readiness_records_foundation_runtime_concurrency_followup(monkeypatch):
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_foundation_runtime_concurrency_summary",
+        lambda: {
+            "status": "missing_foundation_runtime_concurrency_evidence",
+            "verified": False,
+            "summary": {
+                "tenant_count": 0,
+                "user_count": 0,
+                "session_count": 0,
+                "run_count": 0,
+                "concurrent_request_count": 0,
+                "max_observed_concurrency": 0,
+            },
+            "scenario_counts": {
+                "run_creation": 0,
+                "execution": 0,
+                "cancel": 0,
+                "retry": 0,
+            },
+            "failures": ["missing_evidence"],
+            "non_expansion_invariants": {
+                "production_concurrency_increase_allowed": False,
+                "ordinary_user_multi_agent_allowed": False,
+                "docker_sandbox_hardened_claim_allowed": False,
+                "department_rollout_allowed": False,
+                "long_term_cross_session_memory_enabled": False,
+            },
+        },
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness()
+    g5 = readiness["domains"]["g5_run_lifecycle_worker_runtime"]
+
+    assert g5["evidence"]["foundation_runtime_concurrency"]["status"] == (
+        "missing_foundation_runtime_concurrency_evidence"
+    )
+    assert g5["evidence"]["foundation_runtime_concurrency"]["verified"] is False
+    assert "foundation_runtime_concurrency_evidence" in g5["open_followups"]
+    assert "foundation_runtime_concurrency_evidence" in readiness["open_followups"]
+    assert readiness["decision"]["production_claim_allowed"] is False
+    assert readiness["decision"]["capacity_default_increase_allowed"] is False
+    assert readiness["decision"]["ordinary_user_multi_agent_allowed"] is False
+
+
+def test_foundation_alpha_readiness_loads_archived_foundation_runtime_concurrency_evidence():
+    summary = foundation_alpha_readiness._build_foundation_runtime_concurrency_summary()
+
+    assert summary["status"] == "verified_foundation_runtime_concurrency"
+    assert summary["verified"] is True
+    assert summary["summary"]["tenant_count"] == 2
+    assert summary["summary"]["user_count"] == 4
+    assert summary["summary"]["concurrent_request_count"] == 12
+    assert summary["non_expansion_invariants"]["ordinary_user_multi_agent_allowed"] is False
+    assert summary["non_expansion_invariants"]["production_concurrency_increase_allowed"] is False
+
+
+def test_foundation_alpha_readiness_accepts_foundation_runtime_concurrency_summary(monkeypatch):
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_foundation_runtime_concurrency_summary",
+        lambda: {
+            "status": "verified_foundation_runtime_concurrency",
+            "verified": True,
+            "summary": {
+                "tenant_count": 2,
+                "user_count": 4,
+                "session_count": 12,
+                "run_count": 12,
+                "concurrent_request_count": 12,
+                "max_observed_concurrency": 12,
+            },
+            "scenario_counts": {
+                "run_creation": 12,
+                "execution": 8,
+                "cancel": 2,
+                "retry": 2,
+            },
+            "failures": [],
+            "non_expansion_invariants": {
+                "production_concurrency_increase_allowed": False,
+                "ordinary_user_multi_agent_allowed": False,
+                "docker_sandbox_hardened_claim_allowed": False,
+                "department_rollout_allowed": False,
+                "long_term_cross_session_memory_enabled": False,
+            },
+        },
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness()
+    g5 = readiness["domains"]["g5_run_lifecycle_worker_runtime"]
+
+    assert g5["evidence"]["foundation_runtime_concurrency"]["verified"] is True
+    assert g5["evidence"]["foundation_runtime_concurrency"]["summary"]["concurrent_request_count"] == 12
+    assert "foundation_runtime_concurrency_evidence" not in g5["open_followups"]
 
 
 def test_foundation_alpha_readiness_embeds_frontend_release_traceability_summary(monkeypatch):

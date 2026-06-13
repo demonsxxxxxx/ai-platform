@@ -16,6 +16,7 @@ STAGE_NAME = "Foundation Alpha POC"
 RUNTIME_SUBJECT_COMMIT_SHA = "ac9a86bbea14a28748867cade8d80b2f9ff420ec"
 _ROOT = Path(__file__).resolve().parents[1]
 _EVIDENCE_BASE_ROOT = _ROOT / "docs/release-evidence/foundation-alpha-poc"
+_FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT = _ROOT / "docs/release-evidence/foundation-runtime-concurrency"
 _SOURCE_RUNTIME_RELATION_MANIFEST = _EVIDENCE_BASE_ROOT / "source-runtime-relation-manifest.json"
 _EVIDENCE_ROOT = _EVIDENCE_BASE_ROOT / RUNTIME_SUBJECT_COMMIT_SHA
 _SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-13-211-foundation-alpha-poc-ac9a86b-runtime-poc-smoke.json"
@@ -32,10 +33,13 @@ _RUNTIME_NEUTRAL_EXACT_PATHS = {
     "AGENTS.md",
     "app/capacity_bounded_load_harness.py",
     "app/foundation_alpha_readiness.py",
+    "app/foundation_runtime_concurrency.py",
     "tools/foundation_alpha_readiness.py",
+    "tools/foundation_runtime_concurrency.py",
     "tools/frontend_release_traceability.py",
     "tools/verify_auth_rbac_smoke.py",
     "tools/verify_governance_runtime_smoke.py",
+    "tools/verify_multiuser_poc.py",
     "tests/test_source_authority_docs.py",
 }
 
@@ -1584,6 +1588,27 @@ def _build_observability_summary(
     }
 
 
+def _build_foundation_runtime_concurrency_summary() -> dict[str, Any]:
+    from app.foundation_runtime_concurrency import (
+        build_foundation_runtime_concurrency_readiness,
+        load_foundation_runtime_concurrency_evidence,
+    )
+
+    candidates: list[tuple[tuple[str, str], Path, dict[str, Any]]] = []
+    if _FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT.is_dir():
+        for path in sorted(_FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT.glob("*/*.json")):
+            if "readiness" in path.name:
+                continue
+            evidence = load_foundation_runtime_concurrency_evidence(path)
+            if evidence is None:
+                continue
+            candidates.append(((str(evidence.get("captured_at") or ""), path.name), path, evidence))
+    if not candidates:
+        return build_foundation_runtime_concurrency_readiness()
+    _, _path, evidence = max(candidates, key=lambda item: item[0])
+    return build_foundation_runtime_concurrency_readiness(evidence)
+
+
 def _governance_runtime_smoke_summary(payload: dict[str, Any] | None) -> dict[str, Any]:
     if payload is None:
         return {
@@ -1844,6 +1869,8 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     )
     governed_skill_runs_summary = _governed_skill_runs_summary(smoke_checks)
     governed_skill_runs_verified = governed_skill_runs_summary.get("verified") is True
+    foundation_runtime_concurrency = _build_foundation_runtime_concurrency_summary()
+    foundation_runtime_concurrency_verified = foundation_runtime_concurrency.get("verified") is True
     g6_open_followups = _g6_open_followups(
         governance_summary,
         governance_runtime_smoke_verified=governance_runtime_smoke_verified,
@@ -1913,14 +1940,19 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             "open_followups": [],
         },
         "g5_run_lifecycle_worker_runtime": {
-            "status": "poc_verified_capacity_baseline_keep_defaults_locked",
+            "status": "poc_verified_capacity_baseline_keep_defaults_locked"
+            if foundation_runtime_concurrency_verified
+            else "partial_followups_open",
             "evidence": {
                 "general_chat_run": smoke_checks.get("general_chat_run"),
                 "upload_attachment_chat": _safe_runtime_check(smoke_checks.get("upload_attachment_chat")),
                 "document_review_attachment_run": _artifact_review_summary(smoke_checks),
+                "foundation_runtime_concurrency": foundation_runtime_concurrency,
                 "capacity_default_policy": "do_not_raise_without_separate_recorded_profile_evidence",
             },
-            "open_followups": [],
+            "open_followups": []
+            if foundation_runtime_concurrency_verified
+            else ["foundation_runtime_concurrency_evidence"],
         },
         "g6_poc_governance": {
             "status": "partial_followups_open"
