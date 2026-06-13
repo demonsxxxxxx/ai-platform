@@ -1490,6 +1490,191 @@ def test_foundation_alpha_readiness_uses_valid_source_snapshot_marker_when_git_i
     assert readiness["decision"]["current_source_verified_by_running_runtime"] is False
 
 
+def test_foundation_alpha_readiness_uses_committed_source_runtime_manifest_when_runtime_subject_diff_is_unavailable(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    old_smoke_path, old_auth_path = _write_release_evidence_pair(
+        evidence_root,
+        RUNTIME_SUBJECT_SHA,
+        image="ai-platform:8c0cffc-foundation-alpha-poc",
+        smoke_captured_at="2026-06-11T10:00:00+08:00",
+        auth_captured_at="2026-06-11T10:01:00+08:00",
+    )
+    _write_release_evidence_pair(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image="ai-platform:a3f1d73-foundation-alpha-poc",
+        smoke_captured_at="2026-06-11T15:19:22+08:00",
+        auth_captured_at="2026-06-11T15:18:58+08:00",
+    )
+    manifest_path = evidence_root / "source-runtime-relation-manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": foundation_alpha_readiness.SOURCE_RUNTIME_RELATION_MANIFEST_SCHEMA_VERSION,
+                "source_tree_commit_sha": NEWER_SOURCE_SHA,
+                "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
+                "runtime_affecting_changes_since_runtime_subject": [],
+                "note": "committed manifest for clean checkouts without the runtime subject object",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", old_smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", old_auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_SOURCE_SNAPSHOT_MARKER",
+        tmp_path / ".ai-platform-source-snapshot.json",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_SOURCE_RUNTIME_RELATION_MANIFEST",
+        manifest_path,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: NEWER_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        lambda: {
+            "status": "test_manifest_fallback",
+            "open_gap_count": 0,
+            "blockers": [],
+        },
+        raising=False,
+    )
+
+    def runtime_subject_diff_missing(command, **_kwargs):
+        assert command == ["git", "diff", "--name-only", f"{CURRENT_SOURCE_SHA}..HEAD"]
+        raise subprocess.CalledProcessError(128, command, stderr="bad revision")
+
+    monkeypatch.setattr(foundation_alpha_readiness.subprocess, "run", runtime_subject_diff_missing)
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert readiness["status"] == "runtime_current_for_runtime_relevant_source_followups_open"
+    assert readiness["source_tree_commit_sha"] == NEWER_SOURCE_SHA
+    assert readiness["runtime_subject_commit_sha"] == CURRENT_SOURCE_SHA
+    assert readiness["runtime_source_relation"] == {
+        "source_tree_commit_sha": NEWER_SOURCE_SHA,
+        "source_tree_dirty": False,
+        "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
+        "runtime_source_marker": CURRENT_SOURCE_SHA,
+        "runtime_matches_source_tree": False,
+        "runtime_relevant_source_matches": True,
+        "runtime_affecting_changes_since_runtime_subject": [],
+        "runtime_affecting_dirty_paths": [],
+        "status": "runtime_current_for_runtime_relevant_source",
+    }
+    assert readiness["verified_runtime_subject"]["evidence_scope"] == "current_runtime_relevant_source"
+    assert readiness["decision"]["runtime_relevant_source_verified_by_running_runtime"] is True
+    assert readiness["decision"]["current_source_verified_by_running_runtime"] is False
+    assert CURRENT_SOURCE_SHA in readiness["evidence_entries"]["poc_smoke"]
+    assert RUNTIME_SUBJECT_SHA not in readiness["evidence_entries"]["poc_smoke"]
+
+
+def test_foundation_alpha_readiness_rejects_stale_source_runtime_manifest_with_runtime_affecting_delta(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    smoke_path, auth_path = _write_release_evidence_pair(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image="ai-platform:a3f1d73-foundation-alpha-poc",
+        smoke_captured_at="2026-06-11T15:19:22+08:00",
+        auth_captured_at="2026-06-11T15:18:58+08:00",
+    )
+    manifest_path = evidence_root / "source-runtime-relation-manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": foundation_alpha_readiness.SOURCE_RUNTIME_RELATION_MANIFEST_SCHEMA_VERSION,
+                "source_tree_commit_sha": CURRENT_SOURCE_SHA,
+                "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
+                "runtime_affecting_changes_since_runtime_subject": [],
+                "note": "stale manifest must not bless later runtime-affecting code changes",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_SOURCE_SNAPSHOT_MARKER",
+        tmp_path / ".ai-platform-source-snapshot.json",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_SOURCE_RUNTIME_RELATION_MANIFEST",
+        manifest_path,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: NEWER_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_changes_between",
+        lambda _base, _source: ["app/runtime.py"],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        lambda: {
+            "status": "test_stale_manifest_rejected",
+            "open_gap_count": 0,
+            "blockers": [],
+        },
+        raising=False,
+    )
+
+    def runtime_subject_diff_missing(command, **_kwargs):
+        assert command == ["git", "diff", "--name-only", f"{CURRENT_SOURCE_SHA}..HEAD"]
+        raise subprocess.CalledProcessError(128, command, stderr="bad revision")
+
+    monkeypatch.setattr(foundation_alpha_readiness.subprocess, "run", runtime_subject_diff_missing)
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert readiness["status"] == "source_synced_runtime_pending_followups_open"
+    assert readiness["source_tree_commit_sha"] == NEWER_SOURCE_SHA
+    assert readiness["runtime_subject_commit_sha"] == CURRENT_SOURCE_SHA
+    assert readiness["runtime_source_relation"] == {
+        "source_tree_commit_sha": NEWER_SOURCE_SHA,
+        "source_tree_dirty": False,
+        "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
+        "runtime_source_marker": CURRENT_SOURCE_SHA,
+        "runtime_matches_source_tree": False,
+        "runtime_relevant_source_matches": False,
+        "runtime_affecting_changes_since_runtime_subject": None,
+        "runtime_affecting_dirty_paths": [],
+        "status": "source_synced_runtime_pending",
+    }
+    assert readiness["verified_runtime_subject"]["evidence_scope"] == "reviewed_historical_runtime_evidence"
+    assert readiness["decision"]["runtime_relevant_source_verified_by_running_runtime"] is False
+    assert readiness["decision"]["runtime_rollout_required_for_current_source"] is True
+
+
 def test_foundation_alpha_readiness_distinguishes_runtime_relevant_source_from_stage_closure(
     monkeypatch,
     tmp_path,

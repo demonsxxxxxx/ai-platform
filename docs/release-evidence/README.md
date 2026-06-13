@@ -64,6 +64,12 @@ local-only `.ai-platform-source-snapshot.json` marker to preserve that same
 distinction after a docs/tests/evidence-only source sync. The marker must match
 the local `.ai-platform-source-revision`, name the runtime subject commit, and
 declare empty runtime-affecting changes; missing or invalid markers fail closed.
+For normal clean GitHub checkouts where the active runtime subject commit is
+not available locally because it came from a squashed PR branch, the committed
+`foundation-alpha-poc/source-runtime-relation-manifest.json` provides the same
+runtime-affecting delta contract. The readiness tool may use it only when it
+matches the current source tree or when newer source changes after the manifest
+are runtime-neutral.
 
 The readiness schema is `ai-platform.release-evidence-readiness.v1`. The entry
 schema is `ai-platform.release-evidence-entry.v1`. The retention policy schema

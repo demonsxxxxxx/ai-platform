@@ -11,10 +11,12 @@ from app.public_context_keys import public_context_input_key_findings
 
 SCHEMA_VERSION = "ai-platform.foundation-alpha-poc-readiness.v1"
 SOURCE_SNAPSHOT_SCHEMA_VERSION = "ai-platform.source-snapshot.v1"
+SOURCE_RUNTIME_RELATION_MANIFEST_SCHEMA_VERSION = "ai-platform.source-runtime-relation-manifest.v1"
 STAGE_NAME = "Foundation Alpha POC"
 RUNTIME_SUBJECT_COMMIT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
 _ROOT = Path(__file__).resolve().parents[1]
 _EVIDENCE_BASE_ROOT = _ROOT / "docs/release-evidence/foundation-alpha-poc"
+_SOURCE_RUNTIME_RELATION_MANIFEST = _EVIDENCE_BASE_ROOT / "source-runtime-relation-manifest.json"
 _EVIDENCE_ROOT = _EVIDENCE_BASE_ROOT / RUNTIME_SUBJECT_COMMIT_SHA
 _SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-13-211-foundation-alpha-poc-cbbfaff-runtime-poc-smoke.json"
 _AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-13-211-foundation-alpha-poc-cbbfaff-auth-rbac-smoke.json"
@@ -136,6 +138,33 @@ def _source_snapshot_marker_for_source_tree(source_tree_commit: str | None = Non
     return payload
 
 
+def _source_runtime_relation_manifest_path() -> Path:
+    default_base_root = _ROOT / "docs/release-evidence/foundation-alpha-poc"
+    default_manifest = default_base_root / "source-runtime-relation-manifest.json"
+    if _EVIDENCE_BASE_ROOT != default_base_root and _SOURCE_RUNTIME_RELATION_MANIFEST == default_manifest:
+        return _EVIDENCE_BASE_ROOT / "source-runtime-relation-manifest.json"
+    return _SOURCE_RUNTIME_RELATION_MANIFEST
+
+
+def _load_source_runtime_relation_manifest() -> dict[str, Any] | None:
+    path = _source_runtime_relation_manifest_path()
+    if not path.exists():
+        return None
+    try:
+        payload = _load_json(path)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if payload.get("schema_version") != SOURCE_RUNTIME_RELATION_MANIFEST_SCHEMA_VERSION:
+        return None
+    if not isinstance(payload.get("source_tree_commit_sha"), str):
+        return None
+    if not isinstance(payload.get("runtime_subject_commit_sha"), str):
+        return None
+    if _string_list(payload.get("runtime_affecting_changes_since_runtime_subject")) is None:
+        return None
+    return payload
+
+
 def _resolve_source_tree_revision() -> str:
     try:
         result = subprocess.run(
@@ -201,6 +230,46 @@ def _is_runtime_affecting_path(path: str) -> bool:
     return not normalized.startswith(_RUNTIME_NEUTRAL_PATH_PREFIXES)
 
 
+def _resolve_runtime_affecting_changes_between(base_commit: str, source_tree_commit: str) -> list[str] | None:
+    if base_commit == source_tree_commit:
+        return []
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", f"{base_commit}..{source_tree_commit}"],
+            cwd=_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    paths = [line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip()]
+    return [path for path in paths if _is_runtime_affecting_path(path)]
+
+
+def _source_runtime_relation_manifest_for_source_tree(
+    source_tree_commit: str,
+    runtime_subject_commit: str | None = None,
+) -> dict[str, Any] | None:
+    if not source_tree_commit or source_tree_commit == "unknown":
+        return None
+    payload = _load_source_runtime_relation_manifest()
+    if payload is None:
+        return None
+    manifest_source_commit = str(payload.get("source_tree_commit_sha") or "")
+    manifest_runtime_subject = str(payload.get("runtime_subject_commit_sha") or "")
+    if runtime_subject_commit is not None and manifest_runtime_subject != runtime_subject_commit:
+        return None
+    if manifest_source_commit != source_tree_commit:
+        runtime_affecting_after_manifest = _resolve_runtime_affecting_changes_between(
+            manifest_source_commit,
+            source_tree_commit,
+        )
+        if runtime_affecting_after_manifest is None or runtime_affecting_after_manifest:
+            return None
+    return payload
+
+
 def _resolve_runtime_affecting_changes_since(runtime_subject_commit: str) -> list[str] | None:
     if runtime_subject_commit == "unknown":
         return None
@@ -215,7 +284,14 @@ def _resolve_runtime_affecting_changes_since(runtime_subject_commit: str) -> lis
     except (OSError, subprocess.CalledProcessError):
         marker = _source_snapshot_marker_for_source_tree()
         if marker is None or marker.get("runtime_subject_commit_sha") != runtime_subject_commit:
-            return None
+            source_tree_commit = _resolve_source_tree_revision()
+            manifest = _source_runtime_relation_manifest_for_source_tree(
+                source_tree_commit,
+                runtime_subject_commit,
+            )
+            if manifest is None:
+                return None
+            return _string_list(manifest.get("runtime_affecting_changes_since_runtime_subject"))
         return _string_list(marker.get("runtime_affecting_changes_since_runtime_subject"))
     paths = [line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip()]
     return [path for path in paths if _is_runtime_affecting_path(path)]
@@ -557,6 +633,12 @@ def _resolve_release_evidence_paths(source_tree_commit: str) -> tuple[Path, Path
             marker_pair = _discover_release_evidence_pair(runtime_subject_commit)
             if marker_pair is not None:
                 return marker_pair
+        manifest = _source_runtime_relation_manifest_for_source_tree(source_tree_commit)
+        if manifest is not None:
+            runtime_subject_commit = str(manifest.get("runtime_subject_commit_sha") or "")
+            manifest_pair = _discover_release_evidence_pair(runtime_subject_commit)
+            if manifest_pair is not None:
+                return manifest_pair
     configured_runtime_pair = _discover_release_evidence_pair(RUNTIME_SUBJECT_COMMIT_SHA)
     if configured_runtime_pair is not None:
         return configured_runtime_pair

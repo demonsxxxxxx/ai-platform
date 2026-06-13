@@ -46,6 +46,29 @@ For source-only docs/tests/evidence syncs, write a local-only
 `.ai-platform-source-snapshot.json` next to `.ai-platform-source-revision` so
 `tools/foundation_alpha_readiness.py` can prove the runtime-affecting delta is
 empty. Missing, stale, or malformed snapshot markers intentionally fail closed.
+For normal clean GitHub checkouts where a runtime subject came from a squashed
+PR-branch commit that may not exist locally, the committed source-runtime
+relation manifest at
+`docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json`
+is the fallback source of truth. The readiness tool may use that manifest only
+when it matches the current source tree, or when any newer local delta after the
+manifest is runtime-neutral.
+
+S1 post-merge 211 verification requirements: after the reviewed #34-#39 stack is merged, do not use earlier 211 health or historical release evidence as
+closure evidence. The 211 source snapshot directory is not a Git worktree, so
+verification must explicitly bind `.ai-platform-source-revision` and
+`.ai-platform-source-snapshot.json` to the merged source tree commit. It must
+also prove the repo-local deploy composition, container image labels, runtime
+subject, source tree commit, and release-evidence runtime subject all describe
+the same merged runtime subject. The readiness JSON must
+show the S1 G6 evidence fields `governed_skill_runs`,
+`mcp_tool_permission_runtime_controls`, and `memory_context_controls`. Until
+that merged runtime is deployed and smoked, `runtime_rollout_required` remains
+the correct state. If GitHub `reviewDecision` is still empty, status remains
+`PR ready` rather than `reviewed`. The post-merge evidence must keep
+`ordinary_user_multi_agent_allowed=false`, `production_claim_allowed=false`,
+`docker_sandbox_hardened_claim_allowed=false`, and
+`capacity_default_increase_allowed=false`.
 
 Current live 211 API/worker runtime and active Foundation Alpha POC evidence
 subject is `cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55`. On 2026-06-13, source
