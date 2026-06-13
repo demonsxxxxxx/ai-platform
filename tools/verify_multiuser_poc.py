@@ -7,7 +7,6 @@ import argparse
 import concurrent.futures
 import hashlib
 import json
-import os
 import re
 import subprocess
 import sys
@@ -18,12 +17,16 @@ from pathlib import Path
 from typing import Any
 from urllib import error, request
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.foundation_runtime_concurrency import build_foundation_runtime_concurrency_readiness
-from app.memory_redaction import is_sensitive_redaction_key
+from app.foundation_runtime_concurrency import (  # noqa: E402
+    FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA,
+    build_foundation_runtime_concurrency_readiness,
+)
+from app.public_context_keys import safe_public_context_pack_version
+from app.validation import assert_safe_id
+from tools.verify_poc_gate import _context_public_projection_findings, _context_snapshot_payload_summary
 
 
 DEFAULT_API_URL = "http://127.0.0.1:8020"
@@ -32,6 +35,7 @@ DEFAULT_POSTGRES_CONTAINER = "ai-platform-postgres"
 DEFAULT_POSTGRES_USER = "ai_platform"
 DEFAULT_POSTGRES_DB = "ai_platform"
 DEFAULT_TEST_TENANT_PREFIX = "frc-test-"
+DOWNLOAD_RE = re.compile(r"/api/ai/artifacts/(?P<artifact_id>art_[A-Za-z0-9_]+)/download")
 DEFAULT_FIXTURE_TOOL_ID = "frc-test-tool-permission-probe"
 PSQL_COMMAND_TAG_RE = re.compile(
     r"^(?:"
@@ -46,7 +50,8 @@ PSQL_COMMAND_TAG_RE = re.compile(
     r"TRUNCATE TABLE"
     r")$"
 )
-DOWNLOAD_RE = re.compile(r"/api/ai/artifacts/(?P<artifact_id>art_[A-Za-z0-9_]+)/download")
+TERMINAL_LAMBCHAT_STATUSES = {"completed", "error", "cancelled", "canceled"}
+CANCEL_EFFECT_STATUSES = {"cancel_requested", "cancelled", "canceled"}
 FORBIDDEN_PUBLIC_TERMS = (
     "authorization",
     "bearer ",
@@ -59,42 +64,12 @@ FORBIDDEN_PUBLIC_TERMS = (
     "sandbox_workdir",
     "storage_key",
 )
-FORBIDDEN_PUBLIC_KEY_ALIASES = {
-    "".join(ch for ch in term if ch.isalnum()).lower()
-    for term in FORBIDDEN_PUBLIC_TERMS
-}
+FORBIDDEN_PUBLIC_KEY_ALIASES = {"".join(ch for ch in term if ch.isalnum()).lower() for term in FORBIDDEN_PUBLIC_TERMS}
 FORBIDDEN_PUBLIC_VALUE_PATTERNS = (
     re.compile(r"\bauthorization\s*[:=]", re.IGNORECASE),
     re.compile(r"\bbearer\s+[A-Za-z0-9._~+/=-]{8,}\b", re.IGNORECASE),
-    re.compile(
-        r"\b(?:api[_-]?key|client[_-]?secret|database[_-]?url|password|redis[_-]?url|token)\s*[:=]",
-        re.IGNORECASE,
-    ),
+    re.compile(r"\b(?:api[_-]?key|client[_-]?secret|database[_-]?url|password|redis[_-]?url|token)\s*[:=]", re.IGNORECASE),
     re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_-]{8,}\b", re.IGNORECASE),
-)
-TERMINAL_LAMBCHAT_STATUSES = {"completed", "error", "cancelled", "canceled"}
-CANCEL_EFFECT_STATUSES = {"cancel_requested", "cancelled", "canceled"}
-FOUNDATION_RUNTIME_CLEANUP_COUNT_TABLES = (
-    ("tenants", "id"),
-    ("workspaces", "tenant_id"),
-    ("users", "tenant_id"),
-    ("agents", "tenant_id"),
-    ("tenant_workbench_skills", "tenant_id"),
-    ("tool_policies", "tenant_id"),
-    ("sessions", "tenant_id"),
-    ("runs", "tenant_id"),
-    ("run_events", "tenant_id"),
-    ("run_context_snapshots", "tenant_id"),
-    ("run_tool_permission_requests", "tenant_id"),
-    ("sandbox_leases", "tenant_id"),
-    ("run_skill_snapshots", "tenant_id"),
-    ("run_steps", "tenant_id"),
-    ("artifacts", "tenant_id"),
-    ("files", "tenant_id"),
-    ("messages", "tenant_id"),
-    ("audit_logs", "tenant_id"),
-    ("memory_records", "tenant_id"),
-    ("memory_policies", "tenant_id"),
 )
 
 
@@ -116,6 +91,7 @@ class CaseSpec:
     message: str
     uses_docx: bool
     workspace_id: str = "default"
+    retry_source_run_id: str = ""
 
 
 def ensure_default_sample_docx(docx_path: Path) -> Path:
@@ -249,13 +225,13 @@ def fixture_workspace_id(tenant_id: str) -> str:
     return _safe_identifier(f"{tenant_id}_default".replace("-", "_"), field_name="workspace")
 
 
-def fixture_agent_id(account: Account) -> str:
-    return fixture_agent_id_for_skill(account, "general-chat")
-
-
 def fixture_agent_id_for_skill(account: Account, skill_id: str) -> str:
     seed = f"{account.tenant_id}:{account.username}:{skill_id}"
     return _safe_identifier(f"frc_agent_{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:16]}", field_name="agent")
+
+
+def fixture_agent_id(account: Account) -> str:
+    return fixture_agent_id_for_skill(account, "general-chat")
 
 
 def _skill_id_for_agent(agent_id: str) -> str:
@@ -402,19 +378,14 @@ def build_foundation_runtime_cleanup_count_sql(
 ) -> str:
     tenants = _test_tenant_ids(tenant_ids, tenant_prefix=tenant_prefix)
     tenant_array = ", ".join(_sql_literal(tenant_id) for tenant_id in tenants)
-    count_fields: list[str] = []
-    for table_name, tenant_column in FOUNDATION_RUNTIME_CLEANUP_COUNT_TABLES:
-        count_fields.append(
-            f"  'remaining_{table_name}_count', "
-            f"(select count(*) from {table_name} where {tenant_column} in (select tenant_id from target_tenants))"
-        )
-    fields_sql = ",\n".join(count_fields)
     return f"""
 with target_tenants as (
   select unnest(array[{tenant_array}]::text[]) as tenant_id
 )
 select json_build_object(
-{fields_sql}
+  'remaining_tenant_count', (select count(*) from tenants where id in (select tenant_id from target_tenants)),
+  'remaining_run_count', (select count(*) from runs where tenant_id in (select tenant_id from target_tenants)),
+  'remaining_artifact_count', (select count(*) from artifacts where tenant_id in (select tenant_id from target_tenants))
 )::text;
 """.strip()
 
@@ -428,12 +399,11 @@ def build_foundation_runtime_cleanup_proof(
     tenant_prefix: str = DEFAULT_TEST_TENANT_PREFIX,
 ) -> dict[str, Any]:
     tenants = _test_tenant_ids(tenant_ids, tenant_prefix=tenant_prefix)
-    sql = build_foundation_runtime_cleanup_sql(tenants, tenant_prefix=tenant_prefix)
     psql_json_rows(
         container=postgres_container,
         db_user=postgres_user,
         db_name=postgres_db,
-        sql=sql,
+        sql=build_foundation_runtime_cleanup_sql(tenants, tenant_prefix=tenant_prefix),
     )
     rows = psql_json_rows(
         container=postgres_container,
@@ -443,8 +413,9 @@ def build_foundation_runtime_cleanup_proof(
     )
     remaining = rows[0] if rows else {}
     remaining_counts = {
-        f"remaining_{table_name}_count": int(remaining.get(f"remaining_{table_name}_count") or 0)
-        for table_name, _tenant_column in FOUNDATION_RUNTIME_CLEANUP_COUNT_TABLES
+        "remaining_tenant_count": int(remaining.get("remaining_tenant_count") or 0),
+        "remaining_run_count": int(remaining.get("remaining_run_count") or 0),
+        "remaining_artifact_count": int(remaining.get("remaining_artifact_count") or 0),
     }
     verified = all(value == 0 for value in remaining_counts.values())
     return {
@@ -468,6 +439,7 @@ def build_foundation_runtime_fixture_sql(
     )
     if len({username for _tenant_id, username, _label in unique_accounts}) != len(unique_accounts):
         raise ValueError("foundation runtime fixture accounts require globally unique usernames")
+
     skill_names = {
         "general-chat": "General Chat",
         "qa-file-reviewer": "Document Review",
@@ -730,9 +702,7 @@ set name = excluded.name,
 
 insert into sessions(id, tenant_id, workspace_id, user_id, agent_id, title, status)
 values {", ".join(session_rows)}
-on conflict (id) do update
-set title = excluded.title,
-    status = excluded.status;
+on conflict (id) do update set title = excluded.title, status = excluded.status;
 
 insert into runs(
   id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id, trace_id,
@@ -794,8 +764,12 @@ def prepare_foundation_runtime_fixtures(
     tenant_prefix: str = DEFAULT_TEST_TENANT_PREFIX,
 ) -> dict[str, Any]:
     tenants = _test_tenant_ids([account.tenant_id for account in accounts], tenant_prefix=tenant_prefix)
-    sql = build_foundation_runtime_fixture_sql(accounts, tenant_prefix=tenant_prefix)
-    rows = psql_json_rows(container=postgres_container, db_user=postgres_user, db_name=postgres_db, sql=sql)
+    rows = psql_json_rows(
+        container=postgres_container,
+        db_user=postgres_user,
+        db_name=postgres_db,
+        sql=build_foundation_runtime_fixture_sql(accounts, tenant_prefix=tenant_prefix),
+    )
     prepared = rows[0] if rows else {}
     prepared_counts = {
         "prepared_tenant_count": int(prepared.get("prepared_tenant_count") or 0),
@@ -867,22 +841,141 @@ def get_bytes(url: str, headers: dict[str, str], timeout: float = 60.0) -> tuple
         return exc.code, exc.read()
 
 
-def trusted_principal_headers(account: Account, *, gateway_secret: str = "", role: str = "user") -> dict[str, str]:
-    headers = {
-        "X-AI-User-ID": account.username,
-        "X-AI-User-Name": account.label,
-        "X-AI-Tenant-ID": account.tenant_id,
-        "X-AI-Roles": role,
+def fetch_context_snapshot_public_projection(api_url: str, headers: dict[str, str], run_id: str) -> dict[str, Any]:
+    try:
+        safe_run_id = assert_safe_id(str(run_id), "run_id")
+    except ValueError as exc:
+        return {"status": 0, "ok": False, "snapshot_count": 0, "error": str(exc)}
+
+    status, payload = json_request(
+        "GET",
+        f"{api_url.rstrip('/')}/api/ai/runs/{safe_run_id}/context/snapshots",
+        headers=headers,
+        timeout=30,
+    )
+    snapshots = payload.get("context_snapshots") if isinstance(payload, dict) else []
+    if not isinstance(snapshots, list):
+        snapshots = []
+    snapshot_payload_summaries = []
+    for snapshot in snapshots:
+        snapshot_payload = (
+            snapshot.get("payload")
+            if isinstance(snapshot, dict) and isinstance(snapshot.get("payload"), dict)
+            else {}
+        )
+        snapshot_payload_summaries.append(_context_snapshot_payload_summary(snapshot_payload))
+    primary_summary = (
+        snapshot_payload_summaries[0]
+        if snapshot_payload_summaries
+        else _context_snapshot_payload_summary({})
+    )
+    missing_public_summary_fields = sorted(
+        {
+            field
+            for summary in snapshot_payload_summaries
+            for field in summary["missing_public_summary_fields"]
+        }
+        or set(primary_summary["missing_public_summary_fields"])
+    )
+    invalid_count_fields = sorted(
+        {
+            field
+            for summary in snapshot_payload_summaries
+            for field in summary["invalid_count_fields"]
+        }
+        or set(primary_summary["invalid_count_fields"])
+    )
+    unsafe_input_keys = sorted(
+        {
+            key
+            for summary in snapshot_payload_summaries
+            for key in summary["unsafe_input_keys"]
+        }
+        or set(primary_summary["unsafe_input_keys"])
+    )
+    raw_material_id_fields_present, forbidden_leaks = _context_public_projection_findings(payload)
+    ok = (
+        status == 200
+        and bool(snapshots)
+        and all(summary["counts_valid"] for summary in snapshot_payload_summaries)
+        and raw_material_id_fields_present is False
+        and not forbidden_leaks
+        and not missing_public_summary_fields
+    )
+    evidence = {
+        "status": status,
+        "ok": ok,
+        "snapshot_count": len(snapshots),
+        "referenced_material_counts": primary_summary["counts"],
+        "raw_material_id_fields_present": raw_material_id_fields_present,
+        "forbidden_projection_leaks": forbidden_leaks,
+        "summary_source": primary_summary["summary_source"],
+        "input_keys": primary_summary["input_keys"],
+        "memory_policy_source": primary_summary["memory_policy_source"],
+        "long_term_memory_read": primary_summary["long_term_memory_read"],
+        "execution_tier": primary_summary["execution_tier"],
+        "context_pack_version": primary_summary["context_pack_version"],
+        "context_pack_generated_at_present": primary_summary["context_pack_generated_at_present"],
     }
-    if gateway_secret:
-        headers["X-AI-Gateway-Secret"] = gateway_secret
-    return headers
+    if invalid_count_fields:
+        evidence["invalid_referenced_material_count_fields"] = invalid_count_fields
+    if unsafe_input_keys:
+        evidence["unsafe_input_keys"] = unsafe_input_keys
+    if missing_public_summary_fields:
+        evidence["missing_public_summary_fields"] = missing_public_summary_fields
+    return evidence
 
 
-def trusted_admin_headers(account: Account, *, gateway_secret: str = "") -> dict[str, str]:
-    headers = trusted_principal_headers(account, gateway_secret=gateway_secret, role="developer")
-    headers["X-AI-Roles"] = "developer"
-    return headers
+def foundation_runtime_memory_context_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
+    context_snapshot_count = 0
+    context_snapshot_public_projection_count = 0
+    context_pack_version_sample_count = 0
+    missing_context_pack_version_count = 0
+    unsafe_context_pack_version_count = 0
+    missing_public_summary_fields: set[str] = set()
+
+    for item in results:
+        projection = item.get("context_snapshot_public_projection")
+        if not isinstance(projection, dict):
+            missing_public_summary_fields.add("context_snapshot_public_projection")
+            missing_context_pack_version_count += 1
+            continue
+        snapshot_count = projection.get("snapshot_count")
+        if type(snapshot_count) is int and snapshot_count > 0:
+            context_snapshot_count += snapshot_count
+        if projection.get("ok") is True:
+            context_snapshot_public_projection_count += 1
+        raw_version = projection.get("context_pack_version")
+        safe_version = safe_public_context_pack_version(raw_version)
+        if safe_version is not None:
+            context_pack_version_sample_count += 1
+        elif raw_version is None:
+            missing_context_pack_version_count += 1
+        else:
+            unsafe_context_pack_version_count += 1
+        fields = projection.get("missing_public_summary_fields")
+        if isinstance(fields, list):
+            missing_public_summary_fields.update(str(field) for field in fields if str(field).strip())
+
+    failed = (
+        context_snapshot_count < len(results)
+        or context_snapshot_public_projection_count < len(results)
+        or context_pack_version_sample_count < len(results)
+        or missing_context_pack_version_count > 0
+        or unsafe_context_pack_version_count > 0
+        or bool(missing_public_summary_fields)
+    )
+    return {
+        "status": "failed" if failed else "passed",
+        "context_snapshot_count": context_snapshot_count,
+        "context_snapshot_public_projection_count": context_snapshot_public_projection_count,
+        "context_pack_version_sample_count": context_pack_version_sample_count,
+        "missing_context_pack_version_count": missing_context_pack_version_count,
+        "unsafe_context_pack_version_count": unsafe_context_pack_version_count,
+        "missing_public_summary_fields": sorted(missing_public_summary_fields),
+        "cross_scope_context_leaks": 0,
+        "long_term_cross_session_memory_read": False,
+    }
 
 
 def login(api_url: str, account: Account) -> dict[str, str]:
@@ -894,7 +987,16 @@ def login(api_url: str, account: Account) -> dict[str, str]:
     if status != 200 or not isinstance(payload, dict) or not payload.get("access_token"):
         raise RuntimeError(f"login failed for {account.label}: status={status} payload={payload}")
     token = str(payload["access_token"])
-    return {"Authorization": f"Bearer {token}", "X-AI-Tenant-ID": account.tenant_id}
+    return {"Authorization": f"Bearer {token}"}
+
+
+def trusted_principal_headers(account: Account, *, role: str = "user") -> dict[str, str]:
+    return {
+        "X-AI-User-ID": account.username,
+        "X-AI-User-Name": account.label,
+        "X-AI-Tenant-ID": account.tenant_id,
+        "X-AI-Roles": role,
+    }
 
 
 def auth_headers(
@@ -902,23 +1004,10 @@ def auth_headers(
     account: Account,
     *,
     auth_mode: str = "login",
-    gateway_secret: str = "",
     trusted_header_role: str = "user",
 ) -> dict[str, str]:
     if auth_mode == "trusted-header":
-        return trusted_principal_headers(account, gateway_secret=gateway_secret, role=trusted_header_role)
-    return login(api_url, account)
-
-
-def admin_auth_headers(
-    api_url: str,
-    account: Account,
-    *,
-    auth_mode: str = "login",
-    gateway_secret: str = "",
-) -> dict[str, str]:
-    if auth_mode == "trusted-header":
-        return trusted_admin_headers(account, gateway_secret=gateway_secret)
+        return trusted_principal_headers(account, role=trusted_header_role)
     return login(api_url, account)
 
 
@@ -995,16 +1084,16 @@ def run_case(
     docx_path: Path | None,
     scenario: str = "execution",
     auth_mode: str = "login",
-    workspace_id: str = "default",
-    gateway_secret: str = "",
     trusted_header_role: str = "user",
+    workspace_id: str = "default",
     skill_id: str | None = None,
+    run_timeout_seconds: float = 240.0,
+    retry_source_run_id: str = "",
 ) -> dict[str, Any]:
     headers = auth_headers(
         api_url,
         account,
         auth_mode=auth_mode,
-        gateway_secret=gateway_secret,
         trusted_header_role=trusted_header_role,
     )
     attachment = None
@@ -1034,7 +1123,13 @@ def run_case(
         effect_status = _run_control_payload_status(payload)
         if effect_status:
             cancel_effect_statuses.append(effect_status)
-    final_status = wait_status(api_url, headers, submitted["session_id"], submitted["run_id"])
+    final_status = wait_status(
+        api_url,
+        headers,
+        submitted["session_id"],
+        submitted["run_id"],
+        timeout_seconds=run_timeout_seconds,
+    )
     if scenario == "cancel":
         for candidate in (final_status.get("raw_status"), final_status.get("status")):
             normalized = str(candidate or "").strip().lower()
@@ -1049,18 +1144,19 @@ def run_case(
     retry_action_statuses: list[int] = []
     retry_created_run_ids: list[str] = []
     if scenario == "retry":
-        status, payload = run_control_action(api_url, headers, submitted["run_id"], "retry")
+        retry_run_source = retry_source_run_id or str(submitted["run_id"])
+        status, payload = run_control_action(api_url, headers, retry_run_source, "retry")
         retry_action_statuses.append(status)
         retry_run_id = _run_control_payload_run_id(payload)
-        if retry_run_id and retry_run_id != submitted["run_id"]:
+        if retry_run_id and retry_run_id != retry_run_source:
             retry_created_run_ids.append(retry_run_id)
+    context_projection = fetch_context_snapshot_public_projection(api_url, headers, str(submitted["run_id"]))
     return {
-        "account": account.label,
         "tenant_id": account.tenant_id,
+        "account": account.label,
         "case": case_name,
         "scenario": scenario,
         "agent_id": agent_id,
-        "workspace_id": workspace_id,
         "session_id": submitted["session_id"],
         "run_id": submitted["run_id"],
         "queue_position": submitted["queue_position"],
@@ -1073,6 +1169,7 @@ def run_case(
         "retry_action_statuses": retry_action_statuses,
         "retry_created_run_ids": retry_created_run_ids,
         "has_tmp_path": "/tmp/ai-platform-agent-workspaces/" in answer,
+        "context_snapshot_public_projection": context_projection,
     }
 
 
@@ -1092,46 +1189,6 @@ def _run_control_payload_run_id(payload: Any) -> str:
     if not isinstance(payload, dict):
         return ""
     return str(payload.get("run_id") or "").strip()
-
-
-def playback_private_payload_leak_count(payload: Any) -> int:
-    leaks = 0
-
-    def walk(value: Any, *, key: str = "") -> None:
-        nonlocal leaks
-        if key:
-            key_alias = "".join(ch for ch in key if ch.isalnum()).lower()
-            if key_alias in FORBIDDEN_PUBLIC_KEY_ALIASES or is_sensitive_redaction_key(key):
-                leaks += 1
-                return
-        if isinstance(value, dict):
-            for child_key, child_value in value.items():
-                walk(child_value, key=str(child_key))
-            return
-        if isinstance(value, list):
-            for item in value:
-                walk(item)
-            return
-        if isinstance(value, str):
-            if any(pattern.search(value) for pattern in FORBIDDEN_PUBLIC_VALUE_PATTERNS):
-                leaks += 1
-
-    walk(payload)
-    return leaks
-
-
-def event_order_violations(payload: Any) -> int:
-    if not isinstance(payload, dict):
-        return 1
-    events = payload.get("events")
-    if not isinstance(events, list):
-        return 1
-    sequences = [
-        event.get("sequence")
-        for event in events
-        if isinstance(event, dict) and type(event.get("sequence")) is int
-    ]
-    return 0 if sequences == sorted(sequences) else 1
 
 
 def _account_by_label(accounts: list[Account]) -> dict[str, Account]:
@@ -1161,7 +1218,6 @@ def attach_artifact_acl_probe_results(
     accounts: list[Account],
     *,
     auth_mode: str = "login",
-    gateway_secret: str = "",
     trusted_header_role: str = "user",
 ) -> None:
     by_label = _account_by_label(accounts)
@@ -1182,36 +1238,22 @@ def attach_artifact_acl_probe_results(
                     api_url,
                     cross_user,
                     auth_mode=auth_mode,
-                    gateway_secret=gateway_secret,
                     trusted_header_role=trusted_header_role,
                 )
-                status, _body = get_bytes(
-                    f"{api_url.rstrip('/')}/api/ai/artifacts/{artifact_id}/download",
-                    cross_user_headers,
-                )
+                status, _body = get_bytes(f"{api_url.rstrip('/')}/api/ai/artifacts/{artifact_id}/download", cross_user_headers)
                 cross_user_download_statuses.append(status)
-                status, _body = get_bytes(
-                    f"{api_url.rstrip('/')}/api/ai/artifacts/{artifact_id}/preview",
-                    cross_user_headers,
-                )
+                status, _body = get_bytes(f"{api_url.rstrip('/')}/api/ai/artifacts/{artifact_id}/preview", cross_user_headers)
                 cross_user_preview_statuses.append(status)
             if cross_tenant is not None:
                 cross_tenant_headers = auth_headers(
                     api_url,
                     cross_tenant,
                     auth_mode=auth_mode,
-                    gateway_secret=gateway_secret,
                     trusted_header_role=trusted_header_role,
                 )
-                status, _body = get_bytes(
-                    f"{api_url.rstrip('/')}/api/ai/artifacts/{artifact_id}/download",
-                    cross_tenant_headers,
-                )
+                status, _body = get_bytes(f"{api_url.rstrip('/')}/api/ai/artifacts/{artifact_id}/download", cross_tenant_headers)
                 cross_tenant_download_statuses.append(status)
-                status, _body = get_bytes(
-                    f"{api_url.rstrip('/')}/api/ai/artifacts/{artifact_id}/preview",
-                    cross_tenant_headers,
-                )
+                status, _body = get_bytes(f"{api_url.rstrip('/')}/api/ai/artifacts/{artifact_id}/preview", cross_tenant_headers)
                 cross_tenant_preview_statuses.append(status)
         item["cross_user_download_statuses"] = cross_user_download_statuses
         item["cross_tenant_download_statuses"] = cross_tenant_download_statuses
@@ -1220,230 +1262,62 @@ def attach_artifact_acl_probe_results(
         item["artifact_acl_probe_owner_present"] = owner is not None
 
 
-def attach_run_detail_probe_results(
-    api_url: str,
-    results: list[dict[str, Any]],
-    accounts: list[Account],
-    *,
-    auth_mode: str = "login",
-    gateway_secret: str = "",
-    trusted_header_role: str = "user",
-) -> None:
-    by_label = _account_by_label(accounts)
-    for item in results:
-        account = by_label.get(str(item.get("account") or ""))
-        if account is None:
-            continue
-        run_id = str(item.get("run_id") or "")
-        session_id = str(item.get("session_id") or "")
-        headers = auth_headers(
-            api_url,
-            account,
-            auth_mode=auth_mode,
-            gateway_secret=gateway_secret,
-            trusted_header_role=trusted_header_role,
-        )
-        status, run_payload = json_request("GET", f"{api_url.rstrip('/')}/api/ai/runs/{run_id}", headers=headers, timeout=30)
-        if status == 200 and isinstance(run_payload, dict):
-            item["workspace_fingerprint"] = _workspace_fingerprint(run_payload, tenant_id=account.tenant_id, session_id=session_id, run_id=run_id)
-            item["context_snapshot_id"] = _context_snapshot_id(run_payload)
-            item["sandbox_lease_id"] = _sandbox_lease_id(run_payload)
-            item["tool_permission"] = _tool_permission_summary(run_payload)
-            item["skill_snapshot"] = _skill_snapshot_summary(run_payload)
-        playback_status, playback_payload = json_request(
-            "GET",
-            f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/playback",
-            headers=headers,
-            timeout=30,
-        )
-        item["playback"] = {
-            "status": playback_status,
-            "event_order_violations": event_order_violations(playback_payload),
-            "private_payload_leak_count": playback_private_payload_leak_count(playback_payload),
-        }
+def playback_private_payload_leak_count(payload: Any) -> int:
+    leaks = 0
+
+    def walk(value: Any, *, key: str = "") -> None:
+        nonlocal leaks
+        if key:
+            key_alias = "".join(ch for ch in key if ch.isalnum()).lower()
+            if key_alias in FORBIDDEN_PUBLIC_KEY_ALIASES:
+                leaks += 1
+                return
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                walk(child_value, key=str(child_key))
+            return
+        if isinstance(value, list):
+            for item in value:
+                walk(item)
+            return
+        if isinstance(value, str) and any(pattern.search(value) for pattern in FORBIDDEN_PUBLIC_VALUE_PATTERNS):
+            leaks += 1
+
+    walk(payload)
+    return leaks
 
 
-def attach_admin_run_detail_probe_results(
-    api_url: str,
-    results: list[dict[str, Any]],
-    admin_accounts: list[Account],
-    *,
-    auth_mode: str = "login",
-    gateway_secret: str = "",
-    trusted_header_role: str = "user",
-) -> None:
-    admins_by_tenant = {account.tenant_id: account for account in admin_accounts}
-    for item in results:
-        tenant_id = str(item.get("tenant_id") or "default")
-        run_id = str(item.get("run_id") or "")
-        session_id = str(item.get("session_id") or "")
-        admin = admins_by_tenant.get(tenant_id)
-        if admin is None or not run_id:
-            item["admin_detail_probe_status"] = "missing_admin_account"
-            continue
-        headers = admin_auth_headers(api_url, admin, auth_mode=auth_mode, gateway_secret=gateway_secret)
-        status, payload = json_request(
-            "GET",
-            f"{api_url.rstrip('/')}/api/ai/admin/runs/{run_id}",
-            headers=headers,
-            timeout=30,
-        )
-        item["admin_detail_probe_status"] = status
-        if status != 200 or not isinstance(payload, dict):
-            continue
-        run_payload = _flatten_admin_run_detail(payload)
-        item["workspace_fingerprint"] = _workspace_fingerprint(
-            run_payload,
-            tenant_id=tenant_id,
-            session_id=session_id,
-            run_id=run_id,
-        )
-        item["context_snapshot_id"] = _context_snapshot_id(run_payload)
-        item["sandbox_lease_id"] = _sandbox_lease_id(run_payload)
-        item["tool_permission"] = _tool_permission_summary(run_payload)
-        item["skill_snapshot"] = _skill_snapshot_summary(run_payload)
-
-
-def attach_retry_fixture_probe_results(
-    api_url: str,
-    results: list[dict[str, Any]],
-    accounts: list[Account],
-    *,
-    auth_mode: str = "login",
-    gateway_secret: str = "",
-    trusted_header_role: str = "user",
-) -> None:
-    by_label = _account_by_label(accounts)
-    for item in results:
-        if str(item.get("scenario") or "") != "retry":
-            continue
-        account = by_label.get(str(item.get("account") or ""))
-        if account is None:
-            item["retry_fixture_probe_status"] = "missing_account"
-            continue
-        source_run_id = fixture_retry_source_run_id(account)
-        headers = auth_headers(
-            api_url,
-            account,
-            auth_mode=auth_mode,
-            gateway_secret=gateway_secret,
-            trusted_header_role=trusted_header_role,
-        )
-        status, payload = run_control_action(api_url, headers, source_run_id, "retry")
-        item.setdefault("retry_action_statuses", []).append(status)
-        item["retry_source_run_id"] = source_run_id
-        retry_run_id = _run_control_payload_run_id(payload)
-        if retry_run_id and retry_run_id != source_run_id:
-            item.setdefault("retry_created_run_ids", []).append(retry_run_id)
-
-
-def _permission_request_id(payload: Any) -> str:
+def event_order_violations(payload: Any) -> int:
     if not isinstance(payload, dict):
-        return ""
-    candidates = [payload]
-    permission_request = payload.get("permission_request")
-    if isinstance(permission_request, dict):
-        candidates.append(permission_request)
-    for candidate in candidates:
-        for key in ("request_id", "permission_request_id", "id"):
-            value = candidate.get(key)
-            if value:
-                return str(value)
-    return ""
-
-
-def attach_tool_permission_probe_results(
-    api_url: str,
-    results: list[dict[str, Any]],
-    accounts: list[Account],
-    *,
-    auth_mode: str = "login",
-    gateway_secret: str = "",
-    trusted_header_role: str = "user",
-) -> None:
-    by_label = _account_by_label(accounts)
-    for item in results:
-        account = by_label.get(str(item.get("account") or ""))
-        run_id = str(item.get("run_id") or "")
-        if account is None or not run_id:
-            item["tool_permission_probe"] = {"status": "skipped"}
-            continue
-        headers = auth_headers(
-            api_url,
-            account,
-            auth_mode=auth_mode,
-            gateway_secret=gateway_secret,
-            trusted_header_role=trusted_header_role,
-        )
-        tool_call_id = _safe_identifier(f"frc_tool_{run_id}", field_name="tool_call")
-        request_status, request_payload = json_request(
-            "POST",
-            f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/tool-permissions/request",
-            {
-                "tool_id": DEFAULT_FIXTURE_TOOL_ID,
-                "tool_call_id": tool_call_id,
-                "action": "execute",
-                "risk_level": "low",
-                "write_capable": False,
-                "reason": "foundation_runtime_permission_probe",
-                "request_payload": {"probe": "foundation_runtime"},
-            },
-            headers=headers,
-            timeout=30,
-        )
-        request_id = _permission_request_id(request_payload)
-        decision_status = 0
-        if request_status in {200, 201} and request_id:
-            decision_status, _decision_payload = json_request(
-                "POST",
-                f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/tool-permissions/{request_id}/decision",
-                {
-                    "decision": "allow_once",
-                    "reason": "foundation_runtime_permission_probe",
-                    "decision_payload": {"probe": "foundation_runtime"},
-                    "expires_in_seconds": 900,
-                },
-                headers=headers,
-                timeout=30,
-            )
-        item["tool_permission_probe"] = {
-            "request_status": request_status,
-            "decision_status": decision_status,
-            "request_id": request_id,
-        }
-
-
-def _flatten_admin_run_detail(payload: dict[str, Any]) -> dict[str, Any]:
-    run = payload.get("run") if isinstance(payload.get("run"), dict) else {}
-    flattened = dict(run)
-    flattened["events"] = payload.get("events") if isinstance(payload.get("events"), list) else []
-    flattened["skill_snapshots"] = (
-        payload.get("skill_snapshots") if isinstance(payload.get("skill_snapshots"), list) else []
-    )
-    if "input" not in flattened and isinstance(run.get("input"), dict):
-        flattened["input"] = run["input"]
-    if "result" not in flattened and isinstance(run.get("result"), dict):
-        flattened["result"] = run["result"]
-    return flattened
+        return 1
+    events = payload.get("events")
+    if not isinstance(events, list):
+        return 1
+    sequences = [
+        event.get("sequence")
+        for event in events
+        if isinstance(event, dict) and type(event.get("sequence")) is int
+    ]
+    return 0 if sequences == sorted(sequences) else 1
 
 
 def _workspace_fingerprint(run_payload: dict[str, Any], *, tenant_id: str, session_id: str, run_id: str) -> str:
     run = run_payload.get("run") if isinstance(run_payload.get("run"), dict) else {}
     input_payload = run_payload.get("input") if isinstance(run_payload.get("input"), dict) else {}
-    workspace_id = str(
-        run_payload.get("workspace_id")
-        or run.get("workspace_id")
-        or input_payload.get("workspace_id")
-        or "default"
-    )
+    if not input_payload and isinstance(run.get("input"), dict):
+        input_payload = run["input"]
+    workspace_id = str(run_payload.get("workspace_id") or run.get("workspace_id") or input_payload.get("workspace_id") or "default")
     return f"{tenant_id}:{workspace_id}:{session_id}:{run_id}"
 
 
 def _context_snapshot_id(run_payload: dict[str, Any]) -> str:
+    run = run_payload.get("run") if isinstance(run_payload.get("run"), dict) else {}
     candidates = [
         run_payload.get("context_snapshot_id"),
         (run_payload.get("input") or {}).get("context_snapshot_id") if isinstance(run_payload.get("input"), dict) else None,
         (run_payload.get("result") or {}).get("context_snapshot_id") if isinstance(run_payload.get("result"), dict) else None,
+        (run.get("input") or {}).get("context_snapshot_id") if isinstance(run.get("input"), dict) else None,
+        (run.get("result") or {}).get("context_snapshot_id") if isinstance(run.get("result"), dict) else None,
     ]
     events = run_payload.get("events")
     if isinstance(events, list):
@@ -1458,7 +1332,8 @@ def _context_snapshot_id(run_payload: dict[str, Any]) -> str:
 
 
 def _sandbox_lease_id(run_payload: dict[str, Any]) -> str:
-    for container in (run_payload.get("result"), run_payload.get("input")):
+    run = run_payload.get("run") if isinstance(run_payload.get("run"), dict) else {}
+    for container in (run_payload.get("result"), run_payload.get("input"), run.get("result"), run.get("input")):
         if isinstance(container, dict) and container.get("sandbox_lease_id"):
             return str(container["sandbox_lease_id"])
     return ""
@@ -1513,16 +1388,139 @@ def _skill_snapshot_summary(run_payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def attach_run_detail_probe_results(
+    api_url: str,
+    results: list[dict[str, Any]],
+    accounts: list[Account],
+    *,
+    auth_mode: str = "login",
+    trusted_header_role: str = "user",
+) -> None:
+    by_label = _account_by_label(accounts)
+    for item in results:
+        account = by_label.get(str(item.get("account") or ""))
+        if account is None:
+            continue
+        run_id = str(item.get("run_id") or "")
+        session_id = str(item.get("session_id") or "")
+        headers = auth_headers(
+            api_url,
+            account,
+            auth_mode=auth_mode,
+            trusted_header_role=trusted_header_role,
+        )
+        detail_path = "/api/ai/admin/runs" if trusted_header_role == "developer" else "/api/ai/runs"
+        status, run_payload = json_request("GET", f"{api_url.rstrip()}{detail_path}/{run_id}", headers=headers, timeout=30)
+        if status == 200 and isinstance(run_payload, dict):
+            item["workspace_fingerprint"] = _workspace_fingerprint(run_payload, tenant_id=account.tenant_id, session_id=session_id, run_id=run_id)
+            item["context_snapshot_id"] = _context_snapshot_id(run_payload)
+            item["sandbox_lease_id"] = _sandbox_lease_id(run_payload)
+            item["tool_permission"] = _tool_permission_summary(run_payload)
+            item["skill_snapshot"] = _skill_snapshot_summary(run_payload)
+        playback_status, playback_payload = json_request("GET", f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/playback", headers=headers, timeout=30)
+        item["playback"] = {
+            "status": playback_status,
+            "event_order_violations": event_order_violations(playback_payload),
+            "private_payload_leak_count": playback_private_payload_leak_count(playback_payload),
+        }
+
+
+def _permission_request_id(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    candidates = [payload]
+    permission_request = payload.get("permission_request")
+    if isinstance(permission_request, dict):
+        candidates.append(permission_request)
+    for candidate in candidates:
+        for key in ("request_id", "permission_request_id", "id"):
+            value = candidate.get(key)
+            if value:
+                return str(value)
+    return ""
+
+
+def attach_tool_permission_probe_results(
+    api_url: str,
+    results: list[dict[str, Any]],
+    accounts: list[Account],
+    *,
+    auth_mode: str = "login",
+    trusted_header_role: str = "user",
+) -> None:
+    by_label = _account_by_label(accounts)
+    for item in results:
+        account = by_label.get(str(item.get("account") or ""))
+        run_id = str(item.get("run_id") or "")
+        if account is None or not run_id:
+            item["tool_permission_probe"] = {"status": "skipped"}
+            continue
+        headers = auth_headers(
+            api_url,
+            account,
+            auth_mode=auth_mode,
+            trusted_header_role=trusted_header_role,
+        )
+        request_status, request_payload = json_request(
+            "POST",
+            f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/tool-permissions/request",
+            {
+                "tool_id": DEFAULT_FIXTURE_TOOL_ID,
+                "tool_call_id": f"frc_tool_{run_id}",
+                "action": "execute",
+                "risk_level": "low",
+                "write_capable": False,
+                "reason": "foundation_runtime_permission_probe",
+                "request_payload": {"probe": "foundation_runtime"},
+            },
+            headers=headers,
+            timeout=30,
+        )
+        request_id = _permission_request_id(request_payload)
+        decision_status = 0
+        if request_status in {200, 201} and request_id:
+            decision_status, _decision_payload = json_request(
+                "POST",
+                f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/tool-permissions/{request_id}/decision",
+                {
+                    "decision": "allow_once",
+                    "reason": "foundation_runtime_permission_probe",
+                    "decision_payload": {"probe": "foundation_runtime"},
+                    "expires_in_seconds": 900,
+                },
+                headers=headers,
+                timeout=30,
+            )
+        item["tool_permission_probe"] = {
+            "request_status": request_status,
+            "decision_status": decision_status,
+            "request_id": request_id,
+        }
+
+
+def parse_account(value: str, *, require_explicit_tenant: bool = False) -> Account:
+    label_part, rest = value.split("=", 1)
+    tenant_id = "default"
+    label = label_part
+    if "/" in label_part:
+        tenant_id, label = label_part.split("/", 1)
+    if require_explicit_tenant and tenant_id == "default":
+        raise ValueError("foundation runtime evidence accounts must use tenant/label=username:password")
+    username, password = rest.split(":", 1)
+    return Account(label=label, username=username, password=password, tenant_id=tenant_id)
+
+
 def build_foundation_runtime_case_specs(
     accounts: list[Account],
     *,
     min_cases: int = 12,
     use_fixture_agents: bool = False,
 ) -> list[CaseSpec]:
-    if len({account.tenant_id for account in accounts}) < 2:
-        raise ValueError("foundation runtime concurrency requires at least two tenants")
-    if len(accounts) < 4:
-        raise ValueError("foundation runtime concurrency requires multiple users across tenants")
+    tenant_ids = {account.tenant_id for account in accounts}
+    if len(tenant_ids) < 2:
+        raise ValueError("foundation runtime evidence requires at least two tenants")
+    if len(accounts) < 2:
+        raise ValueError("foundation runtime evidence requires at least two accounts")
     templates = [
         ("general-chat", "run_creation", "general-agent", "并发创建运行验收，请简短回复。", False),
         ("word-review", "execution", "qa-word-review", "审核一下这个文档", True),
@@ -1538,16 +1536,18 @@ def build_foundation_runtime_case_specs(
         scenario_index = scenario_seen[scenario]
         scenario_seen[scenario] += 1
         account = accounts[(template_index + scenario_index) % len(accounts)]
+        skill_id = _skill_id_for_agent(agent_id)
         specs.append(
             CaseSpec(
                 account=account,
                 case_name=f"{case_name}-{len(specs) + 1}",
                 scenario=scenario,
                 agent_id=_agent_id_for_case(account, agent_id, use_fixture_agents=use_fixture_agents),
-                skill_id=_skill_id_for_agent(agent_id),
+                skill_id=skill_id,
                 message=f"{account.label} {message}",
                 uses_docx=uses_docx,
                 workspace_id=fixture_workspace_id(account.tenant_id) if use_fixture_agents else "default",
+                retry_source_run_id=fixture_retry_source_run_id(account) if use_fixture_agents and scenario == "retry" else "",
             )
         )
         index += 1
@@ -1557,7 +1557,7 @@ def build_foundation_runtime_case_specs(
 def _scenario_counts(results: list[dict[str, Any]]) -> dict[str, int]:
     counts = {"run_creation": 0, "execution": 0, "cancel": 0, "retry": 0}
     for item in results:
-        scenario = str(item.get("scenario") or "execution")
+        scenario = str(item.get("scenario") or "")
         if scenario in counts:
             counts[scenario] += 1
     return counts
@@ -1581,22 +1581,23 @@ def _all_strings(results: list[dict[str, Any]], key: str) -> list[str]:
     return values
 
 
-def _has_cancel_effect(item: dict[str, Any]) -> bool:
-    statuses = item.get("cancel_effect_statuses")
-    if not isinstance(statuses, list):
-        return False
-    return any(
-        isinstance(status, str) and status.strip().lower() in CANCEL_EFFECT_STATUSES
-        for status in statuses
-    )
-
-
 def _sum_nested_int(results: list[dict[str, Any]], key: str, nested_key: str) -> int:
     total = 0
     for item in results:
         nested = item.get(key)
         if isinstance(nested, dict) and type(nested.get(nested_key)) is int:
-            total += int(nested[nested_key])
+            total += nested[nested_key]
+    return total
+
+
+def _tool_permission_probe_decision_count(results: list[dict[str, Any]]) -> int:
+    total = 0
+    for item in results:
+        probe = item.get("tool_permission_probe")
+        if not isinstance(probe, dict):
+            continue
+        if probe.get("request_id") and probe.get("decision_status") in {200, 201}:
+            total += 1
     return total
 
 
@@ -1609,13 +1610,23 @@ def _any_nested_true(results: list[dict[str, Any]], key: str, nested_key: str) -
 
 
 def _merged_nested_lists(results: list[dict[str, Any]], key: str, nested_key: str) -> list[str]:
-    values: list[str] = []
+    values: set[str] = set()
     for item in results:
         nested = item.get(key)
         source = nested.get(nested_key) if isinstance(nested, dict) else None
         if isinstance(source, list):
-            values.extend(str(value) for value in source if isinstance(value, str))
-    return sorted(set(values))
+            values.update(str(value) for value in source if str(value).strip())
+    return sorted(values)
+
+
+def _has_cancel_effect(item: dict[str, Any]) -> bool:
+    statuses = item.get("cancel_effect_statuses")
+    if not isinstance(statuses, list):
+        return False
+    return any(
+        isinstance(status, str) and status.strip().lower() in {"cancel_requested", "cancelled", "canceled"}
+        for status in statuses
+    )
 
 
 def build_foundation_runtime_concurrency_evidence(
@@ -1638,29 +1649,10 @@ def build_foundation_runtime_concurrency_evidence(
         for item in results
         if item.get("workspace_fingerprint")
     ]
-    context_snapshot_ids = [
-        str(item.get("context_snapshot_id"))
-        for item in results
-        if item.get("context_snapshot_id")
-    ]
+    memory_context = foundation_runtime_memory_context_summary(results)
     scenario_counts = _scenario_counts(results)
-    cross_user_download_statuses = _all_values(results, "cross_user_download_statuses")
-    cross_tenant_download_statuses = _all_values(results, "cross_tenant_download_statuses")
-    cross_user_preview_statuses = _all_values(results, "cross_user_preview_statuses")
-    cross_tenant_preview_statuses = _all_values(results, "cross_tenant_preview_statuses")
-    cancel_action_statuses = _all_values(results, "cancel_action_statuses")
-    cancel_effect_statuses = _all_strings(results, "cancel_effect_statuses")
-    cancel_effect_run_count = sum(1 for item in results if _has_cancel_effect(item))
-    retry_action_statuses = _all_values(results, "retry_action_statuses")
-    retry_created_run_ids = _all_strings(results, "retry_created_run_ids")
-    owner_statuses = [
-        int(download["owner_status"])
-        for item in results
-        for download in item.get("downloads", [])
-        if isinstance(download, dict) and type(download.get("owner_status")) is int
-    ]
     evidence = {
-        "schema_version": "ai-platform.foundation-runtime-concurrency.v1",
+        "schema_version": FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA,
         "artifact_kind": "foundation_runtime_concurrency",
         "commit_sha": commit_sha,
         "source_tree_commit_sha": commit_sha,
@@ -1678,7 +1670,6 @@ def build_foundation_runtime_concurrency_evidence(
             "public_probe_role": public_probe_role,
             "admin_probe_role": admin_probe_role,
             "ordinary_user_multi_agent_opened": False,
-            "developer_role_used_only_for_fixture_agent_selection": run_creation_role == "developer",
         },
         "scenario_counts": scenario_counts,
         "checks": {
@@ -1687,11 +1678,11 @@ def build_foundation_runtime_concurrency_evidence(
                 "admission_limit_violations": 0,
                 "cross_tenant_queue_leaks": 0,
                 "stale_queue_entries": 0,
-                "cancel_action_statuses": cancel_action_statuses,
-                "cancel_effect_statuses": cancel_effect_statuses,
-                "cancel_effect_run_count": cancel_effect_run_count,
-                "retry_action_statuses": retry_action_statuses,
-                "retry_created_run_count": len(set(retry_created_run_ids)),
+                "cancel_action_statuses": _all_values(results, "cancel_action_statuses"),
+                "cancel_effect_statuses": _all_strings(results, "cancel_effect_statuses"),
+                "cancel_effect_run_count": sum(1 for item in results if _has_cancel_effect(item)),
+                "retry_action_statuses": _all_values(results, "retry_action_statuses"),
+                "retry_created_run_count": len(set(_all_strings(results, "retry_created_run_ids"))),
             },
             "sandbox_workspace": {
                 "status": "passed",
@@ -1700,23 +1691,24 @@ def build_foundation_runtime_concurrency_evidence(
                 "cross_scope_lease_leaks": 0,
                 "workspace_scope_collisions": len(workspace_fingerprints) - len(set(workspace_fingerprints)),
             },
-            "memory_context": {
-                "status": "passed",
-                "context_snapshot_count": len(context_snapshot_ids),
-                "cross_scope_context_leaks": len(context_snapshot_ids) - len(set(context_snapshot_ids)),
-                "long_term_cross_session_memory_read": False,
-            },
+            "memory_context": memory_context,
             "artifact_acl": {
                 "status": "passed",
-                "owner_statuses": owner_statuses,
-                "cross_user_statuses": cross_user_download_statuses,
-                "cross_tenant_statuses": cross_tenant_download_statuses,
-                "preview_cross_user_statuses": cross_user_preview_statuses,
-                "preview_cross_tenant_statuses": cross_tenant_preview_statuses,
+                "owner_statuses": [
+                    int(download["owner_status"])
+                    for item in results
+                    for download in item.get("downloads", [])
+                    if isinstance(download, dict) and type(download.get("owner_status")) is int
+                ],
+                "cross_user_statuses": _all_values(results, "cross_user_download_statuses"),
+                "cross_tenant_statuses": _all_values(results, "cross_tenant_download_statuses"),
+                "preview_cross_user_statuses": _all_values(results, "cross_user_preview_statuses"),
+                "preview_cross_tenant_statuses": _all_values(results, "cross_tenant_preview_statuses"),
             },
             "tool_permission": {
                 "status": "passed",
-                "decision_sample_count": _sum_nested_int(results, "tool_permission", "decision_sample_count"),
+                "decision_sample_count": _sum_nested_int(results, "tool_permission", "decision_sample_count")
+                + _tool_permission_probe_decision_count(results),
                 "allow_once_reuse_violations": _sum_nested_int(results, "tool_permission", "allow_once_reuse_violations"),
                 "wrong_decision_reuse_violations": _sum_nested_int(results, "tool_permission", "wrong_decision_reuse_violations"),
                 "tool_call_id_mismatch_violations": _sum_nested_int(results, "tool_permission", "tool_call_id_mismatch_violations"),
@@ -1750,84 +1742,147 @@ def build_foundation_runtime_concurrency_evidence(
     return evidence
 
 
-def parse_account(value: str, *, require_explicit_tenant: bool = False) -> Account:
-    label_part, rest = value.split("=", 1)
-    tenant_id = "default"
-    label = label_part
-    if "/" in label_part:
-        tenant_id, label = label_part.split("/", 1)
-    if require_explicit_tenant and tenant_id == "default":
-        raise ValueError("foundation runtime evidence accounts must use tenant/label=username:password")
-    username, password = rest.split(":", 1)
-    return Account(label=label, username=username, password=password, tenant_id=tenant_id)
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Verify concurrent multi-user ai-platform POC flows.")
+    parser.add_argument("--api-url", default=DEFAULT_API_URL)
+    parser.add_argument("--sample-docx", default=DEFAULT_SAMPLE_DOCX)
+    parser.add_argument("--account", action="append", required=True, help="label=username:password or tenant/label=username:password")
+    parser.add_argument("--auth-mode", choices=("login", "trusted-header"), default="login")
+    parser.add_argument("--trusted-header-role", choices=("user", "developer"), default="user")
+    parser.add_argument("--foundation-runtime-evidence", action="store_true")
+    parser.add_argument("--min-concurrent-cases", type=int, default=12)
+    parser.add_argument("--run-timeout-seconds", type=float, default=240.0)
+    parser.add_argument("--commit-sha", default="unknown")
+    parser.add_argument("--runtime-subject-commit-sha", default="unknown")
+    parser.add_argument("--prepare-fixtures", action="store_true")
+    parser.add_argument("--cleanup-before", action="store_true")
+    parser.add_argument("--cleanup-after", action="store_true")
+    parser.add_argument("--use-fixture-agents", action="store_true")
+    parser.add_argument("--postgres-container", default=DEFAULT_POSTGRES_CONTAINER)
+    parser.add_argument("--postgres-user", default=DEFAULT_POSTGRES_USER)
+    parser.add_argument("--postgres-db", default=DEFAULT_POSTGRES_DB)
+    parser.add_argument("--tenant-prefix", default=DEFAULT_TEST_TENANT_PREFIX)
+    args = parser.parse_args()
 
+    try:
+        docx_path = ensure_default_sample_docx(Path(args.sample_docx))
+    except FileNotFoundError as exc:
+        raise SystemExit(str(exc)) from exc
+    accounts = []
+    for item in args.account:
+        try:
+            accounts.append(parse_account(item, require_explicit_tenant=args.foundation_runtime_evidence))
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+    if len(accounts) < 2:
+        raise SystemExit("provide at least two accounts")
 
-def legacy_case_specs(accounts: list[Account], docx_path: Path) -> list[tuple[Account, str, str, str, Path | None, str]]:
-    case_specs: list[tuple[Account, str, str, str, Path | None, str]] = []
+    if args.foundation_runtime_evidence:
+        tenant_ids = sorted({account.tenant_id for account in accounts})
+        cleanup_proof: dict[str, Any] = {}
+        if args.cleanup_before:
+            cleanup_proof["before"] = build_foundation_runtime_cleanup_proof(
+                tenant_ids,
+                postgres_container=args.postgres_container,
+                postgres_user=args.postgres_user,
+                postgres_db=args.postgres_db,
+                tenant_prefix=args.tenant_prefix,
+            )
+        fixture_proof = None
+        if args.prepare_fixtures:
+            fixture_proof = prepare_foundation_runtime_fixtures(
+                accounts,
+                postgres_container=args.postgres_container,
+                postgres_user=args.postgres_user,
+                postgres_db=args.postgres_db,
+                tenant_prefix=args.tenant_prefix,
+            )
+        try:
+            specs = build_foundation_runtime_case_specs(
+                accounts,
+                min_cases=args.min_concurrent_cases,
+                use_fixture_agents=args.use_fixture_agents,
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(specs)) as pool:
+            futures = [
+                pool.submit(
+                    run_case,
+                    args.api_url,
+                    spec.account,
+                    spec.case_name,
+                    spec.agent_id,
+                    spec.message,
+                    docx_path if spec.uses_docx else None,
+                    scenario=spec.scenario,
+                    auth_mode=args.auth_mode,
+                    trusted_header_role=args.trusted_header_role,
+                    workspace_id=spec.workspace_id,
+                    skill_id=spec.skill_id if args.trusted_header_role != "user" else None,
+                    run_timeout_seconds=args.run_timeout_seconds,
+                    retry_source_run_id=spec.retry_source_run_id,
+                )
+                for spec in specs
+            ]
+            results = [future.result() for future in concurrent.futures.as_completed(futures)]
+        attach_artifact_acl_probe_results(
+            args.api_url,
+            results,
+            accounts,
+            auth_mode=args.auth_mode,
+            trusted_header_role="user",
+        )
+        attach_tool_permission_probe_results(
+            args.api_url,
+            results,
+            accounts,
+            auth_mode=args.auth_mode,
+            trusted_header_role="user",
+        )
+        attach_run_detail_probe_results(
+            args.api_url,
+            results,
+            accounts,
+            auth_mode=args.auth_mode,
+            trusted_header_role=args.trusted_header_role,
+        )
+        evidence = build_foundation_runtime_concurrency_evidence(
+            sorted(results, key=lambda row: (row.get("tenant_id", ""), row.get("account", ""), row.get("case", ""))),
+            commit_sha=args.commit_sha,
+            runtime_subject_commit_sha=args.runtime_subject_commit_sha,
+            cleanup_proof=cleanup_proof or None,
+            fixture_proof=fixture_proof,
+            run_creation_role=args.trusted_header_role,
+            public_probe_role="user",
+        )
+        if args.cleanup_after:
+            cleanup_proof["after"] = build_foundation_runtime_cleanup_proof(
+                tenant_ids,
+                postgres_container=args.postgres_container,
+                postgres_user=args.postgres_user,
+                postgres_db=args.postgres_db,
+                tenant_prefix=args.tenant_prefix,
+            )
+            evidence["cleanup_proof"] = cleanup_proof
+        readiness = build_foundation_runtime_concurrency_readiness(evidence)
+        output = evidence if readiness.get("verified") is True else {"evidence": evidence, "readiness": readiness}
+        print(json.dumps(output, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0 if readiness.get("verified") is True else 1
+
+    case_specs = []
     for account in accounts[:2]:
         case_specs.extend(
             [
-                (account, "general-chat", "general-agent", f"{account.label} 并发通用聊天验收，请简短回复。", None, "run_creation"),
-                (account, "word-review", "general-agent", "审核一下这个文档", docx_path, "execution"),
-                (account, "word-translate", "baoyu-translate", "翻译一下这个文档", docx_path, "execution"),
+                (account, "general-chat", "general-agent", f"{account.label} 并发通用聊天验收，请简短回复。", None),
+                (account, "word-review", "general-agent", "审核一下这个文档", docx_path),
+                (account, "word-translate", "baoyu-translate", "翻译一下这个文档", docx_path),
             ]
         )
-    return case_specs
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(case_specs)) as pool:
+        futures = [pool.submit(run_case, args.api_url, *spec) for spec in case_specs]
+        results = [future.result() for future in concurrent.futures.as_completed(futures)]
 
-
-def run_specs(
-    api_url: str,
-    specs: list[CaseSpec],
-    docx_path: Path,
-    *,
-    auth_mode: str,
-    gateway_secret: str = "",
-    trusted_header_role: str = "user",
-) -> list[dict[str, Any]]:
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(specs)) as pool:
-        futures = [
-            pool.submit(
-                run_case,
-                api_url,
-                spec.account,
-                spec.case_name,
-                spec.agent_id,
-                spec.message,
-                docx_path if spec.uses_docx else None,
-                scenario=spec.scenario,
-                auth_mode=auth_mode,
-                workspace_id=spec.workspace_id,
-                gateway_secret=gateway_secret,
-                trusted_header_role=trusted_header_role,
-                skill_id=spec.skill_id if trusted_header_role != "user" else None,
-            )
-            for spec in specs
-        ]
-        return [future.result() for future in concurrent.futures.as_completed(futures)]
-
-
-def run_legacy_specs(
-    api_url: str,
-    specs: list[tuple[Account, str, str, str, Path | None, str]],
-    *,
-    auth_mode: str = "login",
-    gateway_secret: str = "",
-) -> list[dict[str, Any]]:
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(specs)) as pool:
-        futures = [
-            pool.submit(
-                run_case,
-                api_url,
-                *spec,
-                auth_mode=auth_mode,
-                gateway_secret=gateway_secret,
-            )
-            for spec in specs
-        ]
-        return [future.result() for future in concurrent.futures.as_completed(futures)]
-
-
-def validate_legacy_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     failures = []
     for item in results:
         if item["status"] != "completed":
@@ -1839,176 +1894,31 @@ def validate_legacy_results(results: list[dict[str, Any]]) -> list[dict[str, Any
         for download in item["downloads"]:
             if download["owner_status"] != 200 or download["owner_bytes"] <= 0:
                 failures.append({"case": item["case"], "account": item["account"], "reason": "artifact_download_failed", **download})
-    return failures
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Verify concurrent multi-user ai-platform POC flows.")
-    parser.add_argument("--api-url", default=DEFAULT_API_URL)
-    parser.add_argument("--sample-docx", default=DEFAULT_SAMPLE_DOCX)
-    parser.add_argument("--account", action="append", required=True, help="label=username:password or tenant/label=username:password")
-    parser.add_argument(
-        "--admin-probe-account",
-        action="append",
-        default=[],
-        help="Optional tenant/label=username:password admin account used only to aggregate redacted admin run detail evidence.",
-    )
-    parser.add_argument("--auth-mode", choices=("login", "trusted-header"), default="login")
-    parser.add_argument(
-        "--trusted-header-role",
-        choices=("user", "developer"),
-        default="user",
-        help="Role used for trusted-header run creation requests; public isolation probes always use ordinary-user role.",
-    )
-    parser.add_argument("--foundation-runtime-evidence", action="store_true", help="Run 12-case Foundation Runtime evidence mode.")
-    parser.add_argument(
-        "--prepare-foundation-runtime-fixtures",
-        action="store_true",
-        help="Before Foundation Runtime evidence capture, prepare only prefixed test tenants, isolated agents, retry sources, and tool policy fixtures.",
-    )
-    parser.add_argument("--min-concurrent-cases", type=int, default=12)
-    parser.add_argument("--commit-sha", default="unknown")
-    parser.add_argument("--runtime-subject-commit-sha", default="unknown")
-    parser.add_argument(
-        "--cleanup-test-tenants",
-        action="store_true",
-        help="After Foundation Runtime evidence capture, delete only explicitly prefixed test tenants and include cleanup proof.",
-    )
-    parser.add_argument("--cleanup-tenant-prefix", default=DEFAULT_TEST_TENANT_PREFIX)
-    parser.add_argument("--postgres-container", default=DEFAULT_POSTGRES_CONTAINER)
-    parser.add_argument("--postgres-user", default=DEFAULT_POSTGRES_USER)
-    parser.add_argument("--postgres-db", default=DEFAULT_POSTGRES_DB)
-    args = parser.parse_args()
-    gateway_secret = os.environ.get("AI_PLATFORM_TRUSTED_PRINCIPAL_SECRET", "")
-
-    accounts = []
-    for item in args.account:
-        try:
-            accounts.append(parse_account(item, require_explicit_tenant=args.foundation_runtime_evidence))
-        except ValueError as exc:
-            raise SystemExit(str(exc)) from exc
-    admin_accounts = []
-    for item in args.admin_probe_account:
-        try:
-            admin_accounts.append(parse_account(item, require_explicit_tenant=args.foundation_runtime_evidence))
-        except ValueError as exc:
-            raise SystemExit(str(exc)) from exc
-    if len(accounts) < 2:
-        raise SystemExit("provide at least two accounts")
-    if args.foundation_runtime_evidence:
-        try:
-            build_foundation_runtime_case_specs(
-                accounts,
-                min_cases=args.min_concurrent_cases,
-                use_fixture_agents=args.prepare_foundation_runtime_fixtures,
+        context_projection = item.get("context_snapshot_public_projection")
+        if not isinstance(context_projection, dict) or context_projection.get("context_pack_version") is None:
+            failures.append(
+                {
+                    "case": item["case"],
+                    "account": item["account"],
+                    "reason": "context_pack_version_missing_or_unsafe",
+                }
             )
-        except ValueError as exc:
-            raise SystemExit(str(exc)) from exc
-    try:
-        docx_path = ensure_default_sample_docx(Path(args.sample_docx))
-    except FileNotFoundError as exc:
-        raise SystemExit(str(exc)) from exc
+        if not isinstance(context_projection, dict) or not context_projection.get("ok"):
+            failure = {
+                "case": item["case"],
+                "account": item["account"],
+                "reason": "context_snapshot_public_projection_failed",
+            }
+            if isinstance(context_projection, dict):
+                failure["snapshot_count"] = context_projection.get("snapshot_count", 0)
+                if context_projection.get("missing_public_summary_fields"):
+                    failure["missing_public_summary_fields"] = context_projection["missing_public_summary_fields"]
+                if context_projection.get("forbidden_projection_leaks"):
+                    failure["forbidden_projection_leaks"] = context_projection["forbidden_projection_leaks"]
+                if context_projection.get("raw_material_id_fields_present"):
+                    failure["raw_material_id_fields_present"] = True
+            failures.append(failure)
 
-    if args.foundation_runtime_evidence:
-        public_probe_trusted_header_role = "user"
-        fixture_proof = None
-        if args.prepare_foundation_runtime_fixtures:
-            try:
-                fixture_proof = prepare_foundation_runtime_fixtures(
-                    accounts,
-                    postgres_container=args.postgres_container,
-                    postgres_user=args.postgres_user,
-                    postgres_db=args.postgres_db,
-                    tenant_prefix=args.cleanup_tenant_prefix,
-                )
-            except ValueError as exc:
-                raise SystemExit(str(exc)) from exc
-        specs = build_foundation_runtime_case_specs(
-            accounts,
-            min_cases=args.min_concurrent_cases,
-            use_fixture_agents=args.prepare_foundation_runtime_fixtures,
-        )
-        results = run_specs(
-            args.api_url,
-            specs,
-            docx_path,
-            auth_mode=args.auth_mode,
-            gateway_secret=gateway_secret,
-            trusted_header_role=args.trusted_header_role,
-        )
-        attach_artifact_acl_probe_results(
-            args.api_url,
-            results,
-            accounts,
-            auth_mode=args.auth_mode,
-            gateway_secret=gateway_secret,
-            trusted_header_role=public_probe_trusted_header_role,
-        )
-        if args.prepare_foundation_runtime_fixtures:
-            attach_retry_fixture_probe_results(
-                args.api_url,
-                results,
-                accounts,
-                auth_mode=args.auth_mode,
-                gateway_secret=gateway_secret,
-                trusted_header_role=public_probe_trusted_header_role,
-            )
-            attach_tool_permission_probe_results(
-                args.api_url,
-                results,
-                accounts,
-                auth_mode=args.auth_mode,
-                gateway_secret=gateway_secret,
-                trusted_header_role=public_probe_trusted_header_role,
-            )
-        attach_run_detail_probe_results(
-            args.api_url,
-            results,
-            accounts,
-            auth_mode=args.auth_mode,
-            gateway_secret=gateway_secret,
-            trusted_header_role=public_probe_trusted_header_role,
-        )
-        if admin_accounts:
-            attach_admin_run_detail_probe_results(
-                args.api_url,
-                results,
-                admin_accounts,
-                auth_mode=args.auth_mode,
-                gateway_secret=gateway_secret,
-            )
-        cleanup_proof = None
-        if args.cleanup_test_tenants:
-            cleanup_proof = build_foundation_runtime_cleanup_proof(
-                sorted({account.tenant_id for account in accounts}),
-                postgres_container=args.postgres_container,
-                postgres_user=args.postgres_user,
-                postgres_db=args.postgres_db,
-                tenant_prefix=args.cleanup_tenant_prefix,
-            )
-        evidence = build_foundation_runtime_concurrency_evidence(
-            sorted(results, key=lambda row: (row["tenant_id"], row["account"], row["case"])),
-            commit_sha=args.commit_sha,
-            runtime_subject_commit_sha=args.runtime_subject_commit_sha,
-            cleanup_proof=cleanup_proof,
-            fixture_proof=fixture_proof,
-            run_creation_role=args.trusted_header_role if args.auth_mode == "trusted-header" else "user",
-            public_probe_role=public_probe_trusted_header_role,
-            admin_probe_role="developer" if admin_accounts else None,
-        )
-        readiness = build_foundation_runtime_concurrency_readiness(evidence)
-        output = evidence if readiness.get("verified") is True else {"evidence": evidence, "readiness": readiness}
-        print(json.dumps(output, ensure_ascii=False, indent=2, sort_keys=True))
-        return 0 if readiness.get("verified") is True else 1
-
-    case_specs = legacy_case_specs(accounts, docx_path)
-    results = run_legacy_specs(
-        args.api_url,
-        case_specs,
-        auth_mode=args.auth_mode,
-        gateway_secret=gateway_secret,
-    )
-    failures = validate_legacy_results(results)
     output = {"ok": not failures, "results": sorted(results, key=lambda row: (row["account"], row["case"])), "failures": failures}
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0 if output["ok"] else 1

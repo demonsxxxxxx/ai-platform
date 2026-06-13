@@ -1151,6 +1151,7 @@ async def test_worker_preserves_stored_safe_summary_metadata_when_payload_has_on
                 },
                 "execution_tier": "document_worker",
                 "latest_artifact_version": "v7",
+                "context_pack_version": "v9",
                 "context_pack_generated_at": "2026-06-12T01:23:45Z",
             },
             "created_at": None,
@@ -1189,6 +1190,7 @@ async def test_worker_preserves_stored_safe_summary_metadata_when_payload_has_on
     }
     assert captured["payload"].context_snapshot["execution_tier"] == "document_worker"
     assert captured["payload"].context_snapshot["latest_artifact_version"] == "v7"
+    assert captured["payload"].context_snapshot["context_pack_version"] == "v9"
     assert captured["payload"].context_snapshot["context_pack_generated_at"] == "2026-06-12T01:23:45Z"
     serialized = json.dumps(captured["payload"].context_snapshot, ensure_ascii=False).lower()
     assert "raw_storage_key" not in serialized

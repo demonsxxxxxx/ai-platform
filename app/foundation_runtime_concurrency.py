@@ -6,6 +6,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from tools.verify_poc_gate import CONTEXT_FORBIDDEN_PROJECTION_MARKERS
+
 
 FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA = "ai-platform.foundation-runtime-concurrency.v1"
 
@@ -36,18 +38,6 @@ _DEFAULT_INVARIANTS = {
 _DENIED_HTTP_STATUSES = {401, 403, 404}
 _SUCCESS_HTTP_STATUSES = {200, 202, 204, 409}
 _CANCEL_EFFECT_STATUSES = {"cancel_requested", "cancelled", "canceled"}
-_FORBIDDEN_OUTPUT_TERMS = (
-    "authorization",
-    "bearer ",
-    "database_url",
-    "executor_private_payload",
-    "raw_storage_key",
-    "redis_url",
-    "sandbox_workdir",
-    "secret",
-    "storage_key",
-    "token",
-)
 _REVISION_REF_RE = re.compile(r"^[0-9a-f]{40}(?:[-A-Za-z0-9_.:]*)?$")
 
 
@@ -214,6 +204,16 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
     memory_context = checks["memory_context"]
     if _safe_int(memory_context.get("context_snapshot_count")) < summary["run_count"]:
         failures.append("memory_context_snapshot_count_insufficient")
+    if _safe_int(memory_context.get("context_snapshot_public_projection_count")) < summary["run_count"]:
+        failures.append("memory_context_public_projection_count_insufficient")
+    if _safe_int(memory_context.get("context_pack_version_sample_count")) < summary["run_count"]:
+        failures.append("memory_context_pack_version_samples_insufficient")
+    if _safe_int(memory_context.get("missing_context_pack_version_count")) > 0:
+        failures.append("memory_context_pack_version_missing")
+    if _safe_int(memory_context.get("unsafe_context_pack_version_count")) > 0:
+        failures.append("memory_context_pack_version_unsafe")
+    if _safe_list(memory_context.get("missing_public_summary_fields")):
+        failures.append("memory_context_public_summary_fields_missing")
     if _safe_int(memory_context.get("cross_scope_context_leaks")) > 0:
         failures.append("memory_context_cross_scope_leak")
     if memory_context.get("long_term_cross_session_memory_read") is not False:
@@ -343,6 +343,7 @@ def render_foundation_runtime_concurrency_markdown(readiness: dict[str, Any]) ->
         f"- `{key}`: `{value}`" for key, value in sorted(invariants.items())
     )
     summary = readiness.get("summary") or {}
+    memory_context = (readiness.get("checks") or {}).get("memory_context") or {}
     return "\n".join(
         [
             "# Foundation Runtime Concurrency Readiness",
@@ -352,6 +353,7 @@ def render_foundation_runtime_concurrency_markdown(readiness: dict[str, Any]) ->
             f"- Tenants: `{summary.get('tenant_count', 0)}`",
             f"- Runs: `{summary.get('run_count', 0)}`",
             f"- Concurrent requests: `{summary.get('concurrent_request_count', 0)}`",
+            f"- Context pack version samples: `{memory_context.get('context_pack_version_sample_count', 0)}`",
             "",
             "## Non-Expansion Invariants",
             "",
@@ -367,4 +369,4 @@ def render_foundation_runtime_concurrency_markdown(readiness: dict[str, Any]) ->
 def output_contains_forbidden_terms(payload: dict[str, Any]) -> bool:
     """Return whether a readiness payload contains terms blocked from public evidence."""
     serialized = json.dumps(payload, ensure_ascii=False).lower()
-    return any(term in serialized for term in _FORBIDDEN_OUTPUT_TERMS)
+    return any(term in serialized for term in CONTEXT_FORBIDDEN_PROJECTION_MARKERS)

@@ -6,6 +6,7 @@ from app.context_builder import (
     ensure_public_context_provenance,
     initial_context_summary,
     public_context_payload,
+    public_context_provenance,
     record_initial_context_snapshot,
 )
 
@@ -249,12 +250,25 @@ def test_initial_context_summary_includes_public_context_provenance_contract():
     }
     assert summary["latest_artifact_version"] is None
     assert summary["execution_tier"] == "sdk_only_writing"
+    assert summary["context_pack_version"] == "v1"
     assert datetime.fromisoformat(summary["context_pack_generated_at"].replace("Z", "+00:00"))
     serialized = str(summary).lower()
     assert "msg-a" not in serialized
     assert "file-a" not in serialized
     assert "mem-a" not in serialized
     assert "private_payload" not in serialized
+
+
+def test_initial_context_summary_rejects_unsafe_context_pack_version():
+    summary = public_context_provenance(
+        source="runs_api",
+        input_payload={"message": "hello"},
+        context_pack_version="0123456789abcdef0123456789abcdef",
+    )
+
+    assert summary["context_pack_version"] == "v1"
+    serialized = str(summary).lower()
+    assert "0123456789abcdef0123456789abcdef" not in serialized
 
 
 def test_initial_context_summary_adds_attachment_signal_for_file_context():
@@ -293,6 +307,7 @@ def test_executor_context_pack_from_snapshot_returns_bounded_safe_prompt_contrac
             },
             "latest_artifact_version": "v2",
             "execution_tier": "document_worker",
+            "context_pack_version": "v8",
             "context_pack_generated_at": "2026-06-12T01:23:45Z",
             "raw_storage_key": "s3://private/object",
             "sandbox_workdir": "/tmp/private",
@@ -317,11 +332,12 @@ def test_executor_context_pack_from_snapshot_returns_bounded_safe_prompt_contrac
         },
         "latest_artifact_version": "v2",
         "execution_tier": "document_worker",
+        "context_pack_version": "v8",
         "context_pack_generated_at": "2026-06-12T01:23:45Z",
         "prompt_summary": (
             "Context pack: 3 message(s), 1 file(s), 2 artifact(s), "
             "0 long-term memory record(s). Inputs: attachments, message. "
-            "Execution tier: document_worker. Latest artifact version: v2."
+            "Execution tier: document_worker. Context pack version: v8. Latest artifact version: v2."
         ),
     }
     serialized = str(context_pack).lower()
@@ -350,6 +366,7 @@ def test_executor_context_pack_from_snapshot_defaults_for_missing_snapshot():
         "long_term_memory_read": False,
     }
     assert context_pack["execution_tier"] == "sdk_only_writing"
+    assert context_pack["context_pack_version"] == "v1"
     assert "0 long-term memory record(s)" in context_pack["prompt_summary"]
 
 
@@ -441,6 +458,7 @@ async def test_record_initial_context_snapshot_records_effective_memory_policy_w
     }
     assert context_ref["used_context_summary"]["source"] == "runs_api"
     assert context_ref["execution_tier"] == "sdk_only_writing"
+    assert context_ref["context_pack_version"] == "v1"
 
 
 def test_initial_context_summary_clamps_long_term_memory_policy_projection():

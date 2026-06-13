@@ -191,10 +191,6 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "issue -> PR -> review -> merge -> 211 deploy/smoke -> close issue" in gate_status_text
     assert "#17 frontend source migration" in gate_status_text
     assert "#21 capacity baseline" in gate_status_text
-    assert "Foundation Runtime concurrency evidence" in gate_status_text
-    assert "foundation_runtime_concurrency_evidence" in gate_status_text
-    assert "10+ concurrent" in gate_status_text
-    assert "does not raise production concurrency defaults" in gate_status_text
     assert "#21 is currently closed in GitHub" in gate_status_text
     assert "#21 remains open" not in gate_status_text
     assert "do_not_raise_without_recorded_load_test_evidence" in gate_status_text
@@ -352,12 +348,6 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert f"{ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID}.json" in release_evidence_index
-    assert "Foundation Runtime Concurrency" in release_evidence_index
-    assert "foundation-runtime-concurrency-evidence-211-20260614-013347.json" in release_evidence_index
-    assert "foundation-runtime-concurrency-readiness-211-20260614-013347.json" in release_evidence_index
-    assert "verified for 2 tenants, 4 users, and 12 concurrent" in release_evidence_index
-    assert "does not raise production concurrency defaults" in release_evidence_index
-    assert "open ordinary-user multi-agent" in release_evidence_index
     assert "2026-06-13-211-foundation-alpha-poc-cbbfaff-governance-runtime-smoke.json" in release_evidence_index
     assert "2026-06-13-211-foundation-alpha-poc-cbbfaff-frontend-packaged-runtime-smoke-blocked.json" in release_evidence_index
     assert "2026-06-12-211-foundation-alpha-poc-d4486eb-governance-runtime-smoke.json" in release_evidence_index
@@ -762,6 +752,20 @@ def test_capacity_docs_record_machine_readable_gate_evidence_contract():
         assert "C:\\Users" not in text
 
 
+def test_gate_status_records_foundation_runtime_concurrency_context_pack_blocker():
+    gate_status_text = read(GATE_STATUS_DOC)
+    roadmap_text = read(ROADMAP)
+
+    for text in (gate_status_text, roadmap_text):
+        assert "foundation_runtime_concurrency_evidence" in text
+        assert "ai-platform.foundation-runtime-concurrency.v1" in text
+        assert "context_pack_version" in text
+        assert "10+ concurrent" in text
+        assert "ordinary-user multi-agent" in text
+        assert "production concurrency" in text
+        assert "C:\\Users" not in text
+
+
 def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
     capacity_text = read(CAPACITY_BASELINE_DOC)
 
@@ -895,6 +899,27 @@ def test_governance_docs_record_skill_dependency_review_policy_without_closing_g
         assert "raw_storage_key" not in text
         assert "sandbox_workdir" not in text
         assert "C:\\Users" not in text
+
+
+def test_office_context_docs_track_source_level_context_pack_versioning_without_gate_closure():
+    governance_text = read(GOVERNANCE_READINESS_DOC)
+    roadmap_text = read(ROADMAP)
+    gate_status_text = read(GATE_STATUS_DOC)
+
+    for text in (governance_text, roadmap_text, gate_status_text):
+        assert "source-level context-pack persistence/versioning" in text
+        assert "source_level_context_pack_persistence_and_versioning" in text
+        assert "context_pack_version" in text
+        assert "context_pack_generated_at" in text
+        assert "211 executor context-pack acceptance" in text
+        assert "frontend context provenance acceptance" in text
+        assert "long-term cross-session memory" in text
+        assert "ordinary-user G8/G10 exposure" in text
+        assert "C:\\Users" not in text
+
+    for text in (governance_text, gate_status_text):
+        assert "Context-pack persistence/versioning, 211 executor" not in text
+        assert "context-pack persistence/executor injection/frontend provenance acceptance" not in text
 
 
 def test_frontend_docs_record_packaged_runtime_smoke_contract_and_211_blocker():

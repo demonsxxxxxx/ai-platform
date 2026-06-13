@@ -738,6 +738,7 @@ def _context_snapshot_ref_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "used_context_summary": public_payload["used_context_summary"],
         "latest_artifact_version": public_payload["latest_artifact_version"],
         "execution_tier": public_payload["execution_tier"],
+        "context_pack_version": public_payload["context_pack_version"],
         "context_pack_generated_at": public_payload["context_pack_generated_at"],
     }
     memory_policy = _safe_context_memory_policy(payload.get("memory_policy"))

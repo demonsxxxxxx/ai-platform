@@ -6,7 +6,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from app.public_context_keys import public_context_input_key_findings
+from app.foundation_runtime_concurrency import build_foundation_runtime_concurrency_readiness
+from app.public_context_keys import public_context_input_key_findings, safe_public_context_pack_version
 
 
 SCHEMA_VERSION = "ai-platform.foundation-alpha-poc-readiness.v1"
@@ -33,13 +34,10 @@ _RUNTIME_NEUTRAL_EXACT_PATHS = {
     "AGENTS.md",
     "app/capacity_bounded_load_harness.py",
     "app/foundation_alpha_readiness.py",
-    "app/foundation_runtime_concurrency.py",
     "tools/foundation_alpha_readiness.py",
-    "tools/foundation_runtime_concurrency.py",
     "tools/frontend_release_traceability.py",
     "tools/verify_auth_rbac_smoke.py",
     "tools/verify_governance_runtime_smoke.py",
-    "tools/verify_multiuser_poc.py",
     "tests/test_source_authority_docs.py",
 }
 
@@ -49,6 +47,7 @@ _OPEN_FOLLOWUPS = [
     "broader_auth_session_rbac_tenant_redaction_regression",
 ]
 _FOUNDATION_ALPHA_STAGE_BLOCKER_ORDER = [
+    "foundation_runtime_concurrency_evidence",
     "runtime_admin_dashboard_acceptance_for_governance",
     "g9_runtime_export_and_retention_acceptance",
     "alert_delivery_and_trace_export_211_acceptance",
@@ -626,6 +625,75 @@ def _discover_frontend_packaged_runtime_smoke_evidence(commit_sha: str) -> Path 
     return None
 
 
+def _discover_foundation_runtime_concurrency_evidence(commit_sha: str) -> Path | None:
+    entries: list[tuple[Path, dict[str, Any]]] = []
+    roots = [
+        _FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT,
+        _EVIDENCE_BASE_ROOT / commit_sha,
+    ]
+    seen_roots: set[Path] = set()
+    for root in roots:
+        if root in seen_roots or not root.exists():
+            continue
+        seen_roots.add(root)
+        for path in sorted(root.rglob("*.json")):
+            try:
+                payload = _load_json(path)
+            except (OSError, json.JSONDecodeError):
+                continue
+            runtime_subject = str(payload.get("runtime_subject_commit_sha") or "")
+            source_tree = str(payload.get("source_tree_commit_sha") or "")
+            if (
+                payload.get("schema_version") == "ai-platform.foundation-runtime-concurrency.v1"
+                and payload.get("artifact_kind") == "foundation_runtime_concurrency"
+                and (runtime_subject.startswith(commit_sha) or source_tree.startswith(commit_sha))
+                and build_foundation_runtime_concurrency_readiness(payload).get("verified") is True
+            ):
+                entries.append((path, payload))
+
+    if entries:
+        path, _ = max(entries, key=lambda item: _release_evidence_sort_key(item[0], item[1]))
+        return path
+    return None
+
+
+def _iter_foundation_runtime_concurrency_evidence() -> list[tuple[Path, dict[str, Any]]]:
+    entries: list[tuple[Path, dict[str, Any]]] = []
+    roots = [
+        _FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT,
+        _EVIDENCE_BASE_ROOT,
+    ]
+    seen_roots: set[Path] = set()
+    for root in roots:
+        if root in seen_roots or not root.exists():
+            continue
+        seen_roots.add(root)
+        for path in sorted(root.rglob("*.json")):
+            try:
+                payload = _load_json(path)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if (
+                payload.get("schema_version") == "ai-platform.foundation-runtime-concurrency.v1"
+                and payload.get("artifact_kind") == "foundation_runtime_concurrency"
+            ):
+                entries.append((path, payload))
+    return entries
+
+
+def _discover_latest_verified_foundation_runtime_concurrency_evidence() -> Path | None:
+    entries: list[tuple[Path, dict[str, Any]]] = []
+    for path, payload in _iter_foundation_runtime_concurrency_evidence():
+        readiness = build_foundation_runtime_concurrency_readiness(payload)
+        if readiness.get("verified") is True:
+            entries.append((path, payload))
+
+    if entries:
+        path, _ = max(entries, key=lambda item: _release_evidence_sort_key(item[0], item[1]))
+        return path
+    return None
+
+
 def _resolve_release_evidence_paths(source_tree_commit: str) -> tuple[Path, Path]:
     if source_tree_commit != "unknown":
         current_pair = _discover_release_evidence_pair(source_tree_commit)
@@ -712,6 +780,23 @@ def _verified_runtime_subject(smoke: dict[str, Any], evidence_scope: str) -> dic
 
 def _safe_runtime_check(value: Any) -> dict[str, Any]:
     return deepcopy(value) if isinstance(value, dict) else {}
+
+
+def _foundation_runtime_concurrency_evidence_subject(payload: dict[str, Any] | None) -> dict[str, str | None]:
+    payload = payload if isinstance(payload, dict) else {}
+    return {
+        "commit_sha": payload.get("commit_sha") if isinstance(payload.get("commit_sha"), str) else None,
+        "source_tree_commit_sha": (
+            payload.get("source_tree_commit_sha")
+            if isinstance(payload.get("source_tree_commit_sha"), str)
+            else None
+        ),
+        "runtime_subject_commit_sha": (
+            payload.get("runtime_subject_commit_sha")
+            if isinstance(payload.get("runtime_subject_commit_sha"), str)
+            else None
+        ),
+    }
 
 
 def _status_values_from_check(check: dict[str, Any], summary_key: str, result_key: str) -> list[int]:
@@ -1107,8 +1192,10 @@ def _context_projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any
             "memory_policy_source": None,
             "long_term_memory_read": None,
             "execution_tier": None,
+            "context_pack_version": None,
             "context_pack_generated_at_present": False,
             "missing_public_summary_fields": [
+                "context_pack_version",
                 "context_pack_generated_at",
                 "execution_tier",
                 "input_keys",
@@ -1130,6 +1217,7 @@ def _context_projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any
         projection.get("long_term_memory_read") if isinstance(projection.get("long_term_memory_read"), bool) else None
     )
     execution_tier = projection.get("execution_tier") if isinstance(projection.get("execution_tier"), str) else None
+    context_pack_version = safe_public_context_pack_version(projection.get("context_pack_version"))
     generated_at_present = bool(projection.get("context_pack_generated_at_present"))
     missing_public_summary_fields: list[str] = []
     if not summary_source:
@@ -1165,6 +1253,8 @@ def _context_projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any
         missing_public_summary_fields.append("long_term_memory_read")
     if not execution_tier:
         missing_public_summary_fields.append("execution_tier")
+    if context_pack_version is None:
+        missing_public_summary_fields.append("context_pack_version")
     if not generated_at_present:
         missing_public_summary_fields.append("context_pack_generated_at")
     reported_missing = projection.get("missing_public_summary_fields")
@@ -1191,6 +1281,7 @@ def _context_projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any
         "memory_policy_source": memory_policy_source,
         "long_term_memory_read": long_term_memory_read,
         "execution_tier": execution_tier,
+        "context_pack_version": context_pack_version,
         "context_pack_generated_at_present": generated_at_present,
         "missing_public_summary_fields": missing_public_summary_fields,
     }
@@ -1457,6 +1548,8 @@ def _operator_context(
         for item in next_recommended_slices
         if item not in _FOUNDATION_ALPHA_NON_STAGE_FOLLOWUPS
     ]
+    if stage_acceptance_status == "runtime_rollout_required":
+        next_recommended_slices = ["runtime_rollout_required_for_current_source"]
     for blocker in reversed(stage_acceptance_blockers or []):
         if blocker not in next_recommended_slices:
             next_recommended_slices.insert(0, blocker)
@@ -1586,27 +1679,6 @@ def _build_observability_summary(
         "admin_runtime_projection": observability["admin_runtime_projection"],
         "open_gap_count": len(observability["open_gaps"]),
     }
-
-
-def _build_foundation_runtime_concurrency_summary() -> dict[str, Any]:
-    from app.foundation_runtime_concurrency import (
-        build_foundation_runtime_concurrency_readiness,
-        load_foundation_runtime_concurrency_evidence,
-    )
-
-    candidates: list[tuple[tuple[str, str], Path, dict[str, Any]]] = []
-    if _FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT.is_dir():
-        for path in sorted(_FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT.glob("*/*.json")):
-            if "readiness" in path.name:
-                continue
-            evidence = load_foundation_runtime_concurrency_evidence(path)
-            if evidence is None:
-                continue
-            candidates.append(((str(evidence.get("captured_at") or ""), path.name), path, evidence))
-    if not candidates:
-        return build_foundation_runtime_concurrency_readiness()
-    _, _path, evidence = max(candidates, key=lambda item: item[0])
-    return build_foundation_runtime_concurrency_readiness(evidence)
 
 
 def _governance_runtime_smoke_summary(payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -1821,6 +1893,28 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         frontend_packaged_runtime_smoke_payload
     )
     frontend_packaged_runtime_smoke_verified = frontend_packaged_runtime_smoke["verified"] is True
+    foundation_runtime_concurrency_evidence_path = None
+    if source_tree_commit != "unknown":
+        foundation_runtime_concurrency_evidence_path = _discover_foundation_runtime_concurrency_evidence(
+            source_tree_commit
+        )
+    if foundation_runtime_concurrency_evidence_path is None:
+        foundation_runtime_concurrency_evidence_path = _discover_foundation_runtime_concurrency_evidence(
+            runtime_subject_commit
+        )
+    if foundation_runtime_concurrency_evidence_path is None:
+        foundation_runtime_concurrency_evidence_path = (
+            _discover_latest_verified_foundation_runtime_concurrency_evidence()
+        )
+    foundation_runtime_concurrency_payload = (
+        _load_json(foundation_runtime_concurrency_evidence_path)
+        if foundation_runtime_concurrency_evidence_path is not None
+        else None
+    )
+    foundation_runtime_concurrency = build_foundation_runtime_concurrency_readiness(
+        foundation_runtime_concurrency_payload
+    )
+    foundation_runtime_concurrency_verified = foundation_runtime_concurrency.get("verified") is True
     try:
         governance_summary = _build_governance_summary(settings)
     except ModuleNotFoundError as exc:
@@ -1869,8 +1963,6 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     )
     governed_skill_runs_summary = _governed_skill_runs_summary(smoke_checks)
     governed_skill_runs_verified = governed_skill_runs_summary.get("verified") is True
-    foundation_runtime_concurrency = _build_foundation_runtime_concurrency_summary()
-    foundation_runtime_concurrency_verified = foundation_runtime_concurrency.get("verified") is True
     g6_open_followups = _g6_open_followups(
         governance_summary,
         governance_runtime_smoke_verified=governance_runtime_smoke_verified,
@@ -1896,6 +1988,10 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         frontend_open_followups.append("ordinary_user_acceptance_for_quarantined_legacy_routes")
     if not frontend_packaged_runtime_smoke_verified:
         frontend_open_followups.insert(0, "packaged_frontend_image_release_acceptance")
+
+    g5_open_followups = []
+    if not foundation_runtime_concurrency_verified:
+        g5_open_followups.append("foundation_runtime_concurrency_evidence")
 
     domains = {
         "g0_g1_source_authority_security": {
@@ -1940,19 +2036,22 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             "open_followups": [],
         },
         "g5_run_lifecycle_worker_runtime": {
-            "status": "poc_verified_capacity_baseline_keep_defaults_locked"
-            if foundation_runtime_concurrency_verified
-            else "partial_followups_open",
+            "status": "partial_followups_open"
+            if g5_open_followups
+            else "poc_verified_capacity_baseline_keep_defaults_locked",
             "evidence": {
                 "general_chat_run": smoke_checks.get("general_chat_run"),
                 "upload_attachment_chat": _safe_runtime_check(smoke_checks.get("upload_attachment_chat")),
                 "document_review_attachment_run": _artifact_review_summary(smoke_checks),
-                "foundation_runtime_concurrency": foundation_runtime_concurrency,
                 "capacity_default_policy": "do_not_raise_without_separate_recorded_profile_evidence",
+                "foundation_runtime_concurrency": foundation_runtime_concurrency,
+                "foundation_runtime_concurrency_evidence_subject": (
+                    _foundation_runtime_concurrency_evidence_subject(
+                        foundation_runtime_concurrency_payload
+                    )
+                ),
             },
-            "open_followups": []
-            if foundation_runtime_concurrency_verified
-            else ["foundation_runtime_concurrency_evidence"],
+            "open_followups": g5_open_followups,
         },
         "g6_poc_governance": {
             "status": "partial_followups_open"
@@ -2054,6 +2153,13 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         evidence_entries["frontend_packaged_runtime_smoke"] = _path_for_output(
             frontend_packaged_runtime_smoke_path
         )
+    if (
+        foundation_runtime_concurrency_evidence_path is not None
+        and foundation_runtime_concurrency_verified
+    ):
+        evidence_entries["foundation_runtime_concurrency"] = _path_for_output(
+            foundation_runtime_concurrency_evidence_path
+        )
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -2148,6 +2254,7 @@ def render_foundation_alpha_readiness_markdown(readiness: dict[str, Any]) -> str
                     f"memory_policy={context_projection.get('memory_policy_source')}, "
                     f"long_term_memory_read={context_projection.get('long_term_memory_read')}, "
                     f"tier={context_projection.get('execution_tier')}, "
+                    f"context_pack_version={context_projection.get('context_pack_version')}, "
                     f"generated_at={context_projection.get('context_pack_generated_at_present')}`\n\n"
                 )
                 missing_fields = context_projection.get("missing_public_summary_fields")
