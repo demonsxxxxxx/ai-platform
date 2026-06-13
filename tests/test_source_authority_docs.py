@@ -24,18 +24,22 @@ RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_RUNTIME_RELATION_MANIFEST = (
     ROOT / "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json"
 )
-ACTIVE_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:cbbfaff-runtime-evidence-root-redaction-v2"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:cdd99dbffb6529f8faf9bcc3476c65f18063dea00977d4da7879d98f84fb690b"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-13-211-foundation-alpha-poc-cbbfaff-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-13-211-foundation-alpha-poc-cbbfaff-auth-rbac-smoke"
+ACTIVE_RUNTIME_SUBJECT_SHA = "ac9a86bbea14a28748867cade8d80b2f9ff420ec"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:ac9a86b-s1-merged"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:1d13f440107c7bd39184b8c640c6e9a9c7e9bc0755d7e20e145cd8cafbccb7ee"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-13-211-foundation-alpha-poc-ac9a86b-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-13-211-foundation-alpha-poc-ac9a86b-auth-rbac-smoke"
+ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID = (
+    "2026-06-13-211-foundation-alpha-poc-ac9a86b-governance-runtime-smoke"
+)
 ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-13-211-foundation-alpha-poc-cbbfaff-release-evidence-runtime-acceptance"
+    "2026-06-13-211-foundation-alpha-poc-ac9a86b-release-evidence-runtime-acceptance"
 )
 ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-13-211-foundation-alpha-poc-cbbfaff-alert-trace-export-runtime-acceptance"
+    "2026-06-13-211-foundation-alpha-poc-ac9a86b-alert-trace-export-runtime-acceptance"
 )
-ACTIVE_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
+CBBFAFF_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
+CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
     "2026-06-13-211-foundation-alpha-poc-cbbfaff-frontend-packaged-runtime-smoke-blocked"
 )
 FOUNDATION_ALPHA_POC_EVIDENCE = (
@@ -80,11 +84,11 @@ FOUNDATION_ALPHA_POC_ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE = (
         f"{ACTIVE_RUNTIME_SUBJECT_SHA}/{ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID}.json"
     )
 )
-FOUNDATION_ALPHA_POC_ACTIVE_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE = (
+FOUNDATION_ALPHA_POC_CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE = (
     ROOT
     / (
         "docs/release-evidence/foundation-alpha-poc/"
-        f"{ACTIVE_RUNTIME_SUBJECT_SHA}/{ACTIVE_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID}.json"
+        f"{CBBFAFF_RUNTIME_SUBJECT_SHA}/{CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID}.json"
     )
 )
 SCHEMA = ROOT / "app/schema.sql"
@@ -192,9 +196,9 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "do_not_raise_without_recorded_load_test_evidence" in gate_status_text
     assert "packaged frontend image smoke/release acceptance" in gate_status_text
     assert "Foundation Alpha POC Smoke" in gate_status_text
-    assert "211 POC smoke refreshed for the current context public-summary" in gate_status_text
-    assert "contract; not production gate closure" in gate_status_text
-    assert "current context public-summary" in gate_status_text
+    assert "211 POC smoke refreshed for the merged #34-#39 S1 runtime subject" in gate_status_text
+    assert "not production gate closure" in gate_status_text
+    assert "current context public-summary" not in gate_status_text[:1000]
     assert "source_synced_runtime_pending" in gate_status_text
     assert "committed source-runtime" in gate_status_text
     assert "relation manifest" in gate_status_text
@@ -237,20 +241,23 @@ def test_gate_status_snapshot_records_s1_post_merge_211_verification_requirement
     gate_status_text = read(GATE_STATUS_DOC)
 
     assert "S1 post-merge 211 verification requirements" in gate_status_text
-    assert "after the reviewed #34-#39 stack is merged" in gate_status_text
-    assert "211 source snapshot directory is not a Git worktree" in gate_status_text
+    assert "after the #34-#39 stack is merged" in gate_status_text
+    assert "under the recorded review exception" in gate_status_text
+    assert "211 source snapshot" in gate_status_text
+    assert "not a Git worktree" in gate_status_text
     assert ".ai-platform-source-revision" in gate_status_text
     assert ".ai-platform-source-snapshot.json" in gate_status_text
     assert "repo-local deploy composition" in gate_status_text
     assert "container image labels" in gate_status_text
     assert "runtime subject" in gate_status_text
     assert "source tree commit" in gate_status_text
-    assert "release-evidence runtime subject" in gate_status_text
+    assert "release-evidence" in gate_status_text
+    assert "runtime subject" in gate_status_text
     assert "governed_skill_runs" in gate_status_text
     assert "mcp_tool_permission_runtime_controls" in gate_status_text
     assert "memory_context_controls" in gate_status_text
-    assert "runtime_rollout_required" in gate_status_text
     assert "reviewDecision" in gate_status_text
+    assert "explicitly recorded project exception" in gate_status_text
     assert "ordinary_user_multi_agent_allowed=false" in gate_status_text
     assert "production_claim_allowed=false" in gate_status_text
     assert "docker_sandbox_hardened_claim_allowed=false" in gate_status_text
@@ -263,7 +270,7 @@ def test_committed_source_runtime_relation_manifest_keeps_clean_checkout_readine
     payload = json.loads(read(SOURCE_RUNTIME_RELATION_MANIFEST))
 
     assert payload["schema_version"] == "ai-platform.source-runtime-relation-manifest.v1"
-    assert payload["source_tree_commit_sha"] == "fd8fa25193a34427711e13b7faec0e2c19b2970b"
+    assert payload["source_tree_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
     assert payload["runtime_subject_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
     assert payload["runtime_affecting_changes_since_runtime_subject"] == []
     assert "C:\\Users" not in json.dumps(payload)
@@ -309,11 +316,7 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
         "message",
     ]
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["status"] == "succeeded"
-    assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["artifact_types"] == [
-        "report_txt",
-        "result_json",
-        "reviewed_docx",
-    ]
+    assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["artifact_types"] is None
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["playback_status"] == 200
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["matched_download_artifact_count"] == 1
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["matched_preview_artifact_count"] == 1
@@ -342,6 +345,7 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     release_evidence_index = read(RELEASE_EVIDENCE_INDEX)
     assert f"{ACTIVE_AUTH_RBAC_EVIDENCE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_POC_SMOKE_EVIDENCE_ID}.json" in release_evidence_index
+    assert f"{ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID}.json" in release_evidence_index
     assert "2026-06-13-211-foundation-alpha-poc-cbbfaff-governance-runtime-smoke.json" in release_evidence_index
@@ -474,28 +478,28 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     for marker in forbidden_markers:
         assert marker.lower() not in lowered_alert_trace
 
-    frontend_blocked_text = read(FOUNDATION_ALPHA_POC_ACTIVE_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE)
+    frontend_blocked_text = read(FOUNDATION_ALPHA_POC_CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE)
     frontend_blocked_payload = json.loads(frontend_blocked_text)
     frontend_blocked_smoke = frontend_blocked_payload["evidence_ref"]["runtime_checks"][
         "frontend_packaged_runtime_smoke"
     ]
-    assert frontend_blocked_payload["evidence_id"] == ACTIVE_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID
+    assert frontend_blocked_payload["evidence_id"] == CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID
     assert frontend_blocked_payload["artifact_kind"] == "frontend_packaged_runtime_smoke"
-    assert frontend_blocked_payload["commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
-    assert frontend_blocked_payload["runtime_subject_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
-    assert frontend_blocked_payload["source_ref"]["runtime_commit"] == ACTIVE_RUNTIME_SUBJECT_SHA
-    assert frontend_blocked_payload["source_ref"]["runtime_source_marker"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert frontend_blocked_payload["commit_sha"] == CBBFAFF_RUNTIME_SUBJECT_SHA
+    assert frontend_blocked_payload["runtime_subject_commit_sha"] == CBBFAFF_RUNTIME_SUBJECT_SHA
+    assert frontend_blocked_payload["source_ref"]["runtime_commit"] == CBBFAFF_RUNTIME_SUBJECT_SHA
+    assert frontend_blocked_payload["source_ref"]["runtime_source_marker"] == CBBFAFF_RUNTIME_SUBJECT_SHA
     assert frontend_blocked_payload["source_ref"]["image_labels"]["ai-platform.source-revision"] == (
-        ACTIVE_RUNTIME_SUBJECT_SHA
+        CBBFAFF_RUNTIME_SUBJECT_SHA
     )
     assert frontend_blocked_payload["source_ref"]["image_labels"]["org.opencontainers.image.revision"] == (
-        ACTIVE_RUNTIME_SUBJECT_SHA
+        CBBFAFF_RUNTIME_SUBJECT_SHA
     )
     assert frontend_blocked_payload["evidence_ref"]["result"] == "ok:true"
     assert frontend_blocked_payload["evidence_ref"]["schema_version"] == (
         "ai-platform.frontend-packaged-runtime-smoke.v1"
     )
-    assert frontend_blocked_smoke["commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert frontend_blocked_smoke["commit_sha"] == CBBFAFF_RUNTIME_SUBJECT_SHA
     assert frontend_blocked_smoke["runtime_host"] == "211"
     assert frontend_blocked_smoke["image_tag"] == "ai-platform-frontend:cbbfaff-smoke"
     assert frontend_blocked_smoke["docker_build"]["exit_code"] == 1

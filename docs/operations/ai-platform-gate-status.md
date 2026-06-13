@@ -11,8 +11,8 @@ issue -> PR -> review -> merge -> 211 deploy/smoke -> close issue workflow in
 
 ## Foundation Alpha POC Smoke
 
-Status: 211 POC smoke refreshed for the current context public-summary
-contract; not production gate closure.
+Status: 211 POC smoke refreshed for the merged #34-#39 S1 runtime subject;
+not production gate closure.
 
 Generate the current operator readiness summary with:
 
@@ -54,39 +54,46 @@ is the fallback source of truth. The readiness tool may use that manifest only
 when it matches the current source tree, or when any newer local delta after the
 manifest is runtime-neutral.
 
-S1 post-merge 211 verification requirements: after the reviewed #34-#39 stack is merged, do not use earlier 211 health or historical release evidence as
-closure evidence. The 211 source snapshot directory is not a Git worktree, so
-verification must explicitly bind `.ai-platform-source-revision` and
-`.ai-platform-source-snapshot.json` to the merged source tree commit. It must
-also prove the repo-local deploy composition, container image labels, runtime
-subject, source tree commit, and release-evidence runtime subject all describe
-the same merged runtime subject. The readiness JSON must
-show the S1 G6 evidence fields `governed_skill_runs`,
-`mcp_tool_permission_runtime_controls`, and `memory_context_controls`. Until
-that merged runtime is deployed and smoked, `runtime_rollout_required` remains
-the correct state. If GitHub `reviewDecision` is still empty, status remains
-`PR ready` rather than `reviewed`. The post-merge evidence must keep
+S1 post-merge 211 verification requirements: after the #34-#39 stack is merged
+under the recorded review exception, do not use earlier 211 health or
+historical release evidence as closure evidence. The 211 source snapshot
+directory is not a Git worktree, so verification must explicitly bind
+`.ai-platform-source-revision` and `.ai-platform-source-snapshot.json` to the
+merged source tree commit. It must also prove the repo-local deploy composition,
+container image labels, runtime subject, source tree commit, and release-evidence
+runtime subject all describe the same merged runtime subject. The readiness JSON
+must show the S1 G6 evidence fields `governed_skill_runs`,
+`mcp_tool_permission_runtime_controls`, and `memory_context_controls`. The
+post-merge evidence must keep
 `ordinary_user_multi_agent_allowed=false`, `production_claim_allowed=false`,
 `docker_sandbox_hardened_claim_allowed=false`, and
-`capacity_default_increase_allowed=false`.
+`capacity_default_increase_allowed=false`. GitHub `reviewDecision` stayed empty
+for #34-#39; closure uses the explicitly recorded project exception rather than
+claiming independent review.
 
 Current live 211 API/worker runtime and active Foundation Alpha POC evidence
-subject is `cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55`. On 2026-06-13, source
+subject is `ac9a86bbea14a28748867cade8d80b2f9ff420ec`. On 2026-06-13, source
 and API/worker were advanced to that commit with image
-`ai-platform:cbbfaff-runtime-evidence-root-redaction-v2` and image ID
-`sha256:cdd99dbffb6529f8faf9bcc3476c65f18063dea00977d4da7879d98f84fb690b`.
+`ai-platform:ac9a86b-s1-merged` and image ID
+`sha256:1d13f440107c7bd39184b8c640c6e9a9c7e9bc0755d7e20e145cd8cafbccb7ee`.
 The 211 repo-local source marker, container source marker, source revision
 label, OCI revision label, runtime-subject label, and source_revision alias
-label point to `cbbfaff`; API health returned `ok`; and compose labels point to
+label point to `ac9a86b`; API health returned `ok`; and compose labels point to
 the repo-local deploy composition. Compose still uses an existing external
 runtime env file through `--env-file` without copying or printing values, so
 this evidence does not by itself close production or G0 deployment-layout
 follow-ups.
 
-The full cbbfaff POC evidence refresh includes reviewed, redacted entries for
+The full ac9a86b POC evidence refresh includes reviewed, redacted entries for
 runtime POC smoke, Auth/RBAC smoke, Admin Runtime governance smoke,
-release-evidence runtime acceptance, alert/trace export runtime acceptance, and
-packaged frontend blocker evidence:
+release-evidence runtime acceptance, and alert/trace export runtime acceptance:
+`docs/release-evidence/foundation-alpha-poc/ac9a86bbea14a28748867cade8d80b2f9ff420ec/2026-06-13-211-foundation-alpha-poc-ac9a86b-runtime-poc-smoke.json`,
+`docs/release-evidence/foundation-alpha-poc/ac9a86bbea14a28748867cade8d80b2f9ff420ec/2026-06-13-211-foundation-alpha-poc-ac9a86b-auth-rbac-smoke.json`,
+`docs/release-evidence/foundation-alpha-poc/ac9a86bbea14a28748867cade8d80b2f9ff420ec/2026-06-13-211-foundation-alpha-poc-ac9a86b-governance-runtime-smoke.json`,
+`docs/release-evidence/foundation-alpha-poc/ac9a86bbea14a28748867cade8d80b2f9ff420ec/2026-06-13-211-foundation-alpha-poc-ac9a86b-release-evidence-runtime-acceptance.json`, and
+`docs/release-evidence/foundation-alpha-poc/ac9a86bbea14a28748867cade8d80b2f9ff420ec/2026-06-13-211-foundation-alpha-poc-ac9a86b-alert-trace-export-runtime-acceptance.json`.
+The immediately superseded `cbbfaff` refresh is retained as historical
+Foundation Alpha POC evidence and still carries the packaged frontend blocker:
 `docs/release-evidence/foundation-alpha-poc/cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55/2026-06-13-211-foundation-alpha-poc-cbbfaff-runtime-poc-smoke.json`,
 `docs/release-evidence/foundation-alpha-poc/cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55/2026-06-13-211-foundation-alpha-poc-cbbfaff-auth-rbac-smoke.json`,
 `docs/release-evidence/foundation-alpha-poc/cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55/2026-06-13-211-foundation-alpha-poc-cbbfaff-governance-runtime-smoke.json`,
@@ -94,20 +101,27 @@ packaged frontend blocker evidence:
 `docs/release-evidence/foundation-alpha-poc/cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55/2026-06-13-211-foundation-alpha-poc-cbbfaff-alert-trace-export-runtime-acceptance.json`, and
 `docs/release-evidence/foundation-alpha-poc/cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55/2026-06-13-211-foundation-alpha-poc-cbbfaff-frontend-packaged-runtime-smoke-blocked.json`.
 This refresh verifies the controlled POC loop and cross-user/cross-tenant
-artifact download and preview denial for the cbbfaff runtime subject. The local
+artifact download and preview denial for the ac9a86b runtime subject. The local
 readiness summary now requires the reviewed/redacted aggregate runtime smoke's
 company-login audit before treating the
 broader auth/session/RBAC/tenant/redaction regression as covered:
 `company_login_audit_verified=true`,
 `ordinary_company_login_audit_count=12`, and
 `admin_company_login_audit_count=36`. It reports
-`foundation_alpha_stage_complete=true`, but the stage is only gate closable
-after PR review, CI, and the documented closure workflow; this remains S1
-controlled-POC evidence, not production gate closure.
+`foundation_alpha_stage_complete=true`, but the stage closure is based on the
+recorded review exception plus merged PRs, local verification, 211 deployment,
+and reviewed/redacted runtime evidence; this remains S1 controlled-POC evidence,
+not production gate closure.
 The packaged frontend blocker evidence is retained as S2 delivery follow-up
 evidence, not as an independent Foundation Alpha S1 stage blocker.
 
-The immediately superseded runtime subject commit
+The superseded runtime subject commit
+`cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55` remains historical reviewed evidence
+for the pre-S1 merged runtime refresh and packaged frontend blocker evidence.
+Its reviewed, redacted smoke evidence entries are under
+`docs/release-evidence/foundation-alpha-poc/cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55/`.
+
+The earlier superseded runtime subject commit
 `18454a9ccd890dd6b9636a04604b6a100cba31e7` remains historical reviewed evidence
 for the cross-tenant artifact isolation slice and historical evidence only. Its
 reviewed, redacted smoke evidence entries are under
@@ -284,7 +298,7 @@ Earlier smoke evidence for
 `8c0cffca63bc747fad0a5771f209acc8a608ab9e`,
 `bf20432f9889efa8b367afdf512c641068ba30bc`, and
 `3874281276c84a418bd08bda56d7ea55b52970b7` remains retained as historical
-evidence only; the `cbbfaff` evidence above is the active Foundation Alpha POC
+evidence only; the `ac9a86b` evidence above is the active Foundation Alpha POC
 reference.
 The immediately superseded runtime image was `ai-platform:948179c-skill-release-scaffold`.
 
@@ -312,12 +326,13 @@ attempt as `blocked_environment` with `docker_registry_proxy_unreachable` and
 `base_image_pull_failed`, with no closed evidence items. This is 211-verified
 blocker evidence only; it is not packaged frontend image release acceptance.
 
-After the active `cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55` runtime refresh,
-the packaged frontend blocker was rechecked on 211. The source marker pointed
-to `cbbfaff`, the frontend Dockerfile and repo-local frontend compose overlay
-were present, and the Docker daemon still could not resolve required base-image
-metadata through the registry proxy. No target `ai-platform-frontend:*` image
-was cached. The reviewed, redacted blocker evidence entry is
+During the superseded `cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55` runtime
+refresh, the packaged frontend blocker was rechecked on 211. The source marker
+pointed to `cbbfaff`, the frontend Dockerfile and repo-local frontend compose
+overlay were present, and the Docker daemon still could not resolve required
+base-image metadata through the registry proxy. No target
+`ai-platform-frontend:*` image was cached. The reviewed, redacted blocker
+evidence entry is
 `docs/release-evidence/foundation-alpha-poc/cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55/2026-06-13-211-foundation-alpha-poc-cbbfaff-frontend-packaged-runtime-smoke-blocked.json`.
 It records `blocked_environment` with registry-proxy/base-image resolution
 failure, has no closed evidence items, and still does not close
@@ -334,7 +349,7 @@ follow-up for S2 instead of a standalone S1 stage blocker.
 | G6 Tool / Skill / Memory Governance | Admin Runtime governance projection now has focused 211 smoke evidence for the POC runtime, and Foundation readiness records `memory_context_controls` with `session_scoped_memory=true`, `ordinary_user_opt_out=true`, `retention_cleanup=true`, `delete_redaction=true`, `public_admin_projection_safe=true`, and `long_term_cross_session_memory_fail_closed=true`; G6 remains partial and ordinary-user expansion remains blocked. | Tool policy taxonomy/history, public permission-card projection, skill release/dependency policy contracts, memory delete/retention/redaction/export readiness, office context-pack architecture readiness, context snapshot public provenance projection contract, governance readiness CLI, POC runs using governed skills, and 2026-06-13 governance runtime smoke evidence. | Legacy frontend route remap/policy enforcement, signed package or SBOM review evidence, dependency vulnerability/license evidence, context-pack persistence/executor injection/frontend provenance acceptance, full dashboard/visual acceptance, and broader 211 acceptance. |
 | G7 Sandbox / Resource Hardening | Blocked for high-risk expansion. | Fake provider remains local/test-only; capacity docs expose sandbox limits and missing hardening warnings. | Docker provider hardening, egress/quota policy, orphan cleanup, container security options, and Docker-capable 211 smoke. |
 | G8 Multi-Agent Controlled Beta | Feature-flagged only. | Dispatcher and child-run admission work exists behind current controls. | Tenant-aware scheduling quota/backpressure, #21 capacity evidence, observability, sandbox, and tool governance gates must pass before ordinary-user exposure. |
-| G9 Observability / Quality / Ops | Foundation Alpha POC has enough redacted Admin Runtime visibility for controlled operation through reviewed release-evidence and alert/trace runtime acceptance; G9 remains partial for Operations Beta. | Admin Runtime overview, capacity/governance/observability readiness docs and tools, error taxonomy/dashboard contracts, release-evidence contracts, reviewed 211 release-evidence runtime export/retention acceptance for `cbbfaff`, reviewed 211 alert/trace export runtime acceptance for `cbbfaff`, trace/audit export contracts, frontend projection audit, and reviewed 211 POC smoke entry. | S2/G9 closure still requires runtime dashboard acceptance, recorded capacity evidence, model-gateway backpressure evidence, golden-set eval runtime, alert delivery enablement/runtime calibration, and remaining Admin Runtime observability follow-ups; these do not independently block S1 POC stage acceptance once the explicit runtime acceptance evidence is present. |
+| G9 Observability / Quality / Ops | Foundation Alpha POC has enough redacted Admin Runtime visibility for controlled operation through reviewed release-evidence and alert/trace runtime acceptance; G9 remains partial for Operations Beta. | Admin Runtime overview, capacity/governance/observability readiness docs and tools, error taxonomy/dashboard contracts, release-evidence contracts, reviewed 211 release-evidence runtime export/retention acceptance for `ac9a86b`, reviewed 211 alert/trace export runtime acceptance for `ac9a86b`, trace/audit export contracts, frontend projection audit, and reviewed 211 POC smoke entry. | S2/G9 closure still requires runtime dashboard acceptance, recorded capacity evidence, model-gateway backpressure evidence, golden-set eval runtime, alert delivery enablement/runtime calibration, and remaining Admin Runtime observability follow-ups; these do not independently block S1 POC stage acceptance once the explicit runtime acceptance evidence is present. |
 | G10 Internal Beta / Department Rollout | Blocked. | Candidate internal workflows are named only as examples in roadmap. | Select 1-2 real internal workflow owners, complete prior gates, record cost/quality/audit/rollback evidence, and pass 211 acceptance. |
 
 ## Issue-Driven Thin Spots

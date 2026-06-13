@@ -1,7 +1,7 @@
 {
   "schema_version": "ai-platform.source-runtime-relation-manifest.v1",
-  "source_tree_commit_sha": "fd8fa25193a34427711e13b7faec0e2c19b2970b",
-  "runtime_subject_commit_sha": "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55",
+  "source_tree_commit_sha": "ac9a86bbea14a28748867cade8d80b2f9ff420ec",
+  "runtime_subject_commit_sha": "ac9a86bbea14a28748867cade8d80b2f9ff420ec",
   "runtime_affecting_changes_since_runtime_subject": [],
-  "note": "Committed fallback for normal clean checkouts where the active runtime subject commit is a PR-branch/squashed commit object that may not be present locally. Only docs, tests, release-evidence, and readiness records changed between the active runtime subject and this source tree."
+  "note": "Committed fallback for normal clean checkouts where later docs/tests/release-evidence records may be newer than the active runtime subject. Only docs, tests, release-evidence, and readiness records changed after this runtime subject."
 }

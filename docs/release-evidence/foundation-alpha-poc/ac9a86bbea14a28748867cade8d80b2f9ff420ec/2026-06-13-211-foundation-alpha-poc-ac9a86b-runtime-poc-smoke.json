@@ -1,0 +1,231 @@
+{
+  "artifact_kind": "211_runtime_smoke",
+  "captured_at": "2026-06-13T17:49:10+08:00",
+  "commit_sha": "ac9a86bbea14a28748867cade8d80b2f9ff420ec",
+  "evidence_id": "2026-06-13-211-foundation-alpha-poc-ac9a86b-runtime-poc-smoke",
+  "evidence_ref": {
+    "command": "python3 tools/verify_poc_gate.py --frontend-url http://127.0.0.1:18001 --api-url http://127.0.0.1:8020 --frontend-dist <frontend-dist> --env-path <repo-local-env-path> --api-container ai-platform-api --postgres-container ai-platform-postgres --postgres-user ai_platform --postgres-db ai_platform",
+    "result": "ok:true",
+    "runtime_checks": {
+      "artifact_download_isolation": {
+        "checked_artifacts": 2,
+        "cross_tenant_statuses": [
+          404,
+          404
+        ],
+        "cross_user_statuses": [
+          404,
+          404
+        ],
+        "owner_statuses": [
+          200,
+          200
+        ]
+      },
+      "artifact_preview_isolation": {
+        "checked_artifacts": 1,
+        "cross_tenant_statuses": [
+          404
+        ],
+        "cross_user_statuses": [
+          404
+        ],
+        "owner_content_types": [
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ],
+        "owner_statuses": [
+          200
+        ],
+        "owner_x_content_type_options": [
+          "nosniff"
+        ]
+      },
+      "company_auth_bridge": "invalid-login-probe-returned-unsuccessfully",
+      "company_login_audit": {
+        "admin_user_count": 36,
+        "ordinary_user_count": 12,
+        "source": "company-login"
+      },
+      "context_snapshot_public_projection": {
+        "context_pack_generated_at_present": true,
+        "execution_tier": "sdk_only_writing",
+        "forbidden_projection_leaks": [],
+        "input_keys": [
+          "attachments",
+          "message"
+        ],
+        "long_term_memory_read": false,
+        "memory_policy_source": "default",
+        "ok": true,
+        "raw_material_id_fields_present": false,
+        "referenced_material_counts": {
+          "artifact_count": 0,
+          "file_count": 1,
+          "memory_record_count": 0,
+          "message_count": 1
+        },
+        "snapshot_count": 1,
+        "status": 200,
+        "summary_source": "chat_stream"
+      },
+      "document_review_attachment_run": {
+        "agent_id": "qa-word-review",
+        "artifact_count": 0,
+        "artifact_types": null,
+        "chat_status": 200,
+        "matched_download_artifact_count": 1,
+        "matched_preview_artifact_count": 1,
+        "playback_artifact_count": 3,
+        "playback_contract_version": "ai-platform.run-playback.v1",
+        "playback_download_url_count": 3,
+        "playback_preview_url_count": 1,
+        "playback_status": 200,
+        "private_payload_leaked": false,
+        "skill_id": "qa-file-reviewer",
+        "status": "succeeded",
+        "upload_status": 200
+      },
+      "frontend_dist_api_boundary": {
+        "api_reference_count": 154,
+        "forbidden_reference_count": 0
+      },
+      "general_chat_run": "succeeded",
+      "governed_skill_runs": {
+        "real_task_statuses": {
+          "baoyu-translate": "succeeded",
+          "qa-file-reviewer": "succeeded"
+        },
+        "run_skill_snapshots": {
+          "mismatched_pinned_snapshots": [],
+          "missing_pinned_snapshots": [],
+          "pinned_snapshot_count": 2,
+          "pinned_snapshot_source": "release_decision",
+          "row_count": 2,
+          "used_count": 2,
+          "used_skill_ids": [
+            "qa-file-reviewer",
+            "baoyu-translate"
+          ],
+          "used_skills_source": "executor_hook"
+        },
+        "verified": true
+      },
+      "lambchat_api_compat": {
+        "all_required_routes_http_200": true,
+        "default_model_id": "deepseek-v4-flash",
+        "missing_permissions": [],
+        "registration_enabled": false
+      },
+      "lambchat_frontend": {
+        "status": 200
+      },
+      "review_artifact_run": {
+        "artifact_content_type": "application/json",
+        "skill_id": "qa-file-reviewer",
+        "status": "succeeded"
+      },
+      "runtime_config": {
+        "claude_agent_sdk_enabled": "true",
+        "skills_present": [
+          "baoyu-translate",
+          "general-chat",
+          "qa-file-reviewer"
+        ]
+      },
+      "same_origin_api_health": {
+        "payload_status": "ok",
+        "status": 200
+      },
+      "translate_artifact_run": {
+        "artifact_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "skill_id": "baoyu-translate",
+        "status": "succeeded"
+      },
+      "upload_attachment_chat": {
+        "chat_status": 200,
+        "upload_status": 200
+      }
+    },
+    "schema_version": "ai-platform.poc-gate.v1",
+    "verifier": "tools/verify_poc_gate.py"
+  },
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#15",
+    "#16",
+    "#17",
+    "#21",
+    "#22",
+    "#23",
+    "#24",
+    "#33"
+  ],
+  "open_followups": [
+    "#21 recorded multi-tenant capacity/load evidence remains required before raising production concurrency defaults.",
+    "G7 Docker sandbox hardening and Docker-capable sandbox smoke remain blocked.",
+    "G8 ordinary-user multi-agent exposure remains feature-flagged/internal only.",
+    "Packaged frontend image smoke/release acceptance remains separate from this thin-shell POC smoke.",
+    "Signed package or SBOM review evidence for Skill release remains open.",
+    "External env-file compose layout should be reconciled before G0 source-authority closure; no env values were copied or printed."
+  ],
+  "pr_refs": [
+    "#34",
+    "#35",
+    "#36",
+    "#37",
+    "#38",
+    "#39"
+  ],
+  "redaction_scan_status": "passed",
+  "review_notes": [
+    "This entry is a reviewed summary of the ac9a86b 211 aggregate verifier output, not a raw runtime dump.",
+    "The smoke confirmed governed skill runs, context public projection, artifact download/preview owner access, and cross-user/cross-tenant denials.",
+    "The reviewed summary omits credentials, connection strings, object locators, workspace filesystem paths, executor-only internals, run identifiers, file identifiers, artifact identifiers, storage locators, real user identifiers, runtime env-file paths, and personal workstation paths.",
+    "This evidence supports the Foundation Alpha S1 controlled internal POC runtime loop for ac9a86b only; it does not close production concurrency, Docker sandbox hardening, ordinary-user multi-agent exposure, packaged frontend image release acceptance, or signed Skill package/SBOM."
+  ],
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "ac9a86bbea14a28748867cade8d80b2f9ff420ec",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "api_health": {
+      "route": "/api/ai/health",
+      "status": "ok"
+    },
+    "branch": "main",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_layout_status": "external_env_file_label_present",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "deployment_note": "runtime-only image rebased from the previous healthy image because dependencies did not change; compose used --no-build with the reviewed image tag. Source revision, OCI revision, runtime-subject, and source_revision alias labels point to ac9a86b. The compose environment-file label records an external env-file path; this evidence does not copy or expose runtime secrets.",
+    "gateway_secret_supplied": false,
+    "image": "ai-platform:ac9a86b-s1-merged",
+    "image_id": "sha256:1d13f440107c7bd39184b8c640c6e9a9c7e9bc0755d7e20e145cd8cafbccb7ee",
+    "image_labels": {
+      "ai-platform.runtime-rollout": "foundation-alpha-ac9a86b-s1-merged",
+      "ai-platform.runtime-subject": "ac9a86bbea14a28748867cade8d80b2f9ff420ec",
+      "ai-platform.source-revision": "ac9a86bbea14a28748867cade8d80b2f9ff420ec",
+      "ai-platform.source_note": "s1-merged-runtime-rollout",
+      "ai-platform.source_revision": "ac9a86bbea14a28748867cade8d80b2f9ff420ec",
+      "org.opencontainers.image.revision": "ac9a86bbea14a28748867cade8d80b2f9ff420ec"
+    },
+    "repo_local_env_present": false,
+    "runtime_commit": "ac9a86bbea14a28748867cade8d80b2f9ff420ec",
+    "runtime_source_marker": "ac9a86bbea14a28748867cade8d80b2f9ff420ec",
+    "runtime_subject_label_status": "runtime_subject_label_current",
+    "source_revision_alias_label_status": "source_revision_alias_label_current",
+    "source_snapshot": {
+      "archive": "ai-platform-ac9a86b-source.tar",
+      "created_at": "2026-06-13T17:41:26+08:00",
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "runtime_subject_commit_sha": "ac9a86bbea14a28748867cade8d80b2f9ff420ec",
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "source_target": "services/ai-platform",
+      "source_tree_commit_sha": "ac9a86bbea14a28748867cade8d80b2f9ff420ec",
+      "source_tree_dirty": false
+    }
+  }
+}

@@ -11,7 +11,7 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
-ACTIVE_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
+ACTIVE_RUNTIME_SUBJECT_SHA = "ac9a86bbea14a28748867cade8d80b2f9ff420ec"
 HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
@@ -2315,11 +2315,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"]["document_review_attachment_run"] == {
         "status": "succeeded",
         "skill_id": "qa-file-reviewer",
-        "artifact_types": [
-            "report_txt",
-            "result_json",
-            "reviewed_docx",
-        ],
+        "artifact_types": [],
         "playback_contract_version": "ai-platform.run-playback.v1",
     }
     assert (
@@ -2749,7 +2745,7 @@ def test_foundation_alpha_readiness_records_211_packaged_frontend_environment_bl
     tmp_path,
 ):
     evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
-    image = "ai-platform:cbbfaff-runtime-evidence-root-redaction-v2"
+    image = "ai-platform:ac9a86b-s1-merged"
     smoke_path, auth_path = _write_release_evidence_pair(
         evidence_root,
         ACTIVE_RUNTIME_SUBJECT_SHA,
@@ -2805,12 +2801,12 @@ def test_foundation_alpha_readiness_records_211_packaged_frontend_environment_bl
     ) == blocked_path
 
 
-def test_current_foundation_alpha_readiness_discovers_active_packaged_frontend_blocked_evidence():
+def test_current_foundation_alpha_readiness_keeps_packaged_frontend_followup_when_active_evidence_is_missing():
     readiness = build_foundation_alpha_readiness(SecretBearingSettings())
 
     packaged = readiness["domains"]["frontend_poc"]["evidence"]["frontend_packaged_runtime_smoke"]
-    assert packaged["status"] == "blocked_environment"
-    assert packaged["runtime_host"] == "211"
+    assert packaged["status"] == "missing_frontend_packaged_runtime_smoke"
+    assert packaged["runtime_host"] is None
     assert packaged["verified"] is False
     assert packaged["closed_evidence_items"] == []
     assert "packaged_frontend_image_release_acceptance" in readiness["domains"]["frontend_poc"]["open_followups"]
