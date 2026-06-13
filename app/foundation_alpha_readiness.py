@@ -1717,10 +1717,10 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             "evidence": {
                 **governance_summary,
                 "skill_snapshot_run_seen": True,
+                "tool_permission_decision_audit_required": True,
                 "mcp_tool_permission_runtime_controls": _mcp_tool_permission_runtime_controls_summary(
                     runtime_rollout_required_for_current_source=runtime_rollout_required_for_current_source
                 ),
-                "tool_permission_decision_audit_required": True,
                 "memory_long_term_default_fail_closed": True,
                 "context_snapshot_public_projection": _context_projection_summary(smoke_checks),
                 "governance_runtime_smoke": governance_runtime_smoke,
