@@ -3196,7 +3196,7 @@ def test_governed_skill_runs_summary_keeps_only_public_runtime_evidence_fields()
     )
 
     assert summary == {
-        "verified": True,
+        "verified": False,
         "real_task_statuses": {
             "qa-file-reviewer": "succeeded",
         },

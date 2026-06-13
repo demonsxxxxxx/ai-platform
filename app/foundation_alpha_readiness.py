@@ -685,8 +685,19 @@ def _governed_skill_runs_summary(runtime_checks: dict[str, Any]) -> dict[str, An
     used_skill_ids = snapshots.get("used_skill_ids")
     if not isinstance(used_skill_ids, list):
         used_skill_ids = []
+    safe_missing_pinned_snapshots = [
+        str(item) for item in missing_pinned_snapshots if isinstance(item, str)
+    ]
+    safe_mismatched_pinned_snapshots = [
+        str(item) for item in mismatched_pinned_snapshots if isinstance(item, str)
+    ]
+    verified = (
+        governed.get("verified") is True
+        and not safe_missing_pinned_snapshots
+        and not safe_mismatched_pinned_snapshots
+    )
     return {
-        "verified": governed.get("verified") is True,
+        "verified": verified,
         "real_task_statuses": {
             str(key): str(value)
             for key, value in real_task_statuses.items()
@@ -699,12 +710,8 @@ def _governed_skill_runs_summary(runtime_checks: dict[str, Any]) -> dict[str, An
             "used_skills_source": snapshots.get("used_skills_source"),
             "pinned_snapshot_count": snapshots.get("pinned_snapshot_count"),
             "pinned_snapshot_source": snapshots.get("pinned_snapshot_source"),
-            "missing_pinned_snapshots": [
-                str(item) for item in missing_pinned_snapshots if isinstance(item, str)
-            ],
-            "mismatched_pinned_snapshots": [
-                str(item) for item in mismatched_pinned_snapshots if isinstance(item, str)
-            ],
+            "missing_pinned_snapshots": safe_missing_pinned_snapshots,
+            "mismatched_pinned_snapshots": safe_mismatched_pinned_snapshots,
         },
     }
 
