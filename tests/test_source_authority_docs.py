@@ -689,6 +689,19 @@ def test_frontend_readme_matches_current_projection_audit_gate():
     assert "G6/G9" in readme_text
 
 
+def test_gate_status_snapshot_records_memory_context_readiness_fields():
+    gate_status_text = read(GATE_STATUS_DOC)
+
+    assert "memory_context_controls" in gate_status_text
+    assert "session_scoped_memory=true" in gate_status_text
+    assert "ordinary_user_opt_out=true" in gate_status_text
+    assert "retention_cleanup=true" in gate_status_text
+    assert "delete_redaction=true" in gate_status_text
+    assert "public_admin_projection_safe=true" in gate_status_text
+    assert "long_term_cross_session_memory_fail_closed=true" in gate_status_text
+    assert "ordinary-user expansion remains blocked" in gate_status_text
+
+
 def test_capacity_docs_record_machine_readable_gate_evidence_contract():
     capacity_text = read(CAPACITY_BASELINE_DOC)
     roadmap_text = read(ROADMAP)

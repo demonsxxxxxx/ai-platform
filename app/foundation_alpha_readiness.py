@@ -1486,6 +1486,41 @@ def _build_governance_summary(settings: object | None) -> dict[str, Any]:
 
     settings = settings or _ReadinessDefaultSettings()
     governance = build_governance_readiness(settings, include_frontend_projection_audit=False)
+    memory_governance = _safe_runtime_check(governance.get("domains", {}).get("memory_governance"))
+    memory_implemented = memory_governance.get("implemented")
+    memory_implemented_set = set(memory_implemented) if isinstance(memory_implemented, list) else set()
+    memory_gaps = [
+        item
+        for item in memory_governance.get("gaps", [])
+        if isinstance(item, str) and item.strip()
+    ] if isinstance(memory_governance.get("gaps"), list) else []
+    memory_context_controls = {
+        "status": "verified_current_scope"
+        if {
+            "session_bound_memory_records",
+            "ordinary_user_memory_policy_opt_out",
+            "memory_retention_cleanup_admin_and_worker",
+            "memory_delete_retention_erasure_evidence_snapshot",
+            "memory_export_erasure_evidence_snapshot",
+            "memory_redaction_policy_admin_preview_and_audit",
+            "context_snapshot_public_provenance_projection_contract",
+            "long_term_cross_session_memory_default_fail_closed",
+        }.issubset(memory_implemented_set)
+        else "memory_context_controls_followup_required",
+        "session_scoped_memory": "session_bound_memory_records" in memory_implemented_set,
+        "ordinary_user_opt_out": "ordinary_user_memory_policy_opt_out" in memory_implemented_set,
+        "retention_cleanup": "memory_retention_cleanup_admin_and_worker" in memory_implemented_set,
+        "delete_redaction": (
+            "memory_delete_retention_erasure_evidence_snapshot" in memory_implemented_set
+            and "memory_export_erasure_evidence_snapshot" in memory_implemented_set
+            and "memory_redaction_policy_admin_preview_and_audit" in memory_implemented_set
+        ),
+        "public_admin_projection_safe": "context_snapshot_public_provenance_projection_contract" in memory_implemented_set,
+        "long_term_cross_session_memory_fail_closed": (
+            "long_term_cross_session_memory_default_fail_closed" in memory_implemented_set
+        ),
+        "open_gaps": memory_gaps,
+    }
     return {
         "governance_readiness_status": governance["status"],
         "ordinary_user_policy": governance["ordinary_user_policy"],
@@ -1495,6 +1530,7 @@ def _build_governance_summary(settings: object | None) -> dict[str, Any]:
             for item in governance["open_gaps"]
             if isinstance(item, str) and item.strip()
         ],
+        "memory_context_controls": memory_context_controls,
     }
 
 
@@ -1514,6 +1550,9 @@ def _g6_open_followups(
             continue
         if gap == "signed_skill_package_or_sbom_release_gate":
             followups.append("signed_skill_package_or_sbom_review_evidence")
+    memory_controls = governance_summary.get("memory_context_controls")
+    if not isinstance(memory_controls, dict) or memory_controls.get("status") != "verified_current_scope":
+        followups.append("memory_context_controls_readiness")
     if (
         "open_gaps" not in governance_summary
         and governance_summary.get("open_gap_count")

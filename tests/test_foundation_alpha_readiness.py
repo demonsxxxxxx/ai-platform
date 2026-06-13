@@ -1,4 +1,5 @@
 import json
+import inspect
 import subprocess
 import sys
 
@@ -23,6 +24,21 @@ DEFAULT_FRONTEND_PROJECTION_AUDIT_SUMMARY = {
     "ci_verify_includes_projection_audit": False,
     "open_gap_count": 1,
     "open_gaps": ["frontend_projection_audit_not_exercised_in_unit_default"],
+}
+VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS = {
+    "status": "verified_current_scope",
+    "session_scoped_memory": True,
+    "ordinary_user_opt_out": True,
+    "retention_cleanup": True,
+    "delete_redaction": True,
+    "public_admin_projection_safe": True,
+    "long_term_cross_session_memory_fail_closed": True,
+}
+REQUIRED_MEMORY_CONTEXT_OPEN_GAPS = {
+    "office_context_pack_persistence_and_versioning",
+    "document_centric_followup_state",
+    "sandbox_cold_start_latency_split",
+    "frontend_context_provenance_acceptance",
 }
 
 
@@ -1338,6 +1354,16 @@ def test_foundation_alpha_readiness_removes_signed_skill_followup_when_release_e
             "ordinary_user_policy": "fail_closed_until_projection_mapping_and_acceptance_pass",
             "open_gap_count": 1,
             "open_gaps": ["admin_skill_release_dashboard_211_acceptance"],
+            "memory_context_controls": {
+                **VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS,
+                "open_gaps": [
+                    "office_context_pack_persistence_and_versioning",
+                    "executor_context_pack_injection",
+                    "document_centric_followup_state",
+                    "sandbox_cold_start_latency_split",
+                    "frontend_context_provenance_acceptance",
+                ],
+            },
         },
         raising=False,
     )
@@ -2315,6 +2341,12 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         == 1
     )
     assert readiness["domains"]["g6_poc_governance"]["evidence"]["governance_readiness_status"] == "partial_blocked"
+    memory_context_controls = readiness["domains"]["g6_poc_governance"]["evidence"]["memory_context_controls"]
+    assert {
+        key: memory_context_controls[key]
+        for key in VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS
+    } == VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS
+    assert REQUIRED_MEMORY_CONTEXT_OPEN_GAPS.issubset(set(memory_context_controls["open_gaps"]))
     assert readiness["domains"]["g6_poc_governance"]["evidence"]["context_snapshot_public_projection"] == {
         "status": "verified_public_context_projection",
         "referenced_material_counts": {
@@ -3366,6 +3398,37 @@ def test_foundation_alpha_readiness_summaries_do_not_require_runtime_settings_im
     )
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_governance_summary_surfaces_memory_context_controls_for_s1_readiness():
+    summary = foundation_alpha_readiness._build_governance_summary(SecretBearingSettings())
+
+    controls = summary["memory_context_controls"]
+    assert {
+        key: controls[key]
+        for key in VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS
+    } == VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS
+    assert REQUIRED_MEMORY_CONTEXT_OPEN_GAPS.issubset(set(controls["open_gaps"]))
+
+
+def test_g6_followups_require_memory_context_controls_summary():
+    kwargs = {"governance_runtime_smoke_verified": True}
+    if "governed_skill_runs_verified" in inspect.signature(
+        foundation_alpha_readiness._g6_open_followups
+    ).parameters:
+        kwargs["governed_skill_runs_verified"] = True
+
+    followups = foundation_alpha_readiness._g6_open_followups(
+        {
+            "governance_readiness_status": "partial_blocked",
+            "ordinary_user_policy": "fail_closed_until_projection_mapping_and_acceptance_pass",
+            "open_gap_count": 0,
+            "open_gaps": [],
+        },
+        **kwargs,
+    )
+
+    assert followups == ["memory_context_controls_readiness"]
 
 
 def test_auth_rbac_summary_reports_platform_principal_tenant_and_gateway_checks():
