@@ -649,6 +649,10 @@ def _all_denied(statuses: list[int]) -> bool:
     return bool(statuses) and all(status in _DENIED_HTTP_STATUSES for status in statuses)
 
 
+def _safe_non_negative_int(value: Any) -> int:
+    return value if type(value) is int and value >= 0 else 0
+
+
 def _context_material_count(value: Any) -> tuple[int, bool]:
     if type(value) is not int:
         return 0, False
@@ -1022,6 +1026,35 @@ def _auth_rbac_summary(
         "cross_tenant_statuses",
         "cross_tenant_status",
     )
+    company_login_audit = _safe_runtime_check(artifact_checks.get("company_login_audit"))
+    ordinary_company_login_audit_count = _safe_non_negative_int(
+        company_login_audit.get("ordinary_user_count")
+    )
+    admin_company_login_audit_count = _safe_non_negative_int(
+        company_login_audit.get("admin_user_count")
+    )
+    explicit_company_login_audit_count = company_login_audit.get("count")
+    company_login_audit_count = (
+        explicit_company_login_audit_count
+        if type(explicit_company_login_audit_count) is int and explicit_company_login_audit_count >= 0
+        else ordinary_company_login_audit_count + admin_company_login_audit_count
+    )
+    missing_login_requirements = company_login_audit.get("missing_requirements")
+    company_login_audit_missing_requirements = (
+        [
+            str(item)
+            for item in missing_login_requirements
+            if isinstance(item, str) and item.strip()
+        ]
+        if isinstance(missing_login_requirements, list)
+        else []
+    )
+    company_login_audit_verified = (
+        company_login_audit_count > 0
+        and ordinary_company_login_audit_count > 0
+        and admin_company_login_audit_count > 0
+        and not company_login_audit_missing_requirements
+    )
     broader_regression_verified = (
         _safe_runtime_check(runtime_checks.get("unauthenticated_auth_me")).get("status") == 401
         and authenticated_auth_me.get("status") == 200
@@ -1038,6 +1071,7 @@ def _auth_rbac_summary(
         and _all_denied(download_cross_tenant_statuses)
         and _all_denied(preview_cross_user_statuses)
         and _all_denied(preview_cross_tenant_statuses)
+        and company_login_audit_verified
     )
     return {
         "unauthenticated_auth_me_status": _safe_runtime_check(runtime_checks.get("unauthenticated_auth_me")).get(
@@ -1064,6 +1098,11 @@ def _auth_rbac_summary(
         "artifact_download_cross_tenant_statuses": download_cross_tenant_statuses,
         "artifact_preview_cross_user_statuses": preview_cross_user_statuses,
         "artifact_preview_cross_tenant_statuses": preview_cross_tenant_statuses,
+        "company_login_audit_count": company_login_audit_count,
+        "ordinary_company_login_audit_count": ordinary_company_login_audit_count,
+        "admin_company_login_audit_count": admin_company_login_audit_count,
+        "company_login_audit_missing_requirements": company_login_audit_missing_requirements,
+        "company_login_audit_verified": company_login_audit_verified,
         "broader_auth_session_rbac_tenant_redaction_regression_verified": broader_regression_verified,
     }
 

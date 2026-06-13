@@ -72,8 +72,15 @@ packaged frontend blocker evidence:
 `docs/release-evidence/foundation-alpha-poc/cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55/2026-06-13-211-foundation-alpha-poc-cbbfaff-frontend-packaged-runtime-smoke-blocked.json`.
 This refresh verifies the controlled POC loop and cross-user/cross-tenant
 artifact download and preview denial for the cbbfaff runtime subject. The local
-readiness summary reports `foundation_alpha_stage_complete=true`, but the stage
-is only gate closable after PR review, CI, and the documented closure workflow.
+readiness summary now requires the reviewed/redacted aggregate runtime smoke's
+company-login audit before treating the
+broader auth/session/RBAC/tenant/redaction regression as covered:
+`company_login_audit_verified=true`,
+`ordinary_company_login_audit_count=12`, and
+`admin_company_login_audit_count=36`. It reports
+`foundation_alpha_stage_complete=true`, but the stage is only gate closable
+after PR review, CI, and the documented closure workflow; this remains S1
+controlled-POC evidence, not production gate closure.
 The packaged frontend blocker evidence is retained as S2 delivery follow-up
 evidence, not as an independent Foundation Alpha S1 stage blocker.
 
