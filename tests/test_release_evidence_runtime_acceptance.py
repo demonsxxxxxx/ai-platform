@@ -71,7 +71,7 @@ def test_release_evidence_runtime_acceptance_accepts_safe_index_and_retention_po
         "commit_sha": VALID_COMMIT,
         "runtime_subject_commit_sha": VALID_COMMIT,
         "image": "ai-platform:948179c-skill-release-scaffold",
-        "evidence_root": str(tmp_path),
+        "evidence_root": "<external-evidence-root>",
     }
     assert acceptance["checks"]["runtime_export_acceptance"] == {
         "status": "ready_for_operator_review",
@@ -103,6 +103,18 @@ def test_release_evidence_runtime_acceptance_accepts_safe_index_and_retention_po
     assert "raw_storage_key" not in serialized
     assert "sandbox_workdir" not in serialized
     assert "api_key" not in serialized
+    assert str(tmp_path).lower() not in serialized
+
+
+def test_release_evidence_runtime_acceptance_outputs_repository_relative_default_root():
+    acceptance = build_release_evidence_runtime_acceptance(
+        evidence_root=Path("docs/release-evidence"),
+        commit_sha=VALID_COMMIT,
+        runtime_subject_commit_sha=VALID_COMMIT,
+        image="ai-platform:948179c-skill-release-scaffold",
+    )
+
+    assert acceptance["source"]["evidence_root"] == "docs/release-evidence"
 
 
 def test_release_evidence_runtime_acceptance_fails_closed_when_export_index_is_blocked(tmp_path):
@@ -166,7 +178,9 @@ def test_release_evidence_runtime_acceptance_cli_outputs_safe_json(tmp_path):
     payload = json.loads(result.stdout)
     assert payload["schema_version"] == "ai-platform.release-evidence-runtime-acceptance.v1"
     assert payload["ok"] is True
+    assert payload["source"]["evidence_root"] == "<external-evidence-root>"
     assert payload["checks"]["runtime_export_acceptance"]["safe_entry_count"] == 1
     assert "source_ref" not in result.stdout
     assert "evidence_ref" not in result.stdout
     assert "raw_storage_key" not in result.stdout
+    assert str(tmp_path) not in result.stdout

@@ -8,6 +8,18 @@ from app.release_evidence_readiness import build_release_evidence_readiness
 
 
 SCHEMA_VERSION = "ai-platform.release-evidence-runtime-acceptance.v1"
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_EVIDENCE_ROOT = ROOT / "docs" / "release-evidence"
+EXTERNAL_EVIDENCE_ROOT_MARKER = "<external-evidence-root>"
+
+
+def _safe_evidence_root_for_output(root: Path) -> str:
+    resolved_root = root.resolve()
+    resolved_repo_root = ROOT.resolve()
+    resolved_default_root = DEFAULT_EVIDENCE_ROOT.resolve()
+    if resolved_root == resolved_default_root or resolved_default_root in resolved_root.parents:
+        return str(resolved_root.relative_to(resolved_repo_root)).replace("\\", "/")
+    return EXTERNAL_EVIDENCE_ROOT_MARKER
 
 
 def _runtime_export_acceptance_summary(export_acceptance: dict[str, Any]) -> dict[str, Any]:
@@ -95,7 +107,7 @@ def build_release_evidence_runtime_acceptance(
             "commit_sha": commit_sha,
             "runtime_subject_commit_sha": runtime_subject_commit_sha or commit_sha,
             "image": image,
-            "evidence_root": str(root),
+            "evidence_root": _safe_evidence_root_for_output(root),
         },
         "checks": {
             "runtime_export_acceptance": runtime_export,

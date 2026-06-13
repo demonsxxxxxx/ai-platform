@@ -269,7 +269,7 @@ def _valid_release_evidence_runtime_acceptance() -> dict:
             "commit_sha": CURRENT_SOURCE_SHA,
             "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
             "image": "ai-platform:a3f1d73-foundation-alpha-poc",
-            "evidence_root": "C:\\workspace\\ai-platform\\docs\\release-evidence",
+            "evidence_root": "docs/release-evidence",
         },
         "checks": {
             "runtime_export_acceptance": {
