@@ -752,6 +752,52 @@ def _artifact_review_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _governed_skill_runs_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
+    governed = _safe_runtime_check(runtime_checks.get("governed_skill_runs"))
+    snapshots = _safe_runtime_check(governed.get("run_skill_snapshots"))
+    real_task_statuses = governed.get("real_task_statuses")
+    if not isinstance(real_task_statuses, dict):
+        real_task_statuses = {}
+    missing_pinned_snapshots = snapshots.get("missing_pinned_snapshots")
+    if not isinstance(missing_pinned_snapshots, list):
+        missing_pinned_snapshots = []
+    mismatched_pinned_snapshots = snapshots.get("mismatched_pinned_snapshots")
+    if not isinstance(mismatched_pinned_snapshots, list):
+        mismatched_pinned_snapshots = []
+    used_skill_ids = snapshots.get("used_skill_ids")
+    if not isinstance(used_skill_ids, list):
+        used_skill_ids = []
+    safe_missing_pinned_snapshots = [
+        str(item) for item in missing_pinned_snapshots if isinstance(item, str)
+    ]
+    safe_mismatched_pinned_snapshots = [
+        str(item) for item in mismatched_pinned_snapshots if isinstance(item, str)
+    ]
+    verified = (
+        governed.get("verified") is True
+        and not safe_missing_pinned_snapshots
+        and not safe_mismatched_pinned_snapshots
+    )
+    return {
+        "verified": verified,
+        "real_task_statuses": {
+            str(key): str(value)
+            for key, value in real_task_statuses.items()
+            if isinstance(key, str) and isinstance(value, str)
+        },
+        "run_skill_snapshots": {
+            "row_count": snapshots.get("row_count"),
+            "used_count": snapshots.get("used_count"),
+            "used_skill_ids": [str(item) for item in used_skill_ids if isinstance(item, str)],
+            "used_skills_source": snapshots.get("used_skills_source"),
+            "pinned_snapshot_count": snapshots.get("pinned_snapshot_count"),
+            "pinned_snapshot_source": snapshots.get("pinned_snapshot_source"),
+            "missing_pinned_snapshots": safe_missing_pinned_snapshots,
+            "mismatched_pinned_snapshots": safe_mismatched_pinned_snapshots,
+        },
+    }
+
+
 def _projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     frontend = _safe_runtime_check(runtime_checks.get("lambchat_frontend"))
     boundary = _safe_runtime_check(runtime_checks.get("frontend_dist_api_boundary"))
@@ -1345,10 +1391,13 @@ def _g6_open_followups(
     governance_summary: dict[str, Any],
     *,
     governance_runtime_smoke_verified: bool,
+    governed_skill_runs_verified: bool,
 ) -> list[str]:
     followups: list[str] = []
     if not governance_runtime_smoke_verified:
         followups.append("runtime_admin_dashboard_acceptance_for_governance")
+    if not governed_skill_runs_verified:
+        followups.append("governed_skill_runs_runtime_evidence")
     for gap in governance_summary.get("open_gaps", []):
         if not isinstance(gap, str) or not gap.strip():
             continue
@@ -1642,9 +1691,12 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             else "reviewed_historical_runtime_evidence"
         )
     )
+    governed_skill_runs_summary = _governed_skill_runs_summary(smoke_checks)
+    governed_skill_runs_verified = governed_skill_runs_summary.get("verified") is True
     g6_open_followups = _g6_open_followups(
         governance_summary,
         governance_runtime_smoke_verified=governance_runtime_smoke_verified,
+        governed_skill_runs_verified=governed_skill_runs_verified,
     )
     g9_open_followups = [
         "g9_runtime_export_and_retention_acceptance",
@@ -1721,11 +1773,12 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         },
         "g6_poc_governance": {
             "status": "partial_followups_open"
-            if governance_summary["open_gap_count"]
+            if governance_summary["open_gap_count"] or g6_open_followups
             else "poc_verified_keep_under_regression",
             "evidence": {
                 **governance_summary,
-                "skill_snapshot_run_seen": True,
+                "skill_snapshot_run_seen": governed_skill_runs_verified,
+                "governed_skill_runs": governed_skill_runs_summary,
                 "tool_permission_decision_audit_required": True,
                 "memory_long_term_default_fail_closed": True,
                 "context_snapshot_public_projection": _context_projection_summary(smoke_checks),

@@ -112,6 +112,23 @@ def _minimal_smoke_payload(commit_sha: str, *, image: str, captured_at: str = "2
                     "playback_contract_version": "ai-platform.run-playback.v1",
                     "private_payload_leaked": False,
                 },
+                "governed_skill_runs": {
+                    "verified": True,
+                    "real_task_statuses": {
+                        "qa-file-reviewer": "succeeded",
+                        "baoyu-translate": "succeeded",
+                    },
+                    "run_skill_snapshots": {
+                        "row_count": 2,
+                        "used_count": 2,
+                        "used_skill_ids": ["qa-file-reviewer", "baoyu-translate"],
+                        "used_skills_source": "executor_hook",
+                        "pinned_snapshot_count": 2,
+                        "pinned_snapshot_source": "release_decision",
+                        "missing_pinned_snapshots": [],
+                        "mismatched_pinned_snapshots": [],
+                    },
+                },
                 "artifact_download_isolation": {
                     "owner_statuses": [200],
                     "cross_user_statuses": [404],
@@ -1072,6 +1089,23 @@ def test_foundation_alpha_readiness_accepts_governance_runtime_smoke_for_same_ru
         readiness["domains"]["g6_poc_governance"]["evidence"]["governance_runtime_smoke"]["status"]
         == "verified_admin_runtime_governance_projection"
     )
+    assert readiness["domains"]["g6_poc_governance"]["evidence"]["governed_skill_runs"] == {
+        "verified": True,
+        "real_task_statuses": {
+            "qa-file-reviewer": "succeeded",
+            "baoyu-translate": "succeeded",
+        },
+        "run_skill_snapshots": {
+            "row_count": 2,
+            "used_count": 2,
+            "used_skill_ids": ["qa-file-reviewer", "baoyu-translate"],
+            "used_skills_source": "executor_hook",
+            "pinned_snapshot_count": 2,
+            "pinned_snapshot_source": "release_decision",
+            "missing_pinned_snapshots": [],
+            "mismatched_pinned_snapshots": [],
+        },
+    }
     assert "governance_runtime_smoke" in readiness["evidence_entries"]
     assert readiness["evidence_entries"]["governance_runtime_smoke"] == foundation_alpha_readiness._path_for_output(
         governance_path
@@ -1093,6 +1127,82 @@ def test_foundation_alpha_readiness_accepts_governance_runtime_smoke_for_same_ru
         "signed_skill_package_or_sbom_review_evidence"
         not in readiness["operator_context"]["next_recommended_slices"]
     )
+
+
+def test_foundation_alpha_readiness_blocks_g6_when_governed_skill_runtime_evidence_is_missing(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    image = "ai-platform:a3f1d73-foundation-alpha-poc"
+    smoke_path, auth_path = _write_release_evidence_pair(evidence_root, CURRENT_SOURCE_SHA, image=image)
+    smoke_payload = json.loads(smoke_path.read_text(encoding="utf-8"))
+    smoke_payload["evidence_ref"]["runtime_checks"].pop("governed_skill_runs")
+    smoke_path.write_text(json.dumps(smoke_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_governance_evidence(evidence_root, CURRENT_SOURCE_SHA, image=image)
+    _write_release_evidence_runtime_acceptance(evidence_root, CURRENT_SOURCE_SHA, image=image)
+    _write_alert_trace_export_runtime_acceptance(evidence_root, CURRENT_SOURCE_SHA, image=image)
+    _write_frontend_packaged_runtime_smoke(evidence_root, CURRENT_SOURCE_SHA, image=image)
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: CURRENT_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_governance_summary",
+        lambda _settings: {
+            "governance_readiness_status": "ready",
+            "ordinary_user_policy": "fail_closed_until_projection_mapping_and_acceptance_pass",
+            "open_gap_count": 0,
+            "open_gaps": [],
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_observability_summary",
+        lambda _settings, release_evidence_runtime_acceptance=None: {
+            "observability_readiness_status": "ready",
+            "admin_runtime_projection": "available",
+            "open_gap_count": 0,
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        lambda: {
+            "status": "verified_packaged_release_followup_open",
+            "open_gap_count": 0,
+            "blockers": [],
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_projection_audit_summary",
+        lambda: {
+            "status": "pass_with_policy_gaps",
+            "ordinary_user_acceptance": "accepted_active_legacy_routes_permission_gated",
+            "open_gap_count": 0,
+            "open_gaps": [],
+        },
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert readiness["domains"]["g6_poc_governance"]["evidence"]["governed_skill_runs"]["verified"] is False
+    assert "governed_skill_runs_runtime_evidence" in readiness["domains"]["g6_poc_governance"]["open_followups"]
+    assert "governed_skill_runs_runtime_evidence" in readiness["decision"]["stage_acceptance_blockers"]
+    assert readiness["domains"]["g6_poc_governance"]["status"] == "partial_followups_open"
+    assert readiness["foundation_alpha_stage_complete"] is False
 
 
 def test_foundation_alpha_readiness_removes_signed_skill_followup_when_release_evidence_gap_is_closed(
@@ -3060,7 +3170,21 @@ def test_foundation_alpha_readiness_fails_closed_when_optional_readiness_depende
         "ordinary_user_policy": "fail_closed_until_projection_mapping_and_acceptance_pass",
         "open_gap_count": 1,
         "dependency_error_class": "ModuleNotFoundError",
-        "skill_snapshot_run_seen": True,
+        "skill_snapshot_run_seen": False,
+        "governed_skill_runs": {
+            "verified": False,
+            "real_task_statuses": {},
+            "run_skill_snapshots": {
+                "row_count": None,
+                "used_count": None,
+                "used_skill_ids": [],
+                "used_skills_source": None,
+                "pinned_snapshot_count": None,
+                "pinned_snapshot_source": None,
+                "missing_pinned_snapshots": [],
+                "mismatched_pinned_snapshots": [],
+            },
+        },
         "tool_permission_decision_audit_required": True,
         "memory_long_term_default_fail_closed": True,
         "context_snapshot_public_projection": {
@@ -3228,3 +3352,47 @@ def test_auth_rbac_summary_marks_broader_regression_verified_with_cross_tenant_d
     assert summary["artifact_preview_cross_user_statuses"] == [404]
     assert summary["artifact_preview_cross_tenant_statuses"] == [404]
     assert summary["broader_auth_session_rbac_tenant_redaction_regression_verified"] is True
+
+
+def test_governed_skill_runs_summary_keeps_only_public_runtime_evidence_fields():
+    summary = foundation_alpha_readiness._governed_skill_runs_summary(
+        {
+            "governed_skill_runs": {
+                "verified": True,
+                "real_task_statuses": {
+                    "qa-file-reviewer": "succeeded",
+                    "bad-status": 500,
+                    123: "ignored",
+                },
+                "run_skill_snapshots": {
+                    "row_count": 3,
+                    "used_count": 2,
+                    "used_skill_ids": ["qa-file-reviewer", 42, "baoyu-translate"],
+                    "used_skills_source": "executor_hook",
+                    "pinned_snapshot_count": 2,
+                    "pinned_snapshot_source": "release_decision",
+                    "missing_pinned_snapshots": ["unsafe-skill", {"raw": "ignored"}],
+                    "mismatched_pinned_snapshots": ["baoyu-translate", {"raw": "ignored"}],
+                    "executor_private_payload": {"must_not": "leak"},
+                },
+                "raw_runtime_payload": {"must_not": "leak"},
+            }
+        }
+    )
+
+    assert summary == {
+        "verified": False,
+        "real_task_statuses": {
+            "qa-file-reviewer": "succeeded",
+        },
+        "run_skill_snapshots": {
+            "row_count": 3,
+            "used_count": 2,
+            "used_skill_ids": ["qa-file-reviewer", "baoyu-translate"],
+            "used_skills_source": "executor_hook",
+            "pinned_snapshot_count": 2,
+            "pinned_snapshot_source": "release_decision",
+            "missing_pinned_snapshots": ["unsafe-skill"],
+            "mismatched_pinned_snapshots": ["baoyu-translate"],
+        },
+    }
