@@ -229,10 +229,11 @@ def build_governance_readiness(
                 "memory_redaction_policy_admin_preview_and_audit",
                 "office_context_pack_architecture_readiness_snapshot",
                 "context_snapshot_public_provenance_projection_contract",
+                "executor_context_pack_prompt_injection_source_tests",
             ],
             gaps=[
                 "office_context_pack_persistence_and_versioning",
-                "executor_context_pack_injection",
+                "executor_context_pack_211_acceptance",
                 "document_centric_followup_state",
                 "sandbox_cold_start_latency_split",
                 "frontend_context_provenance_acceptance",
@@ -240,8 +241,9 @@ def build_governance_readiness(
             next_checks=[
                 "keep delete, retention, and export erasure evidence current through tools/memory_erasure_readiness.py",
                 "keep cross-session long-term memory disabled until policy and acceptance are complete",
-                "use tools/office_context_readiness.py to keep the office context-pack architecture contract current",
+                "use tools/office_context_readiness.py to keep the office context-pack source contract and prompt injection tests current",
                 "keep context snapshot public provenance limited to counts, safe input keys, execution tier, and generated time",
+                "record 211 executor context-pack acceptance before closing #22",
                 "do not start Docker sandbox for lightweight office writing tasks by default",
             ],
             evidence={
@@ -249,6 +251,7 @@ def build_governance_readiness(
                     "schema_version": office_context_readiness["schema_version"],
                     "status": office_context_readiness["status"],
                     "policy": office_context_readiness["policy"],
+                    "implemented_controls": office_context_readiness["implemented_controls"],
                     "summary": {
                         "allowed_sources": len(
                             office_context_readiness["context_pack_contract"]["allowed_sources"]
