@@ -431,6 +431,25 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
             agent_id="qa-word-review",
             input={"message": "审核一下"},
             skill_manifests=pins,
+            context_snapshot={
+                "source": "chat_stream",
+                "referenced_materials": {
+                    "message_count": 1,
+                    "file_count": 1,
+                    "artifact_count": 1,
+                    "memory_record_count": 1,
+                },
+                "used_context_summary": {
+                    "source": "chat_stream",
+                    "input_keys": ["message", "attachments"],
+                    "memory_policy_source": "stored",
+                    "long_term_memory_read": True,
+                },
+                "latest_artifact_version": "v4",
+                "execution_tier": "sdk_only_writing",
+                "context_pack_generated_at": "2026-06-12T01:23:45Z",
+                "raw_storage_key": "s3://private/object",
+            },
         )
     )
 
@@ -454,6 +473,11 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
     assert (calls["workspace"] / ".claude" / "skills" / "qa-file-reviewer" / "SKILL.md").is_file()
     assert (calls["workspace"] / ".claude" / "skills" / "minimax-docx" / "SKILL.md").is_file()
     assert "Skill: qa-file-reviewer" not in calls["prompt"]
+    assert "Office context pack:" in calls["prompt"]
+    assert "Context pack: 1 message(s), 1 file(s), 1 artifact(s), 0 long-term memory record(s)" in calls["prompt"]
+    assert "Latest artifact version: v4" in calls["prompt"]
+    assert "raw_storage_key" not in calls["prompt"]
+    assert "s3://private" not in calls["prompt"]
 
 
 @pytest.mark.asyncio
@@ -1265,6 +1289,59 @@ def test_build_skill_prompt_uses_backend_managed_skills_without_forced_selector(
     assert "sample.docx" in prompt
     assert "backend-managed skills" in prompt
     assert "staged Skill" in prompt
+
+
+def test_build_skill_prompt_includes_bounded_executor_context_pack():
+    prompt = build_skill_prompt(
+        skill_id="general-chat",
+        user_message="continue the proposal",
+        file_names=["proposal.docx"],
+        context_pack={
+            "schema_version": "ai-platform.executor-context-pack.v1",
+            "prompt_summary": (
+                "Context pack: 2 message(s), 1 file(s), 1 artifact(s), "
+                "0 long-term memory record(s). Inputs: attachments, message. "
+                "Execution tier: sdk_only_writing. Latest artifact version: v3."
+            ),
+            "referenced_materials": {
+                "message_count": 2,
+                "file_count": 1,
+                "artifact_count": 1,
+                "memory_record_count": 0,
+            },
+            "used_context_summary": {
+                "source": "chat_stream",
+                "input_keys": ["attachments", "message"],
+                "memory_policy_source": "stored",
+                "long_term_memory_read": False,
+            },
+            "raw_storage_key": "s3://private/object",
+            "sandbox_workdir": "/tmp/private",
+        },
+    )
+
+    assert "Office context pack:" in prompt
+    assert "Context pack: 2 message(s), 1 file(s), 1 artifact(s)" in prompt
+    assert "Use this bounded context only as background" in prompt
+    assert "raw_storage_key" not in prompt
+    assert "s3://private" not in prompt
+    assert "sandbox_workdir" not in prompt
+
+
+def test_build_skill_prompt_ignores_unknown_context_pack_schema():
+    prompt = build_skill_prompt(
+        skill_id="general-chat",
+        user_message="continue the proposal",
+        file_names=[],
+        context_pack={
+            "schema_version": "private.unbounded.v1",
+            "prompt_summary": "raw_storage_key=s3://private/object",
+        },
+    )
+
+    assert "Office context pack:" not in prompt
+    assert "raw_storage_key" not in prompt
+    assert "s3://private" not in prompt
 
 
 def test_build_skill_prompt_frontloads_qa_review_fast_path():

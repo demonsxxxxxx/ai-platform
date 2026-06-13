@@ -2,6 +2,7 @@ import pytest
 from datetime import datetime
 
 from app.context_builder import (
+    executor_context_pack_from_snapshot,
     ensure_public_context_provenance,
     initial_context_summary,
     public_context_payload,
@@ -271,6 +272,85 @@ def test_initial_context_summary_adds_attachment_signal_for_file_context():
     serialized = str(summary).lower()
     assert "file-a" not in serialized
     assert "raw_storage_key" not in serialized
+
+
+def test_executor_context_pack_from_snapshot_returns_bounded_safe_prompt_contract():
+    context_pack = executor_context_pack_from_snapshot(
+        {
+            "context_snapshot_id": "ctx-a",
+            "source": "chat_stream",
+            "referenced_materials": {
+                "message_count": 3,
+                "file_count": 1,
+                "artifact_count": 2,
+                "memory_record_count": 4,
+            },
+            "used_context_summary": {
+                "source": "chat_stream",
+                "input_keys": ["message", "attachments", "raw_storage_key"],
+                "memory_policy_source": "stored",
+                "long_term_memory_read": True,
+            },
+            "latest_artifact_version": "v2",
+            "execution_tier": "document_worker",
+            "context_pack_generated_at": "2026-06-12T01:23:45Z",
+            "raw_storage_key": "s3://private/object",
+            "sandbox_workdir": "/tmp/private",
+            "executor_private_payload": {"token": "secret"},
+        }
+    )
+
+    assert context_pack == {
+        "schema_version": "ai-platform.executor-context-pack.v1",
+        "source": "chat_stream",
+        "referenced_materials": {
+            "message_count": 3,
+            "file_count": 1,
+            "artifact_count": 2,
+            "memory_record_count": 4,
+        },
+        "used_context_summary": {
+            "source": "chat_stream",
+            "input_keys": ["attachments", "message"],
+            "memory_policy_source": "stored",
+            "long_term_memory_read": False,
+        },
+        "latest_artifact_version": "v2",
+        "execution_tier": "document_worker",
+        "context_pack_generated_at": "2026-06-12T01:23:45Z",
+        "prompt_summary": (
+            "Context pack: 3 message(s), 1 file(s), 2 artifact(s), "
+            "0 long-term memory record(s). Inputs: attachments, message. "
+            "Execution tier: document_worker. Latest artifact version: v2."
+        ),
+    }
+    serialized = str(context_pack).lower()
+    assert "raw_storage_key" not in serialized
+    assert "s3://private" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "executor_private_payload" not in serialized
+    assert "secret" not in serialized
+
+
+def test_executor_context_pack_from_snapshot_defaults_for_missing_snapshot():
+    context_pack = executor_context_pack_from_snapshot(None)
+
+    assert context_pack["schema_version"] == "ai-platform.executor-context-pack.v1"
+    assert context_pack["source"] == "stored_context_snapshot"
+    assert context_pack["referenced_materials"] == {
+        "message_count": 0,
+        "file_count": 0,
+        "artifact_count": 0,
+        "memory_record_count": 0,
+    }
+    assert context_pack["used_context_summary"] == {
+        "source": "stored_context_snapshot",
+        "input_keys": [],
+        "memory_policy_source": "not_recorded",
+        "long_term_memory_read": False,
+    }
+    assert context_pack["execution_tier"] == "sdk_only_writing"
+    assert "0 long-term memory record(s)" in context_pack["prompt_summary"]
 
 
 @pytest.mark.asyncio

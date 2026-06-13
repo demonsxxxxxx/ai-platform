@@ -416,7 +416,32 @@ def _controlled_fast_path_instruction(*, skill_id: str, user_message: str, file_
     )
 
 
-def build_skill_prompt(*, skill_id: str, user_message: str, file_names: list[str]) -> str:
+def _context_pack_prompt_section(context_pack: dict[str, Any] | None) -> str:
+    if not isinstance(context_pack, dict):
+        return ""
+    if context_pack.get("schema_version") != "ai-platform.executor-context-pack.v1":
+        return ""
+    prompt_summary = context_pack.get("prompt_summary")
+    if not isinstance(prompt_summary, str):
+        return ""
+    prompt_summary = prompt_summary.strip()
+    if not prompt_summary:
+        return ""
+    return (
+        "\n\nOffice context pack:\n"
+        f"- {prompt_summary}\n"
+        "- Use this bounded context only as background; do not infer raw storage keys, "
+        "sandbox paths, private payloads, or long-term memory beyond what is listed."
+    )
+
+
+def build_skill_prompt(
+    *,
+    skill_id: str,
+    user_message: str,
+    file_names: list[str],
+    context_pack: dict[str, Any] | None = None,
+) -> str:
     files_text = "\n".join(f"- {name}" for name in file_names) if file_names else "- no files"
     return (
         "You are running inside the ai-platform controlled worker. "
@@ -425,6 +450,7 @@ def build_skill_prompt(*, skill_id: str, user_message: str, file_names: list[str
         f"Workspace files:\n{files_text}\n\n"
         "If a staged Skill matches the task, use that Skill's instructions. "
         "Return a concise execution summary and ensure generated artifacts are saved in the workspace output directory."
+        f"{_context_pack_prompt_section(context_pack)}"
         f"{_controlled_fast_path_instruction(skill_id=skill_id, user_message=user_message, file_names=file_names)}"
     )
 

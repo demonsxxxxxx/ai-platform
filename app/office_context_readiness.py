@@ -82,12 +82,18 @@ _EXECUTION_TIERS = [
 
 _OPEN_GAPS = [
     "office_context_pack_persistence_and_versioning",
-    "executor_context_pack_injection",
+    "executor_context_pack_211_acceptance",
     "user_visible_context_provenance_projection",
     "document_centric_followup_state",
     "office_execution_tier_router",
     "sandbox_cold_start_latency_split",
     "frontend_context_provenance_acceptance",
+]
+
+_IMPLEMENTED_CONTROLS = [
+    "source_level_context_pack_contract",
+    "context_snapshot_public_provenance_projection_contract",
+    "executor_context_pack_prompt_injection_source_tests",
 ]
 
 _NON_GOALS = [
@@ -99,7 +105,7 @@ _NON_GOALS = [
 
 
 def build_office_context_readiness() -> dict[str, Any]:
-    """Build a source-level #22 context-pack architecture baseline without enabling runtime behavior."""
+    """Build a source-level #22 context-pack baseline without claiming 211 acceptance."""
     return {
         "schema_version": SCHEMA_VERSION,
         "gate": GATE_NAME,
@@ -112,6 +118,7 @@ def build_office_context_readiness() -> dict[str, Any]:
             "long_term_memory_policy": "fail_closed_until_policy_and_acceptance",
             "does_not_expand_multi_agent_beta": True,
         },
+        "implemented_controls": list(_IMPLEMENTED_CONTROLS),
         "context_pack_contract": {
             "bounded_summary_required": True,
             "allowed_sources": list(_ALLOWED_CONTEXT_SOURCES),
@@ -122,8 +129,9 @@ def build_office_context_readiness() -> dict[str, Any]:
         "open_gaps": list(_OPEN_GAPS),
         "non_goals": list(_NON_GOALS),
         "evidence_policy": (
-            "This is architecture-readiness evidence only; code, tests, frontend acceptance, "
-            "and 211 smoke are still required before office context continuity can close G6/G9."
+            "This records source-level context-pack contract and executor prompt-injection tests; "
+            "versioned persistence, frontend acceptance, and 211 executor smoke are still required "
+            "before office context continuity can close G6/G9."
         ),
     }
 
@@ -140,6 +148,7 @@ def render_office_context_readiness_markdown(readiness: dict[str, Any]) -> str:
     forbidden_lines = "\n".join(
         f"- {field}" for field in readiness["context_pack_contract"]["forbidden_projection_terms"]
     )
+    implemented_lines = "\n".join(f"- {item}" for item in readiness["implemented_controls"])
     tier_lines = []
     for tier in readiness["execution_tiers"]:
         examples = ", ".join(tier["task_examples"])
@@ -156,6 +165,8 @@ def render_office_context_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"Status: `{readiness['status']}`\n\n"
         "## Open Gaps\n\n"
         f"{gap_lines}\n\n"
+        "## Implemented Controls\n\n"
+        f"{implemented_lines}\n\n"
         "## Context Pack Contract\n\n"
         f"Bounded summary required: `{str(readiness['context_pack_contract']['bounded_summary_required']).lower()}`\n\n"
         "Allowed sources:\n\n"

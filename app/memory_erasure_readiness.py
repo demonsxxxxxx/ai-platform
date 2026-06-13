@@ -190,7 +190,8 @@ def build_memory_erasure_readiness(repo_root: Path | None = None) -> dict[str, A
     evidence = _marker_evidence(root)
     missing = [item["name"] for item in evidence if item["status"] != "present"]
     open_gaps = [
-        "office_context_pack_runtime_implementation_and_acceptance",
+        "office_context_pack_persistence_and_versioning",
+        "executor_context_pack_211_acceptance",
         "document_centric_followup_state",
         "sandbox_cold_start_latency_split",
         "frontend_context_provenance_acceptance",
@@ -212,6 +213,7 @@ def build_memory_erasure_readiness(repo_root: Path | None = None) -> dict[str, A
             "delete_and_cleanup_audit_payload_allowlist",
             "memory_redaction_policy_admin_preview_and_audit",
             "office_context_pack_architecture_readiness_snapshot",
+            "executor_context_pack_prompt_injection_source_tests",
         ],
         "evidence_markers": evidence,
         "missing_evidence_markers": missing,

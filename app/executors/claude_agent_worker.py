@@ -8,6 +8,7 @@ from typing import Any
 
 from app import repositories
 from app.control_plane_contracts import artifact_lineage_contract, standard_trace_id
+from app.context_builder import executor_context_pack_from_snapshot
 from app.db import transaction
 from app.executors.base import ArtifactManifest, ExecutorEventSink, ExecutorResult, RunPayload
 from app.executors.claude_agent_sdk_runner import (
@@ -579,6 +580,7 @@ class ClaudeAgentWorkerAdapter:
             skill_id=payload.skill_id,
             user_message=str(payload.input.get("message") or payload.input.get("prompt") or ""),
             file_names=file_names,
+            context_pack=executor_context_pack_from_snapshot(payload.context_snapshot),
         )
         sdk_result = await self._try_run_sdk(
             payload,
@@ -699,6 +701,7 @@ class ClaudeAgentWorkerAdapter:
             skill_id=payload.skill_id,
             user_message=str(payload.input.get("message") or payload.input.get("prompt") or ""),
             file_names=file_names,
+            context_pack=executor_context_pack_from_snapshot(payload.context_snapshot),
         )
         async def on_text(delta: str) -> None:
             if event_sink:

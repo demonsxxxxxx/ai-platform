@@ -26,6 +26,7 @@ from app.public_context_keys import (
 PUBLIC_CONTEXT_EXECUTION_TIERS = {"sdk_only_writing", "document_worker", "heavy_sandbox"}
 PUBLIC_CONTEXT_ARTIFACT_VERSION_RE = re.compile(r"^v\d+(?:[._:-]\d+){0,3}$", re.IGNORECASE)
 PUBLIC_CONTEXT_HASH_LIKE_VALUE_RE = re.compile(r"^[a-f0-9]{32,}$", re.IGNORECASE)
+EXECUTOR_CONTEXT_PACK_SCHEMA_VERSION = "ai-platform.executor-context-pack.v1"
 
 
 def _utc_now_iso() -> str:
@@ -237,6 +238,69 @@ def public_context_provenance(
         "latest_artifact_version": latest_artifact_version,
         "execution_tier": str(execution_tier or "sdk_only_writing"),
         "context_pack_generated_at": generated_at or _utc_now_iso(),
+    }
+
+
+def _safe_material_count(value: object) -> int:
+    return max(0, int(value)) if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _stored_public_context_referenced_materials(payload: dict[str, Any]) -> dict[str, int]:
+    materials = payload.get("referenced_materials")
+    if not isinstance(materials, dict):
+        materials = {}
+    return {
+        key: _safe_material_count(materials.get(key))
+        for key in PUBLIC_CONTEXT_MATERIAL_COUNT_KEYS
+    }
+
+
+def executor_context_pack_from_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    """Return the bounded context pack that executor prompts may consume."""
+    payload = snapshot if isinstance(snapshot, dict) else {}
+    referenced_materials = _stored_public_context_referenced_materials(payload)
+    sanitized_payload = ensure_public_context_provenance(
+        payload,
+        source="stored_context_snapshot",
+        preserve_stored_input_keys=True,
+    )
+    used_summary = sanitized_payload.get("used_context_summary")
+    if not isinstance(used_summary, dict):
+        used_summary = {}
+    input_keys = safe_public_context_input_keys(used_summary.get("input_keys"))
+    memory_policy_source = str(used_summary.get("memory_policy_source") or "not_recorded")
+    long_term_memory_read = False
+    source = str(used_summary.get("source") or sanitized_payload.get("source") or "stored_context_snapshot")
+    latest_artifact_version = _stored_public_context_latest_artifact_version(sanitized_payload)
+    execution_tier = _stored_public_context_execution_tier(sanitized_payload) or "sdk_only_writing"
+    generated_at = _stored_public_context_generated_at(sanitized_payload) or _utc_now_iso()
+    prompt_summary = (
+        "Context pack: "
+        f"{referenced_materials['message_count']} message(s), "
+        f"{referenced_materials['file_count']} file(s), "
+        f"{referenced_materials['artifact_count']} artifact(s), "
+        f"{referenced_materials['memory_record_count'] if long_term_memory_read else 0} long-term memory record(s). "
+        f"Inputs: {', '.join(input_keys) if input_keys else 'none'}. "
+        f"Execution tier: {execution_tier}."
+    )
+    if latest_artifact_version:
+        prompt_summary += f" Latest artifact version: {latest_artifact_version}."
+    return {
+        "schema_version": EXECUTOR_CONTEXT_PACK_SCHEMA_VERSION,
+        "source": source if source in PUBLIC_CONTEXT_SOURCE_VALUES else "stored_context_snapshot",
+        "referenced_materials": referenced_materials,
+        "used_context_summary": {
+            "source": source if source in PUBLIC_CONTEXT_SOURCE_VALUES else "stored_context_snapshot",
+            "input_keys": input_keys,
+            "memory_policy_source": memory_policy_source
+            if memory_policy_source in PUBLIC_CONTEXT_MEMORY_POLICY_SOURCE_VALUES
+            else "not_recorded",
+            "long_term_memory_read": long_term_memory_read,
+        },
+        "latest_artifact_version": latest_artifact_version,
+        "execution_tier": execution_tier,
+        "context_pack_generated_at": generated_at,
+        "prompt_summary": prompt_summary,
     }
 
 
