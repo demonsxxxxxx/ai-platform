@@ -15,7 +15,7 @@ auth/session, DB schema, or compose delivery behavior.
 | #16 tenant-aware concurrency | Open. #20 closed the current G5 scheduling/admission gaps, but #21 still blocks capacity claims and production default increases. |
 | #17 frontend source ownership | In progress. Source now lives under `frontend/web`, has local install/lint/build evidence, exposes release traceability plus a frontend projection audit, and has a GitHub Actions frontend workflow with source checks plus a packaged-image build/provenance contract. `ci:verify` starts with the projection audit launcher; the active browser entry graph is currently clear of forbidden private/secret-like projection terms, and the Profile env-var surface is no longer active. Inactive legacy secret-like model/channel/envvar sources remain quarantined and must be remapped before G9 rollout. Full closure still needs packaged image smoke/release acceptance on 211 or another Docker-capable host. |
 | #20 G5 scheduling/admission gaps | Closed on 2026-06-06 by `f5da825` and `e203412`, with local full pytest and 211 smoke evidence recorded in the issue. |
-| #21 capacity baseline | Open. Current default active worker execution is still about three runs, and load-test evidence is required before raising concurrency defaults. |
+| #21 capacity baseline | GitHub issue currently closed, but current default active worker execution is still about three runs, and recorded load-test evidence is required before raising concurrency defaults. |
 | #22 office UX/context continuity | Open. Source-level architecture readiness now exists through `tools/office_context_readiness.py`, but runtime context-pack persistence/injection, document-centric follow-up state, sandbox cold-start latency split, and frontend context provenance acceptance are not implemented by this migration. |
 
 Gate summary:
@@ -171,8 +171,9 @@ Static audit on 2026-06-07:
   only `GET /api/ai/admin/runtime/overview` and displays capacity,
   backpressure, governance gaps, and missing load-test evidence. This improves
   frontend operator visibility and has 211 frontend acceptance, but still does
-  not close #21, G6, or G9 because load-test evidence, legacy route remap, and
-  packaged frontend image delivery/release acceptance remain open.
+  not satisfy the recorded capacity-evidence gate or close G6/G9 because
+  load-test evidence, legacy route remap, and packaged frontend image
+  delivery/release acceptance remain open.
 
 Remaining audit risks:
 
@@ -400,7 +401,7 @@ packaged frontend image trace.
   before ordinary-user rollout.
 - The source worktree on 211 was dirty at migration time; this import captures
   the hash-matched snapshot but does not clean the upstream LambChat POC repo.
-- #21 capacity/load-test evidence remains open, so no production concurrency
+- Recorded capacity/load-test evidence remains missing, so no production concurrency
   defaults should be raised from this migration.
 - The Admin Runtime Capacity section has local source tests, build coverage,
   and 211 frontend acceptance at commit

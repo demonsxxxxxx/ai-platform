@@ -66,7 +66,8 @@ GitHub issue #20 已作为 G5 多租户高并发 gate 的收敛切片在 `main` 
 
 ### G5 / G9 Capacity Baseline Status
 
-Issue #21 remains open and blocks any production concurrency default increase.
+Issue #21 is currently closed in GitHub, but the recorded capacity-evidence gate
+still blocks any production concurrency default increase.
 The first baseline step is now captured in
 `docs/operations/ai-platform-capacity-baseline.md` and exposed through the
 admin-only runtime overview as `capacity` with schema
@@ -334,7 +335,7 @@ contract-only `ai-platform.model-gateway-backpressure-policy.v1` baseline as
 `model_gateway_timeout_and_backpressure` as the required recorded load-test
 gate before any production default decision. G9 therefore keeps the request
 limit/enforcement gap plus recorded model-gateway load-test evidence open. This
-is a visibility baseline only; it does not close #21 or G9 without actual
+is a visibility baseline only; it does not satisfy the recorded capacity-evidence gate or G9 without actual
 request-path backpressure enforcement, real model-gateway timeout/backpressure
 load evidence, and 211 acceptance, and it keeps
 `production_default_policy = do_not_raise_without_recorded_load_test_evidence`.
@@ -451,7 +452,7 @@ Settings includes an admin-only Admin Runtime Capacity section that consumes
 only `GET /api/ai/admin/runtime/overview` and renders capacity, backpressure,
 model gateway limit status, G6 governance gaps, and missing load-test evidence.
 This reduces the G9 visual
-gap but does not close #21 because no load-test evidence has been recorded, and
+gap but does not satisfy the recorded capacity-evidence gate because no load-test evidence has been recorded, and
 does not close G6 because legacy env-var/model/channel/MCP route remap and
 ordinary-user acceptance remain open.
 

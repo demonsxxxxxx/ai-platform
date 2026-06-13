@@ -77,7 +77,8 @@ gate remains `model_gateway_timeout_and_backpressure`. The contract records
 `enforcement_status = not_implemented`,
 `capacity_evidence = unproven_without_load_test`, and
 `production_default_policy = do_not_raise_without_recorded_load_test_evidence`;
-it does not raise production concurrency defaults or close #21/G9.
+it does not raise production concurrency defaults, satisfy the recorded
+capacity-evidence gate, or close G9.
 
 Even if a deployment profile sets `SANDBOX_CONTAINER_PROVIDER=docker`, the
 baseline must still warn that sandbox hardening evidence is missing until G7
@@ -492,10 +493,10 @@ The output remained `load_test_evidence_status = probe_only_not_recorded` and
 logs after the probe had no traceback, exception, error, timeout, failed import,
 permission, entrypoint, pydantic, module-not-found, or syntax-error markers.
 
-This evidence updates #21 to the latest 211 runtime and proves the bounded
-read-only probe path is operational. It still does not close #21, does not
-claim a safe maximum concurrency number, and must not be used to raise
-production defaults.
+This evidence updates the capacity baseline to the latest 211 runtime and proves
+the bounded read-only probe path is operational. It still does not satisfy the
+recorded capacity-evidence gate, does not claim a safe maximum concurrency
+number, and must not be used to raise production defaults.
 
 ### Evidence Bundle Draft Tool
 
