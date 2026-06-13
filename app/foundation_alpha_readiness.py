@@ -670,6 +670,39 @@ def _artifact_review_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _governed_skill_runs_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
+    governed = _safe_runtime_check(runtime_checks.get("governed_skill_runs"))
+    snapshots = _safe_runtime_check(governed.get("run_skill_snapshots"))
+    real_task_statuses = governed.get("real_task_statuses")
+    if not isinstance(real_task_statuses, dict):
+        real_task_statuses = {}
+    missing_pinned_snapshots = snapshots.get("missing_pinned_snapshots")
+    if not isinstance(missing_pinned_snapshots, list):
+        missing_pinned_snapshots = []
+    used_skill_ids = snapshots.get("used_skill_ids")
+    if not isinstance(used_skill_ids, list):
+        used_skill_ids = []
+    return {
+        "verified": governed.get("verified") is True,
+        "real_task_statuses": {
+            str(key): str(value)
+            for key, value in real_task_statuses.items()
+            if isinstance(key, str) and isinstance(value, str)
+        },
+        "run_skill_snapshots": {
+            "row_count": snapshots.get("row_count"),
+            "used_count": snapshots.get("used_count"),
+            "used_skill_ids": [str(item) for item in used_skill_ids if isinstance(item, str)],
+            "used_skills_source": snapshots.get("used_skills_source"),
+            "pinned_snapshot_count": snapshots.get("pinned_snapshot_count"),
+            "pinned_snapshot_source": snapshots.get("pinned_snapshot_source"),
+            "missing_pinned_snapshots": [
+                str(item) for item in missing_pinned_snapshots if isinstance(item, str)
+            ],
+        },
+    }
+
+
 def _projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     frontend = _safe_runtime_check(runtime_checks.get("lambchat_frontend"))
     boundary = _safe_runtime_check(runtime_checks.get("frontend_dist_api_boundary"))
@@ -1644,6 +1677,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
             "evidence": {
                 **governance_summary,
                 "skill_snapshot_run_seen": True,
+                "governed_skill_runs": _governed_skill_runs_summary(smoke_checks),
                 "tool_permission_decision_audit_required": True,
                 "memory_long_term_default_fail_closed": True,
                 "context_snapshot_public_projection": _context_projection_summary(smoke_checks),

@@ -524,6 +524,98 @@ def test_word_review_attachment_chat_routes_to_qa_runner(monkeypatch):
     assert gate.evidence["context_snapshot_public_projection"]["ok"] is True
 
 
+def test_governed_skill_runs_gate_summarizes_real_task_snapshot_pins(monkeypatch):
+    queries: list[str] = []
+    run_rows = [
+        {
+            "run_id": "run_review_gate_1",
+            "tenant_id": "default",
+            "skill_id": "qa-file-reviewer",
+            "status": "succeeded",
+        },
+        {
+            "run_id": "run_translate_gate_1",
+            "tenant_id": "default",
+            "skill_id": "baoyu-translate",
+            "status": "succeeded",
+        },
+    ]
+
+    def fake_psql_rows(container: str, db_user: str, db_name: str, sql: str):
+        queries.append(sql)
+        if "from run_skill_snapshots" not in sql:
+            raise AssertionError(sql)
+        return [
+            {
+                "row_count": 2,
+                "used_count": 2,
+                "used_skill_ids": ["qa-file-reviewer", "baoyu-translate"],
+                "used_skills_sources": ["executor_hook"],
+                "pinned_snapshot_count": 2,
+                "missing_pinned_snapshots": [],
+            }
+        ]
+
+    monkeypatch.setattr(verify_poc_gate, "psql_rows", fake_psql_rows)
+
+    gate = verify_poc_gate.check_governed_skill_runs("postgres", "user", "db", run_rows)
+
+    assert gate.name == "governed_skill_runs"
+    assert gate.ok is True
+    assert gate.evidence == {
+        "verified": True,
+        "real_task_statuses": {
+            "qa-file-reviewer": "succeeded",
+            "baoyu-translate": "succeeded",
+        },
+        "run_skill_snapshots": {
+            "row_count": 2,
+            "used_count": 2,
+            "used_skill_ids": ["qa-file-reviewer", "baoyu-translate"],
+            "used_skills_source": "executor_hook",
+            "pinned_snapshot_count": 2,
+            "pinned_snapshot_source": "release_decision",
+            "missing_pinned_snapshots": [],
+        },
+    }
+    assert "run_review_gate_1" in queries[0]
+    assert "run_translate_gate_1" in queries[0]
+    assert "r.input_json ? 'release_decision'" in queries[0]
+
+
+def test_governed_skill_runs_gate_fails_closed_when_pinned_snapshot_is_missing(monkeypatch):
+    run_rows = [
+        {
+            "run_id": "run_review_gate_1",
+            "tenant_id": "default",
+            "skill_id": "qa-file-reviewer",
+            "status": "succeeded",
+        }
+    ]
+
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "psql_rows",
+        lambda *args, **kwargs: [
+            {
+                "row_count": 0,
+                "used_count": 0,
+                "used_skill_ids": [],
+                "used_skills_sources": [],
+                "pinned_snapshot_count": 0,
+                "missing_pinned_snapshots": ["qa-file-reviewer"],
+            }
+        ],
+    )
+
+    gate = verify_poc_gate.check_governed_skill_runs("postgres", "user", "db", run_rows)
+
+    assert gate.ok is False
+    assert gate.evidence["verified"] is False
+    assert gate.evidence["real_task_statuses"] == {"qa-file-reviewer": "succeeded"}
+    assert gate.evidence["run_skill_snapshots"]["missing_pinned_snapshots"] == ["qa-file-reviewer"]
+
+
 def test_context_snapshot_public_projection_gate_requires_safe_explainable_summary(monkeypatch):
     calls: list[tuple[str, dict[str, str]]] = []
 

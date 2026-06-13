@@ -485,6 +485,7 @@ def latest_successful_run(container: str, db_user: str, db_name: str, *, agent_i
     sql = f"""
 select json_build_object(
   'run_id', r.id,
+  'tenant_id', r.tenant_id,
   'agent_id', r.agent_id,
   'skill_id', r.skill_id,
   'status', r.status,
@@ -520,6 +521,166 @@ def check_db_evidence(container: str, db_user: str, db_name: str) -> list[Gate]:
         ok = bool(row) and (not require_artifact or (row.get("artifact_id") and int(row.get("artifact_size_bytes") or 0) > 0 and storage_key.startswith("tenants/")))
         gates.append(Gate(name, ok, row or {"agent_id": agent_id, "skill_id": skill_id, "found": False}))
     return gates
+
+
+def _safe_run_scope(run_rows: list[dict[str, Any]]) -> list[tuple[str, str, str, str]]:
+    scopes: list[tuple[str, str, str, str]] = []
+    for row in run_rows:
+        if not isinstance(row, dict):
+            continue
+        run_id = str(row.get("run_id") or "")
+        tenant_id = str(row.get("tenant_id") or "default")
+        skill_id = str(row.get("skill_id") or "")
+        status = str(row.get("status") or "")
+        if not run_id or not skill_id:
+            continue
+        scopes.append(
+            (
+                assert_safe_id(tenant_id, "tenant_id"),
+                assert_safe_id(run_id, "run_id"),
+                assert_safe_id(skill_id, "skill_id"),
+                status,
+            )
+        )
+    return scopes
+
+
+def check_governed_skill_runs(
+    container: str,
+    db_user: str,
+    db_name: str,
+    run_rows: list[dict[str, Any]],
+) -> Gate:
+    """Verify real governed-skill task runs persisted used pinned snapshots."""
+    scopes = _safe_run_scope(run_rows)
+    real_task_statuses = {skill_id: status for _, _, skill_id, status in scopes}
+    if not scopes:
+        return Gate(
+            "governed_skill_runs",
+            False,
+            {
+                "verified": False,
+                "real_task_statuses": real_task_statuses,
+                "run_skill_snapshots": {
+                    "row_count": 0,
+                    "used_count": 0,
+                    "used_skill_ids": [],
+                    "used_skills_source": "",
+                    "pinned_snapshot_count": 0,
+                    "pinned_snapshot_source": "release_decision",
+                    "missing_pinned_snapshots": sorted(real_task_statuses),
+                },
+            },
+        )
+    values = ", ".join(
+        f"('{tenant_id}', '{run_id}', '{skill_id}')"
+        for tenant_id, run_id, skill_id, _status in scopes
+    )
+    sql = f"""
+with target_runs(tenant_id, run_id, skill_id) as (
+  values {values}
+),
+snapshots as (
+  select rss.tenant_id, rss.run_id, rss.skill_id, rss.used, rss.used_skills_source
+  from run_skill_snapshots rss
+  join target_runs target
+    on target.tenant_id = rss.tenant_id
+   and target.run_id = rss.run_id
+   and target.skill_id = rss.skill_id
+),
+pinned_runs as (
+  select r.tenant_id, r.id as run_id, r.skill_id
+  from runs r
+  join target_runs target
+    on target.tenant_id = r.tenant_id
+   and target.run_id = r.id
+   and target.skill_id = r.skill_id
+  where r.input_json ? 'release_decision'
+    and coalesce(r.input_json->'release_decision'->>'selected_version', '') <> ''
+)
+select json_build_object(
+  'row_count', (select count(*) from snapshots),
+  'used_count', (select count(*) from snapshots where used),
+  'used_skill_ids', coalesce(
+    (select json_agg(skill_id order by skill_id) from snapshots where used),
+    '[]'::json
+  ),
+  'used_skills_sources', coalesce(
+    (select json_agg(distinct used_skills_source order by used_skills_source)
+       from snapshots
+      where used and coalesce(used_skills_source, '') <> ''),
+    '[]'::json
+  ),
+  'pinned_snapshot_count', (
+    select count(*)
+    from pinned_runs pinned
+    join snapshots snapshot
+      on snapshot.tenant_id = pinned.tenant_id
+     and snapshot.run_id = pinned.run_id
+     and snapshot.skill_id = pinned.skill_id
+  ),
+  'missing_pinned_snapshots', coalesce(
+    (
+      select json_agg(pinned.skill_id order by pinned.skill_id)
+      from pinned_runs pinned
+      left join snapshots snapshot
+        on snapshot.tenant_id = pinned.tenant_id
+       and snapshot.run_id = pinned.run_id
+       and snapshot.skill_id = pinned.skill_id
+      where snapshot.skill_id is null
+    ),
+    '[]'::json
+  )
+)::text;
+"""
+    rows = psql_rows(container, db_user, db_name, sql)
+    snapshot_summary = rows[0] if rows else {}
+    used_skill_ids = snapshot_summary.get("used_skill_ids")
+    if not isinstance(used_skill_ids, list):
+        used_skill_ids = []
+    missing_pinned_snapshots = snapshot_summary.get("missing_pinned_snapshots")
+    if not isinstance(missing_pinned_snapshots, list):
+        missing_pinned_snapshots = []
+    used_skills_sources = snapshot_summary.get("used_skills_sources")
+    if not isinstance(used_skills_sources, list):
+        used_skills_sources = []
+    used_skills_source = ",".join(
+        str(item).strip()
+        for item in used_skills_sources
+        if isinstance(item, str) and item.strip()
+    )
+    expected_used_skill_ids = [skill_id for _, _, skill_id, _status in scopes]
+    row_count = int(snapshot_summary.get("row_count") or 0)
+    used_count = int(snapshot_summary.get("used_count") or 0)
+    pinned_snapshot_count = int(snapshot_summary.get("pinned_snapshot_count") or 0)
+    ok = (
+        all(status == "succeeded" for status in real_task_statuses.values())
+        and row_count >= len(scopes)
+        and used_count >= len(scopes)
+        and sorted(str(item) for item in used_skill_ids) == sorted(expected_used_skill_ids)
+        and pinned_snapshot_count >= len(scopes)
+        and not missing_pinned_snapshots
+    )
+    evidence = {
+        "verified": ok,
+        "real_task_statuses": real_task_statuses,
+        "run_skill_snapshots": {
+            "row_count": row_count,
+            "used_count": used_count,
+            "used_skill_ids": [
+                skill_id
+                for skill_id in expected_used_skill_ids
+                if skill_id in {str(item) for item in used_skill_ids if isinstance(item, str)}
+            ],
+            "used_skills_source": used_skills_source,
+            "pinned_snapshot_count": pinned_snapshot_count,
+            "pinned_snapshot_source": "release_decision",
+            "missing_pinned_snapshots": [
+                str(item) for item in missing_pinned_snapshots if isinstance(item, str)
+            ],
+        },
+    }
+    return Gate("governed_skill_runs", ok, evidence)
 
 
 def check_artifact_download_isolation(api_url: str, artifact_rows: list[dict[str, Any]]) -> Gate:
@@ -1266,6 +1427,12 @@ def main() -> int:
     db_gates = check_db_evidence(args.postgres_container, args.postgres_user, args.postgres_db)
     env_values = runtime_env_values(args.env_path, args.api_container)
     artifact_rows = [gate.evidence for gate in db_gates if gate.name in {"review_artifact", "translate_artifact"} and gate.ok]
+    governed_skill_runs_gate = check_governed_skill_runs(
+        args.postgres_container,
+        args.postgres_user,
+        args.postgres_db,
+        artifact_rows,
+    )
     word_review_gate = check_word_review_attachment_chat(args.api_url, args.postgres_container, args.postgres_user, args.postgres_db)
     gates = [
         check_frontend(args.frontend_url),
@@ -1275,6 +1442,7 @@ def main() -> int:
         check_runtime_config(args.env_path, env_values),
         check_company_auth_bridge(env_values.get("EXISTING_AUTH_BASE_URL", "")),
         *db_gates,
+        governed_skill_runs_gate,
         check_artifact_download_isolation(args.api_url, artifact_rows),
         check_artifact_preview_isolation(args.api_url, artifact_rows),
         check_upload_attachment_chat(args.api_url, args.postgres_container, args.postgres_user, args.postgres_db),
