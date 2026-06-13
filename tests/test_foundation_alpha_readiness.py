@@ -10,7 +10,7 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
-ACTIVE_RUNTIME_SUBJECT_SHA = "18454a9ccd890dd6b9636a04604b6a100cba31e7"
+ACTIVE_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
 HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
@@ -2332,7 +2332,7 @@ def test_foundation_alpha_readiness_records_211_packaged_frontend_environment_bl
     tmp_path,
 ):
     evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
-    image = "ai-platform:18454a9-cross-tenant-isolation"
+    image = "ai-platform:cbbfaff-runtime-evidence-root-redaction-v2"
     smoke_path, auth_path = _write_release_evidence_pair(
         evidence_root,
         ACTIVE_RUNTIME_SUBJECT_SHA,

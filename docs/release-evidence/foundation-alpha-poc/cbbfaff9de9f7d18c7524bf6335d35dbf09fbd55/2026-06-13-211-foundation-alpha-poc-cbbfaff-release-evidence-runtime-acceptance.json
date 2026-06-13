@@ -1,0 +1,120 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-06-13-211-foundation-alpha-poc-cbbfaff-release-evidence-runtime-acceptance",
+  "commit_sha": "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55",
+  "runtime_subject_commit_sha": "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55",
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#15",
+    "#16",
+    "#17",
+    "#21",
+    "#22",
+    "#23",
+    "#24"
+  ],
+  "pr_refs": [
+    "#31"
+  ],
+  "artifact_kind": "211_runtime_smoke",
+  "captured_at": "2026-06-13T08:50:00+08:00",
+  "source_ref": {
+    "branch": "codex/foundation-alpha-s1-closure-18454a9",
+    "runtime_commit": "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55",
+    "runtime_source_marker": "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55",
+    "source_snapshot": {
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "source_tree_commit_sha": "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55",
+      "runtime_subject_commit_sha": "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55",
+      "source_tree_dirty": false,
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "source_target": "services/ai-platform",
+      "created_at": "2026-06-13T08:49:15+08:00",
+      "archive": "ai-platform-cbbfaff-source.tar"
+    },
+    "image": "ai-platform:cbbfaff-runtime-evidence-root-redaction-v2",
+    "image_id": "sha256:cdd99dbffb6529f8faf9bcc3476c65f18063dea00977d4da7879d98f84fb690b",
+    "image_labels": {
+      "ai-platform.source-revision": "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55",
+      "org.opencontainers.image.revision": "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55",
+      "ai-platform.source_revision": "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55",
+      "ai-platform.runtime-subject": "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55",
+      "ai-platform.runtime-rollout": "foundation-alpha-cbbfaff-runtime-evidence-root-redaction",
+      "ai-platform.source_note": "runtime-evidence-root-redaction-marker-refresh"
+    },
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "api_health": {
+      "route": "/api/ai/health",
+      "status": "ok"
+    },
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "compose_env_layout_status": "external_env_file_label_present",
+    "runtime_subject_label_status": "runtime_subject_label_current",
+    "source_revision_alias_label_status": "source_revision_alias_label_current",
+    "repo_local_env_present": false,
+    "gateway_secret_supplied": false,
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "deployment_note": "runtime-only image rebased from the previous healthy image because dependencies did not change; compose used --no-build with the reviewed image tag. Source revision, OCI revision, runtime-subject, and source_revision alias labels point to cbbfaff. The compose environment-file label still records an external env-file path, so this evidence does not copy or expose runtime secrets."
+  },
+  "evidence_ref": {
+    "verifier": "tools/verify_release_evidence_runtime_acceptance.py",
+    "command": "python tools/verify_release_evidence_runtime_acceptance.py --format json --commit-sha cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55 --runtime-subject-commit-sha cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55 --image ai-platform:cbbfaff-runtime-evidence-root-redaction-v2",
+    "result": "ok:true",
+    "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
+    "runtime_checks": {
+      "release_evidence_runtime_acceptance": {
+        "checks": {
+          "retention_runtime_acceptance": {
+            "default_retention_days": 180,
+            "delete_only_reviewed_redacted_entries": true,
+            "forbidden_delete_targets_present": true,
+            "minimum_retention_days": 30,
+            "policy_status": "contract_only_not_runtime_enforced",
+            "requires_review_before_delete": true,
+            "schema_version": "ai-platform.release-evidence-retention-policy.v1",
+            "status": "accepted_review_first_policy"
+          },
+          "runtime_export_acceptance": {
+            "blocked_entry_count": 0,
+            "does_not_export_raw_runtime_payloads": true,
+            "excluded_entry_count": 18,
+            "export_policy": "safe_reviewed_index_only_not_runtime_export",
+            "safe_entry_count": 54,
+            "safe_entry_fields_only": true,
+            "status": "ready_for_operator_review"
+          }
+        },
+        "does_not_close_g9": true,
+        "does_not_export_raw_runtime_payloads": true,
+        "ok": true,
+        "open_gaps": [],
+        "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
+        "source": {
+          "commit_sha": "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55",
+          "evidence_root": "docs/release-evidence",
+          "runtime_subject_commit_sha": "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55",
+          "image": "ai-platform:cbbfaff-runtime-evidence-root-redaction-v2"
+        },
+        "status": "accepted_for_operator_review"
+      }
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "This entry records a reviewed release-evidence runtime acceptance summary produced on 211 for the cbbfaff runtime subject.",
+    "The verifier confirmed safe reviewed-index export behavior and review-first retention policy acceptance with no runtime export blockers.",
+    "The inner runtime acceptance payload is a safe summary only and omits raw evidence roots, raw runtime payloads, object locators, workspace filesystem paths, executor-only internals, run identifiers, file identifiers, artifact identifiers, runtime env-file paths, and personal workstation paths.",
+    "This focused evidence removes the G9 runtime export and retention acceptance blocker for the cbbfaff Foundation Alpha POC runtime only. It does not close alert delivery enablement, signed Skill package/SBOM, ordinary-user legacy route acceptance, packaged frontend image release acceptance, broader auth/session/RBAC regression gates, or G0 source-authority parity while external env-file compose layout remains open."
+  ],
+  "open_followups": [
+    "Signed package or SBOM review evidence for Skill release remains open.",
+    "Ordinary-user acceptance for quarantined legacy routes remains open.",
+    "Packaged frontend image release acceptance remains open.",
+    "External env-file compose layout should be reconciled before G0 source-authority closure; no env values were copied or printed."
+  ]
+}
