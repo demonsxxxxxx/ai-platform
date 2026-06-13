@@ -1094,6 +1094,91 @@ def test_foundation_alpha_readiness_accepts_governance_runtime_smoke_for_same_ru
         not in readiness["operator_context"]["next_recommended_slices"]
     )
 
+def test_foundation_alpha_readiness_summarizes_mcp_tool_permission_runtime_controls(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    smoke_path, auth_path = _write_release_evidence_pair(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image="ai-platform:a3f1d73-foundation-alpha-poc",
+    )
+    _write_governance_evidence(
+        evidence_root,
+        CURRENT_SOURCE_SHA,
+        image="ai-platform:a3f1d73-foundation-alpha-poc",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: NEWER_SOURCE_SHA,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_changes_since",
+        lambda _: ["app/tool_policy_readiness.py"],
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        lambda: {
+            "status": "verified_packaged_release_followup_open",
+            "open_gap_count": 0,
+            "blockers": [],
+        },
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    controls = readiness["domains"]["g6_poc_governance"]["evidence"][
+        "mcp_tool_permission_runtime_controls"
+    ]
+    assert controls == {
+        "status": "source_verified_runtime_rollout_required",
+        "runtime_verified": False,
+        "policy_source": "app.tool_policy_readiness",
+        "registry_source": "platform_registered_mcp_tools_only",
+        "ordinary_user_custom_mcp": "not_allowed",
+        "unregistered_tool_behavior": "deny",
+        "tenant_policy_scope": "same_tenant_registered_tools_only",
+        "read_only_low_risk_auto_allow": True,
+        "disabled_or_unregistered_deny": True,
+        "high_risk_or_write_requires_current_decision": True,
+        "exact_allow_decisions": ["allow_once", "allow_for_run"],
+        "deny_decision": "deny",
+        "allow_once_consumed_before_dispatch": True,
+        "allow_once_consume_failure_fails_closed": True,
+        "request_event_audit": {
+            "permission_request_event": "tool_permission_requested",
+            "permission_decision_event": "tool_permission_decided",
+            "decision_audit_action": "tool.permission.decision",
+            "worker_policy_audit_actions": [
+                "mcp_tool_policy_allowed",
+                "mcp_tool_policy_denied",
+                "mcp_tool_call_completed",
+            ],
+        },
+        "covered_runtime_control_tests": [
+            "tests/test_worker.py::test_worker_audits_read_only_ragflow_tool_call",
+            "tests/test_worker.py::test_worker_blocks_disabled_mcp_tool_before_dispatch",
+            "tests/test_worker.py::test_worker_blocks_high_risk_mcp_tool_without_permission_decision",
+            "tests/test_worker.py::test_worker_allows_high_risk_mcp_tool_with_permission_decision",
+            "tests/test_worker.py::test_worker_consumes_allow_once_mcp_decision_before_dispatch",
+            "tests/test_worker.py::test_worker_fails_closed_when_allow_once_mcp_decision_cannot_be_consumed",
+            "tests/test_tool_permission_routes.py",
+            "tests/test_admin_tool_policies.py",
+        ],
+    }
+    assert controls["status"] != "211_verified"
+
 
 def test_foundation_alpha_readiness_removes_signed_skill_followup_when_release_evidence_gap_is_closed(
     monkeypatch,
@@ -2870,7 +2955,14 @@ def test_foundation_alpha_readiness_fails_closed_when_optional_readiness_depende
     readiness = build_foundation_alpha_readiness(SecretBearingSettings())
 
     assert readiness["domains"]["g6_poc_governance"]["status"] == "partial_followups_open"
-    assert readiness["domains"]["g6_poc_governance"]["evidence"] == {
+    g6_evidence = readiness["domains"]["g6_poc_governance"]["evidence"]
+    assert g6_evidence["mcp_tool_permission_runtime_controls"]["policy_source"] == "app.tool_policy_readiness"
+    assert g6_evidence["mcp_tool_permission_runtime_controls"]["status"] != "211_verified"
+    assert {
+        key: value
+        for key, value in g6_evidence.items()
+        if key != "mcp_tool_permission_runtime_controls"
+    } == {
         "governance_readiness_status": "dependency_unavailable",
         "ordinary_user_policy": "fail_closed_until_projection_mapping_and_acceptance_pass",
         "open_gap_count": 1,
