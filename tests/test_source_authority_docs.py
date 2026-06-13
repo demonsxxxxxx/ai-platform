@@ -184,6 +184,8 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "issue -> PR -> review -> merge -> 211 deploy/smoke -> close issue" in gate_status_text
     assert "#17 frontend source migration" in gate_status_text
     assert "#21 capacity baseline" in gate_status_text
+    assert "#21 is currently closed in GitHub" in gate_status_text
+    assert "#21 remains open" not in gate_status_text
     assert "do_not_raise_without_recorded_load_test_evidence" in gate_status_text
     assert "packaged frontend image smoke/release acceptance" in gate_status_text
     assert "Foundation Alpha POC Smoke" in gate_status_text
@@ -690,7 +692,8 @@ def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
     assert "status counts were `{\"200\": 20}`" in capacity_text
     assert "does_not_mark_gate_recorded = true" in capacity_text
     assert "not accepted by `tools/capacity_gate_readiness.py` as recorded gate evidence" in capacity_text
-    assert "still does not close #21" in capacity_text
+    assert "still does not satisfy the" in capacity_text
+    assert "recorded capacity-evidence gate" in capacity_text
     assert "must not be used to raise production defaults" in capacity_text
     assert "C:\\Users" not in capacity_text
 
