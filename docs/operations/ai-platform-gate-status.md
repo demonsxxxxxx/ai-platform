@@ -46,6 +46,13 @@ For source-only docs/tests/evidence syncs, write a local-only
 `.ai-platform-source-snapshot.json` next to `.ai-platform-source-revision` so
 `tools/foundation_alpha_readiness.py` can prove the runtime-affecting delta is
 empty. Missing, stale, or malformed snapshot markers intentionally fail closed.
+For normal clean GitHub checkouts where a runtime subject came from a squashed
+PR-branch commit that may not exist locally, the committed source-runtime
+relation manifest at
+`docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json`
+is the fallback source of truth. The readiness tool may use that manifest only
+when it matches the current source tree, or when any newer local delta after the
+manifest is runtime-neutral.
 
 Current live 211 API/worker runtime and active Foundation Alpha POC evidence
 subject is `cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55`. On 2026-06-13, source

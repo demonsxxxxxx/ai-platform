@@ -6,6 +6,8 @@ This document closes the first #21 baseline step without raising production
 concurrency defaults. It records the current configured ceiling, the live Admin
 Runtime signal path, and the load-test gates required before any production
 profile increase.
+GitHub issue #21 is currently closed, but the capacity-upgrade evidence gate
+remains open until all recorded load-test gates have operator-reviewed evidence.
 
 ## Current Default Ceiling
 
@@ -399,9 +401,10 @@ load-test gates were still missing recorded evidence:
 - `sandbox_lease_creation_under_load`
 - `model_gateway_timeout_and_backpressure`
 
-This evidence keeps #21 open. It verifies that current 211 runtime visibility
-and fail-closed policy are deployed, but it still does not provide a safe
-maximum concurrency number and must not be used to raise production defaults.
+This evidence belongs to the closed #21 history, but the capacity-upgrade
+evidence gate remains open. It verifies that current 211 runtime visibility and
+fail-closed policy are deployed, but it still does not provide a safe maximum
+concurrency number and must not be used to raise production defaults.
 
 ### 211 Runtime Evidence - 2026-06-08, commit `be03c95`
 
@@ -437,11 +440,12 @@ load-test gates were still missing recorded evidence:
 - `sandbox_lease_creation_under_load`
 - `model_gateway_timeout_and_backpressure`
 
-This follow-up evidence keeps #21 open and continues to fail closed for
-production concurrency. The observed 211 defaults still include single API and
-worker process counts, DB pool max size `10`, active worker runs `3`,
-per-user active admission `3`, tenant/user queue quotas disabled, model
-gateway concurrency unbounded by platform config, and sandbox provider `fake`.
+This follow-up evidence belongs to the closed #21 history and continues to fail
+closed for production concurrency. The capacity-upgrade evidence gate remains
+open. The observed 211 defaults still include single API and worker process
+counts, DB pool max size `10`, active worker runs `3`, per-user active
+admission `3`, tenant/user queue quotas disabled, model gateway concurrency
+unbounded by platform config, and sandbox provider `fake`.
 
 ### 211 Runtime Evidence and Bounded Probe - 2026-06-08, commit `3d607c9`
 

@@ -21,6 +21,9 @@ OBSERVABILITY_READINESS_DOC = ROOT / "docs/operations/ai-platform-observability-
 GOVERNANCE_READINESS_DOC = ROOT / "docs/operations/ai-platform-governance-readiness.md"
 GATE_STATUS_DOC = ROOT / "docs/operations/ai-platform-gate-status.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
+SOURCE_RUNTIME_RELATION_MANIFEST = (
+    ROOT / "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json"
+)
 ACTIVE_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
 ACTIVE_RUNTIME_IMAGE = "ai-platform:cbbfaff-runtime-evidence-root-redaction-v2"
 ACTIVE_RUNTIME_IMAGE_ID = "sha256:cdd99dbffb6529f8faf9bcc3476c65f18063dea00977d4da7879d98f84fb690b"
@@ -193,7 +196,10 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "contract; not production gate closure" in gate_status_text
     assert "current context public-summary" in gate_status_text
     assert "source_synced_runtime_pending" in gate_status_text
+    assert "committed source-runtime" in gate_status_text
+    assert "relation manifest" in gate_status_text
     assert "runtime_source_relation" in release_evidence_text
+    assert "source-runtime-relation-manifest.json" in release_evidence_text
     assert "current_source_verified_by_running_runtime" in release_evidence_text
     assert "runtime_relevant_source_verified_by_running_runtime" in release_evidence_text
     assert "verified_runtime_subject" in release_evidence_text
@@ -225,6 +231,19 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "api_key" not in gate_status_text
     assert "C:\\Users" not in gate_status_text
     assert "/home/xinlin.jiang/" not in gate_status_text
+
+
+def test_committed_source_runtime_relation_manifest_keeps_clean_checkout_readiness_truthful():
+    import json
+
+    payload = json.loads(read(SOURCE_RUNTIME_RELATION_MANIFEST))
+
+    assert payload["schema_version"] == "ai-platform.source-runtime-relation-manifest.v1"
+    assert payload["source_tree_commit_sha"] == "fd8fa25193a34427711e13b7faec0e2c19b2970b"
+    assert payload["runtime_subject_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert payload["runtime_affecting_changes_since_runtime_subject"] == []
+    assert "C:\\Users" not in json.dumps(payload)
+    assert "/home/xinlin.jiang/" not in json.dumps(payload)
 
 
 def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded():
@@ -685,6 +704,11 @@ def test_capacity_docs_record_machine_readable_gate_evidence_contract():
 def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
     capacity_text = read(CAPACITY_BASELINE_DOC)
 
+    assert "GitHub issue #21 is currently closed" in capacity_text
+    assert "capacity-upgrade evidence gate" in capacity_text
+    assert "remains open" in capacity_text
+    assert "This evidence keeps #21 open" not in capacity_text
+    assert "This follow-up evidence keeps #21 open" not in capacity_text
     assert "3d607c96b8d8e21f59461bd94cc4b64de1d49dd5" in capacity_text
     assert "ai-platform:3d607c9-g9-latency-acceptance" in capacity_text
     assert "probe_completed_not_gate_evidence" in capacity_text
