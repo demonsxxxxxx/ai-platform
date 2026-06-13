@@ -145,6 +145,8 @@ def build_governance_readiness(
                 "public_tool_permission_card_projection",
                 "audit_visible_legacy_frontend_route_policy_mapping",
                 "tool_allow_deny_ask_policy_taxonomy_evidence",
+                "platform_registered_mcp_only_policy",
+                "ordinary_user_custom_mcp_disabled",
                 "admin_policy_change_history_projection",
                 "admin_policy_bulk_review_dashboard_contract",
             ],
@@ -161,6 +163,7 @@ def build_governance_readiness(
                 "tool_policy_taxonomy": {
                     "schema_version": tool_policy_readiness["schema_version"],
                     "status": tool_policy_readiness["status"],
+                    "registry_contract": tool_policy_readiness["registry_contract"],
                     "summary": tool_policy_readiness["summary"],
                     "implemented_controls": tool_policy_readiness["implemented_controls"],
                     "open_gaps": tool_policy_readiness["open_gaps"],

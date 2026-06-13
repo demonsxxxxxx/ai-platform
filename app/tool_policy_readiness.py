@@ -82,6 +82,8 @@ def build_tool_policy_readiness() -> dict[str, Any]:
     bulk_review_readiness = build_tool_policy_bulk_review_readiness()
     implemented_controls = [
         "tool_allow_deny_ask_policy_taxonomy_for_all_mcp_tools",
+        "platform_registered_mcp_only_policy",
+        "ordinary_user_custom_mcp_disabled",
         "admin_policy_change_history_projection",
         "admin_policy_bulk_review_dashboard_contract",
     ]
@@ -97,6 +99,12 @@ def build_tool_policy_readiness() -> dict[str, Any]:
             "allow": "active read-only low-risk tools can be auto-allowed",
             "ask": "active medium/high-risk or write-capable tools require a current user decision",
             "deny": "disabled tools, missing tenant policy, expired decisions, or explicit deny fail closed",
+        },
+        "registry_contract": {
+            "registry_source": "platform_registered_mcp_tools_only",
+            "ordinary_user_custom_mcp": "not_allowed",
+            "unregistered_tool_behavior": "deny",
+            "tenant_policy_scope": "same_tenant_registered_tools_only",
         },
         "decision_options": list(_DECISION_OPTIONS),
         "risk_levels": list(RISK_ORDER),

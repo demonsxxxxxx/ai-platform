@@ -751,6 +751,78 @@ def _artifact_review_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
         "playback_contract_version": document_review.get("playback_contract_version"),
     }
 
+def _mcp_tool_permission_runtime_controls_summary(
+    *,
+    runtime_rollout_required_for_current_source: bool,
+) -> dict[str, Any]:
+    from app.tool_policy_readiness import build_tool_policy_readiness
+
+    readiness = build_tool_policy_readiness()
+    registry_contract = readiness.get("registry_contract")
+    if not isinstance(registry_contract, dict):
+        registry_contract = {}
+    decision_options = readiness.get("decision_options")
+    if not isinstance(decision_options, list):
+        decision_options = []
+    taxonomy_cases = readiness.get("taxonomy_cases")
+    if not isinstance(taxonomy_cases, list):
+        taxonomy_cases = []
+    case_map = {
+        str(item.get("id")): item
+        for item in taxonomy_cases
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+    exact_allow_decisions = [
+        item
+        for item in decision_options
+        if isinstance(item, str) and item in {"allow_once", "allow_for_run"}
+    ]
+    return {
+        "status": "source_verified_runtime_rollout_required"
+        if runtime_rollout_required_for_current_source
+        else "source_verified_current_runtime",
+        "runtime_verified": not runtime_rollout_required_for_current_source,
+        "policy_source": "app.tool_policy_readiness",
+        "registry_source": registry_contract.get("registry_source"),
+        "ordinary_user_custom_mcp": registry_contract.get("ordinary_user_custom_mcp"),
+        "unregistered_tool_behavior": registry_contract.get("unregistered_tool_behavior"),
+        "tenant_policy_scope": registry_contract.get("tenant_policy_scope"),
+        "read_only_low_risk_auto_allow": case_map.get("active_low_read_only", {}).get("classification") == "allow",
+        "disabled_or_unregistered_deny": (
+            case_map.get("disabled_registry", {}).get("classification") == "deny"
+            and case_map.get("disabled_tenant_policy", {}).get("classification") == "deny"
+            and registry_contract.get("unregistered_tool_behavior") == "deny"
+        ),
+        "high_risk_or_write_requires_current_decision": (
+            case_map.get("active_high_read_only", {}).get("requires_decision") is True
+            and case_map.get("active_low_write_capable", {}).get("requires_decision") is True
+        ),
+        "exact_allow_decisions": exact_allow_decisions,
+        "deny_decision": "deny" if "deny" in decision_options else None,
+        "allow_once_consumed_before_dispatch": True,
+        "allow_once_consume_failure_fails_closed": True,
+        "request_event_audit": {
+            "permission_request_event": "tool_permission_requested",
+            "permission_decision_event": "tool_permission_decided",
+            "decision_audit_action": "tool.permission.decision",
+            "worker_policy_audit_actions": [
+                "mcp_tool_policy_allowed",
+                "mcp_tool_policy_denied",
+                "mcp_tool_call_completed",
+            ],
+        },
+        "covered_runtime_control_tests": [
+            "tests/test_worker.py::test_worker_audits_read_only_ragflow_tool_call",
+            "tests/test_worker.py::test_worker_blocks_disabled_mcp_tool_before_dispatch",
+            "tests/test_worker.py::test_worker_blocks_high_risk_mcp_tool_without_permission_decision",
+            "tests/test_worker.py::test_worker_allows_high_risk_mcp_tool_with_permission_decision",
+            "tests/test_worker.py::test_worker_consumes_allow_once_mcp_decision_before_dispatch",
+            "tests/test_worker.py::test_worker_fails_closed_when_allow_once_mcp_decision_cannot_be_consumed",
+            "tests/test_tool_permission_routes.py",
+            "tests/test_admin_tool_policies.py",
+        ],
+    }
+
 
 def _governed_skill_runs_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     governed = _safe_runtime_check(runtime_checks.get("governed_skill_runs"))
@@ -1682,6 +1754,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     )
     runtime_matches_source_tree = runtime_relation["runtime_matches_source_tree"]
     runtime_relevant_source_matches = runtime_relation["runtime_relevant_source_matches"]
+    runtime_rollout_required_for_current_source = not runtime_relevant_source_matches
     evidence_scope = (
         "current_source_tree"
         if runtime_matches_source_tree
@@ -1780,6 +1853,9 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
                 "skill_snapshot_run_seen": governed_skill_runs_verified,
                 "governed_skill_runs": governed_skill_runs_summary,
                 "tool_permission_decision_audit_required": True,
+                "mcp_tool_permission_runtime_controls": _mcp_tool_permission_runtime_controls_summary(
+                    runtime_rollout_required_for_current_source=runtime_rollout_required_for_current_source
+                ),
                 "memory_long_term_default_fail_closed": True,
                 "context_snapshot_public_projection": _context_projection_summary(smoke_checks),
                 "governance_runtime_smoke": governance_runtime_smoke,

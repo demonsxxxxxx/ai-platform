@@ -78,7 +78,15 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     tool_evidence = domains["tool_permission"]["evidence"]["tool_policy_taxonomy"]
     assert tool_evidence["schema_version"] == "ai-platform.tool-policy-readiness.v1"
     assert tool_evidence["status"] == "partial_blocked"
+    assert tool_evidence["registry_contract"] == {
+        "registry_source": "platform_registered_mcp_tools_only",
+        "ordinary_user_custom_mcp": "not_allowed",
+        "unregistered_tool_behavior": "deny",
+        "tenant_policy_scope": "same_tenant_registered_tools_only",
+    }
     assert "admin_policy_change_history_projection" in tool_evidence["implemented_controls"]
+    assert "platform_registered_mcp_only_policy" in tool_evidence["implemented_controls"]
+    assert "ordinary_user_custom_mcp_disabled" in tool_evidence["implemented_controls"]
     assert "admin_policy_bulk_review_dashboard_contract" in tool_evidence["implemented_controls"]
     assert tool_evidence["summary"] == {
         "taxonomy_cases": 6,
