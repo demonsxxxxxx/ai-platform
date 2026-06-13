@@ -226,6 +226,7 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "C:\\Users" not in gate_status_text
     assert "/home/xinlin.jiang/" not in gate_status_text
 
+
 def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded():
     import json
 
