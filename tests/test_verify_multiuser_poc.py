@@ -1091,3 +1091,41 @@ def test_foundation_runtime_cli_can_prepare_and_cleanup_test_fixtures(monkeypatc
     assert evidence["role_provenance"]["run_creation_role"] == "developer"
     assert evidence["role_provenance"]["public_probe_role"] == "user"
     assert evidence["role_provenance"]["admin_probe_role"] == "developer"
+
+
+def test_foundation_runtime_cli_rejects_fixture_agents_without_trusted_header_auth(monkeypatch, tmp_path):
+    module = load_verify_multiuser_poc()
+    sample_path = tmp_path / "sample.docx"
+    module.write_minimal_docx(sample_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verify_multiuser_poc.py",
+            "--foundation-runtime-evidence",
+            "--auth-mode",
+            "login",
+            "--use-fixture-agents",
+            "--commit-sha",
+            "3843395b180324b165cbca7c59b6d7e1a934e290",
+            "--runtime-subject-commit-sha",
+            "ac9a86bbea14a28748867cade8d80b2f9ff420ec",
+            "--sample-docx",
+            str(sample_path),
+            "--account",
+            "frc-test-tenant-a/user-a=frc_a1:unused",
+            "--account",
+            "frc-test-tenant-a/user-b=frc_a2:unused",
+            "--account",
+            "frc-test-tenant-b/user-c=frc_b1:unused",
+            "--account",
+            "frc-test-tenant-b/user-d=frc_b2:unused",
+        ],
+    )
+
+    try:
+        module.main()
+    except SystemExit as exc:
+        assert "fixture agents require trusted-header auth" in str(exc)
+    else:
+        raise AssertionError("expected fixture-agent login mode to fail closed")

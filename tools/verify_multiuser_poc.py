@@ -1778,6 +1778,8 @@ def main() -> int:
         raise SystemExit("provide at least two accounts")
 
     if args.foundation_runtime_evidence:
+        if args.use_fixture_agents and args.auth_mode != "trusted-header":
+            raise SystemExit("fixture agents require trusted-header auth")
         tenant_ids = sorted({account.tenant_id for account in accounts})
         cleanup_proof: dict[str, Any] = {}
         if args.cleanup_before:
