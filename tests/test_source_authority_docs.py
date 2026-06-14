@@ -24,19 +24,19 @@ RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_RUNTIME_RELATION_MANIFEST = (
     ROOT / "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json"
 )
-ACTIVE_RUNTIME_SUBJECT_SHA = "ac9a86bbea14a28748867cade8d80b2f9ff420ec"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:ac9a86b-s1-merged"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:1d13f440107c7bd39184b8c640c6e9a9c7e9bc0755d7e20e145cd8cafbccb7ee"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-13-211-foundation-alpha-poc-ac9a86b-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-13-211-foundation-alpha-poc-ac9a86b-auth-rbac-smoke"
+ACTIVE_RUNTIME_SUBJECT_SHA = "dff48fbd454704af64871c039c59d396d8f9aaf7"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:dff48fb-foundation-runtime-concurrency-pr40"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:bcb5942c2093bb1ecdf10236b9d5a3a76623c0f87cf44df2d057b134cd2fab16"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-14-211-foundation-alpha-poc-dff48fb-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-14-211-foundation-alpha-poc-dff48fb-auth-rbac-smoke"
 ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID = (
-    "2026-06-13-211-foundation-alpha-poc-ac9a86b-governance-runtime-smoke"
+    "2026-06-14-211-foundation-alpha-poc-dff48fb-governance-runtime-smoke"
 )
 ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-13-211-foundation-alpha-poc-ac9a86b-release-evidence-runtime-acceptance"
+    "2026-06-14-211-foundation-alpha-poc-dff48fb-release-evidence-runtime-acceptance"
 )
 ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-13-211-foundation-alpha-poc-ac9a86b-alert-trace-export-runtime-acceptance"
+    "2026-06-14-211-foundation-alpha-poc-dff48fb-alert-trace-export-runtime-acceptance"
 )
 CBBFAFF_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
 CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
@@ -316,7 +316,11 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
         "message",
     ]
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["status"] == "succeeded"
-    assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["artifact_types"] is None
+    assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["artifact_types"] == [
+        "report_txt",
+        "reviewed_docx",
+        "result_json",
+    ]
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["playback_status"] == 200
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["matched_download_artifact_count"] == 1
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["matched_preview_artifact_count"] == 1
@@ -765,7 +769,7 @@ def test_gate_status_records_foundation_runtime_concurrency_context_pack_blocker
         assert "10+ concurrent" in text
         assert "dff48fb" in text
         assert "Redis queue-residue cleanup proof" in text
-        assert "broader Foundation Alpha POC smoke/auth/governance evidence set" in compact_text
+        assert "Foundation Runtime concurrency evidence" in text
         assert "ordinary-user multi-agent" in text
         assert "production concurrency" in text
         assert "C:\\Users" not in text

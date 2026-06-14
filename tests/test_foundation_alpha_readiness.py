@@ -11,7 +11,7 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
-ACTIVE_RUNTIME_SUBJECT_SHA = "ac9a86bbea14a28748867cade8d80b2f9ff420ec"
+ACTIVE_RUNTIME_SUBJECT_SHA = "dff48fbd454704af64871c039c59d396d8f9aaf7"
 HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
@@ -2349,14 +2349,14 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     }
     assert readiness["decision"] == {
         "reviewed_poc_loop_evidence_available": True,
-        "controlled_poc_loop_verified_for_current_source": False,
-        "controlled_core_poc_loop_verified_for_runtime_relevant_source": False,
+        "controlled_poc_loop_verified_for_current_source": True,
+        "controlled_core_poc_loop_verified_for_runtime_relevant_source": True,
         "runtime_relevant_source_verified_by_running_runtime": True,
         "current_source_verified_by_running_runtime": True,
         "current_source_exact_runtime_commit_match": True,
         "runtime_rollout_required_for_current_source": False,
         "foundation_alpha_stage_complete": False,
-        "foundation_alpha_stage_status": "context_snapshot_public_summary_followup_required",
+        "foundation_alpha_stage_status": "core_poc_loop_verified_followups_open",
         "stage_acceptance_blockers": [
             "ordinary_user_acceptance_for_quarantined_legacy_routes",
         ],
@@ -2368,9 +2368,9 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     }
     assert readiness["operator_context"] == {
         "poc_scope": "foundation_alpha_controlled_internal_poc",
-        "poc_loop_status": "context_snapshot_public_summary_followup_required",
+        "poc_loop_status": "core_loop_verified_for_current_source_tree",
         "current_runtime_relation": "runtime_current_for_source_tree",
-        "stage_acceptance_status": "context_snapshot_public_summary_followup_required",
+        "stage_acceptance_status": "core_poc_loop_verified_followups_open",
         "stage_gate": "foundation_alpha_poc_not_production",
         "verified_poc_capabilities": [
             "source_authority_security_baseline",
@@ -2419,7 +2419,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"]["document_review_attachment_run"] == {
         "status": "succeeded",
         "skill_id": "qa-file-reviewer",
-        "artifact_types": [],
+        "artifact_types": ["report_txt", "result_json", "reviewed_docx"],
         "playback_contract_version": "ai-platform.run-playback.v1",
     }
     assert (
@@ -2472,7 +2472,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     } == VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS
     assert REQUIRED_MEMORY_CONTEXT_OPEN_GAPS.issubset(set(memory_context_controls["open_gaps"]))
     assert readiness["domains"]["g6_poc_governance"]["evidence"]["context_snapshot_public_projection"] == {
-        "status": "context_snapshot_public_projection_followup_required",
+        "status": "verified_public_context_projection",
         "referenced_material_counts": {
             "message_count": 1,
             "file_count": 1,
@@ -2486,9 +2486,9 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "memory_policy_source": "default",
         "long_term_memory_read": False,
         "execution_tier": "sdk_only_writing",
-        "context_pack_version": None,
+        "context_pack_version": "v1",
         "context_pack_generated_at_present": True,
-        "missing_public_summary_fields": ["context_pack_version"],
+        "missing_public_summary_fields": [],
     }
     assert readiness["domains"]["g9_admin_runtime_observability"]["evidence"]["observability_readiness_status"] == "partial_blocked"
 
@@ -2589,7 +2589,7 @@ def test_foundation_alpha_readiness_prefers_current_source_foundation_runtime_co
     revision_ref = f"{source_commit}-frc-context-pack-20260614-0535"
     evidence_root = tmp_path / "fa"
     dedicated_root = tmp_path / "frc"
-    image = "ai-platform:ac9a86b-s1-merged"
+    image = "ai-platform:dff48fb-foundation-runtime-concurrency-pr40"
     smoke_path, auth_path = _write_release_evidence_pair(evidence_root, ACTIVE_RUNTIME_SUBJECT_SHA, image=image)
     evidence_dir = evidence_root / source_commit
     evidence_dir.mkdir(parents=True)
@@ -2664,7 +2664,7 @@ def test_foundation_alpha_readiness_uses_latest_archived_concurrency_evidence_wi
     revision_ref = f"{evidence_commit}-frc-context-pack-20260614-0535"
     evidence_root = tmp_path / "fa"
     dedicated_root = tmp_path / "frc"
-    image = "ai-platform:ac9a86b-s1-merged"
+    image = "ai-platform:dff48fb-foundation-runtime-concurrency-pr40"
     smoke_path, auth_path = _write_release_evidence_pair(evidence_root, runtime_commit, image=image)
     evidence_dir = evidence_root / evidence_commit
     evidence_dir.mkdir(parents=True)
@@ -3080,7 +3080,7 @@ def test_foundation_alpha_readiness_records_211_packaged_frontend_environment_bl
     tmp_path,
 ):
     evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
-    image = "ai-platform:ac9a86b-s1-merged"
+    image = "ai-platform:dff48fb-foundation-runtime-concurrency-pr40"
     smoke_path, auth_path = _write_release_evidence_pair(
         evidence_root,
         ACTIVE_RUNTIME_SUBJECT_SHA,
@@ -3573,15 +3573,16 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeyp
     assert "Evidence scope: `current_source_tree`" in markdown
     assert "Current decision" in markdown
     assert "`current_source_verified_by_running_runtime`: `True`" in markdown
-    assert "`controlled_poc_loop_verified_for_current_source`: `False`" in markdown
+    assert "`controlled_poc_loop_verified_for_current_source`: `True`" in markdown
     assert "Runtime source relation: `runtime_current_for_source_tree`" in markdown
-    assert "POC loop status: `context_snapshot_public_summary_followup_required`" in markdown
-    assert "Stage acceptance status: `context_snapshot_public_summary_followup_required`" in markdown
-    assert "Context snapshot public projection: `context_snapshot_public_projection_followup_required`" in markdown
+    assert "POC loop status: `core_loop_verified_for_current_source_tree`" in markdown
+    assert "Stage acceptance status: `core_poc_loop_verified_followups_open`" in markdown
+    assert "Context snapshot public projection: `verified_public_context_projection`" in markdown
     assert "Context referenced material counts: `message=1, file=1, artifact=0, memory=0`" in markdown
+    assert "context_pack_version=v1" in markdown
     assert "Frontend release traceability: `verified_packaged_release_followup_open`" in markdown
     assert "Frontend build summary:" in markdown
-    assert "Missing context public summary fields: `context_pack_version`" in markdown
+    assert "Missing context public summary fields:" not in markdown
     assert "`production_claim_allowed`: `False`" in markdown
     assert "`capacity_default_increase_allowed`: `False`" in markdown
     assert "#21_recorded_capacity_evidence" not in markdown
