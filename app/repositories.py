@@ -1972,7 +1972,7 @@ async def decide_tool_permission_request(
     return await cursor.fetchone()
 
 
-async def get_latest_tool_permission_decision(
+async def get_exact_tool_permission_decision(
     conn: AsyncConnection,
     *,
     tenant_id: str,
@@ -1983,6 +1983,7 @@ async def get_latest_tool_permission_decision(
     tool_call_id: str | None = None,
     request_payload_json: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
+    """Fetch a decided permission row only for the exact call or stable request fingerprint."""
     exact_clauses: list[str] = []
     params: list[Any] = [tenant_id, user_id, run_id, tool_id, action]
     if tool_call_id:
@@ -2016,6 +2017,30 @@ async def get_latest_tool_permission_decision(
         tuple(params),
     )
     return await cursor.fetchone()
+
+
+async def get_latest_tool_permission_decision(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    run_id: str,
+    tool_id: str,
+    action: str = "execute",
+    tool_call_id: str | None = None,
+    request_payload_json: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Compatibility wrapper for callers that still use the legacy function name."""
+    return await get_exact_tool_permission_decision(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        run_id=run_id,
+        tool_id=tool_id,
+        action=action,
+        tool_call_id=tool_call_id,
+        request_payload_json=request_payload_json,
+    )
 
 
 async def consume_tool_permission_decision(

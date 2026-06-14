@@ -3693,7 +3693,7 @@ async def test_worker_blocks_high_risk_mcp_tool_without_permission_decision(monk
         calls.append(("policy", tenant_id, tool_id))
         return {"id": tool_id, "status": "active", "write_capable": True, "risk_level": "high"}
 
-    async def get_latest_tool_permission_decision(conn, **kwargs):
+    async def get_exact_tool_permission_decision(conn, **kwargs):
         calls.append(("decision_lookup", kwargs["tool_id"]))
         return None
 
@@ -3711,8 +3711,8 @@ async def test_worker_blocks_high_risk_mcp_tool_without_permission_decision(monk
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.ensure_mcp_tool_active", ensure_mcp_tool_active, raising=False)
     monkeypatch.setattr(
-        "app.worker.repositories.get_latest_tool_permission_decision",
-        get_latest_tool_permission_decision,
+        "app.worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
         raising=False,
     )
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
@@ -3770,7 +3770,7 @@ async def test_worker_allows_high_risk_mcp_tool_with_permission_decision(monkeyp
     async def ensure_mcp_tool_active(conn, *, tenant_id, tool_id):
         return {"id": tool_id, "status": "active", "write_capable": True, "risk_level": "high"}
 
-    async def get_latest_tool_permission_decision(conn, **kwargs):
+    async def get_exact_tool_permission_decision(conn, **kwargs):
         calls.append(("decision_lookup", kwargs["tool_id"]))
         assert kwargs["tool_call_id"].startswith("mcp_")
         if kwargs.get("request_payload_json", {}).get("input_sha256") != expected_input_sha256:
@@ -3795,8 +3795,8 @@ async def test_worker_allows_high_risk_mcp_tool_with_permission_decision(monkeyp
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.ensure_mcp_tool_active", ensure_mcp_tool_active, raising=False)
     monkeypatch.setattr(
-        "app.worker.repositories.get_latest_tool_permission_decision",
-        get_latest_tool_permission_decision,
+        "app.worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
         raising=False,
     )
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
@@ -3826,6 +3826,94 @@ async def test_worker_allows_high_risk_mcp_tool_with_permission_decision(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_worker_mcp_tool_permission_uses_exact_decision_lookup(monkeypatch):
+    calls = []
+    expected_input_sha256 = hashlib.sha256(
+        json.dumps({"mode": "file"}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+    class RagflowAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            calls.append(("adapter", payload.run_id))
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="ragflow-adapter/1",
+                executor_type="ragflow",
+                executor_version="ragflow-retrieval-http",
+                capabilities={"tools": True},
+                result={"message": "answer"},
+            )
+
+    class Registry:
+        def get(self, executor_type):
+            return RagflowAdapter()
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def ensure_mcp_tool_active(conn, *, tenant_id, tool_id):
+        return {"id": tool_id, "status": "active", "write_capable": True, "risk_level": "high"}
+
+    async def get_exact_tool_permission_decision(conn, **kwargs):
+        calls.append(("exact_decision_lookup", kwargs))
+        assert kwargs["tool_id"] == "ragflow-knowledge-search"
+        assert kwargs["tool_call_id"].startswith("mcp_")
+        assert kwargs["request_payload_json"]["input_sha256"] == expected_input_sha256
+        return {"id": "tpr_allow", "decision": "allow_for_run"}
+
+    async def get_latest_tool_permission_decision(conn, **kwargs):
+        raise AssertionError("MCP tool permission must use exact decision lookup")
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"]))
+        return "evt-a"
+
+    async def append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs["action"], kwargs["payload_json"]))
+        return "audit-a"
+
+    async def complete_run(conn, **kwargs):
+        calls.append(("complete", kwargs["result_json"]["message"]))
+
+    async def upsert_run_skill_snapshot(conn, **kwargs):
+        calls.append(("snapshot", kwargs["skill_id"], kwargs["used"]))
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.ensure_mcp_tool_active", ensure_mcp_tool_active, raising=False)
+    monkeypatch.setattr(
+        "app.worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.worker.repositories.get_latest_tool_permission_decision",
+        get_latest_tool_permission_decision,
+        raising=False,
+    )
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
+
+    outcome = await process_run_payload(
+        base_payload(
+            skill_id="ragflow-knowledge-search",
+            executor_type="ragflow",
+            skill_version="hash-ragflow",
+            skill_manifests=[primary_manifest("ragflow-knowledge-search", "hash-ragflow")],
+        ),
+        registry=Registry(),
+        worker_id="worker-ragflow",
+    )
+
+    assert outcome.status == "succeeded"
+    assert any(item[0] == "exact_decision_lookup" for item in calls)
+    assert ("adapter", "run-a") in calls
+
+
+@pytest.mark.asyncio
 async def test_worker_consumes_allow_once_mcp_decision_before_dispatch(monkeypatch):
     calls = []
 
@@ -3851,7 +3939,7 @@ async def test_worker_consumes_allow_once_mcp_decision_before_dispatch(monkeypat
     async def ensure_mcp_tool_active(conn, *, tenant_id, tool_id):
         return {"id": tool_id, "status": "active", "write_capable": True, "risk_level": "high"}
 
-    async def get_latest_tool_permission_decision(conn, **kwargs):
+    async def get_exact_tool_permission_decision(conn, **kwargs):
         calls.append(("decision_lookup", kwargs["tool_id"]))
         return {"id": "tpr-once", "decision": "allow_once"}
 
@@ -3877,8 +3965,8 @@ async def test_worker_consumes_allow_once_mcp_decision_before_dispatch(monkeypat
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.ensure_mcp_tool_active", ensure_mcp_tool_active, raising=False)
     monkeypatch.setattr(
-        "app.worker.repositories.get_latest_tool_permission_decision",
-        get_latest_tool_permission_decision,
+        "app.worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
         raising=False,
     )
     monkeypatch.setattr(
@@ -3939,7 +4027,7 @@ async def test_worker_fails_closed_when_allow_once_mcp_decision_cannot_be_consum
     async def ensure_mcp_tool_active(conn, *, tenant_id, tool_id):
         return {"id": tool_id, "status": "active", "write_capable": True, "risk_level": "high"}
 
-    async def get_latest_tool_permission_decision(conn, **kwargs):
+    async def get_exact_tool_permission_decision(conn, **kwargs):
         calls.append(("decision_lookup", kwargs["tool_id"]))
         return {"id": "tpr-once", "decision": "allow_once"}
 
@@ -3961,8 +4049,8 @@ async def test_worker_fails_closed_when_allow_once_mcp_decision_cannot_be_consum
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.ensure_mcp_tool_active", ensure_mcp_tool_active, raising=False)
     monkeypatch.setattr(
-        "app.worker.repositories.get_latest_tool_permission_decision",
-        get_latest_tool_permission_decision,
+        "app.worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
         raising=False,
     )
     monkeypatch.setattr(

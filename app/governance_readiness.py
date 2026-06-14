@@ -147,6 +147,7 @@ def build_governance_readiness(
                 "tool_allow_deny_ask_policy_taxonomy_evidence",
                 "platform_registered_mcp_only_policy",
                 "ordinary_user_custom_mcp_disabled",
+                "exact_tool_permission_decision_lookup_source_tests",
                 "admin_policy_change_history_projection",
                 "admin_policy_bulk_review_dashboard_contract",
             ],
