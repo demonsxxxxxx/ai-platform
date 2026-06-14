@@ -37,6 +37,7 @@ def test_memory_erasure_readiness_records_delete_retention_evidence_without_priv
     assert "office_context_pack_architecture_readiness_snapshot" in implemented
     assert "executor_context_pack_prompt_injection_source_tests" in implemented
     assert "user_visible_context_provenance_api_projection_source_tests" in implemented
+    assert "office_execution_tier_router_source_tests" in implemented
 
     markers = {item["name"]: item for item in readiness["evidence_markers"]}
     assert set(markers) == {
@@ -60,9 +61,7 @@ def test_memory_erasure_readiness_records_delete_retention_evidence_without_priv
     assert all(item["missing_markers"] == [] for item in markers.values())
 
     assert readiness["open_gaps"] == [
-        "office_context_pack_persistence_and_versioning",
         "executor_context_pack_211_acceptance",
-        "office_execution_tier_router",
         "document_centric_followup_state",
         "sandbox_cold_start_latency_split",
         "frontend_context_provenance_acceptance",
@@ -86,6 +85,7 @@ def test_render_memory_erasure_readiness_markdown_is_gap_first_and_operator_read
     assert "worker_retention_cleanup_across_scopes" in markdown
     assert "memory_redaction_policy_admin_preview_and_audit" in markdown
     assert "executor_context_pack_prompt_injection_source_tests" in markdown
+    assert "office_execution_tier_router_source_tests" in markdown
     assert "executor_context_pack_211_acceptance" in markdown
     assert "c:\\users" not in markdown.lower()
 
@@ -106,12 +106,14 @@ def test_memory_erasure_readiness_cli_outputs_json_without_secret_markers():
     assert "bounded_context_pack_product_contract_for_office_workflows" not in payload["open_gaps"]
     assert "office_context_pack_runtime_implementation_and_acceptance" not in payload["open_gaps"]
     assert "user_visible_context_provenance_projection" not in payload["open_gaps"]
+    assert "office_context_pack_persistence_and_versioning" not in payload["open_gaps"]
     assert "executor_context_pack_211_acceptance" in payload["open_gaps"]
-    assert "office_execution_tier_router" in payload["open_gaps"]
+    assert "office_execution_tier_router" not in payload["open_gaps"]
     assert "memory_redaction_policy_admin_preview_and_audit" in payload["implemented_controls"]
     assert "office_context_pack_architecture_readiness_snapshot" in payload["implemented_controls"]
     assert "executor_context_pack_prompt_injection_source_tests" in payload["implemented_controls"]
     assert "user_visible_context_provenance_api_projection_source_tests" in payload["implemented_controls"]
+    assert "office_execution_tier_router_source_tests" in payload["implemented_controls"]
     assert "ordinary_user_export_excludes_deleted_and_expired_records" in payload["implemented_controls"]
     for marker in FORBIDDEN_PRIVATE_MARKERS:
         assert marker not in result.stdout

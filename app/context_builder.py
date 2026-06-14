@@ -6,6 +6,7 @@ from typing import Any
 
 from app import repositories
 from app.control_plane_contracts import CONTEXT_SNAPSHOT_SCHEMA_VERSION, sanitize_public_payload
+from app.office_execution_tier import route_office_execution_tier
 from app.projection_redaction import capability_id_from_skill
 from app.public_context_keys import (
     PUBLIC_CONTEXT_FORBIDDEN_ID_KEY_ALIASES,
@@ -385,6 +386,12 @@ def initial_context_summary(
 ) -> dict[str, Any]:
     memory_ids = list(memory_record_ids or [])
     memory_policy_source = str((memory_policy or {}).get("source") or "not_recorded")
+    tier_decision = route_office_execution_tier(
+        agent_id=agent_id,
+        skill_id=skill_id,
+        input_payload=input_payload,
+        file_ids=file_ids,
+    )
     sanitized_input = public_context_payload(input_payload)
     input_keys = _public_context_input_keys_with_material_signals(
         sorted(str(key) for key in sanitized_input.keys()),
@@ -417,6 +424,7 @@ def initial_context_summary(
             memory_record_count=len(memory_ids),
             memory_policy_source=memory_policy_source,
             long_term_memory_read=False,
+            execution_tier=str(tier_decision["execution_tier"]),
         )
     )
     return summary

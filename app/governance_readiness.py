@@ -236,10 +236,10 @@ def build_governance_readiness(
                 "executor_context_pack_prompt_injection_source_tests",
                 "source_level_context_pack_persistence_and_versioning",
                 "user_visible_context_provenance_api_projection_source_tests",
+                "office_execution_tier_router_source_tests",
             ],
             gaps=[
                 "executor_context_pack_211_acceptance",
-                "office_execution_tier_router",
                 "document_centric_followup_state",
                 "sandbox_cold_start_latency_split",
                 "frontend_context_provenance_acceptance",

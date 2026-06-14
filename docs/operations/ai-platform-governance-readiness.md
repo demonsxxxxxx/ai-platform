@@ -72,7 +72,7 @@ or secret-like runtime configuration.
 | --- | --- | --- |
 | Tool permission | Admin tool policy inventory, tenant-scoped policy update audit, bounded admin change-history projection through `GET /api/ai/admin/tool-policies/history`, user request/decision flow, exact `tool_call_id` / stable request-fingerprint decision lookup source tests, fail-closed risk/write policy evaluation, public permission-card projection, audit-visible legacy route policy mapping, secret-safe allow/ask/deny taxonomy evidence through `tools/tool_policy_readiness.py`, platform-registered-MCP-only policy evidence with ordinary-user custom MCP disabled, and contract-only Admin bulk-review dashboard readiness through `tools/tool_policy_bulk_review_readiness.py` / `admin_policy_bulk_review_dashboard_contract` | Policy enforcement or ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel surfaces, plus `admin_policy_bulk_review_runtime_acceptance`, `admin_policy_bulk_review_visual_acceptance`, and `admin_policy_bulk_review_211_acceptance` |
 | Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock, secret-safe skill release readiness snapshot, pending review-manifest template entrypoint, source-level `ai-platform.skill-dependency-review-policy.v1` contract, source-level `ai-platform.skill-signed-package-evidence-contract.v1` / `skill_signed_package_evidence_contract`, source-level validation for signed-package evidence JSON, and contract-only Admin Skill release dashboard readiness through `tools/skill_release_dashboard_readiness.py` / `admin_skill_release_dashboard_contract` | SBOM or signed-package release evidence plus reviewed manifests, dependency vulnerability/license evidence, `skill_dependency_review_policy_runtime_acceptance`, plus `admin_skill_release_dashboard_runtime_acceptance`, `admin_skill_release_dashboard_visual_acceptance`, and `admin_skill_release_dashboard_211_acceptance` |
-| Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py`, source-level office context-pack contract/readiness through `tools/office_context_readiness.py`, source-level context-pack persistence/versioning through `source_level_context_pack_persistence_and_versioning`, context snapshot public provenance projection with `context_pack_version` and `context_pack_generated_at`, user-visible context provenance API projection source tests, and executor context-pack prompt injection source tests | 211 executor context-pack acceptance, execution-tier router acceptance, document-centric follow-up state, sandbox cold-start latency split, and frontend context provenance acceptance |
+| Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py`, source-level office context-pack contract/readiness through `tools/office_context_readiness.py`, source-level context-pack persistence/versioning through `source_level_context_pack_persistence_and_versioning`, context snapshot public provenance projection with `context_pack_version` and `context_pack_generated_at`, user-visible context provenance API projection source tests, source-level office execution-tier router tests, and executor context-pack prompt injection source tests | 211 executor context-pack acceptance, document-centric follow-up state, sandbox cold-start latency split, and frontend context provenance acceptance |
 | Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest with build-provenance same-commit gate, packaged frontend image definition traceability, non-push CI packaged-image build/provenance contract, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Profile env-var surface removed from the active browser entry graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Quarantined inactive legacy model/channel/envvar sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image smoke and release acceptance on 211 or another Docker-capable host |
 
 The frontend projection evidence now records three current structured blockers:
@@ -350,9 +350,10 @@ audit payload that records policy scope, mode, change booleans, and redacted
 reason without sample content or metadata. This does not close memory
 governance by itself: office workflow context continuity now has source-level
 context-pack persistence/versioning and user-visible context provenance API
-projection source tests, but still needs 211 executor context-pack acceptance,
-execution-tier router acceptance, document-centric follow-up state, sandbox
-cold-start latency split, and frontend context provenance acceptance.
+projection source tests plus source-level execution-tier routing tests, but
+still needs 211 executor context-pack acceptance, document-centric follow-up
+state, sandbox cold-start latency split, and frontend context provenance
+acceptance.
 
 `tools/office_context_readiness.py` now records the source-level #22
 context-pack readiness contract for office-heavy workflows with schema
@@ -379,13 +380,16 @@ trusting queue copies or stored payload provenance. The source tree now also has
 a bounded `ai-platform.executor-context-pack.v1` executor prompt contract and
 Claude SDK prompt-injection tests that pass only the generated safe summary, not
 raw storage keys, sandbox workdirs, executor-private payloads, or long-term
-memory reads. The implemented control is
+memory reads. The implemented control
 `source_level_context_pack_persistence_and_versioning`: it preserves the safe
 public `context_pack_version` fact in source-level snapshot/projection paths
-without adding a new database schema. This still does not provide 211 executor
-context-pack acceptance, enable long-term cross-session memory, start Docker for
-lightweight office tasks, provide frontend context provenance acceptance, or
-expand ordinary-user G8/G10 exposure.
+without adding a new database schema. Source-level tests now route lightweight
+writing to `sdk_only_writing`, document generation/review/translation skills to
+`document_worker`, and explicit sandbox/script/browser work to `heavy_sandbox`
+without starting Docker during routing. This still does not provide 211
+executor context-pack acceptance, enable long-term cross-session memory, start
+Docker for lightweight office tasks, provide frontend context provenance
+acceptance, or expand ordinary-user G8/G10 exposure.
 
 On 2026-06-08, commit `f7c6b0d9114748fa249acb88da6584851c48aa96` was synced to
 the 211 repo-local source target and deployed to API/worker with image
