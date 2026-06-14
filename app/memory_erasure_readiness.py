@@ -214,6 +214,7 @@ def build_memory_erasure_readiness(repo_root: Path | None = None) -> dict[str, A
             "memory_redaction_policy_admin_preview_and_audit",
             "office_context_pack_architecture_readiness_snapshot",
             "executor_context_pack_prompt_injection_source_tests",
+            "office_execution_tier_router_source_tests",
         ],
         "evidence_markers": evidence,
         "missing_evidence_markers": missing,

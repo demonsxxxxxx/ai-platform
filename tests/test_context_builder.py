@@ -274,6 +274,37 @@ def test_initial_context_summary_adds_attachment_signal_for_file_context():
     assert "raw_storage_key" not in serialized
 
 
+def test_initial_context_summary_routes_document_skill_to_document_worker():
+    summary = initial_context_summary(
+        source="chat_stream",
+        agent_id="baoyu-translate",
+        skill_id="baoyu-translate",
+        input_payload={"message": "Translate this DOCX and return a Word document."},
+        message_ids=["msg-a"],
+        file_ids=["file-a"],
+    )
+
+    assert summary["execution_tier"] == "document_worker"
+    assert summary["used_context_summary"]["input_keys"] == ["attachments", "message"]
+    assert summary["referenced_materials"]["file_count"] == 1
+
+
+def test_initial_context_summary_routes_explicit_sandbox_request_to_heavy_sandbox():
+    summary = initial_context_summary(
+        source="runs_api",
+        agent_id="general-agent",
+        skill_id="general-chat",
+        input_payload={
+            "message": "Run this script in a browser automation task.",
+            "sandbox_mode": "ephemeral",
+        },
+        message_ids=["msg-a"],
+        file_ids=[],
+    )
+
+    assert summary["execution_tier"] == "heavy_sandbox"
+
+
 def test_executor_context_pack_from_snapshot_returns_bounded_safe_prompt_contract():
     context_pack = executor_context_pack_from_snapshot(
         {

@@ -233,6 +233,7 @@ def build_governance_readiness(
                 "office_context_pack_architecture_readiness_snapshot",
                 "context_snapshot_public_provenance_projection_contract",
                 "executor_context_pack_prompt_injection_source_tests",
+                "office_execution_tier_router_source_tests",
             ],
             gaps=[
                 "office_context_pack_persistence_and_versioning",
