@@ -13,6 +13,7 @@ PUBLIC_CONTEXT_PROVENANCE_KEYS = {
     "used_context_summary",
     "latest_artifact_version",
     "execution_tier",
+    "context_pack_version",
     "context_pack_generated_at",
     "source",
 }
@@ -82,6 +83,8 @@ PUBLIC_CONTEXT_MATERIAL_COUNT_KEYS = {
     "artifact_count",
     "memory_record_count",
 }
+PUBLIC_CONTEXT_PACK_VERSION_RE = re.compile(r"^v\d+(?:[._:-]\d+){0,3}$", re.IGNORECASE)
+PUBLIC_CONTEXT_HASH_LIKE_VALUE_RE = re.compile(r"^[a-f0-9]{32,}$", re.IGNORECASE)
 PUBLIC_CONTEXT_KEY_DECODE_DEPTH = 8
 PUBLIC_CONTEXT_CAMEL_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
 PUBLIC_CONTEXT_ACRONYM_BOUNDARY_RE = re.compile(r"([A-Z]+)([A-Z][a-z])")
@@ -233,3 +236,27 @@ def public_context_input_key_findings(value: object) -> tuple[list[str], list[st
         else:
             unsafe_keys.append(key)
     return sorted(set(safe_keys)), sorted(set(unsafe_keys))
+
+
+def safe_public_context_pack_version(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate:
+        return None
+    if sanitize_public_payload(candidate) != candidate:
+        return None
+    normalized_candidates, decode_budget_exhausted = normalized_public_context_key_candidates(candidate)
+    if decode_budget_exhausted:
+        return None
+    forbidden_aliases = PUBLIC_CONTEXT_FORBIDDEN_KEY_ALIASES | PUBLIC_CONTEXT_FORBIDDEN_ID_KEY_ALIASES
+    if any(alias in normalized_key for normalized_key in normalized_candidates for alias in forbidden_aliases):
+        return None
+    if any(
+        has_public_context_forbidden_id_tokens(token_candidate)
+        for token_candidate in public_context_key_token_candidates(candidate)
+    ):
+        return None
+    if PUBLIC_CONTEXT_HASH_LIKE_VALUE_RE.fullmatch(candidate):
+        return None
+    return candidate if PUBLIC_CONTEXT_PACK_VERSION_RE.fullmatch(candidate) else None
