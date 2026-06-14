@@ -3794,6 +3794,29 @@ def test_g6_followups_require_memory_context_controls_summary():
     assert followups == ["memory_context_controls_readiness"]
 
 
+def test_g6_followups_prioritize_s1_memory_controls_over_non_stage_signed_skill_gap():
+    kwargs = {"governance_runtime_smoke_verified": True}
+    if "governed_skill_runs_verified" in inspect.signature(
+        foundation_alpha_readiness._g6_open_followups
+    ).parameters:
+        kwargs["governed_skill_runs_verified"] = True
+
+    followups = foundation_alpha_readiness._g6_open_followups(
+        {
+            "governance_readiness_status": "partial_blocked",
+            "ordinary_user_policy": "fail_closed_until_projection_mapping_and_acceptance_pass",
+            "open_gap_count": 1,
+            "open_gaps": ["signed_skill_package_or_sbom_release_gate"],
+        },
+        **kwargs,
+    )
+
+    assert followups == [
+        "memory_context_controls_readiness",
+        "signed_skill_package_or_sbom_review_evidence",
+    ]
+
+
 def test_auth_rbac_summary_reports_platform_principal_tenant_and_gateway_checks():
     summary = foundation_alpha_readiness._auth_rbac_summary(
         {

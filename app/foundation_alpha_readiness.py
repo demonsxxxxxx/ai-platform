@@ -1667,14 +1667,14 @@ def _g6_open_followups(
         followups.append("runtime_admin_dashboard_acceptance_for_governance")
     if not governed_skill_runs_verified:
         followups.append("governed_skill_runs_runtime_evidence")
+    memory_controls = governance_summary.get("memory_context_controls")
+    if not isinstance(memory_controls, dict) or memory_controls.get("status") != "verified_current_scope":
+        followups.append("memory_context_controls_readiness")
     for gap in governance_summary.get("open_gaps", []):
         if not isinstance(gap, str) or not gap.strip():
             continue
         if gap == "signed_skill_package_or_sbom_release_gate":
             followups.append("signed_skill_package_or_sbom_review_evidence")
-    memory_controls = governance_summary.get("memory_context_controls")
-    if not isinstance(memory_controls, dict) or memory_controls.get("status") != "verified_current_scope":
-        followups.append("memory_context_controls_readiness")
     if (
         "open_gaps" not in governance_summary
         and governance_summary.get("open_gap_count")
