@@ -604,7 +604,7 @@ files, runtime acceptance for the source-level skill dependency review policy,
 `admin_skill_release_dashboard_visual_acceptance`,
 `admin_skill_release_dashboard_211_acceptance`,
 runtime office context-pack persistence/versioning, 211 executor context-pack
-acceptance, document-centric follow-up state, sandbox cold-start latency split,
+acceptance, document-centric follow-up state, 211 sandbox cold-start latency split acceptance,
 frontend context provenance acceptance, quarantined legacy frontend source
 remap, packaged frontend image smoke/release acceptance on 211 or another
 Docker-capable host, and ordinary-user G9 acceptance. Do not use this baseline
@@ -614,22 +614,24 @@ exposure.
 The #22 office context-pack work now has source-level architecture readiness,
 source-level context-pack persistence/versioning evidence, user-visible API
 projection source tests, source-level execution-tier routing tests, and
-executor prompt-injection tests: `tools/office_context_readiness.py` defines
-bounded allowed context sources, user-visible provenance fields, execution
-tiers, and non-goals, while
+executor prompt-injection tests plus a sandbox latency split observability source
+contract: `tools/office_context_readiness.py` defines bounded allowed context
+sources, user-visible provenance fields, execution tiers, and non-goals, while
 `source_level_context_pack_persistence_and_versioning` preserves a bounded
 public `context_pack_version` fact alongside `context_pack_generated_at` in
 source-level snapshot/projection paths. Source-level router tests route
 lightweight writing to `sdk_only_writing`, document generation/review/translation
 skills to `document_worker`, and explicit sandbox/script/browser work to
-`heavy_sandbox` without starting Docker during routing. This does not add a new
-database schema and does not enable runtime context-pack persistence/versioning,
-211 executor context-pack acceptance, document-centric follow-up state,
-long-term cross-session memory, lightweight-task Docker sandbox startup,
-frontend context provenance acceptance, or ordinary-user G8/G10 exposure. It
-replaces the older single "bounded office context-pack product contract"
-blocker with explicit runtime persistence/versioning, 211 executor,
-follow-up-state, latency, and frontend provenance acceptance gaps.
+`heavy_sandbox` without starting Docker during routing. The sandbox latency split
+contract separates lease acquisition, container cold start, healthcheck, executor
+dispatch/model work, document processing, cleanup, and total runtime timings.
+This does not add a new database schema and does not enable 211 executor
+context-pack acceptance, document-centric follow-up state, 211 sandbox latency
+split acceptance, long-term cross-session memory, lightweight-task Docker
+sandbox startup, frontend context provenance acceptance, or ordinary-user G8/G10
+exposure. It replaces the older single "bounded office context-pack product
+contract" blocker with explicit 211 executor, follow-up-state, sandbox latency,
+and frontend provenance acceptance gaps.
 
 The 2026-06-11 context provenance follow-up adds source-level public provenance
 fields to created context snapshots and queued `context_snapshot` references:

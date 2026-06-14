@@ -173,6 +173,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "source_level_context_pack_persistence_and_versioning" in domains["memory_governance"]["implemented"]
     assert "user_visible_context_provenance_api_projection_source_tests" in domains["memory_governance"]["implemented"]
     assert "office_execution_tier_router_source_tests" in domains["memory_governance"]["implemented"]
+    assert "sandbox_cold_start_latency_split_source_contract" in domains["memory_governance"]["implemented"]
     assert "formal_memory_delete_export_erasure_evidence" not in domains["memory_governance"]["gaps"]
     assert "memory_export_erasure_evidence" not in domains["memory_governance"]["gaps"]
     assert "memory_redaction_policy_admin_preview_and_audit" not in domains["memory_governance"]["gaps"]
@@ -183,6 +184,8 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "executor_context_pack_injection" not in domains["memory_governance"]["gaps"]
     assert "executor_context_pack_211_acceptance" in domains["memory_governance"]["gaps"]
     assert "office_execution_tier_router" not in domains["memory_governance"]["gaps"]
+    assert "sandbox_cold_start_latency_split" not in domains["memory_governance"]["gaps"]
+    assert "sandbox_cold_start_latency_split_211_acceptance" in domains["memory_governance"]["gaps"]
     context_evidence = domains["memory_governance"]["evidence"]["office_context_pack_readiness"]
     assert context_evidence["schema_version"] == "ai-platform.office-context-pack-readiness.v1"
     assert context_evidence["status"] == "partial_blocked"
@@ -194,13 +197,19 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "source_level_context_pack_persistence_and_versioning" in context_evidence["implemented_controls"]
     assert "user_visible_context_provenance_api_projection_source_tests" in context_evidence["implemented_controls"]
     assert "office_execution_tier_router_source_tests" in context_evidence["implemented_controls"]
+    assert "sandbox_cold_start_latency_split_source_contract" in context_evidence["implemented_controls"]
     assert context_evidence["summary"]["allowed_sources"] >= 7
     assert context_evidence["summary"]["execution_tiers"] >= 3
     assert context_evidence["summary"]["open_gaps"] == 4
     assert context_evidence["summary"]["sandbox_default_for_lightweight_office_tasks"] is False
+    assert context_evidence["sandbox_latency_observability"]["status"] == (
+        "source_contract_defined_runtime_acceptance_required"
+    )
+    assert context_evidence["sandbox_latency_observability"]["must_not_hide_cold_start_in_executor_latency"] is True
     assert "frontend_context_provenance_acceptance" in context_evidence["open_gaps"]
-    assert "sandbox_cold_start_latency_split" in context_evidence["open_gaps"]
     assert "office_execution_tier_router" not in context_evidence["open_gaps"]
+    assert "sandbox_cold_start_latency_split" not in context_evidence["open_gaps"]
+    assert "sandbox_cold_start_latency_split_211_acceptance" in context_evidence["open_gaps"]
     assert "public_admin_projection_audit_baseline" in domains["frontend_projection"]["implemented"]
     assert "frontend_projection_audit_cli" in domains["frontend_projection"]["implemented"]
     assert "frontend_ci_projection_audit_integration" in domains["frontend_projection"]["implemented"]
@@ -347,7 +356,9 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     assert "source_level_context_pack_persistence_and_versioning" in markdown
     assert "- office_context_pack_persistence_and_versioning" not in markdown
     assert "executor_context_pack_prompt_injection_source_tests" in markdown
+    assert "sandbox_cold_start_latency_split_source_contract" in markdown
     assert "executor_context_pack_211_acceptance" in markdown
+    assert "sandbox_cold_start_latency_split_211_acceptance" in markdown
     open_gaps = markdown.split("## Domains", 1)[0]
     assert "memory_export_erasure_evidence" not in open_gaps
     assert "callback-secret" not in markdown

@@ -373,6 +373,37 @@ async def test_docker_provider_creates_container_with_workspace_labels_and_env()
 
 
 @pytest.mark.asyncio
+async def test_docker_provider_records_cold_start_and_healthcheck_latency():
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    class Clock:
+        def __init__(self):
+            self.values = iter([10.0, 10.07, 10.09, 10.11])
+            self.last = 10.11
+
+        def monotonic(self):
+            try:
+                self.last = next(self.values)
+            except StopIteration:
+                pass
+            return self.last
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+        monotonic=Clock().monotonic,
+    )
+
+    lease = await provider.create_or_reuse(request(), workspace())
+
+    assert lease.timings == {
+        "sandbox_container_cold_start_latency_ms": 70,
+        "sandbox_healthcheck_latency_ms": 20,
+    }
+
+
+@pytest.mark.asyncio
 async def test_docker_provider_does_not_reuse_same_run_container_with_mismatched_scope_labels():
     from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
 

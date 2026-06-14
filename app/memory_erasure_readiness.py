@@ -206,7 +206,7 @@ def build_memory_erasure_readiness(repo_root: Path | None = None) -> dict[str, A
     open_gaps = [
         "executor_context_pack_211_acceptance",
         "document_centric_followup_state",
-        "sandbox_cold_start_latency_split",
+        "sandbox_cold_start_latency_split_211_acceptance",
         "frontend_context_provenance_acceptance",
     ]
     return {
@@ -229,6 +229,7 @@ def build_memory_erasure_readiness(repo_root: Path | None = None) -> dict[str, A
             "executor_context_pack_prompt_injection_source_tests",
             "user_visible_context_provenance_api_projection_source_tests",
             "office_execution_tier_router_source_tests",
+            "sandbox_cold_start_latency_split_source_contract",
         ],
         "evidence_markers": evidence,
         "missing_evidence_markers": missing,

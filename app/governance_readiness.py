@@ -237,19 +237,21 @@ def build_governance_readiness(
                 "source_level_context_pack_persistence_and_versioning",
                 "user_visible_context_provenance_api_projection_source_tests",
                 "office_execution_tier_router_source_tests",
+                "sandbox_cold_start_latency_split_source_contract",
             ],
             gaps=[
                 "executor_context_pack_211_acceptance",
                 "document_centric_followup_state",
-                "sandbox_cold_start_latency_split",
+                "sandbox_cold_start_latency_split_211_acceptance",
                 "frontend_context_provenance_acceptance",
             ],
             next_checks=[
                 "keep delete, retention, and export erasure evidence current through tools/memory_erasure_readiness.py",
                 "keep cross-session long-term memory disabled until policy and acceptance are complete",
-                "use tools/office_context_readiness.py to keep the office context-pack source contract and prompt injection tests current",
+                "use tools/office_context_readiness.py to keep the office context-pack source contract, prompt injection tests, and sandbox latency split contract current",
                 "keep context snapshot public provenance limited to counts, safe input keys, execution tier, and generated time",
                 "record 211 executor context-pack acceptance before closing #22",
+                "record 211 sandbox latency split acceptance before closing the cold-start UX gap",
                 "do not start Docker sandbox for lightweight office writing tasks by default",
             ],
             evidence={
@@ -268,6 +270,9 @@ def build_governance_readiness(
                             "policy"
                         ]["lightweight_office_tasks_start_sandbox_by_default"],
                     },
+                    "sandbox_latency_observability": office_context_readiness[
+                        "sandbox_latency_observability"
+                    ],
                     "open_gaps": office_context_readiness["open_gaps"],
                 }
             },

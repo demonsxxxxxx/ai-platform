@@ -38,6 +38,7 @@ def test_memory_erasure_readiness_records_delete_retention_evidence_without_priv
     assert "executor_context_pack_prompt_injection_source_tests" in implemented
     assert "user_visible_context_provenance_api_projection_source_tests" in implemented
     assert "office_execution_tier_router_source_tests" in implemented
+    assert "sandbox_cold_start_latency_split_source_contract" in implemented
 
     markers = {item["name"]: item for item in readiness["evidence_markers"]}
     assert set(markers) == {
@@ -63,7 +64,7 @@ def test_memory_erasure_readiness_records_delete_retention_evidence_without_priv
     assert readiness["open_gaps"] == [
         "executor_context_pack_211_acceptance",
         "document_centric_followup_state",
-        "sandbox_cold_start_latency_split",
+        "sandbox_cold_start_latency_split_211_acceptance",
         "frontend_context_provenance_acceptance",
     ]
 
@@ -86,7 +87,9 @@ def test_render_memory_erasure_readiness_markdown_is_gap_first_and_operator_read
     assert "memory_redaction_policy_admin_preview_and_audit" in markdown
     assert "executor_context_pack_prompt_injection_source_tests" in markdown
     assert "office_execution_tier_router_source_tests" in markdown
+    assert "sandbox_cold_start_latency_split_source_contract" in markdown
     assert "executor_context_pack_211_acceptance" in markdown
+    assert "sandbox_cold_start_latency_split_211_acceptance" in markdown
     assert "c:\\users" not in markdown.lower()
 
 
@@ -114,6 +117,9 @@ def test_memory_erasure_readiness_cli_outputs_json_without_secret_markers():
     assert "executor_context_pack_prompt_injection_source_tests" in payload["implemented_controls"]
     assert "user_visible_context_provenance_api_projection_source_tests" in payload["implemented_controls"]
     assert "office_execution_tier_router_source_tests" in payload["implemented_controls"]
+    assert "sandbox_cold_start_latency_split_source_contract" in payload["implemented_controls"]
     assert "ordinary_user_export_excludes_deleted_and_expired_records" in payload["implemented_controls"]
+    assert "sandbox_cold_start_latency_split" not in payload["open_gaps"]
+    assert "sandbox_cold_start_latency_split_211_acceptance" in payload["open_gaps"]
     for marker in FORBIDDEN_PRIVATE_MARKERS:
         assert marker not in result.stdout
