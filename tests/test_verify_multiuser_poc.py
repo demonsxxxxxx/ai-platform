@@ -1111,6 +1111,145 @@ def test_attach_run_detail_probe_results_aggregates_safe_projection_and_context(
     assert "authorization" not in serialized
 
 
+def test_attach_run_detail_probe_results_uses_admin_queue_and_sandbox_lease_history(monkeypatch):
+    module = load_verify_multiuser_poc()
+    account = module.Account(label="tenant-a-user-1", username="a1", password="pw", tenant_id="tenant-a")
+    results = [
+        {
+            "account": account.label,
+            "tenant_id": account.tenant_id,
+            "session_id": "session-a",
+            "run_id": "run-a",
+        }
+    ]
+
+    monkeypatch.setattr(module, "login", lambda *_args: {"X-AI-User-ID": "a1"})
+
+    def fake_json_request(method, url, payload=None, headers=None, timeout=30.0):
+        assert method == "GET"
+        if url.endswith("/api/ai/admin/runs/run-a"):
+            return 200, {
+                "run": {
+                    "workspace_id": "workspace-a",
+                    "input": {"context_snapshot_id": "ctx-a"},
+                    "result": {},
+                },
+                "events": [
+                    {
+                        "event_type": "queued",
+                        "payload": {
+                            "source": "admin_runtime_queue",
+                            "queue_position": 2,
+                            "queue_admission_ordinal": 17,
+                        },
+                    }
+                ],
+                "sandbox_leases": [
+                    {
+                        "lease_id": "lease-runtime-a",
+                        "run_id": "run-a",
+                        "tenant_id": "tenant-a",
+                        "workspace_id": "workspace-a",
+                        "user_id": "a1",
+                        "session_id": "session-a",
+                        "status": "released",
+                        "lease_payload": {"source": "foundation_runtime_lifecycle_probe"},
+                    }
+                ],
+                "skill_snapshots": [],
+            }
+        if url.endswith("/api/ai/runs/run-a/playback"):
+            return 200, {"events": [{"sequence": 1, "payload": {"message": "safe"}}]}
+        raise AssertionError(url)
+
+    monkeypatch.setattr(module, "json_request", fake_json_request)
+
+    module.attach_run_detail_probe_results(
+        "http://api.test",
+        results,
+        [account],
+        trusted_header_role="developer",
+    )
+
+    assert results[0]["queue_probe"] == {
+        "source": "admin_runtime_queue",
+        "queue_position": 2,
+        "queue_admission_ordinal": 17,
+        "submitted_queue_position": None,
+        "stale_queue_entry": False,
+        "cross_tenant_queue_leak": False,
+        "admission_limit_violation": False,
+    }
+    assert results[0]["sandbox_lease_id"] == "lease-runtime-a"
+
+
+def test_attach_run_detail_probe_results_ignores_post_run_sandbox_probe_leases(monkeypatch):
+    module = load_verify_multiuser_poc()
+    account = module.Account(label="tenant-a-user-1", username="a1", password="pw", tenant_id="tenant-a")
+    results = complete_foundation_runtime_results()
+    result = results[0]
+    result.update(
+        {
+            "account": account.label,
+            "tenant_id": account.tenant_id,
+            "session_id": "session-a",
+            "run_id": "run-a",
+        }
+    )
+    result.pop("sandbox_lease_id")
+
+    monkeypatch.setattr(module, "login", lambda *_args: {"X-AI-User-ID": "a1"})
+
+    def fake_json_request(method, url, payload=None, headers=None, timeout=30.0):
+        assert method == "GET"
+        if url.endswith("/api/ai/admin/runs/run-a"):
+            return 200, {
+                "run": {
+                    "workspace_id": "workspace-a",
+                    "input": {"context_snapshot_id": "ctx-a"},
+                    "result": {},
+                },
+                "events": [],
+                "sandbox_leases": [
+                    {
+                        "lease_id": "lease-post-run-probe-a",
+                        "run_id": "run-a",
+                        "tenant_id": "tenant-a",
+                        "workspace_id": "workspace-a",
+                        "user_id": "a1",
+                        "session_id": "session-a",
+                        "status": "released",
+                        "lease_payload": {"probe": "foundation_runtime"},
+                    }
+                ],
+                "skill_snapshots": [],
+            }
+        if url.endswith("/api/ai/runs/run-a/playback"):
+            return 200, {"events": [{"sequence": 1, "payload": {"message": "safe"}}]}
+        raise AssertionError(url)
+
+    monkeypatch.setattr(module, "json_request", fake_json_request)
+
+    module.attach_run_detail_probe_results(
+        "http://api.test",
+        [result],
+        [account],
+        trusted_header_role="developer",
+    )
+
+    assert "sandbox_lease_id" not in result
+    evidence = module.build_foundation_runtime_concurrency_evidence(
+        results,
+        commit_sha="3843395b180324b165cbca7c59b6d7e1a934e290",
+        runtime_subject_commit_sha="ac9a86bbea14a28748867cade8d80b2f9ff420ec",
+    )
+    assert evidence["checks"]["sandbox_workspace"]["status"] == "failed"
+    assert evidence["checks"]["sandbox_workspace"]["sandbox_lease_sample_count"] == 11
+    assert evidence["checks"]["sandbox_workspace"]["lease_probe_source"] == "runtime_run_detail"
+    readiness = build_foundation_runtime_concurrency_readiness(evidence)
+    assert "sandbox_lease_samples_missing" in readiness["failures"]
+
+
 def test_foundation_runtime_evidence_counts_tool_probe_and_skill_snapshot_samples():
     module = load_verify_multiuser_poc()
     results = complete_foundation_runtime_results()

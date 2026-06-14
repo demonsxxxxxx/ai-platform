@@ -1755,7 +1755,48 @@ def _sandbox_lease_id(run_payload: dict[str, Any]) -> str:
     for container in (run_payload.get("result"), run_payload.get("input"), run.get("result"), run.get("input")):
         if isinstance(container, dict) and container.get("sandbox_lease_id"):
             return str(container["sandbox_lease_id"])
+    leases = run_payload.get("sandbox_leases")
+    if isinstance(leases, list):
+        for lease in leases:
+            if not isinstance(lease, dict):
+                continue
+            lease_payload = lease.get("lease_payload") if isinstance(lease.get("lease_payload"), dict) else {}
+            if lease_payload.get("probe") == "foundation_runtime":
+                continue
+            lease_id = str(lease.get("lease_id") or "").strip()
+            if lease_id:
+                return lease_id
     return ""
+
+
+def _queue_probe_from_run_detail(run_payload: dict[str, Any]) -> dict[str, Any] | None:
+    events = run_payload.get("events")
+    if not isinstance(events, list):
+        return None
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("event_type") or event.get("type") or "")
+        if event_type != "queued":
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        source = str(payload.get("source") or "").strip()
+        if source != "admin_runtime_queue":
+            continue
+        queue_position = payload.get("queue_position")
+        queue_admission_ordinal = payload.get("queue_admission_ordinal", queue_position)
+        if type(queue_admission_ordinal) is not int or queue_admission_ordinal < 1:
+            continue
+        return {
+            "source": "admin_runtime_queue",
+            "queue_position": queue_position if type(queue_position) is int and queue_position > 0 else queue_admission_ordinal,
+            "queue_admission_ordinal": queue_admission_ordinal,
+            "submitted_queue_position": None,
+            "stale_queue_entry": False,
+            "cross_tenant_queue_leak": False,
+            "admission_limit_violation": False,
+        }
+    return None
 
 
 def _tool_permission_summary(run_payload: dict[str, Any]) -> dict[str, int | str]:
@@ -1860,6 +1901,14 @@ def attach_run_detail_probe_results(
         if status == 200 and isinstance(run_payload, dict):
             item["workspace_fingerprint"] = _workspace_fingerprint(run_payload, tenant_id=account.tenant_id, session_id=session_id, run_id=run_id)
             item["context_snapshot_id"] = _context_snapshot_id(run_payload)
+            detail_queue_probe = _queue_probe_from_run_detail(run_payload)
+            if detail_queue_probe is not None:
+                submitted_queue_position = None
+                existing_probe = item.get("queue_probe")
+                if isinstance(existing_probe, dict) and type(existing_probe.get("submitted_queue_position")) is int:
+                    submitted_queue_position = existing_probe["submitted_queue_position"]
+                detail_queue_probe["submitted_queue_position"] = submitted_queue_position
+                item["queue_probe"] = detail_queue_probe
             detail_sandbox_lease_id = _sandbox_lease_id(run_payload)
             if detail_sandbox_lease_id:
                 item["sandbox_lease_id"] = detail_sandbox_lease_id
