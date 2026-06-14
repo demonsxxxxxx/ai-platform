@@ -466,6 +466,16 @@ def _release_evidence_sort_key(path: Path, payload: dict[str, Any]) -> tuple[str
     return (str(payload.get("captured_at", "")), path.name)
 
 
+def _foundation_runtime_concurrency_sort_key(path: Path, payload: dict[str, Any]) -> tuple[str, str, str]:
+    revision = (
+        payload.get("source_tree_commit_sha")
+        or payload.get("runtime_subject_commit_sha")
+        or payload.get("commit_sha")
+        or ""
+    )
+    return (str(payload.get("captured_at", "")), str(revision), path.as_posix())
+
+
 def _discover_release_evidence_pair(commit_sha: str) -> tuple[Path, Path] | None:
     commit_root = _EVIDENCE_BASE_ROOT / commit_sha
     if not commit_root.is_dir():
@@ -626,7 +636,8 @@ def _discover_frontend_packaged_runtime_smoke_evidence(commit_sha: str) -> Path 
 
 
 def _discover_foundation_runtime_concurrency_evidence(commit_sha: str) -> Path | None:
-    entries: list[tuple[Path, dict[str, Any]]] = []
+    verified_entries: list[tuple[Path, dict[str, Any]]] = []
+    blocked_entries: list[tuple[Path, dict[str, Any]]] = []
     roots = [
         _FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT,
         _EVIDENCE_BASE_ROOT / commit_sha,
@@ -647,12 +658,18 @@ def _discover_foundation_runtime_concurrency_evidence(commit_sha: str) -> Path |
                 payload.get("schema_version") == "ai-platform.foundation-runtime-concurrency.v1"
                 and payload.get("artifact_kind") == "foundation_runtime_concurrency"
                 and (runtime_subject.startswith(commit_sha) or source_tree.startswith(commit_sha))
-                and build_foundation_runtime_concurrency_readiness(payload).get("verified") is True
             ):
-                entries.append((path, payload))
+                readiness = build_foundation_runtime_concurrency_readiness(payload)
+                if readiness.get("verified") is True:
+                    verified_entries.append((path, payload))
+                else:
+                    blocked_entries.append((path, payload))
 
-    if entries:
-        path, _ = max(entries, key=lambda item: _release_evidence_sort_key(item[0], item[1]))
+    if verified_entries:
+        path, _ = max(verified_entries, key=lambda item: _foundation_runtime_concurrency_sort_key(item[0], item[1]))
+        return path
+    if blocked_entries:
+        path, _ = max(blocked_entries, key=lambda item: _foundation_runtime_concurrency_sort_key(item[0], item[1]))
         return path
     return None
 
@@ -689,7 +706,15 @@ def _discover_latest_verified_foundation_runtime_concurrency_evidence() -> Path 
             entries.append((path, payload))
 
     if entries:
-        path, _ = max(entries, key=lambda item: _release_evidence_sort_key(item[0], item[1]))
+        path, _ = max(entries, key=lambda item: _foundation_runtime_concurrency_sort_key(item[0], item[1]))
+        return path
+    return None
+
+
+def _discover_latest_foundation_runtime_concurrency_evidence() -> Path | None:
+    entries = _iter_foundation_runtime_concurrency_evidence()
+    if entries:
+        path, _ = max(entries, key=lambda item: _foundation_runtime_concurrency_sort_key(item[0], item[1]))
         return path
     return None
 
@@ -1905,6 +1930,10 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     if foundation_runtime_concurrency_evidence_path is None:
         foundation_runtime_concurrency_evidence_path = (
             _discover_latest_verified_foundation_runtime_concurrency_evidence()
+        )
+    if foundation_runtime_concurrency_evidence_path is None:
+        foundation_runtime_concurrency_evidence_path = (
+            _discover_latest_foundation_runtime_concurrency_evidence()
         )
     foundation_runtime_concurrency_payload = (
         _load_json(foundation_runtime_concurrency_evidence_path)

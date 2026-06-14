@@ -38,6 +38,8 @@ _DEFAULT_INVARIANTS = {
 _DENIED_HTTP_STATUSES = {401, 403, 404}
 _SUCCESS_HTTP_STATUSES = {200, 202, 204, 409}
 _CANCEL_EFFECT_STATUSES = {"cancel_requested", "cancelled", "canceled"}
+_QUEUE_PROBE_SOURCES = {"redis_metadata", "admin_runtime_queue"}
+_SANDBOX_LEASE_PROBE_SOURCES = {"sandbox_leases"}
 _REVISION_REF_RE = re.compile(r"^[0-9a-f]{40}(?:[-A-Za-z0-9_.:]*)?$")
 
 
@@ -181,6 +183,12 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
         failures.append("queue_cross_tenant_leak")
     if _safe_int(queue_admission.get("stale_queue_entries")) > 0:
         failures.append("queue_stale_entries")
+    if _safe_int(queue_admission.get("queue_position_sample_count")) < summary["run_count"]:
+        failures.append("queue_admission_position_samples_missing")
+    if _safe_int(queue_admission.get("queue_position_duplicate_count")) > 0:
+        failures.append("queue_admission_position_duplicate")
+    if queue_admission.get("queue_probe_source") not in _QUEUE_PROBE_SOURCES:
+        failures.append("queue_admission_probe_source_missing")
     if not _has_success_sample(queue_admission.get("cancel_action_statuses")):
         failures.append("run_control_cancel_samples_missing")
     cancel_effect_run_count = _safe_int(queue_admission.get("cancel_effect_run_count"))
@@ -196,6 +204,10 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
     sandbox = checks["sandbox_workspace"]
     if _safe_int(sandbox.get("workspace_scope_sample_count")) < summary["run_count"]:
         failures.append("sandbox_workspace_samples_missing")
+    if _safe_int(sandbox.get("sandbox_lease_sample_count")) < summary["run_count"]:
+        failures.append("sandbox_lease_samples_missing")
+    if sandbox.get("lease_probe_source") not in _SANDBOX_LEASE_PROBE_SOURCES:
+        failures.append("sandbox_lease_probe_source_missing")
     if _safe_int(sandbox.get("cross_scope_lease_leaks")) > 0:
         failures.append("sandbox_lease_cross_scope_leak")
     if _safe_int(sandbox.get("workspace_scope_collisions")) > 0:
@@ -214,6 +226,8 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
         failures.append("memory_context_pack_version_unsafe")
     if _safe_list(memory_context.get("missing_public_summary_fields")):
         failures.append("memory_context_public_summary_fields_missing")
+    if _safe_int(memory_context.get("context_scope_probe_count")) < summary["run_count"]:
+        failures.append("memory_context_scope_probe_missing")
     if _safe_int(memory_context.get("cross_scope_context_leaks")) > 0:
         failures.append("memory_context_cross_scope_leak")
     if memory_context.get("long_term_cross_session_memory_read") is not False:
@@ -242,6 +256,8 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
     skill_snapshots = checks["skill_snapshots"]
     if _safe_int(skill_snapshots.get("run_skill_snapshot_count")) < summary["run_count"]:
         failures.append("skill_snapshots_missing_for_runs")
+    if _safe_int(skill_snapshots.get("snapshot_binding_sample_count")) < summary["run_count"]:
+        failures.append("skill_snapshot_binding_samples_missing")
     if _safe_list(skill_snapshots.get("missing_pinned_snapshots")):
         failures.append("skill_snapshots_missing_pinned_snapshot")
     if _safe_list(skill_snapshots.get("mismatched_pinned_snapshots")):

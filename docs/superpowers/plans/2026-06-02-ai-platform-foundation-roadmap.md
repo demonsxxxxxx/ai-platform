@@ -72,11 +72,15 @@ concurrency increases blocked. Accepted evidence must include queue/admission
 correctness, sandbox workspace/lease separation, artifact ACL denial across
 users and tenants, exact tool-permission decision binding, pinned
 `run_skill_snapshots`, replay safety, and memory/context isolation. The
-memory/context portion must include per-run public context snapshot projections
-and safe `context_pack_version` samples; legacy evidence that only records
-`context_snapshot_count` is insufficient. This gate does not open
-ordinary-user multi-agent, does not claim Docker sandbox hardening, and does
-not permit department rollout.
+memory/context portion must include per-run public context snapshot projections,
+safe `context_pack_version` samples, and scope probes; legacy evidence that only
+records `context_snapshot_count` is insufficient. Queue/admission and sandbox
+claims require probe sample counts and provenance fields, and skill governance
+claims require pinned snapshot binding samples. The current 2026-06-14
+`384474c` 211 evidence is blocker evidence, not closure evidence, because those
+queue/admission, sandbox lease, memory scope, and skill binding samples are
+missing. This gate does not open ordinary-user multi-agent, does not claim
+Docker sandbox hardening, and does not permit department rollout.
 
 GitHub issue #20 已作为 G5 多租户高并发 gate 的收敛切片在 `main` commit `f5da825` 完成：在 configured fairness horizon 内关闭 tail-window quota leasing 造成的可运行租户饥饿、multi-agent child-run fanout 绕过 active-run admission、queue position / queued-run removal / admin enrichment 无界 Redis queued-list 扫描，以及高风险 review/model-reasoning 规则歧义。详细设计与执行计划分别在 `docs/superpowers/specs/2026-06-06-g5-tenant-aware-scheduling-admission-metadata-design.md` 与 `docs/superpowers/plans/2026-06-06-g5-tenant-aware-scheduling-admission-metadata.md`，211 smoke 与 issue closure 证据保留在对应执行计划和 GitHub issue，不继续追加为产品路线图流水账。
 

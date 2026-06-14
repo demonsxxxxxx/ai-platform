@@ -106,7 +106,14 @@
     }
   },
   "evidence_policy": "This is Foundation Runtime POC correctness evidence only; it does not raise production concurrency defaults or open ordinary-user multi-agent, Docker sandbox hardening, long-term memory, or department rollout gates.",
-  "failures": [],
+  "failures": [
+    "queue_admission_position_samples_missing",
+    "queue_admission_probe_source_missing",
+    "sandbox_lease_samples_missing",
+    "sandbox_lease_probe_source_missing",
+    "memory_context_scope_probe_missing",
+    "skill_snapshot_binding_samples_missing"
+  ],
   "non_expansion_invariants": {
     "department_rollout_allowed": false,
     "docker_sandbox_hardened_claim_allowed": false,
@@ -141,7 +148,7 @@
     "run_creation": 3
   },
   "schema_version": "ai-platform.foundation-runtime-concurrency.v1",
-  "status": "verified_foundation_runtime_concurrency",
+  "status": "blocked_foundation_runtime_concurrency_evidence",
   "summary": {
     "concurrent_request_count": 12,
     "max_observed_concurrency": 12,
@@ -150,5 +157,5 @@
     "tenant_count": 2,
     "user_count": 4
   },
-  "verified": true
+  "verified": false
 }

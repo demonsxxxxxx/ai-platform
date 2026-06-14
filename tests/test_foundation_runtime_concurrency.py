@@ -44,6 +44,9 @@ def complete_evidence(**overrides):
                 "admission_limit_violations": 0,
                 "cross_tenant_queue_leaks": 0,
                 "stale_queue_entries": 0,
+                "queue_position_sample_count": 12,
+                "queue_position_duplicate_count": 0,
+                "queue_probe_source": "redis_metadata",
                 "cancel_action_statuses": [200, 200],
                 "cancel_effect_statuses": ["cancel_requested", "cancelled"],
                 "cancel_effect_run_count": 2,
@@ -53,9 +56,11 @@ def complete_evidence(**overrides):
             "sandbox_workspace": {
                 "status": "passed",
                 "workspace_scope_sample_count": 12,
+                "sandbox_lease_sample_count": 12,
                 "active_lease_count": 0,
                 "cross_scope_lease_leaks": 0,
                 "workspace_scope_collisions": 0,
+                "lease_probe_source": "sandbox_leases",
             },
             "memory_context": {
                 "status": "passed",
@@ -65,6 +70,7 @@ def complete_evidence(**overrides):
                 "missing_context_pack_version_count": 0,
                 "unsafe_context_pack_version_count": 0,
                 "missing_public_summary_fields": [],
+                "context_scope_probe_count": 12,
                 "cross_scope_context_leaks": 0,
                 "long_term_cross_session_memory_read": False,
             },
@@ -90,6 +96,7 @@ def complete_evidence(**overrides):
                 "missing_pinned_snapshots": [],
                 "mismatched_pinned_snapshots": [],
                 "global_mutable_skill_lookup_used": False,
+                "snapshot_binding_sample_count": 12,
             },
             "run_playback": {
                 "status": "passed",
@@ -188,6 +195,26 @@ def test_foundation_runtime_concurrency_rejects_missing_or_unsafe_context_pack_v
     assert "memory_context_pack_version_missing" in readiness["failures"]
     assert "memory_context_pack_version_unsafe" in readiness["failures"]
     assert "memory_context_public_summary_fields_missing" in readiness["failures"]
+
+
+def test_foundation_runtime_concurrency_rejects_unproven_queue_sandbox_memory_and_skill_claims():
+    weak = complete_evidence()
+    for key in ("queue_position_sample_count", "queue_position_duplicate_count", "queue_probe_source"):
+        weak["checks"]["queue_admission"].pop(key)
+    for key in ("sandbox_lease_sample_count", "lease_probe_source"):
+        weak["checks"]["sandbox_workspace"].pop(key)
+    weak["checks"]["memory_context"].pop("context_scope_probe_count")
+    weak["checks"]["skill_snapshots"].pop("snapshot_binding_sample_count")
+
+    readiness = build_foundation_runtime_concurrency_readiness(weak)
+
+    assert readiness["status"] == "blocked_foundation_runtime_concurrency_evidence"
+    assert "queue_admission_position_samples_missing" in readiness["failures"]
+    assert "queue_admission_probe_source_missing" in readiness["failures"]
+    assert "sandbox_lease_samples_missing" in readiness["failures"]
+    assert "sandbox_lease_probe_source_missing" in readiness["failures"]
+    assert "memory_context_scope_probe_missing" in readiness["failures"]
+    assert "skill_snapshot_binding_samples_missing" in readiness["failures"]
 
 
 def test_foundation_runtime_concurrency_rejects_weak_or_leaky_evidence():

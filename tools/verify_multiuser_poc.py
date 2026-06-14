@@ -52,6 +52,8 @@ PSQL_COMMAND_TAG_RE = re.compile(
 )
 TERMINAL_LAMBCHAT_STATUSES = {"completed", "error", "cancelled", "canceled"}
 CANCEL_EFFECT_STATUSES = {"cancel_requested", "cancelled", "canceled"}
+QUEUE_PROBE_SOURCES = {"redis_metadata", "admin_runtime_queue"}
+SANDBOX_LEASE_PROBE_SOURCE = "sandbox_leases"
 FORBIDDEN_PUBLIC_TERMS = (
     "authorization",
     "bearer ",
@@ -932,6 +934,9 @@ def foundation_runtime_memory_context_summary(results: list[dict[str, Any]]) -> 
     context_pack_version_sample_count = 0
     missing_context_pack_version_count = 0
     unsafe_context_pack_version_count = 0
+    context_scope_probe_count = 0
+    cross_scope_context_leaks = 0
+    long_term_cross_session_memory_read = False
     missing_public_summary_fields: set[str] = set()
 
     for item in results:
@@ -956,6 +961,14 @@ def foundation_runtime_memory_context_summary(results: list[dict[str, Any]]) -> 
         fields = projection.get("missing_public_summary_fields")
         if isinstance(fields, list):
             missing_public_summary_fields.update(str(field) for field in fields if str(field).strip())
+        scope_probe = projection.get("scope_probe")
+        if isinstance(scope_probe, dict):
+            if scope_probe.get("same_run_snapshot") is True:
+                context_scope_probe_count += 1
+            if scope_probe.get("cross_scope_leak") is True:
+                cross_scope_context_leaks += 1
+            if scope_probe.get("long_term_cross_session_memory_read") is True:
+                long_term_cross_session_memory_read = True
 
     failed = (
         context_snapshot_count < len(results)
@@ -963,6 +976,9 @@ def foundation_runtime_memory_context_summary(results: list[dict[str, Any]]) -> 
         or context_pack_version_sample_count < len(results)
         or missing_context_pack_version_count > 0
         or unsafe_context_pack_version_count > 0
+        or context_scope_probe_count < len(results)
+        or cross_scope_context_leaks > 0
+        or long_term_cross_session_memory_read
         or bool(missing_public_summary_fields)
     )
     return {
@@ -973,8 +989,9 @@ def foundation_runtime_memory_context_summary(results: list[dict[str, Any]]) -> 
         "missing_context_pack_version_count": missing_context_pack_version_count,
         "unsafe_context_pack_version_count": unsafe_context_pack_version_count,
         "missing_public_summary_fields": sorted(missing_public_summary_fields),
-        "cross_scope_context_leaks": 0,
-        "long_term_cross_session_memory_read": False,
+        "context_scope_probe_count": context_scope_probe_count,
+        "cross_scope_context_leaks": cross_scope_context_leaks,
+        "long_term_cross_session_memory_read": long_term_cross_session_memory_read,
     }
 
 
@@ -1378,13 +1395,40 @@ def _skill_snapshot_summary(run_payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(snapshots, list):
         snapshots = []
     used_count = sum(1 for item in snapshots if isinstance(item, dict) and item.get("used") is True)
+    snapshot_binding_sample_count = 0
+    missing_pinned_snapshots: list[str] = []
+    mismatched_pinned_snapshots: list[str] = []
+    global_mutable_skill_lookup_used = False
+    for item in snapshots:
+        if not isinstance(item, dict):
+            continue
+        skill_id = str(item.get("skill_id") or "").strip()
+        skill_version = str(item.get("skill_version") or "").strip()
+        content_hash = str(item.get("content_hash") or "").strip()
+        source = item.get("source") if isinstance(item.get("source"), dict) else {}
+        if source.get("global_mutable_lookup_used") is True:
+            global_mutable_skill_lookup_used = True
+        if skill_id and (skill_version or content_hash):
+            snapshot_binding_sample_count += 1
+        elif item.get("used") is True:
+            missing_pinned_snapshots.append(skill_id or "unknown")
+        if source.get("pinned_snapshot_mismatch") is True:
+            mismatched_pinned_snapshots.append(skill_id or "unknown")
+    failed = (
+        len(snapshots) == 0
+        or snapshot_binding_sample_count < len(snapshots)
+        or bool(missing_pinned_snapshots)
+        or bool(mismatched_pinned_snapshots)
+        or global_mutable_skill_lookup_used
+    )
     return {
-        "status": "passed",
+        "status": "failed" if failed else "passed",
         "run_skill_snapshot_count": len(snapshots),
         "used_count": used_count,
-        "missing_pinned_snapshots": [],
-        "mismatched_pinned_snapshots": [],
-        "global_mutable_skill_lookup_used": False,
+        "missing_pinned_snapshots": sorted(set(missing_pinned_snapshots)),
+        "mismatched_pinned_snapshots": sorted(set(mismatched_pinned_snapshots)),
+        "global_mutable_skill_lookup_used": global_mutable_skill_lookup_used,
+        "snapshot_binding_sample_count": snapshot_binding_sample_count,
     }
 
 
@@ -1619,6 +1663,86 @@ def _merged_nested_lists(results: list[dict[str, Any]], key: str, nested_key: st
     return sorted(values)
 
 
+def _foundation_runtime_queue_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
+    queue_positions: list[int] = []
+    probe_sources: set[str] = set()
+    admission_limit_violations = 0
+    cross_tenant_queue_leaks = 0
+    stale_queue_entries = 0
+    for item in results:
+        probe = item.get("queue_probe")
+        if not isinstance(probe, dict):
+            continue
+        position = probe.get("queue_position")
+        if type(position) is int and position > 0:
+            queue_positions.append(position)
+        source = str(probe.get("source") or "").strip()
+        if source in QUEUE_PROBE_SOURCES:
+            probe_sources.add(source)
+        if probe.get("admission_limit_violation") is True:
+            admission_limit_violations += 1
+        if probe.get("cross_tenant_queue_leak") is True:
+            cross_tenant_queue_leaks += 1
+        if probe.get("stale_queue_entry") is True:
+            stale_queue_entries += 1
+    duplicate_count = len(queue_positions) - len(set(queue_positions))
+    queue_probe_source = ",".join(sorted(probe_sources)) if probe_sources else "missing"
+    failed = (
+        len(queue_positions) < len(results)
+        or duplicate_count > 0
+        or not probe_sources
+        or admission_limit_violations > 0
+        or cross_tenant_queue_leaks > 0
+        or stale_queue_entries > 0
+    )
+    return {
+        "status": "failed" if failed else "passed",
+        "admission_limit_violations": admission_limit_violations,
+        "cross_tenant_queue_leaks": cross_tenant_queue_leaks,
+        "stale_queue_entries": stale_queue_entries,
+        "queue_position_sample_count": len(queue_positions),
+        "queue_position_duplicate_count": duplicate_count,
+        "queue_probe_source": queue_probe_source,
+    }
+
+
+def _foundation_runtime_sandbox_summary(
+    results: list[dict[str, Any]],
+    *,
+    workspace_fingerprints: list[str],
+) -> dict[str, Any]:
+    lease_scope_by_id: dict[str, str] = {}
+    lease_scope_leaks = 0
+    for item in results:
+        lease_id = str(item.get("sandbox_lease_id") or "").strip()
+        if not lease_id:
+            continue
+        scope = ":".join(
+            str(item.get(key) or "")
+            for key in ("tenant_id", "account", "session_id", "run_id")
+        )
+        existing_scope = lease_scope_by_id.get(lease_id)
+        if existing_scope is not None and existing_scope != scope:
+            lease_scope_leaks += 1
+        lease_scope_by_id[lease_id] = scope
+    lease_count = len(lease_scope_by_id)
+    failed = (
+        len(workspace_fingerprints) < len(results)
+        or lease_count < len(results)
+        or lease_scope_leaks > 0
+        or len(workspace_fingerprints) != len(set(workspace_fingerprints))
+    )
+    return {
+        "status": "failed" if failed else "passed",
+        "workspace_scope_sample_count": len(workspace_fingerprints),
+        "sandbox_lease_sample_count": lease_count,
+        "active_lease_count": 0,
+        "cross_scope_lease_leaks": lease_scope_leaks,
+        "workspace_scope_collisions": len(workspace_fingerprints) - len(set(workspace_fingerprints)),
+        "lease_probe_source": SANDBOX_LEASE_PROBE_SOURCE if lease_count else "missing",
+    }
+
+
 def _has_cancel_effect(item: dict[str, Any]) -> bool:
     statuses = item.get("cancel_effect_statuses")
     if not isinstance(statuses, list):
@@ -1650,6 +1774,26 @@ def build_foundation_runtime_concurrency_evidence(
         if item.get("workspace_fingerprint")
     ]
     memory_context = foundation_runtime_memory_context_summary(results)
+    queue_admission = _foundation_runtime_queue_summary(results)
+    sandbox_workspace = _foundation_runtime_sandbox_summary(
+        results,
+        workspace_fingerprints=workspace_fingerprints,
+    )
+    skill_snapshots = {
+        "run_skill_snapshot_count": _sum_nested_int(results, "skill_snapshot", "run_skill_snapshot_count"),
+        "used_count": _sum_nested_int(results, "skill_snapshot", "used_count"),
+        "missing_pinned_snapshots": _merged_nested_lists(results, "skill_snapshot", "missing_pinned_snapshots"),
+        "mismatched_pinned_snapshots": _merged_nested_lists(results, "skill_snapshot", "mismatched_pinned_snapshots"),
+        "global_mutable_skill_lookup_used": _any_nested_true(results, "skill_snapshot", "global_mutable_skill_lookup_used"),
+        "snapshot_binding_sample_count": _sum_nested_int(results, "skill_snapshot", "snapshot_binding_sample_count"),
+    }
+    skill_snapshots["status"] = "failed" if (
+        skill_snapshots["run_skill_snapshot_count"] < len(results)
+        or skill_snapshots["snapshot_binding_sample_count"] < len(results)
+        or bool(skill_snapshots["missing_pinned_snapshots"])
+        or bool(skill_snapshots["mismatched_pinned_snapshots"])
+        or skill_snapshots["global_mutable_skill_lookup_used"] is True
+    ) else "passed"
     scenario_counts = _scenario_counts(results)
     evidence = {
         "schema_version": FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA,
@@ -1674,23 +1818,14 @@ def build_foundation_runtime_concurrency_evidence(
         "scenario_counts": scenario_counts,
         "checks": {
             "queue_admission": {
-                "status": "passed",
-                "admission_limit_violations": 0,
-                "cross_tenant_queue_leaks": 0,
-                "stale_queue_entries": 0,
+                **queue_admission,
                 "cancel_action_statuses": _all_values(results, "cancel_action_statuses"),
                 "cancel_effect_statuses": _all_strings(results, "cancel_effect_statuses"),
                 "cancel_effect_run_count": sum(1 for item in results if _has_cancel_effect(item)),
                 "retry_action_statuses": _all_values(results, "retry_action_statuses"),
                 "retry_created_run_count": len(set(_all_strings(results, "retry_created_run_ids"))),
             },
-            "sandbox_workspace": {
-                "status": "passed",
-                "workspace_scope_sample_count": len(workspace_fingerprints),
-                "active_lease_count": 0,
-                "cross_scope_lease_leaks": 0,
-                "workspace_scope_collisions": len(workspace_fingerprints) - len(set(workspace_fingerprints)),
-            },
+            "sandbox_workspace": sandbox_workspace,
             "memory_context": memory_context,
             "artifact_acl": {
                 "status": "passed",
@@ -1713,14 +1848,7 @@ def build_foundation_runtime_concurrency_evidence(
                 "wrong_decision_reuse_violations": _sum_nested_int(results, "tool_permission", "wrong_decision_reuse_violations"),
                 "tool_call_id_mismatch_violations": _sum_nested_int(results, "tool_permission", "tool_call_id_mismatch_violations"),
             },
-            "skill_snapshots": {
-                "status": "passed",
-                "run_skill_snapshot_count": _sum_nested_int(results, "skill_snapshot", "run_skill_snapshot_count"),
-                "used_count": _sum_nested_int(results, "skill_snapshot", "used_count"),
-                "missing_pinned_snapshots": _merged_nested_lists(results, "skill_snapshot", "missing_pinned_snapshots"),
-                "mismatched_pinned_snapshots": _merged_nested_lists(results, "skill_snapshot", "mismatched_pinned_snapshots"),
-                "global_mutable_skill_lookup_used": _any_nested_true(results, "skill_snapshot", "global_mutable_skill_lookup_used"),
-            },
+            "skill_snapshots": skill_snapshots,
             "run_playback": {
                 "status": "passed",
                 "event_order_violations": _sum_nested_int(results, "playback", "event_order_violations"),

@@ -130,8 +130,14 @@
   },
   "evidence_policy": "This is Foundation Runtime POC correctness evidence only; it does not raise production concurrency defaults or open ordinary-user multi-agent, Docker sandbox hardening, long-term memory, or department rollout gates.",
   "failures": [
+    "queue_admission_position_samples_missing",
+    "queue_admission_probe_source_missing",
+    "sandbox_lease_samples_missing",
+    "sandbox_lease_probe_source_missing",
     "memory_context_public_projection_count_insufficient",
-    "memory_context_pack_version_samples_insufficient"
+    "memory_context_pack_version_samples_insufficient",
+    "memory_context_scope_probe_missing",
+    "skill_snapshot_binding_samples_missing"
   ],
   "non_expansion_invariants": {
     "department_rollout_allowed": false,

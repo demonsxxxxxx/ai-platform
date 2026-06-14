@@ -278,6 +278,11 @@ def test_foundation_runtime_memory_context_summary_counts_public_projection_vers
                     "snapshot_count": 1,
                     "context_pack_version": "v1",
                     "missing_public_summary_fields": [],
+                    "scope_probe": {
+                        "same_run_snapshot": True,
+                        "cross_scope_leak": False,
+                        "long_term_cross_session_memory_read": False,
+                    },
                 },
             }
         )
@@ -292,6 +297,7 @@ def test_foundation_runtime_memory_context_summary_counts_public_projection_vers
         "missing_context_pack_version_count": 0,
         "unsafe_context_pack_version_count": 0,
         "missing_public_summary_fields": [],
+        "context_scope_probe_count": 12,
         "cross_scope_context_leaks": 0,
         "long_term_cross_session_memory_read": False,
     }
@@ -365,6 +371,14 @@ def complete_foundation_runtime_results(*, context_projection: bool = True):
                 "retry_action_statuses": [200] if scenario == "retry" else [],
                 "retry_created_run_ids": [f"retry-{index}"] if scenario == "retry" else [],
                 "workspace_fingerprint": f"workspace-{tenant}-{index}",
+                "sandbox_lease_id": f"lease-{index}",
+                "queue_probe": {
+                    "source": "redis_metadata",
+                    "queue_position": index + 1,
+                    "stale_queue_entry": False,
+                    "cross_tenant_queue_leak": False,
+                    "admission_limit_violation": False,
+                },
                 "tool_permission": {
                     "decision_sample_count": 1,
                     "allow_once_reuse_violations": 0,
@@ -377,6 +391,7 @@ def complete_foundation_runtime_results(*, context_projection: bool = True):
                     "missing_pinned_snapshots": [],
                     "mismatched_pinned_snapshots": [],
                     "global_mutable_skill_lookup_used": False,
+                    "snapshot_binding_sample_count": 1,
                 },
                 "playback": {"event_order_violations": 0, "private_payload_leak_count": 0},
             }
@@ -386,6 +401,11 @@ def complete_foundation_runtime_results(*, context_projection: bool = True):
                 "snapshot_count": 1,
                 "context_pack_version": "v1",
                 "missing_public_summary_fields": [],
+                "scope_probe": {
+                    "same_run_snapshot": True,
+                    "cross_scope_leak": False,
+                    "long_term_cross_session_memory_read": False,
+                },
             }
         results.append(result)
     return results
@@ -419,10 +439,16 @@ def test_foundation_runtime_evidence_from_results_includes_context_pack_projecti
     assert memory_context["missing_context_pack_version_count"] == 0
     assert memory_context["unsafe_context_pack_version_count"] == 0
     assert memory_context["missing_public_summary_fields"] == []
+    assert memory_context["context_scope_probe_count"] == 12
     assert evidence["checks"]["queue_admission"]["cancel_effect_run_count"] == 3
+    assert evidence["checks"]["queue_admission"]["queue_position_sample_count"] == 12
+    assert evidence["checks"]["queue_admission"]["queue_probe_source"] == "redis_metadata"
     assert evidence["checks"]["artifact_acl"]["cross_tenant_statuses"] == [404] * 12
     assert evidence["checks"]["tool_permission"]["decision_sample_count"] == 12
     assert evidence["checks"]["skill_snapshots"]["run_skill_snapshot_count"] == 12
+    assert evidence["checks"]["skill_snapshots"]["snapshot_binding_sample_count"] == 12
+    assert evidence["checks"]["sandbox_workspace"]["sandbox_lease_sample_count"] == 12
+    assert evidence["checks"]["sandbox_workspace"]["lease_probe_source"] == "sandbox_leases"
     assert evidence["role_provenance"]["ordinary_user_multi_agent_opened"] is False
     readiness = build_foundation_runtime_concurrency_readiness(evidence)
     assert readiness["verified"] is True
@@ -430,6 +456,38 @@ def test_foundation_runtime_evidence_from_results_includes_context_pack_projecti
     assert "authorization" not in serialized
     assert "bearer " not in serialized
     assert "secret" not in serialized
+
+
+def test_foundation_runtime_evidence_from_results_fails_closed_without_probe_sources():
+    module = load_verify_multiuser_poc()
+    results = complete_foundation_runtime_results()
+    for item in results:
+        item.pop("queue_probe")
+        item.pop("sandbox_lease_id")
+        item["skill_snapshot"].pop("snapshot_binding_sample_count")
+        item["context_snapshot_public_projection"].pop("scope_probe")
+
+    evidence = module.build_foundation_runtime_concurrency_evidence(
+        results,
+        commit_sha="3843395b180324b165cbca7c59b6d7e1a934e290",
+        runtime_subject_commit_sha="ac9a86bbea14a28748867cade8d80b2f9ff420ec",
+    )
+
+    readiness = build_foundation_runtime_concurrency_readiness(evidence)
+
+    assert evidence["checks"]["queue_admission"]["status"] == "failed"
+    assert evidence["checks"]["queue_admission"]["queue_probe_source"] == "missing"
+    assert evidence["checks"]["sandbox_workspace"]["status"] == "failed"
+    assert evidence["checks"]["sandbox_workspace"]["sandbox_lease_sample_count"] == 0
+    assert evidence["checks"]["memory_context"]["status"] == "failed"
+    assert evidence["checks"]["memory_context"]["context_scope_probe_count"] == 0
+    assert evidence["checks"]["skill_snapshots"]["status"] == "failed"
+    assert evidence["checks"]["skill_snapshots"]["snapshot_binding_sample_count"] == 0
+    assert readiness["verified"] is False
+    assert "check_queue_admission_not_passed" in readiness["failures"]
+    assert "check_sandbox_workspace_not_passed" in readiness["failures"]
+    assert "check_memory_context_not_passed" in readiness["failures"]
+    assert "check_skill_snapshots_not_passed" in readiness["failures"]
 
 
 def test_foundation_runtime_cli_evidence_mode_fails_closed_without_public_context_projection(

@@ -261,6 +261,9 @@ def _minimal_foundation_runtime_concurrency_payload(revision_ref: str) -> dict:
                 "admission_limit_violations": 0,
                 "cross_tenant_queue_leaks": 0,
                 "stale_queue_entries": 0,
+                "queue_position_sample_count": 12,
+                "queue_position_duplicate_count": 0,
+                "queue_probe_source": "redis_metadata",
                 "cancel_action_statuses": [200],
                 "cancel_effect_statuses": ["cancelled", "cancel_requested", "cancelled"],
                 "cancel_effect_run_count": 3,
@@ -270,9 +273,11 @@ def _minimal_foundation_runtime_concurrency_payload(revision_ref: str) -> dict:
             "sandbox_workspace": {
                 "status": "passed",
                 "workspace_scope_sample_count": 12,
+                "sandbox_lease_sample_count": 12,
                 "active_lease_count": 0,
                 "cross_scope_lease_leaks": 0,
                 "workspace_scope_collisions": 0,
+                "lease_probe_source": "sandbox_leases",
             },
             "memory_context": {
                 "status": "passed",
@@ -282,6 +287,7 @@ def _minimal_foundation_runtime_concurrency_payload(revision_ref: str) -> dict:
                 "missing_context_pack_version_count": 0,
                 "unsafe_context_pack_version_count": 0,
                 "missing_public_summary_fields": [],
+                "context_scope_probe_count": 12,
                 "cross_scope_context_leaks": 0,
                 "long_term_cross_session_memory_read": False,
             },
@@ -307,6 +313,7 @@ def _minimal_foundation_runtime_concurrency_payload(revision_ref: str) -> dict:
                 "missing_pinned_snapshots": [],
                 "mismatched_pinned_snapshots": [],
                 "global_mutable_skill_lookup_used": False,
+                "snapshot_binding_sample_count": 12,
             },
             "run_playback": {
                 "status": "passed",
@@ -2351,6 +2358,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "foundation_alpha_stage_complete": False,
         "foundation_alpha_stage_status": "context_snapshot_public_summary_followup_required",
         "stage_acceptance_blockers": [
+            "foundation_runtime_concurrency_evidence",
             "ordinary_user_acceptance_for_quarantined_legacy_routes",
         ],
         "can_enter_next_stage_without_restrictions": False,
@@ -2378,6 +2386,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
             "department_rollout",
         ],
         "next_recommended_slices": [
+            "foundation_runtime_concurrency_evidence",
             "ordinary_user_acceptance_for_quarantined_legacy_routes",
         ],
     }
@@ -2417,7 +2426,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     }
     assert (
         readiness["domains"]["g5_run_lifecycle_worker_runtime"]["status"]
-        == "poc_verified_capacity_baseline_keep_defaults_locked"
+        == "partial_followups_open"
     )
     assert (
         readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"]["capacity_default_policy"]
@@ -2426,8 +2435,8 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     foundation_runtime_concurrency = readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"][
         "foundation_runtime_concurrency"
     ]
-    assert foundation_runtime_concurrency["status"] == "verified_foundation_runtime_concurrency"
-    assert foundation_runtime_concurrency["verified"] is True
+    assert foundation_runtime_concurrency["status"] == "blocked_foundation_runtime_concurrency_evidence"
+    assert foundation_runtime_concurrency["verified"] is False
     assert foundation_runtime_concurrency["requirements"]["minimum_concurrent_requests"] == 10
     assert foundation_runtime_concurrency["requirements"]["minimum_tenants"] == 2
     assert (
@@ -2440,8 +2449,10 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         ]
         == 12
     )
-    assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["open_followups"] == []
-    assert "foundation_runtime_concurrency_evidence" not in readiness["operator_context"]["next_recommended_slices"]
+    assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["open_followups"] == [
+        "foundation_runtime_concurrency_evidence"
+    ]
+    assert "foundation_runtime_concurrency_evidence" in readiness["operator_context"]["next_recommended_slices"]
     assert readiness["domains"]["frontend_poc"]["evidence"]["same_origin_api_health"]["payload_status"] == "ok"
     assert readiness["domains"]["frontend_poc"]["evidence"]["frontend_http_status"] == 200
     assert readiness["domains"]["frontend_poc"]["evidence"]["forbidden_reference_count"] == 0
