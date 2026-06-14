@@ -552,6 +552,30 @@ async def test_enqueue_run_preserves_multiple_message_ids_for_same_run(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_enqueue_run_with_metadata_returns_trusted_admission_ordinal(monkeypatch):
+    first_payload = queue_payload(run_id="run-admit-a", tenant_id="tenant-a").model_dump()
+    second_payload = queue_payload(run_id="run-admit-b", tenant_id="tenant-a").model_dump()
+    fake = FakeRedis()
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    first = await queue.enqueue_run_with_metadata(first_payload)
+    second_position = await queue.enqueue_run(second_payload)
+
+    assert first.queue_position == 1
+    assert first.queue_admission_ordinal == 1
+    assert first.source == "redis_metadata"
+    assert first.message_id == queue.message_id_for_raw(
+        QueueRunPayload.model_validate(first_payload).model_dump_json()
+    )
+    assert second_position == 2
+    assert fake.closed is True
+
+
+@pytest.mark.asyncio
 async def test_lease_run_moves_valid_payload_to_processing(monkeypatch):
     fake = FakeRedis(raw=payload_json())
 

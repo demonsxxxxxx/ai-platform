@@ -3004,8 +3004,14 @@ async def test_admin_run_detail_rejects_missing_audit_schema(monkeypatch):
                 }
             ]
 
+    class EmptyListCursor:
+        async def fetchall(self):
+            return []
+
     class AuditConnection:
         async def execute(self, sql, params):
+            if "from sandbox_leases" in " ".join(sql.split()):
+                return EmptyListCursor()
             return AuditCursor()
 
     monkeypatch.setattr(repositories, "get_run", fake_get_run)
@@ -3977,6 +3983,38 @@ async def test_admin_run_detail_projects_g2_trace_event_artifact_and_audit_contr
                         }
                     ]
                 )
+            if "from sandbox_leases" in compact:
+                return DetailCursor(
+                    many=[
+                        {
+                            "id": "lease-a",
+                            "tenant_id": "tenant-a",
+                            "workspace_id": "default",
+                            "user_id": "user-a",
+                            "session_id": "ses-a",
+                            "run_id": "run-a",
+                            "trace_id": "trace_lease_a",
+                            "sandbox_mode": "ephemeral",
+                            "provider": "fake",
+                            "status": "released",
+                            "browser_enabled": False,
+                            "resource_limits_json": {"cpu": 1, "token": "secret-limit"},
+                            "user_visible_payload_json": {
+                                "workspace_fingerprint": "tenant-a:default:ses-a:run-a",
+                                "runtime_private_payload": {"cwd": "/var/lib/ai-platform/run-a"},
+                            },
+                            "lease_payload_json": {
+                                "source": "foundation_runtime_lifecycle_probe",
+                                "client_secret": "lease-secret",
+                            },
+                            "heartbeat_at": None,
+                            "expires_at": None,
+                            "released_at": None,
+                            "release_reason": "completed",
+                            "created_at": None,
+                        }
+                    ]
+                )
             if "from audit_logs" in compact:
                 return DetailCursor(
                     many=[
@@ -4006,6 +4044,13 @@ async def test_admin_run_detail_projects_g2_trace_event_artifact_and_audit_contr
     assert detail["artifacts"][0]["trace_id"] == "trace_run_a"
     assert detail["artifacts"][0]["manifest"]["schema_version"] == "ai-platform.artifact-manifest.v1"
     assert "storage_key" not in str(detail["artifacts"][0]["manifest"])
+    assert detail["sandbox_leases"][0]["lease_id"] == "lease-a"
+    assert detail["sandbox_leases"][0]["lease_payload"] == {"source": "foundation_runtime_lifecycle_probe"}
+    assert "resource_limits" in detail["sandbox_leases"][0]
+    serialized_leases = json.dumps(detail["sandbox_leases"], ensure_ascii=False, default=str)
+    assert "lease-secret" not in serialized_leases
+    assert "secret-limit" not in serialized_leases
+    assert "/var/lib/ai-platform" not in serialized_leases
     assert detail["skill_snapshots"] == [
         {
             "skill_id": "qa-file-reviewer",
@@ -4134,8 +4179,14 @@ async def test_admin_run_detail_sanitizes_secret_and_runtime_payloads(monkeypatc
                 }
             ]
 
+    class EmptyListCursor:
+        async def fetchall(self):
+            return []
+
     class AuditConnection:
         async def execute(self, sql, params):
+            if "from sandbox_leases" in " ".join(sql.split()):
+                return EmptyListCursor()
             return AuditCursor()
 
     monkeypatch.setattr(repositories, "get_run", fake_get_run)

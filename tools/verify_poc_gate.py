@@ -21,7 +21,7 @@ from urllib import error, request
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.public_context_keys import public_context_input_key_findings
+from app.public_context_keys import public_context_input_key_findings, safe_public_context_pack_version
 from app.validation import assert_safe_id
 
 
@@ -950,6 +950,8 @@ def _context_missing_public_summary_fields(payload: dict[str, Any]) -> list[str]
         missing.append("long_term_memory_read")
     if _safe_non_empty_string(payload.get("execution_tier")) is None:
         missing.append("execution_tier")
+    if safe_public_context_pack_version(payload.get("context_pack_version")) is None:
+        missing.append("context_pack_version")
     if _safe_non_empty_string(payload.get("context_pack_generated_at")) is None:
         missing.append("context_pack_generated_at")
     return sorted(missing)
@@ -994,6 +996,7 @@ def _context_snapshot_payload_summary(snapshot_payload: dict[str, Any]) -> dict[
         if isinstance(used_summary.get("long_term_memory_read"), bool)
         else None,
         "execution_tier": _safe_non_empty_string(snapshot_payload.get("execution_tier")),
+        "context_pack_version": safe_public_context_pack_version(snapshot_payload.get("context_pack_version")),
         "context_pack_generated_at_present": _safe_non_empty_string(
             snapshot_payload.get("context_pack_generated_at")
         )
@@ -1085,6 +1088,7 @@ def check_context_snapshot_public_projection(
         "memory_policy_source": primary_summary["memory_policy_source"],
         "long_term_memory_read": primary_summary["long_term_memory_read"],
         "execution_tier": primary_summary["execution_tier"],
+        "context_pack_version": primary_summary["context_pack_version"],
         "context_pack_generated_at_present": primary_summary["context_pack_generated_at_present"],
     }
     if invalid_count_fields:

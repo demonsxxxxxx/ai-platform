@@ -2232,6 +2232,26 @@ async def list_active_sandbox_leases_for_run(
     return list(await cursor.fetchall())
 
 
+async def list_sandbox_leases_for_run(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+) -> list[dict[str, Any]]:
+    """Return same-run sandbox lease rows for admin runtime provenance."""
+    cursor = await conn.execute(
+        """
+        select *
+        from sandbox_leases
+        where tenant_id = %s
+          and run_id = %s
+        order by created_at asc
+        """,
+        (tenant_id, run_id),
+    )
+    return list(await cursor.fetchall())
+
+
 async def release_stopped_sandbox_leases_for_cancel(
     conn: AsyncConnection,
     *,
@@ -4768,6 +4788,39 @@ async def get_admin_runtime_observability_summary(
     }
 
 
+def _sandbox_lease_admin_projection(row: dict[str, Any]) -> dict[str, Any]:
+    resource_limits = sanitize_public_payload(
+        row.get("resource_limits_json") if isinstance(row.get("resource_limits_json"), dict) else {}
+    )
+    user_visible_payload = sanitize_public_payload(
+        row.get("user_visible_payload_json") if isinstance(row.get("user_visible_payload_json"), dict) else {}
+    )
+    lease_payload = sanitize_public_payload(
+        row.get("lease_payload_json") if isinstance(row.get("lease_payload_json"), dict) else {}
+    )
+    return {
+        "lease_id": str(row["id"]),
+        "tenant_id": str(row["tenant_id"]),
+        "workspace_id": str(row["workspace_id"]),
+        "user_id": str(row["user_id"]),
+        "session_id": str(row["session_id"]),
+        "run_id": str(row["run_id"]),
+        "trace_id": str(row.get("trace_id") or standard_trace_id(str(row["run_id"]))),
+        "sandbox_mode": str(row["sandbox_mode"]),
+        "provider": str(row.get("provider") or "fake"),
+        "status": str(row.get("status") or "active"),
+        "browser_enabled": bool(row.get("browser_enabled")),
+        "resource_limits": resource_limits if isinstance(resource_limits, dict) else {},
+        "workspace": user_visible_payload if isinstance(user_visible_payload, dict) else {},
+        "lease_payload": lease_payload if isinstance(lease_payload, dict) else {},
+        "heartbeat_at": row.get("heartbeat_at"),
+        "expires_at": row.get("expires_at"),
+        "released_at": row.get("released_at"),
+        "release_reason": str(row.get("release_reason") or ""),
+        "created_at": row.get("created_at"),
+    }
+
+
 async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> dict[str, Any] | None:
     run = await get_run(conn, tenant_id=tenant_id, run_id=run_id)
     if run is None:
@@ -4782,6 +4835,7 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
     events = await list_run_events(conn, tenant_id=tenant_id, run_id=run_id)
     steps = await list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
     artifacts = await list_run_artifacts(conn, tenant_id=tenant_id, run_id=run_id)
+    sandbox_leases = await list_sandbox_leases_for_run(conn, tenant_id=tenant_id, run_id=run_id)
     skill_snapshots = _attach_skill_usage(
         await list_run_skill_snapshots(conn, tenant_id=tenant_id, run_id=run_id),
         events,
@@ -4913,6 +4967,7 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
             }
             for item in artifacts
         ],
+        "sandbox_leases": [_sandbox_lease_admin_projection(item) for item in sandbox_leases],
         "skill_snapshots": skill_snapshots,
         "audit": [
             {
