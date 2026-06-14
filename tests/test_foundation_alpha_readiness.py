@@ -2358,7 +2358,6 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "foundation_alpha_stage_complete": False,
         "foundation_alpha_stage_status": "context_snapshot_public_summary_followup_required",
         "stage_acceptance_blockers": [
-            "foundation_runtime_concurrency_evidence",
             "ordinary_user_acceptance_for_quarantined_legacy_routes",
         ],
         "can_enter_next_stage_without_restrictions": False,
@@ -2386,7 +2385,6 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
             "department_rollout",
         ],
         "next_recommended_slices": [
-            "foundation_runtime_concurrency_evidence",
             "ordinary_user_acceptance_for_quarantined_legacy_routes",
         ],
     }
@@ -2426,7 +2424,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     }
     assert (
         readiness["domains"]["g5_run_lifecycle_worker_runtime"]["status"]
-        == "partial_followups_open"
+        == "poc_verified_capacity_baseline_keep_defaults_locked"
     )
     assert (
         readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"]["capacity_default_policy"]
@@ -2435,8 +2433,8 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     foundation_runtime_concurrency = readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"][
         "foundation_runtime_concurrency"
     ]
-    assert foundation_runtime_concurrency["status"] == "blocked_foundation_runtime_concurrency_evidence"
-    assert foundation_runtime_concurrency["verified"] is False
+    assert foundation_runtime_concurrency["status"] == "verified_foundation_runtime_concurrency"
+    assert foundation_runtime_concurrency["verified"] is True
     assert foundation_runtime_concurrency["requirements"]["minimum_concurrent_requests"] == 10
     assert foundation_runtime_concurrency["requirements"]["minimum_tenants"] == 2
     assert (
@@ -2449,10 +2447,14 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         ]
         == 12
     )
-    assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["open_followups"] == [
-        "foundation_runtime_concurrency_evidence"
-    ]
-    assert "foundation_runtime_concurrency_evidence" in readiness["operator_context"]["next_recommended_slices"]
+    assert foundation_runtime_concurrency["checks"]["memory_context"]["context_scope_probe_count"] == 12
+    assert foundation_runtime_concurrency["checks"]["queue_admission"]["queue_probe_source"] == "admin_runtime_queue"
+    assert foundation_runtime_concurrency["checks"]["queue_admission"]["queue_position_sample_count"] == 12
+    assert foundation_runtime_concurrency["checks"]["sandbox_workspace"]["lease_probe_source"] == "sandbox_leases"
+    assert foundation_runtime_concurrency["checks"]["sandbox_workspace"]["sandbox_lease_sample_count"] == 12
+    assert foundation_runtime_concurrency["checks"]["skill_snapshots"]["snapshot_binding_sample_count"] == 12
+    assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["open_followups"] == []
+    assert "foundation_runtime_concurrency_evidence" not in readiness["operator_context"]["next_recommended_slices"]
     assert readiness["domains"]["frontend_poc"]["evidence"]["same_origin_api_health"]["payload_status"] == "ok"
     assert readiness["domains"]["frontend_poc"]["evidence"]["frontend_http_status"] == 200
     assert readiness["domains"]["frontend_poc"]["evidence"]["forbidden_reference_count"] == 0

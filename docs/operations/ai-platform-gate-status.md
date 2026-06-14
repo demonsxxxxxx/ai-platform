@@ -127,11 +127,12 @@ memory/context check must include public context snapshot projections for each
 run, safe `context_pack_version` samples, and scope probes, not only a raw
 `context_snapshot_count`. Queue/admission and sandbox claims require probe
 sample counts and provenance fields; skill governance claims require pinned
-snapshot binding samples. The current 2026-06-14 `384474c` 211 evidence remains
-blocked because it lacks queue/admission probe samples, sandbox lease probe
-samples, memory scope probes, and skill snapshot binding samples. This gate does
-not raise production concurrency defaults, does not open ordinary-user multi-agent,
-does not claim Docker sandbox hardening, and does not permit department rollout.
+snapshot binding samples. The 2026-06-14 `384474c` 211 rerun now verifies these
+Foundation Runtime concurrency evidence requirements, including queue probe
+source, sandbox lease probe source, memory scope probes, and skill snapshot
+binding samples. This gate does not raise production concurrency defaults, does
+not open ordinary-user multi-agent, does not claim Docker sandbox hardening, and
+does not permit department rollout.
 
 The superseded runtime subject commit
 `cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55` remains historical reviewed evidence

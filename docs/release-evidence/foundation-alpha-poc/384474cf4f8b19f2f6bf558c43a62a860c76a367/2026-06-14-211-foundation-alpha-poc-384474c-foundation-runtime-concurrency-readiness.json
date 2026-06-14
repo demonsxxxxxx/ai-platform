@@ -45,6 +45,7 @@
     },
     "memory_context": {
       "context_pack_version_sample_count": 12,
+      "context_scope_probe_count": 12,
       "context_snapshot_count": 12,
       "context_snapshot_public_projection_count": 12,
       "cross_scope_context_leaks": 0,
@@ -68,6 +69,9 @@
         "cancelled"
       ],
       "cross_tenant_queue_leaks": 0,
+      "queue_position_duplicate_count": 0,
+      "queue_position_sample_count": 12,
+      "queue_probe_source": "admin_runtime_queue",
       "retry_action_statuses": [
         200,
         200,
@@ -75,7 +79,8 @@
       ],
       "retry_created_run_count": 3,
       "stale_queue_entries": 0,
-      "status": "passed"
+      "status": "passed",
+      "submitted_queue_position_sample_count": 12
     },
     "run_playback": {
       "event_order_violations": 0,
@@ -85,6 +90,8 @@
     "sandbox_workspace": {
       "active_lease_count": 0,
       "cross_scope_lease_leaks": 0,
+      "lease_probe_source": "sandbox_leases",
+      "sandbox_lease_sample_count": 12,
       "status": "passed",
       "workspace_scope_collisions": 0,
       "workspace_scope_sample_count": 12
@@ -94,6 +101,7 @@
       "mismatched_pinned_snapshots": [],
       "missing_pinned_snapshots": [],
       "run_skill_snapshot_count": 12,
+      "snapshot_binding_sample_count": 12,
       "status": "passed",
       "used_count": 6
     },
@@ -106,14 +114,7 @@
     }
   },
   "evidence_policy": "This is Foundation Runtime POC correctness evidence only; it does not raise production concurrency defaults or open ordinary-user multi-agent, Docker sandbox hardening, long-term memory, or department rollout gates.",
-  "failures": [
-    "queue_admission_position_samples_missing",
-    "queue_admission_probe_source_missing",
-    "sandbox_lease_samples_missing",
-    "sandbox_lease_probe_source_missing",
-    "memory_context_scope_probe_missing",
-    "skill_snapshot_binding_samples_missing"
-  ],
+  "failures": [],
   "non_expansion_invariants": {
     "department_rollout_allowed": false,
     "docker_sandbox_hardened_claim_allowed": false,
@@ -148,7 +149,7 @@
     "run_creation": 3
   },
   "schema_version": "ai-platform.foundation-runtime-concurrency.v1",
-  "status": "blocked_foundation_runtime_concurrency_evidence",
+  "status": "verified_foundation_runtime_concurrency",
   "summary": {
     "concurrent_request_count": 12,
     "max_observed_concurrency": 12,
@@ -157,5 +158,5 @@
     "tenant_count": 2,
     "user_count": 4
   },
-  "verified": false
+  "verified": true
 }

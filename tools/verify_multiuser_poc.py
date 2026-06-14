@@ -1295,6 +1295,7 @@ def attach_context_scope_probe_results(
     auth_mode: str = "login",
     trusted_header_role: str = "user",
 ) -> None:
+    """Attach same-run and cross-scope context snapshot probe outcomes."""
     by_label = _account_by_label(accounts)
     for item in results:
         account_label = str(item.get("account") or "")
@@ -1370,6 +1371,7 @@ def attach_sandbox_lease_probe_results(
     auth_mode: str = "login",
     trusted_header_role: str = "user",
 ) -> None:
+    """Attach sandbox lease create/release probe outcomes for each run."""
     by_label = _account_by_label(accounts)
     for item in results:
         account = by_label.get(str(item.get("account") or ""))

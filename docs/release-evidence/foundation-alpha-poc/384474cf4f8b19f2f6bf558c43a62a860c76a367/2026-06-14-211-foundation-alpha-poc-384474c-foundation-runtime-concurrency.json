@@ -46,6 +46,7 @@
     },
     "memory_context": {
       "context_pack_version_sample_count": 12,
+      "context_scope_probe_count": 12,
       "context_snapshot_count": 12,
       "context_snapshot_public_projection_count": 12,
       "cross_scope_context_leaks": 0,
@@ -69,6 +70,9 @@
         "cancelled"
       ],
       "cross_tenant_queue_leaks": 0,
+      "queue_position_duplicate_count": 0,
+      "queue_position_sample_count": 12,
+      "queue_probe_source": "admin_runtime_queue",
       "retry_action_statuses": [
         200,
         200,
@@ -76,7 +80,8 @@
       ],
       "retry_created_run_count": 3,
       "stale_queue_entries": 0,
-      "status": "passed"
+      "status": "passed",
+      "submitted_queue_position_sample_count": 12
     },
     "run_playback": {
       "event_order_violations": 0,
@@ -86,6 +91,8 @@
     "sandbox_workspace": {
       "active_lease_count": 0,
       "cross_scope_lease_leaks": 0,
+      "lease_probe_source": "sandbox_leases",
+      "sandbox_lease_sample_count": 12,
       "status": "passed",
       "workspace_scope_collisions": 0,
       "workspace_scope_sample_count": 12
@@ -95,6 +102,7 @@
       "mismatched_pinned_snapshots": [],
       "missing_pinned_snapshots": [],
       "run_skill_snapshot_count": 12,
+      "snapshot_binding_sample_count": 12,
       "status": "passed",
       "used_count": 6
     },
@@ -116,10 +124,10 @@
       "schema_version": "ai-platform.foundation-runtime-cleanup-proof.v1",
       "status": "verified",
       "tenant_ids": [
-        "frc-test-pr40-tenant-a",
-        "frc-test-pr40-tenant-b"
+        "frc-test-pr40b-tenant-a",
+        "frc-test-pr40b-tenant-b"
       ],
-      "tenant_prefix": "frc-test-pr40"
+      "tenant_prefix": "frc-test-pr40b"
     },
     "before": {
       "remaining_counts": {
@@ -130,13 +138,13 @@
       "schema_version": "ai-platform.foundation-runtime-cleanup-proof.v1",
       "status": "verified",
       "tenant_ids": [
-        "frc-test-pr40-tenant-a",
-        "frc-test-pr40-tenant-b"
+        "frc-test-pr40b-tenant-a",
+        "frc-test-pr40b-tenant-b"
       ],
-      "tenant_prefix": "frc-test-pr40"
+      "tenant_prefix": "frc-test-pr40b"
     }
   },
-  "commit_sha": "384474cf4f8b19f2f6bf558c43a62a860c76a367",
+  "commit_sha": "e8a9386a0fa3c85395e84e793b63847a46d5ecdb",
   "fixture_proof": {
     "prepared_counts": {
       "prepared_failed_run_count": 4,
@@ -145,10 +153,10 @@
     "schema_version": "ai-platform.foundation-runtime-fixture-proof.v1",
     "status": "prepared",
     "tenant_ids": [
-      "frc-test-pr40-tenant-a",
-      "frc-test-pr40-tenant-b"
+      "frc-test-pr40b-tenant-a",
+      "frc-test-pr40b-tenant-b"
     ],
-    "tenant_prefix": "frc-test-pr40"
+    "tenant_prefix": "frc-test-pr40b"
   },
   "non_expansion_invariants": {
     "department_rollout_allowed": false,
@@ -171,7 +179,7 @@
     "run_creation": 3
   },
   "schema_version": "ai-platform.foundation-runtime-concurrency.v1",
-  "source_tree_commit_sha": "384474cf4f8b19f2f6bf558c43a62a860c76a367",
+  "source_tree_commit_sha": "e8a9386a0fa3c85395e84e793b63847a46d5ecdb",
   "summary": {
     "concurrent_request_count": 12,
     "max_observed_concurrency": 12,
