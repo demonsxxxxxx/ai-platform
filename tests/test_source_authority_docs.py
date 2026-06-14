@@ -24,19 +24,20 @@ RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_RUNTIME_RELATION_MANIFEST = (
     ROOT / "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json"
 )
-ACTIVE_RUNTIME_SUBJECT_SHA = "dff48fbd454704af64871c039c59d396d8f9aaf7"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:dff48fb-foundation-runtime-concurrency-pr40"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:bcb5942c2093bb1ecdf10236b9d5a3a76623c0f87cf44df2d057b134cd2fab16"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-14-211-foundation-alpha-poc-dff48fb-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-14-211-foundation-alpha-poc-dff48fb-auth-rbac-smoke"
+ACTIVE_RUNTIME_SUBJECT_SHA = "79495bf4954017351db6d19494a16099fe2ee0bf"
+ACTIVE_SOURCE_TREE_SHA = "4624197b0be47f9faa5c068efc11d1bee08384fe"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:79495bf-foundation-runtime-concurrency-pr40"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:6eef3f19c71fd44ddefa24fc6bc106566f156cb299b241c206c38b4f2598fc9f"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-14-211-foundation-alpha-poc-79495bf-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-14-211-foundation-alpha-poc-79495bf-auth-rbac-smoke"
 ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID = (
-    "2026-06-14-211-foundation-alpha-poc-dff48fb-governance-runtime-smoke"
+    "2026-06-14-211-foundation-alpha-poc-79495bf-governance-runtime-smoke"
 )
 ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-14-211-foundation-alpha-poc-dff48fb-release-evidence-runtime-acceptance"
+    "2026-06-14-211-foundation-alpha-poc-79495bf-release-evidence-runtime-acceptance"
 )
 ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-14-211-foundation-alpha-poc-dff48fb-alert-trace-export-runtime-acceptance"
+    "2026-06-14-211-foundation-alpha-poc-79495bf-alert-trace-export-runtime-acceptance"
 )
 CBBFAFF_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
 CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
@@ -270,7 +271,7 @@ def test_committed_source_runtime_relation_manifest_keeps_clean_checkout_readine
     payload = json.loads(read(SOURCE_RUNTIME_RELATION_MANIFEST))
 
     assert payload["schema_version"] == "ai-platform.source-runtime-relation-manifest.v1"
-    assert payload["source_tree_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert payload["source_tree_commit_sha"] == ACTIVE_SOURCE_TREE_SHA
     assert payload["runtime_subject_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
     assert payload["runtime_affecting_changes_since_runtime_subject"] == []
     assert "C:\\Users" not in json.dumps(payload)
@@ -316,10 +317,10 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
         "message",
     ]
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["status"] == "succeeded"
-    assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["artifact_types"] == [
+    assert sorted(payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["artifact_types"]) == [
         "report_txt",
-        "reviewed_docx",
         "result_json",
+        "reviewed_docx",
     ]
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["playback_status"] == 200
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["matched_download_artifact_count"] == 1

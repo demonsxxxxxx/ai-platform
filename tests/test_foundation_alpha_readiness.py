@@ -11,7 +11,7 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
-ACTIVE_RUNTIME_SUBJECT_SHA = "dff48fbd454704af64871c039c59d396d8f9aaf7"
+ACTIVE_RUNTIME_SUBJECT_SHA = "79495bf4954017351db6d19494a16099fe2ee0bf"
 HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
@@ -2381,10 +2381,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "runtime_rollout_required_for_current_source": False,
         "foundation_alpha_stage_complete": False,
         "foundation_alpha_stage_status": "core_poc_loop_verified_followups_open",
-        "stage_acceptance_blockers": [
-            "foundation_runtime_concurrency_evidence",
-            "ordinary_user_acceptance_for_quarantined_legacy_routes",
-        ],
+        "stage_acceptance_blockers": ["ordinary_user_acceptance_for_quarantined_legacy_routes"],
         "can_enter_next_stage_without_restrictions": False,
         "production_claim_allowed": False,
         "ordinary_user_multi_agent_allowed": False,
@@ -2409,10 +2406,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
             "ordinary_user_multi_agent_exposure",
             "department_rollout",
         ],
-        "next_recommended_slices": [
-            "foundation_runtime_concurrency_evidence",
-            "ordinary_user_acceptance_for_quarantined_legacy_routes",
-        ],
+        "next_recommended_slices": ["ordinary_user_acceptance_for_quarantined_legacy_routes"],
     }
 
     assert set(readiness["domains"]) == {
@@ -2450,7 +2444,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     }
     assert (
         readiness["domains"]["g5_run_lifecycle_worker_runtime"]["status"]
-        == "partial_followups_open"
+        == "poc_verified_capacity_baseline_keep_defaults_locked"
     )
     assert (
         readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"]["capacity_default_policy"]
@@ -2465,14 +2459,13 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         ]
         is True
     )
-    assert foundation_runtime_concurrency["status"] == "blocked_foundation_runtime_concurrency_evidence"
-    assert foundation_runtime_concurrency["verified"] is False
-    assert "concurrency_probe_source_missing" in foundation_runtime_concurrency["failures"]
-    assert "queue_admission_probe_samples_missing" in foundation_runtime_concurrency["failures"]
-    assert "sandbox_lease_probe_source_missing" in foundation_runtime_concurrency["failures"]
-    assert "tool_permission_negative_reuse_probe_missing" in foundation_runtime_concurrency["failures"]
+    assert foundation_runtime_concurrency["status"] == "verified_foundation_runtime_concurrency"
+    assert foundation_runtime_concurrency["verified"] is True
+    assert foundation_runtime_concurrency["failures"] == []
     assert foundation_runtime_concurrency["requirements"]["minimum_concurrent_requests"] == 10
     assert foundation_runtime_concurrency["requirements"]["minimum_tenants"] == 2
+    assert foundation_runtime_concurrency["summary"]["concurrency_probe_source"] == "client_case_timestamps"
+    assert foundation_runtime_concurrency["summary"]["concurrency_window_sample_count"] == 12
     assert (
         foundation_runtime_concurrency["checks"]["memory_context"]["context_pack_version_sample_count"]
         == 12
@@ -2486,13 +2479,14 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert foundation_runtime_concurrency["checks"]["memory_context"]["context_scope_probe_count"] == 12
     assert foundation_runtime_concurrency["checks"]["queue_admission"]["queue_probe_source"] == "admin_runtime_queue"
     assert foundation_runtime_concurrency["checks"]["queue_admission"]["queue_position_sample_count"] == 12
-    assert foundation_runtime_concurrency["checks"]["sandbox_workspace"]["lease_probe_source"] == "sandbox_leases"
+    assert foundation_runtime_concurrency["checks"]["queue_admission"]["queue_probe_sample_count"] == 12
+    assert foundation_runtime_concurrency["checks"]["sandbox_workspace"]["lease_probe_source"] == "runtime_run_detail"
     assert foundation_runtime_concurrency["checks"]["sandbox_workspace"]["sandbox_lease_sample_count"] == 12
     assert foundation_runtime_concurrency["checks"]["skill_snapshots"]["snapshot_binding_sample_count"] == 12
-    assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["open_followups"] == [
-        "foundation_runtime_concurrency_evidence"
-    ]
-    assert "foundation_runtime_concurrency_evidence" in readiness["operator_context"]["next_recommended_slices"]
+    assert foundation_runtime_concurrency["checks"]["tool_permission"]["negative_reuse_probe_count"] == 48
+    assert foundation_runtime_concurrency["checks"]["tool_permission"]["negative_reuse_denied_count"] == 48
+    assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["open_followups"] == []
+    assert "foundation_runtime_concurrency_evidence" not in readiness["operator_context"]["next_recommended_slices"]
     assert readiness["domains"]["frontend_poc"]["evidence"]["same_origin_api_health"]["payload_status"] == "ok"
     assert readiness["domains"]["frontend_poc"]["evidence"]["frontend_http_status"] == 200
     assert readiness["domains"]["frontend_poc"]["evidence"]["forbidden_reference_count"] == 0
