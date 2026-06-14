@@ -1563,6 +1563,12 @@ def test_foundation_alpha_readiness_selects_current_source_release_evidence_pair
         image="ai-platform:a3f1d73-foundation-alpha-poc",
     )
     monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT",
+        tmp_path / "docs/release-evidence/foundation-runtime-concurrency",
+        raising=False,
+    )
     monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", old_smoke_path, raising=False)
     monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", old_auth_path, raising=False)
     monkeypatch.setattr(
@@ -1619,6 +1625,12 @@ def test_foundation_alpha_readiness_does_not_overclaim_dirty_source_tree(monkeyp
         image="ai-platform:a3f1d73-foundation-alpha-poc",
     )
     monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT",
+        tmp_path / "docs/release-evidence/foundation-runtime-concurrency",
+        raising=False,
+    )
     monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", old_smoke_path, raising=False)
     monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", old_auth_path, raising=False)
     monkeypatch.setattr(
@@ -1859,6 +1871,12 @@ def test_foundation_alpha_readiness_uses_committed_source_runtime_manifest_when_
         encoding="utf-8",
     )
     monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT",
+        tmp_path / "docs/release-evidence/foundation-runtime-concurrency",
+        raising=False,
+    )
     monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", old_smoke_path, raising=False)
     monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", old_auth_path, raising=False)
     monkeypatch.setattr(
@@ -2681,8 +2699,39 @@ def test_foundation_alpha_readiness_prefers_current_source_foundation_runtime_co
     assert readiness["runtime_relevant_source_verified_by_running_runtime"] is False
 
 
-def test_foundation_runtime_concurrency_active_subject_requires_current_source_match():
+def test_foundation_runtime_concurrency_subject_accepts_runtime_neutral_source_delta(monkeypatch):
+    payload = _minimal_foundation_runtime_concurrency_payload(CURRENT_SOURCE_SHA)
+
+    def runtime_neutral_delta(base_commit, source_tree_commit):
+        assert base_commit == CURRENT_SOURCE_SHA
+        assert source_tree_commit == NEWER_SOURCE_SHA
+        return []
+
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_changes_between",
+        runtime_neutral_delta,
+        raising=False,
+    )
+
+    matches = foundation_alpha_readiness._foundation_runtime_concurrency_evidence_matches_active_subject(
+        payload,
+        source_tree_commit=NEWER_SOURCE_SHA,
+        runtime_subject_commit=ACTIVE_RUNTIME_SUBJECT_SHA,
+    )
+
+    assert matches is True
+
+
+def test_foundation_runtime_concurrency_active_subject_rejects_runtime_affecting_source_delta(monkeypatch):
     payload = _minimal_foundation_runtime_concurrency_payload(ACTIVE_RUNTIME_SUBJECT_SHA)
+
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_changes_between",
+        lambda _base, _source: ["app/runtime_change.py"],
+        raising=False,
+    )
 
     matches = foundation_alpha_readiness._foundation_runtime_concurrency_evidence_matches_active_subject(
         payload,

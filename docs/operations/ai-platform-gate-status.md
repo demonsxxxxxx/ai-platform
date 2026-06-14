@@ -84,6 +84,17 @@ runtime env file through `--env-file` without copying or printing values, so
 this evidence does not by itself close production or G0 deployment-layout
 follow-ups.
 
+PR #40 later advanced the live 211 API/worker runtime to
+`5d3d7e2207d625817d193898c22d29d2f487fa4b` with image
+`ai-platform:5d3d7e2-foundation-runtime-concurrency-pr40` for the focused
+Foundation Runtime concurrency rerun. The 211 source marker, API/worker OCI
+revision labels, and `ai-platform.runtime_subject` labels matched `5d3d7e2`,
+and `/api/ai/health` returned `ok`. This runtime evidence is deliberately
+narrower than the dff48fb broader POC smoke/auth/governance set: it refreshes
+the Foundation Runtime concurrency gate after verifier hardening, but does not
+replace the broader POC evidence set or close production/G0 deployment-layout
+follow-ups.
+
 The full dff48fb POC evidence refresh includes reviewed, redacted entries for
 runtime POC smoke, Auth/RBAC smoke, Admin Runtime governance smoke,
 release-evidence runtime acceptance, alert/trace export runtime acceptance, and
@@ -137,15 +148,22 @@ counts and provenance fields; sandbox claims require runtime run-detail lease
 provenance rather than post-run lease probes; tool-permission claims require
 negative decision-reuse probes for same-request, wrong-run, same-tenant
 other-user, and cross-tenant reuse attempts; skill governance claims require
-pinned snapshot binding samples. The 2026-06-14 `dff48fb` 211 rerun is retained as reviewed
-historical evidence, but current validation blocks it because it lacks measured
-concurrency overlap, `queue_probe_sample_count`, `runtime_run_detail` sandbox
-lease provenance, and negative tool-permission reuse probes. Fresh 211 evidence
-is required before this gate can close for the current source. This gate does
-not raise production concurrency defaults, does not open ordinary-user
-multi-agent, does not claim Docker sandbox hardening, does not permit department
-rollout, and does not replace the broader Foundation Alpha POC
-smoke/auth/governance evidence set.
+pinned snapshot binding samples. The 2026-06-14 `dff48fb` 211 rerun is retained
+as reviewed historical evidence, but current validation blocks it because it
+lacks measured concurrency overlap, `queue_probe_sample_count`,
+`runtime_run_detail` sandbox lease provenance, and negative tool-permission
+reuse probes. The 2026-06-14 `5d3d7e2` PR #40 rerun is the current accepted
+Foundation Runtime concurrency evidence: readiness status is
+`verified_foundation_runtime_concurrency`, it records 12 concurrent cases,
+2 tenants, 4 users, 12 run/session samples, measured client timestamp overlap,
+queue probe sample count 12, runtime-run-detail sandbox lease provenance,
+12 public context projection samples, 12 pinned snapshot binding samples, and
+48 denied negative tool-permission reuse probes. This closes only the PR #40
+Foundation Runtime concurrency evidence gap for the `5d3d7e2` runtime-relevant
+source. It does not raise production concurrency defaults, does not open
+ordinary-user multi-agent, does not claim Docker sandbox hardening, does not
+permit department rollout, and does not replace the broader Foundation Alpha
+POC smoke/auth/governance evidence set.
 
 The superseded runtime subject commit
 `cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55` remains historical reviewed evidence
@@ -383,7 +401,7 @@ follow-up for S2 instead of a standalone S1 stage blocker.
 | --- | --- | --- | --- |
 | G0-G1 Source Authority / Security Baseline | Foundation Alpha POC has fresh 211 source/deploy/source-revision/runtime-subject label evidence, company-login audit evidence, focused Auth/RBAC smoke evidence, and cross-user/cross-tenant artifact denial evidence; keep under regression. | PRD v2, tech acceptance matrix, roadmap, guardrails, source-authority tests, repo-local compose context, frontend source migration, redacted deploy templates, and 2026-06-14 dff48fb POC release evidence. | Full issue/PR/review closure path, production auth rollout, and external env-file/deployment-layout reconciliation are still required before production closure. |
 | G2-G4 Control Plane MVP | Substantial coverage; keep under regression. | Session/run/file/artifact/skill/tool/memory/event/audit contracts, repositories, routes, schema indexes, and focused tests. | Full regression before PR/deploy, plus no executor-owned platform schema drift. |
-| G5 Run Lifecycle / Worker Runtime V1 | Foundation Alpha POC verified queue/run/worker execution and Admin capacity/backpressure projection; not capacity-closed. | Tenant-aware queue lease, worker maintenance, active-run admission, bounded metadata, Admin Runtime capacity/backpressure projection, #20 roadmap closure notes, and 2026-06-14 dff48fb POC verifier evidence. | #21 is currently closed in GitHub, but recorded seven-gate load evidence, large queue bounded lookup pressure, and multi-tenant load evidence are still missing. Production defaults stay unchanged. |
+| G5 Run Lifecycle / Worker Runtime V1 | Foundation Alpha POC verified queue/run/worker execution and Admin capacity/backpressure projection; PR #40 Foundation Runtime concurrency evidence is current for `5d3d7e2`; not capacity-closed. | Tenant-aware queue lease, worker maintenance, active-run admission, bounded metadata, Admin Runtime capacity/backpressure projection, #20 roadmap closure notes, 2026-06-14 dff48fb POC verifier evidence, and 2026-06-14 5d3d7e2 PR #40 Foundation Runtime concurrency evidence. | #21 is currently closed in GitHub, but recorded seven-gate load evidence, large queue bounded lookup pressure, and multi-tenant load evidence are still missing. Production defaults stay unchanged. |
 | G6 Tool / Skill / Memory Governance | Admin Runtime governance projection now has focused 211 smoke evidence for the POC runtime, and Foundation readiness records `memory_context_controls` with `session_scoped_memory=true`, `ordinary_user_opt_out=true`, `retention_cleanup=true`, `delete_redaction=true`, `public_admin_projection_safe=true`, `long_term_cross_session_memory_fail_closed=true`, and source-level context-pack persistence/versioning; G6 remains partial and ordinary-user expansion remains blocked. | Tool policy taxonomy/history, public permission-card projection, skill release/dependency policy contracts, memory delete/retention/redaction/export readiness, office context-pack architecture readiness, `source_level_context_pack_persistence_and_versioning`, `context_pack_version`, `context_pack_generated_at`, context snapshot public provenance projection contract, governance readiness CLI, POC runs using governed skills, and 2026-06-14 dff48fb governance runtime smoke evidence. | Legacy frontend route remap/policy enforcement, signed package or SBOM review evidence, dependency vulnerability/license evidence, 211 executor context-pack acceptance, document-centric follow-up state, frontend context provenance acceptance, full dashboard/visual acceptance, long-term cross-session memory policy closure, ordinary-user G8/G10 exposure controls, and broader 211 acceptance. |
 | G7 Sandbox / Resource Hardening | Blocked for high-risk expansion. | Fake provider remains local/test-only; capacity docs expose sandbox limits and missing hardening warnings. | Docker provider hardening, egress/quota policy, orphan cleanup, container security options, and Docker-capable 211 smoke. |
 | G8 Multi-Agent Controlled Beta | Feature-flagged only. | Dispatcher and child-run admission work exists behind current controls. | Tenant-aware scheduling quota/backpressure, #21 capacity evidence, observability, sandbox, and tool governance gates must pass before ordinary-user exposure. |

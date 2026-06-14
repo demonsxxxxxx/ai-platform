@@ -824,12 +824,22 @@ def _foundation_runtime_concurrency_evidence_subject(payload: dict[str, Any] | N
     }
 
 
-def _commit_ref_matches_subject(commit_ref: str | None, subject_commit: str | None) -> bool:
-    if not isinstance(commit_ref, str) or not isinstance(subject_commit, str):
+def _commit_ref_covers_runtime_relevant_source(
+    commit_ref: str | None,
+    source_tree_commit: str,
+) -> bool:
+    if not isinstance(commit_ref, str):
         return False
-    commit_ref = commit_ref.strip()
-    subject_commit = subject_commit.strip()
-    return bool(commit_ref and subject_commit and commit_ref.startswith(subject_commit))
+    evidence_commit = commit_ref.strip()
+    if not evidence_commit or source_tree_commit == "unknown":
+        return False
+    if evidence_commit.startswith(source_tree_commit):
+        return True
+    runtime_affecting_delta = _resolve_runtime_affecting_changes_between(
+        evidence_commit,
+        source_tree_commit,
+    )
+    return runtime_affecting_delta == []
 
 
 def _foundation_runtime_concurrency_evidence_matches_active_subject(
@@ -842,7 +852,7 @@ def _foundation_runtime_concurrency_evidence_matches_active_subject(
     if source_tree_commit == "unknown":
         return False
     for evidence_ref in (subject["commit_sha"], subject["source_tree_commit_sha"]):
-        if _commit_ref_matches_subject(evidence_ref, source_tree_commit):
+        if _commit_ref_covers_runtime_relevant_source(evidence_ref, source_tree_commit):
             return True
     return False
 
