@@ -824,6 +824,30 @@ def _foundation_runtime_concurrency_evidence_subject(payload: dict[str, Any] | N
     }
 
 
+def _commit_ref_matches_subject(commit_ref: str | None, subject_commit: str | None) -> bool:
+    if not isinstance(commit_ref, str) or not isinstance(subject_commit, str):
+        return False
+    commit_ref = commit_ref.strip()
+    subject_commit = subject_commit.strip()
+    return bool(commit_ref and subject_commit and commit_ref.startswith(subject_commit))
+
+
+def _foundation_runtime_concurrency_evidence_matches_active_subject(
+    payload: dict[str, Any] | None,
+    *,
+    source_tree_commit: str,
+    runtime_subject_commit: str,
+) -> bool:
+    subject = _foundation_runtime_concurrency_evidence_subject(payload)
+    active_subjects = [
+        item for item in (source_tree_commit, runtime_subject_commit) if item and item != "unknown"
+    ]
+    for evidence_ref in subject.values():
+        if any(_commit_ref_matches_subject(evidence_ref, active) for active in active_subjects):
+            return True
+    return False
+
+
 def _status_values_from_check(check: dict[str, Any], summary_key: str, result_key: str) -> list[int]:
     values = check.get(summary_key)
     if isinstance(values, list):
@@ -1944,6 +1968,17 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         foundation_runtime_concurrency_payload
     )
     foundation_runtime_concurrency_verified = foundation_runtime_concurrency.get("verified") is True
+    foundation_runtime_concurrency_matches_active_subject = (
+        _foundation_runtime_concurrency_evidence_matches_active_subject(
+            foundation_runtime_concurrency_payload,
+            source_tree_commit=source_tree_commit,
+            runtime_subject_commit=runtime_subject_commit,
+        )
+    )
+    foundation_runtime_concurrency_verified_for_active_subject = (
+        foundation_runtime_concurrency_verified
+        and foundation_runtime_concurrency_matches_active_subject
+    )
     try:
         governance_summary = _build_governance_summary(settings)
     except ModuleNotFoundError as exc:
@@ -2019,7 +2054,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         frontend_open_followups.insert(0, "packaged_frontend_image_release_acceptance")
 
     g5_open_followups = []
-    if not foundation_runtime_concurrency_verified:
+    if not foundation_runtime_concurrency_verified_for_active_subject:
         g5_open_followups.append("foundation_runtime_concurrency_evidence")
 
     domains = {
@@ -2078,6 +2113,9 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
                     _foundation_runtime_concurrency_evidence_subject(
                         foundation_runtime_concurrency_payload
                     )
+                ),
+                "foundation_runtime_concurrency_evidence_current_subject": (
+                    foundation_runtime_concurrency_matches_active_subject
                 ),
             },
             "open_followups": g5_open_followups,
@@ -2184,7 +2222,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         )
     if (
         foundation_runtime_concurrency_evidence_path is not None
-        and foundation_runtime_concurrency_verified
+        and foundation_runtime_concurrency_verified_for_active_subject
     ):
         evidence_entries["foundation_runtime_concurrency"] = _path_for_output(
             foundation_runtime_concurrency_evidence_path

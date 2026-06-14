@@ -2433,6 +2433,12 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     foundation_runtime_concurrency = readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"][
         "foundation_runtime_concurrency"
     ]
+    assert (
+        readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"][
+            "foundation_runtime_concurrency_evidence_current_subject"
+        ]
+        is True
+    )
     assert foundation_runtime_concurrency["status"] == "verified_foundation_runtime_concurrency"
     assert foundation_runtime_concurrency["verified"] is True
     assert foundation_runtime_concurrency["requirements"]["minimum_concurrent_requests"] == 10
@@ -2636,6 +2642,12 @@ def test_foundation_alpha_readiness_prefers_current_source_foundation_runtime_co
         "source_tree_commit_sha": revision_ref,
         "runtime_subject_commit_sha": revision_ref,
     }
+    assert (
+        readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"][
+            "foundation_runtime_concurrency_evidence_current_subject"
+        ]
+        is True
+    )
     assert "foundation_runtime_concurrency_evidence" not in readiness["domains"]["g5_run_lifecycle_worker_runtime"][
         "open_followups"
     ]
@@ -2711,11 +2723,18 @@ def test_foundation_alpha_readiness_uses_latest_archived_concurrency_evidence_wi
         "source_tree_commit_sha": revision_ref,
         "runtime_subject_commit_sha": revision_ref,
     }
-    assert "foundation_runtime_concurrency_evidence" not in readiness["decision"]["stage_acceptance_blockers"]
-    assert "foundation_runtime_concurrency_evidence" not in readiness["operator_context"]["next_recommended_slices"]
-    assert readiness["evidence_entries"]["foundation_runtime_concurrency"] == (
-        foundation_alpha_readiness._path_for_output(concurrency_path)
+    assert (
+        readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"][
+            "foundation_runtime_concurrency_evidence_current_subject"
+        ]
+        is False
     )
+    assert "foundation_runtime_concurrency_evidence" in readiness["domains"]["g5_run_lifecycle_worker_runtime"][
+        "open_followups"
+    ]
+    assert "foundation_runtime_concurrency_evidence" in readiness["decision"]["stage_acceptance_blockers"]
+    assert "foundation_runtime_concurrency_evidence" in readiness["operator_context"]["next_recommended_slices"]
+    assert "foundation_runtime_concurrency" not in readiness["evidence_entries"]
     assert readiness["foundation_alpha_stage_status"] == "runtime_rollout_required"
     assert readiness["decision"]["runtime_rollout_required_for_current_source"] is True
     assert readiness["runtime_relevant_source_verified_by_running_runtime"] is False
