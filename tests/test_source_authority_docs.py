@@ -24,19 +24,20 @@ RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_RUNTIME_RELATION_MANIFEST = (
     ROOT / "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json"
 )
-ACTIVE_RUNTIME_SUBJECT_SHA = "ac9a86bbea14a28748867cade8d80b2f9ff420ec"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:ac9a86b-s1-merged"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:1d13f440107c7bd39184b8c640c6e9a9c7e9bc0755d7e20e145cd8cafbccb7ee"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-13-211-foundation-alpha-poc-ac9a86b-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-13-211-foundation-alpha-poc-ac9a86b-auth-rbac-smoke"
+ACTIVE_RUNTIME_SUBJECT_SHA = "79495bf4954017351db6d19494a16099fe2ee0bf"
+ACTIVE_SOURCE_TREE_SHA = "4624197b0be47f9faa5c068efc11d1bee08384fe"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:79495bf-foundation-runtime-concurrency-pr40"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:6eef3f19c71fd44ddefa24fc6bc106566f156cb299b241c206c38b4f2598fc9f"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-14-211-foundation-alpha-poc-79495bf-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-14-211-foundation-alpha-poc-79495bf-auth-rbac-smoke"
 ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID = (
-    "2026-06-13-211-foundation-alpha-poc-ac9a86b-governance-runtime-smoke"
+    "2026-06-14-211-foundation-alpha-poc-79495bf-governance-runtime-smoke"
 )
 ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-13-211-foundation-alpha-poc-ac9a86b-release-evidence-runtime-acceptance"
+    "2026-06-14-211-foundation-alpha-poc-79495bf-release-evidence-runtime-acceptance"
 )
 ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-13-211-foundation-alpha-poc-ac9a86b-alert-trace-export-runtime-acceptance"
+    "2026-06-14-211-foundation-alpha-poc-79495bf-alert-trace-export-runtime-acceptance"
 )
 CBBFAFF_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
 CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
@@ -270,7 +271,7 @@ def test_committed_source_runtime_relation_manifest_keeps_clean_checkout_readine
     payload = json.loads(read(SOURCE_RUNTIME_RELATION_MANIFEST))
 
     assert payload["schema_version"] == "ai-platform.source-runtime-relation-manifest.v1"
-    assert payload["source_tree_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert payload["source_tree_commit_sha"] == ACTIVE_SOURCE_TREE_SHA
     assert payload["runtime_subject_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
     assert payload["runtime_affecting_changes_since_runtime_subject"] == []
     assert "C:\\Users" not in json.dumps(payload)
@@ -316,7 +317,11 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
         "message",
     ]
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["status"] == "succeeded"
-    assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["artifact_types"] is None
+    assert sorted(payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["artifact_types"]) == [
+        "report_txt",
+        "result_json",
+        "reviewed_docx",
+    ]
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["playback_status"] == 200
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["matched_download_artifact_count"] == 1
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["matched_preview_artifact_count"] == 1
@@ -752,6 +757,41 @@ def test_capacity_docs_record_machine_readable_gate_evidence_contract():
         assert "C:\\Users" not in text
 
 
+def test_gate_status_records_foundation_runtime_concurrency_context_pack_blocker():
+    gate_status_text = read(GATE_STATUS_DOC)
+    roadmap_text = read(ROADMAP)
+    release_evidence_text = read(RELEASE_EVIDENCE_INDEX)
+
+    for text in (gate_status_text, roadmap_text):
+        compact_text = " ".join(text.split())
+        assert "foundation_runtime_concurrency_evidence" in text
+        assert "ai-platform.foundation-runtime-concurrency.v1" in text
+        assert "context_pack_version" in text
+        assert "10+ concurrent" in text
+        assert "dff48fb" in text
+        assert "5d3d7e2" in text
+        assert "79495bf" in text
+        assert "negative decision-reuse probes" in text
+        assert "current accepted Foundation Runtime concurrency evidence" in compact_text
+        assert "Foundation Runtime" in text
+        assert "concurrency" in text
+        assert "multi-agent" in text
+        assert "production concurrency" in text
+        assert "C:\\Users" not in text
+
+    assert "dff48fbd454704af64871c039c59d396d8f9aaf7" in release_evidence_text
+    assert "2026-06-14-211-foundation-alpha-poc-dff48fb-foundation-runtime-concurrency.json" in release_evidence_text
+    assert "5d3d7e2207d625817d193898c22d29d2f487fa4b" in release_evidence_text
+    assert "2026-06-14-211-foundation-alpha-poc-5d3d7e2-foundation-runtime-concurrency.json" in release_evidence_text
+    assert "79495bf4954017351db6d19494a16099fe2ee0bf" in release_evidence_text
+    assert "2026-06-14-211-foundation-alpha-poc-79495bf-foundation-runtime-concurrency.json" in release_evidence_text
+    assert "verified_foundation_runtime_concurrency" not in release_evidence_text
+    assert "negative tool-permission reuse probes" in release_evidence_text
+    assert "queue_probe_sample_count" in release_evidence_text
+    assert "does not raise production concurrency defaults" in release_evidence_text
+    assert "open ordinary-user multi-agent" in release_evidence_text
+
+
 def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
     capacity_text = read(CAPACITY_BASELINE_DOC)
 
@@ -885,6 +925,27 @@ def test_governance_docs_record_skill_dependency_review_policy_without_closing_g
         assert "raw_storage_key" not in text
         assert "sandbox_workdir" not in text
         assert "C:\\Users" not in text
+
+
+def test_office_context_docs_track_source_level_context_pack_versioning_without_gate_closure():
+    governance_text = read(GOVERNANCE_READINESS_DOC)
+    roadmap_text = read(ROADMAP)
+    gate_status_text = read(GATE_STATUS_DOC)
+
+    for text in (governance_text, roadmap_text, gate_status_text):
+        assert "source-level context-pack persistence/versioning" in text
+        assert "source_level_context_pack_persistence_and_versioning" in text
+        assert "context_pack_version" in text
+        assert "context_pack_generated_at" in text
+        assert "211 executor context-pack acceptance" in text
+        assert "frontend context provenance acceptance" in text
+        assert "long-term cross-session memory" in text
+        assert "ordinary-user G8/G10 exposure" in text
+        assert "C:\\Users" not in text
+
+    for text in (governance_text, gate_status_text):
+        assert "Context-pack persistence/versioning, 211 executor" not in text
+        assert "context-pack persistence/executor injection/frontend provenance acceptance" not in text
 
 
 def test_frontend_docs_record_packaged_runtime_smoke_contract_and_211_blocker():

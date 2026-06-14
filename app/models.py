@@ -598,6 +598,7 @@ class AdminRunDetailResponse(BaseModel):
     events: list[dict[str, Any]] = Field(default_factory=list)
     steps: list[dict[str, Any]] = Field(default_factory=list)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    sandbox_leases: list[dict[str, Any]] = Field(default_factory=list)
     skill_snapshots: list[dict[str, Any]] = Field(default_factory=list)
     audit: list[dict[str, Any]] = Field(default_factory=list)
 

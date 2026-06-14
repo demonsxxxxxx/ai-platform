@@ -180,6 +180,7 @@ def test_tool_policy_readiness_records_allow_ask_deny_taxonomy_without_closing_g
     assert "admin_policy_change_history_projection" in readiness["implemented_controls"]
     assert "admin_policy_bulk_review_and_change_history_view" not in readiness["open_gaps"]
     assert "admin_policy_bulk_review_dashboard_contract" in readiness["implemented_controls"]
+    assert "exact_tool_permission_decision_lookup_source_tests" in readiness["implemented_controls"]
     assert "platform_registered_mcp_only_policy" in readiness["implemented_controls"]
     assert "ordinary_user_custom_mcp_disabled" in readiness["implemented_controls"]
     assert "admin_policy_bulk_review_and_dashboard_acceptance" not in readiness["open_gaps"]
@@ -210,6 +211,7 @@ def test_tool_policy_readiness_markdown_is_gap_first_and_secret_safe():
     assert "active_low_write_capable" in markdown
     assert "admin_policy_change_history_projection" in markdown
     assert "admin_policy_bulk_review_dashboard_contract" in markdown
+    assert "exact_tool_permission_decision_lookup_source_tests" in markdown
     assert "admin_policy_bulk_review_runtime_acceptance" in markdown
     assert "ai-platform.tool-policy-bulk-review-dashboard-contract.v1" in markdown
     assert "token=secret" not in markdown
@@ -237,6 +239,7 @@ def test_tool_policy_readiness_cli_outputs_json_without_secret_markers():
     assert payload["summary"]["taxonomy_cases"] == 6
     assert "tool_allow_deny_ask_policy_taxonomy_for_all_mcp_tools" not in payload["open_gaps"]
     assert "admin_policy_bulk_review_dashboard_contract" in payload["implemented_controls"]
+    assert "exact_tool_permission_decision_lookup_source_tests" in payload["implemented_controls"]
     assert "admin_policy_bulk_review_runtime_acceptance" in payload["open_gaps"]
     assert "token=secret" not in result.stdout
     assert "work_dir" not in result.stdout

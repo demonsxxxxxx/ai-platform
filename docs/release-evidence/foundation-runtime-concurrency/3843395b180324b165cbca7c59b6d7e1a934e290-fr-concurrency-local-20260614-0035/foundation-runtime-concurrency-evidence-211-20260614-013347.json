@@ -1,0 +1,208 @@
+{
+  "artifact_kind": "foundation_runtime_concurrency",
+  "checks": {
+    "artifact_acl": {
+      "cross_tenant_statuses": [
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404
+      ],
+      "cross_user_statuses": [
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404
+      ],
+      "owner_statuses": [
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200
+      ],
+      "preview_cross_tenant_statuses": [
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404
+      ],
+      "preview_cross_user_statuses": [
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404
+      ],
+      "status": "passed"
+    },
+    "memory_context": {
+      "context_snapshot_count": 12,
+      "cross_scope_context_leaks": 0,
+      "long_term_cross_session_memory_read": false,
+      "status": "passed"
+    },
+    "queue_admission": {
+      "admission_limit_violations": 0,
+      "cancel_action_statuses": [
+        200,
+        200,
+        200
+      ],
+      "cancel_effect_run_count": 3,
+      "cancel_effect_statuses": [
+        "cancelled",
+        "cancelled",
+        "cancelled"
+      ],
+      "cross_tenant_queue_leaks": 0,
+      "retry_action_statuses": [
+        409,
+        200,
+        409,
+        200,
+        409,
+        200
+      ],
+      "retry_created_run_count": 3,
+      "stale_queue_entries": 0,
+      "status": "passed"
+    },
+    "run_playback": {
+      "event_order_violations": 0,
+      "private_payload_leak_count": 0,
+      "status": "passed"
+    },
+    "sandbox_workspace": {
+      "active_lease_count": 0,
+      "cross_scope_lease_leaks": 0,
+      "status": "passed",
+      "workspace_scope_collisions": 0,
+      "workspace_scope_sample_count": 12
+    },
+    "skill_snapshots": {
+      "global_mutable_skill_lookup_used": false,
+      "mismatched_pinned_snapshots": [],
+      "missing_pinned_snapshots": [],
+      "run_skill_snapshot_count": 12,
+      "status": "passed",
+      "used_count": 6
+    },
+    "tool_permission": {
+      "allow_once_reuse_violations": 0,
+      "decision_sample_count": 12,
+      "status": "passed",
+      "tool_call_id_mismatch_violations": 0,
+      "wrong_decision_reuse_violations": 0
+    }
+  },
+  "cleanup_proof": {
+    "remaining_counts": {
+      "remaining_agents_count": 0,
+      "remaining_artifacts_count": 0,
+      "remaining_audit_logs_count": 0,
+      "remaining_files_count": 0,
+      "remaining_memory_policies_count": 0,
+      "remaining_memory_records_count": 0,
+      "remaining_messages_count": 0,
+      "remaining_run_context_snapshots_count": 0,
+      "remaining_run_events_count": 0,
+      "remaining_run_skill_snapshots_count": 0,
+      "remaining_run_steps_count": 0,
+      "remaining_run_tool_permission_requests_count": 0,
+      "remaining_runs_count": 0,
+      "remaining_sandbox_leases_count": 0,
+      "remaining_sessions_count": 0,
+      "remaining_tenant_workbench_skills_count": 0,
+      "remaining_tenants_count": 0,
+      "remaining_tool_policies_count": 0,
+      "remaining_users_count": 0,
+      "remaining_workspaces_count": 0
+    },
+    "schema_version": "ai-platform.foundation-runtime-cleanup-proof.v1",
+    "status": "verified",
+    "tenant_ids": [
+      "frc-test-tenant-a",
+      "frc-test-tenant-b"
+    ],
+    "tenant_prefix": "frc-test-"
+  },
+  "commit_sha": "3843395b180324b165cbca7c59b6d7e1a934e290-fr-concurrency-local-20260614-0035",
+  "fixture_proof": {
+    "prepared_counts": {
+      "prepared_failed_run_count": 4,
+      "prepared_tenant_count": 2
+    },
+    "schema_version": "ai-platform.foundation-runtime-fixture-proof.v1",
+    "status": "prepared",
+    "tenant_ids": [
+      "frc-test-tenant-a",
+      "frc-test-tenant-b"
+    ],
+    "tenant_prefix": "frc-test-"
+  },
+  "non_expansion_invariants": {
+    "department_rollout_allowed": false,
+    "docker_sandbox_hardened_claim_allowed": false,
+    "long_term_cross_session_memory_enabled": false,
+    "ordinary_user_multi_agent_allowed": false,
+    "production_concurrency_increase_allowed": false
+  },
+  "role_provenance": {
+    "admin_probe_role": "developer",
+    "developer_role_used_only_for_fixture_agent_selection": true,
+    "ordinary_user_multi_agent_opened": false,
+    "public_probe_role": "user",
+    "run_creation_role": "developer"
+  },
+  "runtime_subject_commit_sha": "3843395b180324b165cbca7c59b6d7e1a934e290-fr-concurrency-local-20260614-0035",
+  "scenario_counts": {
+    "cancel": 3,
+    "execution": 3,
+    "retry": 3,
+    "run_creation": 3
+  },
+  "schema_version": "ai-platform.foundation-runtime-concurrency.v1",
+  "source_tree_commit_sha": "3843395b180324b165cbca7c59b6d7e1a934e290-fr-concurrency-local-20260614-0035",
+  "summary": {
+    "concurrent_request_count": 12,
+    "max_observed_concurrency": 12,
+    "run_count": 12,
+    "session_count": 12,
+    "tenant_count": 2,
+    "user_count": 4
+  }
+}

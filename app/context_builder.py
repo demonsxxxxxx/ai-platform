@@ -22,12 +22,14 @@ from app.public_context_keys import (
     public_context_input_key_findings,
     public_context_key_token_candidates,
     safe_public_context_input_keys,
+    safe_public_context_pack_version,
 )
 
 PUBLIC_CONTEXT_EXECUTION_TIERS = {"sdk_only_writing", "document_worker", "heavy_sandbox"}
 PUBLIC_CONTEXT_ARTIFACT_VERSION_RE = re.compile(r"^v\d+(?:[._:-]\d+){0,3}$", re.IGNORECASE)
 PUBLIC_CONTEXT_HASH_LIKE_VALUE_RE = re.compile(r"^[a-f0-9]{32,}$", re.IGNORECASE)
 EXECUTOR_CONTEXT_PACK_SCHEMA_VERSION = "ai-platform.executor-context-pack.v1"
+DEFAULT_CONTEXT_PACK_VERSION = "v1"
 
 
 def _utc_now_iso() -> str:
@@ -183,6 +185,14 @@ def _stored_public_context_latest_artifact_version(payload: dict[str, Any]) -> s
     return value if PUBLIC_CONTEXT_ARTIFACT_VERSION_RE.fullmatch(value) else None
 
 
+def _stored_public_context_pack_version(payload: dict[str, Any]) -> str | None:
+    return safe_public_context_pack_version(payload.get("context_pack_version"))
+
+
+def _safe_public_context_pack_version(value: object) -> str:
+    return safe_public_context_pack_version(value) or DEFAULT_CONTEXT_PACK_VERSION
+
+
 def _stored_public_context_generated_at(payload: dict[str, Any]) -> str | None:
     value = payload.get("context_pack_generated_at")
     if not isinstance(value, str):
@@ -212,6 +222,7 @@ def public_context_provenance(
     long_term_memory_read: bool = False,
     latest_artifact_version: str | None = None,
     execution_tier: str = "sdk_only_writing",
+    context_pack_version: str = DEFAULT_CONTEXT_PACK_VERSION,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     """Build the user-visible context provenance contract without exposing raw ids."""
@@ -238,6 +249,7 @@ def public_context_provenance(
         },
         "latest_artifact_version": latest_artifact_version,
         "execution_tier": str(execution_tier or "sdk_only_writing"),
+        "context_pack_version": _safe_public_context_pack_version(context_pack_version),
         "context_pack_generated_at": generated_at or _utc_now_iso(),
     }
 
@@ -274,6 +286,7 @@ def executor_context_pack_from_snapshot(snapshot: dict[str, Any] | None) -> dict
     source = str(used_summary.get("source") or sanitized_payload.get("source") or "stored_context_snapshot")
     latest_artifact_version = _stored_public_context_latest_artifact_version(sanitized_payload)
     execution_tier = _stored_public_context_execution_tier(sanitized_payload) or "sdk_only_writing"
+    context_pack_version = _stored_public_context_pack_version(sanitized_payload) or DEFAULT_CONTEXT_PACK_VERSION
     generated_at = _stored_public_context_generated_at(sanitized_payload) or _utc_now_iso()
     prompt_summary = (
         "Context pack: "
@@ -284,6 +297,7 @@ def executor_context_pack_from_snapshot(snapshot: dict[str, Any] | None) -> dict
         f"Inputs: {', '.join(input_keys) if input_keys else 'none'}. "
         f"Execution tier: {execution_tier}."
     )
+    prompt_summary += f" Context pack version: {context_pack_version}."
     if latest_artifact_version:
         prompt_summary += f" Latest artifact version: {latest_artifact_version}."
     return {
@@ -300,6 +314,7 @@ def executor_context_pack_from_snapshot(snapshot: dict[str, Any] | None) -> dict
         },
         "latest_artifact_version": latest_artifact_version,
         "execution_tier": execution_tier,
+        "context_pack_version": context_pack_version,
         "context_pack_generated_at": generated_at,
         "prompt_summary": prompt_summary,
     }
@@ -332,6 +347,9 @@ def ensure_public_context_provenance(
     )
     stored_generated_at = _stored_public_context_generated_at(payload) if preserve_stored_input_keys else None
     stored_execution_tier = _stored_public_context_execution_tier(payload) if preserve_stored_input_keys else None
+    stored_context_pack_version = (
+        _stored_public_context_pack_version(payload) if preserve_stored_input_keys else None
+    )
     stored_latest_artifact_version = (
         _stored_public_context_latest_artifact_version(payload) if preserve_stored_input_keys else None
     )
@@ -349,6 +367,7 @@ def ensure_public_context_provenance(
         else long_term_memory_read,
         latest_artifact_version=stored_latest_artifact_version,
         execution_tier=stored_execution_tier or "sdk_only_writing",
+        context_pack_version=stored_context_pack_version or DEFAULT_CONTEXT_PACK_VERSION,
         generated_at=stored_generated_at,
     )
     return {**sanitized_payload, **provenance}
@@ -489,6 +508,7 @@ async def record_initial_context_snapshot(
         "used_context_summary": summary["used_context_summary"],
         "latest_artifact_version": summary["latest_artifact_version"],
         "execution_tier": summary["execution_tier"],
+        "context_pack_version": summary["context_pack_version"],
         "context_pack_generated_at": summary["context_pack_generated_at"],
     }
     await repositories.update_run_context_snapshot_ref(

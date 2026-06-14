@@ -480,6 +480,7 @@ def test_word_review_attachment_chat_routes_to_qa_runner(monkeypatch):
                                 "long_term_memory_read": False,
                             },
                             "execution_tier": "sdk_only_writing",
+                            "context_pack_version": "v1",
                             "context_pack_generated_at": "2026-06-12T01:00:00Z",
                         },
                     }
@@ -676,6 +677,7 @@ def test_context_snapshot_public_projection_gate_requires_safe_explainable_summa
                             "long_term_memory_read": False,
                         },
                         "execution_tier": "sdk_only_writing",
+                        "context_pack_version": "v1",
                         "context_pack_generated_at": "2026-06-12T01:00:00Z",
                     },
                 }
@@ -710,6 +712,7 @@ def test_context_snapshot_public_projection_gate_requires_safe_explainable_summa
         "memory_policy_source": "stored",
         "long_term_memory_read": False,
         "execution_tier": "sdk_only_writing",
+        "context_pack_version": "v1",
         "context_pack_generated_at_present": True,
     }
 
@@ -745,12 +748,53 @@ def test_context_snapshot_public_projection_gate_rejects_counts_only_summary(mon
     assert gate.evidence["missing_public_summary_fields"] == [
         "attachments_input_key",
         "context_pack_generated_at",
+        "context_pack_version",
         "execution_tier",
         "input_keys",
         "long_term_memory_read",
         "memory_policy_source",
         "summary_source",
     ]
+
+
+def test_context_snapshot_public_projection_gate_requires_context_pack_version(monkeypatch):
+    def fake_get(url: str, headers: dict[str, str], timeout: float = 15.0):
+        return 200, {
+            "run_id": "run_review_gate_1",
+            "context_snapshots": [
+                {
+                    "context_snapshot_id": "ctx_missing_context_pack_version",
+                    "payload": {
+                        "referenced_materials": {
+                            "message_count": 1,
+                            "file_count": 1,
+                            "artifact_count": 0,
+                            "memory_record_count": 0,
+                        },
+                        "used_context_summary": {
+                            "source": "chat_stream",
+                            "input_keys": ["attachments", "message"],
+                            "memory_policy_source": "default",
+                            "long_term_memory_read": False,
+                        },
+                        "execution_tier": "sdk_only_writing",
+                        "context_pack_generated_at": "2026-06-12T01:00:00Z",
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr(verify_poc_gate, "http_json_get_with_headers", fake_get)
+
+    gate = verify_poc_gate.check_context_snapshot_public_projection(
+        "http://api.local",
+        {"run_id": "run_review_gate_1", "file_ids": ["file_review_gate_1"], "artifact_count": 1},
+        headers=verify_poc_gate.principal_headers("upload-review-gate-user", "Upload Review Gate User"),
+    )
+
+    assert gate.ok is False
+    assert gate.evidence["context_pack_version"] is None
+    assert gate.evidence["missing_public_summary_fields"] == ["context_pack_version"]
 
 
 def test_context_snapshot_public_projection_gate_requires_attachment_signal_for_file_context(monkeypatch):
@@ -774,6 +818,7 @@ def test_context_snapshot_public_projection_gate_requires_attachment_signal_for_
                             "long_term_memory_read": False,
                         },
                         "execution_tier": "sdk_only_writing",
+                        "context_pack_version": "v1",
                         "context_pack_generated_at": "2026-06-12T01:00:00Z",
                     },
                 }
@@ -814,6 +859,7 @@ def test_context_snapshot_public_projection_gate_fails_closed_on_malformed_file_
                             "long_term_memory_read": False,
                         },
                         "execution_tier": "sdk_only_writing",
+                        "context_pack_version": "v1",
                         "context_pack_generated_at": "2026-06-12T01:00:00Z",
                     },
                 }
@@ -854,6 +900,7 @@ def test_context_snapshot_public_projection_gate_rejects_non_integer_material_co
                             "long_term_memory_read": False,
                         },
                         "execution_tier": "sdk_only_writing",
+                        "context_pack_version": "v1",
                         "context_pack_generated_at": "2026-06-12T01:00:00Z",
                     },
                 }
@@ -911,6 +958,7 @@ def test_context_snapshot_public_projection_gate_rejects_unsafe_input_keys(monke
                             "long_term_memory_read": False,
                         },
                         "execution_tier": "sdk_only_writing",
+                        "context_pack_version": "v1",
                         "context_pack_generated_at": "2026-06-12T01:00:00Z",
                     },
                 }
@@ -958,6 +1006,7 @@ def test_context_snapshot_public_projection_gate_reports_all_snapshot_followups(
                             "long_term_memory_read": False,
                         },
                         "execution_tier": "sdk_only_writing",
+                        "context_pack_version": "v1",
                         "context_pack_generated_at": "2026-06-12T01:00:00Z",
                     },
                 },
@@ -977,6 +1026,7 @@ def test_context_snapshot_public_projection_gate_reports_all_snapshot_followups(
                             "long_term_memory_read": False,
                         },
                         "execution_tier": "sdk_only_writing",
+                        "context_pack_version": "v1",
                         "context_pack_generated_at": "2026-06-12T01:00:00Z",
                     },
                 },
@@ -1018,6 +1068,7 @@ def test_context_snapshot_public_projection_gate_rejects_raw_id_and_private_leak
                             "long_term_memory_read": False,
                         },
                         "execution_tier": "sdk_only_writing",
+                        "context_pack_version": "v1",
                         "context_pack_generated_at": "2026-06-12T01:00:00Z",
                         "includedFileIds": ["file-secret"],
                         "sandbox_workdir": "/tmp/tenant/run",

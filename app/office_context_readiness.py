@@ -21,6 +21,7 @@ _USER_VISIBLE_PROJECTION = [
     "used_context_summary",
     "latest_artifact_version",
     "execution_tier",
+    "context_pack_version",
     "context_pack_generated_at",
 ]
 
@@ -81,9 +82,7 @@ _EXECUTION_TIERS = [
 ]
 
 _OPEN_GAPS = [
-    "office_context_pack_persistence_and_versioning",
     "executor_context_pack_211_acceptance",
-    "user_visible_context_provenance_projection",
     "document_centric_followup_state",
     "sandbox_cold_start_latency_split",
     "frontend_context_provenance_acceptance",
@@ -93,6 +92,8 @@ _IMPLEMENTED_CONTROLS = [
     "source_level_context_pack_contract",
     "context_snapshot_public_provenance_projection_contract",
     "executor_context_pack_prompt_injection_source_tests",
+    "source_level_context_pack_persistence_and_versioning",
+    "user_visible_context_provenance_api_projection_source_tests",
     "office_execution_tier_router_source_tests",
 ]
 
@@ -129,10 +130,10 @@ def build_office_context_readiness() -> dict[str, Any]:
         "open_gaps": list(_OPEN_GAPS),
         "non_goals": list(_NON_GOALS),
         "evidence_policy": (
-            "This records source-level context-pack contract, execution-tier routing, and executor "
-            "prompt-injection tests; versioned persistence, frontend acceptance, sandbox cold-start "
-            "metrics, and 211 executor smoke are still required before office context continuity can "
-            "close G6/G9."
+            "This records source-level context-pack contract, persistence/versioning, public API "
+            "provenance projection, execution-tier routing source tests, and executor prompt-injection "
+            "tests; 211 executor smoke, frontend acceptance, document-centric follow-up state, and "
+            "sandbox cold-start metrics are still required before office context continuity can close G6/G9."
         ),
     }
 
