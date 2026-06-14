@@ -887,6 +887,94 @@ def test_run_case_cancel_and_retry_record_control_probes(monkeypatch):
     assert retry_result["retry_created_run_ids"] == ["run-retry-a"]
 
 
+def test_run_case_cancel_waits_for_runtime_sandbox_lease_before_cancel(monkeypatch):
+    module = load_verify_multiuser_poc()
+    account = module.Account(label="tenant-a-user-1", username="a1", password="pw", tenant_id="tenant-a")
+    calls = []
+
+    monkeypatch.setattr(module, "login", lambda *_args: {"X-AI-User-ID": "a1"})
+    monkeypatch.setattr(
+        module,
+        "submit_chat",
+        lambda *_args, **_kwargs: {"session_id": "session-a", "run_id": "run-a", "queue_position": 1},
+    )
+    monkeypatch.setattr(module, "stream_answer", lambda *_args: "")
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        module,
+        "fetch_context_snapshot_public_projection",
+        lambda *_args: {"ok": True, "snapshot_count": 1, "context_pack_version": "v1"},
+    )
+    monkeypatch.setattr(module, "wait_status", lambda *_args, **_kwargs: {"status": "completed", "raw_status": "cancelled"})
+
+    def fake_json_request(method, url, payload=None, headers=None, timeout=30.0):
+        if method == "GET" and url.endswith("/api/ai/admin/runs/run-a"):
+            calls.append("lease-ready")
+            return 200, {
+                "run": {"workspace_id": "workspace-a", "input": {}, "result": {}},
+                "sandbox_leases": [
+                    {
+                        "lease_id": "lease-runtime-a",
+                        "status": "active",
+                        "lease_payload": {"source": "worker_run_lifecycle"},
+                    }
+                ],
+            }
+        raise AssertionError((method, url))
+
+    def fake_run_control_action(api_url, headers, run_id, action):
+        calls.append(action)
+        return 200, {"status": "cancel_requested"}
+
+    monkeypatch.setattr(module, "json_request", fake_json_request)
+    monkeypatch.setattr(module, "run_control_action", fake_run_control_action)
+
+    result = module.run_case(
+        "http://api.test",
+        account,
+        "cancel-probe",
+        "general-agent",
+        "cancel",
+        None,
+        "cancel",
+        auth_mode="trusted-header",
+        trusted_header_role="developer",
+    )
+
+    assert calls == ["lease-ready", "cancel"]
+    assert result["cancel_action_statuses"] == [200]
+
+
+def test_wait_runtime_sandbox_lease_ignores_released_leases(monkeypatch):
+    module = load_verify_multiuser_poc()
+    lease_statuses = iter(["released", "active"])
+    calls = []
+
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    def fake_json_request(method, url, payload=None, headers=None, timeout=30.0):
+        calls.append(url)
+        return 200, {
+            "sandbox_leases": [
+                {
+                    "lease_id": "lease-runtime-a",
+                    "status": next(lease_statuses),
+                    "lease_payload": {"source": "worker_run_lifecycle"},
+                }
+            ]
+        }
+
+    monkeypatch.setattr(module, "json_request", fake_json_request)
+
+    lease_id = module.wait_runtime_sandbox_lease("http://api.test", {"X-AI-User-ID": "a1"}, "run-a")
+
+    assert lease_id == "lease-runtime-a"
+    assert calls == [
+        "http://api.test/api/ai/admin/runs/run-a",
+        "http://api.test/api/ai/admin/runs/run-a",
+    ]
+
+
 def test_run_case_retry_uses_configured_source_run_id(monkeypatch):
     module = load_verify_multiuser_poc()
     account = module.Account(label="tenant-a-user-1", username="a1", password="pw", tenant_id="tenant-a")

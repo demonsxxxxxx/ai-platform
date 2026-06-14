@@ -1337,6 +1337,31 @@ def wait_status(api_url: str, headers: dict[str, str], session_id: str, run_id: 
     raise TimeoutError(f"run did not finish: session={session_id} run={run_id} latest={latest}")
 
 
+def wait_runtime_sandbox_lease(
+    api_url: str,
+    headers: dict[str, str],
+    run_id: str,
+    *,
+    timeout_seconds: float = 60.0,
+) -> str:
+    deadline = time.time() + timeout_seconds
+    latest_status = 0
+    while time.time() < deadline:
+        status, payload = json_request(
+            "GET",
+            f"{api_url.rstrip()}/api/ai/admin/runs/{run_id}",
+            headers=headers,
+            timeout=20,
+        )
+        latest_status = status
+        if status == 200 and isinstance(payload, dict):
+            lease_id = _active_sandbox_lease_id(payload)
+            if lease_id:
+                return lease_id
+        time.sleep(1)
+    raise TimeoutError(f"runtime sandbox lease did not appear: run={run_id} latest_status={latest_status}")
+
+
 def stream_answer(api_url: str, headers: dict[str, str], session_id: str, run_id: str) -> str:
     req = request.Request(
         f"{api_url.rstrip('/')}/api/chat/sessions/{session_id}/stream?run_id={run_id}",
@@ -1391,6 +1416,8 @@ def run_case(
     cancel_action_statuses: list[int] = []
     cancel_effect_statuses: list[str] = []
     if scenario == "cancel":
+        if trusted_header_role == "developer":
+            wait_runtime_sandbox_lease(api_url, headers, submitted["run_id"])
         status, payload = run_control_action(api_url, headers, submitted["run_id"], "cancel")
         cancel_action_statuses.append(status)
         effect_status = _run_control_payload_status(payload)
@@ -1766,6 +1793,24 @@ def _sandbox_lease_id(run_payload: dict[str, Any]) -> str:
             lease_id = str(lease.get("lease_id") or "").strip()
             if lease_id:
                 return lease_id
+    return ""
+
+
+def _active_sandbox_lease_id(run_payload: dict[str, Any]) -> str:
+    leases = run_payload.get("sandbox_leases")
+    if not isinstance(leases, list):
+        return ""
+    for lease in leases:
+        if not isinstance(lease, dict):
+            continue
+        lease_payload = lease.get("lease_payload") if isinstance(lease.get("lease_payload"), dict) else {}
+        if lease_payload.get("probe") == "foundation_runtime":
+            continue
+        if str(lease.get("status") or "").strip().lower() != "active":
+            continue
+        lease_id = str(lease.get("lease_id") or "").strip()
+        if lease_id:
+            return lease_id
     return ""
 
 
