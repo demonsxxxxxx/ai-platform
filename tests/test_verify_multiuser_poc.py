@@ -961,6 +961,8 @@ def test_foundation_runtime_cli_can_prepare_and_cleanup_test_fixtures(monkeypatc
     sample_path = tmp_path / "sample.docx"
     module.write_minimal_docx(sample_path)
     calls = []
+    run_calls = []
+    probe_calls = []
 
     def fake_prepare(accounts, **kwargs):
         calls.append(("prepare", [account.tenant_id for account in accounts], kwargs))
@@ -1003,23 +1005,46 @@ def test_foundation_runtime_cli_can_prepare_and_cleanup_test_fixtures(monkeypatc
         result["case"] = case_name
         result["scenario"] = scenario
         result["workspace_fingerprint"] = f"{account.tenant_id}:{kwargs.get('workspace_id')}:session-{index}:run-{index}"
+        run_calls.append(
+            {
+                "account": account,
+                "agent_id": agent_id,
+                "auth_mode": kwargs.get("auth_mode"),
+                "trusted_header_role": kwargs.get("trusted_header_role"),
+                "skill_id": kwargs.get("skill_id"),
+                "workspace_id": kwargs.get("workspace_id"),
+            }
+        )
         fake_run_case.results.append(result)
         return result
 
     fake_run_case.results = []
 
+    def fake_attach_acl(api_url, results, accounts, *, auth_mode="login", trusted_header_role="user"):
+        probe_calls.append(("acl", auth_mode, trusted_header_role))
+
+    def fake_attach_tool(api_url, results, accounts, *, auth_mode="login", trusted_header_role="user"):
+        probe_calls.append(("tool", auth_mode, trusted_header_role))
+
+    def fake_attach_details(api_url, results, accounts, *, auth_mode="login", trusted_header_role="user"):
+        probe_calls.append(("details", auth_mode, trusted_header_role))
+
     monkeypatch.setattr(module, "prepare_foundation_runtime_fixtures", fake_prepare)
     monkeypatch.setattr(module, "build_foundation_runtime_cleanup_proof", fake_cleanup)
     monkeypatch.setattr(module, "run_case", fake_run_case)
-    monkeypatch.setattr(module, "attach_artifact_acl_probe_results", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(module, "attach_tool_permission_probe_results", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(module, "attach_run_detail_probe_results", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "attach_artifact_acl_probe_results", fake_attach_acl)
+    monkeypatch.setattr(module, "attach_tool_permission_probe_results", fake_attach_tool)
+    monkeypatch.setattr(module, "attach_run_detail_probe_results", fake_attach_details)
     monkeypatch.setattr(
         sys,
         "argv",
         [
             "verify_multiuser_poc.py",
             "--foundation-runtime-evidence",
+            "--auth-mode",
+            "trusted-header",
+            "--trusted-header-role",
+            "user",
             "--prepare-fixtures",
             "--cleanup-before",
             "--cleanup-after",
@@ -1050,3 +1075,19 @@ def test_foundation_runtime_cli_can_prepare_and_cleanup_test_fixtures(monkeypatc
     assert evidence["cleanup_proof"]["after"]["status"] == "verified"
     assert [call[0] for call in calls] == ["cleanup", "prepare", "cleanup"]
     assert {call[2]["postgres_container"] for call in calls} == {"pg"}
+    assert len(run_calls) == 12
+    assert {
+        (call["auth_mode"], call["trusted_header_role"], call["skill_id"] is not None)
+        for call in run_calls
+    } == {("trusted-header", "developer", True)}
+    assert all(
+        call["agent_id"] == module.fixture_agent_id_for_skill(call["account"], call["skill_id"])
+        for call in run_calls
+    )
+    assert all(call["workspace_id"] == module.fixture_workspace_id(call["account"].tenant_id) for call in run_calls)
+    assert ("acl", "trusted-header", "user") in probe_calls
+    assert ("tool", "trusted-header", "user") in probe_calls
+    assert ("details", "trusted-header", "developer") in probe_calls
+    assert evidence["role_provenance"]["run_creation_role"] == "developer"
+    assert evidence["role_provenance"]["public_probe_role"] == "user"
+    assert evidence["role_provenance"]["admin_probe_role"] == "developer"

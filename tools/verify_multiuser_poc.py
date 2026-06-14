@@ -1805,6 +1805,8 @@ def main() -> int:
             )
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
+        run_creation_role = "developer" if args.use_fixture_agents else args.trusted_header_role
+        admin_probe_role = run_creation_role if run_creation_role == "developer" else None
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(specs)) as pool:
             futures = [
                 pool.submit(
@@ -1817,9 +1819,9 @@ def main() -> int:
                     docx_path if spec.uses_docx else None,
                     scenario=spec.scenario,
                     auth_mode=args.auth_mode,
-                    trusted_header_role=args.trusted_header_role,
+                    trusted_header_role=run_creation_role,
                     workspace_id=spec.workspace_id,
-                    skill_id=spec.skill_id if args.trusted_header_role != "user" else None,
+                    skill_id=spec.skill_id if run_creation_role != "user" else None,
                     run_timeout_seconds=args.run_timeout_seconds,
                     retry_source_run_id=spec.retry_source_run_id,
                 )
@@ -1845,7 +1847,7 @@ def main() -> int:
             results,
             accounts,
             auth_mode=args.auth_mode,
-            trusted_header_role=args.trusted_header_role,
+            trusted_header_role=run_creation_role,
         )
         evidence = build_foundation_runtime_concurrency_evidence(
             sorted(results, key=lambda row: (row.get("tenant_id", ""), row.get("account", ""), row.get("case", ""))),
@@ -1853,8 +1855,9 @@ def main() -> int:
             runtime_subject_commit_sha=args.runtime_subject_commit_sha,
             cleanup_proof=cleanup_proof or None,
             fixture_proof=fixture_proof,
-            run_creation_role=args.trusted_header_role,
+            run_creation_role=run_creation_role,
             public_probe_role="user",
+            admin_probe_role=admin_probe_role,
         )
         if args.cleanup_after:
             cleanup_proof["after"] = build_foundation_runtime_cleanup_proof(
