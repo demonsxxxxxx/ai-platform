@@ -37,7 +37,6 @@ VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS = {
 REQUIRED_MEMORY_CONTEXT_OPEN_GAPS = {
     "executor_context_pack_211_acceptance",
     "document_centric_followup_state",
-    "office_execution_tier_router",
     "sandbox_cold_start_latency_split",
     "frontend_context_provenance_acceptance",
 }
@@ -1468,9 +1467,8 @@ def test_foundation_alpha_readiness_removes_signed_skill_followup_when_release_e
             "memory_context_controls": {
                 **VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS,
                 "open_gaps": [
-                    "office_context_pack_persistence_and_versioning",
+                    "executor_context_pack_211_acceptance",
                     "document_centric_followup_state",
-                    "office_execution_tier_router",
                     "sandbox_cold_start_latency_split",
                     "frontend_context_provenance_acceptance",
                 ],
@@ -2504,6 +2502,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         for key in VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS
     } == VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS
     assert REQUIRED_MEMORY_CONTEXT_OPEN_GAPS.issubset(set(memory_context_controls["open_gaps"]))
+    assert "office_execution_tier_router" not in memory_context_controls["open_gaps"]
     assert readiness["domains"]["g6_poc_governance"]["evidence"]["context_snapshot_public_projection"] == {
         "status": "verified_public_context_projection",
         "referenced_material_counts": {
@@ -3935,6 +3934,7 @@ def test_governance_summary_surfaces_memory_context_controls_for_s1_readiness():
         for key in VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS
     } == VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS
     assert REQUIRED_MEMORY_CONTEXT_OPEN_GAPS.issubset(set(controls["open_gaps"]))
+    assert "office_execution_tier_router" not in controls["open_gaps"]
 
 
 def test_g6_followups_require_memory_context_controls_summary():
