@@ -34,6 +34,8 @@ DEFAULT_SAMPLE_DOCX = "/tmp/ai-platform-multiuser-poc-sample.docx"
 DEFAULT_POSTGRES_CONTAINER = "ai-platform-postgres"
 DEFAULT_POSTGRES_USER = "ai_platform"
 DEFAULT_POSTGRES_DB = "ai_platform"
+DEFAULT_REDIS_CONTAINER = "ai-platform-redis"
+DEFAULT_QUEUE_PREFIX = "ai-platform:runs"
 DEFAULT_TEST_TENANT_PREFIX = "frc-test-"
 DOWNLOAD_RE = re.compile(r"/api/ai/artifacts/(?P<artifact_id>art_[A-Za-z0-9_]+)/download")
 DEFAULT_FIXTURE_TOOL_ID = "frc-test-tool-permission-probe"
@@ -208,6 +210,28 @@ def psql_json_rows(
             raise RuntimeError(f"unexpected psql output line: {raw}")
         rows.append(json.loads(raw))
     return rows
+
+
+def redis_command(
+    *,
+    container: str,
+    command: list[str],
+    timeout_seconds: float = 30.0,
+) -> list[str]:
+    docker_command = [
+        "sudo",
+        "-n",
+        "docker",
+        "exec",
+        container,
+        "redis-cli",
+        "--raw",
+        *command,
+    ]
+    completed = subprocess.run(docker_command, check=False, capture_output=True, text=True, timeout=timeout_seconds)
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "redis command failed")
+    return completed.stdout.splitlines()
 
 
 def _sql_literal(value: str) -> str:
@@ -392,12 +416,232 @@ select json_build_object(
 """.strip()
 
 
+def _redis_scalar(
+    *,
+    redis_container: str,
+    command: list[str],
+    default: str = "0",
+) -> str:
+    rows = redis_command(container=redis_container, command=command)
+    return rows[0] if rows else default
+
+
+def _json_payload_tenant_id(raw: str) -> str:
+    try:
+        payload = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("tenant_id") or "")
+
+
+def _json_payload_run_id(raw: str) -> str:
+    try:
+        payload = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("run_id") or "")
+
+
+def _hash_pairs(items: list[str]) -> list[tuple[str, str]]:
+    return [(items[index], items[index + 1]) for index in range(0, len(items) - 1, 2)]
+
+
+def _redis_hash_target_fields(
+    *,
+    redis_container: str,
+    key: str,
+    target_tenants: set[str],
+) -> list[str]:
+    if _redis_scalar(redis_container=redis_container, command=["TYPE", key], default="none") != "hash":
+        return []
+    fields: list[str] = []
+    for field, value in _hash_pairs(redis_command(container=redis_container, command=["HGETALL", key])):
+        if _json_payload_tenant_id(value) in target_tenants or field.split(":", 1)[0] in target_tenants:
+            fields.append(field)
+    return fields
+
+
+def _message_ids_from_queued_index_value(raw: str) -> set[str]:
+    try:
+        decoded = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        decoded = raw
+    if isinstance(decoded, list):
+        return {str(item) for item in decoded if str(item)}
+    if decoded:
+        return {str(decoded)}
+    return set()
+
+
+def _count_target_list_items(
+    *,
+    redis_container: str,
+    key: str,
+    target_tenants: set[str],
+) -> int:
+    if _redis_scalar(redis_container=redis_container, command=["TYPE", key], default="none") != "list":
+        return 0
+    return sum(
+        1
+        for raw in redis_command(container=redis_container, command=["LRANGE", key, "0", "-1"])
+        if _json_payload_tenant_id(raw) in target_tenants
+    )
+
+
+def cleanup_foundation_runtime_queue_residue(
+    tenant_ids: list[str],
+    *,
+    redis_container: str = DEFAULT_REDIS_CONTAINER,
+    tenant_prefix: str = DEFAULT_TEST_TENANT_PREFIX,
+    queue_prefix: str = DEFAULT_QUEUE_PREFIX,
+) -> dict[str, Any]:
+    tenants = set(_test_tenant_ids(tenant_ids, tenant_prefix=tenant_prefix))
+    keys = {
+        "queued": f"{queue_prefix}:queued",
+        "processing": f"{queue_prefix}:processing",
+        "queued_meta": f"{queue_prefix}:queued-meta",
+        "queued_run_index": f"{queue_prefix}:queued-run-index",
+        "queued_order": f"{queue_prefix}:queued-order",
+        "processing_meta": f"{queue_prefix}:processing-meta",
+        "retry_meta": f"{queue_prefix}:retry-meta",
+    }
+    removed = {
+        "queued_messages": 0,
+        "processing_messages": 0,
+        "queued_meta": 0,
+        "queued_run_index": 0,
+        "queued_order": 0,
+        "processing_meta": 0,
+        "retry_meta": 0,
+    }
+    message_ids: set[str] = set()
+    queued_run_index_pairs = (
+        _hash_pairs(redis_command(container=redis_container, command=["HGETALL", keys["queued_run_index"]]))
+        if _redis_scalar(redis_container=redis_container, command=["TYPE", keys["queued_run_index"]], default="none")
+        == "hash"
+        else []
+    )
+    queued_run_index_by_field = dict(queued_run_index_pairs)
+
+    for list_name in ("queued", "processing"):
+        key = keys[list_name]
+        if _redis_scalar(redis_container=redis_container, command=["TYPE", key], default="none") != "list":
+            continue
+        for raw in redis_command(container=redis_container, command=["LRANGE", key, "0", "-1"]):
+            tenant_id = _json_payload_tenant_id(raw)
+            if tenant_id not in tenants:
+                continue
+            message_ids.add(hashlib.sha256(raw.encode("utf-8")).hexdigest())
+            run_id = _json_payload_run_id(raw)
+            if run_id:
+                message_ids.update(_message_ids_from_queued_index_value(queued_run_index_by_field.get(f"{tenant_id}:{run_id}", "")))
+            result = redis_command(container=redis_container, command=["LREM", key, "0", raw])
+            removed[f"{list_name}_messages"] += int(result[0]) if result and result[0].isdigit() else 0
+
+    for hash_name in ("queued_meta", "processing_meta", "retry_meta"):
+        for field in _redis_hash_target_fields(
+            redis_container=redis_container,
+            key=keys[hash_name],
+            target_tenants=tenants,
+        ):
+            message_ids.add(field)
+            result = redis_command(container=redis_container, command=["HDEL", keys[hash_name], field])
+            removed[hash_name] += int(result[0]) if result and result[0].isdigit() else 0
+
+    for field in _redis_hash_target_fields(
+        redis_container=redis_container,
+        key=keys["queued_run_index"],
+        target_tenants=tenants,
+    ):
+        message_ids.update(_message_ids_from_queued_index_value(queued_run_index_by_field.get(field, "")))
+        result = redis_command(container=redis_container, command=["HDEL", keys["queued_run_index"], field])
+        removed["queued_run_index"] += int(result[0]) if result and result[0].isdigit() else 0
+
+    if message_ids and _redis_scalar(redis_container=redis_container, command=["TYPE", keys["queued_order"]], default="none") == "zset":
+        result = redis_command(container=redis_container, command=["ZREM", keys["queued_order"], *sorted(message_ids)])
+        removed["queued_order"] += int(result[0]) if result and result[0].isdigit() else 0
+
+    remaining_message_ids = {
+        field
+        for hash_name in ("queued_meta", "processing_meta", "retry_meta")
+        for field in _redis_hash_target_fields(
+            redis_container=redis_container,
+            key=keys[hash_name],
+            target_tenants=tenants,
+        )
+    }
+    remaining_index_fields = _redis_hash_target_fields(
+        redis_container=redis_container,
+        key=keys["queued_run_index"],
+        target_tenants=tenants,
+    )
+    remaining_message_ids.update(
+        message_id
+        for field in remaining_index_fields
+        for message_id in _message_ids_from_queued_index_value(queued_run_index_by_field.get(field, ""))
+    )
+    remaining_queued_order_count = 0
+    if remaining_message_ids and _redis_scalar(redis_container=redis_container, command=["TYPE", keys["queued_order"]], default="none") == "zset":
+        for message_id in remaining_message_ids:
+            if redis_command(container=redis_container, command=["ZSCORE", keys["queued_order"], message_id]):
+                remaining_queued_order_count += 1
+
+    remaining_counts = {
+        "remaining_queued_count": _count_target_list_items(
+            redis_container=redis_container,
+            key=keys["queued"],
+            target_tenants=tenants,
+        ),
+        "remaining_processing_count": _count_target_list_items(
+            redis_container=redis_container,
+            key=keys["processing"],
+            target_tenants=tenants,
+        ),
+        "remaining_queued_meta_count": len(
+            _redis_hash_target_fields(
+                redis_container=redis_container,
+                key=keys["queued_meta"],
+                target_tenants=tenants,
+            )
+        ),
+        "remaining_processing_meta_count": len(
+            _redis_hash_target_fields(
+                redis_container=redis_container,
+                key=keys["processing_meta"],
+                target_tenants=tenants,
+            )
+        ),
+        "remaining_retry_meta_count": len(
+            _redis_hash_target_fields(
+                redis_container=redis_container,
+                key=keys["retry_meta"],
+                target_tenants=tenants,
+            )
+        ),
+        "remaining_queued_run_index_count": len(remaining_index_fields),
+        "remaining_queued_order_count": remaining_queued_order_count,
+    }
+    remaining_counts["remaining_queue_count"] = sum(remaining_counts.values())
+    return {
+        "status": "verified" if remaining_counts["remaining_queue_count"] == 0 else "remaining_records_detected",
+        "redis_container": redis_container,
+        "queue_prefix": queue_prefix,
+        "removed_counts": removed,
+        "remaining_counts": remaining_counts,
+    }
+
+
 def build_foundation_runtime_cleanup_proof(
     tenant_ids: list[str],
     *,
     postgres_container: str,
     postgres_user: str,
     postgres_db: str,
+    redis_container: str = DEFAULT_REDIS_CONTAINER,
     tenant_prefix: str = DEFAULT_TEST_TENANT_PREFIX,
 ) -> dict[str, Any]:
     tenants = _test_tenant_ids(tenant_ids, tenant_prefix=tenant_prefix)
@@ -419,6 +663,14 @@ def build_foundation_runtime_cleanup_proof(
         "remaining_run_count": int(remaining.get("remaining_run_count") or 0),
         "remaining_artifact_count": int(remaining.get("remaining_artifact_count") or 0),
     }
+    redis_cleanup = cleanup_foundation_runtime_queue_residue(
+        tenants,
+        redis_container=redis_container,
+        tenant_prefix=tenant_prefix,
+    )
+    remaining_counts["remaining_queue_count"] = int(
+        redis_cleanup.get("remaining_counts", {}).get("remaining_queue_count") or 0
+    )
     verified = all(value == 0 for value in remaining_counts.values())
     return {
         "schema_version": "ai-platform.foundation-runtime-cleanup-proof.v1",
@@ -426,6 +678,7 @@ def build_foundation_runtime_cleanup_proof(
         "tenant_ids": tenants,
         "tenant_prefix": tenant_prefix,
         "remaining_counts": remaining_counts,
+        "redis_cleanup": redis_cleanup,
     }
 
 
@@ -2044,6 +2297,7 @@ def main() -> int:
     parser.add_argument("--postgres-container", default=DEFAULT_POSTGRES_CONTAINER)
     parser.add_argument("--postgres-user", default=DEFAULT_POSTGRES_USER)
     parser.add_argument("--postgres-db", default=DEFAULT_POSTGRES_DB)
+    parser.add_argument("--redis-container", default=DEFAULT_REDIS_CONTAINER)
     parser.add_argument("--tenant-prefix", default=DEFAULT_TEST_TENANT_PREFIX)
     args = parser.parse_args()
 
@@ -2071,6 +2325,7 @@ def main() -> int:
                 postgres_container=args.postgres_container,
                 postgres_user=args.postgres_user,
                 postgres_db=args.postgres_db,
+                redis_container=args.redis_container,
                 tenant_prefix=args.tenant_prefix,
             )
         fixture_proof = None
@@ -2190,6 +2445,7 @@ def main() -> int:
                 postgres_container=args.postgres_container,
                 postgres_user=args.postgres_user,
                 postgres_db=args.postgres_db,
+                redis_container=args.redis_container,
                 tenant_prefix=args.tenant_prefix,
             )
             evidence["cleanup_proof"] = cleanup_proof

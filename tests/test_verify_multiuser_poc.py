@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import subprocess
 import sys
@@ -676,6 +677,111 @@ def test_foundation_runtime_cleanup_rejects_non_test_tenant_ids():
         raise AssertionError("cleanup must reject non-test tenant ids")
 
 
+def test_foundation_runtime_cleanup_removes_target_tenant_redis_queue_residue(monkeypatch):
+    module = load_verify_multiuser_poc()
+    deleted = []
+    queued_target = json.dumps({"tenant_id": "frc-test-tenant-a", "run_id": "run-a"})
+    queued_other = json.dumps({"tenant_id": "other-tenant", "run_id": "run-other"})
+    processing_target = json.dumps({"tenant_id": "frc-test-tenant-b", "run_id": "run-b"})
+    queued_target_message_id = hashlib.sha256(queued_target.encode("utf-8")).hexdigest()
+    processing_target_message_id = hashlib.sha256(processing_target.encode("utf-8")).hexdigest()
+    redis_state = {
+        "ai-platform:runs:queued": [queued_target, queued_other],
+        "ai-platform:runs:processing": [processing_target],
+        "ai-platform:runs:queued-meta": {
+            queued_target_message_id: json.dumps({"tenant_id": "frc-test-tenant-a", "run_id": "run-a"}),
+            "mid-other": json.dumps({"tenant_id": "other-tenant", "run_id": "run-other"}),
+        },
+        "ai-platform:runs:queued-run-index": {
+            "frc-test-tenant-a:run-a": json.dumps([queued_target_message_id]),
+            "other-tenant:run-other": json.dumps(["mid-other"]),
+        },
+        "ai-platform:runs:queued-order": {queued_target_message_id: "1", "mid-other": "2"},
+        "ai-platform:runs:processing-meta": {
+            processing_target_message_id: json.dumps({"tenant_id": "frc-test-tenant-b", "run_id": "run-b"}),
+        },
+        "ai-platform:runs:retry-meta": {
+            processing_target_message_id: json.dumps({"tenant_id": "frc-test-tenant-b", "run_id": "run-b"}),
+        },
+    }
+
+    def fake_psql_json_rows(*, container, db_user, db_name, sql, timeout_seconds=30.0):
+        if "json_build_object" in sql:
+            return [{"remaining_tenant_count": 0, "remaining_run_count": 0, "remaining_artifact_count": 0}]
+        return []
+
+    def fake_redis_json(*, container, command, timeout_seconds=30.0):
+        verb = command[0]
+        key = command[1] if len(command) > 1 else ""
+        if verb == "TYPE":
+            if isinstance(redis_state.get(key), list):
+                return ["list"]
+            if isinstance(redis_state.get(key), dict) and key.endswith(":queued-order"):
+                return ["zset"]
+            if isinstance(redis_state.get(key), dict):
+                return ["hash"]
+            return ["none"]
+        if verb == "LRANGE":
+            return list(redis_state[key])
+        if verb == "HGETALL":
+            values = []
+            for field, value in redis_state[key].items():
+                values.extend([field, value])
+            return values
+        if verb == "LREM":
+            raw = command[3]
+            before = len(redis_state[key])
+            redis_state[key] = [item for item in redis_state[key] if item != raw]
+            removed = before - len(redis_state[key])
+            deleted.append(tuple(command))
+            return [str(removed)]
+        if verb == "HDEL":
+            removed = 0
+            for field in command[2:]:
+                if field in redis_state[key]:
+                    removed += 1
+                    redis_state[key].pop(field, None)
+            deleted.append(tuple(command))
+            return [str(removed)]
+        if verb == "ZREM":
+            removed = 0
+            for field in command[2:]:
+                if field in redis_state[key]:
+                    removed += 1
+                    redis_state[key].pop(field, None)
+            deleted.append(tuple(command))
+            return [str(removed)]
+        if verb == "ZSCORE":
+            value = redis_state[key].get(command[2])
+            return [value] if value is not None else []
+        if verb == "LLEN":
+            return [str(len(redis_state[key]))]
+        if verb == "HLEN":
+            return [str(len(redis_state[key]))]
+        if verb == "ZCARD":
+            return [str(len(redis_state[key]))]
+        raise AssertionError(command)
+
+    monkeypatch.setattr(module, "psql_json_rows", fake_psql_json_rows)
+    monkeypatch.setattr(module, "redis_command", fake_redis_json)
+
+    proof = module.build_foundation_runtime_cleanup_proof(
+        ["frc-test-tenant-a", "frc-test-tenant-b"],
+        postgres_container="pg",
+        postgres_user="ai_platform",
+        postgres_db="ai_platform",
+    )
+
+    assert proof["status"] == "verified"
+    assert proof["remaining_counts"]["remaining_queue_count"] == 0
+    assert ("LREM", "ai-platform:runs:queued", "0", queued_target) in deleted
+    assert ("LREM", "ai-platform:runs:processing", "0", processing_target) in deleted
+    assert ("HDEL", "ai-platform:runs:queued-meta", queued_target_message_id) in deleted
+    assert ("HDEL", "ai-platform:runs:processing-meta", processing_target_message_id) in deleted
+    assert ("ZREM", "ai-platform:runs:queued-order", queued_target_message_id, processing_target_message_id) in deleted
+    assert all("other" not in " ".join(item) for item in deleted)
+
+
 def test_prepare_foundation_runtime_fixtures_executes_safe_sql(monkeypatch):
     module = load_verify_multiuser_poc()
     accounts = [
@@ -1228,6 +1334,7 @@ def test_foundation_runtime_cli_can_prepare_and_cleanup_test_fixtures(monkeypatc
                 "remaining_tenant_count": 0,
                 "remaining_run_count": 0,
                 "remaining_artifact_count": 0,
+                "remaining_queue_count": 0,
             },
         }
 
@@ -1302,6 +1409,8 @@ def test_foundation_runtime_cli_can_prepare_and_cleanup_test_fixtures(monkeypatc
             "--use-fixture-agents",
             "--postgres-container",
             "pg",
+            "--redis-container",
+            "redis",
             "--commit-sha",
             "3843395b180324b165cbca7c59b6d7e1a934e290",
             "--runtime-subject-commit-sha",
@@ -1326,6 +1435,7 @@ def test_foundation_runtime_cli_can_prepare_and_cleanup_test_fixtures(monkeypatc
     assert evidence["cleanup_proof"]["after"]["status"] == "verified"
     assert [call[0] for call in calls] == ["cleanup", "prepare", "cleanup"]
     assert {call[2]["postgres_container"] for call in calls} == {"pg"}
+    assert {call[2]["redis_container"] for call in calls if call[0] == "cleanup"} == {"redis"}
     assert len(run_calls) == 12
     assert {
         (call["auth_mode"], call["trusted_header_role"], call["skill_id"] is not None)
