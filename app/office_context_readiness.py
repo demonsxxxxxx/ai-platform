@@ -83,7 +83,6 @@ _EXECUTION_TIERS = [
 
 _OPEN_GAPS = [
     "executor_context_pack_211_acceptance",
-    "user_visible_context_provenance_projection",
     "document_centric_followup_state",
     "office_execution_tier_router",
     "sandbox_cold_start_latency_split",
@@ -95,6 +94,7 @@ _IMPLEMENTED_CONTROLS = [
     "context_snapshot_public_provenance_projection_contract",
     "executor_context_pack_prompt_injection_source_tests",
     "source_level_context_pack_persistence_and_versioning",
+    "user_visible_context_provenance_api_projection_source_tests",
 ]
 
 _NON_GOALS = [
@@ -130,10 +130,10 @@ def build_office_context_readiness() -> dict[str, Any]:
         "open_gaps": list(_OPEN_GAPS),
         "non_goals": list(_NON_GOALS),
         "evidence_policy": (
-            "This records source-level context-pack contract, persistence/versioning, and "
-            "executor prompt-injection tests; 211 executor smoke, frontend acceptance, and "
-            "document-centric follow-up state are still required before office context continuity "
-            "can close G6/G9."
+            "This records source-level context-pack contract, persistence/versioning, public API "
+            "provenance projection, and executor prompt-injection tests; 211 executor smoke, "
+            "frontend acceptance, execution-tier router acceptance, and document-centric follow-up "
+            "state are still required before office context continuity can close G6/G9."
         ),
     }
 

@@ -37,6 +37,7 @@ VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS = {
 REQUIRED_MEMORY_CONTEXT_OPEN_GAPS = {
     "executor_context_pack_211_acceptance",
     "document_centric_followup_state",
+    "office_execution_tier_router",
     "sandbox_cold_start_latency_split",
     "frontend_context_provenance_acceptance",
 }
@@ -1468,8 +1469,8 @@ def test_foundation_alpha_readiness_removes_signed_skill_followup_when_release_e
                 **VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS,
                 "open_gaps": [
                     "office_context_pack_persistence_and_versioning",
-                    "executor_context_pack_injection",
                     "document_centric_followup_state",
+                    "office_execution_tier_router",
                     "sandbox_cold_start_latency_split",
                     "frontend_context_provenance_acceptance",
                 ],

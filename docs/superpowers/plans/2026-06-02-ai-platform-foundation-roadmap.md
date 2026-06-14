@@ -602,26 +602,28 @@ files, runtime acceptance for the source-level skill dependency review policy,
 `admin_skill_release_dashboard_runtime_acceptance`,
 `admin_skill_release_dashboard_visual_acceptance`,
 `admin_skill_release_dashboard_211_acceptance`,
-211 executor context-pack acceptance, document-centric follow-up state, sandbox
-cold-start latency split, frontend context provenance acceptance, quarantined
-legacy frontend source remap, packaged frontend image smoke/release acceptance
-on 211 or another Docker-capable host, and ordinary-user G9 acceptance. Do not
-use this baseline to expand sandbox privilege, raw Skill selection, or
-ordinary-user G8/G10 exposure.
+211 executor context-pack acceptance, execution-tier router acceptance,
+document-centric follow-up state, sandbox cold-start latency split, frontend
+context provenance acceptance, quarantined legacy frontend source remap,
+packaged frontend image smoke/release acceptance on 211 or another
+Docker-capable host, and ordinary-user G9 acceptance. Do not use this baseline
+to expand sandbox privilege, raw Skill selection, or ordinary-user G8/G10
+exposure.
 
-The #22 office context-pack work now has source-level architecture readiness and
-source-level context-pack persistence/versioning evidence:
+The #22 office context-pack work now has source-level architecture readiness,
+source-level context-pack persistence/versioning evidence, user-visible API
+projection source tests, and executor prompt-injection tests:
 `tools/office_context_readiness.py` defines bounded allowed context sources,
 user-visible provenance fields, execution tiers, and non-goals, while
 `source_level_context_pack_persistence_and_versioning` preserves a bounded
 public `context_pack_version` fact alongside `context_pack_generated_at` in
 source-level snapshot/projection paths. This does not add a new database schema
-and does not enable 211 executor context-pack acceptance, document-centric
-follow-up state, long-term cross-session memory, lightweight-task Docker sandbox
-startup, frontend context provenance acceptance, or ordinary-user G8/G10
-exposure. It replaces the older single "bounded office context-pack product
-contract" blocker with explicit 211 executor, follow-up-state, latency, and
-frontend provenance acceptance gaps.
+and does not enable 211 executor context-pack acceptance, execution-tier router
+acceptance, document-centric follow-up state, long-term cross-session memory,
+lightweight-task Docker sandbox startup, frontend context provenance acceptance,
+or ordinary-user G8/G10 exposure. It replaces the older single "bounded office
+context-pack product contract" blocker with explicit 211 executor, router
+acceptance, follow-up-state, latency, and frontend provenance acceptance gaps.
 
 The 2026-06-11 context provenance follow-up adds source-level public provenance
 fields to created context snapshots and queued `context_snapshot` references:
@@ -629,16 +631,17 @@ fields to created context snapshots and queued `context_snapshot` references:
 `execution_tier`, `context_pack_version`, and `context_pack_generated_at`. These
 fields expose counts, safe input keys, tier, bounded public context-pack version,
 and generated time only; raw message/file/artifact/memory IDs remain outside the
-public provenance fields and the owner-scoped context snapshot API response. The
-scoped database row and worker lookup path still keep those IDs internally to
-compute public counts. Executor private payloads, raw storage keys, sandbox
-workdirs, and secret-like values remain outside the public projection. Worker execution
+public provenance fields and the owner-scoped context snapshot API response,
+with source tests covering the user-visible API projection. The scoped database
+row and worker lookup path still keep those IDs internally to compute public
+counts. Executor private payloads, raw storage keys, sandbox workdirs, and
+secret-like values remain outside the public projection. Worker execution
 resolves existing context snapshots from the scoped DB row and regenerates
 public provenance/counts rather than trusting queue copies or stored payload
 provenance. This narrows the G6/#22 context output gap but does not close 211
-executor context-pack acceptance, document-centric follow-up state, frontend
-context provenance acceptance, long-term cross-session memory, sandbox, or
-ordinary-user G8/G10 gates.
+executor context-pack acceptance, execution-tier router acceptance,
+document-centric follow-up state, frontend context provenance acceptance,
+long-term cross-session memory, sandbox, or ordinary-user G8/G10 gates.
 
 The current context public-summary verifier treats file-context provenance as
 incomplete unless `file_count > 0` is paired with the safe
