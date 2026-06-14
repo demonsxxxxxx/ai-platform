@@ -755,15 +755,26 @@ def test_capacity_docs_record_machine_readable_gate_evidence_contract():
 def test_gate_status_records_foundation_runtime_concurrency_context_pack_blocker():
     gate_status_text = read(GATE_STATUS_DOC)
     roadmap_text = read(ROADMAP)
+    release_evidence_text = read(RELEASE_EVIDENCE_INDEX)
 
     for text in (gate_status_text, roadmap_text):
+        compact_text = " ".join(text.split())
         assert "foundation_runtime_concurrency_evidence" in text
         assert "ai-platform.foundation-runtime-concurrency.v1" in text
         assert "context_pack_version" in text
         assert "10+ concurrent" in text
+        assert "dff48fb" in text
+        assert "Redis queue-residue cleanup proof" in text
+        assert "broader Foundation Alpha POC smoke/auth/governance evidence set" in compact_text
         assert "ordinary-user multi-agent" in text
         assert "production concurrency" in text
         assert "C:\\Users" not in text
+
+    assert "dff48fbd454704af64871c039c59d396d8f9aaf7" in release_evidence_text
+    assert "2026-06-14-211-foundation-alpha-poc-dff48fb-foundation-runtime-concurrency.json" in release_evidence_text
+    assert "Redis queue residue" in release_evidence_text
+    assert "does not raise production concurrency defaults" in release_evidence_text
+    assert "open ordinary-user multi-agent" in release_evidence_text
 
 
 def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():

@@ -1,0 +1,172 @@
+{
+  "checks": {
+    "artifact_acl": {
+      "cross_tenant_statuses": [
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404
+      ],
+      "cross_user_statuses": [
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404
+      ],
+      "owner_statuses": [
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200
+      ],
+      "preview_cross_tenant_statuses": [
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404
+      ],
+      "preview_cross_user_statuses": [
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404,
+        404
+      ],
+      "status": "passed"
+    },
+    "memory_context": {
+      "context_pack_version_sample_count": 12,
+      "context_scope_probe_count": 12,
+      "context_snapshot_count": 12,
+      "context_snapshot_public_projection_count": 12,
+      "cross_scope_context_leaks": 0,
+      "long_term_cross_session_memory_read": false,
+      "missing_context_pack_version_count": 0,
+      "missing_public_summary_fields": [],
+      "status": "passed",
+      "unsafe_context_pack_version_count": 0
+    },
+    "queue_admission": {
+      "admission_limit_violations": 0,
+      "cancel_action_statuses": [
+        200,
+        200,
+        200
+      ],
+      "cancel_effect_run_count": 3,
+      "cancel_effect_statuses": [
+        "cancelled",
+        "cancelled",
+        "cancelled"
+      ],
+      "cross_tenant_queue_leaks": 0,
+      "queue_position_duplicate_count": 0,
+      "queue_position_sample_count": 12,
+      "queue_probe_source": "admin_runtime_queue",
+      "retry_action_statuses": [
+        200,
+        200,
+        200
+      ],
+      "retry_created_run_count": 3,
+      "stale_queue_entries": 0,
+      "status": "passed",
+      "submitted_queue_position_sample_count": 12
+    },
+    "run_playback": {
+      "event_order_violations": 0,
+      "private_payload_leak_count": 0,
+      "status": "passed"
+    },
+    "sandbox_workspace": {
+      "active_lease_count": 0,
+      "cross_scope_lease_leaks": 0,
+      "lease_probe_source": "sandbox_leases",
+      "sandbox_lease_sample_count": 12,
+      "status": "passed",
+      "workspace_scope_collisions": 0,
+      "workspace_scope_sample_count": 12
+    },
+    "skill_snapshots": {
+      "global_mutable_skill_lookup_used": false,
+      "mismatched_pinned_snapshots": [],
+      "missing_pinned_snapshots": [],
+      "run_skill_snapshot_count": 12,
+      "snapshot_binding_sample_count": 12,
+      "status": "passed",
+      "used_count": 6
+    },
+    "tool_permission": {
+      "allow_once_reuse_violations": 0,
+      "decision_sample_count": 24,
+      "status": "passed",
+      "tool_call_id_mismatch_violations": 0,
+      "wrong_decision_reuse_violations": 0
+    }
+  },
+  "evidence_policy": "This is Foundation Runtime POC correctness evidence only; it does not raise production concurrency defaults or open ordinary-user multi-agent, Docker sandbox hardening, long-term memory, or department rollout gates.",
+  "failures": [],
+  "non_expansion_invariants": {
+    "department_rollout_allowed": false,
+    "docker_sandbox_hardened_claim_allowed": false,
+    "long_term_cross_session_memory_enabled": false,
+    "ordinary_user_multi_agent_allowed": false,
+    "production_concurrency_increase_allowed": false
+  },
+  "requirements": {
+    "evidence_status": "required_before_foundation_runtime_poc_closure",
+    "minimum_concurrent_requests": 10,
+    "minimum_tenants": 2,
+    "required_checks": [
+      "queue_admission",
+      "sandbox_workspace",
+      "memory_context",
+      "artifact_acl",
+      "tool_permission",
+      "skill_snapshots",
+      "run_playback"
+    ],
+    "required_scenarios": [
+      "run_creation",
+      "execution",
+      "cancel",
+      "retry"
+    ]
+  },
+  "scenario_counts": {
+    "cancel": 3,
+    "execution": 3,
+    "retry": 3,
+    "run_creation": 3
+  },
+  "schema_version": "ai-platform.foundation-runtime-concurrency.v1",
+  "status": "verified_foundation_runtime_concurrency",
+  "summary": {
+    "concurrent_request_count": 12,
+    "max_observed_concurrency": 12,
+    "run_count": 12,
+    "session_count": 12,
+    "tenant_count": 2,
+    "user_count": 4
+  },
+  "verified": true
+}
