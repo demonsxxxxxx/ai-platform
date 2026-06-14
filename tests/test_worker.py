@@ -90,6 +90,22 @@ def default_cancel_not_requested(monkeypatch):
         finalize_multi_agent_parent_run_if_ready,
         raising=False,
     )
+
+    async def create_sandbox_lease(conn, **kwargs):
+        return {
+            "id": "lease-test-default",
+            **kwargs,
+        }
+
+    async def release_sandbox_lease(conn, **kwargs):
+        return {
+            "id": kwargs["lease_id"],
+            "status": "released",
+            **kwargs,
+        }
+
+    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease, raising=False)
+    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease, raising=False)
     monkeypatch.setattr("app.worker._PARENT_ROLLUP_RETRY_DELAY_SECONDS", 0, raising=False)
 
 
@@ -334,6 +350,377 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
     assert any(item[0] == "artifact" for item in calls)
     assert ("complete", "fake-adapter/1") in calls
     assert calls[-1] == ("event", "status", "worker", "Run succeeded")
+
+
+@pytest.mark.asyncio
+async def test_worker_records_runtime_sandbox_lease_around_successful_executor_run(monkeypatch):
+    calls = []
+    locked_run = {
+        "id": "run-a",
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-locked",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "agent_id": "qa-word-review",
+        "skill_id": "qa-file-reviewer",
+        "trace_id": "trace-run-a",
+        "input_json": {
+            "input": {"mode": "file"},
+            "file_ids": ["file-a"],
+            "executor_type": "fake",
+            "skill_version": "hash-qa-file-reviewer",
+            "release_decision": release_decision("hash-qa-file-reviewer"),
+        },
+    }
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        calls.append(("running", tenant_id, run_id))
+        return locked_run
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs["stage"], kwargs.get("payload") or {}))
+        return "evt-a"
+
+    async def create_artifact(conn, **kwargs):
+        return None
+
+    async def complete_run(conn, **kwargs):
+        calls.append(("complete", kwargs["run_id"]))
+
+    async def create_sandbox_lease(conn, **kwargs):
+        calls.append(("lease_create", kwargs))
+        return {"id": "lease-runtime-a", **kwargs}
+
+    async def release_sandbox_lease(conn, **kwargs):
+        calls.append(("lease_release", kwargs))
+        return {"id": kwargs["lease_id"], "status": "released", **kwargs}
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+
+    outcome = await process_run_payload(
+        base_payload(workspace_id="workspace-locked"),
+        AdapterRegistry({"fake": FakeSuccessAdapter()}),
+        worker_id="worker-a",
+    )
+
+    assert outcome.status == "succeeded"
+    create_call = next(item[1] for item in calls if item[0] == "lease_create")
+    assert create_call["tenant_id"] == "tenant-a"
+    assert create_call["workspace_id"] == "workspace-locked"
+    assert create_call["user_id"] == "user-a"
+    assert create_call["session_id"] == "session-a"
+    assert create_call["run_id"] == "run-a"
+    assert create_call["trace_id"] == "trace-run-a"
+    assert create_call["sandbox_mode"] == "ephemeral"
+    assert create_call["provider"] == "fake"
+    assert create_call["browser_enabled"] is False
+    assert create_call["resource_limits_json"] == {}
+    assert create_call["user_visible_payload_json"] == {
+        "workspace": "/workspace",
+        "inputs": "/workspace/inputs",
+    }
+    assert create_call["lease_payload_json"] == {
+        "source": "worker_run_lifecycle",
+        "executor_type": "fake",
+        "worker_id": "worker-a",
+    }
+    assert create_call["lease_payload_json"].get("probe") != "foundation_runtime"
+
+    release_call = next(item[1] for item in calls if item[0] == "lease_release")
+    assert release_call == {
+        "tenant_id": "tenant-a",
+        "user_id": "user-a",
+        "run_id": "run-a",
+        "lease_id": "lease-runtime-a",
+        "reason": "run_succeeded",
+    }
+    assert next(index for index, item in enumerate(calls) if item[0] == "lease_create") < next(
+        index for index, item in enumerate(calls) if item[0] == "complete"
+    )
+    assert next(index for index, item in enumerate(calls) if item[0] == "complete") < next(
+        index for index, item in enumerate(calls) if item[0] == "lease_release"
+    )
+
+
+@pytest.mark.asyncio
+async def test_worker_does_not_record_runtime_sandbox_lease_when_cancelled_before_executor(monkeypatch):
+    calls = []
+
+    class ShouldNotRunAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            calls.append(("adapter", payload.run_id))
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="adapter/1",
+                executor_type="fake",
+                executor_version="fake/1",
+                capabilities={},
+                result={"message": "should not run"},
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def is_cancel_requested(conn, *, tenant_id, run_id):
+        return True
+
+    async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
+        calls.append(("cancel", result_json))
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs["stage"]))
+        return "evt-a"
+
+    async def fail_create_sandbox_lease(*args, **kwargs):
+        raise AssertionError("cancelled run that never reaches executor setup must not create runtime sandbox leases")
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", fail_create_sandbox_lease)
+
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": ShouldNotRunAdapter()}))
+
+    assert outcome.status == "cancelled"
+    assert ("adapter", "run-a") not in calls
+    assert any(item[0] == "cancel" for item in calls)
+
+
+@pytest.mark.asyncio
+async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkeypatch):
+    calls = []
+
+    class RaisingAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            raise RuntimeError("executor crashed")
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs["stage"]))
+        return "evt-a"
+
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+        calls.append(("fail", run_id, error_code, error_message))
+
+    async def create_sandbox_lease(conn, **kwargs):
+        calls.append(("lease_create", kwargs["run_id"]))
+        return {"id": "lease-failed-a", **kwargs}
+
+    async def release_sandbox_lease(conn, **kwargs):
+        calls.append(("lease_release", kwargs))
+        return {"id": kwargs["lease_id"], "status": "released", **kwargs}
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": RaisingAdapter()}))
+
+    assert outcome.status == "failed"
+    assert ("lease_create", "run-a") in calls
+    release_call = next(item[1] for item in calls if item[0] == "lease_release")
+    assert release_call["tenant_id"] == "tenant-a"
+    assert release_call["user_id"] == "user-a"
+    assert release_call["run_id"] == "run-a"
+    assert release_call["lease_id"] == "lease-failed-a"
+    assert release_call["reason"] == "run_failed"
+    assert next(index for index, item in enumerate(calls) if item[0] == "fail") < next(
+        index for index, item in enumerate(calls) if item[0] == "lease_release"
+    )
+
+
+@pytest.mark.asyncio
+async def test_worker_releases_runtime_sandbox_lease_when_adapter_reports_failure(monkeypatch):
+    calls = []
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs["stage"]))
+        return "evt-a"
+
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+        calls.append(("fail", run_id, error_code, error_message))
+
+    async def create_sandbox_lease(conn, **kwargs):
+        calls.append(("lease_create", kwargs["run_id"]))
+        return {"id": "lease-reported-failed-a", **kwargs}
+
+    async def release_sandbox_lease(conn, **kwargs):
+        calls.append(("lease_release", kwargs))
+        return {"id": kwargs["lease_id"], "status": "released", **kwargs}
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FakeFailureAdapter()}))
+
+    assert outcome.status == "failed"
+    release_call = next(item[1] for item in calls if item[0] == "lease_release")
+    assert release_call["tenant_id"] == "tenant-a"
+    assert release_call["user_id"] == "user-a"
+    assert release_call["run_id"] == "run-a"
+    assert release_call["lease_id"] == "lease-reported-failed-a"
+    assert release_call["reason"] == "run_failed"
+    assert next(index for index, item in enumerate(calls) if item[0] == "fail") < next(
+        index for index, item in enumerate(calls) if item[0] == "lease_release"
+    )
+
+
+@pytest.mark.asyncio
+async def test_worker_releases_runtime_sandbox_lease_when_cancelled_on_event_boundary(monkeypatch):
+    calls = []
+    cancel_checks = 0
+
+    class StreamingAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            await event_sink(
+                event_type="assistant_delta",
+                stage="message",
+                message="partial",
+                payload={"delta": "partial"},
+            )
+            calls.append(("adapter", "continued_after_cancel"))
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="adapter/1",
+                executor_type="fake",
+                executor_version="fake/1",
+                capabilities={"streaming": True},
+                result={"message": "should not complete"},
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def is_cancel_requested(conn, *, tenant_id, run_id):
+        nonlocal cancel_checks
+        cancel_checks += 1
+        return cancel_checks >= 2
+
+    async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
+        calls.append(("cancel", result_json))
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs["stage"]))
+        return "evt-a"
+
+    async def create_sandbox_lease(conn, **kwargs):
+        calls.append(("lease_create", kwargs["run_id"]))
+        return {"id": "lease-event-cancel-a", **kwargs}
+
+    async def release_sandbox_lease(conn, **kwargs):
+        calls.append(("lease_release", kwargs))
+        return {"id": kwargs["lease_id"], "status": "released", **kwargs}
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": StreamingAdapter()}))
+
+    assert outcome.status == "cancelled"
+    assert ("adapter", "continued_after_cancel") not in calls
+    release_call = next(item[1] for item in calls if item[0] == "lease_release")
+    assert release_call["tenant_id"] == "tenant-a"
+    assert release_call["user_id"] == "user-a"
+    assert release_call["run_id"] == "run-a"
+    assert release_call["lease_id"] == "lease-event-cancel-a"
+    assert release_call["reason"] == "run_cancelled"
+    assert next(index for index, item in enumerate(calls) if item[0] == "cancel") < next(
+        index for index, item in enumerate(calls) if item[0] == "lease_release"
+    )
+
+
+@pytest.mark.asyncio
+async def test_worker_releases_runtime_sandbox_lease_when_terminal_persistence_raises(monkeypatch):
+    calls = []
+    tx_counter = 0
+
+    @asynccontextmanager
+    async def recording_transaction():
+        nonlocal tx_counter
+        tx_counter += 1
+        tx_label = f"tx-{tx_counter}"
+        calls.append(("tx_enter", tx_label))
+        try:
+            yield tx_label
+        except BaseException:
+            calls.append(("tx_rollback", tx_label))
+            raise
+        else:
+            calls.append(("tx_commit", tx_label))
+        finally:
+            calls.append(("tx_exit", tx_label))
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", conn, kwargs["event_type"], kwargs["stage"]))
+        return "evt-a"
+
+    async def create_artifact(conn, **kwargs):
+        return None
+
+    async def complete_run(conn, **kwargs):
+        calls.append(("complete", conn, kwargs["run_id"]))
+        raise RuntimeError("terminal write failed")
+
+    async def create_sandbox_lease(conn, **kwargs):
+        calls.append(("lease_create", conn, kwargs["run_id"]))
+        return {"id": "lease-terminal-error-a", **kwargs}
+
+    async def release_sandbox_lease(conn, **kwargs):
+        calls.append(("lease_release", conn, kwargs))
+        return {"id": kwargs["lease_id"], "status": "released", **kwargs}
+
+    monkeypatch.setattr("app.worker.transaction", recording_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+
+    with pytest.raises(RuntimeError, match="terminal write failed"):
+        await process_run_payload(base_payload(), AdapterRegistry({"fake": FakeSuccessAdapter()}))
+
+    complete_call = next(item for item in calls if item[0] == "complete")
+    release_call = next(item for item in calls if item[0] == "lease_release")
+    assert complete_call[1] != release_call[1]
+    assert release_call[2] == {
+        "tenant_id": "tenant-a",
+        "user_id": "user-a",
+        "run_id": "run-a",
+        "lease_id": "lease-terminal-error-a",
+        "reason": "run_terminal_interrupted",
+    }
+    assert calls.index(complete_call) < calls.index(release_call)
 
 
 @pytest.mark.asyncio
@@ -1512,11 +1899,15 @@ async def test_worker_rejects_queue_payload_identity_mismatch_before_context_or_
     async def fail_record_context(*args, **kwargs):
         raise AssertionError("identity-mismatched queue payload must not refresh context snapshot")
 
+    async def fail_create_sandbox_lease(*args, **kwargs):
+        raise AssertionError("identity-mismatched queue payload must not create runtime sandbox leases")
+
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.record_initial_context_snapshot", fail_record_context)
+    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(
@@ -1734,6 +2125,9 @@ async def test_worker_does_not_refresh_missing_context_for_unknown_executor(monk
     async def fail_record_context(*args, **kwargs):
         raise AssertionError("unknown executor must fail before refreshing context")
 
+    async def fail_create_sandbox_lease(*args, **kwargs):
+        raise AssertionError("unknown executor must fail before creating runtime sandbox leases")
+
     async def fail_run(conn, **kwargs):
         calls.append(("fail", kwargs["error_code"]))
 
@@ -1742,6 +2136,7 @@ async def test_worker_does_not_refresh_missing_context_for_unknown_executor(monk
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.record_initial_context_snapshot", fail_record_context)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(
@@ -2248,6 +2643,9 @@ async def test_worker_parks_top_level_multi_agent_parent_for_dispatcher_without_
         calls.append(("event", kwargs["event_type"], kwargs["stage"], kwargs.get("payload") or {}))
         return "evt-a"
 
+    async def fail_create_sandbox_lease(*args, **kwargs):
+        raise AssertionError("parked multi-agent parent must not create runtime sandbox leases")
+
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.get_settings", lambda: Settings(), raising=False)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -2257,6 +2655,7 @@ async def test_worker_parks_top_level_multi_agent_parent_for_dispatcher_without_
         raising=False,
     )
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(
