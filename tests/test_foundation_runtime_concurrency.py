@@ -31,6 +31,8 @@ def complete_evidence(**overrides):
             "run_count": 12,
             "concurrent_request_count": 12,
             "max_observed_concurrency": 12,
+            "concurrency_probe_source": "client_case_timestamps",
+            "concurrency_window_sample_count": 12,
         },
         "scenario_counts": {
             "run_creation": 12,
@@ -46,6 +48,7 @@ def complete_evidence(**overrides):
                 "stale_queue_entries": 0,
                 "queue_position_sample_count": 12,
                 "queue_position_duplicate_count": 0,
+                "queue_probe_sample_count": 12,
                 "queue_probe_source": "redis_metadata",
                 "cancel_action_statuses": [200, 200],
                 "cancel_effect_statuses": ["cancel_requested", "cancelled"],
@@ -60,7 +63,7 @@ def complete_evidence(**overrides):
                 "active_lease_count": 0,
                 "cross_scope_lease_leaks": 0,
                 "workspace_scope_collisions": 0,
-                "lease_probe_source": "sandbox_leases",
+                "lease_probe_source": "runtime_run_detail",
             },
             "memory_context": {
                 "status": "passed",
@@ -85,6 +88,9 @@ def complete_evidence(**overrides):
             "tool_permission": {
                 "status": "passed",
                 "decision_sample_count": 12,
+                "negative_reuse_probe_count": 48,
+                "negative_reuse_denied_count": 48,
+                "negative_reuse_unexpected_successes": 0,
                 "allow_once_reuse_violations": 0,
                 "wrong_decision_reuse_violations": 0,
                 "tool_call_id_mismatch_violations": 0,
@@ -199,7 +205,7 @@ def test_foundation_runtime_concurrency_rejects_missing_or_unsafe_context_pack_v
 
 def test_foundation_runtime_concurrency_rejects_unproven_queue_sandbox_memory_and_skill_claims():
     weak = complete_evidence()
-    for key in ("queue_position_sample_count", "queue_position_duplicate_count", "queue_probe_source"):
+    for key in ("queue_position_sample_count", "queue_position_duplicate_count", "queue_probe_source", "queue_probe_sample_count"):
         weak["checks"]["queue_admission"].pop(key)
     for key in ("sandbox_lease_sample_count", "lease_probe_source"):
         weak["checks"]["sandbox_workspace"].pop(key)
@@ -211,10 +217,58 @@ def test_foundation_runtime_concurrency_rejects_unproven_queue_sandbox_memory_an
     assert readiness["status"] == "blocked_foundation_runtime_concurrency_evidence"
     assert "queue_admission_position_samples_missing" in readiness["failures"]
     assert "queue_admission_probe_source_missing" in readiness["failures"]
+    assert "queue_admission_probe_samples_missing" in readiness["failures"]
     assert "sandbox_lease_samples_missing" in readiness["failures"]
     assert "sandbox_lease_probe_source_missing" in readiness["failures"]
     assert "memory_context_scope_probe_missing" in readiness["failures"]
     assert "skill_snapshot_binding_samples_missing" in readiness["failures"]
+
+
+def test_foundation_runtime_concurrency_rejects_synthetic_concurrency_claim():
+    weak = complete_evidence()
+    weak["summary"].pop("concurrency_probe_source")
+    weak["summary"].pop("concurrency_window_sample_count")
+
+    readiness = build_foundation_runtime_concurrency_readiness(weak)
+
+    assert readiness["status"] == "blocked_foundation_runtime_concurrency_evidence"
+    assert "concurrency_probe_source_missing" in readiness["failures"]
+    assert "concurrency_window_samples_missing" in readiness["failures"]
+
+
+def test_foundation_runtime_concurrency_rejects_submit_only_queue_probe():
+    weak = complete_evidence()
+    weak["checks"]["queue_admission"]["queue_probe_source"] = "submit_response"
+
+    readiness = build_foundation_runtime_concurrency_readiness(weak)
+
+    assert readiness["status"] == "blocked_foundation_runtime_concurrency_evidence"
+    assert "queue_admission_probe_source_missing" in readiness["failures"]
+
+
+def test_foundation_runtime_concurrency_rejects_post_run_sandbox_probe_as_execution_lease():
+    weak = complete_evidence()
+    weak["checks"]["sandbox_workspace"]["lease_probe_source"] = "sandbox_leases"
+
+    readiness = build_foundation_runtime_concurrency_readiness(weak)
+
+    assert readiness["status"] == "blocked_foundation_runtime_concurrency_evidence"
+    assert "sandbox_lease_probe_source_missing" in readiness["failures"]
+
+
+def test_foundation_runtime_concurrency_rejects_missing_tool_permission_negative_probe():
+    weak = complete_evidence()
+    for key in (
+        "negative_reuse_probe_count",
+        "negative_reuse_denied_count",
+        "negative_reuse_unexpected_successes",
+    ):
+        weak["checks"]["tool_permission"].pop(key)
+
+    readiness = build_foundation_runtime_concurrency_readiness(weak)
+
+    assert readiness["status"] == "blocked_foundation_runtime_concurrency_evidence"
+    assert "tool_permission_negative_reuse_probe_missing" in readiness["failures"]
 
 
 def test_foundation_runtime_concurrency_rejects_weak_or_leaky_evidence():

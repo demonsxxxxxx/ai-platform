@@ -74,16 +74,20 @@ users and tenants, exact tool-permission decision binding, pinned
 `run_skill_snapshots`, replay safety, and memory/context isolation. The
 memory/context portion must include per-run public context snapshot projections,
 safe `context_pack_version` samples, and scope probes; legacy evidence that only
-records `context_snapshot_count` is insufficient. Queue/admission and sandbox
-claims require probe sample counts and provenance fields, and skill governance
-claims require pinned snapshot binding samples. The 2026-06-14 `dff48fb` 211
-current-PR-head rerun now verifies the Foundation Runtime concurrency evidence
-requirements, including queue/admission, sandbox lease, memory scope, skill
-binding samples, and Redis queue-residue cleanup proof after the verifier run.
-This gate does not open ordinary-user multi-agent, does not claim Docker
-sandbox hardening, does not raise production concurrency defaults, does not
-permit department rollout, and does not replace the broader Foundation Alpha
-POC smoke/auth/governance evidence set.
+records `context_snapshot_count` is insufficient. Queue/admission claims require
+real probe sample counts and provenance fields; sandbox claims require runtime
+run-detail lease provenance instead of post-run lease probes; tool-permission
+claims require negative decision-reuse probes for same-request, wrong-run,
+same-tenant other-user, and cross-tenant reuse attempts; skill governance
+claims require pinned snapshot binding samples. The 2026-06-14 `dff48fb` 211 rerun is retained
+as reviewed historical evidence, but current validation blocks it because it
+lacks measured concurrency overlap, `queue_probe_sample_count`,
+`runtime_run_detail` sandbox lease provenance, and negative tool-permission
+reuse probes. Fresh 211 evidence is required before this gate can close for the
+current source. This gate does not open ordinary-user multi-agent, does not
+claim Docker sandbox hardening, does not raise production concurrency defaults,
+does not permit department rollout, and does not replace the broader Foundation
+Alpha POC smoke/auth/governance evidence set.
 
 GitHub issue #20 已作为 G5 多租户高并发 gate 的收敛切片在 `main` commit `f5da825` 完成：在 configured fairness horizon 内关闭 tail-window quota leasing 造成的可运行租户饥饿、multi-agent child-run fanout 绕过 active-run admission、queue position / queued-run removal / admin enrichment 无界 Redis queued-list 扫描，以及高风险 review/model-reasoning 规则歧义。详细设计与执行计划分别在 `docs/superpowers/specs/2026-06-06-g5-tenant-aware-scheduling-admission-metadata-design.md` 与 `docs/superpowers/plans/2026-06-06-g5-tenant-aware-scheduling-admission-metadata.md`，211 smoke 与 issue closure 证据保留在对应执行计划和 GitHub issue，不继续追加为产品路线图流水账。
 

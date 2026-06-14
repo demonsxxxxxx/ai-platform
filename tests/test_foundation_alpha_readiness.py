@@ -248,6 +248,8 @@ def _minimal_foundation_runtime_concurrency_payload(revision_ref: str) -> dict:
             "run_count": 12,
             "concurrent_request_count": 12,
             "max_observed_concurrency": 12,
+            "concurrency_probe_source": "client_case_timestamps",
+            "concurrency_window_sample_count": 12,
         },
         "scenario_counts": {
             "run_creation": 3,
@@ -263,6 +265,7 @@ def _minimal_foundation_runtime_concurrency_payload(revision_ref: str) -> dict:
                 "stale_queue_entries": 0,
                 "queue_position_sample_count": 12,
                 "queue_position_duplicate_count": 0,
+                "queue_probe_sample_count": 12,
                 "queue_probe_source": "redis_metadata",
                 "cancel_action_statuses": [200],
                 "cancel_effect_statuses": ["cancelled", "cancel_requested", "cancelled"],
@@ -277,7 +280,7 @@ def _minimal_foundation_runtime_concurrency_payload(revision_ref: str) -> dict:
                 "active_lease_count": 0,
                 "cross_scope_lease_leaks": 0,
                 "workspace_scope_collisions": 0,
-                "lease_probe_source": "sandbox_leases",
+                "lease_probe_source": "runtime_run_detail",
             },
             "memory_context": {
                 "status": "passed",
@@ -302,6 +305,9 @@ def _minimal_foundation_runtime_concurrency_payload(revision_ref: str) -> dict:
             "tool_permission": {
                 "status": "passed",
                 "decision_sample_count": 12,
+                "negative_reuse_probe_count": 48,
+                "negative_reuse_denied_count": 48,
+                "negative_reuse_unexpected_successes": 0,
                 "allow_once_reuse_violations": 0,
                 "wrong_decision_reuse_violations": 0,
                 "tool_call_id_mismatch_violations": 0,
@@ -2358,6 +2364,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "foundation_alpha_stage_complete": False,
         "foundation_alpha_stage_status": "core_poc_loop_verified_followups_open",
         "stage_acceptance_blockers": [
+            "foundation_runtime_concurrency_evidence",
             "ordinary_user_acceptance_for_quarantined_legacy_routes",
         ],
         "can_enter_next_stage_without_restrictions": False,
@@ -2385,6 +2392,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
             "department_rollout",
         ],
         "next_recommended_slices": [
+            "foundation_runtime_concurrency_evidence",
             "ordinary_user_acceptance_for_quarantined_legacy_routes",
         ],
     }
@@ -2424,7 +2432,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     }
     assert (
         readiness["domains"]["g5_run_lifecycle_worker_runtime"]["status"]
-        == "poc_verified_capacity_baseline_keep_defaults_locked"
+        == "partial_followups_open"
     )
     assert (
         readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"]["capacity_default_policy"]
@@ -2439,8 +2447,12 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         ]
         is True
     )
-    assert foundation_runtime_concurrency["status"] == "verified_foundation_runtime_concurrency"
-    assert foundation_runtime_concurrency["verified"] is True
+    assert foundation_runtime_concurrency["status"] == "blocked_foundation_runtime_concurrency_evidence"
+    assert foundation_runtime_concurrency["verified"] is False
+    assert "concurrency_probe_source_missing" in foundation_runtime_concurrency["failures"]
+    assert "queue_admission_probe_samples_missing" in foundation_runtime_concurrency["failures"]
+    assert "sandbox_lease_probe_source_missing" in foundation_runtime_concurrency["failures"]
+    assert "tool_permission_negative_reuse_probe_missing" in foundation_runtime_concurrency["failures"]
     assert foundation_runtime_concurrency["requirements"]["minimum_concurrent_requests"] == 10
     assert foundation_runtime_concurrency["requirements"]["minimum_tenants"] == 2
     assert (
@@ -2459,8 +2471,10 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert foundation_runtime_concurrency["checks"]["sandbox_workspace"]["lease_probe_source"] == "sandbox_leases"
     assert foundation_runtime_concurrency["checks"]["sandbox_workspace"]["sandbox_lease_sample_count"] == 12
     assert foundation_runtime_concurrency["checks"]["skill_snapshots"]["snapshot_binding_sample_count"] == 12
-    assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["open_followups"] == []
-    assert "foundation_runtime_concurrency_evidence" not in readiness["operator_context"]["next_recommended_slices"]
+    assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["open_followups"] == [
+        "foundation_runtime_concurrency_evidence"
+    ]
+    assert "foundation_runtime_concurrency_evidence" in readiness["operator_context"]["next_recommended_slices"]
     assert readiness["domains"]["frontend_poc"]["evidence"]["same_origin_api_health"]["payload_status"] == "ok"
     assert readiness["domains"]["frontend_poc"]["evidence"]["frontend_http_status"] == 200
     assert readiness["domains"]["frontend_poc"]["evidence"]["forbidden_reference_count"] == 0
@@ -2665,6 +2679,18 @@ def test_foundation_alpha_readiness_prefers_current_source_foundation_runtime_co
     assert readiness["runtime_source_relation"]["runtime_subject_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
     assert readiness["runtime_source_relation"]["runtime_relevant_source_matches"] is False
     assert readiness["runtime_relevant_source_verified_by_running_runtime"] is False
+
+
+def test_foundation_runtime_concurrency_active_subject_requires_current_source_match():
+    payload = _minimal_foundation_runtime_concurrency_payload(ACTIVE_RUNTIME_SUBJECT_SHA)
+
+    matches = foundation_alpha_readiness._foundation_runtime_concurrency_evidence_matches_active_subject(
+        payload,
+        source_tree_commit=NEWER_SOURCE_SHA,
+        runtime_subject_commit=ACTIVE_RUNTIME_SUBJECT_SHA,
+    )
+
+    assert matches is False
 
 
 def test_foundation_alpha_readiness_uses_latest_archived_concurrency_evidence_without_runtime_closure(

@@ -55,7 +55,9 @@ PSQL_COMMAND_TAG_RE = re.compile(
 TERMINAL_LAMBCHAT_STATUSES = {"completed", "error", "cancelled", "canceled"}
 CANCEL_EFFECT_STATUSES = {"cancel_requested", "cancelled", "canceled"}
 QUEUE_PROBE_SOURCES = {"redis_metadata", "admin_runtime_queue"}
-SANDBOX_LEASE_PROBE_SOURCE = "sandbox_leases"
+SANDBOX_LEASE_PROBE_SOURCE = "runtime_run_detail"
+SYNTHETIC_SANDBOX_LEASE_PROBE_SOURCE = "post_run_sandbox_lease_probe"
+DENIED_OR_CONFLICT_HTTP_STATUSES = {401, 403, 404, 409}
 FORBIDDEN_PUBLIC_TERMS = (
     "authorization",
     "bearer ",
@@ -1360,6 +1362,7 @@ def run_case(
     run_timeout_seconds: float = 240.0,
     retry_source_run_id: str = "",
 ) -> dict[str, Any]:
+    started_at = time.perf_counter()
     headers = auth_headers(
         api_url,
         account,
@@ -1421,6 +1424,7 @@ def run_case(
         if retry_run_id and retry_run_id != retry_run_source:
             retry_created_run_ids.append(retry_run_id)
     context_projection = fetch_context_snapshot_public_projection(api_url, headers, str(submitted["run_id"]))
+    finished_at = time.perf_counter()
     return {
         "tenant_id": account.tenant_id,
         "account": account.label,
@@ -1430,8 +1434,10 @@ def run_case(
         "session_id": submitted["session_id"],
         "run_id": submitted["run_id"],
         "queue_position": submitted["queue_position"],
+        "case_started_at_monotonic": started_at,
+        "case_finished_at_monotonic": finished_at,
         "queue_probe": {
-            "source": "admin_runtime_queue",
+            "source": "submit_response",
             "queue_position": submitted["queue_position"],
             "submitted_queue_position": submitted["queue_position"],
             "stale_queue_entry": False,
@@ -1634,7 +1640,7 @@ def attach_sandbox_lease_probe_results(
                 "create_status": 0,
                 "release_status": 0,
                 "lease_id": "",
-                "source": "sandbox_leases",
+                "source": SYNTHETIC_SANDBOX_LEASE_PROBE_SOURCE,
             }
             continue
         headers = auth_headers(
@@ -1667,12 +1673,11 @@ def attach_sandbox_lease_probe_results(
                 headers=headers,
                 timeout=30,
             )
-            item["sandbox_lease_id"] = lease_id
         item["sandbox_lease_probe"] = {
             "create_status": create_status,
             "release_status": release_status,
             "lease_id": lease_id,
-            "source": "sandbox_leases",
+            "source": SYNTHETIC_SANDBOX_LEASE_PROBE_SOURCE,
         }
 
 
@@ -1883,6 +1888,34 @@ def _permission_request_id(payload: Any) -> str:
     return ""
 
 
+def _tool_permission_negative_reuse_targets(
+    account: Account,
+    accounts: list[Account],
+    run_id: str,
+) -> list[tuple[Account, str, str]]:
+    same_tenant_other_user = next(
+        (
+            candidate
+            for candidate in accounts
+            if candidate.tenant_id == account.tenant_id and candidate.label != account.label
+        ),
+        None,
+    )
+    cross_tenant_user = next(
+        (candidate for candidate in accounts if candidate.tenant_id != account.tenant_id),
+        None,
+    )
+    targets: list[tuple[Account, str, str]] = [
+        (account, run_id, "same_request_repeat"),
+        (account, f"{run_id}-reuse-wrong-run", "wrong_run"),
+    ]
+    if same_tenant_other_user is not None:
+        targets.append((same_tenant_other_user, run_id, "same_tenant_other_user"))
+    if cross_tenant_user is not None:
+        targets.append((cross_tenant_user, run_id, "cross_tenant_other_user"))
+    return targets
+
+
 def attach_tool_permission_probe_results(
     api_url: str,
     results: list[dict[str, Any]],
@@ -1921,6 +1954,9 @@ def attach_tool_permission_probe_results(
         )
         request_id = _permission_request_id(request_payload)
         decision_status = 0
+        negative_reuse_probe_count = 0
+        negative_reuse_denied_count = 0
+        negative_reuse_unexpected_successes = 0
         if request_status in {200, 201} and request_id:
             decision_status, _decision_payload = json_request(
                 "POST",
@@ -1934,10 +1970,44 @@ def attach_tool_permission_probe_results(
                 headers=headers,
                 timeout=30,
             )
+            for target_account, target_run_id, target_scope in _tool_permission_negative_reuse_targets(
+                account,
+                accounts,
+                run_id,
+            ):
+                target_headers = headers if target_account == account else auth_headers(
+                    api_url,
+                    target_account,
+                    auth_mode=auth_mode,
+                    trusted_header_role=trusted_header_role,
+                )
+                negative_reuse_status, _negative_reuse_payload = json_request(
+                    "POST",
+                    f"{api_url.rstrip('/')}/api/ai/runs/{target_run_id}/tool-permissions/{request_id}/decision",
+                    {
+                        "decision": "allow_once",
+                        "reason": "foundation_runtime_permission_reuse_negative_probe",
+                        "decision_payload": {
+                            "probe": "foundation_runtime_reuse",
+                            "scope": target_scope,
+                        },
+                        "expires_in_seconds": 900,
+                    },
+                    headers=target_headers,
+                    timeout=30,
+                )
+                negative_reuse_probe_count += 1
+                if negative_reuse_status in DENIED_OR_CONFLICT_HTTP_STATUSES:
+                    negative_reuse_denied_count += 1
+                else:
+                    negative_reuse_unexpected_successes += 1
         item["tool_permission_probe"] = {
             "request_status": request_status,
             "decision_status": decision_status,
             "request_id": request_id,
+            "negative_reuse_probe_count": negative_reuse_probe_count,
+            "negative_reuse_denied_count": negative_reuse_denied_count,
+            "negative_reuse_unexpected_successes": negative_reuse_unexpected_successes,
         }
 
 
@@ -2044,6 +2114,10 @@ def _tool_permission_probe_decision_count(results: list[dict[str, Any]]) -> int:
     return total
 
 
+def _tool_permission_probe_negative_count(results: list[dict[str, Any]], key: str) -> int:
+    return _sum_nested_int(results, "tool_permission_probe", key)
+
+
 def _any_nested_true(results: list[dict[str, Any]], key: str, nested_key: str) -> bool:
     for item in results:
         nested = item.get(key)
@@ -2065,23 +2139,25 @@ def _merged_nested_lists(results: list[dict[str, Any]], key: str, nested_key: st
 def _foundation_runtime_queue_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     queue_positions: list[int] = []
     submitted_queue_positions: list[int] = []
+    queue_probe_sample_count = 0
     probe_sources: set[str] = set()
     admission_limit_violations = 0
     cross_tenant_queue_leaks = 0
     stale_queue_entries = 0
-    for ordinal, item in enumerate(results, start=1):
+    for item in results:
         probe = item.get("queue_probe")
         if not isinstance(probe, dict):
             continue
-        position = probe.get("queue_admission_ordinal", ordinal)
-        if type(position) is int and position > 0:
-            queue_positions.append(position)
         submitted_position = probe.get("submitted_queue_position", probe.get("queue_position"))
         if type(submitted_position) is int and submitted_position > 0:
             submitted_queue_positions.append(submitted_position)
         source = str(probe.get("source") or "").strip()
         if source in QUEUE_PROBE_SOURCES:
             probe_sources.add(source)
+            queue_probe_sample_count += 1
+            position = probe.get("queue_admission_ordinal", probe.get("queue_position"))
+            if type(position) is int and position > 0:
+                queue_positions.append(position)
         if probe.get("admission_limit_violation") is True:
             admission_limit_violations += 1
         if probe.get("cross_tenant_queue_leak") is True:
@@ -2105,6 +2181,7 @@ def _foundation_runtime_queue_summary(results: list[dict[str, Any]]) -> dict[str
         "stale_queue_entries": stale_queue_entries,
         "queue_position_sample_count": len(queue_positions),
         "queue_position_duplicate_count": duplicate_count,
+        "queue_probe_sample_count": queue_probe_sample_count,
         "submitted_queue_position_sample_count": len(submitted_queue_positions),
         "queue_probe_source": queue_probe_source,
     }
@@ -2144,6 +2221,25 @@ def _foundation_runtime_sandbox_summary(
         "cross_scope_lease_leaks": lease_scope_leaks,
         "workspace_scope_collisions": len(workspace_fingerprints) - len(set(workspace_fingerprints)),
         "lease_probe_source": SANDBOX_LEASE_PROBE_SOURCE if lease_count else "missing",
+    }
+
+
+def _foundation_runtime_concurrency_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
+    windows: list[tuple[float, float]] = []
+    for item in results:
+        start = item.get("case_started_at_monotonic")
+        finish = item.get("case_finished_at_monotonic")
+        if type(start) in {int, float} and type(finish) in {int, float} and float(finish) >= float(start):
+            windows.append((float(start), float(finish)))
+    max_overlap = 0
+    for start, _finish in windows:
+        overlap = sum(1 for candidate_start, candidate_finish in windows if candidate_start <= start <= candidate_finish)
+        max_overlap = max(max_overlap, overlap)
+    return {
+        "concurrent_request_count": len(results),
+        "max_observed_concurrency": max_overlap,
+        "concurrency_probe_source": "client_case_timestamps" if windows else "missing",
+        "concurrency_window_sample_count": len(windows),
     }
 
 
@@ -2200,6 +2296,7 @@ def build_foundation_runtime_concurrency_evidence(
         or skill_snapshots["global_mutable_skill_lookup_used"] is True
     ) else "passed"
     scenario_counts = _scenario_counts(results)
+    concurrency_summary = _foundation_runtime_concurrency_summary(results)
     evidence = {
         "schema_version": FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA,
         "artifact_kind": "foundation_runtime_concurrency",
@@ -2211,8 +2308,7 @@ def build_foundation_runtime_concurrency_evidence(
             "user_count": len(users),
             "session_count": len(session_ids),
             "run_count": len(run_ids),
-            "concurrent_request_count": len(results),
-            "max_observed_concurrency": len(results),
+            **concurrency_summary,
         },
         "role_provenance": {
             "run_creation_role": run_creation_role,
@@ -2249,6 +2345,16 @@ def build_foundation_runtime_concurrency_evidence(
                 "status": "passed",
                 "decision_sample_count": _sum_nested_int(results, "tool_permission", "decision_sample_count")
                 + _tool_permission_probe_decision_count(results),
+                "negative_reuse_probe_count": _sum_nested_int(results, "tool_permission", "negative_reuse_probe_count")
+                + _tool_permission_probe_negative_count(results, "negative_reuse_probe_count"),
+                "negative_reuse_denied_count": _sum_nested_int(results, "tool_permission", "negative_reuse_denied_count")
+                + _tool_permission_probe_negative_count(results, "negative_reuse_denied_count"),
+                "negative_reuse_unexpected_successes": _sum_nested_int(
+                    results,
+                    "tool_permission",
+                    "negative_reuse_unexpected_successes",
+                )
+                + _tool_permission_probe_negative_count(results, "negative_reuse_unexpected_successes"),
                 "allow_once_reuse_violations": _sum_nested_int(results, "tool_permission", "allow_once_reuse_violations"),
                 "wrong_decision_reuse_violations": _sum_nested_int(results, "tool_permission", "wrong_decision_reuse_violations"),
                 "tool_call_id_mismatch_violations": _sum_nested_int(results, "tool_permission", "tool_call_id_mismatch_violations"),

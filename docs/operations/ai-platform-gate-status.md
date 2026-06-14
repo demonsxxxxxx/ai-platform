@@ -132,16 +132,20 @@ and cross-tenant denial, exact tool-permission decision binding, pinned
 `run_skill_snapshots`, replay safety, and memory/context isolation. The
 memory/context check must include public context snapshot projections for each
 run, safe `context_pack_version` samples, and scope probes, not only a raw
-`context_snapshot_count`. Queue/admission and sandbox claims require probe
-sample counts and provenance fields; skill governance claims require pinned
-snapshot binding samples. The 2026-06-14 `dff48fb` 211 current-PR-head rerun
-now verifies these Foundation Runtime concurrency evidence requirements,
-including queue probe source, sandbox lease probe source, memory scope probes,
-skill snapshot binding samples, and Redis queue-residue cleanup proof after
-the verifier run. This gate does not raise production concurrency defaults,
-does not open ordinary-user multi-agent, does not claim Docker sandbox
-hardening, does not permit department rollout, and does not replace the broader
-Foundation Alpha POC smoke/auth/governance evidence set.
+`context_snapshot_count`. Queue/admission claims require real probe sample
+counts and provenance fields; sandbox claims require runtime run-detail lease
+provenance rather than post-run lease probes; tool-permission claims require
+negative decision-reuse probes for same-request, wrong-run, same-tenant
+other-user, and cross-tenant reuse attempts; skill governance claims require
+pinned snapshot binding samples. The 2026-06-14 `dff48fb` 211 rerun is retained as reviewed
+historical evidence, but current validation blocks it because it lacks measured
+concurrency overlap, `queue_probe_sample_count`, `runtime_run_detail` sandbox
+lease provenance, and negative tool-permission reuse probes. Fresh 211 evidence
+is required before this gate can close for the current source. This gate does
+not raise production concurrency defaults, does not open ordinary-user
+multi-agent, does not claim Docker sandbox hardening, does not permit department
+rollout, and does not replace the broader Foundation Alpha POC
+smoke/auth/governance evidence set.
 
 The superseded runtime subject commit
 `cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55` remains historical reviewed evidence

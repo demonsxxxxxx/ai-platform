@@ -839,11 +839,10 @@ def _foundation_runtime_concurrency_evidence_matches_active_subject(
     runtime_subject_commit: str,
 ) -> bool:
     subject = _foundation_runtime_concurrency_evidence_subject(payload)
-    active_subjects = [
-        item for item in (source_tree_commit, runtime_subject_commit) if item and item != "unknown"
-    ]
-    for evidence_ref in subject.values():
-        if any(_commit_ref_matches_subject(evidence_ref, active) for active in active_subjects):
+    if source_tree_commit == "unknown":
+        return False
+    for evidence_ref in (subject["commit_sha"], subject["source_tree_commit_sha"]):
+        if _commit_ref_matches_subject(evidence_ref, source_tree_commit):
             return True
     return False
 

@@ -38,8 +38,10 @@ _DEFAULT_INVARIANTS = {
 _DENIED_HTTP_STATUSES = {401, 403, 404}
 _SUCCESS_HTTP_STATUSES = {200, 202, 204, 409}
 _CANCEL_EFFECT_STATUSES = {"cancel_requested", "cancelled", "canceled"}
+_CONCURRENCY_PROBE_SOURCES = {"client_case_timestamps"}
 _QUEUE_PROBE_SOURCES = {"redis_metadata", "admin_runtime_queue"}
-_SANDBOX_LEASE_PROBE_SOURCES = {"sandbox_leases"}
+_SANDBOX_LEASE_PROBE_SOURCES = {"runtime_run_detail"}
+_MINIMUM_TOOL_PERMISSION_NEGATIVE_REUSE_PROBES_PER_RUN = 4
 _REVISION_REF_RE = re.compile(r"^[0-9a-f]{40}(?:[-A-Za-z0-9_.:]*)?$")
 
 
@@ -53,7 +55,7 @@ def _requirements() -> dict[str, Any]:
     }
 
 
-def _empty_summary() -> dict[str, int]:
+def _empty_summary() -> dict[str, Any]:
     return {
         "tenant_count": 0,
         "user_count": 0,
@@ -61,6 +63,8 @@ def _empty_summary() -> dict[str, int]:
         "run_count": 0,
         "concurrent_request_count": 0,
         "max_observed_concurrency": 0,
+        "concurrency_probe_source": "missing",
+        "concurrency_window_sample_count": 0,
     }
 
 
@@ -94,7 +98,7 @@ def _cancel_effect_sample_count(values: Any) -> int:
     )
 
 
-def _summary_from_evidence(evidence: dict[str, Any]) -> dict[str, int]:
+def _summary_from_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
     summary = _safe_dict(evidence.get("summary"))
     return {
         "tenant_count": _safe_int(summary.get("tenant_count")),
@@ -103,6 +107,8 @@ def _summary_from_evidence(evidence: dict[str, Any]) -> dict[str, int]:
         "run_count": _safe_int(summary.get("run_count")),
         "concurrent_request_count": _safe_int(summary.get("concurrent_request_count")),
         "max_observed_concurrency": _safe_int(summary.get("max_observed_concurrency")),
+        "concurrency_probe_source": str(summary.get("concurrency_probe_source") or "missing"),
+        "concurrency_window_sample_count": _safe_int(summary.get("concurrency_window_sample_count")),
     }
 
 
@@ -157,6 +163,10 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
         failures.append("minimum_concurrent_requests_not_met")
     if summary["max_observed_concurrency"] < _MINIMUM_CONCURRENT_REQUESTS:
         failures.append("minimum_observed_concurrency_not_met")
+    if summary["concurrency_probe_source"] not in _CONCURRENCY_PROBE_SOURCES:
+        failures.append("concurrency_probe_source_missing")
+    if summary["concurrency_window_sample_count"] < summary["run_count"]:
+        failures.append("concurrency_window_samples_missing")
     if summary["tenant_count"] < _MINIMUM_TENANTS:
         failures.append("minimum_tenants_not_met")
     if summary["user_count"] < 2:
@@ -188,6 +198,8 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
         failures.append("queue_stale_entries")
     if _safe_int(queue_admission.get("queue_position_sample_count")) < summary["run_count"]:
         failures.append("queue_admission_position_samples_missing")
+    if _safe_int(queue_admission.get("queue_probe_sample_count")) < summary["run_count"]:
+        failures.append("queue_admission_probe_samples_missing")
     if _safe_int(queue_admission.get("queue_position_duplicate_count")) > 0:
         failures.append("queue_admission_position_duplicate")
     if queue_admission.get("queue_probe_source") not in _QUEUE_PROBE_SOURCES:
@@ -249,6 +261,17 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
     tool_permission = checks["tool_permission"]
     if _safe_int(tool_permission.get("decision_sample_count")) <= 0:
         failures.append("tool_permission_decision_samples_missing")
+    negative_probe_count = _safe_int(tool_permission.get("negative_reuse_probe_count"))
+    negative_denied_count = _safe_int(tool_permission.get("negative_reuse_denied_count"))
+    minimum_negative_reuse_probe_count = (
+        summary["run_count"] * _MINIMUM_TOOL_PERMISSION_NEGATIVE_REUSE_PROBES_PER_RUN
+    )
+    if negative_probe_count < minimum_negative_reuse_probe_count:
+        failures.append("tool_permission_negative_reuse_probe_missing")
+    if negative_denied_count < negative_probe_count:
+        failures.append("tool_permission_negative_reuse_not_denied")
+    if _safe_int(tool_permission.get("negative_reuse_unexpected_successes")) > 0:
+        failures.append("tool_permission_negative_reuse_unexpected_success")
     if _safe_int(tool_permission.get("allow_once_reuse_violations")) > 0:
         failures.append("tool_permission_allow_once_reused")
     if _safe_int(tool_permission.get("wrong_decision_reuse_violations")) > 0:

@@ -152,7 +152,7 @@ def test_run_case_records_queue_probe_from_submit_position(monkeypatch):
     )
 
     assert result["queue_probe"] == {
-        "source": "admin_runtime_queue",
+        "source": "submit_response",
         "queue_position": 7,
         "submitted_queue_position": 7,
         "stale_queue_entry": False,
@@ -161,7 +161,7 @@ def test_run_case_records_queue_probe_from_submit_position(monkeypatch):
     }
 
 
-def test_build_foundation_runtime_evidence_assigns_stable_queue_admission_ordinals():
+def test_build_foundation_runtime_evidence_rejects_duplicate_queue_positions_without_probe_ordinals():
     module = load_verify_multiuser_poc()
     results = complete_foundation_runtime_results()
     for index, item in enumerate(results):
@@ -181,10 +181,35 @@ def test_build_foundation_runtime_evidence_assigns_stable_queue_admission_ordina
     )
 
     queue = evidence["checks"]["queue_admission"]
-    assert queue["status"] == "passed"
+    assert queue["status"] == "failed"
     assert queue["queue_position_sample_count"] == 12
-    assert queue["queue_position_duplicate_count"] == 0
+    assert queue["queue_position_duplicate_count"] == 10
     assert queue["submitted_queue_position_sample_count"] == 12
+
+
+def test_build_foundation_runtime_evidence_rejects_submit_only_queue_positions():
+    module = load_verify_multiuser_poc()
+    results = complete_foundation_runtime_results()
+    for item in results:
+        item["queue_probe"] = {
+            "source": "submit_response",
+            "queue_position": item["queue_position"],
+            "submitted_queue_position": item["queue_position"],
+            "stale_queue_entry": False,
+            "cross_tenant_queue_leak": False,
+            "admission_limit_violation": False,
+        }
+
+    evidence = module.build_foundation_runtime_concurrency_evidence(
+        results,
+        commit_sha="3843395b180324b165cbca7c59b6d7e1a934e290",
+        runtime_subject_commit_sha="ac9a86bbea14a28748867cade8d80b2f9ff420ec",
+    )
+
+    assert evidence["checks"]["queue_admission"]["status"] == "failed"
+    assert evidence["checks"]["queue_admission"]["queue_probe_source"] == "missing"
+    readiness = build_foundation_runtime_concurrency_readiness(evidence)
+    assert "queue_admission_probe_source_missing" in readiness["failures"]
 
 
 def test_run_case_passes_configured_timeout_to_wait_status(monkeypatch):
@@ -429,6 +454,8 @@ def complete_foundation_runtime_results(*, context_projection: bool = True):
                 "session_id": f"session-{index}",
                 "run_id": f"run-{index}",
                 "status": "completed" if scenario != "cancel" else "cancelled",
+                "case_started_at_monotonic": 100.0,
+                "case_finished_at_monotonic": 200.0 + index,
                 "queue_position": index + 1,
                 "artifact_ids": [f"art_{index}"] if scenario == "execution" else [],
                 "downloads": [{"artifact_id": f"art_{index}", "owner_status": 200, "owner_bytes": 8}],
@@ -452,6 +479,9 @@ def complete_foundation_runtime_results(*, context_projection: bool = True):
                 },
                 "tool_permission": {
                     "decision_sample_count": 1,
+                    "negative_reuse_probe_count": 4,
+                    "negative_reuse_denied_count": 4,
+                    "negative_reuse_unexpected_successes": 0,
                     "allow_once_reuse_violations": 0,
                     "wrong_decision_reuse_violations": 0,
                     "tool_call_id_mismatch_violations": 0,
@@ -497,6 +527,8 @@ def test_foundation_runtime_evidence_from_results_includes_context_pack_projecti
     assert evidence["summary"]["user_count"] == 4
     assert evidence["summary"]["run_count"] == 12
     assert evidence["summary"]["concurrent_request_count"] == 12
+    assert evidence["summary"]["concurrency_probe_source"] == "client_case_timestamps"
+    assert evidence["summary"]["concurrency_window_sample_count"] == 12
     assert evidence["scenario_counts"] == {
         "run_creation": 3,
         "execution": 3,
@@ -513,13 +545,16 @@ def test_foundation_runtime_evidence_from_results_includes_context_pack_projecti
     assert memory_context["context_scope_probe_count"] == 12
     assert evidence["checks"]["queue_admission"]["cancel_effect_run_count"] == 3
     assert evidence["checks"]["queue_admission"]["queue_position_sample_count"] == 12
+    assert evidence["checks"]["queue_admission"]["queue_probe_sample_count"] == 12
     assert evidence["checks"]["queue_admission"]["queue_probe_source"] == "redis_metadata"
     assert evidence["checks"]["artifact_acl"]["cross_tenant_statuses"] == [404] * 12
     assert evidence["checks"]["tool_permission"]["decision_sample_count"] == 12
+    assert evidence["checks"]["tool_permission"]["negative_reuse_probe_count"] == 48
+    assert evidence["checks"]["tool_permission"]["negative_reuse_denied_count"] == 48
     assert evidence["checks"]["skill_snapshots"]["run_skill_snapshot_count"] == 12
     assert evidence["checks"]["skill_snapshots"]["snapshot_binding_sample_count"] == 12
     assert evidence["checks"]["sandbox_workspace"]["sandbox_lease_sample_count"] == 12
-    assert evidence["checks"]["sandbox_workspace"]["lease_probe_source"] == "sandbox_leases"
+    assert evidence["checks"]["sandbox_workspace"]["lease_probe_source"] == "runtime_run_detail"
     assert evidence["role_provenance"]["ordinary_user_multi_agent_opened"] is False
     readiness = build_foundation_runtime_concurrency_readiness(evidence)
     assert readiness["verified"] is True
@@ -988,12 +1023,12 @@ def test_attach_sandbox_lease_probe_results_creates_and_releases_probe_lease(mon
 
     module.attach_sandbox_lease_probe_results("http://api.test", [result], [account])
 
-    assert result["sandbox_lease_id"] == "lease-a"
+    assert "sandbox_lease_id" not in result
     assert result["sandbox_lease_probe"] == {
         "create_status": 200,
         "release_status": 200,
         "lease_id": "lease-a",
-        "source": "sandbox_leases",
+        "source": "post_run_sandbox_lease_probe",
     }
     assert calls == [
         (
@@ -1084,6 +1119,9 @@ def test_foundation_runtime_evidence_counts_tool_probe_and_skill_snapshot_sample
             "request_status": 200,
             "decision_status": 200,
             "request_id": f"perm-{item['run_id']}",
+            "negative_reuse_probe_count": 4,
+            "negative_reuse_denied_count": 4,
+            "negative_reuse_unexpected_successes": 0,
         }
         item["tool_permission"] = {
             "decision_sample_count": 0,
@@ -1099,6 +1137,8 @@ def test_foundation_runtime_evidence_counts_tool_probe_and_skill_snapshot_sample
     )
 
     assert evidence["checks"]["tool_permission"]["decision_sample_count"] == 12
+    assert evidence["checks"]["tool_permission"]["negative_reuse_probe_count"] == 48
+    assert evidence["checks"]["tool_permission"]["negative_reuse_denied_count"] == 48
     assert evidence["checks"]["skill_snapshots"]["run_skill_snapshot_count"] == 12
     readiness = build_foundation_runtime_concurrency_readiness(evidence)
     assert "tool_permission_decision_samples_missing" not in readiness["failures"]
@@ -1108,29 +1148,49 @@ def test_foundation_runtime_evidence_counts_tool_probe_and_skill_snapshot_sample
 def test_attach_tool_permission_probe_results_uses_request_and_decision_routes(monkeypatch):
     module = load_verify_multiuser_poc()
     account = module.Account(label="tenant-a-user-1", username="a1", password="pw", tenant_id="tenant-a")
+    same_tenant_other_user = module.Account(label="tenant-a-user-2", username="a2", password="pw", tenant_id="tenant-a")
+    cross_tenant_user = module.Account(label="tenant-b-user-1", username="b1", password="pw", tenant_id="tenant-b")
     results = [{"account": account.label, "tenant_id": account.tenant_id, "run_id": "run-a"}]
     calls = []
 
-    monkeypatch.setattr(module, "login", lambda *_args: {"X-AI-User-ID": "a1"})
+    monkeypatch.setattr(module, "login", lambda _api_url, user: {"X-AI-User-ID": user.username})
 
     def fake_json_request(method, url, payload=None, headers=None, timeout=30.0):
-        calls.append((method, url, payload))
+        calls.append((method, url, payload, headers))
         if url.endswith("/api/ai/runs/run-a/tool-permissions/request"):
             return 200, {"permission_request": {"request_id": "perm-a"}}
-        if url.endswith("/api/ai/runs/run-a/tool-permissions/perm-a/decision"):
+        if url.endswith("/api/ai/runs/run-a/tool-permissions/perm-a/decision") and len(calls) == 2:
             return 200, {"permission_request": {"request_id": "perm-a", "status": "decided"}}
+        if url.endswith("/api/ai/runs/run-a/tool-permissions/perm-a/decision"):
+            return 409, {"detail": "tool_permission_request_not_pending"}
+        if url.endswith("/api/ai/runs/run-a-reuse-wrong-run/tool-permissions/perm-a/decision"):
+            return 404, {"detail": "run_not_found"}
         raise AssertionError(url)
 
     monkeypatch.setattr(module, "json_request", fake_json_request)
 
-    module.attach_tool_permission_probe_results("http://api.test", results, [account])
+    module.attach_tool_permission_probe_results(
+        "http://api.test",
+        results,
+        [account, same_tenant_other_user, cross_tenant_user],
+    )
 
     assert results[0]["tool_permission_probe"] == {
         "request_status": 200,
         "decision_status": 200,
         "request_id": "perm-a",
+        "negative_reuse_probe_count": 4,
+        "negative_reuse_denied_count": 4,
+        "negative_reuse_unexpected_successes": 0,
     }
-    assert [call[0] for call in calls] == ["POST", "POST"]
+    assert [call[0] for call in calls] == ["POST", "POST", "POST", "POST", "POST", "POST"]
+    assert [call[1] for call in calls[2:]] == [
+        "http://api.test/api/ai/runs/run-a/tool-permissions/perm-a/decision",
+        "http://api.test/api/ai/runs/run-a-reuse-wrong-run/tool-permissions/perm-a/decision",
+        "http://api.test/api/ai/runs/run-a/tool-permissions/perm-a/decision",
+        "http://api.test/api/ai/runs/run-a/tool-permissions/perm-a/decision",
+    ]
+    assert [call[3]["X-AI-User-ID"] for call in calls[2:]] == ["a1", "a1", "a2", "b1"]
 
 
 def test_foundation_runtime_cli_evidence_mode_runs_live_probe_attachments(monkeypatch, tmp_path, capsys):

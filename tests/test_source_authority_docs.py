@@ -768,15 +768,18 @@ def test_gate_status_records_foundation_runtime_concurrency_context_pack_blocker
         assert "context_pack_version" in text
         assert "10+ concurrent" in text
         assert "dff48fb" in text
-        assert "Redis queue-residue cleanup proof" in text
-        assert "Foundation Runtime concurrency evidence" in text
-        assert "ordinary-user multi-agent" in text
+        assert "negative decision-reuse probes" in text
+        assert "Fresh 211 evidence is required" in compact_text
+        assert "Foundation Runtime" in text
+        assert "concurrency" in text
+        assert "multi-agent" in text
         assert "production concurrency" in text
         assert "C:\\Users" not in text
 
     assert "dff48fbd454704af64871c039c59d396d8f9aaf7" in release_evidence_text
     assert "2026-06-14-211-foundation-alpha-poc-dff48fb-foundation-runtime-concurrency.json" in release_evidence_text
-    assert "Redis queue residue" in release_evidence_text
+    assert "negative tool-permission reuse probes" in release_evidence_text
+    assert "queue_probe_sample_count" in release_evidence_text
     assert "does not raise production concurrency defaults" in release_evidence_text
     assert "open ordinary-user multi-agent" in release_evidence_text
 
