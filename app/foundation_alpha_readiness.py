@@ -14,14 +14,14 @@ SCHEMA_VERSION = "ai-platform.foundation-alpha-poc-readiness.v1"
 SOURCE_SNAPSHOT_SCHEMA_VERSION = "ai-platform.source-snapshot.v1"
 SOURCE_RUNTIME_RELATION_MANIFEST_SCHEMA_VERSION = "ai-platform.source-runtime-relation-manifest.v1"
 STAGE_NAME = "Foundation Alpha POC"
-RUNTIME_SUBJECT_COMMIT_SHA = "79495bf4954017351db6d19494a16099fe2ee0bf"
+RUNTIME_SUBJECT_COMMIT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
 _ROOT = Path(__file__).resolve().parents[1]
 _EVIDENCE_BASE_ROOT = _ROOT / "docs/release-evidence/foundation-alpha-poc"
 _FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT = _ROOT / "docs/release-evidence/foundation-runtime-concurrency"
 _SOURCE_RUNTIME_RELATION_MANIFEST = _EVIDENCE_BASE_ROOT / "source-runtime-relation-manifest.json"
 _EVIDENCE_ROOT = _EVIDENCE_BASE_ROOT / RUNTIME_SUBJECT_COMMIT_SHA
-_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-14-211-foundation-alpha-poc-79495bf-runtime-poc-smoke.json"
-_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-14-211-foundation-alpha-poc-79495bf-auth-rbac-smoke.json"
+_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-15-211-foundation-alpha-poc-380de6b-runtime-poc-smoke.json"
+_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-15-211-foundation-alpha-poc-380de6b-auth-rbac-smoke.json"
 _SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
 _SOURCE_SNAPSHOT_MARKER = _ROOT / ".ai-platform-source-snapshot.json"
 _RUNTIME_NEUTRAL_PATH_PREFIXES = (
@@ -38,6 +38,7 @@ _RUNTIME_NEUTRAL_EXACT_PATHS = {
     "tools/frontend_release_traceability.py",
     "tools/verify_auth_rbac_smoke.py",
     "tools/verify_governance_runtime_smoke.py",
+    "tools/verify_multiuser_poc.py",
     "tests/test_source_authority_docs.py",
 }
 

@@ -797,8 +797,20 @@ def test_foundation_runtime_cleanup_removes_target_tenant_redis_queue_residue(mo
             return [str(len(redis_state[key]))]
         raise AssertionError(command)
 
+    def fake_redis_stdin(*, container, command, stdin, timeout_seconds=30.0):
+        verb = command[0]
+        key = command[1]
+        assert verb == "LREM"
+        assert command[2] == "0"
+        before = len(redis_state[key])
+        redis_state[key] = [item for item in redis_state[key] if item != stdin]
+        removed = before - len(redis_state[key])
+        deleted.append((*command, stdin))
+        return [str(removed)]
+
     monkeypatch.setattr(module, "psql_json_rows", fake_psql_json_rows)
     monkeypatch.setattr(module, "redis_command", fake_redis_json)
+    monkeypatch.setattr(module, "redis_command_with_stdin", fake_redis_stdin)
 
     proof = module.build_foundation_runtime_cleanup_proof(
         ["frc-test-tenant-a", "frc-test-tenant-b"],
@@ -848,6 +860,97 @@ def test_prepare_foundation_runtime_fixtures_executes_safe_sql(monkeypatch):
         "prepared_failed_run_count": 2,
     }
     assert captured
+
+
+def test_cleanup_foundation_runtime_queue_residue_uses_stdin_for_large_list_payloads(monkeypatch):
+    module = load_verify_multiuser_poc()
+    large_target = json.dumps(
+        {
+            "tenant_id": "frc-test-tenant-a",
+            "run_id": "run-large",
+            "payload": "x" * 200_000,
+        }
+    )
+    large_message_id = hashlib.sha256(large_target.encode("utf-8")).hexdigest()
+    redis_state = {
+        "ai-platform:runs:queued": [large_target],
+        "ai-platform:runs:processing": [],
+        "ai-platform:runs:queued-meta": {
+            large_message_id: json.dumps({"tenant_id": "frc-test-tenant-a", "run_id": "run-large"}),
+        },
+        "ai-platform:runs:queued-run-index": {
+            "frc-test-tenant-a:run-large": json.dumps([large_message_id]),
+        },
+        "ai-platform:runs:queued-order": {large_message_id: "1"},
+        "ai-platform:runs:processing-meta": {},
+        "ai-platform:runs:retry-meta": {},
+    }
+    argv_calls = []
+    stdin_calls = []
+
+    def fake_redis_json(*, container, command, timeout_seconds=30.0):
+        argv_calls.append(tuple(command))
+        verb = command[0]
+        key = command[1] if len(command) > 1 else ""
+        if verb == "TYPE":
+            if isinstance(redis_state.get(key), list):
+                return ["list"]
+            if isinstance(redis_state.get(key), dict) and key.endswith(":queued-order"):
+                return ["zset"]
+            if isinstance(redis_state.get(key), dict):
+                return ["hash"]
+            return ["none"]
+        if verb == "LRANGE":
+            return list(redis_state[key])
+        if verb == "HGETALL":
+            values = []
+            for field, value in redis_state[key].items():
+                values.extend([field, value])
+            return values
+        if verb == "HDEL":
+            removed = 0
+            for field in command[2:]:
+                if field in redis_state[key]:
+                    removed += 1
+                    redis_state[key].pop(field, None)
+            return [str(removed)]
+        if verb == "ZREM":
+            removed = 0
+            for field in command[2:]:
+                if field in redis_state[key]:
+                    removed += 1
+                    redis_state[key].pop(field, None)
+            return [str(removed)]
+        if verb == "ZSCORE":
+            value = redis_state[key].get(command[2])
+            return [value] if value is not None else []
+        raise AssertionError(command)
+
+    def fake_stdin_json(*, container, command, stdin, timeout_seconds=30.0):
+        stdin_calls.append((tuple(command), stdin))
+        assert command == ["LREM", "ai-platform:runs:queued", "0"]
+        assert stdin == large_target
+        before = len(redis_state["ai-platform:runs:queued"])
+        redis_state["ai-platform:runs:queued"] = [
+            item for item in redis_state["ai-platform:runs:queued"] if item != stdin
+        ]
+        return [str(before - len(redis_state["ai-platform:runs:queued"]))]
+
+    monkeypatch.setattr(module, "redis_command", fake_redis_json)
+    monkeypatch.setattr(module, "redis_command_with_stdin", fake_stdin_json)
+
+    proof = module.cleanup_foundation_runtime_queue_residue(
+        ["frc-test-tenant-a"],
+        redis_container="redis",
+    )
+
+    assert proof["status"] == "verified"
+    assert proof["removed_counts"]["queued_messages"] == 1
+    assert stdin_calls == [(
+        ("LREM", "ai-platform:runs:queued", "0"),
+        large_target,
+    )]
+    assert all(large_target not in call for argv_call in argv_calls for call in argv_call)
 
 
 def test_run_case_cancel_and_retry_record_control_probes(monkeypatch):

@@ -83,10 +83,11 @@ claims require pinned snapshot binding samples. The 2026-06-14 `dff48fb` 211
 rerun is retained as reviewed historical evidence, but current validation
 blocks its concurrency entry because it lacks measured concurrency overlap,
 `queue_probe_sample_count`, `runtime_run_detail` sandbox lease provenance, and
-negative tool-permission reuse probes. The 2026-06-14 `5d3d7e2` PR #40 rerun is
-retained as superseded reviewed evidence after the current-head refresh. The
-2026-06-14 `79495bf` PR #40 refresh is the current accepted Foundation Alpha
-POC runtime evidence set and the current accepted Foundation Runtime
+negative tool-permission reuse probes. The 2026-06-14 `5d3d7e2` PR #40 rerun
+and the 2026-06-14 `79495bf` PR #40 refresh are retained as superseded reviewed
+evidence after the merged-main refresh. The 2026-06-15 `380de6b` refresh is the
+current accepted Foundation Alpha POC runtime evidence set and the current
+accepted Foundation Runtime
 concurrency evidence: it records coherent 211 source/runtime labels and
 container markers, refreshed runtime POC smoke, Auth/RBAC smoke, governance
 runtime smoke, release-evidence runtime acceptance, alert/trace export runtime
@@ -95,8 +96,8 @@ portion covers 12 concurrent cases, 2 tenants, 4 users, run
 creation/execution/cancel/retry coverage, measured client timestamp overlap,
 queue probe samples, runtime-run-detail sandbox lease provenance, public
 context projections, pinned skill snapshot bindings, and negative
-tool-permission reuse denial probes. This closes the PR #40 Foundation Runtime
-concurrency evidence gap for the `79495bf` runtime-relevant source and refreshes
+tool-permission reuse denial probes. This closes the Foundation Runtime
+concurrency evidence gap for the `380de6b` runtime-relevant source and refreshes
 the broader Foundation Alpha POC smoke/auth/governance evidence on the same
 runtime subject. It does not open ordinary-user multi-agent, does not claim
 Docker sandbox hardening, does not raise production concurrency defaults, does

@@ -1,0 +1,136 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "artifact_kind": "211_runtime_smoke",
+  "captured_at": "2026-06-15T00:56:02+08:00",
+  "commit_sha": "380de6bf9ffed5167f9bb2eaee8e63612a52c124",
+  "runtime_subject_commit_sha": "380de6bf9ffed5167f9bb2eaee8e63612a52c124",
+  "evidence_id": "2026-06-15-211-foundation-alpha-poc-380de6b-governance-runtime-smoke",
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#15",
+    "#16",
+    "#17",
+    "#21",
+    "#22",
+    "#23",
+    "#24",
+    "#33"
+  ],
+  "pr_refs": [],
+  "open_followups": [
+    "#21 is closed in GitHub, but production concurrency defaults remain locked until separate recorded load/capacity evidence supports raising them.",
+    "G7 Docker sandbox hardening and Docker-capable sandbox smoke remain blocked.",
+    "G8 ordinary-user multi-agent exposure remains feature-flagged/internal only.",
+    "Packaged frontend image smoke/release acceptance remains separate from this thin-shell POC smoke.",
+    "Signed package or SBOM review evidence for Skill release remains open.",
+    "The 211 compose label still records an external env-file path; no env values were copied or printed, and deployment-layout reconciliation remains a production/G0 follow-up."
+  ],
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "source_ref": {
+    "api_health": {
+      "route": "/api/ai/health",
+      "status": "ok"
+    },
+    "branch": "main",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_layout_status": "external_env_file_label_present",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "deployment_note": "Merged-main runtime image was run on 211 for the 380de6b runtime subject. Source revision, OCI revision, runtime-subject, and source_revision alias labels point to 380de6b. The compose environment-file label records an external env-file path; this evidence does not copy or expose runtime secrets.",
+    "gateway_secret_supplied": false,
+    "image": "ai-platform:380de6b-merged-main-runtime",
+    "image_id": "sha256:e36e4dfad072cdd12b841019db3ccbcdef4b63ccf5262869c994757fef5663f9",
+    "image_labels": {
+      "ai-platform.runtime-rollout": "merged-main-runtime-380de6b",
+      "ai-platform.runtime-subject": "380de6bf9ffed5167f9bb2eaee8e63612a52c124",
+      "ai-platform.runtime_subject": "380de6bf9ffed5167f9bb2eaee8e63612a52c124",
+      "ai-platform.source-revision": "380de6bf9ffed5167f9bb2eaee8e63612a52c124",
+      "ai-platform.source_note": "merged-main-380de6b-runtime-rollout",
+      "ai-platform.source_revision": "380de6bf9ffed5167f9bb2eaee8e63612a52c124",
+      "ai-platform.source_tree_commit": "380de6bf9ffed5167f9bb2eaee8e63612a52c124",
+      "org.opencontainers.image.revision": "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
+    },
+    "repo_local_env_present": false,
+    "runtime_commit": "380de6bf9ffed5167f9bb2eaee8e63612a52c124",
+    "runtime_source_marker": "380de6bf9ffed5167f9bb2eaee8e63612a52c124",
+    "runtime_subject_label_status": "runtime_subject_label_current",
+    "source_revision_alias_label_status": "source_revision_alias_label_current",
+    "source_snapshot": {
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "snapshot": "380de6b-202606150055-merged-main-broad",
+      "source_branch": "main",
+      "source_revision": "380de6bf9ffed5167f9bb2eaee8e63612a52c124",
+      "source_tree_commit_sha": "380de6bf9ffed5167f9bb2eaee8e63612a52c124",
+      "source_tree_dirty": false,
+      "runtime_subject_commit_sha": "380de6bf9ffed5167f9bb2eaee8e63612a52c124",
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "sync_method": "git_archive_upload",
+      "notes": [
+        "No real .env copied or exported",
+        "Runtime evidence directory preserved under runtime-evidence for operator audit"
+      ]
+    }
+  },
+  "evidence_ref": {
+    "verifier": "tools/verify_governance_runtime_smoke.py",
+    "schema_version": "ai-platform.governance-runtime-smoke.v1",
+    "command": "python3 tools/verify_governance_runtime_smoke.py --base-url http://127.0.0.1:8020 --commit-sha 380de6b... --runtime-subject-commit-sha 380de6b... --image ai-platform:380de6b-merged-main-runtime",
+    "result": "ok:true",
+    "runtime_checks": {
+      "admin_runtime_governance": {
+        "expected_status": 200,
+        "forbidden_projection_terms_present": false,
+        "governance_schema_version": "ai-platform.governance-readiness.v1",
+        "governance_status": "partial_blocked",
+        "governance_status_allowed": true,
+        "memory_governance": {
+          "context_provenance_present": true,
+          "domain_status": "partial_blocked",
+          "gap_count": 4,
+          "long_term_fail_closed_present": true,
+          "office_context_readiness_present": true
+        },
+        "missing_domains": [],
+        "open_gap_count": 17,
+        "required_domains_present": true,
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "skill_governance": {
+          "dashboard_contract_exposed": false,
+          "dashboard_present": true,
+          "domain_status": "partial_blocked",
+          "gap_count": 6,
+          "implemented_snapshot_lock": true,
+          "implemented_version_registry": true,
+          "release_readiness_present": true
+        },
+        "status": 200,
+        "tenant_id": "default",
+        "tenant_matches_requested": true,
+        "tool_permission": {
+          "bulk_review_present": true,
+          "domain_status": "partial_blocked",
+          "gap_count": 4,
+          "implemented_bulk_review_dashboard": true,
+          "implemented_policy_taxonomy": true,
+          "taxonomy_present": true
+        }
+      },
+      "ordinary_admin_runtime": {
+        "detail": "not_ai_admin",
+        "expected_status": 403,
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "status": 403
+      }
+    }
+  },
+  "review_notes": [
+    "This entry records a reviewed Admin Runtime governance smoke summary for the 380de6b runtime.",
+    "The smoke verified ordinary-user Admin Runtime denial, same-tenant admin governance projection, required governance domains, tool-permission taxonomy and bulk review fields, skill release/dashboard fields, and memory/context readiness fields.",
+    "The reviewed summary omits credentials, connection strings, executor-only internals, runtime workspace paths, real user identifiers, runtime env-file paths, and personal workstation paths."
+  ]
+}

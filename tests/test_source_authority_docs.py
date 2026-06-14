@@ -24,20 +24,20 @@ RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_RUNTIME_RELATION_MANIFEST = (
     ROOT / "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json"
 )
-ACTIVE_RUNTIME_SUBJECT_SHA = "79495bf4954017351db6d19494a16099fe2ee0bf"
-ACTIVE_SOURCE_TREE_SHA = "4624197b0be47f9faa5c068efc11d1bee08384fe"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:79495bf-foundation-runtime-concurrency-pr40"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:6eef3f19c71fd44ddefa24fc6bc106566f156cb299b241c206c38b4f2598fc9f"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-14-211-foundation-alpha-poc-79495bf-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-14-211-foundation-alpha-poc-79495bf-auth-rbac-smoke"
+ACTIVE_RUNTIME_SUBJECT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
+ACTIVE_SOURCE_TREE_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:380de6b-merged-main-runtime"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:e36e4dfad072cdd12b841019db3ccbcdef4b63ccf5262869c994757fef5663f9"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-15-211-foundation-alpha-poc-380de6b-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-15-211-foundation-alpha-poc-380de6b-auth-rbac-smoke"
 ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID = (
-    "2026-06-14-211-foundation-alpha-poc-79495bf-governance-runtime-smoke"
+    "2026-06-15-211-foundation-alpha-poc-380de6b-governance-runtime-smoke"
 )
 ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-14-211-foundation-alpha-poc-79495bf-release-evidence-runtime-acceptance"
+    "2026-06-15-211-foundation-alpha-poc-380de6b-release-evidence-runtime-acceptance"
 )
 ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-14-211-foundation-alpha-poc-79495bf-alert-trace-export-runtime-acceptance"
+    "2026-06-15-211-foundation-alpha-poc-380de6b-alert-trace-export-runtime-acceptance"
 )
 CBBFAFF_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
 CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
@@ -771,6 +771,7 @@ def test_gate_status_records_foundation_runtime_concurrency_context_pack_blocker
         assert "dff48fb" in text
         assert "5d3d7e2" in text
         assert "79495bf" in text
+        assert "380de6b" in text
         assert "negative decision-reuse probes" in text
         assert "current accepted Foundation Runtime concurrency evidence" in compact_text
         assert "Foundation Runtime" in text
@@ -785,6 +786,8 @@ def test_gate_status_records_foundation_runtime_concurrency_context_pack_blocker
     assert "2026-06-14-211-foundation-alpha-poc-5d3d7e2-foundation-runtime-concurrency.json" in release_evidence_text
     assert "79495bf4954017351db6d19494a16099fe2ee0bf" in release_evidence_text
     assert "2026-06-14-211-foundation-alpha-poc-79495bf-foundation-runtime-concurrency.json" in release_evidence_text
+    assert ACTIVE_RUNTIME_SUBJECT_SHA in release_evidence_text
+    assert "2026-06-15-211-foundation-alpha-poc-380de6b-foundation-runtime-concurrency.json" in release_evidence_text
     assert "verified_foundation_runtime_concurrency" not in release_evidence_text
     assert "negative tool-permission reuse probes" in release_evidence_text
     assert "queue_probe_sample_count" in release_evidence_text

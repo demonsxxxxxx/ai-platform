@@ -11,7 +11,7 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
-ACTIVE_RUNTIME_SUBJECT_SHA = "79495bf4954017351db6d19494a16099fe2ee0bf"
+ACTIVE_RUNTIME_SUBJECT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
 HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
@@ -2517,7 +2517,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "input_keys": ["attachments", "message"],
         "memory_policy_source": "default",
         "long_term_memory_read": False,
-        "execution_tier": "sdk_only_writing",
+        "execution_tier": "document_worker",
         "context_pack_version": "v1",
         "context_pack_generated_at_present": True,
         "missing_public_summary_fields": [],
@@ -3935,6 +3935,27 @@ def test_governance_summary_surfaces_memory_context_controls_for_s1_readiness():
     } == VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS
     assert REQUIRED_MEMORY_CONTEXT_OPEN_GAPS.issubset(set(controls["open_gaps"]))
     assert "office_execution_tier_router" not in controls["open_gaps"]
+
+
+def test_runtime_relevant_diff_treats_multiuser_verifier_as_runtime_neutral(monkeypatch):
+    monkeypatch.setattr(
+        foundation_alpha_readiness.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout="tools/verify_multiuser_poc.py\n",
+            stderr="",
+        ),
+    )
+
+    assert (
+        foundation_alpha_readiness._resolve_runtime_affecting_changes_between(
+            HISTORICAL_RUNTIME_SUBJECT_SHA,
+            ACTIVE_RUNTIME_SUBJECT_SHA,
+        )
+        == []
+    )
 
 
 def test_g6_followups_require_memory_context_controls_summary():

@@ -236,6 +236,39 @@ def redis_command(
     return completed.stdout.splitlines()
 
 
+def redis_command_with_stdin(
+    *,
+    container: str,
+    command: list[str],
+    stdin: str,
+    timeout_seconds: float = 30.0,
+) -> list[str]:
+    """Run redis-cli with a bulk string read from stdin to avoid argv limits."""
+    docker_command = [
+        "sudo",
+        "-n",
+        "docker",
+        "exec",
+        "-i",
+        container,
+        "redis-cli",
+        "--raw",
+        "-x",
+        *command,
+    ]
+    completed = subprocess.run(
+        docker_command,
+        input=stdin,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "redis command failed")
+    return completed.stdout.splitlines()
+
+
 def _sql_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
@@ -541,7 +574,11 @@ def cleanup_foundation_runtime_queue_residue(
             run_id = _json_payload_run_id(raw)
             if run_id:
                 message_ids.update(_message_ids_from_queued_index_value(queued_run_index_by_field.get(f"{tenant_id}:{run_id}", "")))
-            result = redis_command(container=redis_container, command=["LREM", key, "0", raw])
+            result = redis_command_with_stdin(
+                container=redis_container,
+                command=["LREM", key, "0"],
+                stdin=raw,
+            )
             removed[f"{list_name}_messages"] += int(result[0]) if result and result[0].isdigit() else 0
 
     for hash_name in ("queued_meta", "processing_meta", "retry_meta"):
