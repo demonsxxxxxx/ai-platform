@@ -560,7 +560,7 @@ files, runtime acceptance for the source-level skill dependency review policy,
 `admin_skill_release_dashboard_visual_acceptance`,
 `admin_skill_release_dashboard_211_acceptance`,
 office context-pack persistence/versioning, executor context-pack injection,
-document-centric follow-up state, sandbox cold-start latency split, frontend context provenance
+document-centric follow-up state, 211 sandbox cold-start latency split acceptance, frontend context provenance
 acceptance, quarantined legacy frontend source remap, packaged frontend image
 smoke/release acceptance on 211 or another Docker-capable host, and
 ordinary-user G9 acceptance. Do not use this baseline to expand sandbox
@@ -568,12 +568,13 @@ privilege, raw Skill selection, or multi-agent ordinary-user exposure.
 
 The #22 office context-pack work now has source-level architecture readiness
 evidence only: `tools/office_context_readiness.py` defines bounded allowed
-context sources, user-visible provenance fields, execution tiers, and non-goals
-without enabling runtime context-pack persistence, executor injection, long-term
-cross-session memory, lightweight-task Docker sandbox startup, or ordinary-user
-G8/G10 exposure. It replaces the older single "bounded office context-pack
-product contract" blocker with explicit persistence/versioning, executor
-injection, follow-up-state, latency, and frontend provenance acceptance gaps.
+context sources, user-visible provenance fields, execution tiers, the source-level
+sandbox latency split observability contract, and non-goals without enabling
+runtime context-pack persistence, executor injection, long-term cross-session
+memory, lightweight-task Docker sandbox startup, or ordinary-user G8/G10 exposure.
+It replaces the older single "bounded office context-pack product contract"
+blocker with explicit persistence/versioning, executor injection, follow-up-state,
+211 sandbox latency split acceptance, and frontend provenance acceptance gaps.
 
 The 2026-06-11 context provenance follow-up adds source-level public provenance
 fields to created context snapshots and queued `context_snapshot` references:

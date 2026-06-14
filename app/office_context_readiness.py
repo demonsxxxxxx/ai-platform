@@ -86,7 +86,7 @@ _OPEN_GAPS = [
     "user_visible_context_provenance_projection",
     "document_centric_followup_state",
     "office_execution_tier_router",
-    "sandbox_cold_start_latency_split",
+    "sandbox_cold_start_latency_split_211_acceptance",
     "frontend_context_provenance_acceptance",
 ]
 
@@ -94,6 +94,7 @@ _IMPLEMENTED_CONTROLS = [
     "source_level_context_pack_contract",
     "context_snapshot_public_provenance_projection_contract",
     "executor_context_pack_prompt_injection_source_tests",
+    "sandbox_cold_start_latency_split_source_contract",
 ]
 
 _NON_GOALS = [
@@ -102,6 +103,21 @@ _NON_GOALS = [
     "do_not_enable_long_term_cross_session_memory_by_default",
     "do_not_expand_g8_g10_multi_agent_to_ordinary_users",
 ]
+
+_SANDBOX_LATENCY_OBSERVABILITY = {
+    "status": "source_contract_defined_runtime_acceptance_required",
+    "applies_to_execution_tiers": ["heavy_sandbox"],
+    "required_metric_fields": [
+        "sandbox_lease_acquire_latency_ms",
+        "sandbox_container_cold_start_latency_ms",
+        "sandbox_healthcheck_latency_ms",
+        "executor_model_latency_ms",
+        "document_processing_latency_ms",
+        "sandbox_cleanup_latency_ms",
+    ],
+    "must_not_hide_cold_start_in_executor_latency": True,
+    "runtime_acceptance_required": "211_sandbox_latency_split_smoke",
+}
 
 
 def build_office_context_readiness() -> dict[str, Any]:
@@ -126,11 +142,17 @@ def build_office_context_readiness() -> dict[str, Any]:
             "forbidden_projection_terms": list(_FORBIDDEN_PROJECTION_TERMS),
         },
         "execution_tiers": [dict(tier) for tier in _EXECUTION_TIERS],
+        "sandbox_latency_observability": {
+            **_SANDBOX_LATENCY_OBSERVABILITY,
+            "applies_to_execution_tiers": list(_SANDBOX_LATENCY_OBSERVABILITY["applies_to_execution_tiers"]),
+            "required_metric_fields": list(_SANDBOX_LATENCY_OBSERVABILITY["required_metric_fields"]),
+        },
         "open_gaps": list(_OPEN_GAPS),
         "non_goals": list(_NON_GOALS),
         "evidence_policy": (
-            "This records source-level context-pack contract and executor prompt-injection tests; "
-            "versioned persistence, frontend acceptance, and 211 executor smoke are still required "
+            "This records source-level context-pack contract, executor prompt-injection tests, "
+            "and sandbox latency split observability contract; versioned persistence, "
+            "frontend acceptance, 211 executor smoke, and 211 sandbox latency split smoke are still required "
             "before office context continuity can close G6/G9."
         ),
     }

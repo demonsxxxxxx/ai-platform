@@ -87,6 +87,7 @@ class ContainerLease(BaseModel):
     workspace_host_path: str
     workspace_container_path: str = "/workspace"
     labels: dict[str, str] = Field(default_factory=dict)
+    timings: dict[str, int] = Field(default_factory=dict)
 
     @field_validator("tenant_id", "workspace_id", "user_id", "session_id", "run_id")
     @classmethod

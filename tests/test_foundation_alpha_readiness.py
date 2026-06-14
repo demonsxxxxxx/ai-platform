@@ -37,7 +37,7 @@ VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS = {
 REQUIRED_MEMORY_CONTEXT_OPEN_GAPS = {
     "office_context_pack_persistence_and_versioning",
     "document_centric_followup_state",
-    "sandbox_cold_start_latency_split",
+    "sandbox_cold_start_latency_split_211_acceptance",
     "frontend_context_provenance_acceptance",
 }
 
