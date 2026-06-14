@@ -171,6 +171,9 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
         if scenario_counts[name] <= 0:
             failures.append(f"scenario_{name}_missing")
 
+    if _safe_int(evidence.get("failed_case_count")) > 0 or _safe_list(evidence.get("failed_cases")):
+        failures.append("foundation_runtime_case_failures")
+
     checks = _checks_from_evidence(evidence)
     for name, check in checks.items():
         if check.get("status") != "passed":

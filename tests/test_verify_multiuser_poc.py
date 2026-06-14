@@ -1187,3 +1187,70 @@ def test_foundation_runtime_cli_rejects_fixture_agents_without_trusted_header_au
         assert "fixture agents require trusted-header auth" in str(exc)
     else:
         raise AssertionError("expected fixture-agent login mode to fail closed")
+
+
+def test_foundation_runtime_cli_outputs_blocked_evidence_when_one_case_times_out(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    module = load_verify_multiuser_poc()
+    sample_path = tmp_path / "sample.docx"
+    module.write_minimal_docx(sample_path)
+
+    def fake_run_case(api_url, account, case_name, agent_id, message, docx_path, scenario="execution", **_kwargs):
+        index = fake_run_case.call_count
+        fake_run_case.call_count += 1
+        if index == 3:
+            raise TimeoutError("run did not finish: session=ses-timeout run=run-timeout latest={'status':'queued'}")
+        result = complete_foundation_runtime_results()[index]
+        result["account"] = account.label
+        result["tenant_id"] = account.tenant_id
+        result["case"] = case_name
+        result["scenario"] = scenario
+        fake_run_case.results.append(result)
+        return result
+
+    fake_run_case.call_count = 0
+    fake_run_case.results = []
+
+    monkeypatch.setattr(module, "run_case", fake_run_case)
+    monkeypatch.setattr(module, "attach_artifact_acl_probe_results", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "attach_tool_permission_probe_results", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "attach_run_detail_probe_results", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verify_multiuser_poc.py",
+            "--foundation-runtime-evidence",
+            "--auth-mode",
+            "trusted-header",
+            "--commit-sha",
+            "3843395b180324b165cbca7c59b6d7e1a934e290",
+            "--runtime-subject-commit-sha",
+            "ac9a86bbea14a28748867cade8d80b2f9ff420ec",
+            "--sample-docx",
+            str(sample_path),
+            "--account",
+            "frc-test-tenant-a/user-a=frc_a1:unused",
+            "--account",
+            "frc-test-tenant-a/user-b=frc_a2:unused",
+            "--account",
+            "frc-test-tenant-b/user-c=frc_b1:unused",
+            "--account",
+            "frc-test-tenant-b/user-d=frc_b2:unused",
+        ],
+    )
+
+    assert module.main() == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["readiness"]["verified"] is False
+    assert payload["readiness"]["status"] == "blocked_foundation_runtime_concurrency_evidence"
+    assert "foundation_runtime_case_failures" in payload["readiness"]["failures"]
+    assert payload["evidence"]["failed_case_count"] == 1
+    assert payload["evidence"]["failed_cases"][0]["error_type"] == "TimeoutError"
+    assert "run-timeout" in payload["evidence"]["failed_cases"][0]["message"]
+    serialized = json.dumps(payload, ensure_ascii=False).lower()
+    assert "authorization" not in serialized
+    assert "bearer " not in serialized

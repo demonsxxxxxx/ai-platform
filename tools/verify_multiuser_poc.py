@@ -1760,6 +1760,7 @@ def build_foundation_runtime_concurrency_evidence(
     runtime_subject_commit_sha: str,
     cleanup_proof: dict[str, Any] | None = None,
     fixture_proof: dict[str, Any] | None = None,
+    failed_cases: list[dict[str, Any]] | None = None,
     run_creation_role: str = "user",
     public_probe_role: str = "user",
     admin_probe_role: str | None = None,
@@ -1863,6 +1864,9 @@ def build_foundation_runtime_concurrency_evidence(
             "long_term_cross_session_memory_enabled": False,
         },
     }
+    if failed_cases:
+        evidence["failed_case_count"] = len(failed_cases)
+        evidence["failed_cases"] = failed_cases
     if cleanup_proof is not None:
         evidence["cleanup_proof"] = cleanup_proof
     if fixture_proof is not None:
@@ -1938,7 +1942,7 @@ def main() -> int:
         run_creation_role = "developer" if args.use_fixture_agents else args.trusted_header_role
         admin_probe_role = run_creation_role if run_creation_role == "developer" else None
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(specs)) as pool:
-            futures = [
+            future_specs = {
                 pool.submit(
                     run_case,
                     args.api_url,
@@ -1954,10 +1958,28 @@ def main() -> int:
                     skill_id=spec.skill_id if run_creation_role != "user" else None,
                     run_timeout_seconds=args.run_timeout_seconds,
                     retry_source_run_id=spec.retry_source_run_id,
-                )
+                ): spec
                 for spec in specs
-            ]
-            results = [future.result() for future in concurrent.futures.as_completed(futures)]
+            }
+            results = []
+            failed_cases: list[dict[str, Any]] = []
+            for future in concurrent.futures.as_completed(future_specs):
+                spec = future_specs[future]
+                try:
+                    results.append(future.result())
+                except Exception as exc:
+                    failed_cases.append(
+                        {
+                            "tenant_id": spec.account.tenant_id,
+                            "account": spec.account.label,
+                            "case": spec.case_name,
+                            "scenario": spec.scenario,
+                            "agent_id": spec.agent_id,
+                            "skill_id": spec.skill_id,
+                            "error_type": type(exc).__name__,
+                            "message": str(exc),
+                        }
+                    )
         attach_artifact_acl_probe_results(
             args.api_url,
             results,
@@ -1985,6 +2007,14 @@ def main() -> int:
             runtime_subject_commit_sha=args.runtime_subject_commit_sha,
             cleanup_proof=cleanup_proof or None,
             fixture_proof=fixture_proof,
+            failed_cases=sorted(
+                failed_cases,
+                key=lambda row: (
+                    str(row.get("tenant_id") or ""),
+                    str(row.get("account") or ""),
+                    str(row.get("case") or ""),
+                ),
+            ),
             run_creation_role=run_creation_role,
             public_probe_role="user",
             admin_probe_role=admin_probe_role,
