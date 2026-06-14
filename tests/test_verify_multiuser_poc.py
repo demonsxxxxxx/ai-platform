@@ -975,6 +975,48 @@ def test_wait_runtime_sandbox_lease_ignores_released_leases(monkeypatch):
     ]
 
 
+def test_run_case_cancel_uses_run_timeout_while_waiting_for_runtime_sandbox_lease(monkeypatch):
+    module = load_verify_multiuser_poc()
+    account = module.Account(label="tenant-a-user-1", username="a1", password="pw", tenant_id="tenant-a")
+    observed = {}
+
+    monkeypatch.setattr(module, "login", lambda *_args: {"X-AI-User-ID": "a1"})
+    monkeypatch.setattr(
+        module,
+        "submit_chat",
+        lambda *_args, **_kwargs: {"session_id": "session-a", "run_id": "run-a", "queue_position": 1},
+    )
+    monkeypatch.setattr(module, "stream_answer", lambda *_args: "")
+    monkeypatch.setattr(module, "wait_status", lambda *_args, **_kwargs: {"status": "completed", "raw_status": "cancelled"})
+    monkeypatch.setattr(
+        module,
+        "fetch_context_snapshot_public_projection",
+        lambda *_args: {"ok": True, "snapshot_count": 1, "context_pack_version": "v1"},
+    )
+    monkeypatch.setattr(module, "run_control_action", lambda *_args: (200, {"status": "cancel_requested"}))
+
+    def fake_wait_runtime_sandbox_lease(api_url, headers, run_id, *, timeout_seconds):
+        observed["timeout_seconds"] = timeout_seconds
+        return "lease-runtime-a"
+
+    monkeypatch.setattr(module, "wait_runtime_sandbox_lease", fake_wait_runtime_sandbox_lease)
+
+    module.run_case(
+        "http://api.test",
+        account,
+        "cancel-probe",
+        "general-agent",
+        "cancel",
+        None,
+        "cancel",
+        auth_mode="trusted-header",
+        trusted_header_role="developer",
+        run_timeout_seconds=900,
+    )
+
+    assert observed["timeout_seconds"] == 900
+
+
 def test_run_case_retry_uses_configured_source_run_id(monkeypatch):
     module = load_verify_multiuser_poc()
     account = module.Account(label="tenant-a-user-1", username="a1", password="pw", tenant_id="tenant-a")

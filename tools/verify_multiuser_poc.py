@@ -1417,7 +1417,7 @@ def run_case(
     cancel_effect_statuses: list[str] = []
     if scenario == "cancel":
         if trusted_header_role == "developer":
-            wait_runtime_sandbox_lease(api_url, headers, submitted["run_id"])
+            wait_runtime_sandbox_lease(api_url, headers, submitted["run_id"], timeout_seconds=run_timeout_seconds)
         status, payload = run_control_action(api_url, headers, submitted["run_id"], "cancel")
         cancel_action_statuses.append(status)
         effect_status = _run_control_payload_status(payload)
