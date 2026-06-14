@@ -27,6 +27,7 @@ def test_office_context_readiness_defines_safe_context_pack_contract_without_ena
         "source_level_context_pack_contract",
         "context_snapshot_public_provenance_projection_contract",
         "executor_context_pack_prompt_injection_source_tests",
+        "user_visible_context_provenance_api_projection_source_tests",
     ]
 
     context_pack = readiness["context_pack_contract"]
@@ -70,7 +71,6 @@ def test_office_context_readiness_defines_safe_context_pack_contract_without_ena
     assert readiness["open_gaps"] == [
         "office_context_pack_persistence_and_versioning",
         "executor_context_pack_211_acceptance",
-        "user_visible_context_provenance_projection",
         "document_centric_followup_state",
         "office_execution_tier_router",
         "sandbox_cold_start_latency_split",
@@ -124,7 +124,9 @@ def test_office_context_readiness_cli_outputs_json_without_secret_markers():
     assert payload["status"] == "partial_blocked"
     assert payload["policy"]["lightweight_office_tasks_start_sandbox_by_default"] is False
     assert "executor_context_pack_prompt_injection_source_tests" in payload["implemented_controls"]
+    assert "user_visible_context_provenance_api_projection_source_tests" in payload["implemented_controls"]
     assert "executor_context_pack_injection" not in payload["open_gaps"]
+    assert "user_visible_context_provenance_projection" not in payload["open_gaps"]
     assert "executor_context_pack_211_acceptance" in payload["open_gaps"]
     assert "sk-secret" not in result.stdout
     assert "callback-token" not in result.stdout
