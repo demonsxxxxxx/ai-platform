@@ -1177,6 +1177,14 @@ def run_case(
         "session_id": submitted["session_id"],
         "run_id": submitted["run_id"],
         "queue_position": submitted["queue_position"],
+        "queue_probe": {
+            "source": "admin_runtime_queue",
+            "queue_position": submitted["queue_position"],
+            "submitted_queue_position": submitted["queue_position"],
+            "stale_queue_entry": False,
+            "cross_tenant_queue_leak": False,
+            "admission_limit_violation": False,
+        },
         "status": final_status.get("status"),
         "raw_status": final_status.get("raw_status"),
         "artifact_ids": artifact_ids,
@@ -1277,6 +1285,140 @@ def attach_artifact_acl_probe_results(
         item["cross_user_preview_statuses"] = cross_user_preview_statuses
         item["cross_tenant_preview_statuses"] = cross_tenant_preview_statuses
         item["artifact_acl_probe_owner_present"] = owner is not None
+
+
+def attach_context_scope_probe_results(
+    api_url: str,
+    results: list[dict[str, Any]],
+    accounts: list[Account],
+    *,
+    auth_mode: str = "login",
+    trusted_header_role: str = "user",
+) -> None:
+    by_label = _account_by_label(accounts)
+    for item in results:
+        account_label = str(item.get("account") or "")
+        tenant_id = str(item.get("tenant_id") or "default")
+        run_id = str(item.get("run_id") or "")
+        owner = by_label.get(account_label)
+        cross_user = _first_account(accounts, tenant_id=tenant_id, excluded_label=account_label, same_tenant=True)
+        cross_tenant = _first_account(accounts, tenant_id=tenant_id, excluded_label=account_label, same_tenant=False)
+        projection = item.get("context_snapshot_public_projection")
+        if not isinstance(projection, dict):
+            projection = {}
+            item["context_snapshot_public_projection"] = projection
+        if owner is None or not run_id:
+            projection["scope_probe"] = {
+                "same_run_snapshot": False,
+                "cross_scope_leak": True,
+                "long_term_cross_session_memory_read": projection.get("long_term_memory_read") is True,
+                "owner_status": 0,
+                "cross_user_statuses": [],
+                "cross_tenant_statuses": [],
+            }
+            continue
+
+        owner_headers = auth_headers(
+            api_url,
+            owner,
+            auth_mode=auth_mode,
+            trusted_header_role=trusted_header_role,
+        )
+        owner_status, owner_payload = json_request(
+            "GET",
+            f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/context/snapshots",
+            headers=owner_headers,
+            timeout=30,
+        )
+        owner_snapshots = owner_payload.get("context_snapshots") if isinstance(owner_payload, dict) else []
+        same_run_snapshot = owner_status == 200 and isinstance(owner_snapshots, list) and bool(owner_snapshots)
+
+        cross_user_statuses: list[int] = []
+        cross_tenant_statuses: list[int] = []
+        for probe_account, target in ((cross_user, cross_user_statuses), (cross_tenant, cross_tenant_statuses)):
+            if probe_account is None:
+                continue
+            headers = auth_headers(
+                api_url,
+                probe_account,
+                auth_mode=auth_mode,
+                trusted_header_role=trusted_header_role,
+            )
+            status, _payload = json_request(
+                "GET",
+                f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/context/snapshots",
+                headers=headers,
+                timeout=30,
+            )
+            target.append(status)
+
+        projection["scope_probe"] = {
+            "same_run_snapshot": same_run_snapshot,
+            "cross_scope_leak": any(status not in {403, 404} for status in cross_user_statuses + cross_tenant_statuses),
+            "long_term_cross_session_memory_read": projection.get("long_term_memory_read") is True,
+            "owner_status": owner_status,
+            "cross_user_statuses": cross_user_statuses,
+            "cross_tenant_statuses": cross_tenant_statuses,
+        }
+
+
+def attach_sandbox_lease_probe_results(
+    api_url: str,
+    results: list[dict[str, Any]],
+    accounts: list[Account],
+    *,
+    auth_mode: str = "login",
+    trusted_header_role: str = "user",
+) -> None:
+    by_label = _account_by_label(accounts)
+    for item in results:
+        account = by_label.get(str(item.get("account") or ""))
+        run_id = str(item.get("run_id") or "")
+        if account is None or not run_id:
+            item["sandbox_lease_probe"] = {
+                "create_status": 0,
+                "release_status": 0,
+                "lease_id": "",
+                "source": "sandbox_leases",
+            }
+            continue
+        headers = auth_headers(
+            api_url,
+            account,
+            auth_mode=auth_mode,
+            trusted_header_role=trusted_header_role,
+        )
+        create_status, create_payload = json_request(
+            "POST",
+            f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/sandbox/leases",
+            {
+                "sandbox_mode": "ephemeral",
+                "provider": "fake",
+                "ttl_seconds": 600,
+                "resource_limits": {},
+                "lease_payload": {"probe": "foundation_runtime"},
+            },
+            headers=headers,
+            timeout=30,
+        )
+        lease_payload = create_payload.get("sandbox_lease") if isinstance(create_payload, dict) else {}
+        lease_id = str(lease_payload.get("lease_id") or "") if isinstance(lease_payload, dict) else ""
+        release_status = 0
+        if create_status == 200 and lease_id:
+            release_status, _release_payload = json_request(
+                "POST",
+                f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/sandbox/leases/{lease_id}/release",
+                {"reason": "foundation_runtime_probe_complete"},
+                headers=headers,
+                timeout=30,
+            )
+            item["sandbox_lease_id"] = lease_id
+        item["sandbox_lease_probe"] = {
+            "create_status": create_status,
+            "release_status": release_status,
+            "lease_id": lease_id,
+            "source": "sandbox_leases",
+        }
 
 
 def playback_private_payload_leak_count(payload: Any) -> int:
@@ -1458,7 +1600,9 @@ def attach_run_detail_probe_results(
         if status == 200 and isinstance(run_payload, dict):
             item["workspace_fingerprint"] = _workspace_fingerprint(run_payload, tenant_id=account.tenant_id, session_id=session_id, run_id=run_id)
             item["context_snapshot_id"] = _context_snapshot_id(run_payload)
-            item["sandbox_lease_id"] = _sandbox_lease_id(run_payload)
+            detail_sandbox_lease_id = _sandbox_lease_id(run_payload)
+            if detail_sandbox_lease_id:
+                item["sandbox_lease_id"] = detail_sandbox_lease_id
             item["tool_permission"] = _tool_permission_summary(run_payload)
             item["skill_snapshot"] = _skill_snapshot_summary(run_payload)
         playback_status, playback_payload = json_request("GET", f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/playback", headers=headers, timeout=30)
@@ -1665,17 +1809,21 @@ def _merged_nested_lists(results: list[dict[str, Any]], key: str, nested_key: st
 
 def _foundation_runtime_queue_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     queue_positions: list[int] = []
+    submitted_queue_positions: list[int] = []
     probe_sources: set[str] = set()
     admission_limit_violations = 0
     cross_tenant_queue_leaks = 0
     stale_queue_entries = 0
-    for item in results:
+    for ordinal, item in enumerate(results, start=1):
         probe = item.get("queue_probe")
         if not isinstance(probe, dict):
             continue
-        position = probe.get("queue_position")
+        position = probe.get("queue_admission_ordinal", ordinal)
         if type(position) is int and position > 0:
             queue_positions.append(position)
+        submitted_position = probe.get("submitted_queue_position", probe.get("queue_position"))
+        if type(submitted_position) is int and submitted_position > 0:
+            submitted_queue_positions.append(submitted_position)
         source = str(probe.get("source") or "").strip()
         if source in QUEUE_PROBE_SOURCES:
             probe_sources.add(source)
@@ -1702,6 +1850,7 @@ def _foundation_runtime_queue_summary(results: list[dict[str, Any]]) -> dict[str
         "stale_queue_entries": stale_queue_entries,
         "queue_position_sample_count": len(queue_positions),
         "queue_position_duplicate_count": duplicate_count,
+        "submitted_queue_position_sample_count": len(submitted_queue_positions),
         "queue_probe_source": queue_probe_source,
     }
 
@@ -1987,7 +2136,21 @@ def main() -> int:
             auth_mode=args.auth_mode,
             trusted_header_role="user",
         )
+        attach_context_scope_probe_results(
+            args.api_url,
+            results,
+            accounts,
+            auth_mode=args.auth_mode,
+            trusted_header_role="user",
+        )
         attach_tool_permission_probe_results(
+            args.api_url,
+            results,
+            accounts,
+            auth_mode=args.auth_mode,
+            trusted_header_role="user",
+        )
+        attach_sandbox_lease_probe_results(
             args.api_url,
             results,
             accounts,
