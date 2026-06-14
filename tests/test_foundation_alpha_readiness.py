@@ -2620,6 +2620,77 @@ def test_foundation_runtime_concurrency_discovery_skips_blocked_direct_matches(
     assert discovered == verified_path
 
 
+def test_foundation_alpha_readiness_prefers_source_covering_verified_concurrency_over_blocked_runtime_subject(
+    monkeypatch, tmp_path
+):
+    runtime_commit = ACTIVE_RUNTIME_SUBJECT_SHA
+    verified_commit = "5d3d7e2207d625817d193898c22d29d2f487fa4b"
+    source_commit = "f91cd6bbcb1ae64c9a87f0bc5801347367326d78"
+    evidence_base = tmp_path / "foundation-alpha-poc"
+    dedicated_base = tmp_path / "foundation-runtime-concurrency"
+    blocked_dir = dedicated_base / "blocked-runtime-subject"
+    verified_dir = dedicated_base / "verified-current-pr40"
+    image = "ai-platform:dff48fb-foundation-runtime-concurrency-pr40"
+    smoke_path, auth_path = _write_release_evidence_pair(evidence_base, runtime_commit, image=image)
+    blocked_dir.mkdir(parents=True)
+    verified_dir.mkdir(parents=True)
+    blocked_payload = _minimal_foundation_runtime_concurrency_payload(runtime_commit)
+    blocked_payload["checks"]["queue_admission"].pop("queue_probe_sample_count")
+    blocked_path = blocked_dir / "blocked-dff48fb-foundation-runtime-concurrency.json"
+    blocked_path.write_text(json.dumps(blocked_payload), encoding="utf-8")
+    verified_path = verified_dir / "verified-5d3d7e2-foundation-runtime-concurrency.json"
+    verified_path.write_text(
+        json.dumps(_minimal_foundation_runtime_concurrency_payload(verified_commit)),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_base)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT",
+        dedicated_base,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: source_commit,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_changes_since",
+        lambda _: ["app/foundation_runtime_concurrency.py"],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_changes_between",
+        lambda base, target: [] if base == verified_commit and target == source_commit else ["app/worker.py"],
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    foundation_runtime_concurrency = readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"][
+        "foundation_runtime_concurrency"
+    ]
+    assert foundation_runtime_concurrency["status"] == "verified_foundation_runtime_concurrency"
+    assert foundation_runtime_concurrency["verified"] is True
+    assert (
+        readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"][
+            "foundation_runtime_concurrency_evidence_current_subject"
+        ]
+        is True
+    )
+    assert readiness["evidence_entries"]["foundation_runtime_concurrency"] == (
+        foundation_alpha_readiness._path_for_output(verified_path)
+    )
+    assert "foundation_runtime_concurrency_evidence" not in readiness["decision"]["stage_acceptance_blockers"]
+    assert readiness["foundation_alpha_stage_status"] == "runtime_rollout_required"
+
+
 def test_foundation_alpha_readiness_prefers_current_source_foundation_runtime_concurrency_evidence(
     monkeypatch, tmp_path
 ):

@@ -711,6 +711,28 @@ def _discover_latest_verified_foundation_runtime_concurrency_evidence() -> Path 
     return None
 
 
+def _discover_verified_foundation_runtime_concurrency_evidence_for_source(
+    source_tree_commit: str,
+) -> Path | None:
+    entries: list[tuple[Path, dict[str, Any]]] = []
+    for path, payload in _iter_foundation_runtime_concurrency_evidence():
+        readiness = build_foundation_runtime_concurrency_readiness(payload)
+        if readiness.get("verified") is not True:
+            continue
+        if not _foundation_runtime_concurrency_evidence_matches_active_subject(
+            payload,
+            source_tree_commit=source_tree_commit,
+            runtime_subject_commit="",
+        ):
+            continue
+        entries.append((path, payload))
+
+    if entries:
+        path, _ = max(entries, key=lambda item: _foundation_runtime_concurrency_sort_key(item[0], item[1]))
+        return path
+    return None
+
+
 def _discover_latest_foundation_runtime_concurrency_evidence() -> Path | None:
     entries = _iter_foundation_runtime_concurrency_evidence()
     if entries:
@@ -1955,6 +1977,12 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     if source_tree_commit != "unknown":
         foundation_runtime_concurrency_evidence_path = _discover_foundation_runtime_concurrency_evidence(
             source_tree_commit
+        )
+    if foundation_runtime_concurrency_evidence_path is None:
+        foundation_runtime_concurrency_evidence_path = (
+            _discover_verified_foundation_runtime_concurrency_evidence_for_source(
+                source_tree_commit
+            )
         )
     if foundation_runtime_concurrency_evidence_path is None:
         foundation_runtime_concurrency_evidence_path = _discover_foundation_runtime_concurrency_evidence(
