@@ -303,6 +303,7 @@ def test_context_snapshot_response_preserves_stored_safe_summary_metadata(monkey
                     },
                     "execution_tier": "document_worker",
                     "latest_artifact_version": "v7",
+                    "context_pack_version": "v9",
                     "context_pack_generated_at": "2026-06-12T01:23:45Z",
                 },
                 "created_at": None,
@@ -327,6 +328,7 @@ def test_context_snapshot_response_preserves_stored_safe_summary_metadata(monkey
     }
     assert payload["execution_tier"] == "document_worker"
     assert payload["latest_artifact_version"] == "v7"
+    assert payload["context_pack_version"] == "v9"
     assert payload["context_pack_generated_at"] == "2026-06-12T01:23:45Z"
     serialized = response.text.lower()
     assert "raw_storage_key" not in serialized

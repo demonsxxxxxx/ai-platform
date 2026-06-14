@@ -158,6 +158,20 @@ _EVIDENCE_MARKERS = [
             'assert [audit["action"] for audit in audit_calls] == ["worker.memory.retention.cleanup"] * 2',
         ],
     },
+    {
+        "name": "context_snapshot_public_provenance_projection_source_tests",
+        "path": "tests/test_context_routes.py",
+        "markers": [
+            "test_create_context_snapshot_records_snapshot_and_event",
+            "test_context_snapshot_response_omits_raw_material_ids_from_public_projection",
+            "test_context_snapshot_response_preserves_stored_safe_summary_metadata",
+            "test_context_snapshot_response_preserves_safe_top_level_legacy_source",
+            'body["payload"]["execution_tier"] == "sdk_only_writing"',
+            '"context_pack_generated_at"',
+            '"included_artifact_ids" not in body',
+            '"raw_storage_key" not in serialized',
+        ],
+    },
 ]
 
 
@@ -192,6 +206,7 @@ def build_memory_erasure_readiness(repo_root: Path | None = None) -> dict[str, A
     open_gaps = [
         "office_context_pack_persistence_and_versioning",
         "executor_context_pack_211_acceptance",
+        "office_execution_tier_router",
         "document_centric_followup_state",
         "sandbox_cold_start_latency_split",
         "frontend_context_provenance_acceptance",
@@ -214,6 +229,7 @@ def build_memory_erasure_readiness(repo_root: Path | None = None) -> dict[str, A
             "memory_redaction_policy_admin_preview_and_audit",
             "office_context_pack_architecture_readiness_snapshot",
             "executor_context_pack_prompt_injection_source_tests",
+            "user_visible_context_provenance_api_projection_source_tests",
         ],
         "evidence_markers": evidence,
         "missing_evidence_markers": missing,

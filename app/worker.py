@@ -51,6 +51,14 @@ class _WorkerTerminalAfterTransaction:
     reconciled_parent: dict[str, Any] | None
 
 
+@dataclass(frozen=True)
+class _WorkerRuntimeSandboxLease:
+    lease_id: str
+    tenant_id: str
+    user_id: str
+    run_id: str
+
+
 _PARENT_ROLLUP_RETRY_ATTEMPTS = 3
 _PARENT_ROLLUP_RETRY_DELAY_SECONDS = 0.05
 
@@ -668,6 +676,75 @@ def _payload_with_locked_run_input(payload: QueueRunPayload, locked_run: object)
     return payload.model_copy(update=updates)
 
 
+def _locked_run_trace_id(payload: QueueRunPayload, locked_run: object) -> str:
+    if isinstance(locked_run, dict) and locked_run.get("trace_id"):
+        return str(locked_run["trace_id"])
+    return standard_trace_id(payload.run_id)
+
+
+def _runtime_sandbox_workspace_payload() -> dict[str, str]:
+    return {
+        "workspace": "/workspace",
+        "inputs": "/workspace/inputs",
+    }
+
+
+async def _create_worker_runtime_sandbox_lease(
+    conn,
+    *,
+    payload: QueueRunPayload,
+    run_identity: dict[str, str],
+    trace_id: str,
+    worker_id: str | None,
+) -> _WorkerRuntimeSandboxLease:
+    lease_payload = {
+        "source": "worker_run_lifecycle",
+        "executor_type": payload.executor_type,
+    }
+    if worker_id:
+        lease_payload["worker_id"] = worker_id
+    row = await repositories.create_sandbox_lease(
+        conn,
+        tenant_id=run_identity["tenant_id"],
+        workspace_id=run_identity["workspace_id"],
+        user_id=run_identity["user_id"],
+        session_id=run_identity["session_id"],
+        run_id=run_identity["run_id"],
+        trace_id=trace_id,
+        sandbox_mode="ephemeral",
+        provider="fake",
+        browser_enabled=False,
+        ttl_seconds=1800,
+        resource_limits_json={},
+        user_visible_payload_json=_runtime_sandbox_workspace_payload(),
+        lease_payload_json=lease_payload,
+    )
+    return _WorkerRuntimeSandboxLease(
+        lease_id=str(row["id"]),
+        tenant_id=run_identity["tenant_id"],
+        user_id=run_identity["user_id"],
+        run_id=run_identity["run_id"],
+    )
+
+
+async def _release_worker_runtime_sandbox_lease(
+    conn,
+    lease: _WorkerRuntimeSandboxLease | None,
+    *,
+    reason: str,
+) -> None:
+    if lease is None:
+        return
+    await repositories.release_sandbox_lease(
+        conn,
+        tenant_id=lease.tenant_id,
+        user_id=lease.user_id,
+        run_id=lease.run_id,
+        lease_id=lease.lease_id,
+        reason=reason,
+    )
+
+
 def _is_top_level_multi_agent_parent_for_worker_dispatch(payload: QueueRunPayload) -> bool:
     if not bool(get_settings().multi_agent_dispatch_worker_enabled):
         return False
@@ -738,6 +815,7 @@ def _context_snapshot_ref_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "used_context_summary": public_payload["used_context_summary"],
         "latest_artifact_version": public_payload["latest_artifact_version"],
         "execution_tier": public_payload["execution_tier"],
+        "context_pack_version": public_payload["context_pack_version"],
         "context_pack_generated_at": public_payload["context_pack_generated_at"],
     }
     memory_policy = _safe_context_memory_policy(payload.get("memory_policy"))
@@ -811,6 +889,8 @@ async def process_run_payload(
     adapter_registry = registry if registry is not None else AdapterRegistry()
     adapter = None
     run_identity = _payload_identity(payload)
+    runtime_sandbox_lease: _WorkerRuntimeSandboxLease | None = None
+    runtime_sandbox_lease_released = False
 
     terminal_after_transaction: _WorkerTerminalAfterTransaction | None = None
     try:
@@ -893,6 +973,7 @@ async def process_run_payload(
                 )
                 return terminal_after_transaction.outcome
             payload = _payload_with_locked_run_input(payload, locked)
+            trace_id = _locked_run_trace_id(payload, locked)
             await append_user_event(
                 conn,
                 tenant_id=run_identity["tenant_id"],
@@ -1240,6 +1321,13 @@ async def process_run_payload(
                 )
                 return terminal_after_transaction.outcome
             context_ref = await _ensure_worker_context_snapshot(conn, payload, trace_id=trace_id, run_identity=run_identity)
+            runtime_sandbox_lease = await _create_worker_runtime_sandbox_lease(
+                conn,
+                payload=payload,
+                run_identity=run_identity,
+                trace_id=trace_id,
+                worker_id=worker_id,
+            )
     finally:
         if terminal_after_transaction is not None:
             await _finalize_multi_agent_parent_after_child_commit(
@@ -1297,6 +1385,22 @@ async def process_run_payload(
                 run_id=run_payload.run_id,
             ):
                 raise WorkerRunCancelled
+
+    async def release_runtime_sandbox_lease(conn, *, reason: str) -> None:
+        nonlocal runtime_sandbox_lease_released
+        if runtime_sandbox_lease is None or runtime_sandbox_lease_released:
+            return
+        await _release_worker_runtime_sandbox_lease(conn, runtime_sandbox_lease, reason=reason)
+        runtime_sandbox_lease_released = True
+
+    async def cleanup_runtime_sandbox_lease_after_interruption() -> None:
+        if runtime_sandbox_lease is None or runtime_sandbox_lease_released:
+            return
+        try:
+            async with transaction() as conn:
+                await release_runtime_sandbox_lease(conn, reason="run_terminal_interrupted")
+        except Exception:
+            return
 
     try:
         if payload.executor_type == "ragflow":
@@ -1369,6 +1473,7 @@ async def process_run_payload(
                 message="任务已取消",
                 payload={"severity": "warning"},
             )
+            await release_runtime_sandbox_lease(conn, reason="run_cancelled")
         await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
         return WorkerOutcome("cancelled", payload.run_id)
     except Exception as exc:
@@ -1400,6 +1505,7 @@ async def process_run_payload(
                 message="Executor failed",
                 payload={"error": str(exc), "executor_type": payload.executor_type, "visible_to_user": False},
             )
+            await release_runtime_sandbox_lease(conn, reason="run_failed")
         await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
         return WorkerOutcome("failed", payload.run_id, "executor_failure", str(exc))
 
@@ -1456,176 +1562,181 @@ async def process_run_payload(
     if skill_snapshot:
         result_payload["skills"] = skill_snapshot
     reconciled_parent = None
-    async with transaction() as conn:
-        cancel_requested = await repositories.is_cancel_requested(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
-        if result.status == "succeeded" and cancel_requested:
-            result_payload = {
-                **result_payload,
-                "cancel_status": "cancel_requested_but_completed",
-            }
-        for artifact in artifact_records:
-            manifest_json = artifact_manifest_contract(
-                artifact_type=artifact["artifact_type"],
-                manifest=_sanitize_artifact_manifest(artifact["manifest_json"]),
-            )
-            lineage = artifact_lineage_contract(manifest_json, source_run_id=payload.run_id)
-            await repositories.create_artifact(
-                conn,
-                artifact_id=artifact["id"],
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
-                artifact_type=artifact["artifact_type"],
-                label=artifact["label"],
-                content_type=artifact["content_type"],
-                storage_key=artifact["storage_key"],
-                size_bytes=artifact["size_bytes"],
-                trace_id=trace_id,
-                manifest_json=manifest_json,
-            )
-            await append_user_event(
-                conn,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
-                event_type="artifact_created",
-                stage="artifact",
-                message=f"Artifact created: {artifact['label']}",
-                payload={
-                    "artifact_id": artifact["id"],
-                    "artifact_type": artifact["artifact_type"],
-                    "download_url": artifact["download_url"],
-                    "lineage": lineage,
-                },
-            )
-        for item in _skill_manifests_for_persistence(result, payload):
-            skill_id = str(item.get("skill_id") or "").strip()
-            if not skill_id:
-                continue
-            await repositories.upsert_run_skill_snapshot(
-                conn,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
-                skill_id=skill_id,
-                skill_version=str(item.get("version") or item.get("skill_version") or ""),
-                content_hash=str(item.get("content_hash") or item.get("version") or ""),
-                source_json=item.get("source") if isinstance(item.get("source"), dict) else {},
-                dependency_ids=_dependency_ids_from_manifest(item),
-                allowed=bool(item.get("allowed")),
-                staged=bool(item.get("staged")),
-                used=bool(item.get("used")),
-                used_skills_source=str(item.get("used_skills_source") or "").strip(),
-                inferred_used=bool(item.get("inferred_used")),
-            )
-        if result.status == "succeeded":
-            await _attach_multi_agent_result_summary(
-                conn,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
-                result_capabilities=result.capabilities,
-                result_payload=result_payload,
-            )
-            await repositories.append_message(
-                conn,
-                tenant_id=payload.tenant_id,
-                session_id=payload.session_id,
-                run_id=payload.run_id,
-                role="assistant",
-                content=str(result_payload.get("message") or ""),
-                metadata_json={
-                    "artifact_count": len(result.artifacts),
-                    "executor_type": result.executor_type,
-                    "adapter_version": result.adapter_version,
-                    "skills": skill_snapshot,
-                },
-            )
-            await append_user_event(
-                conn,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
-                event_type="assistant_message_created",
-                stage="message",
-                message="Assistant response is ready",
-                payload={"artifact_count": len(result.artifacts), "skills": skill_snapshot},
-            )
-            if cancel_requested:
+    try:
+        async with transaction() as conn:
+            cancel_requested = await repositories.is_cancel_requested(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
+            if result.status == "succeeded" and cancel_requested:
+                result_payload = {
+                    **result_payload,
+                    "cancel_status": "cancel_requested_but_completed",
+                }
+            for artifact in artifact_records:
+                manifest_json = artifact_manifest_contract(
+                    artifact_type=artifact["artifact_type"],
+                    manifest=_sanitize_artifact_manifest(artifact["manifest_json"]),
+                )
+                lineage = artifact_lineage_contract(manifest_json, source_run_id=payload.run_id)
+                await repositories.create_artifact(
+                    conn,
+                    artifact_id=artifact["id"],
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                    artifact_type=artifact["artifact_type"],
+                    label=artifact["label"],
+                    content_type=artifact["content_type"],
+                    storage_key=artifact["storage_key"],
+                    size_bytes=artifact["size_bytes"],
+                    trace_id=trace_id,
+                    manifest_json=manifest_json,
+                )
                 await append_user_event(
                     conn,
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
-                    event_type="cancel_requested_but_completed",
-                    stage="control",
-                    message="取消请求已记录，但任务已完成",
-                    payload={"severity": "warning"},
+                    event_type="artifact_created",
+                    stage="artifact",
+                    message=f"Artifact created: {artifact['label']}",
+                    payload={
+                        "artifact_id": artifact["id"],
+                        "artifact_type": artifact["artifact_type"],
+                        "download_url": artifact["download_url"],
+                        "lineage": lineage,
+                    },
                 )
-            await repositories.complete_run(
-                conn,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
-                result_json=result_payload,
-            )
-            reconciled_parent = await _reconcile_multi_agent_child_terminal_state(
-                conn,
-                payload=payload,
-                child_status="succeeded",
-                result_json=result_payload,
-            )
-            await append_user_event(
-                conn,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
-                event_type="run_succeeded",
-                stage="worker",
-                message="Run succeeded",
-                payload={"artifact_count": len(result.artifacts), "skills": skill_snapshot},
-                **terminal_event_kwargs,
-            )
-            await repositories.append_event(
-                conn,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
-                event_type="status",
-                stage="worker",
-                message="Run succeeded",
-                payload={"artifact_count": len(result.artifacts), "visible_to_user": False},
-            )
-            terminal_outcome = WorkerOutcome("succeeded", payload.run_id)
-        else:
-            reported_error_code = str(result.result.get("error_code") or "executor_reported_failure")
-            reported_error_message = str(result.result.get("message") or "Executor reported failure")
-            await _attach_multi_agent_result_summary(
-                conn,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
-                result_capabilities=result.capabilities,
-                result_payload=result_payload,
-            )
-            reconciled_parent = await _fail_run_and_reconcile(
-                conn,
-                payload=payload,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
-                error_code=reported_error_code,
-                error_message=reported_error_message,
-                result_json=result_payload,
-            )
-            await append_user_event(
-                conn,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
-                event_type="run_failed",
-                stage="worker",
-                message="Run failed",
-                payload={"artifact_count": len(result.artifacts), "severity": "error"},
-                **terminal_event_kwargs,
-            )
-            await repositories.append_event(
-                conn,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
-                event_type="error",
-                stage="worker",
-                message="Run failed",
-                payload={"artifact_count": len(result.artifacts), "visible_to_user": False},
-            )
-            terminal_outcome = WorkerOutcome("failed", payload.run_id, reported_error_code, reported_error_message)
+            for item in _skill_manifests_for_persistence(result, payload):
+                skill_id = str(item.get("skill_id") or "").strip()
+                if not skill_id:
+                    continue
+                await repositories.upsert_run_skill_snapshot(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                    skill_id=skill_id,
+                    skill_version=str(item.get("version") or item.get("skill_version") or ""),
+                    content_hash=str(item.get("content_hash") or item.get("version") or ""),
+                    source_json=item.get("source") if isinstance(item.get("source"), dict) else {},
+                    dependency_ids=_dependency_ids_from_manifest(item),
+                    allowed=bool(item.get("allowed")),
+                    staged=bool(item.get("staged")),
+                    used=bool(item.get("used")),
+                    used_skills_source=str(item.get("used_skills_source") or "").strip(),
+                    inferred_used=bool(item.get("inferred_used")),
+                )
+            if result.status == "succeeded":
+                await _attach_multi_agent_result_summary(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                    result_capabilities=result.capabilities,
+                    result_payload=result_payload,
+                )
+                await repositories.append_message(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    session_id=payload.session_id,
+                    run_id=payload.run_id,
+                    role="assistant",
+                    content=str(result_payload.get("message") or ""),
+                    metadata_json={
+                        "artifact_count": len(result.artifacts),
+                        "executor_type": result.executor_type,
+                        "adapter_version": result.adapter_version,
+                        "skills": skill_snapshot,
+                    },
+                )
+                await append_user_event(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                    event_type="assistant_message_created",
+                    stage="message",
+                    message="Assistant response is ready",
+                    payload={"artifact_count": len(result.artifacts), "skills": skill_snapshot},
+                )
+                if cancel_requested:
+                    await append_user_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type="cancel_requested_but_completed",
+                        stage="control",
+                        message="取消请求已记录，但任务已完成",
+                        payload={"severity": "warning"},
+                    )
+                await repositories.complete_run(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                    result_json=result_payload,
+                )
+                reconciled_parent = await _reconcile_multi_agent_child_terminal_state(
+                    conn,
+                    payload=payload,
+                    child_status="succeeded",
+                    result_json=result_payload,
+                )
+                await append_user_event(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                    event_type="run_succeeded",
+                    stage="worker",
+                    message="Run succeeded",
+                    payload={"artifact_count": len(result.artifacts), "skills": skill_snapshot},
+                    **terminal_event_kwargs,
+                )
+                await repositories.append_event(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                    event_type="status",
+                    stage="worker",
+                    message="Run succeeded",
+                    payload={"artifact_count": len(result.artifacts), "visible_to_user": False},
+                )
+                await release_runtime_sandbox_lease(conn, reason="run_succeeded")
+                terminal_outcome = WorkerOutcome("succeeded", payload.run_id)
+            else:
+                reported_error_code = str(result.result.get("error_code") or "executor_reported_failure")
+                reported_error_message = str(result.result.get("message") or "Executor reported failure")
+                await _attach_multi_agent_result_summary(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                    result_capabilities=result.capabilities,
+                    result_payload=result_payload,
+                )
+                reconciled_parent = await _fail_run_and_reconcile(
+                    conn,
+                    payload=payload,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                    error_code=reported_error_code,
+                    error_message=reported_error_message,
+                    result_json=result_payload,
+                )
+                await append_user_event(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                    event_type="run_failed",
+                    stage="worker",
+                    message="Run failed",
+                    payload={"artifact_count": len(result.artifacts), "severity": "error"},
+                    **terminal_event_kwargs,
+                )
+                await repositories.append_event(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                    event_type="error",
+                    stage="worker",
+                    message="Run failed",
+                    payload={"artifact_count": len(result.artifacts), "visible_to_user": False},
+                )
+                await release_runtime_sandbox_lease(conn, reason="run_failed")
+                terminal_outcome = WorkerOutcome("failed", payload.run_id, reported_error_code, reported_error_message)
+    finally:
+        await cleanup_runtime_sandbox_lease_after_interruption()
     await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
     return terminal_outcome
