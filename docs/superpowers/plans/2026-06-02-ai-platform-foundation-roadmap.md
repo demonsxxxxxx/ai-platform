@@ -83,14 +83,17 @@ claims require pinned snapshot binding samples. The 2026-06-14 `dff48fb` 211
 rerun is retained as reviewed historical evidence, but current validation
 blocks it because it lacks measured concurrency overlap, `queue_probe_sample_count`,
 `runtime_run_detail` sandbox lease provenance, and negative tool-permission
-reuse probes. The 2026-06-14 `5d3d7e2` PR #40 rerun is the current accepted
-Foundation Runtime concurrency evidence for the tightened verifier: it records
-12 concurrent cases, 2 tenants, 4 users, run creation/execution/cancel/retry
-coverage, measured client timestamp overlap, queue probe samples,
-runtime-run-detail sandbox lease provenance, public context projections, pinned
-skill snapshot bindings, and negative tool-permission reuse denial probes. This
-closes only the PR #40 Foundation Runtime concurrency evidence gap for the
-`5d3d7e2` runtime-relevant source. It does not open ordinary-user multi-agent,
+reuse probes. The 2026-06-14 `5d3d7e2` PR #40 rerun is retained as superseded
+reviewed evidence after the current-head refresh. The 2026-06-14 `79495bf`
+PR #40 rerun is the current accepted Foundation Runtime concurrency evidence
+for the tightened verifier: it records coherent 211 source/runtime labels and
+container markers, 12 concurrent cases, 2 tenants, 4 users, run
+creation/execution/cancel/retry coverage, measured client timestamp overlap,
+queue probe samples, runtime-run-detail sandbox lease provenance, public
+context projections, pinned skill snapshot bindings, and negative
+tool-permission reuse denial probes. This closes only the PR #40 Foundation
+Runtime concurrency evidence gap for the `79495bf` runtime-relevant source. It
+does not open ordinary-user multi-agent,
 does not claim Docker sandbox hardening, does not raise production concurrency
 defaults, does not permit department rollout, and does not replace the broader
 Foundation Alpha POC smoke/auth/governance evidence set.

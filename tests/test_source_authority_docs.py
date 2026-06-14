@@ -769,6 +769,7 @@ def test_gate_status_records_foundation_runtime_concurrency_context_pack_blocker
         assert "10+ concurrent" in text
         assert "dff48fb" in text
         assert "5d3d7e2" in text
+        assert "79495bf" in text
         assert "negative decision-reuse probes" in text
         assert "current accepted Foundation Runtime concurrency evidence" in compact_text
         assert "Foundation Runtime" in text
@@ -781,6 +782,8 @@ def test_gate_status_records_foundation_runtime_concurrency_context_pack_blocker
     assert "2026-06-14-211-foundation-alpha-poc-dff48fb-foundation-runtime-concurrency.json" in release_evidence_text
     assert "5d3d7e2207d625817d193898c22d29d2f487fa4b" in release_evidence_text
     assert "2026-06-14-211-foundation-alpha-poc-5d3d7e2-foundation-runtime-concurrency.json" in release_evidence_text
+    assert "79495bf4954017351db6d19494a16099fe2ee0bf" in release_evidence_text
+    assert "2026-06-14-211-foundation-alpha-poc-79495bf-foundation-runtime-concurrency.json" in release_evidence_text
     assert "verified_foundation_runtime_concurrency" not in release_evidence_text
     assert "negative tool-permission reuse probes" in release_evidence_text
     assert "queue_probe_sample_count" in release_evidence_text
