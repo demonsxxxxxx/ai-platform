@@ -65,6 +65,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "user_tool_permission_request_decision" in domains["tool_permission"]["implemented"]
     assert "audit_visible_legacy_frontend_route_policy_mapping" in domains["tool_permission"]["implemented"]
     assert "tool_allow_deny_ask_policy_taxonomy_evidence" in domains["tool_permission"]["implemented"]
+    assert "exact_tool_permission_decision_lookup_source_tests" in domains["tool_permission"]["implemented"]
     assert "admin_policy_change_history_projection" in domains["tool_permission"]["implemented"]
     assert "admin_policy_bulk_review_dashboard_contract" in domains["tool_permission"]["implemented"]
     assert "legacy_frontend_route_policy_enforcement_or_ai_platform_remap" in domains["tool_permission"]["gaps"]
@@ -85,6 +86,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
         "tenant_policy_scope": "same_tenant_registered_tools_only",
     }
     assert "admin_policy_change_history_projection" in tool_evidence["implemented_controls"]
+    assert "exact_tool_permission_decision_lookup_source_tests" in tool_evidence["implemented_controls"]
     assert "platform_registered_mcp_only_policy" in tool_evidence["implemented_controls"]
     assert "ordinary_user_custom_mcp_disabled" in tool_evidence["implemented_controls"]
     assert "admin_policy_bulk_review_dashboard_contract" in tool_evidence["implemented_controls"]

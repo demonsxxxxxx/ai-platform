@@ -892,6 +892,12 @@ projections.
 - allow_once 消费/expiry 与 allow_for_run fingerprint 语义。
 - permission decision lookup 必须匹配 exact tool_call_id 或稳定 request fingerprint，不能只取同 run/tool/action 的最新决策。
 
+当前 source-level evidence 已覆盖 worker MCP 与 Claude SDK tool hook 的 exact
+decision lookup：`allow_once` / `deny` 绑定 exact `tool_call_id`，
+`allow_for_run` 绑定稳定 request fingerprint（`input_sha256` 或
+`command_sha256`）。这不替代 211 runtime acceptance、普通用户确认卡视觉验收或
+legacy frontend route remap。
+
 后续硬化：
 
 - tool schema validation。

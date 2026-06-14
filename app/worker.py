@@ -1084,7 +1084,7 @@ async def process_run_payload(
                     )
                     tool_gate = evaluate_tool_policy(tool=tool)
                     if not tool_gate.allowed and tool_gate.reason == "tool_permission_required":
-                        permission_decision = await repositories.get_latest_tool_permission_decision(
+                        permission_decision = await repositories.get_exact_tool_permission_decision(
                             conn,
                             tenant_id=payload.tenant_id,
                             user_id=payload.user_id,

@@ -86,6 +86,7 @@ def build_tool_policy_readiness() -> dict[str, Any]:
         "ordinary_user_custom_mcp_disabled",
         "admin_policy_change_history_projection",
         "admin_policy_bulk_review_dashboard_contract",
+        "exact_tool_permission_decision_lookup_source_tests",
     ]
     open_gaps = [
         "legacy_frontend_route_policy_enforcement_or_ai_platform_remap",
@@ -128,8 +129,8 @@ def build_tool_policy_readiness() -> dict[str, Any]:
             }
         },
         "evidence_policy": (
-            "taxonomy and change-history evidence document policy behavior only; route enforcement, admin UX acceptance, "
-            "and 211 smoke are still required before G6 closure"
+            "taxonomy, change-history, and exact-decision lookup source tests document policy behavior only; "
+            "legacy route enforcement, admin UX acceptance, and 211 smoke are still required before G6 closure"
         ),
     }
 

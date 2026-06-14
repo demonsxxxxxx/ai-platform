@@ -2107,7 +2107,7 @@ async def test_claude_worker_sdk_permission_hook_creates_request_event_and_audit
             used_skills_source="",
         )
 
-    async def get_latest_tool_permission_decision(conn, **kwargs):
+    async def get_exact_tool_permission_decision(conn, **kwargs):
         calls.append(("decision_lookup", kwargs))
         return None
 
@@ -2145,8 +2145,8 @@ async def test_claude_worker_sdk_permission_hook_creates_request_event_and_audit
     monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_latest_tool_permission_decision",
-        get_latest_tool_permission_decision,
+        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
         raising=False,
     )
     monkeypatch.setattr(
@@ -2243,7 +2243,7 @@ async def test_claude_worker_sdk_permission_hook_allows_existing_decision(monkey
             used_skills_source="",
         )
 
-    async def get_latest_tool_permission_decision(conn, **kwargs):
+    async def get_exact_tool_permission_decision(conn, **kwargs):
         calls.append(("decision_lookup", kwargs))
         command_hash = hashlib.sha256("python write_business_system.py --id 456".encode("utf-8")).hexdigest()
         return {
@@ -2266,8 +2266,8 @@ async def test_claude_worker_sdk_permission_hook_allows_existing_decision(monkey
     monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_latest_tool_permission_decision",
-        get_latest_tool_permission_decision,
+        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
         raising=False,
     )
     monkeypatch.setattr(
@@ -2300,6 +2300,100 @@ async def test_claude_worker_sdk_permission_hook_allows_existing_decision(monkey
     audit_call = next(item[1] for item in calls if item[0] == "audit")
     assert audit_call["action"] == "claude_sdk_tool_policy_allowed"
     assert audit_call["payload_json"]["permission_request_id"] == "tpr-allow"
+
+
+@pytest.mark.asyncio
+async def test_claude_worker_sdk_permission_hook_uses_exact_decision_lookup(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    calls = []
+
+    async def fake_run_claude_agent_sdk(
+        *,
+        prompt,
+        cwd,
+        skill_id,
+        skills,
+        on_text,
+        on_skill_use,
+        on_tool_permission,
+    ):
+        gate = await on_tool_permission(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "python write_business_system.py --id 456"},
+                "tool_call_id": "tool-write",
+                "risk_level": "high",
+                "write_capable": True,
+                "reason": "Claude SDK requested Bash",
+            }
+        )
+        calls.append(("gate", gate))
+        return types.SimpleNamespace(
+            used_sdk=True,
+            message="allowed",
+            session_id="sdk-session",
+            usage={},
+            error=None if gate["allowed"] else gate["reason"],
+            used_skills=[],
+            used_skills_source="",
+        )
+
+    async def get_exact_tool_permission_decision(conn, **kwargs):
+        calls.append(("exact_decision_lookup", kwargs))
+        command_hash = hashlib.sha256("python write_business_system.py --id 456".encode("utf-8")).hexdigest()
+        assert kwargs["tool_call_id"] == "tool-write"
+        assert kwargs["request_payload_json"]["command_sha256"] == command_hash
+        return {
+            "id": "tpr-allow",
+            "decision": "allow_for_run",
+            "tool_call_id": "tool-write",
+            "request_payload_json": {"command_sha256": command_hash},
+        }
+
+    async def get_latest_tool_permission_decision(conn, **kwargs):
+        raise AssertionError("Claude SDK tool permission must use exact decision lookup")
+
+    async def create_tool_permission_request(conn, **kwargs):
+        raise AssertionError("exact allow decision must not create another request")
+
+    async def append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "audit-sdk"
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    workspace = tmp_path / "workspaces" / "default" / "run_1"
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.get_latest_tool_permission_decision",
+        get_latest_tool_permission_decision,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.create_tool_permission_request",
+        create_tool_permission_request,
+        raising=False,
+    )
+    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_audit_log", append_audit_log)
+
+    result = await adapter._try_run_sdk(
+        payload(trace_id="trace-sdk"),
+        workspace=workspace,
+        file_names=[],
+        prompt="hello",
+        staged_skill_names=[],
+    )
+
+    assert result.error is None
+    assert any(item[0] == "exact_decision_lookup" for item in calls)
+    assert calls[-1][0] == "gate"
+    assert calls[-1][1]["allowed"] is True
 
 
 @pytest.mark.asyncio
@@ -2339,7 +2433,7 @@ async def test_claude_worker_sdk_permission_hook_consumes_allow_once_decision(mo
             used_skills_source="",
         )
 
-    async def get_latest_tool_permission_decision(conn, **kwargs):
+    async def get_exact_tool_permission_decision(conn, **kwargs):
         calls.append(("decision_lookup", kwargs))
         return {
             "id": "tpr-once",
@@ -2365,8 +2459,8 @@ async def test_claude_worker_sdk_permission_hook_consumes_allow_once_decision(mo
     monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_latest_tool_permission_decision",
-        get_latest_tool_permission_decision,
+        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
         raising=False,
     )
     monkeypatch.setattr(
@@ -2455,7 +2549,7 @@ async def test_claude_worker_sdk_permission_hook_fails_closed_when_allow_once_co
             used_skills_source="",
         )
 
-    async def get_latest_tool_permission_decision(conn, **kwargs):
+    async def get_exact_tool_permission_decision(conn, **kwargs):
         calls.append(("decision_lookup", kwargs))
         return {
             "id": "tpr-once",
@@ -2481,8 +2575,8 @@ async def test_claude_worker_sdk_permission_hook_fails_closed_when_allow_once_co
     monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_latest_tool_permission_decision",
-        get_latest_tool_permission_decision,
+        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
         raising=False,
     )
     monkeypatch.setattr(
@@ -2559,7 +2653,7 @@ async def test_claude_worker_sdk_permission_hook_allows_run_decision_for_same_ba
             used_skills_source="",
         )
 
-    async def get_latest_tool_permission_decision(conn, **kwargs):
+    async def get_exact_tool_permission_decision(conn, **kwargs):
         calls.append(("decision_lookup", kwargs))
         if kwargs.get("request_payload_json", {}).get("command_sha256") != command_hash:
             return None
@@ -2583,8 +2677,8 @@ async def test_claude_worker_sdk_permission_hook_allows_run_decision_for_same_ba
     monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_latest_tool_permission_decision",
-        get_latest_tool_permission_decision,
+        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
         raising=False,
     )
     monkeypatch.setattr(
@@ -2654,7 +2748,7 @@ async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_decision_fo
             used_skills_source="",
         )
 
-    async def get_latest_tool_permission_decision(conn, **kwargs):
+    async def get_exact_tool_permission_decision(conn, **kwargs):
         calls.append(("decision_lookup", kwargs))
         other_command_hash = hashlib.sha256("python write_business_system.py --id 456".encode("utf-8")).hexdigest()
         return {
@@ -2698,8 +2792,8 @@ async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_decision_fo
     monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_latest_tool_permission_decision",
-        get_latest_tool_permission_decision,
+        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
         raising=False,
     )
     monkeypatch.setattr(
@@ -2766,7 +2860,7 @@ async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_deny_for_ot
             used_skills_source="",
         )
 
-    async def get_latest_tool_permission_decision(conn, **kwargs):
+    async def get_exact_tool_permission_decision(conn, **kwargs):
         calls.append(("decision_lookup", kwargs))
         return {
             "id": "tpr-denied-other",
@@ -2809,8 +2903,8 @@ async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_deny_for_ot
     monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_latest_tool_permission_decision",
-        get_latest_tool_permission_decision,
+        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
         raising=False,
     )
     monkeypatch.setattr(

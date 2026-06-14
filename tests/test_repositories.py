@@ -22,6 +22,7 @@ from app.repositories import (
     fail_run,
     get_admin_run_detail,
     get_context_snapshot_for_worker,
+    get_exact_tool_permission_decision,
     get_latest_tool_permission_decision,
     get_run_identity,
     list_multi_agent_dispatch_candidate_run_ids,
@@ -2154,10 +2155,10 @@ async def test_decide_tool_permission_request_sets_decision_expiry():
 
 
 @pytest.mark.asyncio
-async def test_get_latest_tool_permission_decision_scopes_by_run_user_and_tool():
+async def test_get_exact_tool_permission_decision_requires_exact_call_or_fingerprint():
     conn = RecordingConnection()
 
-    row = await get_latest_tool_permission_decision(
+    row = await get_exact_tool_permission_decision(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
@@ -2171,10 +2172,10 @@ async def test_get_latest_tool_permission_decision_scopes_by_run_user_and_tool()
 
 
 @pytest.mark.asyncio
-async def test_get_latest_tool_permission_decision_can_filter_exact_tool_call_or_fingerprint():
+async def test_get_exact_tool_permission_decision_filters_tool_call_or_fingerprint():
     conn = RecordingConnection()
 
-    await get_latest_tool_permission_decision(
+    await get_exact_tool_permission_decision(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
@@ -2199,6 +2200,36 @@ async def test_get_latest_tool_permission_decision_can_filter_exact_tool_call_or
         "tool-current",
         "command_sha256",
         "a" * 64,
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_latest_tool_permission_decision_wrapper_uses_exact_lookup_shape():
+    conn = RecordingConnection()
+
+    await get_latest_tool_permission_decision(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        run_id="run-a",
+        tool_id="ragflow-knowledge-search",
+        action="execute",
+        tool_call_id="mcp-current",
+        request_payload_json={"input_sha256": "b" * 64},
+    )
+
+    sql, params = conn.calls[0]
+    assert "decision in ('allow_once', 'deny')" in sql
+    assert "decision = 'allow_for_run'" in sql
+    assert params == (
+        "tenant-a",
+        "user-a",
+        "run-a",
+        "ragflow-knowledge-search",
+        "execute",
+        "mcp-current",
+        "input_sha256",
+        "b" * 64,
     )
 
 

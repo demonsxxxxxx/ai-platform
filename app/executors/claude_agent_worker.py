@@ -745,7 +745,7 @@ class ClaudeAgentWorkerAdapter:
             }
 
             async with transaction() as conn:
-                permission_decision = await repositories.get_latest_tool_permission_decision(
+                permission_decision = await repositories.get_exact_tool_permission_decision(
                     conn,
                     tenant_id=payload.tenant_id,
                     user_id=payload.user_id,
