@@ -27,6 +27,7 @@ def test_office_context_readiness_defines_safe_context_pack_contract_without_ena
         "source_level_context_pack_contract",
         "context_snapshot_public_provenance_projection_contract",
         "executor_context_pack_prompt_injection_source_tests",
+        "sandbox_cold_start_latency_split_source_contract",
     ]
 
     context_pack = readiness["context_pack_contract"]
@@ -67,13 +68,29 @@ def test_office_context_readiness_defines_safe_context_pack_contract_without_ena
     assert readiness["execution_tiers"][2]["uses_sandbox_by_default"] is True
     assert "script_execution" in readiness["execution_tiers"][2]["task_examples"]
 
+    sandbox_latency = readiness["sandbox_latency_observability"]
+    assert sandbox_latency == {
+        "status": "source_contract_defined_runtime_acceptance_required",
+        "applies_to_execution_tiers": ["heavy_sandbox"],
+        "required_metric_fields": [
+            "sandbox_lease_acquire_latency_ms",
+            "sandbox_container_cold_start_latency_ms",
+            "sandbox_healthcheck_latency_ms",
+            "executor_model_latency_ms",
+            "document_processing_latency_ms",
+            "sandbox_cleanup_latency_ms",
+        ],
+        "must_not_hide_cold_start_in_executor_latency": True,
+        "runtime_acceptance_required": "211_sandbox_latency_split_smoke",
+    }
+
     assert readiness["open_gaps"] == [
         "office_context_pack_persistence_and_versioning",
         "executor_context_pack_211_acceptance",
         "user_visible_context_provenance_projection",
         "document_centric_followup_state",
         "office_execution_tier_router",
-        "sandbox_cold_start_latency_split",
+        "sandbox_cold_start_latency_split_211_acceptance",
         "frontend_context_provenance_acceptance",
     ]
     assert readiness["non_goals"] == [
@@ -124,7 +141,11 @@ def test_office_context_readiness_cli_outputs_json_without_secret_markers():
     assert payload["status"] == "partial_blocked"
     assert payload["policy"]["lightweight_office_tasks_start_sandbox_by_default"] is False
     assert "executor_context_pack_prompt_injection_source_tests" in payload["implemented_controls"]
+    assert "sandbox_cold_start_latency_split_source_contract" in payload["implemented_controls"]
+    assert payload["sandbox_latency_observability"]["must_not_hide_cold_start_in_executor_latency"] is True
     assert "executor_context_pack_injection" not in payload["open_gaps"]
     assert "executor_context_pack_211_acceptance" in payload["open_gaps"]
+    assert "sandbox_cold_start_latency_split" not in payload["open_gaps"]
+    assert "sandbox_cold_start_latency_split_211_acceptance" in payload["open_gaps"]
     assert "sk-secret" not in result.stdout
     assert "callback-token" not in result.stdout
