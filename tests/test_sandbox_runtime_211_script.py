@@ -200,6 +200,161 @@ def test_cancel_check_requires_stop_evidence(tmp_path):
     assert verifier.check_cancel_stops_container(evidence, run_id="run-a").passed is False
 
 
+def test_platform_runtime_evidence_requires_latency_split_and_docker_provider(tmp_path):
+    verifier = load_verifier()
+    evidence = tmp_path / "evidence.json"
+    base = {
+        "schema_version": "ai-platform.sandbox-runtime-211.v1",
+        "run_id": "run-a",
+        "executor_url": "http://executor.test",
+        "runtime_mode": "platform",
+        "sandbox_provider": "docker",
+        "executed_task": True,
+        "callback_auth": "token",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "callbacks": [
+            {"run_id": "run-a", "status": "running"},
+            {"run_id": "run-a", "status": "completed"},
+        ],
+    }
+    timings = {
+        "schema_version": "ai-platform.sandbox-latency-split.v1",
+        "sandbox_lease_acquire_latency_ms": 1,
+        "sandbox_container_cold_start_latency_ms": 2,
+        "sandbox_healthcheck_latency_ms": 3,
+        "sandbox_executor_dispatch_latency_ms": 4,
+        "executor_model_latency_ms": 5,
+        "document_processing_latency_ms": 6,
+        "sandbox_cleanup_latency_ms": 7,
+        "sandbox_total_latency_ms": 28,
+    }
+    evidence.write_text(json.dumps({**base, "timings": timings}), encoding="utf-8")
+
+    assert verifier.check_platform_runtime_evidence(evidence, run_id="run-a").passed is True
+
+    evidence.write_text(json.dumps({**base, "runtime_mode": "executor", "timings": timings}), encoding="utf-8")
+    failed_mode = verifier.check_platform_runtime_evidence(evidence, run_id="run-a")
+    assert failed_mode.passed is False
+    assert "platform" in failed_mode.message
+
+    evidence.write_text(json.dumps({**base, "sandbox_provider": "fake", "timings": timings}), encoding="utf-8")
+    failed_provider = verifier.check_platform_runtime_evidence(evidence, run_id="run-a")
+    assert failed_provider.passed is False
+    assert "docker" in failed_provider.message
+
+    incomplete = dict(timings)
+    incomplete.pop("sandbox_container_cold_start_latency_ms")
+    evidence.write_text(json.dumps({**base, "timings": incomplete}), encoding="utf-8")
+    failed_timing = verifier.check_platform_runtime_evidence(evidence, run_id="run-a")
+    assert failed_timing.passed is False
+    assert "sandbox_container_cold_start_latency_ms" in failed_timing.message
+
+
+def test_platform_runtime_evidence_rejects_hidden_or_invalid_latency_split(tmp_path):
+    verifier = load_verifier()
+    evidence = tmp_path / "evidence.json"
+    timings = {
+        "schema_version": "ai-platform.sandbox-latency-split.v1",
+        "sandbox_lease_acquire_latency_ms": 1,
+        "sandbox_container_cold_start_latency_ms": 5,
+        "sandbox_healthcheck_latency_ms": 1,
+        "sandbox_executor_dispatch_latency_ms": 2,
+        "executor_model_latency_ms": 5,
+        "document_processing_latency_ms": 3,
+        "sandbox_cleanup_latency_ms": 1,
+        "sandbox_total_latency_ms": 18,
+    }
+    evidence.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.sandbox-runtime-211.v1",
+                "run_id": "run-a",
+                "runtime_mode": "platform",
+                "sandbox_provider": "docker",
+                "timings": timings,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    failed_equal = verifier.check_platform_runtime_evidence(evidence, run_id="run-a")
+
+    assert failed_equal.passed is False
+    assert "cold start" in failed_equal.message
+
+    timings["sandbox_container_cold_start_latency_ms"] = -1
+    evidence.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.sandbox-runtime-211.v1",
+                "run_id": "run-a",
+                "runtime_mode": "platform",
+                "sandbox_provider": "docker",
+                "timings": timings,
+            }
+        ),
+        encoding="utf-8",
+    )
+    failed_negative = verifier.check_platform_runtime_evidence(evidence, run_id="run-a")
+    assert failed_negative.passed is False
+    assert "non-negative" in failed_negative.message
+
+
+def test_platform_runtime_hardening_requires_isolation_cleanup_and_fallback_evidence(tmp_path):
+    verifier = load_verifier()
+    evidence = tmp_path / "evidence.json"
+    hardening = {
+        "lease_isolation": {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "recorded_lease_id": "lease-a",
+            "released_lease_id": "lease-a",
+            "release_reason": "dispatch_completed",
+            "host_paths_redacted": True,
+        },
+        "workspace_isolation": {
+            "workspace_container_path": "/workspace",
+            "inputs_container_path": "/workspace/inputs",
+            "host_paths_redacted": True,
+            "marker_path_is_container_path": True,
+        },
+        "cleanup": {
+            "ephemeral_container_removed": True,
+            "cancel_probe_container_removed": True,
+            "active_lease_released": True,
+        },
+        "resource_timeout": {
+            "max_seconds_enforced": True,
+            "timeout_error_code": "executor_health_timeout",
+            "failed_container_removed": True,
+            "source_regression_tests": [
+                "tests/test_sandbox_container_provider.py::test_docker_provider_removes_container_after_health_timeout"
+            ],
+        },
+        "failure_fallback": {
+            "dispatch_failure_stops_container": True,
+            "lease_record_failure_stops_container": True,
+            "db_lease_not_released_when_stop_fails": True,
+            "source_regression_tests": [
+                "tests/test_sandbox_runtime.py::test_runtime_does_not_release_db_lease_when_dispatch_failure_stop_fails"
+            ],
+        },
+    }
+    evidence.write_text(json.dumps({"run_id": "run-a", "hardening": hardening}), encoding="utf-8")
+
+    assert verifier.check_platform_hardening_evidence(evidence, run_id="run-a").passed is True
+
+    broken = dict(hardening)
+    broken["cleanup"] = {**hardening["cleanup"], "ephemeral_container_removed": False}
+    evidence.write_text(json.dumps({"run_id": "run-a", "hardening": broken}), encoding="utf-8")
+    failed = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
+    assert failed.passed is False
+    assert "ephemeral_container_removed" in failed.message
+
+
 def test_no_secret_leakage_rejects_sensitive_evidence(tmp_path):
     verifier = load_verifier()
     evidence = tmp_path / "evidence.json"
@@ -300,6 +455,8 @@ def test_main_json_reports_all_checks_as_structured_output(tmp_path, capsys):
         "check_executor_health",
         "check_callback_stream",
         "check_cancel_stops_container",
+        "check_platform_runtime_evidence",
+        "check_platform_hardening_evidence",
         "check_no_secret_leakage",
     }
 
@@ -321,6 +478,32 @@ def test_evidence_recorder_writes_sanitized_callback_evidence(tmp_path):
     recorder.executed_task = True
     recorder.cancel_stops_container = True
     recorder.cancelled_container_id = "verifier-run-a"
+    recorder.runtime_mode = "platform"
+    recorder.sandbox_provider = "docker"
+    recorder.timings = {
+        "schema_version": "ai-platform.sandbox-latency-split.v1",
+        "sandbox_lease_acquire_latency_ms": 1,
+        "sandbox_container_cold_start_latency_ms": 2,
+        "sandbox_healthcheck_latency_ms": 3,
+        "sandbox_executor_dispatch_latency_ms": 4,
+        "executor_model_latency_ms": 5,
+        "document_processing_latency_ms": 6,
+        "sandbox_cleanup_latency_ms": 7,
+        "sandbox_total_latency_ms": 28,
+    }
+    recorder.hardening = {
+        "lease_isolation": {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "recorded_lease_id": "lease-a",
+            "released_lease_id": "lease-a",
+            "release_reason": "dispatch_completed",
+            "host_paths_redacted": True,
+        }
+    }
     recorder.write(evidence_path)
 
     raw = evidence_path.read_text(encoding="utf-8")
@@ -329,6 +512,11 @@ def test_evidence_recorder_writes_sanitized_callback_evidence(tmp_path):
     assert data["executor_url"] == "http://127.0.0.1:18000"
     assert data["executed_task"] is True
     assert data["callback_auth"] == "token"
+    assert data["schema_version"] == "ai-platform.sandbox-runtime-211.v1"
+    assert data["runtime_mode"] == "platform"
+    assert data["sandbox_provider"] == "docker"
+    assert data["timings"]["schema_version"] == "ai-platform.sandbox-latency-split.v1"
+    assert data["hardening"]["lease_isolation"]["recorded_lease_id"] == "lease-a"
     assert [item["status"] for item in data["callbacks"]] == ["running", "completed"]
     assert "secret-token" not in raw
 
@@ -373,6 +561,58 @@ def test_submit_executor_task_marks_executed_after_http_success():
     assert body["callback_url"] == "http://callback.test/callback"
     assert body["callback_token"] == "secret-token"
     assert body["config"]["resource_limits"]["max_seconds"] == 60
+
+
+def test_run_platform_runtime_probe_records_timings_and_hardening(tmp_path):
+    generator = load_generator()
+
+    async def fake_probe():
+        return type(
+            "SandboxRuntimeResult",
+            (),
+            {
+                "status": "accepted",
+                "session_id": "session-run-a",
+                "run_id": "run-a",
+                "executor_response": {
+                    "status": "accepted",
+                    "run_id": "run-a",
+                    "executor_model_latency_ms": 5,
+                    "document_processing_latency_ms": 6,
+                },
+                "timings": {
+                    "schema_version": "ai-platform.sandbox-latency-split.v1",
+                    "sandbox_lease_acquire_latency_ms": 1,
+                    "sandbox_container_cold_start_latency_ms": 2,
+                    "sandbox_healthcheck_latency_ms": 3,
+                    "sandbox_executor_dispatch_latency_ms": 4,
+                    "executor_model_latency_ms": 5,
+                    "document_processing_latency_ms": 6,
+                    "sandbox_cleanup_latency_ms": 7,
+                    "sandbox_total_latency_ms": 28,
+                },
+            },
+        )()
+
+    recorder = generator.EvidenceRecorder(
+        run_id="run-a",
+        executor_url="http://executor.test",
+        callback_token="secret-token",
+    )
+
+    result = generator.record_platform_runtime_probe(
+        recorder=recorder,
+        sandbox_provider="docker",
+        workspace_root=tmp_path,
+        probe=fake_probe,
+    )
+
+    assert result["status"] == "accepted"
+    assert recorder.runtime_mode == "platform"
+    assert recorder.sandbox_provider == "docker"
+    assert recorder.timings["sandbox_container_cold_start_latency_ms"] == 2
+    assert recorder.hardening["workspace_isolation"]["workspace_container_path"] == "/workspace"
+    assert recorder.hardening["cleanup"]["ephemeral_container_removed"] is True
 
 
 def test_cancel_probe_stops_only_verifier_owned_container():
@@ -446,6 +686,59 @@ def test_generator_defaults_use_local_ai_platform_cancel_probe_image():
     args = generator.build_parser().parse_args([])
 
     assert args.cancel_image == "ai-platform:local"
+    assert args.sandbox_executor_image == ""
+
+
+def test_platform_runtime_mode_defaults_executor_image_to_cancel_image(tmp_path, monkeypatch, capsys):
+    generator = load_generator()
+    calls = []
+
+    def fake_run_platform_runtime_probe(**kwargs):
+        calls.append(kwargs)
+        recorder = kwargs["recorder"]
+        recorder.runtime_mode = "platform"
+        recorder.sandbox_provider = kwargs["sandbox_provider"]
+        recorder.executed_task = True
+        recorder.timings = {
+            "schema_version": "ai-platform.sandbox-latency-split.v1",
+            "sandbox_lease_acquire_latency_ms": 1,
+            "sandbox_container_cold_start_latency_ms": 2,
+            "sandbox_healthcheck_latency_ms": 3,
+            "sandbox_executor_dispatch_latency_ms": 4,
+            "executor_model_latency_ms": 5,
+            "document_processing_latency_ms": 6,
+            "sandbox_cleanup_latency_ms": 7,
+            "sandbox_total_latency_ms": 28,
+        }
+
+    monkeypatch.setattr(generator, "run_platform_runtime_probe", fake_run_platform_runtime_probe)
+    monkeypatch.setattr(generator, "run_cancel_probe", lambda **kwargs: "container-a")
+
+    evidence = tmp_path / "evidence.json"
+    exit_code = generator.main(
+        [
+            "--runtime-mode",
+            "platform",
+            "--sandbox-provider",
+            "docker",
+            "--executor-url",
+            "http://executor.test",
+            "--evidence-file",
+            str(evidence),
+            "--run-id",
+            "run-a",
+            "--callback-timeout",
+            "0",
+            "--cancel-image",
+            "ai-platform:local",
+            "--json",
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert output["runtime_mode"] == "platform"
+    assert calls[0]["sandbox_executor_image"] == "ai-platform:local"
 
 
 def test_callback_public_url_template_uses_actual_bound_port():

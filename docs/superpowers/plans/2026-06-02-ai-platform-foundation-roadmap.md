@@ -603,13 +603,12 @@ files, runtime acceptance for the source-level skill dependency review policy,
 `admin_skill_release_dashboard_runtime_acceptance`,
 `admin_skill_release_dashboard_visual_acceptance`,
 `admin_skill_release_dashboard_211_acceptance`,
-runtime office context-pack persistence/versioning, 211 executor context-pack
-acceptance, document-centric follow-up state, 211 sandbox cold-start latency split acceptance,
+runtime office context-pack persistence/versioning, 211 executor context-pack acceptance,
+document-centric follow-up state, 211 sandbox cold-start latency split acceptance,
 frontend context provenance acceptance, quarantined legacy frontend source
 remap, packaged frontend image smoke/release acceptance on 211 or another
 Docker-capable host, and ordinary-user G9 acceptance. Do not use this baseline
-to expand sandbox privilege, raw Skill selection, or ordinary-user G8/G10
-exposure.
+to expand sandbox privilege, raw Skill selection, or ordinary-user G8/G10 exposure.
 
 The #22 office context-pack work now has source-level architecture readiness,
 source-level context-pack persistence/versioning evidence, user-visible API

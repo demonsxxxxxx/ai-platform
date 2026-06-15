@@ -40,6 +40,49 @@ SENSITIVE_PATTERNS = [
     re.compile(r"authorization", re.IGNORECASE),
 ]
 
+EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime-211.v1"
+LATENCY_SCHEMA_VERSION = "ai-platform.sandbox-latency-split.v1"
+REQUIRED_TIMING_FIELDS = [
+    "sandbox_lease_acquire_latency_ms",
+    "sandbox_container_cold_start_latency_ms",
+    "sandbox_healthcheck_latency_ms",
+    "sandbox_executor_dispatch_latency_ms",
+    "executor_model_latency_ms",
+    "document_processing_latency_ms",
+    "sandbox_cleanup_latency_ms",
+    "sandbox_total_latency_ms",
+]
+REQUIRED_HARDENING_FLAGS = {
+    "lease_isolation": [
+        "recorded_lease_id",
+        "released_lease_id",
+        "host_paths_redacted",
+    ],
+    "workspace_isolation": [
+        "workspace_container_path",
+        "inputs_container_path",
+        "host_paths_redacted",
+        "marker_path_is_container_path",
+    ],
+    "cleanup": [
+        "ephemeral_container_removed",
+        "cancel_probe_container_removed",
+        "active_lease_released",
+    ],
+    "resource_timeout": [
+        "max_seconds_enforced",
+        "timeout_error_code",
+        "failed_container_removed",
+        "source_regression_tests",
+    ],
+    "failure_fallback": [
+        "dispatch_failure_stops_container",
+        "lease_record_failure_stops_container",
+        "db_lease_not_released_when_stop_fails",
+        "source_regression_tests",
+    ],
+}
+
 
 class CheckResult:
     def __init__(self, name: str, passed: bool, message: str) -> None:
@@ -213,6 +256,105 @@ def check_cancel_stops_container(evidence_path: str | Path, *, run_id: str = "")
     return CheckResult("check_cancel_stops_container", False, "cancel stop evidence missing")
 
 
+def _required_evidence_error(evidence: dict[str, Any], *, run_id: str = "") -> str | None:
+    if not run_id:
+        return "run_id argument required"
+    if evidence.get("run_id") != run_id:
+        return "run_id evidence mismatch"
+    return None
+
+
+def _timing_error(timings: object) -> str | None:
+    if not isinstance(timings, dict):
+        return "latency split timings missing"
+    if timings.get("schema_version") != LATENCY_SCHEMA_VERSION:
+        return "latency split schema mismatch"
+    missing = [field for field in REQUIRED_TIMING_FIELDS if field not in timings]
+    if missing:
+        return f"latency split timing missing: {', '.join(missing)}"
+    for field in REQUIRED_TIMING_FIELDS:
+        value = timings.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return f"latency split timing must be non-negative integer: {field}"
+    cold_start = int(timings["sandbox_container_cold_start_latency_ms"])
+    executor_model = int(timings["executor_model_latency_ms"])
+    if cold_start == executor_model:
+        return "cold start latency must not be hidden in executor model latency"
+    total = int(timings["sandbox_total_latency_ms"])
+    subtotal = sum(int(timings[field]) for field in REQUIRED_TIMING_FIELDS if field != "sandbox_total_latency_ms")
+    if total < max(cold_start, executor_model) or total == 0 and subtotal > 0:
+        return "sandbox total latency is inconsistent with split timings"
+    return None
+
+
+def check_platform_runtime_evidence(evidence_path: str | Path, *, run_id: str = "") -> CheckResult:
+    evidence, error = _read_evidence(evidence_path)
+    if error:
+        return CheckResult("check_platform_runtime_evidence", False, error)
+    run_error = _required_evidence_error(evidence, run_id=run_id)
+    if run_error:
+        return CheckResult("check_platform_runtime_evidence", False, run_error)
+    if evidence.get("schema_version") != EVIDENCE_SCHEMA_VERSION:
+        return CheckResult("check_platform_runtime_evidence", False, "sandbox runtime evidence schema mismatch")
+    if evidence.get("runtime_mode") != "platform":
+        return CheckResult("check_platform_runtime_evidence", False, "platform runtime evidence missing")
+    if evidence.get("sandbox_provider") != "docker":
+        return CheckResult("check_platform_runtime_evidence", False, "docker sandbox provider evidence missing")
+    timing_error = _timing_error(evidence.get("timings"))
+    if timing_error:
+        return CheckResult("check_platform_runtime_evidence", False, timing_error)
+    return CheckResult("check_platform_runtime_evidence", True, "platform runtime latency split evidence present")
+
+
+def _hardening_error(evidence: dict[str, Any]) -> str | None:
+    hardening = evidence.get("hardening")
+    if not isinstance(hardening, dict):
+        return "platform hardening evidence missing"
+    for section_name, required_fields in REQUIRED_HARDENING_FLAGS.items():
+        section = hardening.get(section_name)
+        if not isinstance(section, dict):
+            return f"hardening section missing: {section_name}"
+        for field in required_fields:
+            value = section.get(field)
+            if field in {"workspace_container_path", "inputs_container_path"}:
+                if not isinstance(value, str) or not value:
+                    return f"hardening evidence missing: {section_name}.{field}"
+            elif field.endswith("_id") or field == "timeout_error_code":
+                if not isinstance(value, str) or not value:
+                    return f"hardening evidence missing: {section_name}.{field}"
+            elif field == "source_regression_tests":
+                if not isinstance(value, list) or not value:
+                    return f"hardening evidence missing: {section_name}.{field}"
+            elif value is not True:
+                return f"hardening evidence missing: {section_name}.{field}"
+    lease = hardening["lease_isolation"]
+    if lease.get("recorded_lease_id") != lease.get("released_lease_id"):
+        return "released lease does not match recorded lease"
+    if lease.get("release_reason") not in {"dispatch_completed", "run_succeeded", "run_cancelled", "run_failed"}:
+        return "lease release reason missing or unexpected"
+    workspace = hardening["workspace_isolation"]
+    if workspace.get("workspace_container_path") != "/workspace":
+        return "workspace container path mismatch"
+    if workspace.get("inputs_container_path") != "/workspace/inputs":
+        return "inputs container path mismatch"
+    if hardening["resource_timeout"].get("timeout_error_code") != "executor_health_timeout":
+        return "resource timeout evidence must prove executor_health_timeout fallback"
+    return None
+
+
+def check_platform_hardening_evidence(evidence_path: str | Path, *, run_id: str = "") -> CheckResult:
+    evidence, error = _read_evidence(evidence_path)
+    if error:
+        return CheckResult("check_platform_hardening_evidence", False, error)
+    run_error = _required_evidence_error(evidence, run_id=run_id)
+    if run_error:
+        return CheckResult("check_platform_hardening_evidence", False, run_error)
+    hardening_error = _hardening_error(evidence)
+    if hardening_error:
+        return CheckResult("check_platform_hardening_evidence", False, hardening_error)
+    return CheckResult("check_platform_hardening_evidence", True, "platform hardening evidence present")
+
+
 def check_no_secret_leakage(evidence_path: str | Path) -> CheckResult:
     evidence_path = Path(evidence_path)
     if not evidence_path.exists():
@@ -259,6 +401,8 @@ def main(argv: list[str] | None = None) -> int:
         lambda: check_executor_health(args.executor_url),
         lambda: check_callback_stream(args.evidence_file, run_id=args.run_id, executor_url=args.executor_url),
         lambda: check_cancel_stops_container(args.evidence_file, run_id=args.run_id),
+        lambda: check_platform_runtime_evidence(args.evidence_file, run_id=args.run_id),
+        lambda: check_platform_hardening_evidence(args.evidence_file, run_id=args.run_id),
         lambda: check_no_secret_leakage(args.evidence_file),
     ]
     exit_code, results = run_checks(checks)

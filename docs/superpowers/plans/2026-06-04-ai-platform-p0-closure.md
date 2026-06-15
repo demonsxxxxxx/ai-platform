@@ -274,6 +274,9 @@ python3 scripts/generate_sandbox_runtime_evidence_211.py \
   --evidence-file "$EVIDENCE" \
   --run-id "$RUN_ID" \
   --executor-url "$EXECUTOR_URL" \
+  --runtime-mode platform \
+  --sandbox-provider docker \
+  --sandbox-executor-image ai-platform:local \
   --docker-cmd "sudo -n docker" \
   --cancel-image ai-platform:local \
   --callback-host 0.0.0.0 \
@@ -286,6 +289,14 @@ python3 scripts/verify_sandbox_runtime_211.py \
   --docker-cmd "sudo -n docker"
 sudo -n docker rm -f ai-platform-sandbox-smoke-executor >/dev/null 2>&1 || true
 ```
+
+The generator must run in `--runtime-mode platform` for this acceptance gate:
+executor-only callback evidence is not enough to close the sandbox runtime
+latency split. The verifier now fails closed unless the evidence includes the
+`ai-platform.sandbox-runtime-211.v1` platform runtime schema, Docker provider
+evidence, `ai-platform.sandbox-latency-split.v1` timing fields, live
+lease/workspace/cleanup isolation proof, and source-regression references for
+resource timeout and failure fallback behavior.
 
 Then run platform-level user/admin cancel smoke against the deployed API and confirm: the runtime container is stopped/removed, DB active sandbox lease count for the run is `0`, and Admin Runtime projections do not show stale/orphan runtime payload or secret-like values.
 

@@ -685,7 +685,19 @@ def test_agents_lock_211_runtime_verification_and_rebase_deploy_rules():
     assert "rebasing from the current/backup image" in agents_text
     assert "compose with `--no-build`" in agents_text
     assert '"ai-platform:local"' in generator_text
+    assert "--runtime-mode" in generator_text
+    assert "platform" in generator_text
     assert "busybox" not in generator_text
+
+
+def test_sandbox_211_runtime_acceptance_runbook_requires_platform_mode():
+    p0_plan = read(ROOT / "docs/superpowers/plans/2026-06-04-ai-platform-p0-closure.md")
+
+    assert "--runtime-mode platform" in p0_plan
+    assert "--sandbox-provider docker" in p0_plan
+    assert "--sandbox-executor-image ai-platform:local" in p0_plan
+    assert "executor-only callback evidence is not enough" in p0_plan
+    assert "ai-platform.sandbox-latency-split.v1" in p0_plan
 
 
 def test_gitignore_excludes_real_env_variants_but_not_templates():

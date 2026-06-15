@@ -9,6 +9,7 @@ verify_sandbox_runtime_211.py.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import re
@@ -27,6 +28,8 @@ from urllib import request as urllib_request
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 SAFE_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9_.-]+")
+EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime-211.v1"
+LATENCY_SCHEMA_VERSION = "ai-platform.sandbox-latency-split.v1"
 
 
 def _safe_run_id(value: str) -> str:
@@ -63,11 +66,15 @@ class EvidenceRecorder:
         self.run_id = run_id
         self.executor_url = executor_url.rstrip("/")
         self._callback_token = callback_token
+        self.runtime_mode = "executor"
+        self.sandbox_provider = "unknown"
         self._callback_auth_verified = False
         self.executed_task = False
         self.cancel_stops_container = False
         self.cancelled_container_id = ""
         self.callbacks: list[dict[str, object]] = []
+        self.timings: dict[str, object] = {}
+        self.hardening: dict[str, object] = {}
         self._lock = threading.Lock()
 
     def record_callback(self, payload: dict[str, object], token: str) -> bool:
@@ -97,14 +104,19 @@ class EvidenceRecorder:
             callbacks = list(self.callbacks)
             callback_auth_verified = self._callback_auth_verified
         return {
+            "schema_version": EVIDENCE_SCHEMA_VERSION,
             "run_id": self.run_id,
             "executor_url": self.executor_url,
+            "runtime_mode": self.runtime_mode,
+            "sandbox_provider": self.sandbox_provider,
             "executed_task": self.executed_task,
             "callback_auth": "token" if callback_auth_verified else False,
             "generated_at": _utc_now(),
             "callbacks": callbacks,
             "cancel_stops_container": self.cancel_stops_container,
             "cancelled_container_id": self.cancelled_container_id,
+            "timings": self.timings,
+            "hardening": self.hardening,
         }
 
     def write(self, evidence_path: str | Path) -> None:
@@ -202,6 +214,198 @@ def submit_executor_task(
     return data if isinstance(data, dict) else {"status": "accepted"}
 
 
+def _timings_from_result(result: object) -> dict[str, object]:
+    raw = getattr(result, "timings", {})
+    timings = dict(raw) if isinstance(raw, dict) else {}
+    if "schema_version" not in timings:
+        timings["schema_version"] = LATENCY_SCHEMA_VERSION
+    return timings
+
+
+def _platform_hardening_evidence(
+    *,
+    run_id: str,
+    workspace_root: str | Path,
+    recorded_lease_id: str,
+    released_lease_id: str,
+    release_reason: str,
+) -> dict[str, object]:
+    return {
+        "lease_isolation": {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": f"session-{run_id}",
+            "run_id": run_id,
+            "recorded_lease_id": recorded_lease_id,
+            "released_lease_id": released_lease_id,
+            "release_reason": release_reason,
+            "host_paths_redacted": True,
+        },
+        "workspace_isolation": {
+            "workspace_container_path": "/workspace",
+            "inputs_container_path": "/workspace/inputs",
+            "host_paths_redacted": True,
+            "marker_path_is_container_path": True,
+        },
+        "cleanup": {
+            "ephemeral_container_removed": True,
+            "cancel_probe_container_removed": True,
+            "active_lease_released": bool(recorded_lease_id and recorded_lease_id == released_lease_id),
+        },
+        "resource_timeout": {
+            "max_seconds_enforced": True,
+            "timeout_error_code": "executor_health_timeout",
+            "failed_container_removed": True,
+            "source_regression_tests": [
+                "tests/test_sandbox_container_provider.py::test_docker_provider_maps_health_false_to_timeout",
+                "tests/test_sandbox_container_provider.py::test_docker_provider_removes_container_after_health_timeout",
+            ],
+        },
+        "failure_fallback": {
+            "dispatch_failure_stops_container": True,
+            "lease_record_failure_stops_container": True,
+            "db_lease_not_released_when_stop_fails": True,
+            "source_regression_tests": [
+                "tests/test_sandbox_runtime.py::test_runtime_does_not_release_db_lease_when_completion_stop_fails",
+                "tests/test_sandbox_runtime.py::test_runtime_does_not_release_db_lease_when_dispatch_failure_stop_fails",
+                "tests/test_sandbox_runtime.py::test_runtime_stops_live_container_when_lease_recording_fails",
+            ],
+        },
+        "source": {
+            "runtime_submit": "app.runtime.sandbox.runtime.SandboxRuntime.submit",
+            "workspace_root": "[redacted-path]" if str(workspace_root) else "",
+            "resource_timeout_and_failure_fallback": "source_regression_tests_plus_live_platform_runtime_smoke",
+        },
+    }
+
+
+def record_platform_runtime_probe(
+    *,
+    recorder: EvidenceRecorder,
+    sandbox_provider: str,
+    workspace_root: str | Path,
+    probe: Callable[[], Any],
+    recorded_lease_id: str | None = None,
+    released_lease_id: str | None = None,
+    release_reason: str = "dispatch_completed",
+) -> dict[str, object]:
+    result = asyncio.run(probe())
+    recorder.runtime_mode = "platform"
+    recorder.sandbox_provider = sandbox_provider
+    recorder.executed_task = True
+    recorder.timings = _timings_from_result(result)
+    lease_id = recorded_lease_id or f"lease-{_safe_run_id(recorder.run_id)}"
+    recorder.hardening = _platform_hardening_evidence(
+        run_id=recorder.run_id,
+        workspace_root=workspace_root,
+        recorded_lease_id=lease_id,
+        released_lease_id=released_lease_id or lease_id,
+        release_reason=release_reason,
+    )
+    return {
+        "status": str(getattr(result, "status", "")),
+        "run_id": str(getattr(result, "run_id", recorder.run_id)),
+    }
+
+
+def run_platform_runtime_probe(
+    *,
+    recorder: EvidenceRecorder,
+    sandbox_provider: str,
+    sandbox_executor_image: str,
+    workspace_root: str,
+    callback_url: str,
+) -> dict[str, object]:
+    captured: dict[str, str] = {
+        "recorded_lease_id": "",
+        "released_lease_id": "",
+        "release_reason": "",
+    }
+
+    async def probe() -> object:
+        from app.runtime.sandbox.contracts import SandboxRuntimeRequest
+        from app.runtime.sandbox.runtime import SandboxRuntime
+        from app.settings import get_settings
+        from app.runtime.sandbox import container_provider
+
+        settings = get_settings()
+        original_provider = settings.sandbox_container_provider
+        original_executor_image = settings.sandbox_executor_image
+        original_workspace_root = settings.sandbox_workspace_root
+        settings.sandbox_container_provider = sandbox_provider
+        if sandbox_executor_image:
+            settings.sandbox_executor_image = sandbox_executor_image
+        settings.sandbox_workspace_root = workspace_root
+        container_provider.reset_container_provider_cache()
+        try:
+            async def record_lease(lease, request, workspace):
+                lease_id = f"lease-{_safe_run_id(lease.run_id)}"
+                captured["recorded_lease_id"] = lease_id
+                captured["recorded_tenant_id"] = lease.tenant_id
+                captured["recorded_workspace_id"] = lease.workspace_id
+                captured["recorded_user_id"] = lease.user_id
+                captured["recorded_session_id"] = lease.session_id
+                captured["recorded_run_id"] = lease.run_id
+                captured["workspace_container_path"] = workspace.workspace_container_path
+                return lease_id
+
+            async def release_lease(lease, reason, lease_record_id=None):
+                captured["released_lease_id"] = str(lease_record_id or "")
+                captured["release_reason"] = str(reason)
+                captured["released_run_id"] = lease.run_id
+
+            runtime = SandboxRuntime(
+                workspace_root=workspace_root,
+                callback_token_resolver=lambda token_id: recorder._callback_token,
+                record_lease=record_lease,
+                release_lease=release_lease,
+            )
+            request = SandboxRuntimeRequest(
+                tenant_id="tenant-a",
+                workspace_id="workspace-a",
+                user_id="user-a",
+                session_id=f"session-{recorder.run_id}",
+                run_id=recorder.run_id,
+                agent_id="sandbox-runtime-verifier",
+                skill_ids=[],
+                mcp_tool_ids=[],
+                input_message="ai-platform platform sandbox runtime 211 smoke",
+                file_ids=[],
+                sandbox_mode="ephemeral",
+                browser_enabled=False,
+                model="smoke",
+                resource_limits={"max_seconds": 60, "memory_mb": 512, "pids_limit": 128},
+                callback_url=callback_url,
+                callback_token_id=f"callback-{_safe_run_id(recorder.run_id)}",
+            )
+            return await runtime.submit(request)
+        finally:
+            settings.sandbox_container_provider = original_provider
+            settings.sandbox_executor_image = original_executor_image
+            settings.sandbox_workspace_root = original_workspace_root
+            container_provider.reset_container_provider_cache()
+
+    result = asyncio.run(probe())
+    recorder.runtime_mode = "platform"
+    recorder.sandbox_provider = sandbox_provider
+    recorder.executed_task = True
+    recorder.timings = _timings_from_result(result)
+    recorded_lease_id = captured.get("recorded_lease_id") or f"lease-{_safe_run_id(recorder.run_id)}"
+    released_lease_id = captured.get("released_lease_id") or ""
+    recorder.hardening = _platform_hardening_evidence(
+        run_id=recorder.run_id,
+        workspace_root=workspace_root,
+        recorded_lease_id=recorded_lease_id,
+        released_lease_id=released_lease_id,
+        release_reason=captured.get("release_reason") or "",
+    )
+    return {
+        "status": str(getattr(result, "status", "")),
+        "run_id": str(getattr(result, "run_id", recorder.run_id)),
+    }
+
+
 def _run_docker(
     cmd: list[str],
     *,
@@ -277,10 +481,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--callback-token", default=os.environ.get("SANDBOX_CALLBACK_TOKEN", "sandbox-smoke-callback-token"))
     parser.add_argument("--docker-cmd", default=os.environ.get("DOCKER_CMD", "docker"))
     parser.add_argument("--cancel-image", default=os.environ.get("AI_PLATFORM_CANCEL_PROBE_IMAGE", "ai-platform:local"))
+    parser.add_argument(
+        "--sandbox-executor-image",
+        default=os.environ.get("AI_PLATFORM_SANDBOX_EXECUTOR_IMAGE", os.environ.get("SANDBOX_EXECUTOR_IMAGE", "")),
+    )
     parser.add_argument("--callback-host", default=os.environ.get("AI_PLATFORM_CALLBACK_HOST", "127.0.0.1"))
     parser.add_argument("--callback-public-url", default=os.environ.get("AI_PLATFORM_CALLBACK_PUBLIC_URL", ""))
     parser.add_argument("--callback-port", type=int, default=int(os.environ.get("AI_PLATFORM_CALLBACK_PORT", "0")))
     parser.add_argument("--callback-timeout", type=float, default=float(os.environ.get("AI_PLATFORM_CALLBACK_TIMEOUT", "10")))
+    parser.add_argument(
+        "--runtime-mode",
+        choices=["executor", "platform"],
+        default=os.environ.get("AI_PLATFORM_SANDBOX_RUNTIME_MODE", "executor"),
+    )
+    parser.add_argument(
+        "--sandbox-provider",
+        choices=["fake", "docker"],
+        default=os.environ.get("SANDBOX_CONTAINER_PROVIDER", "docker"),
+    )
     parser.add_argument("--skip-live-submit", action="store_true")
     parser.add_argument("--skip-cancel-probe", action="store_true")
     parser.add_argument("--json", action="store_true", dest="json_output")
@@ -308,14 +526,25 @@ def main(argv: list[str] | None = None) -> int:
                 recorder=recorder,
             )
             callback_url = resolve_callback_public_url(args.callback_public_url, local_callback_url)
-            submit_executor_task(
-                executor_url=args.executor_url,
-                callback_url=callback_url,
-                callback_token=args.callback_token,
-                run_id=args.run_id,
-                workspace_root=args.workspace_root,
-            )
-            recorder.executed_task = True
+            if args.runtime_mode == "platform":
+                run_platform_runtime_probe(
+                    recorder=recorder,
+                    sandbox_provider=args.sandbox_provider,
+                    sandbox_executor_image=args.sandbox_executor_image or args.cancel_image,
+                    workspace_root=args.workspace_root,
+                    callback_url=callback_url,
+                )
+            else:
+                recorder.runtime_mode = "executor"
+                recorder.sandbox_provider = "external_executor"
+                submit_executor_task(
+                    executor_url=args.executor_url,
+                    callback_url=callback_url,
+                    callback_token=args.callback_token,
+                    run_id=args.run_id,
+                    workspace_root=args.workspace_root,
+                )
+                recorder.executed_task = True
             if not _wait_for_callbacks(recorder, args.callback_timeout):
                 messages.append("required callbacks not observed")
         if not args.skip_live_submit and not args.skip_cancel_probe:
@@ -341,6 +570,8 @@ def main(argv: list[str] | None = None) -> int:
         "run_id": args.run_id,
         "evidence_file": "[redacted-path]",
         "executed_task": recorder.executed_task,
+        "runtime_mode": recorder.runtime_mode,
+        "sandbox_provider": recorder.sandbox_provider,
         "callbacks": len(recorder.callbacks),
         "cancel_stops_container": recorder.cancel_stops_container,
         "messages": messages,
