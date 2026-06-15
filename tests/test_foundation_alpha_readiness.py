@@ -11,7 +11,7 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
-ACTIVE_RUNTIME_SUBJECT_SHA = "79495bf4954017351db6d19494a16099fe2ee0bf"
+ACTIVE_RUNTIME_SUBJECT_SHA = "3c5b9f0241fc48d8749dcbad14a0dce63368074a"
 HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
@@ -2425,7 +2425,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     ] == [404, 404]
     assert readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["auth_rbac"][
         "artifact_preview_cross_tenant_statuses"
-    ] == [404]
+    ] == [404, 404]
     assert readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["auth_rbac"][
         "broader_auth_session_rbac_tenant_redaction_regression_verified"
     ] is True
@@ -2493,7 +2493,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         readiness["domains"]["g2_g4_control_plane_contracts"]["evidence"]["artifact_preview_isolation"][
             "checked_artifacts"
         ]
-        == 1
+        == 2
     )
     assert readiness["domains"]["g6_poc_governance"]["evidence"]["governance_readiness_status"] == "partial_blocked"
     memory_context_controls = readiness["domains"]["g6_poc_governance"]["evidence"]["memory_context_controls"]
@@ -2516,7 +2516,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "input_keys": ["attachments", "message"],
         "memory_policy_source": "default",
         "long_term_memory_read": False,
-        "execution_tier": "sdk_only_writing",
+        "execution_tier": "document_worker",
         "context_pack_version": "v1",
         "context_pack_generated_at_present": True,
         "missing_public_summary_fields": [],

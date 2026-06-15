@@ -1,0 +1,564 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "artifact_kind": "211_runtime_smoke",
+  "captured_at": "2026-06-15T16:26:27+08:00",
+  "commit_sha": "3c5b9f0241fc48d8749dcbad14a0dce63368074a",
+  "runtime_subject_commit_sha": "3c5b9f0241fc48d8749dcbad14a0dce63368074a",
+  "evidence_id": "2026-06-15-211-foundation-alpha-poc-3c5b9f0-runtime-poc-smoke",
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#15",
+    "#16",
+    "#17",
+    "#21",
+    "#22",
+    "#23",
+    "#24",
+    "#33"
+  ],
+  "pr_refs": [],
+  "open_followups": [
+    "#21 is closed in GitHub, but recorded multi-tenant capacity/load evidence remains required before raising production concurrency defaults.",
+    "G7 Docker sandbox hardening and Docker-capable sandbox smoke remain blocked.",
+    "G8 ordinary-user multi-agent exposure remains feature-flagged/internal only.",
+    "Packaged frontend image smoke/release acceptance remains separate from this thin-shell POC smoke.",
+    "Signed package or SBOM review evidence for Skill release remains open."
+  ],
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "source_ref": {
+    "api_health": {
+      "route": "/api/ai/health",
+      "status": "ok"
+    },
+    "branch": "codex/s1-memory-context-readiness",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_layout_status": "external_env_file_supplied_no_values_exported",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "deployment_note": "Runtime-only current-source image was run on 211 for the 3c5b9f0 runtime subject. Source revision, OCI revision, runtime-subject, and source_revision alias labels point to 3c5b9f0. Evidence does not copy or expose runtime secrets.",
+    "gateway_secret_supplied": false,
+    "image": "ai-platform:3c5b9f0-foundation-alpha-current-source",
+    "image_id": "sha256:1d80e33dec6a519ec2d7e1056ad3ed4ddc87029a9b0cad8d49ce31cb4e632af8",
+    "image_labels": {
+      "ai-platform.runtime-rollout": "foundation-alpha-current-source-3c5b9f0",
+      "ai-platform.runtime-subject": "3c5b9f0241fc48d8749dcbad14a0dce63368074a",
+      "ai-platform.runtime_subject": "3c5b9f0241fc48d8749dcbad14a0dce63368074a",
+      "ai-platform.source-branch": "codex/s1-memory-context-readiness",
+      "ai-platform.source-revision": "3c5b9f0241fc48d8749dcbad14a0dce63368074a",
+      "ai-platform.source_commit": "3c5b9f0241fc48d8749dcbad14a0dce63368074a",
+      "ai-platform.source_note": "foundation-alpha-current-source-3c5b9f0",
+      "ai-platform.source_revision": "3c5b9f0241fc48d8749dcbad14a0dce63368074a",
+      "ai-platform.source_tree_commit": "3c5b9f0241fc48d8749dcbad14a0dce63368074a",
+      "org.opencontainers.image.revision": "3c5b9f0241fc48d8749dcbad14a0dce63368074a"
+    },
+    "repo_local_env_present": false,
+    "runtime_commit": "3c5b9f0241fc48d8749dcbad14a0dce63368074a",
+    "runtime_source_marker": "3c5b9f0241fc48d8749dcbad14a0dce63368074a",
+    "runtime_subject_label_status": "runtime_subject_label_current",
+    "source_revision_alias_label_status": "source_revision_alias_label_current",
+    "source_snapshot": {
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "source_tree_commit_sha": "3c5b9f0241fc48d8749dcbad14a0dce63368074a",
+      "source_tree_dirty": false,
+      "runtime_subject_commit_sha": "3c5b9f0241fc48d8749dcbad14a0dce63368074a",
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "source_branch": "codex/s1-memory-context-readiness",
+      "source_revision": "3c5b9f0241fc48d8749dcbad14a0dce63368074a",
+      "sync_method": "git_archive_upload",
+      "notes": [
+        "No real .env copied or exported",
+        "Runtime evidence generated from 211 current-source rollout"
+      ]
+    }
+  },
+  "evidence_ref": {
+    "verifier": "tools/verify_poc_gate.py",
+    "schema_version": "ai-platform.poc-gate.v1",
+    "command": "python3 tools/verify_poc_gate.py --frontend-url http://127.0.0.1:18001 --api-url http://127.0.0.1:8020 --frontend-dist <frontend-dist> --env-path <external-env-not-exported> --api-container ai-platform-api --postgres-container ai-platform-postgres --postgres-user ai_platform --postgres-db ai_platform",
+    "result": "ok:true",
+    "runtime_checks": {
+      "lambchat_frontend": {
+        "url": "http://127.0.0.1:18001",
+        "status": 200,
+        "bytes": 11432
+      },
+      "lambchat_frontend_dist_api_boundary": {
+        "path": "/home/xinlin.jiang/lambchat-poc/frontend-dist-ai-platform",
+        "exists": true,
+        "api_reference_count": 154,
+        "forbidden_reference_count": 0,
+        "forbidden_files": []
+      },
+      "lambchat_frontend_origin_api": {
+        "url": "http://127.0.0.1:18001/api/ai/health",
+        "status": 200,
+        "payload": {
+          "status": "ok"
+        }
+      },
+      "lambchat_api_compat": {
+        "statuses": {
+          "/api/ai/health": 200,
+          "/api/auth/oauth/providers": 200,
+          "/api/auth/permissions": 200,
+          "/api/agent/models/available": 200,
+          "/api/settings/": 200,
+          "/api/projects": 200,
+          "/api/notifications/active": 200,
+          "/api/upload/config": 200,
+          "/api/tools": 200,
+          "/api/version": 200
+        },
+        "registration_enabled": false,
+        "default_model_id": "deepseek-v4-flash",
+        "missing_permissions": []
+      },
+      "runtime_config": {
+        "env_path": "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/.env",
+        "claude_agent_sdk_enabled": "true",
+        "claude_agent_model": "deepseek-v4-flash",
+        "openai_model": "deepseek-v4-flash",
+        "anthropic_model": "deepseek-v4-flash",
+        "skills_present": [
+          "baoyu-translate",
+          "general-chat",
+          "qa-file-reviewer"
+        ]
+      },
+      "company_auth_bridge": {
+        "login_url": "http://10.56.0.25:7263/api/Login/",
+        "login_probe_status": 200,
+        "login_probe_payload_status": "unsuccessfully!"
+      },
+      "general_chat_run": {
+        "run_id": "run_6dd8913c52d348378a942499ef28fb67",
+        "tenant_id": "default",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "succeeded",
+        "user_id": "ZX2834",
+        "artifact_id": null,
+        "artifact_label": null,
+        "artifact_size_bytes": null,
+        "artifact_content_type": null,
+        "artifact_storage_key": null
+      },
+      "review_artifact": {
+        "run_id": "run_587cc85f1cad46abaf7f42feb76bcc51",
+        "tenant_id": "default",
+        "agent_id": "qa-word-review",
+        "skill_id": "qa-file-reviewer",
+        "status": "succeeded",
+        "user_id": "ZX2834",
+        "artifact_id": "art_41d98d726507404bbabfb4169d6ac9c4",
+        "artifact_label": "审核 Word",
+        "artifact_size_bytes": 231234,
+        "artifact_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "artifact_storage_key": "tenants/default/workspaces/default/sessions/ses_6102f29984b44d4992d4b8da42642b5b/runs/run_587cc85f1cad46abaf7f42feb76bcc51/artifacts/1/output/TR(G)-AD-IP321-1-031-1.0 IP321_ADC_-ZY-clean-hy_reviewed.docx"
+      },
+      "translate_artifact": {
+        "run_id": "run_6328ea617cf147b19c3bd4b211dae485",
+        "tenant_id": "default",
+        "agent_id": "baoyu-translate",
+        "skill_id": "baoyu-translate",
+        "status": "succeeded",
+        "user_id": "ZX2834",
+        "artifact_id": "art_a4fab332ce554042b7ca4ad5e8cc1fff",
+        "artifact_label": "翻译 Word",
+        "artifact_size_bytes": 42902,
+        "artifact_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "artifact_storage_key": "tenants/default/workspaces/default/sessions/ses_ab2ae56fb076471ca3eb61a04264116b/runs/run_6328ea617cf147b19c3bd4b211dae485/artifacts/1/BD__translated.docx"
+      },
+      "governed_skill_runs": {
+        "verified": true,
+        "real_task_statuses": {
+          "qa-file-reviewer": "succeeded",
+          "baoyu-translate": "succeeded"
+        },
+        "run_skill_snapshots": {
+          "row_count": 2,
+          "used_count": 2,
+          "used_skill_ids": [
+            "qa-file-reviewer",
+            "baoyu-translate"
+          ],
+          "used_skills_source": "executor_hook",
+          "pinned_snapshot_count": 2,
+          "pinned_snapshot_source": "release_decision",
+          "missing_pinned_snapshots": [],
+          "mismatched_pinned_snapshots": []
+        }
+      },
+      "artifact_download_isolation": {
+        "checked_artifacts": 2,
+        "results": [
+          {
+            "artifact_id": "art_41d98d726507404bbabfb4169d6ac9c4",
+            "owner_user": "ZX2834",
+            "owner_status": 200,
+            "owner_bytes": 231234,
+            "cross_user_status": 404,
+            "cross_tenant_status": 404
+          },
+          {
+            "artifact_id": "art_a4fab332ce554042b7ca4ad5e8cc1fff",
+            "owner_user": "ZX2834",
+            "owner_status": 200,
+            "owner_bytes": 42902,
+            "cross_user_status": 404,
+            "cross_tenant_status": 404
+          }
+        ]
+      },
+      "artifact_preview_isolation": {
+        "checked_artifacts": 2,
+        "results": [
+          {
+            "artifact_id": "art_41d98d726507404bbabfb4169d6ac9c4",
+            "owner_user": "ZX2834",
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "owner_status": 200,
+            "owner_bytes": 231234,
+            "owner_cache_control": "no-store",
+            "owner_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "owner_content_disposition": "inline; filename*=UTF-8''TR%28G%29-AD-IP321-1-031-1.0%20IP321_ADC_-ZY-clean-hy_reviewed.docx",
+            "owner_x_content_type_options": "nosniff",
+            "cross_user_status": 404,
+            "cross_tenant_status": 404
+          },
+          {
+            "artifact_id": "art_a4fab332ce554042b7ca4ad5e8cc1fff",
+            "owner_user": "ZX2834",
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "owner_status": 200,
+            "owner_bytes": 42902,
+            "owner_cache_control": "no-store",
+            "owner_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "owner_content_disposition": "inline; filename*=UTF-8''BD__translated.docx",
+            "owner_x_content_type_options": "nosniff",
+            "cross_user_status": 404,
+            "cross_tenant_status": 404
+          }
+        ]
+      },
+      "upload_attachment_chat": {
+        "upload_check_status": 200,
+        "upload_check_payload": {
+          "exists": false
+        },
+        "upload_status": 200,
+        "upload_payload": {
+          "key": "file_a51024769588424db1e56f3b9f5200c4",
+          "file_id": "file_a51024769588424db1e56f3b9f5200c4",
+          "url": "/api/ai/files/file_a51024769588424db1e56f3b9f5200c4",
+          "name": "upload-gate.txt",
+          "type": "uploads",
+          "mime_type": "text/plain",
+          "mimeType": "text/plain",
+          "size": 18,
+          "sha256": "8a34511f1e6f90afbeeab3f241dbd927b48100752d2208134eb1848df8c7bbbe"
+        },
+        "chat_status": 200,
+        "chat_payload": {
+          "session_id": "ses_aabde31573ec4387b7c8441e01ef36ae",
+          "run_id": "run_f417cf0ac1104d5884ed58e0f111fd00",
+          "status": "queued",
+          "queue_position": 1,
+          "queue_insight": {
+            "tenant_id": "default",
+            "reason": "workers_busy",
+            "depths": {
+              "queued": 0,
+              "processing": 1,
+              "dead_letter": 16,
+              "tenant_queued": 0,
+              "tenant_processing": 1
+            },
+            "workers": {
+              "active": 1
+            },
+            "capacity": {
+              "max_active_worker_runs": 3,
+              "processing_saturated": false,
+              "available_worker_slots": 2,
+              "queue_tenant_processing_limit": 0,
+              "queue_user_processing_limit": 0,
+              "queue_lease_scan_limit": 50
+            },
+            "queue_sample": {
+              "queued_scan_limit": 500,
+              "queued_sampled": 0,
+              "queued_sample_complete": true
+            },
+            "throttling": {
+              "tenant_processing": 1,
+              "tenant_processing_limit": 0,
+              "tenant_processing_saturated": false,
+              "user_processing_limit": 0,
+              "current_user": {
+                "queued": 0,
+                "processing": 1,
+                "processing_saturated": false
+              },
+              "users": {}
+            }
+          },
+          "intent_decision": {
+            "status": "selected",
+            "intent": "general_chat",
+            "confidence": 0.74,
+            "reason": "未检测到文件型或知识库专属意图",
+            "selected_capability": "general_chat",
+            "agent_id": "general-agent",
+            "skill_id": null,
+            "confirmed_by_user": false,
+            "suggestions": []
+          },
+          "suggestions": []
+        },
+        "run": {
+          "run_id": "run_f417cf0ac1104d5884ed58e0f111fd00",
+          "status": "succeeded",
+          "file_ids": [
+            "file_a51024769588424db1e56f3b9f5200c4"
+          ],
+          "error_code": null,
+          "error_message": null,
+          "executor_type": "claude-agent-worker",
+          "worker_events": [
+            {
+              "severity": "info",
+              "worker_id": "b7f269f1ead3:939cd6503f2d",
+              "executor_type": "claude-agent-worker",
+              "visible_to_user": true,
+              "claude_agent_model": "deepseek-v4-flash",
+              "claude_agent_sdk_import": "ok",
+              "claude_agent_sdk_enabled": true
+            }
+          ]
+        }
+      },
+      "word_review_attachment_chat": {
+        "sample_docx_found": true,
+        "sample_docx_name": "tmp-smoke-translate.docx",
+        "upload_status": 200,
+        "upload_payload": {
+          "key": "file_fd0525d5b45c47ac8e61a5012109218a",
+          "file_id": "file_fd0525d5b45c47ac8e61a5012109218a",
+          "url": "/api/ai/files/file_fd0525d5b45c47ac8e61a5012109218a",
+          "name": "tmp-smoke-translate.docx",
+          "type": "uploads",
+          "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "size": 24056,
+          "sha256": "8a568b754d84c0ee98931fefb1750a3b362c5640393dfbe61dc5d89998b1c6e7"
+        },
+        "chat_status": 200,
+        "chat_payload": {
+          "session_id": "ses_38da91df35604da4a9042a1a4752107e",
+          "run_id": "run_b63433fd798548308a28533419a4ef7f",
+          "status": "queued",
+          "queue_position": 1,
+          "queue_insight": {
+            "tenant_id": "default",
+            "reason": "workers_busy",
+            "depths": {
+              "queued": 0,
+              "processing": 1,
+              "dead_letter": 16,
+              "tenant_queued": 0,
+              "tenant_processing": 1
+            },
+            "workers": {
+              "active": 1
+            },
+            "capacity": {
+              "max_active_worker_runs": 3,
+              "processing_saturated": false,
+              "available_worker_slots": 2,
+              "queue_tenant_processing_limit": 0,
+              "queue_user_processing_limit": 0,
+              "queue_lease_scan_limit": 50
+            },
+            "queue_sample": {
+              "queued_scan_limit": 500,
+              "queued_sampled": 0,
+              "queued_sample_complete": true
+            },
+            "throttling": {
+              "tenant_processing": 1,
+              "tenant_processing_limit": 0,
+              "tenant_processing_saturated": false,
+              "user_processing_limit": 0,
+              "current_user": {
+                "queued": 0,
+                "processing": 1,
+                "processing_saturated": false
+              },
+              "users": {}
+            }
+          },
+          "intent_decision": {
+            "status": "selected",
+            "intent": "document_review",
+            "confidence": 0.92,
+            "reason": "检测到 Word 文件和审核意图",
+            "selected_capability": "document_review",
+            "agent_id": "document-review",
+            "skill_id": null,
+            "confirmed_by_user": false,
+            "suggestions": []
+          },
+          "suggestions": []
+        },
+        "run": {
+          "run_id": "run_b63433fd798548308a28533419a4ef7f",
+          "agent_id": "qa-word-review",
+          "skill_id": "qa-file-reviewer",
+          "status": "succeeded",
+          "file_ids": [
+            "file_fd0525d5b45c47ac8e61a5012109218a"
+          ],
+          "error_message": null,
+          "artifact_count": 3,
+          "artifacts": [
+            {
+              "artifact_id": "art_1e89889a41aa45c9ab0777ec4a00d2aa",
+              "artifact_type": "report_txt",
+              "content_type": "text/plain; charset=utf-8"
+            },
+            {
+              "artifact_id": "art_77d6a6f76047470f9c67e314e9f2bc0a",
+              "artifact_type": "reviewed_docx",
+              "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            },
+            {
+              "artifact_id": "art_c02d0da5f5f24d88bb84b8bf68324cd3",
+              "artifact_type": "result_json",
+              "content_type": "application/json"
+            }
+          ]
+        },
+        "playback": {
+          "status": 200,
+          "contract_version": "ai-platform.run-playback.v1",
+          "artifact_count": 3,
+          "download_url_count": 3,
+          "preview_url_count": 1,
+          "matched_download_artifact_count": 1,
+          "matched_preview_artifact_count": 1,
+          "private_payload_leaked": false
+        },
+        "context_snapshot_public_projection": {
+          "status": 200,
+          "ok": true,
+          "snapshot_count": 1,
+          "referenced_material_counts": {
+            "message_count": 1,
+            "file_count": 1,
+            "artifact_count": 0,
+            "memory_record_count": 0
+          },
+          "raw_material_id_fields_present": false,
+          "forbidden_projection_leaks": [],
+          "summary_source": "chat_stream",
+          "input_keys": [
+            "attachments",
+            "message"
+          ],
+          "memory_policy_source": "default",
+          "long_term_memory_read": false,
+          "execution_tier": "document_worker",
+          "context_pack_version": "v1",
+          "context_pack_generated_at_present": true
+        }
+      },
+      "context_snapshot_public_projection": {
+        "status": 200,
+        "ok": true,
+        "snapshot_count": 1,
+        "referenced_material_counts": {
+          "message_count": 1,
+          "file_count": 1,
+          "artifact_count": 0,
+          "memory_record_count": 0
+        },
+        "raw_material_id_fields_present": false,
+        "forbidden_projection_leaks": [],
+        "summary_source": "chat_stream",
+        "input_keys": [
+          "attachments",
+          "message"
+        ],
+        "memory_policy_source": "default",
+        "long_term_memory_read": false,
+        "execution_tier": "document_worker",
+        "context_pack_version": "v1",
+        "context_pack_generated_at_present": true
+      },
+      "company_login_audit": {
+        "count": 51,
+        "ordinary_user_count": 13,
+        "admin_user_count": 38,
+        "latest_user_id": "ZX2834",
+        "latest_payload": {
+          "roles": [
+            "普通user",
+            "developer"
+          ],
+          "source": "company-login",
+          "work_id": "ZX2834",
+          "is_admin": true,
+          "permissions": [
+            "agent:use",
+            "chat:read",
+            "chat:write",
+            "session:read",
+            "session:write",
+            "artifact:download",
+            "file:upload",
+            "file:upload:document",
+            "agent:admin",
+            "model:admin",
+            "settings:manage",
+            "admin:status"
+          ]
+        },
+        "all_auth_login_count": 51,
+        "latest_any_user_id": "ZX2834",
+        "latest_any_payload": {
+          "roles": [
+            "普通user",
+            "developer"
+          ],
+          "source": "company-login",
+          "work_id": "ZX2834",
+          "is_admin": true,
+          "permissions": [
+            "agent:use",
+            "chat:read",
+            "chat:write",
+            "session:read",
+            "session:write",
+            "artifact:download",
+            "file:upload",
+            "file:upload:document",
+            "agent:admin",
+            "model:admin",
+            "settings:manage",
+            "admin:status"
+          ]
+        }
+      }
+    }
+  },
+  "operator_notes": [
+    "Reviewed redacted 211 current-source runtime evidence for Foundation Alpha POC.",
+    "This evidence does not raise production concurrency defaults, open ordinary-user multi-agent, or claim Docker sandbox hardening."
+  ]
+}

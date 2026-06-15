@@ -14,14 +14,14 @@ SCHEMA_VERSION = "ai-platform.foundation-alpha-poc-readiness.v1"
 SOURCE_SNAPSHOT_SCHEMA_VERSION = "ai-platform.source-snapshot.v1"
 SOURCE_RUNTIME_RELATION_MANIFEST_SCHEMA_VERSION = "ai-platform.source-runtime-relation-manifest.v1"
 STAGE_NAME = "Foundation Alpha POC"
-RUNTIME_SUBJECT_COMMIT_SHA = "79495bf4954017351db6d19494a16099fe2ee0bf"
+RUNTIME_SUBJECT_COMMIT_SHA = "3c5b9f0241fc48d8749dcbad14a0dce63368074a"
 _ROOT = Path(__file__).resolve().parents[1]
 _EVIDENCE_BASE_ROOT = _ROOT / "docs/release-evidence/foundation-alpha-poc"
 _FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT = _ROOT / "docs/release-evidence/foundation-runtime-concurrency"
 _SOURCE_RUNTIME_RELATION_MANIFEST = _EVIDENCE_BASE_ROOT / "source-runtime-relation-manifest.json"
 _EVIDENCE_ROOT = _EVIDENCE_BASE_ROOT / RUNTIME_SUBJECT_COMMIT_SHA
-_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-14-211-foundation-alpha-poc-79495bf-runtime-poc-smoke.json"
-_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-14-211-foundation-alpha-poc-79495bf-auth-rbac-smoke.json"
+_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-15-211-foundation-alpha-poc-3c5b9f0-runtime-poc-smoke.json"
+_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-15-211-foundation-alpha-poc-3c5b9f0-auth-rbac-smoke.json"
 _SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
 _SOURCE_SNAPSHOT_MARKER = _ROOT / ".ai-platform-source-snapshot.json"
 _RUNTIME_NEUTRAL_PATH_PREFIXES = (
@@ -914,6 +914,22 @@ def _context_material_count(value: Any) -> tuple[int, bool]:
 
 def _artifact_review_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     document_review = _safe_runtime_check(runtime_checks.get("document_review_attachment_run"))
+    if not document_review:
+        word_review = _safe_runtime_check(runtime_checks.get("word_review_attachment_chat"))
+        run = _safe_runtime_check(word_review.get("run"))
+        playback = _safe_runtime_check(word_review.get("playback"))
+        artifacts = run.get("artifacts")
+        artifact_types = [
+            artifact.get("artifact_type")
+            for artifact in artifacts
+            if isinstance(artifact, dict) and isinstance(artifact.get("artifact_type"), str)
+        ] if isinstance(artifacts, list) else []
+        return {
+            "status": run.get("status"),
+            "skill_id": run.get("skill_id"),
+            "artifact_types": sorted(artifact_types),
+            "playback_contract_version": playback.get("contract_version"),
+        }
     artifact_types = document_review.get("artifact_types")
     if not isinstance(artifact_types, list):
         artifact_types = document_review.get("artifact_type_summary")
@@ -923,6 +939,22 @@ def _artifact_review_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
         "artifact_types": sorted(artifact_types or []),
         "playback_contract_version": document_review.get("playback_contract_version"),
     }
+
+
+def _document_review_playback_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
+    document_review = _safe_runtime_check(runtime_checks.get("document_review_attachment_run"))
+    if document_review:
+        return {
+            "contract_version": document_review.get("playback_contract_version"),
+            "private_payload_leaked": document_review.get("private_payload_leaked"),
+        }
+    word_review = _safe_runtime_check(runtime_checks.get("word_review_attachment_chat"))
+    playback = _safe_runtime_check(word_review.get("playback"))
+    return {
+        "contract_version": playback.get("contract_version"),
+        "private_payload_leaked": playback.get("private_payload_leaked"),
+    }
+
 
 def _mcp_tool_permission_runtime_controls_summary(
     *,
@@ -1046,9 +1078,16 @@ def _governed_skill_runs_summary(runtime_checks: dict[str, Any]) -> dict[str, An
 def _projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     frontend = _safe_runtime_check(runtime_checks.get("lambchat_frontend"))
     boundary = _safe_runtime_check(runtime_checks.get("frontend_dist_api_boundary"))
+    if not boundary:
+        boundary = _safe_runtime_check(runtime_checks.get("lambchat_frontend_dist_api_boundary"))
     same_origin_api_health = _safe_runtime_check(runtime_checks.get("same_origin_api_health"))
+    if not same_origin_api_health:
+        same_origin_api_health = _safe_runtime_check(runtime_checks.get("lambchat_frontend_origin_api"))
     if same_origin_api_health.get("status") is None and same_origin_api_health.get("api_status") is not None:
         same_origin_api_health["status"] = same_origin_api_health.get("api_status")
+    payload = _safe_runtime_check(same_origin_api_health.get("payload"))
+    if same_origin_api_health.get("payload_status") is None and payload.get("status") is not None:
+        same_origin_api_health["payload_status"] = payload.get("status")
     return {
         "frontend_http_status": frontend.get("status") or runtime_checks.get("frontend_http_status"),
         "same_origin_api_health": same_origin_api_health,
@@ -2093,6 +2132,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     g5_open_followups = []
     if not foundation_runtime_concurrency_verified_for_active_subject:
         g5_open_followups.append("foundation_runtime_concurrency_evidence")
+    document_review_playback = _document_review_playback_summary(smoke_checks)
 
     domains = {
         "g0_g1_source_authority_security": {
@@ -2127,12 +2167,8 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
                 "artifact_preview_isolation": _safe_runtime_check(
                     smoke_checks.get("artifact_preview_isolation")
                 ),
-                "public_playback_contract_version": _safe_runtime_check(
-                    smoke_checks.get("document_review_attachment_run")
-                ).get("playback_contract_version"),
-                "private_payload_leaked": _safe_runtime_check(
-                    smoke_checks.get("document_review_attachment_run")
-                ).get("private_payload_leaked"),
+                "public_playback_contract_version": document_review_playback.get("contract_version"),
+                "private_payload_leaked": document_review_playback.get("private_payload_leaked"),
             },
             "open_followups": [],
         },
