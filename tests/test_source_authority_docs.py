@@ -20,12 +20,14 @@ CAPACITY_BASELINE_DOC = ROOT / "docs/operations/ai-platform-capacity-baseline.md
 OBSERVABILITY_READINESS_DOC = ROOT / "docs/operations/ai-platform-observability-readiness.md"
 GOVERNANCE_READINESS_DOC = ROOT / "docs/operations/ai-platform-governance-readiness.md"
 GATE_STATUS_DOC = ROOT / "docs/operations/ai-platform-gate-status.md"
+FOUNDATION_ALPHA_CLOSURE_DOC = ROOT / "docs/operations/ai-platform-foundation-alpha-closure.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_RUNTIME_RELATION_MANIFEST = (
     ROOT / "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json"
 )
 ACTIVE_RUNTIME_SUBJECT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
 ACTIVE_SOURCE_TREE_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
+ACTIVE_CLOSURE_SOURCE_TREE_SHA = "3c06c5351517028111c18a365ff9a24ed22ffa33"
 ACTIVE_RUNTIME_IMAGE = "ai-platform:380de6b-merged-main-runtime"
 ACTIVE_RUNTIME_IMAGE_ID = "sha256:e36e4dfad072cdd12b841019db3ccbcdef4b63ccf5262869c994757fef5663f9"
 ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-15-211-foundation-alpha-poc-380de6b-runtime-poc-smoke"
@@ -263,6 +265,53 @@ def test_gate_status_snapshot_records_s1_post_merge_211_verification_requirement
     assert "production_claim_allowed=false" in gate_status_text
     assert "docker_sandbox_hardened_claim_allowed=false" in gate_status_text
     assert "capacity_default_increase_allowed=false" in gate_status_text
+
+
+def test_foundation_alpha_closure_records_stage_complete_baseline_and_boundaries():
+    closure_text = read(FOUNDATION_ALPHA_CLOSURE_DOC)
+    prd_text = read(PRD)
+    tech_text = read(TECH_ACCEPTANCE)
+    roadmap_text = read(ROADMAP)
+    gate_status_text = read(GATE_STATUS_DOC)
+
+    assert "Status: Foundation Alpha stage complete" in closure_text
+    assert ACTIVE_CLOSURE_SOURCE_TREE_SHA in closure_text
+    assert ACTIVE_RUNTIME_SUBJECT_SHA in closure_text
+    assert ACTIVE_RUNTIME_IMAGE in closure_text
+    assert ACTIVE_RUNTIME_IMAGE_ID in closure_text
+    assert "runtime_current_for_runtime_relevant_source" in closure_text
+    assert "foundation_alpha_stage_complete=true" in closure_text
+    assert "stage_acceptance_blockers=[]" in closure_text
+    assert "runtime_relevant_source_verified_by_running_runtime=true" in closure_text
+    assert "current_source_verified_by_running_runtime=false" in closure_text
+    assert "controlled_poc_loop_verified_for_current_source=false" in closure_text
+    assert "python tools\\foundation_alpha_readiness.py --format json" in closure_text
+    assert "verified_foundation_runtime_concurrency" in closure_text
+    assert "48 denied negative tool-permission reuse probes" in closure_text
+    for issue_number in ("#15", "#16", "#17", "#21", "#22", "#23", "#33"):
+        assert issue_number in closure_text
+    assert "draft PR #44" in closure_text
+    assert "is not an S1 blocker" in closure_text
+
+    for boundary in (
+        "raise production concurrency defaults",
+        "open ordinary-user multi-agent exposure",
+        "claim Docker sandbox hardening",
+        "permit department rollout",
+        "enable long-term cross-session memory by default",
+        "close packaged frontend image release acceptance",
+        "close signed Skill package, SBOM, license, or vulnerability evidence",
+    ):
+        assert boundary in closure_text
+
+    for authority_text in (prd_text, tech_text, roadmap_text, gate_status_text):
+        assert "Foundation Alpha" in authority_text
+        assert "ordinary-user multi-agent" in authority_text
+        assert "Docker sandbox" in authority_text
+
+    assert "production readiness" in closure_text
+    assert "not production readiness" in closure_text
+    assert "C:\\Users" not in closure_text
 
 
 def test_committed_source_runtime_relation_manifest_keeps_clean_checkout_readiness_truthful():
