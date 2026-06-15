@@ -232,6 +232,18 @@ def test_admin_run_detail_returns_explainability_contract(monkeypatch):
             },
             "events": [{"event_id": "evt_a", "type": "run_succeeded", "stage": "worker", "message": "Run succeeded"}],
             "artifacts": [{"artifact_id": "art_a", "label": "审核 Word", "artifact_type": "reviewed_docx"}],
+            "sandbox_leases": [
+                {
+                    "lease_id": "lease-a",
+                    "tenant_id": "default",
+                    "workspace_id": "default",
+                    "user_id": "user-a",
+                    "session_id": "ses_a",
+                    "run_id": run_id,
+                    "status": "released",
+                    "lease_payload": {"source": "foundation_runtime_lifecycle_probe"},
+                }
+            ],
             "skill_snapshots": [
                 {
                     "skill_id": "qa-file-reviewer",
@@ -272,6 +284,8 @@ def test_admin_run_detail_returns_explainability_contract(monkeypatch):
     assert data["run"]["run_id"] == "run_a"
     assert data["run"]["input"]["intent"]["selected_capability"] == "document_review"
     assert data["artifacts"][0]["artifact_id"] == "art_a"
+    assert data["sandbox_leases"][0]["lease_id"] == "lease-a"
+    assert data["sandbox_leases"][0]["lease_payload"] == {"source": "foundation_runtime_lifecycle_probe"}
     assert data["skill_snapshots"][0]["skill_id"] == "qa-file-reviewer"
     assert data["skill_snapshots"][0]["used"] is True
     assert data["skill_snapshots"][0]["usage"]["used_skills_source"] == "executor_hook"

@@ -148,6 +148,21 @@ def test_dockerfile_packages_release_evidence_for_runtime_readiness():
     assert "COPY docs /app/docs" not in content
 
 
+def test_runtime_image_packages_ctd_chart_dependencies():
+    dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+    pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+
+    assert '"matplotlib>=3.8.0"' in pyproject
+    assert "ARG APT_MIRROR" in dockerfile
+    assert "sed -i" in dockerfile
+    assert "$APT_MIRROR" in dockerfile
+    assert "apt-get update" in dockerfile
+    assert "fonts-noto-cjk" in dockerfile
+    assert "fontconfig" in dockerfile
+    assert "fc-cache -f -v" in dockerfile
+    assert "rm -rf /var/lib/apt/lists/*" in dockerfile
+
+
 def test_docker_entrypoint_validates_runtime_env():
     content = Path("docker-entrypoint.sh").read_text(encoding="utf-8")
 

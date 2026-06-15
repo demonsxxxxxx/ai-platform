@@ -1,0 +1,143 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "artifact_kind": "alert_trace_export_runtime_acceptance",
+  "captured_at": "2026-06-14T22:52:29+08:00",
+  "commit_sha": "79495bf4954017351db6d19494a16099fe2ee0bf",
+  "runtime_subject_commit_sha": "79495bf4954017351db6d19494a16099fe2ee0bf",
+  "evidence_id": "2026-06-14-211-foundation-alpha-poc-79495bf-alert-trace-export-runtime-acceptance",
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#15",
+    "#16",
+    "#17",
+    "#21",
+    "#22",
+    "#23",
+    "#24",
+    "#33"
+  ],
+  "pr_refs": [
+    "#40"
+  ],
+  "open_followups": [
+    "#21 is closed in GitHub, but recorded multi-tenant capacity/load evidence remains required before raising production concurrency defaults.",
+    "G7 Docker sandbox hardening and Docker-capable sandbox smoke remain blocked.",
+    "G8 ordinary-user multi-agent exposure remains feature-flagged/internal only.",
+    "Packaged frontend image smoke/release acceptance remains separate from this thin-shell POC smoke.",
+    "Signed package or SBOM review evidence for Skill release remains open.",
+    "The 211 compose label still records an external env-file path; no env values were copied or printed, and deployment-layout reconciliation remains a production/G0 follow-up."
+  ],
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "source_ref": {
+    "api_health": {
+      "route": "/api/ai/health",
+      "status": "ok"
+    },
+    "branch": "codex/foundation-runtime-concurrency",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_layout_status": "external_env_file_label_present",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "deployment_note": "Runtime-only PR #40 image was run on 211 for the 79495bf runtime subject. Source revision, OCI revision, runtime-subject, and source_revision alias labels point to 79495bf. The compose environment-file label records an external env-file path; this evidence does not copy or expose runtime secrets.",
+    "gateway_secret_supplied": false,
+    "image": "ai-platform:79495bf-foundation-runtime-concurrency-pr40",
+    "image_id": "sha256:6eef3f19c71fd44ddefa24fc6bc106566f156cb299b241c206c38b4f2598fc9f",
+    "image_labels": {
+      "ai-platform.pr": "40",
+      "ai-platform.runtime-rollout": "foundation-runtime-concurrency-pr40-79495bf",
+      "ai-platform.runtime-subject": "79495bf4954017351db6d19494a16099fe2ee0bf",
+      "ai-platform.runtime_subject": "79495bf4954017351db6d19494a16099fe2ee0bf",
+      "ai-platform.source-branch": "codex/foundation-runtime-concurrency",
+      "ai-platform.source-revision": "79495bf4954017351db6d19494a16099fe2ee0bf",
+      "ai-platform.source_note": "pr40-79495bf-runtime-rollout",
+      "ai-platform.source_revision": "79495bf4954017351db6d19494a16099fe2ee0bf",
+      "ai-platform.source_tree_commit": "79495bf4954017351db6d19494a16099fe2ee0bf",
+      "org.opencontainers.image.revision": "79495bf4954017351db6d19494a16099fe2ee0bf"
+    },
+    "repo_local_env_present": false,
+    "runtime_commit": "79495bf4954017351db6d19494a16099fe2ee0bf",
+    "runtime_source_marker": "79495bf4954017351db6d19494a16099fe2ee0bf",
+    "runtime_subject_label_status": "runtime_subject_label_current",
+    "source_revision_alias_label_status": "source_revision_alias_label_current",
+    "source_snapshot": {
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "snapshot": "79495bf-202606142252-foundation-alpha-broad",
+      "source_branch": "codex/foundation-runtime-concurrency",
+      "source_revision": "79495bf4954017351db6d19494a16099fe2ee0bf",
+      "source_tree_commit_sha": "79495bf4954017351db6d19494a16099fe2ee0bf",
+      "source_tree_dirty": false,
+      "runtime_subject_commit_sha": "79495bf4954017351db6d19494a16099fe2ee0bf",
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "sync_method": "git_archive_upload",
+      "notes": [
+        "No real .env copied or exported",
+        "Runtime evidence directory preserved under .codex-runtime-evidence for operator audit"
+      ]
+    }
+  },
+  "evidence_ref": {
+    "verifier": "tools/verify_alert_trace_export_runtime_acceptance.py",
+    "schema_version": "ai-platform.alert-trace-export-runtime-acceptance.v1",
+    "command": "python3 tools/verify_alert_trace_export_runtime_acceptance.py --base-url http://127.0.0.1:8020 --commit-sha 79495bf... --runtime-subject-commit-sha 79495bf... --image ai-platform:79495bf-foundation-runtime-concurrency-pr40",
+    "result": "ok:true",
+    "runtime_checks": {
+      "alert_trace_export_runtime_acceptance": {
+        "checks": {
+          "admin_runtime_alerts_and_exports": {
+            "alert_delivery_not_enabled": true,
+            "alert_delivery_policy_status": "contract_only_not_enabled",
+            "alert_rule_count": 7,
+            "alert_rules_status": "partial_blocked",
+            "alerts_domain_status": "partial_blocked",
+            "expected_status": 200,
+            "forbidden_projection_terms_present": false,
+            "implemented_alert_delivery_policy": true,
+            "implemented_alert_template": true,
+            "implemented_trace_export_contract": true,
+            "observability_schema_version": "ai-platform.observability-readiness.v1",
+            "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+            "slo_threshold_runtime_calibration_gap_present": true,
+            "status": 200,
+            "tenant_id": "default",
+            "tenant_matches_requested": true,
+            "trace_export_contract_schema_version": "ai-platform.trace-audit-export-contract.v1",
+            "trace_export_not_raw_runtime_payloads": true,
+            "trace_export_sources_public_only": true,
+            "trace_export_status": "partial_blocked"
+          },
+          "ordinary_admin_runtime": {
+            "detail": "not_ai_admin",
+            "expected_status": 403,
+            "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+            "status": 403
+          }
+        },
+        "does_not_close_g9": true,
+        "does_not_enable_alert_delivery": true,
+        "does_not_export_raw_runtime_payloads": true,
+        "ok": true,
+        "open_gaps": [],
+        "redaction_scan_status": "passed",
+        "schema_version": "ai-platform.alert-trace-export-runtime-acceptance.v1",
+        "source": {
+          "base_url": "http://127.0.0.1:8020",
+          "commit_sha": "79495bf4954017351db6d19494a16099fe2ee0bf",
+          "gateway_secret_supplied": false,
+          "image": "ai-platform:79495bf-foundation-runtime-concurrency-pr40",
+          "runtime_subject_commit_sha": "79495bf4954017351db6d19494a16099fe2ee0bf",
+          "tenant_id": "default"
+        },
+        "status": "accepted_for_operator_review"
+      }
+    }
+  },
+  "review_notes": [
+    "This entry records a reviewed alert/trace export runtime acceptance summary for 79495bf.",
+    "The verifier confirmed ordinary-user Admin Runtime denial, same-tenant admin observability projection, alert delivery remains contract-only disabled, and trace export does not expose raw runtime payloads."
+  ]
+}

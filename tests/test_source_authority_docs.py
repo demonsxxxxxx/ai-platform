@@ -21,18 +21,26 @@ OBSERVABILITY_READINESS_DOC = ROOT / "docs/operations/ai-platform-observability-
 GOVERNANCE_READINESS_DOC = ROOT / "docs/operations/ai-platform-governance-readiness.md"
 GATE_STATUS_DOC = ROOT / "docs/operations/ai-platform-gate-status.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
-ACTIVE_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:cbbfaff-runtime-evidence-root-redaction-v2"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:cdd99dbffb6529f8faf9bcc3476c65f18063dea00977d4da7879d98f84fb690b"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-13-211-foundation-alpha-poc-cbbfaff-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-13-211-foundation-alpha-poc-cbbfaff-auth-rbac-smoke"
+SOURCE_RUNTIME_RELATION_MANIFEST = (
+    ROOT / "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json"
+)
+ACTIVE_RUNTIME_SUBJECT_SHA = "79495bf4954017351db6d19494a16099fe2ee0bf"
+ACTIVE_SOURCE_TREE_SHA = "4624197b0be47f9faa5c068efc11d1bee08384fe"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:79495bf-foundation-runtime-concurrency-pr40"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:6eef3f19c71fd44ddefa24fc6bc106566f156cb299b241c206c38b4f2598fc9f"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-14-211-foundation-alpha-poc-79495bf-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-14-211-foundation-alpha-poc-79495bf-auth-rbac-smoke"
+ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID = (
+    "2026-06-14-211-foundation-alpha-poc-79495bf-governance-runtime-smoke"
+)
 ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-13-211-foundation-alpha-poc-cbbfaff-release-evidence-runtime-acceptance"
+    "2026-06-14-211-foundation-alpha-poc-79495bf-release-evidence-runtime-acceptance"
 )
 ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-13-211-foundation-alpha-poc-cbbfaff-alert-trace-export-runtime-acceptance"
+    "2026-06-14-211-foundation-alpha-poc-79495bf-alert-trace-export-runtime-acceptance"
 )
-ACTIVE_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
+CBBFAFF_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
+CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
     "2026-06-13-211-foundation-alpha-poc-cbbfaff-frontend-packaged-runtime-smoke-blocked"
 )
 FOUNDATION_ALPHA_POC_EVIDENCE = (
@@ -77,11 +85,11 @@ FOUNDATION_ALPHA_POC_ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE = (
         f"{ACTIVE_RUNTIME_SUBJECT_SHA}/{ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID}.json"
     )
 )
-FOUNDATION_ALPHA_POC_ACTIVE_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE = (
+FOUNDATION_ALPHA_POC_CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE = (
     ROOT
     / (
         "docs/release-evidence/foundation-alpha-poc/"
-        f"{ACTIVE_RUNTIME_SUBJECT_SHA}/{ACTIVE_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID}.json"
+        f"{CBBFAFF_RUNTIME_SUBJECT_SHA}/{CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID}.json"
     )
 )
 SCHEMA = ROOT / "app/schema.sql"
@@ -189,11 +197,14 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "do_not_raise_without_recorded_load_test_evidence" in gate_status_text
     assert "packaged frontend image smoke/release acceptance" in gate_status_text
     assert "Foundation Alpha POC Smoke" in gate_status_text
-    assert "211 POC smoke refreshed for the current context public-summary" in gate_status_text
-    assert "contract; not production gate closure" in gate_status_text
-    assert "current context public-summary" in gate_status_text
+    assert "211 POC smoke refreshed for the merged #34-#39 S1 runtime subject" in gate_status_text
+    assert "not production gate closure" in gate_status_text
+    assert "current context public-summary" not in gate_status_text[:1000]
     assert "source_synced_runtime_pending" in gate_status_text
+    assert "committed source-runtime" in gate_status_text
+    assert "relation manifest" in gate_status_text
     assert "runtime_source_relation" in release_evidence_text
+    assert "source-runtime-relation-manifest.json" in release_evidence_text
     assert "current_source_verified_by_running_runtime" in release_evidence_text
     assert "runtime_relevant_source_verified_by_running_runtime" in release_evidence_text
     assert "verified_runtime_subject" in release_evidence_text
@@ -225,6 +236,46 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "api_key" not in gate_status_text
     assert "C:\\Users" not in gate_status_text
     assert "/home/xinlin.jiang/" not in gate_status_text
+
+
+def test_gate_status_snapshot_records_s1_post_merge_211_verification_requirements():
+    gate_status_text = read(GATE_STATUS_DOC)
+
+    assert "S1 post-merge 211 verification requirements" in gate_status_text
+    assert "after the #34-#39 stack is merged" in gate_status_text
+    assert "under the recorded review exception" in gate_status_text
+    assert "211 source snapshot" in gate_status_text
+    assert "not a Git worktree" in gate_status_text
+    assert ".ai-platform-source-revision" in gate_status_text
+    assert ".ai-platform-source-snapshot.json" in gate_status_text
+    assert "repo-local deploy composition" in gate_status_text
+    assert "container image labels" in gate_status_text
+    assert "runtime subject" in gate_status_text
+    assert "source tree commit" in gate_status_text
+    assert "release-evidence" in gate_status_text
+    assert "runtime subject" in gate_status_text
+    assert "governed_skill_runs" in gate_status_text
+    assert "mcp_tool_permission_runtime_controls" in gate_status_text
+    assert "memory_context_controls" in gate_status_text
+    assert "reviewDecision" in gate_status_text
+    assert "explicitly recorded project exception" in gate_status_text
+    assert "ordinary_user_multi_agent_allowed=false" in gate_status_text
+    assert "production_claim_allowed=false" in gate_status_text
+    assert "docker_sandbox_hardened_claim_allowed=false" in gate_status_text
+    assert "capacity_default_increase_allowed=false" in gate_status_text
+
+
+def test_committed_source_runtime_relation_manifest_keeps_clean_checkout_readiness_truthful():
+    import json
+
+    payload = json.loads(read(SOURCE_RUNTIME_RELATION_MANIFEST))
+
+    assert payload["schema_version"] == "ai-platform.source-runtime-relation-manifest.v1"
+    assert payload["source_tree_commit_sha"] == ACTIVE_SOURCE_TREE_SHA
+    assert payload["runtime_subject_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert payload["runtime_affecting_changes_since_runtime_subject"] == []
+    assert "C:\\Users" not in json.dumps(payload)
+    assert "/home/xinlin.jiang/" not in json.dumps(payload)
 
 
 def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded():
@@ -266,7 +317,7 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
         "message",
     ]
     assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["status"] == "succeeded"
-    assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["artifact_types"] == [
+    assert sorted(payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["artifact_types"]) == [
         "report_txt",
         "result_json",
         "reviewed_docx",
@@ -299,6 +350,7 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     release_evidence_index = read(RELEASE_EVIDENCE_INDEX)
     assert f"{ACTIVE_AUTH_RBAC_EVIDENCE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_POC_SMOKE_EVIDENCE_ID}.json" in release_evidence_index
+    assert f"{ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID}.json" in release_evidence_index
     assert "2026-06-13-211-foundation-alpha-poc-cbbfaff-governance-runtime-smoke.json" in release_evidence_index
@@ -431,28 +483,28 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     for marker in forbidden_markers:
         assert marker.lower() not in lowered_alert_trace
 
-    frontend_blocked_text = read(FOUNDATION_ALPHA_POC_ACTIVE_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE)
+    frontend_blocked_text = read(FOUNDATION_ALPHA_POC_CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE)
     frontend_blocked_payload = json.loads(frontend_blocked_text)
     frontend_blocked_smoke = frontend_blocked_payload["evidence_ref"]["runtime_checks"][
         "frontend_packaged_runtime_smoke"
     ]
-    assert frontend_blocked_payload["evidence_id"] == ACTIVE_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID
+    assert frontend_blocked_payload["evidence_id"] == CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID
     assert frontend_blocked_payload["artifact_kind"] == "frontend_packaged_runtime_smoke"
-    assert frontend_blocked_payload["commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
-    assert frontend_blocked_payload["runtime_subject_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
-    assert frontend_blocked_payload["source_ref"]["runtime_commit"] == ACTIVE_RUNTIME_SUBJECT_SHA
-    assert frontend_blocked_payload["source_ref"]["runtime_source_marker"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert frontend_blocked_payload["commit_sha"] == CBBFAFF_RUNTIME_SUBJECT_SHA
+    assert frontend_blocked_payload["runtime_subject_commit_sha"] == CBBFAFF_RUNTIME_SUBJECT_SHA
+    assert frontend_blocked_payload["source_ref"]["runtime_commit"] == CBBFAFF_RUNTIME_SUBJECT_SHA
+    assert frontend_blocked_payload["source_ref"]["runtime_source_marker"] == CBBFAFF_RUNTIME_SUBJECT_SHA
     assert frontend_blocked_payload["source_ref"]["image_labels"]["ai-platform.source-revision"] == (
-        ACTIVE_RUNTIME_SUBJECT_SHA
+        CBBFAFF_RUNTIME_SUBJECT_SHA
     )
     assert frontend_blocked_payload["source_ref"]["image_labels"]["org.opencontainers.image.revision"] == (
-        ACTIVE_RUNTIME_SUBJECT_SHA
+        CBBFAFF_RUNTIME_SUBJECT_SHA
     )
     assert frontend_blocked_payload["evidence_ref"]["result"] == "ok:true"
     assert frontend_blocked_payload["evidence_ref"]["schema_version"] == (
         "ai-platform.frontend-packaged-runtime-smoke.v1"
     )
-    assert frontend_blocked_smoke["commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert frontend_blocked_smoke["commit_sha"] == CBBFAFF_RUNTIME_SUBJECT_SHA
     assert frontend_blocked_smoke["runtime_host"] == "211"
     assert frontend_blocked_smoke["image_tag"] == "ai-platform-frontend:cbbfaff-smoke"
     assert frontend_blocked_smoke["docker_build"]["exit_code"] == 1
@@ -478,6 +530,16 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert "`/api/ai/auth/me`" in gate_status_text
     assert "tenant match" in gate_status_text
     assert "invalid gateway secret" in gate_status_text
+
+
+def test_gate_status_snapshot_records_company_login_audit_readiness_fields():
+    gate_status_text = read(GATE_STATUS_DOC)
+
+    assert "company_login_audit_verified=true" in gate_status_text
+    assert "ordinary_company_login_audit_count=12" in gate_status_text
+    assert "admin_company_login_audit_count=36" in gate_status_text
+    assert "broader auth/session/RBAC/tenant/redaction regression" in gate_status_text
+    assert "not production gate closure" in gate_status_text
 
 
 def test_foundation_alpha_runtime_evidence_subject_commit_parity_without_self_referential_record_commit():
@@ -695,9 +757,49 @@ def test_capacity_docs_record_machine_readable_gate_evidence_contract():
         assert "C:\\Users" not in text
 
 
+def test_gate_status_records_foundation_runtime_concurrency_context_pack_blocker():
+    gate_status_text = read(GATE_STATUS_DOC)
+    roadmap_text = read(ROADMAP)
+    release_evidence_text = read(RELEASE_EVIDENCE_INDEX)
+
+    for text in (gate_status_text, roadmap_text):
+        compact_text = " ".join(text.split())
+        assert "foundation_runtime_concurrency_evidence" in text
+        assert "ai-platform.foundation-runtime-concurrency.v1" in text
+        assert "context_pack_version" in text
+        assert "10+ concurrent" in text
+        assert "dff48fb" in text
+        assert "5d3d7e2" in text
+        assert "79495bf" in text
+        assert "negative decision-reuse probes" in text
+        assert "current accepted Foundation Runtime concurrency evidence" in compact_text
+        assert "Foundation Runtime" in text
+        assert "concurrency" in text
+        assert "multi-agent" in text
+        assert "production concurrency" in text
+        assert "C:\\Users" not in text
+
+    assert "dff48fbd454704af64871c039c59d396d8f9aaf7" in release_evidence_text
+    assert "2026-06-14-211-foundation-alpha-poc-dff48fb-foundation-runtime-concurrency.json" in release_evidence_text
+    assert "5d3d7e2207d625817d193898c22d29d2f487fa4b" in release_evidence_text
+    assert "2026-06-14-211-foundation-alpha-poc-5d3d7e2-foundation-runtime-concurrency.json" in release_evidence_text
+    assert "79495bf4954017351db6d19494a16099fe2ee0bf" in release_evidence_text
+    assert "2026-06-14-211-foundation-alpha-poc-79495bf-foundation-runtime-concurrency.json" in release_evidence_text
+    assert "verified_foundation_runtime_concurrency" not in release_evidence_text
+    assert "negative tool-permission reuse probes" in release_evidence_text
+    assert "queue_probe_sample_count" in release_evidence_text
+    assert "does not raise production concurrency defaults" in release_evidence_text
+    assert "open ordinary-user multi-agent" in release_evidence_text
+
+
 def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
     capacity_text = read(CAPACITY_BASELINE_DOC)
 
+    assert "GitHub issue #21 is currently closed" in capacity_text
+    assert "capacity-upgrade evidence gate" in capacity_text
+    assert "remains open" in capacity_text
+    assert "This evidence keeps #21 open" not in capacity_text
+    assert "This follow-up evidence keeps #21 open" not in capacity_text
     assert "3d607c96b8d8e21f59461bd94cc4b64de1d49dd5" in capacity_text
     assert "ai-platform:3d607c9-g9-latency-acceptance" in capacity_text
     assert "probe_completed_not_gate_evidence" in capacity_text
@@ -823,6 +925,27 @@ def test_governance_docs_record_skill_dependency_review_policy_without_closing_g
         assert "raw_storage_key" not in text
         assert "sandbox_workdir" not in text
         assert "C:\\Users" not in text
+
+
+def test_office_context_docs_track_source_level_context_pack_versioning_without_gate_closure():
+    governance_text = read(GOVERNANCE_READINESS_DOC)
+    roadmap_text = read(ROADMAP)
+    gate_status_text = read(GATE_STATUS_DOC)
+
+    for text in (governance_text, roadmap_text, gate_status_text):
+        assert "source-level context-pack persistence/versioning" in text
+        assert "source_level_context_pack_persistence_and_versioning" in text
+        assert "context_pack_version" in text
+        assert "context_pack_generated_at" in text
+        assert "211 executor context-pack acceptance" in text
+        assert "frontend context provenance acceptance" in text
+        assert "long-term cross-session memory" in text
+        assert "ordinary-user G8/G10 exposure" in text
+        assert "C:\\Users" not in text
+
+    for text in (governance_text, gate_status_text):
+        assert "Context-pack persistence/versioning, 211 executor" not in text
+        assert "context-pack persistence/executor injection/frontend provenance acceptance" not in text
 
 
 def test_frontend_docs_record_packaged_runtime_smoke_contract_and_211_blocker():

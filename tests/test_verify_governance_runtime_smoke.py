@@ -96,16 +96,22 @@ def governance_payload(tenant_id="default", *, overrides=None):
                     "implemented": [
                         "long_term_cross_session_memory_default_fail_closed",
                         "context_snapshot_public_provenance_projection_contract",
+                        "executor_context_pack_prompt_injection_source_tests",
                     ],
                     "gaps": [
                         "office_context_pack_persistence_and_versioning",
-                        "executor_context_pack_injection",
+                        "executor_context_pack_211_acceptance",
                         "frontend_context_provenance_acceptance",
                     ],
                     "evidence": {
                         "office_context_pack_readiness": {
-                            "schema_version": "ai-platform.office-context-readiness.v1",
+                            "schema_version": "ai-platform.office-context-pack-readiness.v1",
                             "status": "partial_blocked",
+                            "implemented_controls": [
+                                "source_level_context_pack_contract",
+                                "context_snapshot_public_provenance_projection_contract",
+                                "executor_context_pack_prompt_injection_source_tests",
+                            ],
                             "summary": {
                                 "open_gaps": 3,
                                 "sandbox_default_for_lightweight_office_tasks": False,
@@ -118,6 +124,7 @@ def governance_payload(tenant_id="default", *, overrides=None):
                 "legacy_frontend_route_policy_enforcement_or_ai_platform_remap",
                 "skill_dependency_review_policy_runtime_acceptance",
                 "office_context_pack_persistence_and_versioning",
+                "executor_context_pack_211_acceptance",
             ],
             "evidence_policy": "code_tests_docs_and_211_smoke_required_before_gate_closure",
         },

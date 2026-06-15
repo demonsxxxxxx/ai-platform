@@ -8,6 +8,7 @@ from typing import Any
 
 from app import repositories
 from app.control_plane_contracts import artifact_lineage_contract, standard_trace_id
+from app.context_builder import executor_context_pack_from_snapshot
 from app.db import transaction
 from app.executors.base import ArtifactManifest, ExecutorEventSink, ExecutorResult, RunPayload
 from app.executors.claude_agent_sdk_runner import (
@@ -579,6 +580,7 @@ class ClaudeAgentWorkerAdapter:
             skill_id=payload.skill_id,
             user_message=str(payload.input.get("message") or payload.input.get("prompt") or ""),
             file_names=file_names,
+            context_pack=executor_context_pack_from_snapshot(payload.context_snapshot),
         )
         sdk_result = await self._try_run_sdk(
             payload,
@@ -634,6 +636,7 @@ class ClaudeAgentWorkerAdapter:
         used_skill_names = _sdk_used_skill_names(sdk_result, staged_skill_names) if sdk_result else []
         used_skills_source = _sdk_used_skills_source(sdk_result, used_skill_names)
         inferred_used_skill_names = _inferred_used_skill_names(payload, staged_skill_names)
+        artifacts = self._collect_workspace_artifacts(payload, workspace)
         skill_manifests = _skill_manifests(
             selected_skills,
             used_skill_names=used_skill_names,
@@ -655,8 +658,9 @@ class ClaudeAgentWorkerAdapter:
                 "allowed_skills": allowed_skill_names,
                 "staged_skills": staged_skill_names,
                 "used_skills": used_skill_names,
+                "artifact_count": len(artifacts),
             },
-            artifacts=[],
+            artifacts=artifacts,
             executor_payload={
                 "sdk_used": bool(sdk_result and sdk_result.used_sdk),
                 "sdk_error": sdk_result.error if sdk_result else "claude_agent_sdk_required",
@@ -699,6 +703,7 @@ class ClaudeAgentWorkerAdapter:
             skill_id=payload.skill_id,
             user_message=str(payload.input.get("message") or payload.input.get("prompt") or ""),
             file_names=file_names,
+            context_pack=executor_context_pack_from_snapshot(payload.context_snapshot),
         )
         async def on_text(delta: str) -> None:
             if event_sink:
@@ -742,7 +747,7 @@ class ClaudeAgentWorkerAdapter:
             }
 
             async with transaction() as conn:
-                permission_decision = await repositories.get_latest_tool_permission_decision(
+                permission_decision = await repositories.get_exact_tool_permission_decision(
                     conn,
                     tenant_id=payload.tenant_id,
                     user_id=payload.user_id,
@@ -964,26 +969,36 @@ class ClaudeAgentWorkerAdapter:
         return file_names
 
     def _collect_workspace_artifacts(self, payload: RunPayload, workspace: Path) -> list[ArtifactManifest]:
-        output_dir = workspace / "output"
-        if not output_dir.is_dir():
-            return []
-        ensure_path_inside(workspace, output_dir, "workspace output must stay inside the run workspace")
+        output_dirs = [
+            workspace / "output",
+            workspace / "outputs",
+            workspace / "workspace-outputs",
+        ]
         artifacts: list[ArtifactManifest] = []
         storage = ObjectStorage()
         candidates: list[Path] = []
-        for item in sorted(output_dir.rglob("*")):
-            if item.is_symlink():
-                raise ValueError("workspace output must not contain symlinks")
-            if not item.is_file():
+        for output_dir in output_dirs:
+            if not output_dir.exists():
                 continue
-            ensure_path_inside(output_dir, item, "workspace artifact must stay inside output directory")
-            candidates.append(item)
+            if output_dir.is_symlink():
+                raise ValueError("workspace output must not contain symlinks")
+            if not output_dir.is_dir():
+                continue
+            ensure_path_inside(workspace, output_dir, "workspace output must stay inside the run workspace")
+            for item in sorted(output_dir.rglob("*")):
+                if item.is_symlink():
+                    raise ValueError("workspace output must not contain symlinks")
+                if not item.is_file():
+                    continue
+                ensure_path_inside(output_dir, item, "workspace artifact must stay inside output directory")
+                candidates.append(item)
         for index, path in enumerate(candidates, start=1):
+            workspace_output = path.relative_to(workspace).as_posix()
             content_type = _artifact_content_type(path.name)
             artifact_type = _artifact_type(path.name, payload.skill_id)
             storage_key = (
                 f"tenants/{payload.tenant_id}/workspaces/{payload.workspace_id}/"
-                f"sessions/{payload.session_id}/runs/{payload.run_id}/artifacts/{index}/{path.name}"
+                f"sessions/{payload.session_id}/runs/{payload.run_id}/artifacts/{index}/{workspace_output}"
             )
             stored = storage.put_bytes(
                 storage_key=storage_key,
@@ -999,7 +1014,7 @@ class ClaudeAgentWorkerAdapter:
                     size_bytes=stored.size_bytes,
                     manifest={
                         "source_executor": self.executor_type,
-                        "workspace_output": str(path.relative_to(workspace)),
+                        "workspace_output": workspace_output,
                     },
                 )
             )

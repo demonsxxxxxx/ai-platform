@@ -22,6 +22,7 @@ from app.repositories import (
     fail_run,
     get_admin_run_detail,
     get_context_snapshot_for_worker,
+    get_exact_tool_permission_decision,
     get_latest_tool_permission_decision,
     get_run_identity,
     list_multi_agent_dispatch_candidate_run_ids,
@@ -2154,10 +2155,10 @@ async def test_decide_tool_permission_request_sets_decision_expiry():
 
 
 @pytest.mark.asyncio
-async def test_get_latest_tool_permission_decision_scopes_by_run_user_and_tool():
+async def test_get_exact_tool_permission_decision_requires_exact_call_or_fingerprint():
     conn = RecordingConnection()
 
-    row = await get_latest_tool_permission_decision(
+    row = await get_exact_tool_permission_decision(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
@@ -2171,10 +2172,10 @@ async def test_get_latest_tool_permission_decision_scopes_by_run_user_and_tool()
 
 
 @pytest.mark.asyncio
-async def test_get_latest_tool_permission_decision_can_filter_exact_tool_call_or_fingerprint():
+async def test_get_exact_tool_permission_decision_filters_tool_call_or_fingerprint():
     conn = RecordingConnection()
 
-    await get_latest_tool_permission_decision(
+    await get_exact_tool_permission_decision(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
@@ -2199,6 +2200,36 @@ async def test_get_latest_tool_permission_decision_can_filter_exact_tool_call_or
         "tool-current",
         "command_sha256",
         "a" * 64,
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_latest_tool_permission_decision_wrapper_uses_exact_lookup_shape():
+    conn = RecordingConnection()
+
+    await get_latest_tool_permission_decision(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        run_id="run-a",
+        tool_id="ragflow-knowledge-search",
+        action="execute",
+        tool_call_id="mcp-current",
+        request_payload_json={"input_sha256": "b" * 64},
+    )
+
+    sql, params = conn.calls[0]
+    assert "decision in ('allow_once', 'deny')" in sql
+    assert "decision = 'allow_for_run'" in sql
+    assert params == (
+        "tenant-a",
+        "user-a",
+        "run-a",
+        "ragflow-knowledge-search",
+        "execute",
+        "mcp-current",
+        "input_sha256",
+        "b" * 64,
     )
 
 
@@ -3004,8 +3035,14 @@ async def test_admin_run_detail_rejects_missing_audit_schema(monkeypatch):
                 }
             ]
 
+    class EmptyListCursor:
+        async def fetchall(self):
+            return []
+
     class AuditConnection:
         async def execute(self, sql, params):
+            if "from sandbox_leases" in " ".join(sql.split()):
+                return EmptyListCursor()
             return AuditCursor()
 
     monkeypatch.setattr(repositories, "get_run", fake_get_run)
@@ -3977,6 +4014,38 @@ async def test_admin_run_detail_projects_g2_trace_event_artifact_and_audit_contr
                         }
                     ]
                 )
+            if "from sandbox_leases" in compact:
+                return DetailCursor(
+                    many=[
+                        {
+                            "id": "lease-a",
+                            "tenant_id": "tenant-a",
+                            "workspace_id": "default",
+                            "user_id": "user-a",
+                            "session_id": "ses-a",
+                            "run_id": "run-a",
+                            "trace_id": "trace_lease_a",
+                            "sandbox_mode": "ephemeral",
+                            "provider": "fake",
+                            "status": "released",
+                            "browser_enabled": False,
+                            "resource_limits_json": {"cpu": 1, "token": "secret-limit"},
+                            "user_visible_payload_json": {
+                                "workspace_fingerprint": "tenant-a:default:ses-a:run-a",
+                                "runtime_private_payload": {"cwd": "/var/lib/ai-platform/run-a"},
+                            },
+                            "lease_payload_json": {
+                                "source": "foundation_runtime_lifecycle_probe",
+                                "client_secret": "lease-secret",
+                            },
+                            "heartbeat_at": None,
+                            "expires_at": None,
+                            "released_at": None,
+                            "release_reason": "completed",
+                            "created_at": None,
+                        }
+                    ]
+                )
             if "from audit_logs" in compact:
                 return DetailCursor(
                     many=[
@@ -4006,6 +4075,13 @@ async def test_admin_run_detail_projects_g2_trace_event_artifact_and_audit_contr
     assert detail["artifacts"][0]["trace_id"] == "trace_run_a"
     assert detail["artifacts"][0]["manifest"]["schema_version"] == "ai-platform.artifact-manifest.v1"
     assert "storage_key" not in str(detail["artifacts"][0]["manifest"])
+    assert detail["sandbox_leases"][0]["lease_id"] == "lease-a"
+    assert detail["sandbox_leases"][0]["lease_payload"] == {"source": "foundation_runtime_lifecycle_probe"}
+    assert "resource_limits" in detail["sandbox_leases"][0]
+    serialized_leases = json.dumps(detail["sandbox_leases"], ensure_ascii=False, default=str)
+    assert "lease-secret" not in serialized_leases
+    assert "secret-limit" not in serialized_leases
+    assert "/var/lib/ai-platform" not in serialized_leases
     assert detail["skill_snapshots"] == [
         {
             "skill_id": "qa-file-reviewer",
@@ -4134,8 +4210,14 @@ async def test_admin_run_detail_sanitizes_secret_and_runtime_payloads(monkeypatc
                 }
             ]
 
+    class EmptyListCursor:
+        async def fetchall(self):
+            return []
+
     class AuditConnection:
         async def execute(self, sql, params):
+            if "from sandbox_leases" in " ".join(sql.split()):
+                return EmptyListCursor()
             return AuditCursor()
 
     monkeypatch.setattr(repositories, "get_run", fake_get_run)

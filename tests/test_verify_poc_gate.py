@@ -480,6 +480,7 @@ def test_word_review_attachment_chat_routes_to_qa_runner(monkeypatch):
                                 "long_term_memory_read": False,
                             },
                             "execution_tier": "sdk_only_writing",
+                            "context_pack_version": "v1",
                             "context_pack_generated_at": "2026-06-12T01:00:00Z",
                         },
                     }
@@ -524,6 +525,134 @@ def test_word_review_attachment_chat_routes_to_qa_runner(monkeypatch):
     assert gate.evidence["context_snapshot_public_projection"]["ok"] is True
 
 
+def test_governed_skill_runs_gate_summarizes_real_task_snapshot_pins(monkeypatch):
+    queries: list[str] = []
+    run_rows = [
+        {
+            "run_id": "run_review_gate_1",
+            "tenant_id": "default",
+            "skill_id": "qa-file-reviewer",
+            "status": "succeeded",
+        },
+        {
+            "run_id": "run_translate_gate_1",
+            "tenant_id": "default",
+            "skill_id": "baoyu-translate",
+            "status": "succeeded",
+        },
+    ]
+
+    def fake_psql_rows(container: str, db_user: str, db_name: str, sql: str):
+        queries.append(sql)
+        if "from run_skill_snapshots" not in sql:
+            raise AssertionError(sql)
+        return [
+            {
+                "row_count": 2,
+                "used_count": 2,
+                "used_skill_ids": ["qa-file-reviewer", "baoyu-translate"],
+                "used_skills_sources": ["executor_hook"],
+                "pinned_snapshot_count": 2,
+                "missing_pinned_snapshots": [],
+            }
+        ]
+
+    monkeypatch.setattr(verify_poc_gate, "psql_rows", fake_psql_rows)
+
+    gate = verify_poc_gate.check_governed_skill_runs("postgres", "user", "db", run_rows)
+
+    assert gate.name == "governed_skill_runs"
+    assert gate.ok is True
+    assert gate.evidence == {
+        "verified": True,
+        "real_task_statuses": {
+            "qa-file-reviewer": "succeeded",
+            "baoyu-translate": "succeeded",
+        },
+        "run_skill_snapshots": {
+            "row_count": 2,
+            "used_count": 2,
+            "used_skill_ids": ["qa-file-reviewer", "baoyu-translate"],
+            "used_skills_source": "executor_hook",
+            "pinned_snapshot_count": 2,
+            "pinned_snapshot_source": "release_decision",
+            "missing_pinned_snapshots": [],
+            "mismatched_pinned_snapshots": [],
+        },
+    }
+    assert "run_review_gate_1" in queries[0]
+    assert "run_translate_gate_1" in queries[0]
+    assert "r.input_json ? 'release_decision'" in queries[0]
+
+
+def test_governed_skill_runs_gate_fails_closed_when_pinned_snapshot_is_missing(monkeypatch):
+    run_rows = [
+        {
+            "run_id": "run_review_gate_1",
+            "tenant_id": "default",
+            "skill_id": "qa-file-reviewer",
+            "status": "succeeded",
+        }
+    ]
+
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "psql_rows",
+        lambda *args, **kwargs: [
+            {
+                "row_count": 0,
+                "used_count": 0,
+                "used_skill_ids": [],
+                "used_skills_sources": [],
+                "pinned_snapshot_count": 0,
+                "missing_pinned_snapshots": ["qa-file-reviewer"],
+            }
+        ],
+    )
+
+    gate = verify_poc_gate.check_governed_skill_runs("postgres", "user", "db", run_rows)
+
+    assert gate.ok is False
+    assert gate.evidence["verified"] is False
+    assert gate.evidence["real_task_statuses"] == {"qa-file-reviewer": "succeeded"}
+    assert gate.evidence["run_skill_snapshots"]["missing_pinned_snapshots"] == ["qa-file-reviewer"]
+
+
+def test_governed_skill_runs_gate_fails_closed_when_snapshot_version_does_not_match_release_decision(
+    monkeypatch,
+):
+    run_rows = [
+        {
+            "run_id": "run_review_gate_1",
+            "tenant_id": "default",
+            "skill_id": "qa-file-reviewer",
+            "status": "succeeded",
+        }
+    ]
+
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "psql_rows",
+        lambda *args, **kwargs: [
+            {
+                "row_count": 1,
+                "used_count": 1,
+                "used_skill_ids": ["qa-file-reviewer"],
+                "used_skills_sources": ["executor_hook"],
+                "pinned_snapshot_count": 0,
+                "missing_pinned_snapshots": [],
+                "mismatched_pinned_snapshots": ["qa-file-reviewer"],
+            }
+        ],
+    )
+
+    gate = verify_poc_gate.check_governed_skill_runs("postgres", "user", "db", run_rows)
+
+    assert gate.ok is False
+    assert gate.evidence["verified"] is False
+    assert gate.evidence["run_skill_snapshots"]["mismatched_pinned_snapshots"] == ["qa-file-reviewer"]
+
+
 def test_context_snapshot_public_projection_gate_requires_safe_explainable_summary(monkeypatch):
     calls: list[tuple[str, dict[str, str]]] = []
 
@@ -548,6 +677,7 @@ def test_context_snapshot_public_projection_gate_requires_safe_explainable_summa
                             "long_term_memory_read": False,
                         },
                         "execution_tier": "sdk_only_writing",
+                        "context_pack_version": "v1",
                         "context_pack_generated_at": "2026-06-12T01:00:00Z",
                     },
                 }
@@ -582,6 +712,7 @@ def test_context_snapshot_public_projection_gate_requires_safe_explainable_summa
         "memory_policy_source": "stored",
         "long_term_memory_read": False,
         "execution_tier": "sdk_only_writing",
+        "context_pack_version": "v1",
         "context_pack_generated_at_present": True,
     }
 
@@ -617,12 +748,53 @@ def test_context_snapshot_public_projection_gate_rejects_counts_only_summary(mon
     assert gate.evidence["missing_public_summary_fields"] == [
         "attachments_input_key",
         "context_pack_generated_at",
+        "context_pack_version",
         "execution_tier",
         "input_keys",
         "long_term_memory_read",
         "memory_policy_source",
         "summary_source",
     ]
+
+
+def test_context_snapshot_public_projection_gate_requires_context_pack_version(monkeypatch):
+    def fake_get(url: str, headers: dict[str, str], timeout: float = 15.0):
+        return 200, {
+            "run_id": "run_review_gate_1",
+            "context_snapshots": [
+                {
+                    "context_snapshot_id": "ctx_missing_context_pack_version",
+                    "payload": {
+                        "referenced_materials": {
+                            "message_count": 1,
+                            "file_count": 1,
+                            "artifact_count": 0,
+                            "memory_record_count": 0,
+                        },
+                        "used_context_summary": {
+                            "source": "chat_stream",
+                            "input_keys": ["attachments", "message"],
+                            "memory_policy_source": "default",
+                            "long_term_memory_read": False,
+                        },
+                        "execution_tier": "sdk_only_writing",
+                        "context_pack_generated_at": "2026-06-12T01:00:00Z",
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr(verify_poc_gate, "http_json_get_with_headers", fake_get)
+
+    gate = verify_poc_gate.check_context_snapshot_public_projection(
+        "http://api.local",
+        {"run_id": "run_review_gate_1", "file_ids": ["file_review_gate_1"], "artifact_count": 1},
+        headers=verify_poc_gate.principal_headers("upload-review-gate-user", "Upload Review Gate User"),
+    )
+
+    assert gate.ok is False
+    assert gate.evidence["context_pack_version"] is None
+    assert gate.evidence["missing_public_summary_fields"] == ["context_pack_version"]
 
 
 def test_context_snapshot_public_projection_gate_requires_attachment_signal_for_file_context(monkeypatch):
@@ -646,6 +818,7 @@ def test_context_snapshot_public_projection_gate_requires_attachment_signal_for_
                             "long_term_memory_read": False,
                         },
                         "execution_tier": "sdk_only_writing",
+                        "context_pack_version": "v1",
                         "context_pack_generated_at": "2026-06-12T01:00:00Z",
                     },
                 }
@@ -686,6 +859,7 @@ def test_context_snapshot_public_projection_gate_fails_closed_on_malformed_file_
                             "long_term_memory_read": False,
                         },
                         "execution_tier": "sdk_only_writing",
+                        "context_pack_version": "v1",
                         "context_pack_generated_at": "2026-06-12T01:00:00Z",
                     },
                 }
@@ -726,6 +900,7 @@ def test_context_snapshot_public_projection_gate_rejects_non_integer_material_co
                             "long_term_memory_read": False,
                         },
                         "execution_tier": "sdk_only_writing",
+                        "context_pack_version": "v1",
                         "context_pack_generated_at": "2026-06-12T01:00:00Z",
                     },
                 }
@@ -783,6 +958,7 @@ def test_context_snapshot_public_projection_gate_rejects_unsafe_input_keys(monke
                             "long_term_memory_read": False,
                         },
                         "execution_tier": "sdk_only_writing",
+                        "context_pack_version": "v1",
                         "context_pack_generated_at": "2026-06-12T01:00:00Z",
                     },
                 }
@@ -830,6 +1006,7 @@ def test_context_snapshot_public_projection_gate_reports_all_snapshot_followups(
                             "long_term_memory_read": False,
                         },
                         "execution_tier": "sdk_only_writing",
+                        "context_pack_version": "v1",
                         "context_pack_generated_at": "2026-06-12T01:00:00Z",
                     },
                 },
@@ -849,6 +1026,7 @@ def test_context_snapshot_public_projection_gate_reports_all_snapshot_followups(
                             "long_term_memory_read": False,
                         },
                         "execution_tier": "sdk_only_writing",
+                        "context_pack_version": "v1",
                         "context_pack_generated_at": "2026-06-12T01:00:00Z",
                     },
                 },
@@ -890,6 +1068,7 @@ def test_context_snapshot_public_projection_gate_rejects_raw_id_and_private_leak
                             "long_term_memory_read": False,
                         },
                         "execution_tier": "sdk_only_writing",
+                        "context_pack_version": "v1",
                         "context_pack_generated_at": "2026-06-12T01:00:00Z",
                         "includedFileIds": ["file-secret"],
                         "sandbox_workdir": "/tmp/tenant/run",

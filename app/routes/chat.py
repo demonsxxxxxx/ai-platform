@@ -29,7 +29,7 @@ from app.projection_redaction import (
     sanitize_user_control_input,
     strip_server_owned_control_metadata,
 )
-from app.queue import enqueue_run, get_queue_insight
+from app.queue import QueueAdmissionMetadata, enqueue_run, enqueue_run_with_metadata, get_queue_insight
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.settings import get_settings
 from app.skills.pinning import (
@@ -43,6 +43,7 @@ from app.skills.registry import BuiltinSkillRegistry
 
 router = APIRouter()
 _MISSING = object()
+_ORIGINAL_ENQUEUE_RUN = enqueue_run
 
 
 def _skill_manifest_pins(skill_id: str, input_payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -106,6 +107,17 @@ def _validate_queue_payload_for_enqueue(payload: dict[str, Any]) -> dict[str, An
         return QueueRunPayload.model_validate(payload).model_dump(mode="json")
     except ValueError as exc:
         raise HTTPException(status_code=500, detail="queue_payload_invalid") from exc
+
+
+async def _enqueue_chat_run(queue_payload: dict[str, Any]):
+    if enqueue_run is not _ORIGINAL_ENQUEUE_RUN:
+        queue_position = await enqueue_run(queue_payload)
+        return QueueAdmissionMetadata(
+            queue_position=int(queue_position),
+            queue_admission_ordinal=int(queue_position),
+            message_id="",
+        )
+    return await enqueue_run_with_metadata(queue_payload)
 
 
 def _strip_server_owned_control_metadata(input_payload: object) -> object:
@@ -626,7 +638,24 @@ async def chat_stream(
             "context_snapshot": context_ref,
         }
     )
-    queue_position = await enqueue_run(queue_payload)
+    queue_admission = await _enqueue_chat_run(queue_payload)
+    queue_position = int(queue_admission.queue_position)
+    async with transaction() as conn:
+        await repositories.append_event(
+            conn,
+            tenant_id=principal.tenant_id,
+            run_id=run_id,
+            event_type="queued",
+            stage="queue",
+            message="任务队列接纳完成",
+            payload={
+                "visible_to_user": False,
+                "source": "admin_runtime_queue",
+                "queue_position": queue_position,
+                "queue_admission_ordinal": int(queue_admission.queue_admission_ordinal),
+                "queue_probe_source": str(queue_admission.source),
+            },
+        )
     return ChatStreamResponse(
         session_id=session_id,
         run_id=run_id,

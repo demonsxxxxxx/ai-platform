@@ -1,0 +1,131 @@
+{
+  "artifact_kind": "211_runtime_smoke",
+  "captured_at": "2026-06-14T12:35:00+08:00",
+  "commit_sha": "dff48fbd454704af64871c039c59d396d8f9aaf7",
+  "evidence_id": "2026-06-14-211-foundation-alpha-poc-dff48fb-auth-rbac-smoke",
+  "evidence_ref": {
+    "command": "python3 tools/verify_auth_rbac_smoke.py --base-url http://127.0.0.1:8020 --commit-sha dff48fb... --image ai-platform:dff48fb-foundation-runtime-concurrency-pr40",
+    "result": "ok:true",
+    "runtime_checks": {
+      "admin_runtime": {
+        "expected_status": 200,
+        "forbidden_projection_terms_present": false,
+        "missing_sections": [],
+        "queue_lease_scan_limit": 50,
+        "required_sections_present": true,
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "sandbox_active_leases": 0,
+        "status": 200,
+        "tenant_id": "default",
+        "tenant_matches_requested": true
+      },
+      "authenticated_auth_me": {
+        "expected_status": 200,
+        "forbidden_projection_terms_present": false,
+        "is_admin": true,
+        "route": "/api/ai/auth/me",
+        "source": "trusted-header",
+        "status": 200,
+        "tenant_id": "default",
+        "tenant_matches_requested": true,
+        "user_id": "poc-admin-smoke",
+        "user_matches_requested": true
+      },
+      "invalid_gateway_secret_auth_me": {
+        "detail": "invalid_gateway_principal_secret",
+        "expected_status": 403,
+        "route": "/api/ai/auth/me",
+        "status": 403
+      },
+      "ordinary_admin_runtime": {
+        "detail": "not_ai_admin",
+        "expected_status": 403,
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "status": 403
+      },
+      "unauthenticated_auth_me": {
+        "detail": "missing_authenticated_principal",
+        "expected_status": 401,
+        "route": "/api/auth/me",
+        "status": 401
+      }
+    },
+    "schema_version": "ai-platform.auth-rbac-smoke.v1",
+    "verifier": "tools/verify_auth_rbac_smoke.py"
+  },
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#15",
+    "#16",
+    "#17",
+    "#21",
+    "#22",
+    "#23",
+    "#24",
+    "#33"
+  ],
+  "open_followups": [
+    "#21 is closed in GitHub, but recorded multi-tenant capacity/load evidence remains required before raising production concurrency defaults.",
+    "G7 Docker sandbox hardening and Docker-capable sandbox smoke remain blocked.",
+    "G8 ordinary-user multi-agent exposure remains feature-flagged/internal only.",
+    "Packaged frontend image smoke/release acceptance remains separate from this thin-shell POC smoke.",
+    "Signed package or SBOM review evidence for Skill release remains open.",
+    "The 211 compose label still records an external env-file path; no env values were copied or printed, and deployment-layout reconciliation remains a production/G0 follow-up."
+  ],
+  "pr_refs": [
+    "#40"
+  ],
+  "redaction_scan_status": "passed",
+  "review_notes": [
+    "This entry records a reviewed Auth/RBAC smoke summary for the dff48fb Foundation Alpha S1 runtime.",
+    "The smoke verified unauthenticated denial, invalid gateway-secret denial, ordinary-user Admin Runtime denial, and same-tenant admin auth/Admin Runtime access.",
+    "The reviewed summary omits credentials, connection strings, executor-only internals, runtime workspace paths, real user identifiers, runtime env-file paths, and personal workstation paths."
+  ],
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "dff48fbd454704af64871c039c59d396d8f9aaf7",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "api_health": {
+      "route": "/api/ai/health",
+      "status": "ok"
+    },
+    "branch": "codex/foundation-runtime-concurrency",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_layout_status": "external_env_file_label_present",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "deployment_note": "Runtime-only PR #40 image was run on 211 for the dff48fb runtime subject. Source revision, OCI revision, runtime-subject, and source_revision alias labels point to dff48fb. The compose environment-file label records an external env-file path; this evidence does not copy or expose runtime secrets.",
+    "gateway_secret_supplied": false,
+    "image": "ai-platform:dff48fb-foundation-runtime-concurrency-pr40",
+    "image_id": "sha256:bcb5942c2093bb1ecdf10236b9d5a3a76623c0f87cf44df2d057b134cd2fab16",
+    "image_labels": {
+      "ai-platform.runtime-rollout": "foundation-runtime-concurrency-pr40-current-head",
+      "ai-platform.runtime-subject": "dff48fbd454704af64871c039c59d396d8f9aaf7",
+      "ai-platform.source-branch": "codex/foundation-runtime-concurrency",
+      "ai-platform.source-revision": "dff48fbd454704af64871c039c59d396d8f9aaf7",
+      "ai-platform.source_note": "pr40-current-head-runtime-rollout",
+      "ai-platform.source_revision": "dff48fbd454704af64871c039c59d396d8f9aaf7",
+      "org.opencontainers.image.revision": "dff48fbd454704af64871c039c59d396d8f9aaf7"
+    },
+    "repo_local_env_present": false,
+    "runtime_commit": "dff48fbd454704af64871c039c59d396d8f9aaf7",
+    "runtime_source_marker": "dff48fbd454704af64871c039c59d396d8f9aaf7",
+    "runtime_subject_label_status": "runtime_subject_label_current",
+    "source_revision_alias_label_status": "source_revision_alias_label_current",
+    "source_snapshot": {
+      "dirty": false,
+      "notes": [
+        "No real .env copied or exported",
+        "Runtime evidence directory preserved from prior 211 source snapshot"
+      ],
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "snapshot": "dff48fb-202606141155-source-sync",
+      "source_branch": "codex/foundation-runtime-concurrency",
+      "source_revision": "dff48fbd454704af64871c039c59d396d8f9aaf7",
+      "sync_method": "git_archive_upload"
+    }
+  }
+}

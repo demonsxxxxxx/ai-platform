@@ -16,7 +16,7 @@ auth/session, DB schema, or compose delivery behavior.
 | #17 frontend source ownership | In progress. Source now lives under `frontend/web`, has local install/lint/build evidence, exposes release traceability plus a frontend projection audit, and has a GitHub Actions frontend workflow with source checks plus a packaged-image build/provenance contract. `ci:verify` starts with the projection audit launcher; the active browser entry graph is currently clear of forbidden private/secret-like projection terms, and the Profile env-var surface is no longer active. Inactive legacy secret-like model/channel/envvar sources remain quarantined and must be remapped before G9 rollout. Full closure still needs packaged image smoke/release acceptance on 211 or another Docker-capable host. |
 | #20 G5 scheduling/admission gaps | Closed on 2026-06-06 by `f5da825` and `e203412`, with local full pytest and 211 smoke evidence recorded in the issue. |
 | #21 capacity baseline | GitHub issue currently closed, but current default active worker execution is still about three runs, and recorded load-test evidence is required before raising concurrency defaults. |
-| #22 office UX/context continuity | Open. Source-level architecture readiness now exists through `tools/office_context_readiness.py`, but runtime context-pack persistence/injection, document-centric follow-up state, sandbox cold-start latency split, and frontend context provenance acceptance are not implemented by this migration. |
+| #22 office UX/context continuity | Open. Source-level context-pack readiness, context-pack persistence/versioning, user-visible context provenance API projection tests, execution-tier routing tests, and executor prompt-injection tests now exist through `tools/office_context_readiness.py`, context route tests, router tests, and the worker adapter tests, but 211 executor acceptance, document-centric follow-up state, sandbox cold-start latency split, and frontend context provenance acceptance are not implemented by this migration. |
 
 Gate summary:
 
@@ -412,11 +412,13 @@ packaged frontend image trace.
   frontend image release acceptance remains pending until the image is smoked
   with the compose overlay on 211 or another Docker-capable host.
 - #22 document-centric context/workbench UX now has a source-level architecture
-  readiness baseline through `tools/office_context_readiness.py`, but runtime
-  context-pack persistence/injection, document-centric follow-up state,
-  lightweight-task execution-tier routing, sandbox cold-start latency split, and
-  frontend context provenance acceptance remain future work and are not part of
-  this source move.
+  readiness baseline through `tools/office_context_readiness.py` plus
+  source-level context-pack persistence/versioning, user-visible context
+  provenance API projection tests, execution-tier routing, and bounded executor
+  context-pack prompt injection tests, but 211 executor acceptance,
+  document-centric follow-up state, sandbox cold-start latency split, and
+  frontend context provenance acceptance
+  remain future work and are not part of this source move.
 
 ## Verification Commands
 

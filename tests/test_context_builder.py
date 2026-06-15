@@ -2,9 +2,11 @@ import pytest
 from datetime import datetime
 
 from app.context_builder import (
+    executor_context_pack_from_snapshot,
     ensure_public_context_provenance,
     initial_context_summary,
     public_context_payload,
+    public_context_provenance,
     record_initial_context_snapshot,
 )
 
@@ -248,12 +250,25 @@ def test_initial_context_summary_includes_public_context_provenance_contract():
     }
     assert summary["latest_artifact_version"] is None
     assert summary["execution_tier"] == "sdk_only_writing"
+    assert summary["context_pack_version"] == "v1"
     assert datetime.fromisoformat(summary["context_pack_generated_at"].replace("Z", "+00:00"))
     serialized = str(summary).lower()
     assert "msg-a" not in serialized
     assert "file-a" not in serialized
     assert "mem-a" not in serialized
     assert "private_payload" not in serialized
+
+
+def test_initial_context_summary_rejects_unsafe_context_pack_version():
+    summary = public_context_provenance(
+        source="runs_api",
+        input_payload={"message": "hello"},
+        context_pack_version="0123456789abcdef0123456789abcdef",
+    )
+
+    assert summary["context_pack_version"] == "v1"
+    serialized = str(summary).lower()
+    assert "0123456789abcdef0123456789abcdef" not in serialized
 
 
 def test_initial_context_summary_adds_attachment_signal_for_file_context():
@@ -271,6 +286,119 @@ def test_initial_context_summary_adds_attachment_signal_for_file_context():
     serialized = str(summary).lower()
     assert "file-a" not in serialized
     assert "raw_storage_key" not in serialized
+
+
+def test_initial_context_summary_routes_document_skill_to_document_worker():
+    summary = initial_context_summary(
+        source="chat_stream",
+        agent_id="baoyu-translate",
+        skill_id="baoyu-translate",
+        input_payload={"message": "Translate this DOCX and return a Word document."},
+        message_ids=["msg-a"],
+        file_ids=["file-a"],
+    )
+
+    assert summary["execution_tier"] == "document_worker"
+    assert summary["used_context_summary"]["input_keys"] == ["attachments", "message"]
+    assert summary["referenced_materials"]["file_count"] == 1
+
+
+def test_initial_context_summary_routes_explicit_sandbox_request_to_heavy_sandbox():
+    summary = initial_context_summary(
+        source="runs_api",
+        agent_id="general-agent",
+        skill_id="general-chat",
+        input_payload={
+            "message": "Run this script in a browser automation task.",
+            "sandbox_mode": "ephemeral",
+        },
+        message_ids=["msg-a"],
+        file_ids=[],
+    )
+
+    assert summary["execution_tier"] == "heavy_sandbox"
+
+
+def test_executor_context_pack_from_snapshot_returns_bounded_safe_prompt_contract():
+    context_pack = executor_context_pack_from_snapshot(
+        {
+            "context_snapshot_id": "ctx-a",
+            "source": "chat_stream",
+            "referenced_materials": {
+                "message_count": 3,
+                "file_count": 1,
+                "artifact_count": 2,
+                "memory_record_count": 4,
+            },
+            "used_context_summary": {
+                "source": "chat_stream",
+                "input_keys": ["message", "attachments", "raw_storage_key"],
+                "memory_policy_source": "stored",
+                "long_term_memory_read": True,
+            },
+            "latest_artifact_version": "v2",
+            "execution_tier": "document_worker",
+            "context_pack_version": "v8",
+            "context_pack_generated_at": "2026-06-12T01:23:45Z",
+            "raw_storage_key": "s3://private/object",
+            "sandbox_workdir": "/tmp/private",
+            "executor_private_payload": {"token": "secret"},
+        }
+    )
+
+    assert context_pack == {
+        "schema_version": "ai-platform.executor-context-pack.v1",
+        "source": "chat_stream",
+        "referenced_materials": {
+            "message_count": 3,
+            "file_count": 1,
+            "artifact_count": 2,
+            "memory_record_count": 4,
+        },
+        "used_context_summary": {
+            "source": "chat_stream",
+            "input_keys": ["attachments", "message"],
+            "memory_policy_source": "stored",
+            "long_term_memory_read": False,
+        },
+        "latest_artifact_version": "v2",
+        "execution_tier": "document_worker",
+        "context_pack_version": "v8",
+        "context_pack_generated_at": "2026-06-12T01:23:45Z",
+        "prompt_summary": (
+            "Context pack: 3 message(s), 1 file(s), 2 artifact(s), "
+            "0 long-term memory record(s). Inputs: attachments, message. "
+            "Execution tier: document_worker. Context pack version: v8. Latest artifact version: v2."
+        ),
+    }
+    serialized = str(context_pack).lower()
+    assert "raw_storage_key" not in serialized
+    assert "s3://private" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "executor_private_payload" not in serialized
+    assert "secret" not in serialized
+
+
+def test_executor_context_pack_from_snapshot_defaults_for_missing_snapshot():
+    context_pack = executor_context_pack_from_snapshot(None)
+
+    assert context_pack["schema_version"] == "ai-platform.executor-context-pack.v1"
+    assert context_pack["source"] == "stored_context_snapshot"
+    assert context_pack["referenced_materials"] == {
+        "message_count": 0,
+        "file_count": 0,
+        "artifact_count": 0,
+        "memory_record_count": 0,
+    }
+    assert context_pack["used_context_summary"] == {
+        "source": "stored_context_snapshot",
+        "input_keys": [],
+        "memory_policy_source": "not_recorded",
+        "long_term_memory_read": False,
+    }
+    assert context_pack["execution_tier"] == "sdk_only_writing"
+    assert context_pack["context_pack_version"] == "v1"
+    assert "0 long-term memory record(s)" in context_pack["prompt_summary"]
 
 
 @pytest.mark.asyncio
@@ -361,6 +489,7 @@ async def test_record_initial_context_snapshot_records_effective_memory_policy_w
     }
     assert context_ref["used_context_summary"]["source"] == "runs_api"
     assert context_ref["execution_tier"] == "sdk_only_writing"
+    assert context_ref["context_pack_version"] == "v1"
 
 
 def test_initial_context_summary_clamps_long_term_memory_policy_projection():

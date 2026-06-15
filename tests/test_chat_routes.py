@@ -359,7 +359,7 @@ async def test_chat_stream_creates_message_run_and_queue_payload(monkeypatch):
         calls.append(("files", kwargs["file_ids"]))
 
     async def fake_append_event(conn, **kwargs):
-        calls.append(("event", kwargs["stage"]))
+        calls.append(("event", kwargs["event_type"], kwargs["stage"], kwargs.get("payload", {})))
         return "evt_3"
 
     async def fake_enqueue_run(payload):
@@ -448,6 +448,18 @@ async def test_chat_stream_creates_message_run_and_queue_payload(monkeypatch):
     assert queue_payload["context_snapshot"]["source"] == "chat_stream"
     assert queue_payload["context_snapshot"]["message_count"] == 1
     assert queue_payload["context_snapshot"]["file_count"] == 1
+    assert (
+        "event",
+        "queued",
+        "queue",
+        {
+            "visible_to_user": False,
+            "source": "admin_runtime_queue",
+            "queue_position": 3,
+            "queue_admission_ordinal": 3,
+            "queue_probe_source": "redis_metadata",
+        },
+    ) in calls
 
 
 @pytest.mark.asyncio
@@ -803,7 +815,12 @@ async def test_chat_stream_appends_canonical_product_events(monkeypatch):
         principal=principal(),
     )
 
-    assert [event["event_type"] for event in events] == [
+    product_events = [
+        event
+        for event in events
+        if not (event["event_type"] == "queued" and event["payload"].get("source") == "admin_runtime_queue")
+    ]
+    assert [event["event_type"] for event in product_events] == [
         "intent_detected",
         "intent_confirmed",
         "queued",
@@ -811,10 +828,22 @@ async def test_chat_stream_appends_canonical_product_events(monkeypatch):
         "file_bound",
         "skill_release_decision",
     ]
-    assert events[0]["payload"]["visible_to_user"] is True
-    assert events[1]["payload"]["selected_capability"] == "document_review"
-    assert events[3]["payload"]["skill_id"] == "qa-file-reviewer"
-    assert events[4]["payload"]["file_ids"] == ["file_doc"]
+    assert product_events[0]["payload"]["visible_to_user"] is True
+    assert product_events[1]["payload"]["selected_capability"] == "document_review"
+    assert product_events[3]["payload"]["skill_id"] == "qa-file-reviewer"
+    assert product_events[4]["payload"]["file_ids"] == ["file_doc"]
+    assert any(
+        event["event_type"] == "queued"
+        and event["stage"] == "queue"
+        and event["payload"] == {
+            "visible_to_user": False,
+            "source": "admin_runtime_queue",
+            "queue_position": 1,
+            "queue_admission_ordinal": 1,
+            "queue_probe_source": "redis_metadata",
+        }
+        for event in events
+    )
 
 
 @pytest.mark.asyncio
@@ -837,6 +866,7 @@ async def test_lambchat_chat_stream_defaults_to_general_agent(monkeypatch):
 
     async def fake_enqueue_run(payload):
         calls.append(("queue", payload["agent_id"], payload["skill_id"]))
+        return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
@@ -1118,6 +1148,7 @@ async def test_lambchat_word_review_attachment_routes_to_qa_agent(monkeypatch):
 
     async def fake_enqueue_run(payload):
         calls.append(("queue", payload["agent_id"], payload["skill_id"], payload["file_ids"]))
+        return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)

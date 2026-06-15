@@ -23,6 +23,8 @@ _SDK_ENV_ALLOWLIST = {
 _SDK_AVAILABLE_TOOLS = ["Read", "Glob", "LS", "Bash"]
 _SDK_AUTO_ALLOWED_TOOLS = {"Read", "Glob", "LS"}
 _SDK_PLATFORM_DISALLOWED_TOOLS = ["Write", "Edit", "NotebookEdit"]
+_SDK_AGENT_TOOL = "Agent"
+_SDK_BUNDLED_AGENT_ALLOWED_TOOLS = {"Read", "Grep", "Glob", "LS", "Bash", "Write"}
 _SDK_PROJECT_SETTING_FILES = (".claude/settings.json", ".claude/settings.local.json")
 _SDK_FULL_ACCESS_MIN_TIMEOUT_SECONDS = 1800.0
 _SHELL_UNSAFE_CHARS = set("$`;&|<>{}[]*?!\n\r")
@@ -305,17 +307,36 @@ def _sdk_permission_mode(value: object, *, full_access: bool = False) -> str:
     return mode
 
 
-def _safe_allowed_tools(value: object, *, full_access: bool = False) -> list[str]:
+def _unique_tool_names(tool_names: list[str]) -> list[str]:
+    tools: list[str] = []
+    for tool_name in tool_names:
+        if tool_name and tool_name not in tools:
+            tools.append(tool_name)
+    return tools
+
+
+def _safe_allowed_tools(
+    value: object,
+    *,
+    full_access: bool = False,
+    available_tools: list[str] | None = None,
+) -> list[str]:
+    available = available_tools or _SDK_AVAILABLE_TOOLS
     if full_access:
-        return list(_SDK_AVAILABLE_TOOLS)
+        return list(available)
     allowed: list[str] = []
     for tool_name in _split_csv(str(value or "Read,Glob,LS")):
-        if tool_name in _SDK_AUTO_ALLOWED_TOOLS and tool_name not in allowed:
+        if tool_name in _SDK_AUTO_ALLOWED_TOOLS and tool_name in available and tool_name not in allowed:
             allowed.append(tool_name)
     return allowed
 
 
-def _safe_disallowed_tools(value: object, *, full_access: bool = False) -> list[str]:
+def _safe_disallowed_tools(
+    value: object,
+    *,
+    full_access: bool = False,
+    available_tools: list[str] | None = None,
+) -> list[str]:
     if full_access:
         return []
     disallowed: list[str] = []
@@ -362,6 +383,9 @@ def build_sdk_env(*, cwd: Path | None = None) -> dict[str, str]:
         env["TMPDIR"] = str(cwd / ".tmp")
         env["TMP"] = str(cwd / ".tmp")
         env["TEMP"] = str(cwd / ".tmp")
+        env["AI_PLATFORM_OUTPUT_ROOT"] = str(cwd / "outputs")
+        env["AI_PLATFORM_LEGACY_OUTPUT_ROOT"] = str(cwd / "output")
+        env["AI_PLATFORM_WORKSPACE_OUTPUT_ROOT"] = str(cwd / "workspace-outputs")
     if settings.anthropic_base_url:
         env["ANTHROPIC_BASE_URL"] = settings.anthropic_base_url
     if settings.anthropic_auth_token:
@@ -416,7 +440,32 @@ def _controlled_fast_path_instruction(*, skill_id: str, user_message: str, file_
     )
 
 
-def build_skill_prompt(*, skill_id: str, user_message: str, file_names: list[str]) -> str:
+def _context_pack_prompt_section(context_pack: dict[str, Any] | None) -> str:
+    if not isinstance(context_pack, dict):
+        return ""
+    if context_pack.get("schema_version") != "ai-platform.executor-context-pack.v1":
+        return ""
+    prompt_summary = context_pack.get("prompt_summary")
+    if not isinstance(prompt_summary, str):
+        return ""
+    prompt_summary = prompt_summary.strip()
+    if not prompt_summary:
+        return ""
+    return (
+        "\n\nOffice context pack:\n"
+        f"- {prompt_summary}\n"
+        "- Use this bounded context only as background; do not infer raw storage keys, "
+        "sandbox paths, private payloads, or long-term memory beyond what is listed."
+    )
+
+
+def build_skill_prompt(
+    *,
+    skill_id: str,
+    user_message: str,
+    file_names: list[str],
+    context_pack: dict[str, Any] | None = None,
+) -> str:
     files_text = "\n".join(f"- {name}" for name in file_names) if file_names else "- no files"
     return (
         "You are running inside the ai-platform controlled worker. "
@@ -424,7 +473,11 @@ def build_skill_prompt(*, skill_id: str, user_message: str, file_names: list[str
         f"User request: {user_message}\n"
         f"Workspace files:\n{files_text}\n\n"
         "If a staged Skill matches the task, use that Skill's instructions. "
-        "Return a concise execution summary and ensure generated artifacts are saved in the workspace output directory."
+        "Return a concise execution summary and ensure generated artifacts are saved in the workspace output directory. "
+        "Use only workspace-relative output roots: output/, outputs/, or workspace-outputs/. "
+        "Do not write generated deliverables or diagnostics under /tmp/, /var/tmp/, home directories, "
+        "mounted host paths, or any absolute output directory; if a Skill asks for output_dir, choose a relative path under outputs/."
+        f"{_context_pack_prompt_section(context_pack)}"
         f"{_controlled_fast_path_instruction(skill_id=skill_id, user_message=user_message, file_names=file_names)}"
     )
 
@@ -493,6 +546,107 @@ def _extract_skill_names_from_tool_input(tool_input: Any, allowed_skill_names: s
     return names
 
 
+def _parse_simple_agent_frontmatter(content: str) -> tuple[dict[str, str], str]:
+    if not content.startswith("---"):
+        return {}, content.strip()
+    lines = content.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}, content.strip()
+    end_index = None
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            end_index = index
+            break
+    if end_index is None:
+        return {}, content.strip()
+    frontmatter_lines = lines[1:end_index]
+    body = "\n".join(lines[end_index + 1 :]).strip()
+    metadata: dict[str, str] = {}
+    current_key = ""
+    folded_keys: set[str] = set()
+    literal_keys: set[str] = set()
+    for line in frontmatter_lines:
+        if line.startswith((" ", "\t")) and current_key:
+            metadata[current_key] = (metadata[current_key] + "\n" + line.strip()).strip()
+            continue
+        if ":" not in line:
+            current_key = ""
+            continue
+        key, value = line.split(":", 1)
+        current_key = key.strip()
+        if current_key:
+            scalar_value = value.strip()
+            if scalar_value in {">", ">-"}:
+                metadata[current_key] = ""
+                folded_keys.add(current_key)
+                continue
+            if scalar_value in {"|", "|-"}:
+                metadata[current_key] = ""
+                literal_keys.add(current_key)
+                continue
+            metadata[current_key] = scalar_value.strip("'\"")
+    for key in folded_keys:
+        metadata[key] = " ".join(part.strip() for part in metadata.get(key, "").splitlines() if part.strip())
+    for key in literal_keys:
+        metadata[key] = "\n".join(part.rstrip() for part in metadata.get(key, "").splitlines()).strip()
+    return metadata, body
+
+
+def _agent_definition_name(agent_file: Path, metadata: dict[str, str]) -> str:
+    name = metadata.get("name", "").strip() or agent_file.stem
+    safe_name = "".join(ch for ch in name if ch.isalnum() or ch in {"_", "-"}).strip("_-")
+    return safe_name
+
+
+def _agent_definition_tools(metadata: dict[str, str], available_tools: list[str]) -> list[str]:
+    requested = _split_csv(metadata.get("tools", ""))
+    if not requested:
+        return []
+    allowed = set(available_tools) & _SDK_BUNDLED_AGENT_ALLOWED_TOOLS
+    return [tool_name for tool_name in requested if tool_name in allowed]
+
+
+def _discover_bundled_skill_agents(
+    *,
+    sdk: object,
+    cwd: Path,
+    skill_names: list[str],
+    available_tools: list[str],
+) -> dict[str, object]:
+    AgentDefinition = getattr(sdk, "AgentDefinition", None)
+    if AgentDefinition is None:
+        return {}
+    agents: dict[str, object] = {}
+    skill_root = cwd / ".claude" / "skills"
+    for skill_name in skill_names:
+        if Path(skill_name).name != skill_name:
+            continue
+        agents_dir = skill_root / skill_name / "agents"
+        if not agents_dir.is_dir():
+            continue
+        for agent_file in sorted(agents_dir.glob("*.md")):
+            try:
+                content = agent_file.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            metadata, prompt = _parse_simple_agent_frontmatter(content)
+            name = _agent_definition_name(agent_file, metadata)
+            description = metadata.get("description", "").strip() or name
+            if not name or not prompt:
+                continue
+            model = metadata.get("model", "").strip() or None
+            if model == "inherit":
+                model = None
+            agents[name] = AgentDefinition(
+                description=description,
+                prompt=prompt,
+                tools=_agent_definition_tools(metadata, available_tools),
+                model=model,
+                skills=[skill_name],
+            )
+    return agents
+
+
 async def run_claude_agent_sdk(
     *,
     prompt: str,
@@ -532,13 +686,32 @@ async def run_claude_agent_sdk(
         getattr(settings, "claude_agent_permission_mode", "dontAsk"),
         full_access=full_access,
     )
+    available_tools = list(_SDK_AVAILABLE_TOOLS)
+    if full_access:
+        available_tools = _unique_tool_names(
+            [
+                *_SDK_AVAILABLE_TOOLS,
+                _SDK_AGENT_TOOL,
+                *_SDK_BUNDLED_AGENT_ALLOWED_TOOLS,
+            ]
+        )
+    bundled_agents = _discover_bundled_skill_agents(
+        sdk=sdk,
+        cwd=cwd,
+        skill_names=configured_skills,
+        available_tools=available_tools,
+    )
+    if not bundled_agents:
+        available_tools = list(_SDK_AVAILABLE_TOOLS)
     allowed_tools = _safe_allowed_tools(
         getattr(settings, "claude_agent_allowed_tools", "Read,Glob,LS"),
         full_access=full_access,
+        available_tools=available_tools,
     )
     disallowed_tools = _safe_disallowed_tools(
         getattr(settings, "claude_agent_disallowed_tools", ""),
         full_access=full_access,
+        available_tools=available_tools,
     )
     timeout_seconds = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 120.0))
     if full_access:
@@ -554,7 +727,7 @@ async def run_claude_agent_sdk(
             await on_skill_use(skill_name, metadata)
 
     async def can_use_tool(tool_name: str, tool_input: dict[str, Any], _context=None):
-        if full_access and tool_name in _SDK_AVAILABLE_TOOLS:
+        if full_access and tool_name in available_tools:
             return PermissionResultAllow()
         if tool_name == "Bash" and isinstance(tool_input, dict):
             command = str(tool_input.get("command") or "")
@@ -698,12 +871,13 @@ async def run_claude_agent_sdk(
     options = ClaudeAgentOptions(
         cwd=str(cwd),
         model=settings.claude_agent_model or settings.anthropic_model or None,
-        tools=list(_SDK_AVAILABLE_TOOLS),
+        tools=available_tools,
         permission_mode=permission_mode,
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,
         env=build_sdk_env(cwd=cwd),
         skills=configured_skills,
+        agents=bundled_agents or None,
         max_turns=max(1, int(getattr(settings, "claude_agent_sdk_max_turns", 48))),
         can_use_tool=can_use_tool,
         hooks=hooks,

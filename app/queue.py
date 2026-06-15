@@ -416,6 +416,16 @@ class QueueMessage:
     message_id: str
 
 
+@dataclass(frozen=True)
+class QueueAdmissionMetadata:
+    """Trusted queue admission metadata returned from Redis enqueue state."""
+
+    queue_position: int
+    queue_admission_ordinal: int
+    message_id: str
+    source: str = "redis_metadata"
+
+
 async def get_redis() -> Redis:
     settings = get_settings()
     return Redis.from_url(settings.redis_url, decode_responses=True)
@@ -487,7 +497,9 @@ def _dead_letter_json(
     )
 
 
-async def enqueue_run(payload: dict[str, Any]) -> int:
+async def enqueue_run_with_metadata(payload: dict[str, Any]) -> QueueAdmissionMetadata:
+    """Enqueue a run and return the Redis-derived admission ordinal."""
+
     validated = QueueRunPayload.model_validate(payload)
     keys = get_queue_keys()
     redis = await get_redis()
@@ -516,9 +528,18 @@ async def enqueue_run(payload: dict[str, Any]) -> int:
                 json.dumps(metadata, ensure_ascii=False),
             )
         )
-        return int(result.get("position") or 1)
+        return QueueAdmissionMetadata(
+            queue_position=int(result.get("position") or 1),
+            queue_admission_ordinal=int(result.get("sequence") or result.get("position") or 1),
+            message_id=message_id,
+        )
     finally:
         await redis.aclose()
+
+
+async def enqueue_run(payload: dict[str, Any]) -> int:
+    metadata = await enqueue_run_with_metadata(payload)
+    return metadata.queue_position
 
 
 async def remove_queued_run(*, tenant_id: str, run_id: str) -> int:

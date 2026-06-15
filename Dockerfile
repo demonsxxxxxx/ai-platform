@@ -6,8 +6,19 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
 ARG PIP_INDEX_URL
 ARG PIP_TRUSTED_HOST
+ARG APT_MIRROR
 
 WORKDIR /app
+
+RUN if [ -n "$APT_MIRROR" ]; then \
+        sed -i "s|http://deb.debian.org/debian|$APT_MIRROR/debian|g; s|http://deb.debian.org/debian-security|$APT_MIRROR/debian-security|g" /etc/apt/sources.list.d/debian.sources; \
+    fi \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        fontconfig \
+        fonts-noto-cjk \
+    && fc-cache -f -v \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml /app/pyproject.toml
 COPY app /app/app

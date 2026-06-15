@@ -237,6 +237,87 @@ def test_collect_workspace_artifacts_rejects_symlinked_output(monkeypatch, tmp_p
     assert stored == []
 
 
+def test_collect_workspace_artifacts_includes_platform_output_roots(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    legacy_output = workspace / "output"
+    ctd_output = workspace / "outputs" / "run-001"
+    fact_output = workspace / "workspace-outputs"
+    legacy_output.mkdir(parents=True)
+    ctd_output.mkdir(parents=True)
+    fact_output.mkdir(parents=True)
+    (legacy_output / "summary.txt").write_text("legacy output", encoding="utf-8")
+    (ctd_output / "filled.docx").write_bytes(b"docx")
+    (fact_output / "fact-packet.json").write_text("{}", encoding="utf-8")
+    stored = []
+
+    class FakeStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            stored.append((storage_key, content, content_type))
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+
+    artifacts = adapter._collect_workspace_artifacts(payload(skill_id="ctd-32s73-stability-template-fill"), workspace)
+
+    workspace_outputs = [artifact.manifest["workspace_output"].replace("\\", "/") for artifact in artifacts]
+    storage_keys = [item[0] for item in stored]
+    assert workspace_outputs == [
+        "output/summary.txt",
+        "outputs/run-001/filled.docx",
+        "workspace-outputs/fact-packet.json",
+    ]
+    assert len(set(storage_keys)) == 3
+    assert any(key.endswith("/output/summary.txt") for key in storage_keys)
+    assert any(key.endswith("/outputs/run-001/filled.docx") for key in storage_keys)
+    assert any(key.endswith("/workspace-outputs/fact-packet.json") for key in storage_keys)
+    assert [artifact.artifact_type for artifact in artifacts] == ["report_txt", "result_docx", "result_json"]
+
+
+@pytest.mark.asyncio
+async def test_agent_run_collects_workspace_diagnostics_on_sdk_timeout(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    write_skill(tmp_path / "skills", name="ctd-32s73-stability-template-fill")
+    pins = _registry_pins(tmp_path / "skills", skill_id="ctd-32s73-stability-template-fill")
+    stored = []
+
+    class FakeStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            stored.append((storage_key, content, content_type))
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
+
+    async def fake_try_run_sdk(payload, event_sink=None, **kwargs):
+        output_dir = kwargs["workspace"] / "outputs" / "template-fill"
+        output_dir.mkdir(parents=True)
+        (output_dir / "workflow-summary.json").write_text('{"state":"FAILED"}', encoding="utf-8")
+        result = types.SimpleNamespace(**FakeSdkRuntimeErrorWithSkillUse.__dict__)
+        result.error = "claude_agent_sdk_timeout"
+        return result
+
+    async def no_files(payload, workspace):
+        return []
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+    monkeypatch.setattr(adapter, "_try_run_sdk", fake_try_run_sdk)
+
+    result = await adapter.submit_run(
+        payload(
+            skill_id="ctd-32s73-stability-template-fill",
+            agent_id="ctd-32s73-stability-template-fill",
+            skill_manifests=pins,
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.result["sdk_error"] == "claude_agent_sdk_timeout"
+    assert result.result["artifact_count"] == 1
+    assert result.artifacts[0].manifest["workspace_output"] == "outputs/template-fill/workflow-summary.json"
+    assert stored[0][0].endswith("/outputs/template-fill/workflow-summary.json")
+
+
 @pytest.mark.asyncio
 async def test_materialize_files_rejects_symlinked_workspace(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace-link"
@@ -431,6 +512,25 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
             agent_id="qa-word-review",
             input={"message": "审核一下"},
             skill_manifests=pins,
+            context_snapshot={
+                "source": "chat_stream",
+                "referenced_materials": {
+                    "message_count": 1,
+                    "file_count": 1,
+                    "artifact_count": 1,
+                    "memory_record_count": 1,
+                },
+                "used_context_summary": {
+                    "source": "chat_stream",
+                    "input_keys": ["message", "attachments"],
+                    "memory_policy_source": "stored",
+                    "long_term_memory_read": True,
+                },
+                "latest_artifact_version": "v4",
+                "execution_tier": "sdk_only_writing",
+                "context_pack_generated_at": "2026-06-12T01:23:45Z",
+                "raw_storage_key": "s3://private/object",
+            },
         )
     )
 
@@ -454,6 +554,11 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
     assert (calls["workspace"] / ".claude" / "skills" / "qa-file-reviewer" / "SKILL.md").is_file()
     assert (calls["workspace"] / ".claude" / "skills" / "minimax-docx" / "SKILL.md").is_file()
     assert "Skill: qa-file-reviewer" not in calls["prompt"]
+    assert "Office context pack:" in calls["prompt"]
+    assert "Context pack: 1 message(s), 1 file(s), 1 artifact(s), 0 long-term memory record(s)" in calls["prompt"]
+    assert "Latest artifact version: v4" in calls["prompt"]
+    assert "raw_storage_key" not in calls["prompt"]
+    assert "s3://private" not in calls["prompt"]
 
 
 @pytest.mark.asyncio
@@ -1267,6 +1372,71 @@ def test_build_skill_prompt_uses_backend_managed_skills_without_forced_selector(
     assert "staged Skill" in prompt
 
 
+def test_build_skill_prompt_requires_workspace_relative_output_roots():
+    prompt = build_skill_prompt(
+        skill_id="ctd-32s73-stability-template-fill",
+        user_message="generate the CTD Word deliverable",
+        file_names=["source.docx"],
+    )
+
+    assert "Use only workspace-relative output roots: output/, outputs/, or workspace-outputs/." in prompt
+    assert "Do not write generated deliverables or diagnostics under /tmp/" in prompt
+    assert "absolute output directory" in prompt
+
+
+def test_build_skill_prompt_includes_bounded_executor_context_pack():
+    prompt = build_skill_prompt(
+        skill_id="general-chat",
+        user_message="continue the proposal",
+        file_names=["proposal.docx"],
+        context_pack={
+            "schema_version": "ai-platform.executor-context-pack.v1",
+            "prompt_summary": (
+                "Context pack: 2 message(s), 1 file(s), 1 artifact(s), "
+                "0 long-term memory record(s). Inputs: attachments, message. "
+                "Execution tier: sdk_only_writing. Latest artifact version: v3."
+            ),
+            "referenced_materials": {
+                "message_count": 2,
+                "file_count": 1,
+                "artifact_count": 1,
+                "memory_record_count": 0,
+            },
+            "used_context_summary": {
+                "source": "chat_stream",
+                "input_keys": ["attachments", "message"],
+                "memory_policy_source": "stored",
+                "long_term_memory_read": False,
+            },
+            "raw_storage_key": "s3://private/object",
+            "sandbox_workdir": "/tmp/private",
+        },
+    )
+
+    assert "Office context pack:" in prompt
+    assert "Context pack: 2 message(s), 1 file(s), 1 artifact(s)" in prompt
+    assert "Use this bounded context only as background" in prompt
+    assert "raw_storage_key" not in prompt
+    assert "s3://private" not in prompt
+    assert "sandbox_workdir" not in prompt
+
+
+def test_build_skill_prompt_ignores_unknown_context_pack_schema():
+    prompt = build_skill_prompt(
+        skill_id="general-chat",
+        user_message="continue the proposal",
+        file_names=[],
+        context_pack={
+            "schema_version": "private.unbounded.v1",
+            "prompt_summary": "raw_storage_key=s3://private/object",
+        },
+    )
+
+    assert "Office context pack:" not in prompt
+    assert "raw_storage_key" not in prompt
+    assert "s3://private" not in prompt
+
+
 def test_build_skill_prompt_frontloads_qa_review_fast_path():
     prompt = build_skill_prompt(
         skill_id="qa-file-reviewer",
@@ -1418,6 +1588,111 @@ async def test_sdk_runner_passes_staged_skill_names(monkeypatch, tmp_path):
     assert captured["allowed_tools"] == ["Read", "Glob", "LS"]
     assert captured["disallowed_tools"] == ["Write", "Edit", "NotebookEdit"]
     assert callable(captured["can_use_tool"])
+
+
+@pytest.mark.asyncio
+async def test_sdk_runner_enables_bundled_skill_subagents(monkeypatch, tmp_path):
+    captured = {}
+    staged_skill = tmp_path / ".claude" / "skills" / "reference-fact-extraction"
+    agents_dir = staged_skill / "agents"
+    agents_dir.mkdir(parents=True)
+    (staged_skill / "SKILL.md").write_text("# Reference Fact Extraction\n", encoding="utf-8")
+    (agents_dir / "reference_fact_extraction_agent.md").write_text(
+        """---
+name: reference_fact_extraction_agent
+description: >
+  Extract one source-grounded fact shard.
+  Keep evidence independent from validation.
+model: inherit
+tools: Read, Grep, Glob, Write
+---
+
+Extract the requested shard and write the requested JSON artifact.
+""",
+        encoding="utf-8",
+    )
+
+    class TextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class AssistantMessage:
+        def __init__(self, content):
+            self.content = content
+
+    class ResultMessage:
+        session_id = "sdk-session"
+        usage = {}
+        model_usage = {}
+        result = "ok"
+        is_error = False
+        errors = []
+        stop_reason = None
+
+    class AgentDefinition:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            captured.update(kwargs)
+
+    async def query(prompt, options):
+        yield AssistantMessage([TextBlock("ok")])
+        yield ResultMessage()
+
+    current_settings = type(
+        "S",
+        (),
+        {
+            "claude_agent_sdk_enabled": True,
+            "anthropic_base_url": "",
+            "anthropic_auth_token": "",
+            "anthropic_model": "",
+            "openai_api_key": "",
+            "claude_agent_model": "deepseek-v4-flash",
+            "claude_agent_sdk_skills": "",
+            "claude_agent_sdk_timeout_seconds": 5,
+            "claude_agent_sdk_max_turns": 12,
+            "claude_agent_permission_mode": "bypassPermissions",
+            "claude_agent_allowed_tools": "Read,Glob,LS,Bash",
+            "claude_agent_disallowed_tools": "",
+        },
+    )()
+    fake_sdk = types.SimpleNamespace(
+        AgentDefinition=AgentDefinition,
+        AssistantMessage=AssistantMessage,
+        ClaudeAgentOptions=ClaudeAgentOptions,
+        ResultMessage=ResultMessage,
+        TextBlock=TextBlock,
+        query=query,
+    )
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="hello",
+        cwd=tmp_path,
+        skill_id="reference-fact-extraction",
+        skills=["reference-fact-extraction"],
+    )
+
+    assert result.message == "ok"
+    assert "Agent" in captured["tools"]
+    assert "Agent" in captured["allowed_tools"]
+    assert "Grep" in captured["tools"]
+    assert "Write" in captured["tools"]
+    assert captured["disallowed_tools"] == []
+    assert set(captured["agents"]) == {"reference_fact_extraction_agent"}
+    agent = captured["agents"]["reference_fact_extraction_agent"]
+    assert agent.kwargs["description"] == (
+        "Extract one source-grounded fact shard. Keep evidence independent from validation."
+    )
+    assert agent.kwargs["prompt"].startswith("Extract the requested shard")
+    assert agent.kwargs["tools"] == ["Read", "Grep", "Glob", "Write"]
+    assert agent.kwargs["model"] is None
+    assert agent.kwargs["skills"] == ["reference-fact-extraction"]
 
 
 @pytest.mark.asyncio
@@ -2030,7 +2305,7 @@ async def test_claude_worker_sdk_permission_hook_creates_request_event_and_audit
             used_skills_source="",
         )
 
-    async def get_latest_tool_permission_decision(conn, **kwargs):
+    async def get_exact_tool_permission_decision(conn, **kwargs):
         calls.append(("decision_lookup", kwargs))
         return None
 
@@ -2068,8 +2343,8 @@ async def test_claude_worker_sdk_permission_hook_creates_request_event_and_audit
     monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_latest_tool_permission_decision",
-        get_latest_tool_permission_decision,
+        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
         raising=False,
     )
     monkeypatch.setattr(
@@ -2166,7 +2441,7 @@ async def test_claude_worker_sdk_permission_hook_allows_existing_decision(monkey
             used_skills_source="",
         )
 
-    async def get_latest_tool_permission_decision(conn, **kwargs):
+    async def get_exact_tool_permission_decision(conn, **kwargs):
         calls.append(("decision_lookup", kwargs))
         command_hash = hashlib.sha256("python write_business_system.py --id 456".encode("utf-8")).hexdigest()
         return {
@@ -2189,8 +2464,8 @@ async def test_claude_worker_sdk_permission_hook_allows_existing_decision(monkey
     monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_latest_tool_permission_decision",
-        get_latest_tool_permission_decision,
+        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
         raising=False,
     )
     monkeypatch.setattr(
@@ -2223,6 +2498,100 @@ async def test_claude_worker_sdk_permission_hook_allows_existing_decision(monkey
     audit_call = next(item[1] for item in calls if item[0] == "audit")
     assert audit_call["action"] == "claude_sdk_tool_policy_allowed"
     assert audit_call["payload_json"]["permission_request_id"] == "tpr-allow"
+
+
+@pytest.mark.asyncio
+async def test_claude_worker_sdk_permission_hook_uses_exact_decision_lookup(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    calls = []
+
+    async def fake_run_claude_agent_sdk(
+        *,
+        prompt,
+        cwd,
+        skill_id,
+        skills,
+        on_text,
+        on_skill_use,
+        on_tool_permission,
+    ):
+        gate = await on_tool_permission(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "python write_business_system.py --id 456"},
+                "tool_call_id": "tool-write",
+                "risk_level": "high",
+                "write_capable": True,
+                "reason": "Claude SDK requested Bash",
+            }
+        )
+        calls.append(("gate", gate))
+        return types.SimpleNamespace(
+            used_sdk=True,
+            message="allowed",
+            session_id="sdk-session",
+            usage={},
+            error=None if gate["allowed"] else gate["reason"],
+            used_skills=[],
+            used_skills_source="",
+        )
+
+    async def get_exact_tool_permission_decision(conn, **kwargs):
+        calls.append(("exact_decision_lookup", kwargs))
+        command_hash = hashlib.sha256("python write_business_system.py --id 456".encode("utf-8")).hexdigest()
+        assert kwargs["tool_call_id"] == "tool-write"
+        assert kwargs["request_payload_json"]["command_sha256"] == command_hash
+        return {
+            "id": "tpr-allow",
+            "decision": "allow_for_run",
+            "tool_call_id": "tool-write",
+            "request_payload_json": {"command_sha256": command_hash},
+        }
+
+    async def get_latest_tool_permission_decision(conn, **kwargs):
+        raise AssertionError("Claude SDK tool permission must use exact decision lookup")
+
+    async def create_tool_permission_request(conn, **kwargs):
+        raise AssertionError("exact allow decision must not create another request")
+
+    async def append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "audit-sdk"
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    workspace = tmp_path / "workspaces" / "default" / "run_1"
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.get_latest_tool_permission_decision",
+        get_latest_tool_permission_decision,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.create_tool_permission_request",
+        create_tool_permission_request,
+        raising=False,
+    )
+    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_audit_log", append_audit_log)
+
+    result = await adapter._try_run_sdk(
+        payload(trace_id="trace-sdk"),
+        workspace=workspace,
+        file_names=[],
+        prompt="hello",
+        staged_skill_names=[],
+    )
+
+    assert result.error is None
+    assert any(item[0] == "exact_decision_lookup" for item in calls)
+    assert calls[-1][0] == "gate"
+    assert calls[-1][1]["allowed"] is True
 
 
 @pytest.mark.asyncio
@@ -2262,7 +2631,7 @@ async def test_claude_worker_sdk_permission_hook_consumes_allow_once_decision(mo
             used_skills_source="",
         )
 
-    async def get_latest_tool_permission_decision(conn, **kwargs):
+    async def get_exact_tool_permission_decision(conn, **kwargs):
         calls.append(("decision_lookup", kwargs))
         return {
             "id": "tpr-once",
@@ -2288,8 +2657,8 @@ async def test_claude_worker_sdk_permission_hook_consumes_allow_once_decision(mo
     monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_latest_tool_permission_decision",
-        get_latest_tool_permission_decision,
+        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
         raising=False,
     )
     monkeypatch.setattr(
@@ -2378,7 +2747,7 @@ async def test_claude_worker_sdk_permission_hook_fails_closed_when_allow_once_co
             used_skills_source="",
         )
 
-    async def get_latest_tool_permission_decision(conn, **kwargs):
+    async def get_exact_tool_permission_decision(conn, **kwargs):
         calls.append(("decision_lookup", kwargs))
         return {
             "id": "tpr-once",
@@ -2404,8 +2773,8 @@ async def test_claude_worker_sdk_permission_hook_fails_closed_when_allow_once_co
     monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_latest_tool_permission_decision",
-        get_latest_tool_permission_decision,
+        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
         raising=False,
     )
     monkeypatch.setattr(
@@ -2482,7 +2851,7 @@ async def test_claude_worker_sdk_permission_hook_allows_run_decision_for_same_ba
             used_skills_source="",
         )
 
-    async def get_latest_tool_permission_decision(conn, **kwargs):
+    async def get_exact_tool_permission_decision(conn, **kwargs):
         calls.append(("decision_lookup", kwargs))
         if kwargs.get("request_payload_json", {}).get("command_sha256") != command_hash:
             return None
@@ -2506,8 +2875,8 @@ async def test_claude_worker_sdk_permission_hook_allows_run_decision_for_same_ba
     monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_latest_tool_permission_decision",
-        get_latest_tool_permission_decision,
+        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
         raising=False,
     )
     monkeypatch.setattr(
@@ -2577,7 +2946,7 @@ async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_decision_fo
             used_skills_source="",
         )
 
-    async def get_latest_tool_permission_decision(conn, **kwargs):
+    async def get_exact_tool_permission_decision(conn, **kwargs):
         calls.append(("decision_lookup", kwargs))
         other_command_hash = hashlib.sha256("python write_business_system.py --id 456".encode("utf-8")).hexdigest()
         return {
@@ -2621,8 +2990,8 @@ async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_decision_fo
     monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_latest_tool_permission_decision",
-        get_latest_tool_permission_decision,
+        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
         raising=False,
     )
     monkeypatch.setattr(
@@ -2689,7 +3058,7 @@ async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_deny_for_ot
             used_skills_source="",
         )
 
-    async def get_latest_tool_permission_decision(conn, **kwargs):
+    async def get_exact_tool_permission_decision(conn, **kwargs):
         calls.append(("decision_lookup", kwargs))
         return {
             "id": "tpr-denied-other",
@@ -2732,8 +3101,8 @@ async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_deny_for_ot
     monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_latest_tool_permission_decision",
-        get_latest_tool_permission_decision,
+        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
         raising=False,
     )
     monkeypatch.setattr(

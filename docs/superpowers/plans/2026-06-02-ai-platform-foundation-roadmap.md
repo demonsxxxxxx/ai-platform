@@ -62,6 +62,46 @@ DB connection pool 是 issue #16 的第一个可独立闭环前置项：平台�
 
 当前未关闭的 G5 后续项仍包括：large queue bounded lookup 压力验证，以及多 tenant 并发压力测试。Tenant-aware queue lease、tenant-aware worker maintenance、active-run admission、bounded queue metadata、multi-agent child-run admission 与 P1 Admin Runtime admission/backpressure 已作为子切片通过 review、full pytest、main merge 和 211 smoke；G8 Multi-Agent Controlled Beta 仍不得绕过剩余 quota/backpressure/observability 阻塞项。
 
+Foundation Runtime 10+ concurrent correctness now has a fail-closed evidence
+gate named `foundation_runtime_concurrency_evidence` with schema
+`ai-platform.foundation-runtime-concurrency.v1`. This gate is narrower than the
+#21 production capacity gate: it proves the first-stage backend execution loop
+under at least 2 tenants, multiple users/sessions, and 10+ concurrent run
+creation, execution, cancel, and retry cases, while keeping production
+concurrency increases blocked. Accepted evidence must include queue/admission
+correctness, sandbox workspace/lease separation, artifact ACL denial across
+users and tenants, exact tool-permission decision binding, pinned
+`run_skill_snapshots`, replay safety, and memory/context isolation. The
+memory/context portion must include per-run public context snapshot projections,
+safe `context_pack_version` samples, and scope probes; legacy evidence that only
+records `context_snapshot_count` is insufficient. Queue/admission claims require
+real probe sample counts and provenance fields; sandbox claims require runtime
+run-detail lease provenance instead of post-run lease probes; tool-permission
+claims require negative decision-reuse probes for same-request, wrong-run,
+same-tenant other-user, and cross-tenant reuse attempts; skill governance
+claims require pinned snapshot binding samples. The 2026-06-14 `dff48fb` 211
+rerun is retained as reviewed historical evidence, but current validation
+blocks its concurrency entry because it lacks measured concurrency overlap,
+`queue_probe_sample_count`, `runtime_run_detail` sandbox lease provenance, and
+negative tool-permission reuse probes. The 2026-06-14 `5d3d7e2` PR #40 rerun is
+retained as superseded reviewed evidence after the current-head refresh. The
+2026-06-14 `79495bf` PR #40 refresh is the current accepted Foundation Alpha
+POC runtime evidence set and the current accepted Foundation Runtime
+concurrency evidence: it records coherent 211 source/runtime labels and
+container markers, refreshed runtime POC smoke, Auth/RBAC smoke, governance
+runtime smoke, release-evidence runtime acceptance, alert/trace export runtime
+acceptance, and Foundation Runtime concurrency correctness. The concurrency
+portion covers 12 concurrent cases, 2 tenants, 4 users, run
+creation/execution/cancel/retry coverage, measured client timestamp overlap,
+queue probe samples, runtime-run-detail sandbox lease provenance, public
+context projections, pinned skill snapshot bindings, and negative
+tool-permission reuse denial probes. This closes the PR #40 Foundation Runtime
+concurrency evidence gap for the `79495bf` runtime-relevant source and refreshes
+the broader Foundation Alpha POC smoke/auth/governance evidence on the same
+runtime subject. It does not open ordinary-user multi-agent, does not claim
+Docker sandbox hardening, does not raise production concurrency defaults, does
+not permit department rollout, and does not close production readiness.
+
 GitHub issue #20 已作为 G5 多租户高并发 gate 的收敛切片在 `main` commit `f5da825` 完成：在 configured fairness horizon 内关闭 tail-window quota leasing 造成的可运行租户饥饿、multi-agent child-run fanout 绕过 active-run admission、queue position / queued-run removal / admin enrichment 无界 Redis queued-list 扫描，以及高风险 review/model-reasoning 规则歧义。详细设计与执行计划分别在 `docs/superpowers/specs/2026-06-06-g5-tenant-aware-scheduling-admission-metadata-design.md` 与 `docs/superpowers/plans/2026-06-06-g5-tenant-aware-scheduling-admission-metadata.md`，211 smoke 与 issue closure 证据保留在对应执行计划和 GitHub issue，不继续追加为产品路线图流水账。
 
 ### G5 / G9 Capacity Baseline Status
@@ -475,6 +515,9 @@ delete/retention/export erasure evidence through
 `tools/memory_erasure_readiness.py`,
 source-level office context-pack architecture readiness through
 `tools/office_context_readiness.py`,
+source-level context-pack persistence/versioning as
+`source_level_context_pack_persistence_and_versioning` with public
+`context_pack_version` and `context_pack_generated_at`,
 secret-safe Skill release readiness evidence through
 `tools/skill_release_readiness.py` with schema
 `ai-platform.skill-release-readiness.v1`,
@@ -559,37 +602,52 @@ files, runtime acceptance for the source-level skill dependency review policy,
 `admin_skill_release_dashboard_runtime_acceptance`,
 `admin_skill_release_dashboard_visual_acceptance`,
 `admin_skill_release_dashboard_211_acceptance`,
-office context-pack persistence/versioning, executor context-pack injection,
-document-centric follow-up state, sandbox cold-start latency split, frontend context provenance
-acceptance, quarantined legacy frontend source remap, packaged frontend image
-smoke/release acceptance on 211 or another Docker-capable host, and
-ordinary-user G9 acceptance. Do not use this baseline to expand sandbox
-privilege, raw Skill selection, or multi-agent ordinary-user exposure.
+runtime office context-pack persistence/versioning, 211 executor context-pack
+acceptance, document-centric follow-up state, sandbox cold-start latency split,
+frontend context provenance acceptance, quarantined legacy frontend source
+remap, packaged frontend image smoke/release acceptance on 211 or another
+Docker-capable host, and ordinary-user G9 acceptance. Do not use this baseline
+to expand sandbox privilege, raw Skill selection, or ordinary-user G8/G10
+exposure.
 
-The #22 office context-pack work now has source-level architecture readiness
-evidence only: `tools/office_context_readiness.py` defines bounded allowed
-context sources, user-visible provenance fields, execution tiers, and non-goals
-without enabling runtime context-pack persistence, executor injection, long-term
-cross-session memory, lightweight-task Docker sandbox startup, or ordinary-user
-G8/G10 exposure. It replaces the older single "bounded office context-pack
-product contract" blocker with explicit persistence/versioning, executor
-injection, follow-up-state, latency, and frontend provenance acceptance gaps.
+The #22 office context-pack work now has source-level architecture readiness,
+source-level context-pack persistence/versioning evidence, user-visible API
+projection source tests, source-level execution-tier routing tests, and
+executor prompt-injection tests: `tools/office_context_readiness.py` defines
+bounded allowed context sources, user-visible provenance fields, execution
+tiers, and non-goals, while
+`source_level_context_pack_persistence_and_versioning` preserves a bounded
+public `context_pack_version` fact alongside `context_pack_generated_at` in
+source-level snapshot/projection paths. Source-level router tests route
+lightweight writing to `sdk_only_writing`, document generation/review/translation
+skills to `document_worker`, and explicit sandbox/script/browser work to
+`heavy_sandbox` without starting Docker during routing. This does not add a new
+database schema and does not enable runtime context-pack persistence/versioning,
+211 executor context-pack acceptance, document-centric follow-up state,
+long-term cross-session memory, lightweight-task Docker sandbox startup,
+frontend context provenance acceptance, or ordinary-user G8/G10 exposure. It
+replaces the older single "bounded office context-pack product contract"
+blocker with explicit runtime persistence/versioning, 211 executor,
+follow-up-state, latency, and frontend provenance acceptance gaps.
 
 The 2026-06-11 context provenance follow-up adds source-level public provenance
 fields to created context snapshots and queued `context_snapshot` references:
 `referenced_materials`, `used_context_summary`, `latest_artifact_version`,
-`execution_tier`, and `context_pack_generated_at`. These fields expose counts,
-safe input keys, tier, and generated time only; raw message/file/artifact/memory
-IDs remain outside the public provenance fields and the owner-scoped context
-snapshot API response. The scoped database row and worker lookup path still keep
-those IDs internally to compute public counts. Executor private payloads, raw
-storage keys, sandbox workdirs, and secret-like values remain outside the public
-projection. Worker execution
+`execution_tier`, `context_pack_version`, and `context_pack_generated_at`. These
+fields expose counts, safe input keys, tier, bounded public context-pack version,
+and generated time only; raw message/file/artifact/memory IDs remain outside the
+public provenance fields and the owner-scoped context snapshot API response,
+with source tests covering the user-visible API projection. The scoped database
+row and worker lookup path still keep those IDs internally to compute public
+counts. Executor private payloads, raw storage keys, sandbox workdirs, and
+secret-like values remain outside the public projection. Worker execution
 resolves existing context snapshots from the scoped DB row and regenerates
 public provenance/counts rather than trusting queue copies or stored payload
-provenance. This narrows the G6/#22 context output gap but does not close
-executor context-pack injection, frontend context provenance acceptance,
-long-term memory, sandbox, or multi-agent gates.
+provenance. This narrows the G6/#22 context output gap but does not close 211
+executor context-pack acceptance, runtime context-pack persistence/versioning,
+document-centric follow-up state, frontend context provenance acceptance,
+long-term cross-session memory, sandbox cold-start metrics, or ordinary-user
+G8/G10 gates.
 
 The current context public-summary verifier treats file-context provenance as
 incomplete unless `file_count > 0` is paired with the safe
@@ -839,6 +897,12 @@ projections.
 - write-capable business tools 接入同一 gate。
 - allow_once 消费/expiry 与 allow_for_run fingerprint 语义。
 - permission decision lookup 必须匹配 exact tool_call_id 或稳定 request fingerprint，不能只取同 run/tool/action 的最新决策。
+
+当前 source-level evidence 已覆盖 worker MCP 与 Claude SDK tool hook 的 exact
+decision lookup：`allow_once` / `deny` 绑定 exact `tool_call_id`，
+`allow_for_run` 绑定稳定 request fingerprint（`input_sha256` 或
+`command_sha256`）。这不替代 211 runtime acceptance、普通用户确认卡视觉验收或
+legacy frontend route remap。
 
 后续硬化：
 

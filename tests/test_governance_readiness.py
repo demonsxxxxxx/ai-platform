@@ -65,6 +65,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "user_tool_permission_request_decision" in domains["tool_permission"]["implemented"]
     assert "audit_visible_legacy_frontend_route_policy_mapping" in domains["tool_permission"]["implemented"]
     assert "tool_allow_deny_ask_policy_taxonomy_evidence" in domains["tool_permission"]["implemented"]
+    assert "exact_tool_permission_decision_lookup_source_tests" in domains["tool_permission"]["implemented"]
     assert "admin_policy_change_history_projection" in domains["tool_permission"]["implemented"]
     assert "admin_policy_bulk_review_dashboard_contract" in domains["tool_permission"]["implemented"]
     assert "legacy_frontend_route_policy_enforcement_or_ai_platform_remap" in domains["tool_permission"]["gaps"]
@@ -78,7 +79,16 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     tool_evidence = domains["tool_permission"]["evidence"]["tool_policy_taxonomy"]
     assert tool_evidence["schema_version"] == "ai-platform.tool-policy-readiness.v1"
     assert tool_evidence["status"] == "partial_blocked"
+    assert tool_evidence["registry_contract"] == {
+        "registry_source": "platform_registered_mcp_tools_only",
+        "ordinary_user_custom_mcp": "not_allowed",
+        "unregistered_tool_behavior": "deny",
+        "tenant_policy_scope": "same_tenant_registered_tools_only",
+    }
     assert "admin_policy_change_history_projection" in tool_evidence["implemented_controls"]
+    assert "exact_tool_permission_decision_lookup_source_tests" in tool_evidence["implemented_controls"]
+    assert "platform_registered_mcp_only_policy" in tool_evidence["implemented_controls"]
+    assert "ordinary_user_custom_mcp_disabled" in tool_evidence["implemented_controls"]
     assert "admin_policy_bulk_review_dashboard_contract" in tool_evidence["implemented_controls"]
     assert tool_evidence["summary"] == {
         "taxonomy_cases": 6,
@@ -159,13 +169,20 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "memory_redaction_policy_admin_preview_and_audit" in domains["memory_governance"]["implemented"]
     assert "office_context_pack_architecture_readiness_snapshot" in domains["memory_governance"]["implemented"]
     assert "context_snapshot_public_provenance_projection_contract" in domains["memory_governance"]["implemented"]
+    assert "executor_context_pack_prompt_injection_source_tests" in domains["memory_governance"]["implemented"]
+    assert "source_level_context_pack_persistence_and_versioning" in domains["memory_governance"]["implemented"]
+    assert "user_visible_context_provenance_api_projection_source_tests" in domains["memory_governance"]["implemented"]
+    assert "office_execution_tier_router_source_tests" in domains["memory_governance"]["implemented"]
     assert "formal_memory_delete_export_erasure_evidence" not in domains["memory_governance"]["gaps"]
     assert "memory_export_erasure_evidence" not in domains["memory_governance"]["gaps"]
     assert "memory_redaction_policy_admin_preview_and_audit" not in domains["memory_governance"]["gaps"]
     assert "bounded_context_pack_product_contract_for_office_workflows" not in domains["memory_governance"]["gaps"]
     assert "office_context_pack_runtime_implementation_and_acceptance" not in domains["memory_governance"]["gaps"]
-    assert "office_context_pack_persistence_and_versioning" in domains["memory_governance"]["gaps"]
-    assert "executor_context_pack_injection" in domains["memory_governance"]["gaps"]
+    assert "office_context_pack_persistence_and_versioning" not in domains["memory_governance"]["gaps"]
+    assert "user_visible_context_provenance_projection" not in domains["memory_governance"]["gaps"]
+    assert "executor_context_pack_injection" not in domains["memory_governance"]["gaps"]
+    assert "executor_context_pack_211_acceptance" in domains["memory_governance"]["gaps"]
+    assert "office_execution_tier_router" not in domains["memory_governance"]["gaps"]
     context_evidence = domains["memory_governance"]["evidence"]["office_context_pack_readiness"]
     assert context_evidence["schema_version"] == "ai-platform.office-context-pack-readiness.v1"
     assert context_evidence["status"] == "partial_blocked"
@@ -173,12 +190,17 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert context_evidence["policy"]["ordinary_user_policy"] == "public_projection_only"
     assert context_evidence["policy"]["long_term_memory_policy"] == "fail_closed_until_policy_and_acceptance"
     assert context_evidence["policy"]["does_not_expand_multi_agent_beta"] is True
+    assert "executor_context_pack_prompt_injection_source_tests" in context_evidence["implemented_controls"]
+    assert "source_level_context_pack_persistence_and_versioning" in context_evidence["implemented_controls"]
+    assert "user_visible_context_provenance_api_projection_source_tests" in context_evidence["implemented_controls"]
+    assert "office_execution_tier_router_source_tests" in context_evidence["implemented_controls"]
     assert context_evidence["summary"]["allowed_sources"] >= 7
     assert context_evidence["summary"]["execution_tiers"] >= 3
-    assert context_evidence["summary"]["open_gaps"] >= 7
+    assert context_evidence["summary"]["open_gaps"] == 4
     assert context_evidence["summary"]["sandbox_default_for_lightweight_office_tasks"] is False
     assert "frontend_context_provenance_acceptance" in context_evidence["open_gaps"]
     assert "sandbox_cold_start_latency_split" in context_evidence["open_gaps"]
+    assert "office_execution_tier_router" not in context_evidence["open_gaps"]
     assert "public_admin_projection_audit_baseline" in domains["frontend_projection"]["implemented"]
     assert "frontend_projection_audit_cli" in domains["frontend_projection"]["implemented"]
     assert "frontend_ci_projection_audit_integration" in domains["frontend_projection"]["implemented"]
@@ -320,8 +342,12 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     assert "memory_delete_retention_erasure_evidence_snapshot" in markdown
     assert "memory_export_erasure_evidence_snapshot" in markdown
     assert "context_snapshot_public_provenance_projection_contract" in markdown
-    assert "office_context_pack_persistence_and_versioning" in markdown
-    assert "executor_context_pack_injection" in markdown
+    assert "user_visible_context_provenance_api_projection_source_tests" in markdown
+    assert "office_execution_tier_router" in markdown
+    assert "source_level_context_pack_persistence_and_versioning" in markdown
+    assert "- office_context_pack_persistence_and_versioning" not in markdown
+    assert "executor_context_pack_prompt_injection_source_tests" in markdown
+    assert "executor_context_pack_211_acceptance" in markdown
     open_gaps = markdown.split("## Domains", 1)[0]
     assert "memory_export_erasure_evidence" not in open_gaps
     assert "callback-secret" not in markdown

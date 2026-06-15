@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">AI Platform controlled execution cabin illustration</title>
+  <desc id="desc">A sparse Ian Xiaohei style hand-drawn architecture illustration for the ai-platform repository.</desc>
+  <defs>
+    <style>
+      .ink { fill: none; stroke: #111; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; }
+      .thin { fill: none; stroke: #111; stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round; }
+      .orange { fill: none; stroke: #f2992e; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; }
+      .red { fill: none; stroke: #d33a2c; stroke-width: 4.5; stroke-linecap: round; stroke-linejoin: round; }
+      .blue { fill: none; stroke: #2f80c9; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+      .label { font-family: "KaiTi", "STKaiti", "Microsoft YaHei", sans-serif; font-size: 31px; fill: #111; }
+      .label-small { font-family: "KaiTi", "STKaiti", "Microsoft YaHei", sans-serif; font-size: 24px; fill: #111; }
+      .label-blue { font-family: "KaiTi", "STKaiti", "Microsoft YaHei", sans-serif; font-size: 24px; fill: #2f80c9; }
+      .label-red { font-family: "KaiTi", "STKaiti", "Microsoft YaHei", sans-serif; font-size: 24px; fill: #d33a2c; }
+      .label-orange { font-family: "KaiTi", "STKaiti", "Microsoft YaHei", sans-serif; font-size: 25px; fill: #f2992e; }
+      .paper { fill: #fff; stroke: #111; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+      .xiaohei { fill: #111; stroke: #111; stroke-width: 3; stroke-linejoin: round; }
+    </style>
+    <marker id="arrow-orange" markerWidth="15" markerHeight="15" refX="11" refY="7.5" orient="auto">
+      <path d="M1 1 L12 7.5 L1 14" fill="none" stroke="#f2992e" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="14" markerHeight="14" refX="10" refY="7" orient="auto">
+      <path d="M1 1 L11 7 L1 13" fill="none" stroke="#2f80c9" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="900" fill="#fff"/>
+
+  <!-- left input scraps -->
+  <path class="paper" d="M126 232 C181 222 242 231 296 220 C312 255 308 322 303 365 C251 382 179 371 126 385 C111 339 112 278 126 232 Z"/>
+  <path class="thin" d="M151 272 C194 267 236 270 274 262"/>
+  <path class="thin" d="M150 310 C206 306 230 313 274 304"/>
+  <path class="thin" d="M151 346 C199 340 239 349 280 337"/>
+  <text class="label-small" x="145" y="216">frontend/web</text>
+  <text class="label-blue" x="117" y="421">同源入口</text>
+
+  <path class="paper" d="M86 493 C139 476 204 494 247 481 C268 515 258 578 252 620 C194 626 126 613 79 633 C69 592 64 531 86 493 Z"/>
+  <text class="label-small" x="104" y="546">公司账号</text>
+  <text class="label-small" x="123" y="584">会话</text>
+
+  <path class="orange" marker-end="url(#arrow-orange)" d="M304 315 C393 304 438 345 502 381"/>
+  <path class="orange" marker-end="url(#arrow-orange)" d="M255 557 C351 546 424 500 496 464"/>
+  <text class="label-orange" x="338" y="290">任务投递</text>
+
+  <!-- central strange controller machine -->
+  <path class="ink" d="M520 246 C630 216 820 221 922 254 C955 333 951 493 914 586 C797 621 635 615 527 580 C497 484 493 340 520 246 Z"/>
+  <path class="thin" d="M550 286 C660 273 780 279 895 297"/>
+  <path class="thin" d="M544 543 C664 570 788 565 902 535"/>
+  <path class="thin" d="M577 330 C609 333 632 330 666 328"/>
+  <path class="thin" d="M580 369 C623 364 662 369 705 361"/>
+  <path class="thin" d="M581 409 C642 400 700 407 759 396"/>
+  <text class="label" x="600" y="251">平台中控</text>
+
+  <!-- queue slot and gate -->
+  <path class="ink" d="M735 290 C793 304 841 340 863 396 C817 410 756 411 704 394 C704 351 715 315 735 290 Z"/>
+  <path class="red" d="M812 288 C810 334 815 369 832 408"/>
+  <text class="label-red" x="838" y="300">权限闸</text>
+  <text class="label-small" x="724" y="446">run queue</text>
+
+  <!-- Xiaohei as core worker -->
+  <path class="xiaohei" d="M625 437 C601 402 614 354 653 342 C699 328 744 354 750 400 C757 455 720 490 674 489 C650 488 635 474 625 437 Z"/>
+  <circle cx="656" cy="393" r="7" fill="#fff"/>
+  <circle cx="696" cy="389" r="7" fill="#fff"/>
+  <path class="thin" d="M646 486 C633 509 629 530 616 551"/>
+  <path class="thin" d="M703 486 C716 513 720 531 737 552"/>
+  <path class="thin" d="M628 421 C585 409 556 407 523 418"/>
+  <path class="thin" d="M745 421 C786 412 802 407 830 390"/>
+  <path class="orange" d="M555 418 C592 424 614 430 638 437"/>
+  <text class="label-small" x="554" y="614">小黑把任务塞进受控舱</text>
+
+  <!-- controlled data organs -->
+  <ellipse class="thin" cx="596" cy="668" rx="66" ry="24"/>
+  <path class="thin" d="M530 668 L530 721 C554 744 632 743 662 719 L662 668"/>
+  <text class="label-small" x="551" y="776">Postgres</text>
+
+  <path class="thin" d="M708 641 C753 627 797 642 808 670 C817 697 795 721 755 725 C706 730 671 710 674 680 C677 661 688 649 708 641 Z"/>
+  <text class="label-small" x="695" y="776">Redis</text>
+
+  <path class="thin" d="M838 655 C895 632 951 646 958 690 C916 724 866 729 816 704 C818 681 824 666 838 655 Z"/>
+  <text class="label-small" x="838" y="776">MinIO</text>
+
+  <path class="blue" marker-end="url(#arrow-blue)" d="M610 585 C599 614 596 634 596 657"/>
+  <path class="blue" marker-end="url(#arrow-blue)" d="M729 584 C746 609 752 628 753 651"/>
+  <path class="blue" marker-end="url(#arrow-blue)" d="M856 581 C877 607 888 632 891 656"/>
+  <text class="label-blue" x="482" y="704">事实沉淀</text>
+
+  <!-- worker trolley and skill drawer -->
+  <path class="paper" d="M992 286 C1056 263 1142 279 1192 311 C1190 367 1167 419 1119 448 C1060 438 1013 408 984 365 C981 335 982 309 992 286 Z"/>
+  <text class="label-small" x="1035" y="336">worker</text>
+  <text class="label-small" x="1027" y="374">技能快照</text>
+  <path class="thin" d="M1028 408 C1076 422 1124 421 1162 399"/>
+  <path class="orange" marker-end="url(#arrow-orange)" d="M914 405 C961 393 973 373 996 358"/>
+
+  <path class="paper" d="M1056 535 C1126 510 1195 530 1237 574 C1222 646 1154 685 1085 671 C1024 640 1016 583 1056 535 Z"/>
+  <path class="thin" d="M1080 576 C1126 566 1166 574 1205 560"/>
+  <path class="thin" d="M1079 615 C1121 604 1160 617 1199 600"/>
+  <text class="label-small" x="1066" y="720">执行舱</text>
+  <text class="label-blue" x="1162" y="676">fake/docker</text>
+  <path class="blue" marker-end="url(#arrow-blue)" d="M1120 450 C1116 485 1113 507 1120 534"/>
+
+  <!-- outputs on right -->
+  <path class="paper" d="M1285 233 C1349 216 1427 222 1481 249 C1493 299 1483 354 1455 393 C1386 398 1317 388 1270 355 C1264 311 1268 270 1285 233 Z"/>
+  <text class="label-small" x="1321" y="285">run_events</text>
+  <text class="label-red" x="1339" y="332">可追溯</text>
+
+  <path class="paper" d="M1288 461 C1355 441 1436 453 1489 493 C1488 555 1458 604 1408 628 C1341 619 1287 592 1267 544 C1263 511 1270 482 1288 461 Z"/>
+  <text class="label-small" x="1328" y="521">artifact</text>
+  <text class="label-small" x="1325" y="558">审计证据</text>
+
+  <path class="orange" marker-end="url(#arrow-orange)" d="M1190 350 C1241 329 1252 309 1285 292"/>
+  <path class="orange" marker-end="url(#arrow-orange)" d="M1233 589 C1269 578 1278 551 1295 535"/>
+
+  <!-- deployment dock -->
+  <path class="thin" d="M1210 770 C1300 746 1412 759 1502 733"/>
+  <rect x="1252" y="701" width="86" height="45" rx="6" class="paper"/>
+  <rect x="1356" y="683" width="104" height="53" rx="7" class="paper"/>
+  <text class="label-small" x="1267" y="733">api</text>
+  <text class="label-small" x="1371" y="718">worker</text>
+  <text class="label-blue" x="1287" y="811">211 发布口</text>
+
+  <!-- source authority note -->
+  <path class="red" d="M452 151 C580 109 781 100 918 142"/>
+  <path class="red" d="M918 142 C904 132 890 129 872 132"/>
+  <text class="label-red" x="546" y="104">源头要对齐</text>
+
+  <!-- small weird ventilation lines -->
+  <path class="thin" d="M426 180 C407 151 413 128 435 108"/>
+  <path class="thin" d="M438 183 C427 158 437 138 460 125"/>
+  <path class="thin" d="M970 172 C997 150 1001 125 984 102"/>
+  <path class="thin" d="M990 187 C1030 173 1041 150 1033 124"/>
+
+  <!-- sparse bottom labels -->
+  <text class="label-small" x="83" y="752">不是直接放权</text>
+  <path class="red" d="M83 762 C153 779 220 773 285 754"/>
+  <text class="label-blue" x="1012" y="248">API / routes</text>
+  <text class="label-orange" x="1217" y="421">事件回流</text>
+</svg>
