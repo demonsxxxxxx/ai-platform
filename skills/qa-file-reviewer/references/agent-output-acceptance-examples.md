@@ -176,3 +176,49 @@
 - `review_result.json.artifacts.reviewed_docx` 指向真实文件
 - `commenting.actual_total >= commenting.expected_total`
 - 若 `semantic_agent_review=false` 且 `semantic_agent_review_attempted=true`，运行诊断必须保留在 `review_result.json` / logs；Word 中只保留真实文档审核发现，不写“语义审核未完整完成”类内部状态批注
+
+## 示例 6：默认多 reviewer 路径必须收齐 shard
+
+输入场景：
+
+- 用户请求：`深度审核`
+- 当前 runtime 中 Agent 工具可用
+
+预期结果：
+
+- 必须先生成 deterministic context
+- 必须派发并收齐至少以下 reviewer shard：
+  - `qa-structure-reviewer`
+  - `qa-zh-language-reviewer`
+  - `qa-en-language-reviewer`
+  - `qa-bilingual-reviewer`
+  - `qa-data-consistency-reviewer`
+  - `qa-risk-classifier`
+- 必须再运行 `qa-final-merge-reviewer`
+- `final_merge_agent_review.json` 才是传给 `run_qa_review.py --agent-review-json` 的合并输入
+
+不接受的情况：
+
+- 只运行 deterministic runner 就宣称完成深度审核
+- 少任一必需 shard 却没有降级记录
+- 没有 final merge reviewer 直接把多个 shard 并列当最终交付
+
+## 示例 7：Agent 工具不可用时的降级记录
+
+输入场景：
+
+- 用户请求：`平台全权审核`
+- 当前 runtime 中 Agent 工具不可用
+
+预期结果：
+
+- 允许降级到 deterministic-only 路径
+- 但必须先写 `agent_routing_record.json`
+- 记录里至少包含：
+  - `requested_review=platform_full_review`
+  - `execution_mode=fast_deterministic_downgrade`
+  - `agent_tool_available=false`
+  - `downgrade_reason`
+  - `required_reviewers`
+  - `completed_reviewers`
+- `downgrade_reason` 只进入 JSON / logs / 最终摘要，不进入 Word 批注

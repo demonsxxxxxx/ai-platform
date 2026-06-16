@@ -1,6 +1,6 @@
 # File Reviewer - 职责分支边界
 
-本文档定义 `qa-file-reviewer` 的当前职责拆分。
+本文档定义 `qa-file-reviewer` 的当前职责拆分，以及深度审核 / 平台全权审核下的强制多 reviewer 语义路径。
 
 ## 总原则
 
@@ -9,6 +9,7 @@
 - 中文、英文、双语和语义问题主要来自调用 agent 在脚本外的语义复核，并通过 `--agent-review-json` 进入统一合并、门禁和批注链路。
 - 聚合层负责去重、门禁、人工复核清单维护和 Word 批注可见性。
 - 定位不稳、低置信、建议空泛或外部证据依赖的问题默认过滤出 Word，只在内部诊断、跳过计数或日志中保留原因，避免增加人工复核成本。
+- 深度审核 / 平台全权审核默认必须走 Claude Agent SDK `Agent` 多 reviewer 路径，不允许把 deterministic runner 当作默认主路径。
 
 ## 职责清单
 
@@ -18,6 +19,7 @@
 | `project_number` | 实体识别与模板残留检查 | 只看项目号和相关引用语境，不扩展为通用实体识别。 |
 | `content_consistency` | 高置信结构一致性检查 | 只覆盖可泛化结构模式，不维护样本文档 literal 规则。 |
 | 调用 agent 语义复核 | 结构、中文、英文、双语、数据一致性、风险分类 | 不属于 `run_qa_review.py` 内置 LLM 分支；必须输出结构化 JSON，并由 runner 校验、锚定、合并。 |
+| `qa-final-merge-reviewer` | 合并 shard、去重、冲突归并、risk veto | 在 reviewer shards 之后运行，输出唯一 `final_merge_agent_review.json`。 |
 | `merge` / `gate` | 聚合、门禁、人工复核 | 负责汇总、门禁和交付控制。 |
 
 ## 确定性职责
@@ -80,6 +82,14 @@
 - 调用 agent 输出 `*_agent_review.json` 后，由 `run_qa_review.py --agent-review-json` 合并为兼容分支 `llm_full_review`。
 - 高/中置信、可稳定锚定、有原文依据且建议清晰的问题可写入“建议修改”批注；低置信、锚点不稳、外部证据依赖或建议空泛的问题默认不写入 Word。只有显式 `global_summary` 全文级问题允许无原位锚点并追加到文末全局审核意见。
 - 缺失 agent JSON、JSON 解析失败、非法 schema、SDK/sub-agent 执行失败和内部路径只记录到内部诊断，不进入 `human_review_queue` 的用户可见批注路径。
+- 深度审核 / 平台全权审核至少收齐以下 reviewer shard，之后才能进入 final merge reviewer：
+  - `qa-structure-reviewer`
+  - `qa-zh-language-reviewer`
+  - `qa-en-language-reviewer`
+  - `qa-bilingual-reviewer`
+  - `qa-data-consistency-reviewer`
+  - `qa-risk-classifier`
+- 至少收齐以上 shard 且完成 `qa-final-merge-reviewer` 后，才可宣称 semantic multi-review 完成。
 - 内部通过 `category` 区分：
   - `zh_language`
   - `en_language`
@@ -92,6 +102,18 @@
   - `qa-bilingual-reviewer`：中英文缺译、错译、术语映射、DS/DP 等双语一致性。
   - `qa-data-consistency-reviewer`：数字、百分号、单位、时间点、正文与表格内部一致性。
   - `qa-risk-classifier`：区分 `suggest_change`、`request_check`、外部证据依赖。
+  - `qa-final-merge-reviewer`：读取 deterministic context、全部 shards、risk veto 结果，生成唯一可合并 JSON。
+
+### Final Merge Reviewer
+
+- `qa-final-merge-reviewer` 不是可选润色步骤，而是深度审核 / 平台全权审核的必需步骤。
+- 该 reviewer 负责：
+  - 跨 reviewer 去重
+  - 冲突 issue 取舍
+  - risk-classifier 对同语义问题的 `request_check` / external veto
+  - 全文级 `global_summary` 归并
+- final merge reviewer 输出缺失时，默认视为多 reviewer 语义审核未完成。
+- 若因为 Agent 工具不可用或调用失败而无法运行 final merge reviewer，只能降级，并必须记录 downgrade reason。
 
 ## 聚合 / 复核职责
 

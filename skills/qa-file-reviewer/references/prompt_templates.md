@@ -2,6 +2,8 @@
 
 本文档只保留调用 agent 进行语义复核时的通用提示原则。当前不维护固定错词、固定句式、产品名组合或试验条件枚举模板。
 
+深度审核 / 平台全权审核时，默认使用 Claude Agent SDK `Agent` 派发多个 reviewer shard，再由 final merge reviewer 汇总；不是单一 prompt 跑完整个审核。
+
 ## 调用 agent 语义复核
 
 ### 调度来源
@@ -10,6 +12,8 @@
 - `scripts/run_qa_review.py` 不读取模型环境变量，也不自动调用内置 LLM。
 - 调用 agent 必须把结果写成 JSON 文件，并通过 `scripts/run_qa_review.py --agent-review-json <json>` 交回确定性 runner。
 - 不得在 prompt、日志、报告或源码中输出密钥。
+- risk classifier shard 必须独立产出，不能与普通语言 reviewer 混成一份自由文本总结。
+- final merge reviewer 必须消费全部 reviewer shard 和 deterministic context，再输出唯一 merged JSON。
 
 ### 目标
 
@@ -48,6 +52,10 @@
 - `zh_agent_review.json`
 - `en_agent_review.json`
 - `bilingual_semantic_agent_review.json`
+- `structure_agent_review.json`
+- `data_consistency_agent_review.json`
+- `risk_classifier_agent_review.json`
+- `final_merge_agent_review.json`
 
 调用 agent 应严格校验：
 
