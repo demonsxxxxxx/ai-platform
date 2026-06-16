@@ -12,7 +12,7 @@ def test_tool_policy_bulk_review_readiness_contract_is_safe_and_does_not_close_g
 
     assert readiness["schema_version"] == "ai-platform.tool-policy-bulk-review-readiness.v1"
     assert readiness["status"] == "partial_blocked"
-    assert readiness["policy"] == "contract_only_not_runtime_dashboard_acceptance"
+    assert readiness["policy"] == "source_runtime_acceptance_recorded_not_visual_or_211"
     assert readiness["does_not_close_g6"] is True
     assert readiness["dashboard_contract"] == {
         "schema_version": "ai-platform.tool-policy-bulk-review-dashboard-contract.v1",
@@ -72,12 +72,45 @@ def test_tool_policy_bulk_review_readiness_contract_is_safe_and_does_not_close_g
             "change_history_drilldown",
         ],
     }
+    assert readiness["runtime_acceptance"] == {
+        "schema_version": "ai-platform.tool-policy-bulk-review-runtime-acceptance.v1",
+        "status": "source_route_tests_recorded",
+        "evidence_strength": "source_route_tests",
+        "source_routes": [
+            "GET /api/ai/admin/tool-policies",
+            "GET /api/ai/admin/tool-policies/history",
+            "PUT /api/ai/admin/tool-policies/{tool_id}",
+        ],
+        "covered_runtime_controls": [
+            "ordinary_user_denied_inventory",
+            "same_tenant_admin_inventory_projection",
+            "ordinary_user_denied_history",
+            "same_tenant_admin_history_projection",
+            "dirty_history_payload_sanitized",
+            "admin_update_audited",
+            "risky_or_write_policy_requires_decision",
+            "missing_tool_update_fails_closed",
+        ],
+        "source_tests": [
+            "tests/test_admin_tool_policies.py::test_admin_list_tool_policies_requires_admin",
+            "tests/test_admin_tool_policies.py::test_admin_list_tool_policies_returns_same_tenant_operational_projection",
+            "tests/test_admin_tool_policies.py::test_admin_tool_policy_history_requires_admin",
+            "tests/test_admin_tool_policies.py::test_admin_tool_policy_history_returns_bounded_same_tenant_secret_safe_projection",
+            "tests/test_admin_tool_policies.py::test_admin_tool_policy_history_drops_dirty_scalars_and_nested_allowed_payloads",
+            "tests/test_admin_tool_policies.py::test_admin_update_tool_policy_audits_and_keeps_risky_tools_fail_closed",
+            "tests/test_admin_tool_policies.py::test_admin_update_tool_policy_returns_404_for_missing_tool",
+        ],
+        "forbidden_payload_classes": readiness["forbidden_payload_classes"],
+        "does_not_close_g6": True,
+        "does_not_close_visual_acceptance": True,
+        "does_not_close_211_acceptance": True,
+    }
     assert readiness["open_gaps"] == [
-        "admin_policy_bulk_review_runtime_acceptance",
         "admin_policy_bulk_review_visual_acceptance",
         "admin_policy_bulk_review_211_acceptance",
     ]
     assert "admin_policy_bulk_review_and_dashboard_acceptance" not in readiness["open_gaps"]
+    assert "admin_policy_bulk_review_runtime_acceptance" not in readiness["open_gaps"]
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
     assert "executor_private_payload" not in serialized
@@ -180,23 +213,26 @@ def test_tool_policy_readiness_records_allow_ask_deny_taxonomy_without_closing_g
     assert "admin_policy_change_history_projection" in readiness["implemented_controls"]
     assert "admin_policy_bulk_review_and_change_history_view" not in readiness["open_gaps"]
     assert "admin_policy_bulk_review_dashboard_contract" in readiness["implemented_controls"]
+    assert "admin_policy_bulk_review_runtime_acceptance_source_route_tests" in readiness["implemented_controls"]
     assert "exact_tool_permission_decision_lookup_source_tests" in readiness["implemented_controls"]
     assert "platform_registered_mcp_only_policy" in readiness["implemented_controls"]
     assert "ordinary_user_custom_mcp_disabled" in readiness["implemented_controls"]
     assert "admin_policy_bulk_review_and_dashboard_acceptance" not in readiness["open_gaps"]
     assert "tool_policy_taxonomy_admin_dashboard_acceptance" not in readiness["open_gaps"]
+    assert "admin_policy_bulk_review_runtime_acceptance" not in readiness["open_gaps"]
     assert readiness["evidence"]["admin_policy_bulk_review_dashboard"]["schema_version"] == (
         "ai-platform.tool-policy-bulk-review-readiness.v1"
+    )
+    assert readiness["evidence"]["admin_policy_bulk_review_dashboard"]["runtime_acceptance"]["status"] == (
+        "source_route_tests_recorded"
     )
     assert readiness["evidence"]["admin_policy_bulk_review_dashboard"]["dashboard_contract"][
         "schema_version"
     ] == "ai-platform.tool-policy-bulk-review-dashboard-contract.v1"
     assert readiness["evidence"]["admin_policy_bulk_review_dashboard"]["open_gaps"] == [
-        "admin_policy_bulk_review_runtime_acceptance",
         "admin_policy_bulk_review_visual_acceptance",
         "admin_policy_bulk_review_211_acceptance",
     ]
-    assert "admin_policy_bulk_review_runtime_acceptance" in readiness["open_gaps"]
     assert "admin_policy_bulk_review_visual_acceptance" in readiness["open_gaps"]
     assert "admin_policy_bulk_review_211_acceptance" in readiness["open_gaps"]
 
@@ -212,7 +248,10 @@ def test_tool_policy_readiness_markdown_is_gap_first_and_secret_safe():
     assert "admin_policy_change_history_projection" in markdown
     assert "admin_policy_bulk_review_dashboard_contract" in markdown
     assert "exact_tool_permission_decision_lookup_source_tests" in markdown
-    assert "admin_policy_bulk_review_runtime_acceptance" in markdown
+    assert "admin_policy_bulk_review_runtime_acceptance" not in markdown.split("## Open Gaps", 1)[1].split(
+        "## Admin Bulk Review", 1
+    )[0]
+    assert "source_route_tests_recorded" in markdown
     assert "ai-platform.tool-policy-bulk-review-dashboard-contract.v1" in markdown
     assert "token=secret" not in markdown
     assert ".env" not in markdown
@@ -239,8 +278,12 @@ def test_tool_policy_readiness_cli_outputs_json_without_secret_markers():
     assert payload["summary"]["taxonomy_cases"] == 6
     assert "tool_allow_deny_ask_policy_taxonomy_for_all_mcp_tools" not in payload["open_gaps"]
     assert "admin_policy_bulk_review_dashboard_contract" in payload["implemented_controls"]
+    assert "admin_policy_bulk_review_runtime_acceptance_source_route_tests" in payload["implemented_controls"]
     assert "exact_tool_permission_decision_lookup_source_tests" in payload["implemented_controls"]
-    assert "admin_policy_bulk_review_runtime_acceptance" in payload["open_gaps"]
+    assert "admin_policy_bulk_review_runtime_acceptance" not in payload["open_gaps"]
+    assert payload["evidence"]["admin_policy_bulk_review_dashboard"]["runtime_acceptance"]["status"] == (
+        "source_route_tests_recorded"
+    )
     assert "token=secret" not in result.stdout
     assert "work_dir" not in result.stdout
     assert ".env" not in result.stdout
@@ -263,10 +306,10 @@ def test_tool_policy_bulk_review_readiness_cli_outputs_json_without_secret_marke
     assert payload["schema_version"] == "ai-platform.tool-policy-bulk-review-readiness.v1"
     assert payload["status"] == "partial_blocked"
     assert payload["open_gaps"] == [
-        "admin_policy_bulk_review_runtime_acceptance",
         "admin_policy_bulk_review_visual_acceptance",
         "admin_policy_bulk_review_211_acceptance",
     ]
+    assert payload["runtime_acceptance"]["status"] == "source_route_tests_recorded"
     assert "postgresql://" not in result.stdout
     assert "redis-secret" not in result.stdout
     assert "database_url" not in result.stdout.lower()
