@@ -186,6 +186,11 @@ _FORBIDDEN_EVIDENCE_FILE_MARKERS = (
     "token",
     "work_dir",
 )
+_RUNTIME_BYTECODE_PATH_PATTERN = re.compile(r"(__pycache__|\.pyc\b|\.pyo\b)", re.IGNORECASE)
+_PERSONAL_MACHINE_PATH_PATTERN = re.compile(
+    r"([A-Za-z]:[\\/](?:Users|home)[\\/][^\\/\s\"']+)|(/Users/[^/\s\"']+)|(/home/[^/\s\"']+)",
+    re.IGNORECASE,
+)
 
 
 def _validate_skill_id(skill_id: str) -> str:
@@ -443,7 +448,15 @@ def _reviewed_evidence_file_errors(evidence_path: Path, *, category: str) -> lis
         return [error_name]
     if "operator action:" in normalized_text and "_reviewed=true" in normalized_text:
         return [error_name]
-    return []
+
+    errors: list[str] = []
+    basename = evidence_path.name.lower()
+    if category == "sbom_or_signed_package" and basename in _SBOM_FILE_NAMES:
+        if _RUNTIME_BYTECODE_PATH_PATTERN.search(text):
+            errors.append(f"{category}_evidence_file_runtime_bytecode_content")
+    if _PERSONAL_MACHINE_PATH_PATTERN.search(text):
+        errors.append(f"{category}_evidence_file_personal_machine_path_content")
+    return sorted(set(errors))
 
 
 def _valid_signed_package_evidence_paths(

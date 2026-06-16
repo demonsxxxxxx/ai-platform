@@ -959,6 +959,77 @@ def test_skill_release_review_manifest_rejects_placeholder_actual_evidence_paths
     assert "replace-me/npm-audit.json" not in serialized
 
 
+def test_skill_release_review_manifest_rejects_runtime_bytecode_entries_in_sbom(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(
+        skills_root,
+        "general-chat",
+        "Default chat capability.",
+        {
+            "evidence/sbom.json": json.dumps(
+                {
+                    "schema_version": "ai-platform.skill-release-source-sbom.v1",
+                    "components": [
+                        {"type": "file", "name": "scripts/run_generation_pipeline.py"},
+                        {"type": "file", "name": "__pycache__/run_generation_pipeline.cpython-313.pyc"},
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            "legal/LICENSE": "reviewed license text",
+            "security/npm-audit.json": "{}",
+            "ai-platform-skill-release-review.json": _passed_review_manifest(
+                "general-chat",
+                {
+                    "sbom_or_signed_package": ["evidence/sbom.json"],
+                    "license_policy": ["legal/LICENSE"],
+                    "vulnerability_scan": ["security/npm-audit.json"],
+                },
+            ),
+        },
+    )
+
+    readiness = build_skill_release_readiness(skills_root=skills_root)
+
+    skill = readiness["skills"][0]
+    assert skill["release_review"]["status"] == "invalid_or_incomplete"
+    assert "sbom_or_signed_package_evidence_file_runtime_bytecode_content" in skill["release_review"][
+        "evidence_file_errors"
+    ]
+
+
+def test_skill_release_review_manifest_rejects_personal_machine_paths_in_reviewed_evidence(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(
+        skills_root,
+        "general-chat",
+        "Default chat capability.",
+        {
+            "evidence/sbom.json": "{}",
+            "legal/LICENSE": "Reviewed on C:/Users/release-admin/Desktop/private-builds/license-check.txt",
+            "security/npm-audit.json": "{}",
+            "ai-platform-skill-release-review.json": _passed_review_manifest(
+                "general-chat",
+                {
+                    "sbom_or_signed_package": ["evidence/sbom.json"],
+                    "license_policy": ["legal/LICENSE"],
+                    "vulnerability_scan": ["security/npm-audit.json"],
+                },
+            ),
+        },
+    )
+
+    readiness = build_skill_release_readiness(skills_root=skills_root)
+
+    skill = readiness["skills"][0]
+    assert skill["release_review"]["status"] == "invalid_or_incomplete"
+    assert "license_policy_evidence_file_personal_machine_path_content" in skill["release_review"][
+        "evidence_file_errors"
+    ]
+    serialized = json.dumps(readiness, ensure_ascii=False)
+    assert "C:/Users/release-admin/Desktop/private-builds/license-check.txt" not in serialized
+
+
 def test_skill_release_evidence_scaffold_records_external_evidence_without_clearing_gate(tmp_path):
     skills_root = tmp_path / "skills"
     _write_skill(skills_root, "general-chat", "Default chat capability.")
