@@ -246,6 +246,34 @@ def test_dependency_policy_reports_missing_internal_dependency_for_admin_audit()
         skill_dependency_ids("qa-file-reviewer", {"qa-file-reviewer"})
 
 
+def test_dependency_policy_allows_ctd_stability_reference_dependency():
+    policy = skill_dependency_policy(
+        "ctd-32s73-stability-template-fill",
+        {"ctd-32s73-stability-template-fill", "reference-fact-extraction"},
+    )
+
+    assert policy == {
+        "skill_id": "ctd-32s73-stability-template-fill",
+        "public": True,
+        "internal_dependency": False,
+        "dependency_ids": ["reference-fact-extraction"],
+        "dependency_details": [
+            {
+                "skill_id": "reference-fact-extraction",
+                "status": "allowed",
+                "reason": "declared_internal_dependency",
+                "public": False,
+                "internal_dependency": True,
+                "available": True,
+            }
+        ],
+    }
+    assert skill_dependency_ids(
+        "ctd-32s73-stability-template-fill",
+        {"ctd-32s73-stability-template-fill", "reference-fact-extraction"},
+    ) == ["reference-fact-extraction"]
+
+
 def test_dependency_policy_reports_public_dependency_without_allowing_it(monkeypatch):
     monkeypatch.setitem(skill_dependencies.SKILL_DEPENDENCIES, "qa-file-reviewer", ["baoyu-translate"])
 

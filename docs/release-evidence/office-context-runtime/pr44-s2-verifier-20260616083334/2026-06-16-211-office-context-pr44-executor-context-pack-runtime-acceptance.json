@@ -8,8 +8,8 @@
     "result": "ok:true",
     "runtime_checks": {
       "executor_context_pack_211_acceptance": {
-        "does_not_close_211_acceptance": false,
-        "evidence_strength": "live_worker_run_payload",
+        "does_not_close_211_acceptance": true,
+        "evidence_strength": "superseded_live_worker_run_payload_insufficient",
         "generated_at": "2026-06-16T00:36:27+00:00",
         "live_run_checks": {
           "context_pack_schema_present": true,
@@ -50,7 +50,7 @@
           }
         },
         "run_id": "run_f417cf0ac1104d5884ed58e0f111fd00",
-        "runtime_acceptance_requires_real_run_payload": false,
+        "runtime_acceptance_requires_real_run_payload": true,
         "runtime_evidence": {
           "context_snapshot_id_present": true,
           "executor_private_content_absent": true,

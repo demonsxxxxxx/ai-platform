@@ -287,6 +287,15 @@ def test_qa_file_reviewer_includes_minimax_docx_dependency_when_available():
     assert selected == ["qa-file-reviewer", "minimax-docx"]
 
 
+def test_ctd_stability_template_fill_includes_reference_fact_dependency_when_available():
+    selected = _allowed_skill_names(
+        types.SimpleNamespace(skill_id="ctd-32s73-stability-template-fill", input={}, skill_manifests=[]),
+        ["ctd-32s73-stability-template-fill", "reference-fact-extraction", "general-chat"],
+    )
+
+    assert selected == ["ctd-32s73-stability-template-fill", "reference-fact-extraction"]
+
+
 def test_inferred_used_skill_names_uses_shared_dependency_helper(monkeypatch):
     calls = []
 

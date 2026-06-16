@@ -1,0 +1,11 @@
+ai-platform Skill release license-policy evidence
+
+Skill: reference-fact-extraction
+Skill content hash: e81703b22e532ccbb7f698fd2c981a7d4777a822b047440fd70331ce9baedde1
+Generated at: 2026-06-16T06:04:09Z
+
+Repository-declared dependency files:
+- requirements.txt
+
+Status: pending_review
+Operator action: confirm third-party license policy before setting license_policy_reviewed=true.

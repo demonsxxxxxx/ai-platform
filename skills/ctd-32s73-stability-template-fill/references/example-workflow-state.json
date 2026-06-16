@@ -1,8 +1,8 @@
 {
   "schema_version": "ctd-32s73-workflow-state-v1",
   "run_id": "run-001",
-  "skill_root": "C:\\Users\\Yanan.Liu\\.claude\\skills\\ctd-32s73-stability-template-fill",
-  "output_dir": "C:\\path\\to\\project\\outputs\\run-001",
+  "skill_root": "<skill-root>/ctd-32s73-stability-template-fill",
+  "output_dir": "<project-output-root>/run-001",
   "state": "FACT_EXTRACTION_REQUIRED",
   "previous_states": [
     {

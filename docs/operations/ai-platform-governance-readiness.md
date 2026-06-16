@@ -251,12 +251,13 @@ repository `skills/` inventory, Skill front matter, sanitized evidence file
 basenames, content hashes, and the platform dependency policy. It does not output
 Skill body content, absolute paths, `.env` values, staging paths, callback
 tokens, sandbox workspace roots, or executor-private data. The current source
-inventory contains five Skills, four public workbench Skills, one internal
-dependency Skill, and one declared dependency edge
-`qa-file-reviewer -> minimax-docx`; that dependency is allowed by policy. The
-same snapshot records one Skill with package metadata, one Skill with
-requirements evidence, and zero Skills with SBOM, license, or vulnerability
-review evidence. A missing or empty Skill inventory fails closed as
+inventory contains seven Skills, five public workbench Skills, two internal
+dependency Skills, and two declared dependency edges:
+`qa-file-reviewer -> minimax-docx` and
+`ctd-32s73-stability-template-fill -> reference-fact-extraction`. Those
+dependencies are allowed by policy. The same snapshot records source-bound
+pending SBOM, license, and vulnerability scaffold evidence for all seven Skills,
+but review manifests remain pending and do not close G6. A missing or empty Skill inventory fails closed as
 `skill_inventory_missing_or_empty`; blocked dependency-policy details fail
 closed as `skill_dependency_policy_blocked`; and SBOM/license/vulnerability
 filenames do not clear release governance unless an explicit review manifest
