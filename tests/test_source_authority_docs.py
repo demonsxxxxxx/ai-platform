@@ -313,6 +313,7 @@ def test_s2_sandbox_runtime_smoke_contract_records_pr44_evidence_without_closing
     assert "Docker sandbox production hardening is closed" not in governance_text
     assert "Docker sandbox production hardening is closed" not in roadmap_text
     assert "2026-06-16-211-office-context-pr44-executor-context-pack-runtime-acceptance.json" in release_evidence_text
+    assert "2026-06-17-211-office-context-8e0389e-executor-context-pack-runtime-acceptance.json" in release_evidence_text
     assert "2026-06-16-211-office-context-pr44-sandbox-latency-split-runtime-acceptance.json" in release_evidence_text
     assert "executor_context_pack_211_acceptance" in release_evidence_text
     assert "sandbox_cold_start_latency_split_211_acceptance" in release_evidence_text
@@ -322,6 +323,7 @@ def test_s2_sandbox_runtime_smoke_contract_records_pr44_evidence_without_closing
     assert "does not claim production Docker sandbox hardening" in release_evidence_text
     assert "Superseded insufficient PR #44 executor context-pack evidence" in release_evidence_text
     assert "does not close `executor_context_pack_211_acceptance`" in release_evidence_text
+    assert "closes only the #22 `executor_context_pack_211_acceptance` runtime gap" in release_evidence_text
     assert "G6/G9 closure" in release_evidence_text
 
 

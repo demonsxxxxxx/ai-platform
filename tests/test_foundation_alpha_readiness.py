@@ -35,11 +35,10 @@ VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS = {
     "long_term_cross_session_memory_fail_closed": True,
 }
 REQUIRED_MEMORY_CONTEXT_CLOSED_RUNTIME_GAPS = {
+    "executor_context_pack_211_acceptance",
     "sandbox_cold_start_latency_split_211_acceptance",
 }
-REQUIRED_MEMORY_CONTEXT_OPEN_RUNTIME_GAPS = {
-    "executor_context_pack_211_acceptance",
-}
+REQUIRED_MEMORY_CONTEXT_OPEN_RUNTIME_GAPS = set()
 
 
 class SecretBearingSettings:
@@ -1524,6 +1523,9 @@ def test_foundation_alpha_readiness_classifies_source_metadata_paths_as_runtime_
     assert foundation_alpha_readiness._is_runtime_affecting_path(".gitignore") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("AGENTS.md") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("app/foundation_alpha_readiness.py") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("app/governance_readiness.py") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("app/memory_erasure_readiness.py") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("app/office_context_readiness.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("app/capacity_bounded_load_harness.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("docs/agent-rules/ai-platform-guardrails.md") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("docs/agent-rules/github-issue-pr-workflow.md") is False

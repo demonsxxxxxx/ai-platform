@@ -171,7 +171,7 @@ def build_governance_readiness(
     if "executor_context_pack_211_acceptance" in office_context_readiness["open_gaps"]:
         office_context_next_checks.append("record 211 executor context-pack acceptance before closing #22")
     else:
-        office_context_next_checks.append("keep reviewed PR #44 211 executor context-pack evidence under regression")
+        office_context_next_checks.append("keep reviewed 211 executor context-pack evidence under regression")
     office_context_next_checks.extend(
         [
             "keep run playback context provenance limited to counts, safe input keys, memory policy source/read flag, execution tier, bounded artifact/context-pack versions, and context pack metadata",
