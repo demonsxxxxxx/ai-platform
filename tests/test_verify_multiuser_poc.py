@@ -1951,7 +1951,45 @@ def test_foundation_runtime_cli_outputs_blocked_evidence_when_one_case_times_out
     fake_run_case.call_count = 0
     fake_run_case.results = []
 
+    diagnostics_requests = []
+
+    def fake_json_request(method, url, payload=None, headers=None, timeout=30.0):
+        diagnostics_requests.append((method, url, headers))
+        if url.endswith("/api/ai/admin/runs/run-timeout"):
+            return 200, {
+                "run": {"run_id": "run-timeout", "status": "queued"},
+                "queue_insight": {
+                    "reason": "workers_busy",
+                    "depths": {"queued": 4, "processing": 3, "tenant_queued": 2, "tenant_processing": 1},
+                    "workers": {"active": 3},
+                    "capacity": {
+                        "max_active_worker_runs": 3,
+                        "available_worker_slots": 0,
+                        "processing_saturated": True,
+                    },
+                    "throttling": {"tenant_processing_saturated": False, "user_processing_saturated": False},
+                },
+                "sandbox_leases": [
+                    {"lease_id": "lease-a", "status": "released", "provider": "fake"},
+                ],
+            }
+        if url.endswith("/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"):
+            return 200, {
+                "queue": {
+                    "tenant_insight": {
+                        "reason": "workers_busy",
+                        "depths": {"queued": 4, "processing": 3},
+                        "capacity": {"max_active_worker_runs": 3, "available_worker_slots": 0},
+                    }
+                },
+                "sandbox": {"active_lease_count": 3},
+                "capacity": {"limits": {"worker": {"max_active_worker_runs": 3}}},
+                "backpressure": {"reasons": ["worker_capacity_saturated"]},
+            }
+        raise AssertionError(f"unexpected diagnostics request: {method} {url}")
+
     monkeypatch.setattr(module, "run_case", fake_run_case)
+    monkeypatch.setattr(module, "json_request", fake_json_request)
     monkeypatch.setattr(module, "attach_artifact_acl_probe_results", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "attach_context_scope_probe_results", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "attach_tool_permission_probe_results", lambda *_args, **_kwargs: None)
@@ -1988,8 +2026,19 @@ def test_foundation_runtime_cli_outputs_blocked_evidence_when_one_case_times_out
     assert payload["readiness"]["status"] == "blocked_foundation_runtime_concurrency_evidence"
     assert "foundation_runtime_case_failures" in payload["readiness"]["failures"]
     assert payload["evidence"]["failed_case_count"] == 1
-    assert payload["evidence"]["failed_cases"][0]["error_type"] == "TimeoutError"
-    assert "run-timeout" in payload["evidence"]["failed_cases"][0]["message"]
+    failed_case = payload["evidence"]["failed_cases"][0]
+    assert failed_case["error_type"] == "TimeoutError"
+    assert "run-timeout" in failed_case["message"]
+    assert failed_case["run_id"] == "run-timeout"
+    assert failed_case["session_id"] == "ses-timeout"
+    assert failed_case["diagnostics"]["run_detail"]["status_code"] == 200
+    assert failed_case["diagnostics"]["run_detail"]["run_status"] == "queued"
+    assert failed_case["diagnostics"]["run_detail"]["queue_insight"]["reason"] == "workers_busy"
+    assert failed_case["diagnostics"]["run_detail"]["queue_insight"]["capacity"]["available_worker_slots"] == 0
+    assert failed_case["diagnostics"]["run_detail"]["sandbox_leases"]["active_count"] == 0
+    assert failed_case["diagnostics"]["runtime_overview"]["status_code"] == 200
+    assert failed_case["diagnostics"]["runtime_overview"]["backpressure_reasons"] == ["worker_capacity_saturated"]
+    assert any("/api/ai/admin/runs/run-timeout" in request[1] for request in diagnostics_requests)
     serialized = json.dumps(payload, ensure_ascii=False).lower()
     assert "authorization" not in serialized
     assert "bearer " not in serialized
