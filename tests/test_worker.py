@@ -2358,6 +2358,68 @@ async def test_worker_persists_g2_executor_contract_latency_and_token_placeholde
 
 
 @pytest.mark.asyncio
+async def test_worker_persists_sdk_usage_as_run_observability(monkeypatch):
+    calls = []
+
+    class SdkUsageAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="claude-agent-worker/1",
+                capabilities={"streaming": False},
+                result={"message": "done"},
+                executor_payload={
+                    "sdk_used": True,
+                    "sdk_session_id": "sdk-session-a",
+                    "sdk_usage": {
+                        "input_tokens": 101,
+                        "output_tokens": 37,
+                        "total_tokens": 138,
+                        "total_cost_usd": 0.0123,
+                    },
+                },
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(
+            (
+                "event",
+                kwargs["event_type"],
+                kwargs.get("latency_ms"),
+                kwargs.get("input_token_count"),
+                kwargs.get("output_token_count"),
+                kwargs.get("total_token_count"),
+                kwargs.get("estimated_cost_minor"),
+            )
+        )
+        return "evt-a"
+
+    async def complete_run(conn, **kwargs):
+        result = kwargs["result_json"]
+        calls.append(("complete", result["latency_ms"], result["token_counts"], result["cost"]))
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr("app.worker.time.monotonic", iter([20.0, 20.5]).__next__, raising=False)
+
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": SdkUsageAdapter()}))
+
+    assert outcome.status == "succeeded"
+    assert ("complete", 500, {"input": 101, "output": 37, "total": 138}, {"estimated_cost_minor": 1}) in calls
+    succeeded_event = next(item for item in calls if item[0] == "event" and item[1] == "run_succeeded")
+    assert succeeded_event[2:] == (500, 101, 37, 138, 1)
+
+
+@pytest.mark.asyncio
 async def test_worker_persists_artifact_manifest_contract(monkeypatch):
     created = []
     events = []

@@ -967,20 +967,22 @@ class ClaudeAgentWorkerAdapter:
         return file_names
 
     def _collect_workspace_artifacts(self, payload: RunPayload, workspace: Path) -> list[ArtifactManifest]:
-        output_dir = workspace / "output"
-        if not output_dir.is_dir():
-            return []
-        ensure_path_inside(workspace, output_dir, "workspace output must stay inside the run workspace")
         artifacts: list[ArtifactManifest] = []
         storage = ObjectStorage()
         candidates: list[Path] = []
-        for item in sorted(output_dir.rglob("*")):
-            if item.is_symlink():
-                raise ValueError("workspace output must not contain symlinks")
-            if not item.is_file():
-                continue
-            ensure_path_inside(output_dir, item, "workspace artifact must stay inside output directory")
-            candidates.append(item)
+        seen_candidates: set[Path] = set()
+        for output_dir in self._workspace_artifact_dirs(workspace):
+            for item in sorted(output_dir.rglob("*")):
+                if item.is_symlink():
+                    raise ValueError("workspace output must not contain symlinks")
+                if not item.is_file():
+                    continue
+                ensure_path_inside(output_dir, item, "workspace artifact must stay inside output directory")
+                resolved = item.resolve(strict=False)
+                if resolved in seen_candidates:
+                    continue
+                seen_candidates.add(resolved)
+                candidates.append(item)
         for index, path in enumerate(candidates, start=1):
             content_type = _artifact_content_type(path.name)
             artifact_type = _artifact_type(path.name, payload.skill_id)
@@ -1002,11 +1004,31 @@ class ClaudeAgentWorkerAdapter:
                     size_bytes=stored.size_bytes,
                     manifest={
                         "source_executor": self.executor_type,
-                        "workspace_output": str(path.relative_to(workspace)),
+                        "workspace_output": path.relative_to(workspace).as_posix(),
                     },
                 )
             )
         return artifacts
+
+    def _workspace_artifact_dirs(self, workspace: Path) -> list[Path]:
+        roots: list[Path] = []
+        legacy_output = workspace / "output"
+        if legacy_output.is_dir():
+            ensure_path_inside(workspace, legacy_output, "workspace output must stay inside the run workspace")
+            roots.append(legacy_output)
+
+        outputs_root = workspace / "outputs"
+        if not outputs_root.is_dir():
+            return roots
+        ensure_path_inside(workspace, outputs_root, "workspace output must stay inside the run workspace")
+        for delivery_dir in sorted(outputs_root.rglob("delivery")):
+            if delivery_dir.is_symlink():
+                raise ValueError("workspace output must not contain symlinks")
+            if not delivery_dir.is_dir():
+                continue
+            ensure_path_inside(outputs_root, delivery_dir, "workspace artifact must stay inside output directory")
+            roots.append(delivery_dir)
+        return roots
 
 
 def _file_skill_steps(input_payload: dict[str, object]) -> list[dict[str, object]]:
