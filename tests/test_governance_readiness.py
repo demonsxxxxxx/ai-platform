@@ -188,13 +188,13 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "frontend_context_provenance_acceptance" not in domains["memory_governance"]["gaps"]
     assert "executor_context_pack_injection" not in domains["memory_governance"]["gaps"]
     assert "document_centric_followup_state" not in domains["memory_governance"]["gaps"]
-    assert "executor_context_pack_211_acceptance" in domains["memory_governance"]["gaps"]
+    assert "executor_context_pack_211_acceptance" not in domains["memory_governance"]["gaps"]
     assert "office_execution_tier_router" not in domains["memory_governance"]["gaps"]
     assert "sandbox_cold_start_latency_split" not in domains["memory_governance"]["gaps"]
     assert "sandbox_cold_start_latency_split_211_acceptance" not in domains["memory_governance"]["gaps"]
     context_evidence = domains["memory_governance"]["evidence"]["office_context_pack_readiness"]
     assert context_evidence["schema_version"] == "ai-platform.office-context-pack-readiness.v1"
-    assert context_evidence["status"] == "partial_blocked"
+    assert context_evidence["status"] == "runtime_acceptance_recorded"
     assert context_evidence["policy"]["lightweight_office_tasks_start_sandbox_by_default"] is False
     assert context_evidence["policy"]["ordinary_user_policy"] == "public_projection_only"
     assert context_evidence["policy"]["long_term_memory_policy"] == "fail_closed_until_policy_and_acceptance"
@@ -210,8 +210,8 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "sandbox_cached_lease_scope_revalidation_source_tests" in context_evidence["implemented_controls"]
     assert context_evidence["summary"]["allowed_sources"] >= 7
     assert context_evidence["summary"]["execution_tiers"] >= 3
-    assert context_evidence["summary"]["open_gaps"] == 1
-    assert context_evidence["summary"]["closed_runtime_gaps"] == 1
+    assert context_evidence["summary"]["open_gaps"] == 0
+    assert context_evidence["summary"]["closed_runtime_gaps"] == 2
     assert context_evidence["summary"]["sandbox_default_for_lightweight_office_tasks"] is False
     assert context_evidence["sandbox_latency_observability"]["status"] == (
         "source_contract_defined_runtime_acceptance_required"
@@ -297,14 +297,20 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     ] is True
     assert "frontend_context_provenance_acceptance" not in context_evidence["open_gaps"]
     assert "document_centric_followup_state" not in context_evidence["open_gaps"]
-    assert "executor_context_pack_211_acceptance" in context_evidence["open_gaps"]
+    assert "executor_context_pack_211_acceptance" not in context_evidence["open_gaps"]
     assert "office_execution_tier_router" not in context_evidence["open_gaps"]
     assert "sandbox_cold_start_latency_split" not in context_evidence["open_gaps"]
     assert "sandbox_cold_start_latency_split_211_acceptance" not in context_evidence["open_gaps"]
     assert context_evidence["closed_runtime_gaps"] == [
+        "executor_context_pack_211_acceptance",
         "sandbox_cold_start_latency_split_211_acceptance",
     ]
-    assert "executor_context_pack_211_acceptance" not in context_evidence["runtime_acceptance_evidence"]
+    assert context_evidence["runtime_acceptance_evidence"]["executor_context_pack_211_acceptance"][
+        "run_id"
+    ] == "run_a618c52ee5c148a185254b68e1c81b9e"
+    assert context_evidence["runtime_acceptance_evidence"]["executor_context_pack_211_acceptance"][
+        "runtime_subject"
+    ] == "8e0389e-main-runtime-rebase"
     assert context_evidence["runtime_acceptance_evidence"]["sandbox_cold_start_latency_split_211_acceptance"][
         "timings"
     ]["sandbox_container_cold_start_latency_ms"] > 0
@@ -472,7 +478,7 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     assert "executor_context_pack_prompt_injection_source_tests" in markdown
     assert "sandbox_cold_start_latency_split_source_contract" in markdown
     open_gaps = markdown.split("## Domains", 1)[0]
-    assert "executor_context_pack_211_acceptance" in open_gaps
+    assert "executor_context_pack_211_acceptance" not in open_gaps
     assert "sandbox_cold_start_latency_split_211_acceptance" not in open_gaps
     assert "closed runtime gaps" in markdown
     assert "executor_context_pack_211_acceptance" in markdown

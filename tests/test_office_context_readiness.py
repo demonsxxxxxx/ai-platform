@@ -188,25 +188,33 @@ def _write_office_runtime_entry(
     runtime_key: str,
     runtime_payload: dict,
     verifier_checks: list[str],
+    evidence_dir_name: str = "pr44",
+    commit_sha: str = "e421210c9dc510e7afbdc9ebdf8d4f7601f11cb1",
+    runtime_subject_commit_sha: str = "e421210c9dc510e7afbdc9ebdf8d4f7601f11cb1",
+    pr_refs: list[str] | None = None,
+    source_branch: str = "codex/issue22-sandbox-latency-split",
+    runtime_source_marker: str = "pr44-s2-verifier-20260616083334",
+    image: str = "ai-platform:pr44-s2-verifier-20260616083334",
+    source_tree_dirty: bool = True,
 ) -> None:
-    evidence_dir = repo_root / "docs" / "release-evidence" / "office-context-runtime" / "pr44"
+    evidence_dir = repo_root / "docs" / "release-evidence" / "office-context-runtime" / evidence_dir_name
     evidence_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema_version": "ai-platform.release-evidence-entry.v1",
         "evidence_id": evidence_id,
-        "commit_sha": "e421210c9dc510e7afbdc9ebdf8d4f7601f11cb1",
-        "runtime_subject_commit_sha": "e421210c9dc510e7afbdc9ebdf8d4f7601f11cb1",
+        "commit_sha": commit_sha,
+        "runtime_subject_commit_sha": runtime_subject_commit_sha,
         "gate": "G6/G9/#22 Office Context Pack Architecture",
         "issue_refs": ["#22"],
-        "pr_refs": ["#44"],
+        "pr_refs": pr_refs if pr_refs is not None else ["#44"],
         "artifact_kind": artifact_kind,
         "captured_at": "2026-06-16T08:36:40+08:00",
         "source_ref": {
-            "branch": "codex/issue22-sandbox-latency-split",
-            "runtime_source_marker": "pr44-s2-verifier-20260616083334",
-            "image": "ai-platform:pr44-s2-verifier-20260616083334",
+            "branch": source_branch,
+            "runtime_source_marker": runtime_source_marker,
+            "image": image,
             "containers": ["ai-platform-api", "ai-platform-worker"],
-            "source_tree_dirty": True,
+            "source_tree_dirty": source_tree_dirty,
             "compose_env_source": "external 211 env file supplied through compose --env-file; values not copied",
         },
         "evidence_ref": {
@@ -527,6 +535,58 @@ def test_office_context_readiness_closes_runtime_gaps_with_synthetic_valid_revie
     assert readiness["policy"]["does_not_expand_multi_agent_beta"] is True
 
 
+def test_office_context_readiness_accepts_reviewed_8e0389e_executor_context_pack_evidence(tmp_path):
+    runtime_subject_sha = "8e0389ea621a57f3ded2044e410943cc0d298571"
+    _write_office_runtime_entry(
+        tmp_path,
+        evidence_id="2026-06-17-211-office-context-8e0389e-executor-context-pack-runtime-acceptance",
+        artifact_kind="executor_context_pack_211_acceptance",
+        verifier="scripts/verify_executor_context_pack_211.py",
+        runtime_key="executor_context_pack_211_acceptance",
+        runtime_payload={
+            **_valid_executor_context_pack_evidence(),
+            "run_id": "run_a618c52ee5c148a185254b68e1c81b9e",
+        },
+        verifier_checks=[
+            "check_executor_context_pack_evidence",
+            "check_no_secret_leakage",
+        ],
+        evidence_dir_name="8e0389e-main-runtime-rebase",
+        commit_sha="494243efa847a831db95539716390b7d66d60480",
+        runtime_subject_commit_sha=runtime_subject_sha,
+        pr_refs=[],
+        source_branch="main",
+        runtime_source_marker=runtime_subject_sha,
+        image="ai-platform:8e0389e-main-runtime-rebase",
+        source_tree_dirty=False,
+    )
+
+    readiness = build_office_context_readiness(repo_root=tmp_path)
+
+    assert readiness["status"] == "partial_blocked"
+    assert readiness["open_gaps"] == ["sandbox_cold_start_latency_split_211_acceptance"]
+    assert readiness["closed_runtime_gaps"] == ["executor_context_pack_211_acceptance"]
+    assert readiness["does_not_close_g6_g9"] is True
+    assert readiness["policy"]["does_not_expand_multi_agent_beta"] is True
+    executor_evidence = readiness["runtime_acceptance_evidence"]["executor_context_pack_211_acceptance"]
+    assert executor_evidence == {
+        "status": "verified_211_runtime_acceptance",
+        "artifact_kind": "executor_context_pack_211_acceptance",
+        "evidence_id": "2026-06-17-211-office-context-8e0389e-executor-context-pack-runtime-acceptance",
+        "path": (
+            "docs/release-evidence/office-context-runtime/8e0389e-main-runtime-rebase/"
+            "2026-06-17-211-office-context-8e0389e-executor-context-pack-runtime-acceptance.json"
+        ),
+        "verifier": "scripts/verify_executor_context_pack_211.py",
+        "runtime_subject": "8e0389e-main-runtime-rebase",
+        "run_id": "run_a618c52ee5c148a185254b68e1c81b9e",
+        "runtime_mode": "worker",
+        "evidence_strength": "live_worker_run_payload",
+        "runtime_run_payload_verified": True,
+        "does_not_close_g6_g9": True,
+    }
+
+
 def test_office_context_readiness_rejects_unreviewed_runtime_evidence(tmp_path):
     _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
     evidence_path = next(
@@ -660,7 +720,7 @@ def test_office_context_readiness_cli_outputs_json_without_secret_markers():
 
     payload = json.loads(result.stdout)
     assert payload["schema_version"] == "ai-platform.office-context-pack-readiness.v1"
-    assert payload["status"] == "partial_blocked"
+    assert payload["status"] == "runtime_acceptance_recorded"
     assert payload["policy"]["lightweight_office_tasks_start_sandbox_by_default"] is False
     assert "executor_context_pack_prompt_injection_source_tests" in payload["implemented_controls"]
     assert "source_level_context_pack_persistence_and_versioning" in payload["implemented_controls"]
@@ -734,13 +794,15 @@ def test_office_context_readiness_cli_outputs_json_without_secret_markers():
     assert "user_visible_context_provenance_projection" not in payload["open_gaps"]
     assert "frontend_context_provenance_acceptance" not in payload["open_gaps"]
     assert "document_centric_followup_state" not in payload["open_gaps"]
-    assert "executor_context_pack_211_acceptance" in payload["open_gaps"]
-    assert "executor_context_pack_211_acceptance" not in payload["closed_runtime_gaps"]
+    assert "executor_context_pack_211_acceptance" not in payload["open_gaps"]
+    assert "executor_context_pack_211_acceptance" in payload["closed_runtime_gaps"]
     assert "office_execution_tier_router" not in payload["open_gaps"]
     assert "sandbox_cold_start_latency_split" not in payload["open_gaps"]
     assert "sandbox_cold_start_latency_split_211_acceptance" not in payload["open_gaps"]
     assert "sandbox_cold_start_latency_split_211_acceptance" in payload["closed_runtime_gaps"]
-    assert "executor_context_pack_211_acceptance" not in payload["runtime_acceptance_evidence"]
+    assert payload["runtime_acceptance_evidence"]["executor_context_pack_211_acceptance"]["run_id"] == (
+        "run_a618c52ee5c148a185254b68e1c81b9e"
+    )
     assert payload["runtime_acceptance_evidence"]["sandbox_cold_start_latency_split_211_acceptance"][
         "timings"
     ]["sandbox_container_cold_start_latency_ms"] > 0

@@ -11,6 +11,8 @@ SCHEMA_VERSION = "ai-platform.office-context-pack-readiness.v1"
 GATE_NAME = "G6/G9/#22 Office Context Pack Architecture"
 _PR44_BRANCH = "codex/issue22-sandbox-latency-split"
 _PR44_RUNTIME_MARKER = "pr44-s2-verifier-20260616083334"
+_S2_0_RUNTIME_SUBJECT_SHA = "8e0389ea621a57f3ded2044e410943cc0d298571"
+_S2_0_RUNTIME_IMAGE = "ai-platform:8e0389e-main-runtime-rebase"
 
 _ALLOWED_CONTEXT_SOURCES = [
     "uploaded_source_documents",
@@ -303,13 +305,32 @@ def _entry_is_pr44_runtime_evidence(payload: dict[str, Any]) -> bool:
     )
 
 
+def _entry_is_s2_0_executor_runtime_evidence(payload: dict[str, Any]) -> bool:
+    source_ref = payload.get("source_ref")
+    if not isinstance(source_ref, dict):
+        return False
+    return (
+        payload.get("runtime_subject_commit_sha") == _S2_0_RUNTIME_SUBJECT_SHA
+        and source_ref.get("branch") == "main"
+        and source_ref.get("runtime_source_marker") == _S2_0_RUNTIME_SUBJECT_SHA
+        and source_ref.get("image") == _S2_0_RUNTIME_IMAGE
+        and source_ref.get("source_tree_dirty") is False
+    )
+
+
+def _entry_is_accepted_runtime_evidence(payload: dict[str, Any], artifact_kind: str) -> bool:
+    if artifact_kind == "executor_context_pack_211_acceptance":
+        return _entry_is_pr44_runtime_evidence(payload) or _entry_is_s2_0_executor_runtime_evidence(payload)
+    return _entry_is_pr44_runtime_evidence(payload)
+
+
 def _entry_is_reviewed(payload: dict[str, Any], artifact_kind: str, verifier: str) -> bool:
     evidence_ref = payload.get("evidence_ref")
     return (
         payload.get("schema_version") == "ai-platform.release-evidence-entry.v1"
         and payload.get("gate") == GATE_NAME
         and payload.get("artifact_kind") == artifact_kind
-        and _entry_is_pr44_runtime_evidence(payload)
+        and _entry_is_accepted_runtime_evidence(payload, artifact_kind)
         and payload.get("redaction_scan_status") == "passed"
         and payload.get("review_status") == "reviewed"
         and isinstance(evidence_ref, dict)
@@ -553,7 +574,7 @@ def build_office_context_readiness(repo_root: Path | None = None) -> dict[str, A
     closed_runtime_gaps = [gap for gap in _OPEN_GAPS if gap in runtime_acceptance_evidence]
     if "executor_context_pack_211_acceptance" in closed_runtime_gaps:
         executor_evidence_policy = (
-            "reviewed PR #44 211 executor context-pack runtime evidence closes only "
+            "reviewed 211 executor context-pack runtime evidence closes only "
             "`executor_context_pack_211_acceptance`"
         )
     else:
