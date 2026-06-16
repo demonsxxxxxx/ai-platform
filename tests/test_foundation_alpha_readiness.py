@@ -11,7 +11,7 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
-ACTIVE_RUNTIME_SUBJECT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
+ACTIVE_RUNTIME_SUBJECT_SHA = "8e0389ea621a57f3ded2044e410943cc0d298571"
 HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
@@ -1533,6 +1533,8 @@ def test_foundation_alpha_readiness_classifies_source_metadata_paths_as_runtime_
     assert foundation_alpha_readiness._is_runtime_affecting_path("tools/frontend_release_traceability.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("tools/verify_auth_rbac_smoke.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("tools/verify_governance_runtime_smoke.py") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("tools/wrap_foundation_alpha_evidence.py") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("tests/test_wrap_foundation_alpha_evidence.py") is False
     assert (
         foundation_alpha_readiness._is_runtime_affecting_path(
             "assets/ai-platform-architecture-illustrations/01-controlled-execution-cabin.svg"
@@ -2378,7 +2380,10 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "runtime_rollout_required_for_current_source": False,
         "foundation_alpha_stage_complete": False,
         "foundation_alpha_stage_status": "core_poc_loop_verified_followups_open",
-        "stage_acceptance_blockers": ["ordinary_user_acceptance_for_quarantined_legacy_routes"],
+        "stage_acceptance_blockers": [
+            "foundation_runtime_concurrency_evidence",
+            "ordinary_user_acceptance_for_quarantined_legacy_routes",
+        ],
         "can_enter_next_stage_without_restrictions": False,
         "production_claim_allowed": False,
         "ordinary_user_multi_agent_allowed": False,
@@ -2403,7 +2408,10 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
             "ordinary_user_multi_agent_exposure",
             "department_rollout",
         ],
-        "next_recommended_slices": ["ordinary_user_acceptance_for_quarantined_legacy_routes"],
+        "next_recommended_slices": [
+            "foundation_runtime_concurrency_evidence",
+            "ordinary_user_acceptance_for_quarantined_legacy_routes",
+        ],
     }
 
     assert set(readiness["domains"]) == {
@@ -2423,7 +2431,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     ] == [404, 404]
     assert readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["auth_rbac"][
         "artifact_preview_cross_tenant_statuses"
-    ] == [404]
+    ] == [404, 404]
     assert readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["auth_rbac"][
         "broader_auth_session_rbac_tenant_redaction_regression_verified"
     ] is True
@@ -2436,12 +2444,12 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"]["document_review_attachment_run"] == {
         "status": "succeeded",
         "skill_id": "qa-file-reviewer",
-        "artifact_types": ["report_txt", "result_json", "reviewed_docx"],
+        "artifact_types": ["report_txt", "reviewed_docx"],
         "playback_contract_version": "ai-platform.run-playback.v1",
     }
     assert (
         readiness["domains"]["g5_run_lifecycle_worker_runtime"]["status"]
-        == "poc_verified_capacity_baseline_keep_defaults_locked"
+        == "partial_followups_open"
     )
     assert (
         readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"]["capacity_default_policy"]
@@ -2456,34 +2464,42 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         ]
         is True
     )
-    assert foundation_runtime_concurrency["status"] == "verified_foundation_runtime_concurrency"
-    assert foundation_runtime_concurrency["verified"] is True
-    assert foundation_runtime_concurrency["failures"] == []
+    assert foundation_runtime_concurrency["status"] == "blocked_foundation_runtime_concurrency_evidence"
+    assert foundation_runtime_concurrency["verified"] is False
+    assert foundation_runtime_concurrency["failures"] == [
+        "minimum_concurrent_requests_not_met",
+        "minimum_observed_concurrency_not_met",
+        "minimum_sessions_not_met",
+        "minimum_runs_not_met",
+        "foundation_runtime_case_failures",
+    ]
     assert foundation_runtime_concurrency["requirements"]["minimum_concurrent_requests"] == 10
     assert foundation_runtime_concurrency["requirements"]["minimum_tenants"] == 2
     assert foundation_runtime_concurrency["summary"]["concurrency_probe_source"] == "client_case_timestamps"
-    assert foundation_runtime_concurrency["summary"]["concurrency_window_sample_count"] == 12
+    assert foundation_runtime_concurrency["summary"]["concurrency_window_sample_count"] == 8
     assert (
         foundation_runtime_concurrency["checks"]["memory_context"]["context_pack_version_sample_count"]
-        == 12
+        == 8
     )
     assert (
         foundation_runtime_concurrency["checks"]["memory_context"][
             "context_snapshot_public_projection_count"
         ]
-        == 12
+        == 8
     )
-    assert foundation_runtime_concurrency["checks"]["memory_context"]["context_scope_probe_count"] == 12
+    assert foundation_runtime_concurrency["checks"]["memory_context"]["context_scope_probe_count"] == 8
     assert foundation_runtime_concurrency["checks"]["queue_admission"]["queue_probe_source"] == "admin_runtime_queue"
-    assert foundation_runtime_concurrency["checks"]["queue_admission"]["queue_position_sample_count"] == 12
-    assert foundation_runtime_concurrency["checks"]["queue_admission"]["queue_probe_sample_count"] == 12
+    assert foundation_runtime_concurrency["checks"]["queue_admission"]["queue_position_sample_count"] == 8
+    assert foundation_runtime_concurrency["checks"]["queue_admission"]["queue_probe_sample_count"] == 8
     assert foundation_runtime_concurrency["checks"]["sandbox_workspace"]["lease_probe_source"] == "runtime_run_detail"
-    assert foundation_runtime_concurrency["checks"]["sandbox_workspace"]["sandbox_lease_sample_count"] == 12
-    assert foundation_runtime_concurrency["checks"]["skill_snapshots"]["snapshot_binding_sample_count"] == 12
-    assert foundation_runtime_concurrency["checks"]["tool_permission"]["negative_reuse_probe_count"] == 48
-    assert foundation_runtime_concurrency["checks"]["tool_permission"]["negative_reuse_denied_count"] == 48
-    assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["open_followups"] == []
-    assert "foundation_runtime_concurrency_evidence" not in readiness["operator_context"]["next_recommended_slices"]
+    assert foundation_runtime_concurrency["checks"]["sandbox_workspace"]["sandbox_lease_sample_count"] == 8
+    assert foundation_runtime_concurrency["checks"]["skill_snapshots"]["snapshot_binding_sample_count"] == 10
+    assert foundation_runtime_concurrency["checks"]["tool_permission"]["negative_reuse_probe_count"] == 32
+    assert foundation_runtime_concurrency["checks"]["tool_permission"]["negative_reuse_denied_count"] == 32
+    assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["open_followups"] == [
+        "foundation_runtime_concurrency_evidence"
+    ]
+    assert "foundation_runtime_concurrency_evidence" in readiness["operator_context"]["next_recommended_slices"]
     assert readiness["domains"]["frontend_poc"]["evidence"]["same_origin_api_health"]["payload_status"] == "ok"
     assert readiness["domains"]["frontend_poc"]["evidence"]["frontend_http_status"] == 200
     assert readiness["domains"]["frontend_poc"]["evidence"]["forbidden_reference_count"] == 0
@@ -2491,7 +2507,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         readiness["domains"]["g2_g4_control_plane_contracts"]["evidence"]["artifact_preview_isolation"][
             "checked_artifacts"
         ]
-        == 1
+        == 2
     )
     assert readiness["domains"]["g6_poc_governance"]["evidence"]["governance_readiness_status"] == "partial_blocked"
     memory_context_controls = readiness["domains"]["g6_poc_governance"]["evidence"]["memory_context_controls"]

@@ -126,6 +126,8 @@ G0 source-authority closure.
 
 | Date | Gate | Commit | Evidence | Status |
 | --- | --- | --- | --- | --- |
+| 2026-06-16 | Foundation Alpha POC | `8e0389ea621a57f3ded2044e410943cc0d298571` | [`2026-06-16-211-foundation-alpha-poc-8e0389e-runtime-poc-smoke.json`](foundation-alpha-poc/8e0389ea621a57f3ded2044e410943cc0d298571/2026-06-16-211-foundation-alpha-poc-8e0389e-runtime-poc-smoke.json), [`2026-06-16-211-foundation-alpha-poc-8e0389e-auth-rbac-smoke.json`](foundation-alpha-poc/8e0389ea621a57f3ded2044e410943cc0d298571/2026-06-16-211-foundation-alpha-poc-8e0389e-auth-rbac-smoke.json), [`2026-06-16-211-foundation-alpha-poc-8e0389e-governance-runtime-smoke.json`](foundation-alpha-poc/8e0389ea621a57f3ded2044e410943cc0d298571/2026-06-16-211-foundation-alpha-poc-8e0389e-governance-runtime-smoke.json), [`2026-06-16-211-foundation-alpha-poc-8e0389e-release-evidence-runtime-acceptance.json`](foundation-alpha-poc/8e0389ea621a57f3ded2044e410943cc0d298571/2026-06-16-211-foundation-alpha-poc-8e0389e-release-evidence-runtime-acceptance.json), [`2026-06-16-211-foundation-alpha-poc-8e0389e-alert-trace-export-runtime-acceptance.json`](foundation-alpha-poc/8e0389ea621a57f3ded2044e410943cc0d298571/2026-06-16-211-foundation-alpha-poc-8e0389e-alert-trace-export-runtime-acceptance.json) | Reviewed S2-0 latest-main 211 smoke refresh passed against `ai-platform:8e0389e-main-runtime-rebase` with image ID `sha256:02d2a32bad783857cf140f5bbc20369603e96617b34dc3cdcbf2b8be7728cf0a`. It verifies runtime POC smoke, Auth/RBAC, Admin Runtime governance, release-evidence runtime acceptance, and alert/trace export runtime acceptance for the `8e0389e` runtime subject. It removes the latest-main runtime-rollout blocker for runtime-relevant source, but does not close Foundation Runtime concurrency evidence, production readiness, Docker sandbox hardening, ordinary-user multi-agent, packaged frontend image acceptance, or production concurrency default increases. |
+| 2026-06-16 | Foundation Runtime Concurrency | `8e0389ea621a57f3ded2044e410943cc0d298571` | [`2026-06-16-211-foundation-alpha-poc-8e0389e-foundation-runtime-concurrency-blocked.json`](foundation-runtime-concurrency/8e0389ea621a57f3ded2044e410943cc0d298571-frc-s2-0-20260616/2026-06-16-211-foundation-alpha-poc-8e0389e-foundation-runtime-concurrency-blocked.json), [`2026-06-16-211-foundation-alpha-poc-8e0389e-foundation-runtime-concurrency-readiness-blocked.json`](foundation-runtime-concurrency/8e0389ea621a57f3ded2044e410943cc0d298571-frc-s2-0-20260616/2026-06-16-211-foundation-alpha-poc-8e0389e-foundation-runtime-concurrency-readiness-blocked.json) | Blocked latest-main Foundation Runtime concurrency rerun for the `8e0389e` runtime subject. The successful subchecks cover queue/admission, sandbox workspace, memory/context, artifact ACL, tool permission, skill snapshots, and playback for the completed samples, but the evidence is not accepted because only 8 concurrent cases/sessions/runs were observed against the required 10+ and case failures were recorded. This leaves `foundation_runtime_concurrency_evidence` as a stage blocker and does not raise production concurrency defaults or expand ordinary-user multi-agent, Docker sandbox, long-term memory, department rollout, or production claims. |
 | 2026-06-16 | G6/G9/#22 Office Context Pack Architecture | `pr44-s2-verifier-20260616083334` | [`2026-06-16-211-office-context-pr44-executor-context-pack-runtime-acceptance.json`](office-context-runtime/pr44-s2-verifier-20260616083334/2026-06-16-211-office-context-pr44-executor-context-pack-runtime-acceptance.json) | Superseded insufficient PR #44 executor context-pack evidence: the historical live worker-run payload binding for `run_f417cf0ac1104d5884ed58e0f111fd00` has `artifact_count=0` and predates the current public input-key leakage guard. It does not close `executor_context_pack_211_acceptance`; fresh 211 live evidence must prove positive source-run artifact scope and public `input_keys` without `copied_from_run_id` / `source_run_id` / `parent_run_id`. Non-expansion invariants still apply. |
 | 2026-06-16 | G6/G9/#22 Office Context Pack Architecture | `pr44-s2-verifier-20260616083334` | [`2026-06-16-211-office-context-pr44-sandbox-latency-split-runtime-acceptance.json`](office-context-runtime/pr44-s2-verifier-20260616083334/2026-06-16-211-office-context-pr44-sandbox-latency-split-runtime-acceptance.json) | Reviewed PR #44 controlled 211 sandbox latency split evidence passed for the platform-mode Docker verifier run `sandbox-pr44-mcp-final-20260616083439`, including lease acquisition, container cold start, healthcheck, executor dispatch/model, document processing, cleanup, and total sandbox latency timings. It closes only the #22 `sandbox_cold_start_latency_split_211_acceptance` runtime gap, keeps `ordinary_user_high_risk_sandbox_allowed=false`, `ordinary_user_multi_agent_allowed=false`, `production_concurrency_defaults_raised=false`, and does not claim production Docker sandbox hardening, G6/G9 closure, packaged frontend acceptance, or production readiness. |
 | 2026-06-15 | Foundation Alpha POC | `380de6bf9ffed5167f9bb2eaee8e63612a52c124` | [`2026-06-15-211-foundation-alpha-poc-380de6b-runtime-poc-smoke.json`](foundation-alpha-poc/380de6bf9ffed5167f9bb2eaee8e63612a52c124/2026-06-15-211-foundation-alpha-poc-380de6b-runtime-poc-smoke.json) | Current 211 runtime POC smoke passed against `ai-platform:380de6b-merged-main-runtime` with image ID `sha256:e36e4dfad072cdd12b841019db3ccbcdef4b63ccf5262869c994757fef5663f9`; verifies the controlled POC loop, context public projection with `context_pack_version`, company-login audit evidence, and cross-user/cross-tenant artifact download and preview denial for this runtime subject, but does not close packaged frontend image, signed Skill package/SBOM, production, or independent review gates. |
@@ -304,22 +306,30 @@ runtime blocker.
 - `signed_skill_package_or_sbom_review_evidence`
 - `g9_admin_runtime_observability_partial_followups_open`
 - `packaged_frontend_image_release_acceptance`
+- `foundation_runtime_concurrency_evidence` for the latest `8e0389e` runtime
+  subject
 
-The 2026-06-15 `380de6b` 211 evidence records reviewed runtime export,
-retention, alert/trace export runtime acceptance, cross-tenant artifact
-isolation, Auth/RBAC smoke, governance smoke, and Foundation Runtime
-concurrency correctness for the active broader Foundation Alpha POC runtime
-subject. The earlier `79495bf` broad refresh, `dff48fb` broad refresh, and
-`5d3d7e2` focused PR #40 refresh are retained as superseded reviewed evidence
-after the merged-main refresh. Together these remove the narrower
-`g9_runtime_export_and_retention_acceptance`,
-`alert_delivery_and_trace_export_211_acceptance`, and
-`foundation_runtime_concurrency_evidence` blockers for the current recorded
-runtime subject, while preserving the boundary that this does not close
-production readiness, signed Skill package/SBOM, packaged frontend image release
-acceptance, ordinary-user multi-agent exposure, or Docker sandbox hardening. The
-superseded `cbbfaff` refresh still records packaged frontend blocker evidence as
-`blocked_environment`; it does not close `packaged_frontend_image_release_acceptance`.
+The 2026-06-16 `8e0389e` S2-0 latest-main 211 evidence records reviewed runtime
+export, retention, alert/trace export runtime acceptance, cross-tenant artifact
+isolation, Auth/RBAC smoke, and governance smoke for the latest runtime subject.
+That removes the latest-main `runtime_rollout_required` condition for
+runtime-relevant source and keeps the previously closed
+`g9_runtime_export_and_retention_acceptance` and
+`alert_delivery_and_trace_export_211_acceptance` blockers closed for the
+runtime-smoke scope, but the same rerun records
+`foundation_runtime_concurrency_evidence` as blocked because only 8 observed
+concurrent cases/sessions/runs completed against the required 10+. The
+2026-06-15 `380de6b` 211 evidence remains the historical Foundation Alpha
+baseline with accepted Foundation Runtime concurrency correctness for that
+runtime subject. The earlier `79495bf` broad refresh, `dff48fb` broad refresh,
+and `5d3d7e2` focused PR #40 refresh are retained as superseded reviewed
+evidence after the merged-main refresh. The 8e0389e and 380de6b evidence
+preserves the boundary that this does not close production readiness, signed
+Skill package/SBOM, packaged frontend image release acceptance, ordinary-user
+multi-agent exposure, production concurrency default increases, or Docker
+sandbox hardening. The superseded `cbbfaff` refresh still records packaged
+frontend blocker evidence as `blocked_environment`; it does not close
+`packaged_frontend_image_release_acceptance`.
 These evidence records do not close G9 or production readiness by themselves:
 signed Skill package or SBOM review evidence, packaged frontend image release
 acceptance, G9 Admin Runtime observability follow-ups, G0 source-authority

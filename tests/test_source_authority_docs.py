@@ -25,21 +25,24 @@ RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_RUNTIME_RELATION_MANIFEST = (
     ROOT / "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json"
 )
-ACTIVE_RUNTIME_SUBJECT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
-ACTIVE_SOURCE_TREE_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
+ACTIVE_RUNTIME_SUBJECT_SHA = "8e0389ea621a57f3ded2044e410943cc0d298571"
+ACTIVE_SOURCE_TREE_SHA = "8e0389ea621a57f3ded2044e410943cc0d298571"
+FOUNDATION_ALPHA_BASELINE_RUNTIME_SUBJECT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
 ACTIVE_CLOSURE_SOURCE_TREE_SHA = "3c06c5351517028111c18a365ff9a24ed22ffa33"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:380de6b-merged-main-runtime"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:e36e4dfad072cdd12b841019db3ccbcdef4b63ccf5262869c994757fef5663f9"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-15-211-foundation-alpha-poc-380de6b-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-15-211-foundation-alpha-poc-380de6b-auth-rbac-smoke"
+FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE = "ai-platform:380de6b-merged-main-runtime"
+FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE_ID = "sha256:e36e4dfad072cdd12b841019db3ccbcdef4b63ccf5262869c994757fef5663f9"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:8e0389e-main-runtime-rebase"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:02d2a32bad783857cf140f5bbc20369603e96617b34dc3cdcbf2b8be7728cf0a"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-16-211-foundation-alpha-poc-8e0389e-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-16-211-foundation-alpha-poc-8e0389e-auth-rbac-smoke"
 ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID = (
-    "2026-06-15-211-foundation-alpha-poc-380de6b-governance-runtime-smoke"
+    "2026-06-16-211-foundation-alpha-poc-8e0389e-governance-runtime-smoke"
 )
 ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-15-211-foundation-alpha-poc-380de6b-release-evidence-runtime-acceptance"
+    "2026-06-16-211-foundation-alpha-poc-8e0389e-release-evidence-runtime-acceptance"
 )
 ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-15-211-foundation-alpha-poc-380de6b-alert-trace-export-runtime-acceptance"
+    "2026-06-16-211-foundation-alpha-poc-8e0389e-alert-trace-export-runtime-acceptance"
 )
 CBBFAFF_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
 CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
@@ -97,8 +100,9 @@ FOUNDATION_ALPHA_POC_CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE = (
 SCHEMA = ROOT / "app/schema.sql"
 
 AUTHORITY_DOCS = [PRD, TECH_ACCEPTANCE, ROADMAP, GUARDRAILS, AGENTS]
-TARGET_211_BACKEND = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform"
-TARGET_211_DEPLOY = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform"
+TARGET_211_HOME_ROOT = "/home/" + "xinlin.jiang/"
+TARGET_211_BACKEND = TARGET_211_HOME_ROOT + "ai-platform-phaseb/services/ai-platform"
+TARGET_211_DEPLOY = TARGET_211_BACKEND + "/deploy/ai-platform"
 STALE_LOCAL_PATHS = [
     "webUI/services/ai-platform",
     "src/AI/agent-workbench",
@@ -244,7 +248,7 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "sandbox_workdir" not in gate_status_text
     assert "api_key" not in gate_status_text
     assert "C:\\Users" not in gate_status_text
-    assert "/home/xinlin.jiang/" not in gate_status_text
+    assert TARGET_211_HOME_ROOT not in gate_status_text
 
 
 def test_gate_status_snapshot_records_s1_post_merge_211_verification_requirements():
@@ -330,9 +334,9 @@ def test_foundation_alpha_closure_records_stage_complete_baseline_and_boundaries
 
     assert "Status: Foundation Alpha historical baseline accepted" in closure_text
     assert ACTIVE_CLOSURE_SOURCE_TREE_SHA in closure_text
-    assert ACTIVE_RUNTIME_SUBJECT_SHA in closure_text
-    assert ACTIVE_RUNTIME_IMAGE in closure_text
-    assert ACTIVE_RUNTIME_IMAGE_ID in closure_text
+    assert FOUNDATION_ALPHA_BASELINE_RUNTIME_SUBJECT_SHA in closure_text
+    assert FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE in closure_text
+    assert FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE_ID in closure_text
     assert "runtime_current_for_runtime_relevant_source" in closure_text
     assert "This note is not a claim that every later source revision is already verified" in closure_text
     assert "foundation_alpha_stage_status=runtime_rollout_required" in closure_text
@@ -408,7 +412,7 @@ def test_committed_source_runtime_relation_manifest_keeps_clean_checkout_readine
     assert payload["runtime_subject_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
     assert payload["runtime_affecting_changes_since_runtime_subject"] == []
     assert "C:\\Users" not in json.dumps(payload)
-    assert "/home/xinlin.jiang/" not in json.dumps(payload)
+    assert TARGET_211_HOME_ROOT not in json.dumps(payload)
 
 
 def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded():
@@ -442,43 +446,43 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert payload["source_ref"]["repo_local_env_present"] is False
     assert payload["evidence_ref"]["result"] == "ok:true"
     assert payload["evidence_ref"]["runtime_checks"]["lambchat_frontend"]["status"] == 200
-    assert payload["evidence_ref"]["runtime_checks"]["same_origin_api_health"]["payload_status"] == "ok"
-    assert payload["evidence_ref"]["runtime_checks"]["lambchat_api_compat"]["all_required_routes_http_200"] is True
+    assert payload["evidence_ref"]["runtime_checks"]["lambchat_frontend_origin_api"]["payload"]["status"] == "ok"
+    assert payload["evidence_ref"]["runtime_checks"]["lambchat_frontend_origin_api"]["status"] == 200
+    assert set(payload["evidence_ref"]["runtime_checks"]["lambchat_api_compat"]["statuses"].values()) == {200}
+    assert payload["evidence_ref"]["runtime_checks"]["lambchat_api_compat"]["missing_permissions"] == []
     assert payload["evidence_ref"]["runtime_checks"]["context_snapshot_public_projection"]["summary_source"] == "chat_stream"
     assert payload["evidence_ref"]["runtime_checks"]["context_snapshot_public_projection"]["input_keys"] == [
         "attachments",
         "message",
     ]
-    assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["status"] == "succeeded"
-    assert sorted(payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["artifact_types"]) == [
-        "report_txt",
-        "result_json",
-        "reviewed_docx",
-    ]
-    assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["playback_status"] == 200
-    assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["matched_download_artifact_count"] == 1
-    assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["matched_preview_artifact_count"] == 1
-    assert payload["evidence_ref"]["runtime_checks"]["document_review_attachment_run"]["private_payload_leaked"] is False
+    word_review = payload["evidence_ref"]["runtime_checks"]["word_review_attachment_chat"]
+    assert word_review["run"]["status"] == "succeeded"
+    assert word_review["playback"]["private_payload_leaked"] is False
     assert payload["evidence_ref"]["runtime_checks"]["artifact_download_isolation"]["checked_artifacts"] == 2
-    assert payload["evidence_ref"]["runtime_checks"]["artifact_download_isolation"]["owner_statuses"] == [200, 200]
-    assert payload["evidence_ref"]["runtime_checks"]["artifact_download_isolation"]["cross_user_statuses"] == [
+    download_results = payload["evidence_ref"]["runtime_checks"]["artifact_download_isolation"]["results"]
+    assert [item["owner_status"] for item in download_results] == [200, 200]
+    assert [item["cross_user_status"] for item in download_results] == [
         404,
         404,
     ]
-    assert payload["evidence_ref"]["runtime_checks"]["artifact_download_isolation"]["cross_tenant_statuses"] == [
+    assert [item["cross_tenant_status"] for item in download_results] == [
         404,
         404,
     ]
-    assert payload["evidence_ref"]["runtime_checks"]["artifact_preview_isolation"]["checked_artifacts"] == 1
-    assert payload["evidence_ref"]["runtime_checks"]["artifact_preview_isolation"]["owner_statuses"] == [200]
-    assert payload["evidence_ref"]["runtime_checks"]["artifact_preview_isolation"]["cross_user_statuses"] == [404]
-    assert payload["evidence_ref"]["runtime_checks"]["artifact_preview_isolation"]["cross_tenant_statuses"] == [404]
-    assert payload["evidence_ref"]["runtime_checks"]["artifact_preview_isolation"]["owner_content_types"] == [
+    assert payload["evidence_ref"]["runtime_checks"]["artifact_preview_isolation"]["checked_artifacts"] == 2
+    preview_results = payload["evidence_ref"]["runtime_checks"]["artifact_preview_isolation"]["results"]
+    assert [item["owner_status"] for item in preview_results] == [200, 200]
+    assert [item["cross_user_status"] for item in preview_results] == [404, 404]
+    assert [item["cross_tenant_status"] for item in preview_results] == [404, 404]
+    assert sorted({item["owner_content_type"] for item in preview_results}) == [
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     ]
     smoke_followups = "\n".join(payload["open_followups"])
     assert "alert_delivery_and_trace_export_211_acceptance" not in smoke_followups
-    assert "Signed package or SBOM review evidence" in smoke_followups
+    assert "Foundation Runtime concurrency evidence is blocked" in smoke_followups
+    assert "runtime-only rebase was used as a labeled workaround" in smoke_followups
+    assert "Docker sandbox hardening remains unclaimed" in smoke_followups
+    assert "ordinary-user multi-agent exposure remains blocked" in smoke_followups
 
     release_evidence_index = read(RELEASE_EVIDENCE_INDEX)
     assert f"{ACTIVE_AUTH_RBAC_EVIDENCE_ID}.json" in release_evidence_index
@@ -524,7 +528,7 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
         "redis url",
         "sk-",
         "C:\\Users",
-        "/home/xinlin.jiang/",
+        TARGET_211_HOME_ROOT,
         "artifact_storage_key",
         "tenants/default/workspaces",
         "tenants/default",

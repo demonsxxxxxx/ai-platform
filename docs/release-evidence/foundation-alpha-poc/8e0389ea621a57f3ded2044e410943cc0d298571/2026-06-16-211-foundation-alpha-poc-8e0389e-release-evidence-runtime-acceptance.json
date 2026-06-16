@@ -1,0 +1,117 @@
+{
+  "artifact_kind": "211_runtime_smoke",
+  "captured_at": "2026-06-16T22:45:00+08:00",
+  "commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
+  "evidence_id": "2026-06-16-211-foundation-alpha-poc-8e0389e-release-evidence-runtime-acceptance",
+  "evidence_ref": {
+    "command": "python3 tools/verify_release_evidence_runtime_acceptance.py --format json --evidence-root docs/release-evidence --commit-sha 8e0389ea621a57f3ded2044e410943cc0d298571 --runtime-subject-commit-sha 8e0389ea621a57f3ded2044e410943cc0d298571 --image ai-platform:8e0389e-main-runtime-rebase",
+    "result": "ok:true",
+    "runtime_checks": {
+      "release_evidence_runtime_acceptance": {
+        "checks": {
+          "retention_runtime_acceptance": {
+            "default_retention_days": 180,
+            "delete_only_reviewed_redacted_entries": true,
+            "forbidden_delete_targets_present": true,
+            "minimum_retention_days": 30,
+            "policy_status": "contract_only_not_runtime_enforced",
+            "requires_review_before_delete": true,
+            "schema_version": "ai-platform.release-evidence-retention-policy.v1",
+            "status": "accepted_review_first_policy"
+          },
+          "runtime_export_acceptance": {
+            "blocked_entry_count": 0,
+            "does_not_export_raw_runtime_payloads": true,
+            "excluded_entry_count": 40,
+            "export_policy": "safe_reviewed_index_only_not_runtime_export",
+            "safe_entry_count": 80,
+            "safe_entry_fields_only": true,
+            "status": "ready_for_operator_review"
+          }
+        },
+        "does_not_close_g9": true,
+        "does_not_export_raw_runtime_payloads": true,
+        "ok": true,
+        "open_gaps": [],
+        "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
+        "source": {
+          "commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
+          "evidence_root": "docs/release-evidence",
+          "image": "ai-platform:8e0389e-main-runtime-rebase",
+          "runtime_subject_commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571"
+        },
+        "status": "accepted_for_operator_review"
+      }
+    },
+    "runtime_source": {
+      "commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "evidence_root": "docs/release-evidence",
+      "image": "ai-platform:8e0389e-main-runtime-rebase",
+      "runtime_subject_commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571"
+    },
+    "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
+    "verifier": "tools/verify_release_evidence_runtime_acceptance.py"
+  },
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "S2-0 latest-main evidence refresh"
+  ],
+  "open_followups": [
+    "Foundation Runtime concurrency evidence is blocked for this runtime subject: only 8 of 12 concurrent cases completed; production concurrency defaults remain locked.",
+    "Full Docker build failed on deb.debian.org package fetch; runtime-only rebase was used as a labeled workaround.",
+    "G7 Docker sandbox hardening remains unclaimed.",
+    "G8 ordinary-user multi-agent exposure remains blocked."
+  ],
+  "pr_refs": [],
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "api_health": {
+      "route": "/api/ai/health",
+      "status": "ok"
+    },
+    "branch": "main",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_layout_status": "external_env_file_label_present",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "gateway_secret_supplied": false,
+    "image": "ai-platform:8e0389e-main-runtime-rebase",
+    "image_id": "sha256:02d2a32bad783857cf140f5bbc20369603e96617b34dc3cdcbf2b8be7728cf0a",
+    "image_labels": {
+      "ai-platform.runtime-subject": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "ai-platform.runtime_subject": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "ai-platform.source-revision": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "ai-platform.source.note": "origin-main-8e0389e-s2-0-runtime-only-rebase",
+      "ai-platform.source_revision": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "ai-platform.source_tree_commit": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "org.opencontainers.image.revision": "8e0389ea621a57f3ded2044e410943cc0d298571"
+    },
+    "repo_local_env_present": false,
+    "runtime_commit": "8e0389ea621a57f3ded2044e410943cc0d298571",
+    "runtime_source_marker": "8e0389ea621a57f3ded2044e410943cc0d298571",
+    "runtime_subject_label_status": "runtime_subject_label_current",
+    "source_revision_alias_label_status": "source_revision_alias_label_current",
+    "source_snapshot": {
+      "notes": [
+        "No real .env copied or exported",
+        "Full docker build failed on deb.debian.org package fetch; runtime-only rebase used as labeled workaround"
+      ],
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "runtime_subject_commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "snapshot": "8e0389e-202606162233-s2-0-runtime-only-rebase",
+      "source_branch": "main",
+      "source_revision": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "source_tree_commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "source_tree_dirty": false,
+      "sync_method": "git_bundle_fast_forward_plus_runtime_only_rebase"
+    }
+  }
+}

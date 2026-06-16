@@ -1,0 +1,128 @@
+{
+  "artifact_kind": "211_runtime_smoke",
+  "captured_at": "2026-06-16T22:45:00+08:00",
+  "commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
+  "evidence_id": "2026-06-16-211-foundation-alpha-poc-8e0389e-governance-runtime-smoke",
+  "evidence_ref": {
+    "command": "python3 tools/verify_governance_runtime_smoke.py --base-url http://127.0.0.1:8020 --commit-sha 8e0389ea621a57f3ded2044e410943cc0d298571 --runtime-subject-commit-sha 8e0389ea621a57f3ded2044e410943cc0d298571 --image ai-platform:8e0389e-main-runtime-rebase",
+    "result": "ok:true",
+    "runtime_checks": {
+      "admin_runtime_governance": {
+        "expected_status": 200,
+        "forbidden_projection_terms_present": false,
+        "governance_schema_version": "ai-platform.governance-readiness.v1",
+        "governance_status": "partial_blocked",
+        "governance_status_allowed": true,
+        "memory_governance": {
+          "context_provenance_present": true,
+          "domain_status": "partial_blocked",
+          "gap_count": 1,
+          "long_term_fail_closed_present": true,
+          "office_context_readiness_present": true
+        },
+        "missing_domains": [],
+        "open_gap_count": 14,
+        "required_domains_present": true,
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "skill_governance": {
+          "dashboard_contract_exposed": false,
+          "dashboard_present": true,
+          "domain_status": "partial_blocked",
+          "gap_count": 6,
+          "implemented_snapshot_lock": true,
+          "implemented_version_registry": true,
+          "release_readiness_present": true
+        },
+        "status": 200,
+        "tenant_id": "default",
+        "tenant_matches_requested": true,
+        "tool_permission": {
+          "bulk_review_present": true,
+          "domain_status": "partial_blocked",
+          "gap_count": 4,
+          "implemented_bulk_review_dashboard": true,
+          "implemented_policy_taxonomy": true,
+          "taxonomy_present": true
+        }
+      },
+      "ordinary_admin_runtime": {
+        "detail": "not_ai_admin",
+        "expected_status": 403,
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "status": 403
+      }
+    },
+    "runtime_source": {
+      "base_url": "http://127.0.0.1:8020",
+      "commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "gateway_secret_supplied": true,
+      "image": "ai-platform:8e0389e-main-runtime-rebase",
+      "runtime_subject_commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "tenant_id": "default"
+    },
+    "schema_version": "ai-platform.governance-runtime-smoke.v1",
+    "verifier": "tools/verify_governance_runtime_smoke.py"
+  },
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "S2-0 latest-main evidence refresh"
+  ],
+  "open_followups": [
+    "Foundation Runtime concurrency evidence is blocked for this runtime subject: only 8 of 12 concurrent cases completed; production concurrency defaults remain locked.",
+    "Full Docker build failed on deb.debian.org package fetch; runtime-only rebase was used as a labeled workaround.",
+    "G7 Docker sandbox hardening remains unclaimed.",
+    "G8 ordinary-user multi-agent exposure remains blocked."
+  ],
+  "pr_refs": [],
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "api_health": {
+      "route": "/api/ai/health",
+      "status": "ok"
+    },
+    "branch": "main",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_layout_status": "external_env_file_label_present",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "gateway_secret_supplied": true,
+    "image": "ai-platform:8e0389e-main-runtime-rebase",
+    "image_id": "sha256:02d2a32bad783857cf140f5bbc20369603e96617b34dc3cdcbf2b8be7728cf0a",
+    "image_labels": {
+      "ai-platform.runtime-subject": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "ai-platform.runtime_subject": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "ai-platform.source-revision": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "ai-platform.source.note": "origin-main-8e0389e-s2-0-runtime-only-rebase",
+      "ai-platform.source_revision": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "ai-platform.source_tree_commit": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "org.opencontainers.image.revision": "8e0389ea621a57f3ded2044e410943cc0d298571"
+    },
+    "repo_local_env_present": false,
+    "runtime_commit": "8e0389ea621a57f3ded2044e410943cc0d298571",
+    "runtime_source_marker": "8e0389ea621a57f3ded2044e410943cc0d298571",
+    "runtime_subject_label_status": "runtime_subject_label_current",
+    "source_revision_alias_label_status": "source_revision_alias_label_current",
+    "source_snapshot": {
+      "notes": [
+        "No real .env copied or exported",
+        "Full docker build failed on deb.debian.org package fetch; runtime-only rebase used as labeled workaround"
+      ],
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "runtime_subject_commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "snapshot": "8e0389e-202606162233-s2-0-runtime-only-rebase",
+      "source_branch": "main",
+      "source_revision": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "source_tree_commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "source_tree_dirty": false,
+      "sync_method": "git_bundle_fast_forward_plus_runtime_only_rebase"
+    }
+  }
+}
