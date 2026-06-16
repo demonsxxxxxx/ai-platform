@@ -237,6 +237,41 @@ def test_collect_workspace_artifacts_rejects_symlinked_output(monkeypatch, tmp_p
     assert stored == []
 
 
+def test_collect_workspace_artifacts_includes_delivery_outputs(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    delivery = workspace / "outputs" / "run-002-ctd-fill" / "delivery"
+    delivery.mkdir(parents=True)
+    (delivery / "filled.docx").write_bytes(b"docx")
+    debug_dir = workspace / "outputs" / "run-002-ctd-fill" / "_debug"
+    debug_dir.mkdir()
+    (debug_dir / "debug.txt").write_text("debug", encoding="utf-8")
+    stored = []
+
+    class FakeStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            stored.append((storage_key, content, content_type))
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+
+    artifacts = adapter._collect_workspace_artifacts(
+        payload(skill_id="ctd-32s73-stability-template-fill"),
+        workspace,
+    )
+
+    assert len(artifacts) == 1
+    assert artifacts[0].artifact_type == "result_docx"
+    assert artifacts[0].manifest["workspace_output"] == "outputs/run-002-ctd-fill/delivery/filled.docx"
+    assert stored == [
+        (
+            "tenants/default/workspaces/default/sessions/ses_1/runs/run_1/artifacts/1/filled.docx",
+            b"docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+    ]
+
+
 @pytest.mark.asyncio
 async def test_materialize_files_rejects_symlinked_workspace(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace-link"
