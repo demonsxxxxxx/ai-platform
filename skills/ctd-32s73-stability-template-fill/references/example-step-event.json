@@ -1,0 +1,20 @@
+{
+  "schema_version": "ctd-32s73-step-event-v1",
+  "user_message": "为当前项目生成 3.2.S.7.3 稳定性数据章节",
+  "project_root": "C:\\path\\to\\project",
+  "output_dir": "outputs/run-001",
+  "sources": [
+    "项目基本信息表.docx",
+    "稳定性试验数据汇总.xlsx",
+    "影响因素试验报告.pdf"
+  ],
+  "forbidden_sources": [
+    "已完成的申报资料-32s73-稳定性数据.docx",
+    "~$已完成的申报资料-32s73-稳定性数据.docx"
+  ],
+  "provided_artifacts": {},
+  "hooks": {},
+  "options": {
+    "artifact_profile": "delivery"
+  }
+}

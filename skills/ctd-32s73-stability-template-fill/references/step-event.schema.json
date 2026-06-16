@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ctd-32s73-step-event.schema.json",
+  "title": "CTD 3.2.S.7.3 Step Event",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema_version", "output_dir"],
+  "properties": {
+    "schema_version": {"const": "ctd-32s73-step-event-v1"},
+    "user_message": {"type": "string"},
+    "project_root": {"type": "string"},
+    "output_dir": {"type": "string", "minLength": 1},
+    "sources": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {"type": "string"},
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "path": {"type": "string"},
+              "file": {"type": "string"}
+            }
+          }
+        ]
+      }
+    },
+    "forbidden_sources": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {"type": "string"},
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "path": {"type": "string"},
+              "file": {"type": "string"}
+            }
+          }
+        ]
+      }
+    },
+    "provided_artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fact_packet": {"type": "string"},
+        "body_skeleton_docx": {"type": "string"}
+      }
+    },
+    "hooks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "recovery_hook": {"type": "string"},
+        "body_skeleton_hook": {"type": "string"}
+      }
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow_intermediate": {"type": "boolean"},
+        "auto_ocr_pdf": {"type": "boolean"},
+        "disallow_hour_time": {"type": "boolean"},
+        "until": {"type": "string"},
+        "artifact_profile": {"type": "string", "enum": ["delivery", "audit", "full"]},
+        "max_recovery_attempts": {"type": ["integer", "string"]},
+        "min_tables": {"type": ["integer", "string"]},
+        "max_tables": {"type": ["integer", "string"]},
+        "expected_batch": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
+        "expected_batches": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
+        "expected_warning": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
+        "expected_warnings": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]}
+      }
+    }
+  },
+  "not": {
+    "anyOf": [
+      {"required": ["action"]},
+      {"required": ["tool_call"]},
+      {"required": ["next_state"]},
+      {"required": ["state"]},
+      {"required": ["submit"]},
+      {"required": ["finalize"]},
+      {"required": ["render"]},
+      {"required": ["validate"]}
+    ]
+  }
+}

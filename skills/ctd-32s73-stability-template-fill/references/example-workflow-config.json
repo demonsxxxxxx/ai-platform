@@ -1,0 +1,33 @@
+{
+  "usage": "internal_runtime_example_not_public_entrypoint_use_scripts_skill_step_py_consume_fact_packet_only",
+  "output_dir": "outputs/run-001",
+  "template": "assets/templates/ctd-32s73-stability-template-v2.docx",
+  "template_id": "ctd-32s73-stability-template-v2",
+  "sources": [
+    "项目基本信息表.docx",
+    "稳定性试验数据汇总.xlsx",
+    "影响因素试验报告.pdf"
+  ],
+  "forbidden_sources": [
+    "已完成的申报资料-32s73-稳定性数据.docx",
+    "~$已完成的申报资料-32s73-稳定性数据.docx"
+  ],
+  "fact_packet": "outputs/reference-fact-extraction/fact-packet.json",
+  "working_docx": "outputs/run-001/body-and-skeleton-filled.docx",
+  "hooks": {
+    "recovery_hook": "project_scripts/recover_missing_facts.py",
+    "body_skeleton_hook": "project_scripts/fill_body_and_skeleton.py"
+  },
+  "options": {
+    "resume": false,
+    "artifact_profile": "delivery",
+    "allow_intermediate": false,
+    "max_recovery_attempts": 2,
+    "disallow_hour_time": true,
+    "min_tables": 1,
+    "expected_batches": [
+      "IP000DSC20260101"
+    ],
+    "expected_warnings": []
+  }
+}

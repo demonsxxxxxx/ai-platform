@@ -1,0 +1,36 @@
+{
+  "schema_version": "reference-fact-extraction-step-response-v1",
+  "state": "PRIMARY_CONTEXT_SHARD_REQUIRED",
+  "reply": "Source index is ready. Submit the verified primary context fact shard produced by the required extraction and validation subagents; if subagents are unavailable, report SUBAGENT_REQUIRED.",
+  "done": false,
+  "final": false,
+  "terminal_kind": "paused_recoverable",
+  "delivery_status": "not_ready",
+  "recoverable": true,
+  "recovery_mode": "submit_fact_shards",
+  "allowed_next_events": [
+    {
+      "schema_version": "reference-fact-extraction-step-event-v1",
+      "output_dir": "D:/path/to/project/outputs/fact-extraction-run-001",
+      "profile_id": "ctd-32s73-stability",
+      "provided_artifacts": {
+        "project_profile_facts": "D:/path/to/project/outputs/fact-extraction-run-001/fact-shards/project-profile-facts.json"
+      }
+    }
+  ],
+  "required_artifacts": ["project_profile_facts"],
+  "blocking_reasons": [],
+  "gates": {
+    "subagent": {
+      "subagent_required": true,
+      "required_execution_mode": "subagent",
+      "extraction_agent": "reference_fact_extraction_agent",
+      "validation_agent": "reference_fact_validation_agent",
+      "fallback_when_unavailable": "SUBAGENT_REQUIRED"
+    }
+  },
+  "artifacts": {
+    "source_index_json": "D:/path/to/project/outputs/fact-extraction-run-001/source-index.json",
+    "source_index_md": "D:/path/to/project/outputs/fact-extraction-run-001/source-index.md"
+  }
+}
