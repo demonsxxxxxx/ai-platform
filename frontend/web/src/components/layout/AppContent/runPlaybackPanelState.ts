@@ -1,5 +1,6 @@
 import type {
   RunPlaybackArtifact,
+  RunPlaybackContextRef,
   RunPlaybackEvent,
   RunPlaybackResponse,
   RunPlaybackStep,
@@ -72,12 +73,23 @@ export interface RunPlaybackMultiAgentViewModel {
   steps: RunPlaybackStepItem[];
 }
 
+export interface RunPlaybackContextProvenanceViewModel {
+  source: string | null;
+  executionTier: string | null;
+  contextPackVersion: string | null;
+  contextPackGeneratedAt: string | null;
+  latestArtifactVersion: string | null;
+  referencedMaterials: RunPlaybackCountItem[];
+  inputKeys: string[];
+}
+
 export interface RunPlaybackPanelViewModel {
   state: RunPlaybackPanelState;
   summary: RunPlaybackPanelSummary;
   timeline: RunPlaybackTimelineItem[];
   artifacts: RunPlaybackArtifactItem[];
   multiAgent: RunPlaybackMultiAgentViewModel;
+  contextProvenance: RunPlaybackContextProvenanceViewModel | null;
   errorMessage: string | null;
 }
 
@@ -97,6 +109,20 @@ const MULTI_AGENT_COUNT_ORDER = [
   "pending",
 ] as const;
 
+const PUBLIC_CONTEXT_INPUT_KEYS = new Set([
+  "attachments",
+  "message",
+  "messages",
+  "files",
+  "file",
+  "memory",
+  "artifacts",
+  "mode",
+  "prompt",
+  "query",
+  "text",
+]);
+
 export function buildRunPlaybackLoadingViewModel(
   runId: string,
 ): RunPlaybackPanelViewModel {
@@ -106,6 +132,7 @@ export function buildRunPlaybackLoadingViewModel(
     timeline: [],
     artifacts: [],
     multiAgent: EMPTY_MULTI_AGENT,
+    contextProvenance: null,
     errorMessage: null,
   };
 }
@@ -121,6 +148,7 @@ export function buildRunPlaybackErrorViewModel(
     timeline: [],
     artifacts: [],
     multiAgent: EMPTY_MULTI_AGENT,
+    contextProvenance: null,
     errorMessage,
   };
 }
@@ -132,11 +160,13 @@ export function buildRunPlaybackPanelViewModel(
   const timeline = buildTimelineItems(response);
   const artifacts = buildArtifactItems(response);
   const multiAgent = buildMultiAgentViewModel(response);
+  const contextProvenance = buildContextProvenanceViewModel(response?.context_ref);
   const hasContent =
     timeline.length > 0 ||
     artifacts.length > 0 ||
     multiAgent.counts.length > 0 ||
-    multiAgent.steps.length > 0;
+    multiAgent.steps.length > 0 ||
+    contextProvenance !== null;
 
   return {
     state: hasContent ? "ready" : "empty",
@@ -144,6 +174,7 @@ export function buildRunPlaybackPanelViewModel(
     timeline,
     artifacts,
     multiAgent,
+    contextProvenance,
     errorMessage: null,
   };
 }
@@ -336,6 +367,54 @@ function buildMultiAgentViewModel(
       buildStepItem(step, index),
     ),
   };
+}
+
+function buildContextProvenanceViewModel(
+  contextRef: RunPlaybackContextRef | null | undefined,
+): RunPlaybackContextProvenanceViewModel | null {
+  if (!contextRef) {
+    return null;
+  }
+  const referencedMaterials = [
+    countItem("files", contextRef.referenced_materials.file_count),
+    countItem("messages", contextRef.referenced_materials.message_count),
+    countItem("memory", contextRef.referenced_materials.memory_record_count),
+    countItem("artifacts", contextRef.referenced_materials.artifact_count),
+  ].filter((item): item is RunPlaybackCountItem => item !== null);
+  const inputKeys = Array.from(
+    new Set(
+      (contextRef.used_context_summary.input_keys ?? []).filter((key) =>
+        PUBLIC_CONTEXT_INPUT_KEYS.has(key),
+      ),
+    ),
+  ).sort();
+  const hasContent =
+    Boolean(contextRef.source) ||
+    Boolean(contextRef.execution_tier) ||
+    Boolean(contextRef.context_pack_version) ||
+    Boolean(contextRef.context_pack_generated_at) ||
+    Boolean(contextRef.latest_artifact_version) ||
+    referencedMaterials.length > 0 ||
+    inputKeys.length > 0;
+  if (!hasContent) {
+    return null;
+  }
+  return {
+    source: contextRef.source ?? contextRef.used_context_summary.source ?? null,
+    executionTier: contextRef.execution_tier ?? null,
+    contextPackVersion: contextRef.context_pack_version ?? null,
+    contextPackGeneratedAt: contextRef.context_pack_generated_at ?? null,
+    latestArtifactVersion: contextRef.latest_artifact_version ?? null,
+    referencedMaterials,
+    inputKeys,
+  };
+}
+
+function countItem(
+  label: string,
+  value: number | undefined,
+): RunPlaybackCountItem | null {
+  return typeof value === "number" && value > 0 ? { label, value } : null;
 }
 
 function buildStepItem(

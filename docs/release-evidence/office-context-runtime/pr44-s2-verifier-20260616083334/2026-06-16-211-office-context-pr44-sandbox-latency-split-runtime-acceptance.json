@@ -1,0 +1,189 @@
+{
+  "artifact_kind": "sandbox_cold_start_latency_split_211_acceptance",
+  "captured_at": "2026-06-16T08:36:40+08:00",
+  "commit_sha": "e421210c9dc510e7afbdc9ebdf8d4f7601f11cb1",
+  "evidence_id": "2026-06-16-211-office-context-pr44-sandbox-latency-split-runtime-acceptance",
+  "evidence_ref": {
+    "command": "python3 scripts/verify_sandbox_runtime_211.py --docker-cmd \"sudo -n docker\" --executor-url http://127.0.0.1:18000 --evidence-file <redacted> --run-id sandbox-pr44-mcp-final-20260616083439 --json",
+    "result": "ok:true",
+    "runtime_checks": {
+      "sandbox_cold_start_latency_split_211_acceptance": {
+        "callback_auth": "token",
+        "callbacks": [
+          {
+            "progress": 5,
+            "run_id": "sandbox-pr44-mcp-final-20260616083439",
+            "status": "running"
+          },
+          {
+            "progress": 100,
+            "run_id": "sandbox-pr44-mcp-final-20260616083439",
+            "status": "completed"
+          }
+        ],
+        "cancel_stops_container": true,
+        "cancelled_container_id": "78e0c17d4210be4f1429b616101bffd50d7a228b270f60d1dd8655ed2f3b6405",
+        "executed_task": true,
+        "executor_url": "http://127.0.0.1:18000",
+        "generated_at": "2026-06-16T00:34:58.910636+00:00",
+        "hardening": {
+          "cached_lease_revalidation": {
+            "cached_lease_revalidates_scope_labels": true,
+            "evidence_class": "source_regression_guard",
+            "scope_mismatch_fails_closed": true,
+            "source_regression_tests": [
+              "tests/test_sandbox_container_provider.py::test_docker_provider_cached_lease_revalidates_container_scope_labels"
+            ],
+            "tenant_workspace_user_session_checked": true
+          },
+          "cleanup": {
+            "active_lease_released": true,
+            "cancel_probe_container_removed": true,
+            "ephemeral_container_removed": true,
+            "evidence_class": "live_platform_probe"
+          },
+          "failure_fallback": {
+            "db_lease_not_released_when_stop_fails": true,
+            "dispatch_failure_stops_container": true,
+            "evidence_class": "source_regression_guard",
+            "lease_record_failure_stops_container": true,
+            "source_regression_tests": [
+              "tests/test_sandbox_runtime.py::test_runtime_does_not_release_db_lease_when_completion_stop_fails",
+              "tests/test_sandbox_runtime.py::test_runtime_does_not_release_db_lease_when_dispatch_failure_stop_fails",
+              "tests/test_sandbox_runtime.py::test_runtime_stops_live_container_when_lease_recording_fails"
+            ]
+          },
+          "lease_isolation": {
+            "evidence_class": "live_platform_probe",
+            "host_paths_redacted": true,
+            "recorded_lease_id": "lease-sandbox-pr44-mcp-final-20260616083439",
+            "release_reason": "dispatch_completed",
+            "released_lease_id": "lease-sandbox-pr44-mcp-final-20260616083439",
+            "run_id": "sandbox-pr44-mcp-final-20260616083439",
+            "session_id": "session-sandbox-pr44-mcp-final-20260616083439",
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+            "workspace_id": "workspace-a"
+          },
+          "resource_timeout": {
+            "evidence_class": "source_regression_guard",
+            "failed_container_removed": true,
+            "max_seconds_enforced": true,
+            "source_regression_tests": [
+              "tests/test_sandbox_container_provider.py::test_docker_provider_maps_health_false_to_timeout",
+              "tests/test_sandbox_container_provider.py::test_docker_provider_removes_container_after_health_timeout"
+            ],
+            "timeout_error_code": "executor_health_timeout"
+          },
+          "source": {
+            "cached_lease_revalidation": "source_regression_tests_plus_live_platform_runtime_smoke",
+            "resource_timeout_and_failure_fallback": "source_regression_tests_plus_live_platform_runtime_smoke",
+            "runtime_submit": "app.runtime.sandbox.runtime.SandboxRuntime.submit",
+            "workspace_root": "[redacted-path]"
+          },
+          "workspace_isolation": {
+            "evidence_class": "live_platform_probe",
+            "host_paths_redacted": true,
+            "inputs_container_path": "/workspace/inputs",
+            "marker_path_is_container_path": true,
+            "workspace_container_path": "/workspace"
+          }
+        },
+        "non_expansion_invariants": {
+          "admin_or_allowlist_only": true,
+          "docker_sandbox_production_hardening_claimed": false,
+          "ordinary_user_high_risk_sandbox_allowed": false,
+          "ordinary_user_multi_agent_allowed": false,
+          "production_concurrency_defaults_raised": false
+        },
+        "run_id": "sandbox-pr44-mcp-final-20260616083439",
+        "runtime_mode": "platform",
+        "sandbox_provider": "docker",
+        "schema_version": "ai-platform.sandbox-runtime-211.v1",
+        "timings": {
+          "document_processing_latency_ms": 0,
+          "executor_model_latency_ms": 40,
+          "sandbox_cleanup_latency_ms": 1114,
+          "sandbox_container_cold_start_latency_ms": 1573,
+          "sandbox_executor_dispatch_latency_ms": 54,
+          "sandbox_healthcheck_latency_ms": 821,
+          "sandbox_lease_acquire_latency_ms": 2405,
+          "sandbox_total_latency_ms": 3575,
+          "schema_version": "ai-platform.sandbox-latency-split.v1"
+        }
+      },
+      "verifier_checks": [
+        {
+          "name": "check_docker_socket",
+          "passed": true
+        },
+        {
+          "name": "check_workspace_write",
+          "passed": true
+        },
+        {
+          "message": "platform runtime evidence includes executor cold-start and healthcheck",
+          "name": "check_executor_health",
+          "passed": true
+        },
+        {
+          "name": "check_callback_stream",
+          "passed": true
+        },
+        {
+          "name": "check_cancel_stops_container",
+          "passed": true
+        },
+        {
+          "name": "check_platform_runtime_evidence",
+          "passed": true
+        },
+        {
+          "name": "check_platform_hardening_evidence",
+          "passed": true
+        },
+        {
+          "name": "check_no_secret_leakage",
+          "passed": true
+        }
+      ]
+    },
+    "verifier": "scripts/verify_sandbox_runtime_211.py"
+  },
+  "gate": "G6/G9/#22 Office Context Pack Architecture",
+  "issue_refs": [
+    "#22"
+  ],
+  "open_followups": [
+    "Production Docker sandbox hardening remains open.",
+    "G6/G9 gate closure remains open until broader governance, observability, frontend packaged runtime, and production hardening gates are separately evidenced."
+  ],
+  "pr_refs": [
+    "#44"
+  ],
+  "redaction_scan_status": "passed",
+  "review_notes": [
+    "211 MCP smoke produced platform-mode Docker sandbox evidence for run sandbox-pr44-mcp-final-20260616083439 on ai-platform:pr44-s2-verifier-20260616083334.",
+    "The verifier accepted latency split timings, callback stream, cancel cleanup, platform hardening evidence, and no secret leakage.",
+    "The API and worker runtime boundary stayed provider=fake; this evidence is an ephemeral verifier-container smoke and does not claim production Docker sandbox hardening."
+  ],
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "e421210c9dc510e7afbdc9ebdf8d4f7601f11cb1",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "branch": "codex/issue22-sandbox-latency-split",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "image": "ai-platform:pr44-s2-verifier-20260616083334",
+    "runtime_boundary": {
+      "api_worker_sandbox_callback_base_url": "http://10.56.0.211:8020",
+      "api_worker_sandbox_container_provider": "fake",
+      "api_worker_sandbox_executor_image": "ai-platform:local"
+    },
+    "runtime_source_marker": "pr44-s2-verifier-20260616083334",
+    "source_tree_dirty": true
+  }
+}

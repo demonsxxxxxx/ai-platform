@@ -89,6 +89,47 @@ def test_executor_health_accepts_healthy_response():
     assert result.passed is True
 
 
+def test_executor_health_accepts_platform_runtime_evidence_when_ephemeral_executor_is_gone(tmp_path):
+    verifier = load_verifier()
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.sandbox-runtime-211.v1",
+                "run_id": "run-a",
+                "runtime_mode": "platform",
+                "sandbox_provider": "docker",
+                "executed_task": True,
+                "timings": {
+                    "schema_version": "ai-platform.sandbox-latency-split.v1",
+                    "sandbox_lease_acquire_latency_ms": 1,
+                    "sandbox_container_cold_start_latency_ms": 2,
+                    "sandbox_healthcheck_latency_ms": 3,
+                    "sandbox_executor_dispatch_latency_ms": 4,
+                    "executor_model_latency_ms": 5,
+                    "document_processing_latency_ms": 6,
+                    "sandbox_cleanup_latency_ms": 7,
+                    "sandbox_total_latency_ms": 28,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def failing_urlopen(request, timeout):
+        raise OSError("connection refused")
+
+    result = verifier.check_executor_health_or_platform_evidence(
+        "http://executor.test",
+        evidence,
+        run_id="run-a",
+        urlopen=failing_urlopen,
+    )
+
+    assert result.passed is True
+    assert "platform runtime evidence" in result.message
+
+
 def test_callback_stream_requires_running_and_terminal_events(tmp_path):
     verifier = load_verifier()
     evidence = tmp_path / "evidence.json"
@@ -216,6 +257,13 @@ def test_platform_runtime_evidence_requires_latency_split_and_docker_provider(tm
             {"run_id": "run-a", "status": "running"},
             {"run_id": "run-a", "status": "completed"},
         ],
+        "non_expansion_invariants": {
+            "ordinary_user_high_risk_sandbox_allowed": False,
+            "admin_or_allowlist_only": True,
+            "production_concurrency_defaults_raised": False,
+            "docker_sandbox_production_hardening_claimed": False,
+            "ordinary_user_multi_agent_allowed": False,
+        },
     }
     timings = {
         "schema_version": "ai-platform.sandbox-latency-split.v1",
@@ -248,6 +296,25 @@ def test_platform_runtime_evidence_requires_latency_split_and_docker_provider(tm
     failed_timing = verifier.check_platform_runtime_evidence(evidence, run_id="run-a")
     assert failed_timing.passed is False
     assert "sandbox_container_cold_start_latency_ms" in failed_timing.message
+
+    missing_invariants = dict(base)
+    missing_invariants.pop("non_expansion_invariants")
+    evidence.write_text(json.dumps({**missing_invariants, "timings": timings}), encoding="utf-8")
+    failed_invariants = verifier.check_platform_runtime_evidence(evidence, run_id="run-a")
+    assert failed_invariants.passed is False
+    assert "non_expansion_invariants" in failed_invariants.message
+
+    expanded_ordinary_user = {
+        **base,
+        "non_expansion_invariants": {
+            **base["non_expansion_invariants"],
+            "ordinary_user_high_risk_sandbox_allowed": True,
+        },
+    }
+    evidence.write_text(json.dumps({**expanded_ordinary_user, "timings": timings}), encoding="utf-8")
+    failed_ordinary = verifier.check_platform_runtime_evidence(evidence, run_id="run-a")
+    assert failed_ordinary.passed is False
+    assert "ordinary_user_high_risk_sandbox_allowed" in failed_ordinary.message
 
 
 def test_platform_runtime_evidence_rejects_hidden_or_invalid_latency_split(tmp_path):
@@ -305,6 +372,7 @@ def test_platform_runtime_hardening_requires_isolation_cleanup_and_fallback_evid
     evidence = tmp_path / "evidence.json"
     hardening = {
         "lease_isolation": {
+            "evidence_class": "live_platform_probe",
             "tenant_id": "tenant-a",
             "workspace_id": "workspace-a",
             "user_id": "user-a",
@@ -316,30 +384,46 @@ def test_platform_runtime_hardening_requires_isolation_cleanup_and_fallback_evid
             "host_paths_redacted": True,
         },
         "workspace_isolation": {
+            "evidence_class": "live_platform_probe",
             "workspace_container_path": "/workspace",
             "inputs_container_path": "/workspace/inputs",
             "host_paths_redacted": True,
             "marker_path_is_container_path": True,
         },
         "cleanup": {
+            "evidence_class": "live_platform_probe",
             "ephemeral_container_removed": True,
             "cancel_probe_container_removed": True,
             "active_lease_released": True,
         },
         "resource_timeout": {
+            "evidence_class": "source_regression_guard",
             "max_seconds_enforced": True,
             "timeout_error_code": "executor_health_timeout",
             "failed_container_removed": True,
             "source_regression_tests": [
+                "tests/test_sandbox_container_provider.py::test_docker_provider_maps_health_false_to_timeout",
                 "tests/test_sandbox_container_provider.py::test_docker_provider_removes_container_after_health_timeout"
             ],
         },
         "failure_fallback": {
+            "evidence_class": "source_regression_guard",
             "dispatch_failure_stops_container": True,
             "lease_record_failure_stops_container": True,
             "db_lease_not_released_when_stop_fails": True,
             "source_regression_tests": [
-                "tests/test_sandbox_runtime.py::test_runtime_does_not_release_db_lease_when_dispatch_failure_stop_fails"
+                "tests/test_sandbox_runtime.py::test_runtime_does_not_release_db_lease_when_completion_stop_fails",
+                "tests/test_sandbox_runtime.py::test_runtime_does_not_release_db_lease_when_dispatch_failure_stop_fails",
+                "tests/test_sandbox_runtime.py::test_runtime_stops_live_container_when_lease_recording_fails",
+            ],
+        },
+        "cached_lease_revalidation": {
+            "evidence_class": "source_regression_guard",
+            "cached_lease_revalidates_scope_labels": True,
+            "scope_mismatch_fails_closed": True,
+            "tenant_workspace_user_session_checked": True,
+            "source_regression_tests": [
+                "tests/test_sandbox_container_provider.py::test_docker_provider_cached_lease_revalidates_container_scope_labels"
             ],
         },
     }
@@ -353,6 +437,48 @@ def test_platform_runtime_hardening_requires_isolation_cleanup_and_fallback_evid
     failed = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
     assert failed.passed is False
     assert "ephemeral_container_removed" in failed.message
+
+    missing_cached_revalidation = dict(hardening)
+    missing_cached_revalidation.pop("cached_lease_revalidation")
+    evidence.write_text(
+        json.dumps({"run_id": "run-a", "hardening": missing_cached_revalidation}),
+        encoding="utf-8",
+    )
+    failed_cached = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
+    assert failed_cached.passed is False
+    assert "cached_lease_revalidation" in failed_cached.message
+
+    wrong_evidence_class = dict(hardening)
+    wrong_evidence_class["resource_timeout"] = {
+        **hardening["resource_timeout"],
+        "evidence_class": "live_platform_probe",
+    }
+    evidence.write_text(json.dumps({"run_id": "run-a", "hardening": wrong_evidence_class}), encoding="utf-8")
+    failed_class = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
+    assert failed_class.passed is False
+    assert "evidence_class" in failed_class.message
+
+    unknown_source_test = dict(hardening)
+    unknown_source_test["resource_timeout"] = {
+        **hardening["resource_timeout"],
+        "source_regression_tests": ["tests/test_unrelated.py::test_not_a_sandbox_guard"],
+    }
+    evidence.write_text(json.dumps({"run_id": "run-a", "hardening": unknown_source_test}), encoding="utf-8")
+    failed_unknown_test = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
+    assert failed_unknown_test.passed is False
+    assert "source_regression_tests" in failed_unknown_test.message
+
+    incomplete_source_tests = dict(hardening)
+    incomplete_source_tests["resource_timeout"] = {
+        **hardening["resource_timeout"],
+        "source_regression_tests": [
+            "tests/test_sandbox_container_provider.py::test_docker_provider_removes_container_after_health_timeout"
+        ],
+    }
+    evidence.write_text(json.dumps({"run_id": "run-a", "hardening": incomplete_source_tests}), encoding="utf-8")
+    failed_incomplete_tests = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
+    assert failed_incomplete_tests.passed is False
+    assert "source_regression_tests" in failed_incomplete_tests.message
 
 
 def test_no_secret_leakage_rejects_sensitive_evidence(tmp_path):
@@ -493,6 +619,7 @@ def test_evidence_recorder_writes_sanitized_callback_evidence(tmp_path):
     }
     recorder.hardening = {
         "lease_isolation": {
+            "evidence_class": "live_platform_probe",
             "tenant_id": "tenant-a",
             "workspace_id": "workspace-a",
             "user_id": "user-a",
@@ -517,6 +644,13 @@ def test_evidence_recorder_writes_sanitized_callback_evidence(tmp_path):
     assert data["sandbox_provider"] == "docker"
     assert data["timings"]["schema_version"] == "ai-platform.sandbox-latency-split.v1"
     assert data["hardening"]["lease_isolation"]["recorded_lease_id"] == "lease-a"
+    assert data["non_expansion_invariants"] == {
+        "ordinary_user_high_risk_sandbox_allowed": False,
+        "admin_or_allowlist_only": True,
+        "production_concurrency_defaults_raised": False,
+        "docker_sandbox_production_hardening_claimed": False,
+        "ordinary_user_multi_agent_allowed": False,
+    }
     assert [item["status"] for item in data["callbacks"]] == ["running", "completed"]
     assert "secret-token" not in raw
 
@@ -565,6 +699,7 @@ def test_submit_executor_task_marks_executed_after_http_success():
 
 def test_run_platform_runtime_probe_records_timings_and_hardening(tmp_path):
     generator = load_generator()
+    verifier = load_verifier()
 
     async def fake_probe():
         return type(
@@ -613,6 +748,17 @@ def test_run_platform_runtime_probe_records_timings_and_hardening(tmp_path):
     assert recorder.timings["sandbox_container_cold_start_latency_ms"] == 2
     assert recorder.hardening["workspace_isolation"]["workspace_container_path"] == "/workspace"
     assert recorder.hardening["cleanup"]["ephemeral_container_removed"] is True
+    assert recorder.hardening["cached_lease_revalidation"] == {
+        "evidence_class": "source_regression_guard",
+        "cached_lease_revalidates_scope_labels": True,
+        "scope_mismatch_fails_closed": True,
+        "tenant_workspace_user_session_checked": True,
+        "source_regression_tests": [
+            "tests/test_sandbox_container_provider.py::test_docker_provider_cached_lease_revalidates_container_scope_labels"
+        ],
+    }
+    for section_name, allowed_tests in verifier.ALLOWED_SOURCE_REGRESSION_TESTS.items():
+        assert set(recorder.hardening[section_name]["source_regression_tests"]) <= allowed_tests
 
 
 def test_cancel_probe_stops_only_verifier_owned_container():
@@ -687,6 +833,23 @@ def test_generator_defaults_use_local_ai_platform_cancel_probe_image():
 
     assert args.cancel_image == "ai-platform:local"
     assert args.sandbox_executor_image == ""
+
+
+def test_sandbox_runtime_211_help_names_211_docker_command_and_local_cancel_image():
+    generator = load_generator()
+    verifier = load_verifier()
+
+    generator_help = generator.build_parser().format_help()
+    verifier_help = verifier.build_parser().format_help()
+
+    assert "--docker-cmd" in generator_help
+    assert "sudo -n docker" in generator_help
+    assert "on 211" in generator_help
+    assert "ai-platform" in generator_help
+    assert "local" in generator_help
+    assert "--docker-cmd" in verifier_help
+    assert "sudo -n docker" in verifier_help
+    assert "on 211" in verifier_help
 
 
 def test_platform_runtime_mode_defaults_executor_image_to_cancel_image(tmp_path, monkeypatch, capsys):

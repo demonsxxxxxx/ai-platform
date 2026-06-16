@@ -427,9 +427,20 @@ def _context_pack_prompt_section(context_pack: dict[str, Any] | None) -> str:
     prompt_summary = prompt_summary.strip()
     if not prompt_summary:
         return ""
+    metadata_lines: list[str] = []
+    context_pack_version = context_pack.get("context_pack_version")
+    if isinstance(context_pack_version, str) and context_pack_version.strip():
+        metadata_lines.append(f"- Context pack version: {context_pack_version.strip()}")
+    context_pack_generated_at = context_pack.get("context_pack_generated_at")
+    if isinstance(context_pack_generated_at, str) and context_pack_generated_at.strip():
+        metadata_lines.append(f"- Context pack generated at: {context_pack_generated_at.strip()}")
+    metadata_text = "\n".join(metadata_lines)
+    if metadata_text:
+        metadata_text += "\n"
     return (
         "\n\nOffice context pack:\n"
         f"- {prompt_summary}\n"
+        f"{metadata_text}"
         "- Use this bounded context only as background; do not infer raw storage keys, "
         "sandbox paths, private payloads, or long-term memory beyond what is listed."
     )
@@ -730,7 +741,9 @@ async def run_claude_agent_sdk(
         disallowed_tools=disallowed_tools,
         env=build_sdk_env(cwd=cwd),
         skills=configured_skills,
-        max_turns=max(1, int(getattr(settings, "claude_agent_sdk_max_turns", 48))),
+        max_turns=max(1, int(getattr(settings, "claude_agent_sdk_max_turns", 128))),
+        max_thinking_tokens=max(1, int(getattr(settings, "claude_agent_sdk_max_thinking_tokens", 16384))),
+        effort=str(getattr(settings, "claude_agent_sdk_effort", "xhigh") or "xhigh"),
         can_use_tool=can_use_tool,
         hooks=hooks,
         setting_sources=["project"],

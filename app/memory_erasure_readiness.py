@@ -1,6 +1,8 @@
 from pathlib import Path
 from typing import Any
 
+from app.office_context_readiness import build_office_context_readiness
+
 
 SCHEMA_VERSION = "ai-platform.memory-erasure-readiness.v1"
 
@@ -203,12 +205,32 @@ def build_memory_erasure_readiness(repo_root: Path | None = None) -> dict[str, A
     root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
     evidence = _marker_evidence(root)
     missing = [item["name"] for item in evidence if item["status"] != "present"]
-    open_gaps = [
-        "executor_context_pack_211_acceptance",
-        "document_centric_followup_state",
-        "sandbox_cold_start_latency_split_211_acceptance",
-        "frontend_context_provenance_acceptance",
-    ]
+    office_context_readiness = build_office_context_readiness(repo_root=root)
+    open_gaps = office_context_readiness["open_gaps"]
+    if "executor_context_pack_211_acceptance" in open_gaps:
+        executor_policy = (
+            "superseded PR #44 executor context-pack 211 evidence keeps "
+            "`executor_context_pack_211_acceptance` open and follows "
+            "office_context_readiness.executor_context_pack_runtime_acceptance_contract"
+        )
+    else:
+        executor_policy = (
+            "reviewed PR #44 executor context-pack 211 acceptance follows "
+            "office_context_readiness.executor_context_pack_runtime_acceptance_contract"
+        )
+    if "sandbox_cold_start_latency_split_211_acceptance" in office_context_readiness["closed_runtime_gaps"]:
+        sandbox_policy = (
+            "reviewed PR #44 sandbox 211 acceptance follows "
+            "office_context_readiness.sandbox_runtime_smoke_contract for "
+            "211_sandbox_latency_split_smoke and closes only "
+            "`sandbox_cold_start_latency_split_211_acceptance`"
+        )
+    else:
+        sandbox_policy = (
+            "PR #44 sandbox 211 acceptance still requires "
+            "office_context_readiness.sandbox_runtime_smoke_contract for "
+            "211_sandbox_latency_split_smoke"
+        )
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "blocked" if missing else "partial_blocked",
@@ -228,20 +250,30 @@ def build_memory_erasure_readiness(repo_root: Path | None = None) -> dict[str, A
             "office_context_pack_architecture_readiness_snapshot",
             "executor_context_pack_prompt_injection_source_tests",
             "user_visible_context_provenance_api_projection_source_tests",
+            "frontend_context_provenance_playback_source_tests",
             "office_execution_tier_router_source_tests",
+            "document_centric_followup_state_source_tests",
             "sandbox_cold_start_latency_split_source_contract",
+            "sandbox_runtime_hardening_source_verifier_contract",
+            "sandbox_cached_lease_scope_revalidation_source_tests",
         ],
         "evidence_markers": evidence,
         "missing_evidence_markers": missing,
         "open_gaps": open_gaps,
-        "evidence_policy": "delete_retention_export_tests_docs_and_211_smoke_required_before_memory_governance_closure",
+        "closed_runtime_gaps": office_context_readiness["closed_runtime_gaps"],
+        "runtime_acceptance_evidence": office_context_readiness["runtime_acceptance_evidence"],
+        "evidence_policy": (
+            "delete_retention_export_tests_docs_and_211_smoke_required_before_memory_governance_closure; "
+            f"{executor_policy}; {sandbox_policy}"
+        ),
     }
 
 
 def render_memory_erasure_readiness_markdown(readiness: dict[str, Any]) -> str:
     """Render the memory erasure readiness snapshot as operator-readable Markdown."""
     controls = "\n".join(f"- {item}" for item in readiness["implemented_controls"])
-    gaps = "\n".join(f"- {item}" for item in readiness["open_gaps"])
+    gaps = "\n".join(f"- {item}" for item in readiness["open_gaps"]) or "- none"
+    closed_runtime_gaps = "\n".join(f"- {item}" for item in readiness.get("closed_runtime_gaps", [])) or "- none"
     markers = "\n".join(
         f"| `{item['name']}` | `{item['source']}` | `{item['status']}` |"
         for item in readiness["evidence_markers"]
@@ -254,6 +286,8 @@ def render_memory_erasure_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"Admin Runtime projection: `{readiness['admin_runtime_projection']}`\n\n"
         "## Open Gaps\n\n"
         f"{gaps}\n\n"
+        "## Closed Runtime Gaps\n\n"
+        f"{closed_runtime_gaps}\n\n"
         "## Implemented Controls\n\n"
         f"{controls}\n\n"
         "## Evidence Markers\n\n"

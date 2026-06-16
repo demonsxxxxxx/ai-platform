@@ -16,7 +16,7 @@ auth/session, DB schema, or compose delivery behavior.
 | #17 frontend source ownership | In progress. Source now lives under `frontend/web`, has local install/lint/build evidence, exposes release traceability plus a frontend projection audit, and has a GitHub Actions frontend workflow with source checks plus a packaged-image build/provenance contract. `ci:verify` starts with the projection audit launcher; the active browser entry graph is currently clear of forbidden private/secret-like projection terms, and the Profile env-var surface is no longer active. Inactive legacy secret-like model/channel/envvar sources remain quarantined and must be remapped before G9 rollout. Full closure still needs packaged image smoke/release acceptance on 211 or another Docker-capable host. |
 | #20 G5 scheduling/admission gaps | Closed on 2026-06-06 by `f5da825` and `e203412`, with local full pytest and 211 smoke evidence recorded in the issue. |
 | #21 capacity baseline | GitHub issue currently closed, but current default active worker execution is still about three runs, and recorded load-test evidence is required before raising concurrency defaults. |
-| #22 office UX/context continuity | Open. Source-level context-pack readiness, context-pack persistence/versioning, user-visible context provenance API projection tests, execution-tier routing tests, executor prompt-injection tests, and the sandbox cold-start latency split observability contract now exist through `tools/office_context_readiness.py`, context route tests, router tests, worker adapter tests, and sandbox runtime/provider tests, but 211 executor acceptance, document-centric follow-up state, 211 sandbox latency split acceptance, and frontend context provenance acceptance are not implemented by this migration. |
+| #22 office UX/context continuity | Open at G6/G9 level. Source-level context-pack readiness, context-pack persistence/versioning, user-visible context provenance API projection tests, execution-tier routing tests, executor prompt-injection tests, document-centric follow-up state source tests, and the sandbox cold-start latency split observability contract now exist through `tools/office_context_readiness.py`, context route tests, router tests, worker adapter tests, and sandbox runtime/provider tests. PR #44 records reviewed 211 sandbox latency split evidence for the named #22 runtime gap; executor context-pack 211 acceptance remains open until fresh positive source-artifact and public input-key redaction evidence exists. This frontend migration still does not close G6/G9, production Docker sandbox hardening, or packaged frontend acceptance. |
 
 Gate summary:
 
@@ -414,12 +414,16 @@ packaged frontend image trace.
 - #22 document-centric context/workbench UX now has a source-level architecture
   readiness baseline through `tools/office_context_readiness.py` plus
   source-level context-pack persistence/versioning, user-visible context
-  provenance API projection tests, execution-tier routing, and bounded executor
-  context-pack prompt injection tests, plus the sandbox cold-start latency split
-  observability contract, but 211 executor acceptance, document-centric
-  follow-up state, 211 sandbox cold-start latency split acceptance, and frontend
-  context provenance acceptance
-  remain future work and are not part of this source move.
+  provenance API projection tests, frontend run-playback context provenance
+  source tests, execution-tier routing, and bounded executor context-pack prompt
+  injection tests, document-centric follow-up state source tests, plus the
+  sandbox cold-start latency split observability contract and cached sandbox
+  lease scope revalidation source tests. The 211 verifier requires hardening
+  evidence for lease/workspace isolation, cleanup, resource timeout fallback,
+  failure fallback, and cached lease scope revalidation. PR #44 records reviewed
+  211 executor acceptance and 211 sandbox cold-start latency split evidence for
+  the named #22 runtime gaps, but that evidence is separate from this frontend
+  source move and does not close packaged frontend release acceptance.
 
 ## Verification Commands
 

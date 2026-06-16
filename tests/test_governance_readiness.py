@@ -172,8 +172,12 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "executor_context_pack_prompt_injection_source_tests" in domains["memory_governance"]["implemented"]
     assert "source_level_context_pack_persistence_and_versioning" in domains["memory_governance"]["implemented"]
     assert "user_visible_context_provenance_api_projection_source_tests" in domains["memory_governance"]["implemented"]
+    assert "frontend_context_provenance_playback_source_tests" in domains["memory_governance"]["implemented"]
     assert "office_execution_tier_router_source_tests" in domains["memory_governance"]["implemented"]
+    assert "document_centric_followup_state_source_tests" in domains["memory_governance"]["implemented"]
     assert "sandbox_cold_start_latency_split_source_contract" in domains["memory_governance"]["implemented"]
+    assert "sandbox_runtime_hardening_source_verifier_contract" in domains["memory_governance"]["implemented"]
+    assert "sandbox_cached_lease_scope_revalidation_source_tests" in domains["memory_governance"]["implemented"]
     assert "formal_memory_delete_export_erasure_evidence" not in domains["memory_governance"]["gaps"]
     assert "memory_export_erasure_evidence" not in domains["memory_governance"]["gaps"]
     assert "memory_redaction_policy_admin_preview_and_audit" not in domains["memory_governance"]["gaps"]
@@ -181,11 +185,13 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "office_context_pack_runtime_implementation_and_acceptance" not in domains["memory_governance"]["gaps"]
     assert "office_context_pack_persistence_and_versioning" not in domains["memory_governance"]["gaps"]
     assert "user_visible_context_provenance_projection" not in domains["memory_governance"]["gaps"]
+    assert "frontend_context_provenance_acceptance" not in domains["memory_governance"]["gaps"]
     assert "executor_context_pack_injection" not in domains["memory_governance"]["gaps"]
+    assert "document_centric_followup_state" not in domains["memory_governance"]["gaps"]
     assert "executor_context_pack_211_acceptance" in domains["memory_governance"]["gaps"]
     assert "office_execution_tier_router" not in domains["memory_governance"]["gaps"]
     assert "sandbox_cold_start_latency_split" not in domains["memory_governance"]["gaps"]
-    assert "sandbox_cold_start_latency_split_211_acceptance" in domains["memory_governance"]["gaps"]
+    assert "sandbox_cold_start_latency_split_211_acceptance" not in domains["memory_governance"]["gaps"]
     context_evidence = domains["memory_governance"]["evidence"]["office_context_pack_readiness"]
     assert context_evidence["schema_version"] == "ai-platform.office-context-pack-readiness.v1"
     assert context_evidence["status"] == "partial_blocked"
@@ -196,20 +202,112 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "executor_context_pack_prompt_injection_source_tests" in context_evidence["implemented_controls"]
     assert "source_level_context_pack_persistence_and_versioning" in context_evidence["implemented_controls"]
     assert "user_visible_context_provenance_api_projection_source_tests" in context_evidence["implemented_controls"]
+    assert "frontend_context_provenance_playback_source_tests" in context_evidence["implemented_controls"]
     assert "office_execution_tier_router_source_tests" in context_evidence["implemented_controls"]
+    assert "document_centric_followup_state_source_tests" in context_evidence["implemented_controls"]
     assert "sandbox_cold_start_latency_split_source_contract" in context_evidence["implemented_controls"]
+    assert "sandbox_runtime_hardening_source_verifier_contract" in context_evidence["implemented_controls"]
+    assert "sandbox_cached_lease_scope_revalidation_source_tests" in context_evidence["implemented_controls"]
     assert context_evidence["summary"]["allowed_sources"] >= 7
     assert context_evidence["summary"]["execution_tiers"] >= 3
-    assert context_evidence["summary"]["open_gaps"] == 4
+    assert context_evidence["summary"]["open_gaps"] == 1
+    assert context_evidence["summary"]["closed_runtime_gaps"] == 1
     assert context_evidence["summary"]["sandbox_default_for_lightweight_office_tasks"] is False
     assert context_evidence["sandbox_latency_observability"]["status"] == (
         "source_contract_defined_runtime_acceptance_required"
     )
     assert context_evidence["sandbox_latency_observability"]["must_not_hide_cold_start_in_executor_latency"] is True
-    assert "frontend_context_provenance_acceptance" in context_evidence["open_gaps"]
+    assert context_evidence["sandbox_runtime_smoke_contract"]["generator_script"] == (
+        "scripts/generate_sandbox_runtime_evidence_211.py"
+    )
+    assert context_evidence["sandbox_runtime_smoke_contract"]["verifier_script"] == (
+        "scripts/verify_sandbox_runtime_211.py"
+    )
+    assert context_evidence["sandbox_runtime_smoke_contract"]["docker_cmd"] == "sudo -n docker"
+    assert "check_platform_runtime_evidence" in context_evidence["sandbox_runtime_smoke_contract"]["required_checks"]
+    assert "check_platform_hardening_evidence" in context_evidence["sandbox_runtime_smoke_contract"]["required_checks"]
+    assert "non_expansion_invariants" in context_evidence["sandbox_runtime_smoke_contract"]["required_evidence_sections"]
+    assert "hardening.evidence_class" in context_evidence["sandbox_runtime_smoke_contract"]["required_evidence_sections"]
+    assert context_evidence["sandbox_runtime_smoke_contract"]["non_expansion_invariants"][
+        "ordinary_user_multi_agent_allowed"
+    ] is False
+    assert context_evidence["executor_context_pack_runtime_acceptance_contract"]["schema_version"] == (
+        "ai-platform.executor-context-pack-runtime-acceptance.v1"
+    )
+    assert context_evidence["executor_context_pack_runtime_acceptance_contract"]["target"] == (
+        "211_api_worker_runtime"
+    )
+    assert context_evidence["executor_context_pack_runtime_acceptance_contract"]["generator_script"] == (
+        "scripts/generate_executor_context_pack_evidence_211.py"
+    )
+    assert context_evidence["executor_context_pack_runtime_acceptance_contract"]["verifier_script"] == (
+        "scripts/verify_executor_context_pack_211.py"
+    )
+    assert (
+        context_evidence["executor_context_pack_runtime_acceptance_contract"]["source_probe_evidence_strength"]
+        == "source_probe_on_target_runtime"
+    )
+    assert (
+        context_evidence["executor_context_pack_runtime_acceptance_contract"]["required_live_evidence_strength"]
+        == "live_worker_run_payload"
+    )
+    assert "accepted_evidence_strength" not in context_evidence["executor_context_pack_runtime_acceptance_contract"]
+    assert (
+        context_evidence["executor_context_pack_runtime_acceptance_contract"]["does_not_close_211_acceptance"]
+        is True
+    )
+    assert (
+        context_evidence["executor_context_pack_runtime_acceptance_contract"][
+            "runtime_acceptance_requires_real_run_payload"
+        ]
+        is True
+    )
+    assert "runtime_evidence" in context_evidence[
+        "executor_context_pack_runtime_acceptance_contract"
+    ]["required_live_evidence_sections"]
+    assert "app.repositories.get_context_snapshot_for_worker" in context_evidence[
+        "executor_context_pack_runtime_acceptance_contract"
+    ]["source_functions"]
+    assert "app.context_builder.executor_context_pack_from_snapshot" in context_evidence[
+        "executor_context_pack_runtime_acceptance_contract"
+    ]["source_functions"]
+    assert "app.worker._context_snapshot_ref_from_row" in context_evidence[
+        "executor_context_pack_runtime_acceptance_contract"
+    ]["source_functions"]
+    assert "live_worker_run_payload" in context_evidence[
+        "executor_context_pack_runtime_acceptance_contract"
+    ]["required_runtime_evidence"]
+    assert "scoped_context_snapshot_loaded" in context_evidence[
+        "executor_context_pack_runtime_acceptance_contract"
+    ]["required_runtime_evidence"]
+    assert "prompt_includes_context_pack_generated_at" in context_evidence[
+        "executor_context_pack_runtime_acceptance_contract"
+    ]["required_runtime_evidence"]
+    assert "fresh_generated_at" in context_evidence[
+        "executor_context_pack_runtime_acceptance_contract"
+    ]["required_runtime_evidence"]
+    assert "source_functions_bound_to_current_runtime" in context_evidence[
+        "executor_context_pack_runtime_acceptance_contract"
+    ]["required_runtime_evidence"]
+    assert context_evidence["executor_context_pack_runtime_acceptance_contract"][
+        "acceptance_gap"
+    ] == "executor_context_pack_211_acceptance"
+    assert context_evidence["executor_context_pack_runtime_acceptance_contract"][
+        "does_not_close_g6_g9"
+    ] is True
+    assert "frontend_context_provenance_acceptance" not in context_evidence["open_gaps"]
+    assert "document_centric_followup_state" not in context_evidence["open_gaps"]
+    assert "executor_context_pack_211_acceptance" in context_evidence["open_gaps"]
     assert "office_execution_tier_router" not in context_evidence["open_gaps"]
     assert "sandbox_cold_start_latency_split" not in context_evidence["open_gaps"]
-    assert "sandbox_cold_start_latency_split_211_acceptance" in context_evidence["open_gaps"]
+    assert "sandbox_cold_start_latency_split_211_acceptance" not in context_evidence["open_gaps"]
+    assert context_evidence["closed_runtime_gaps"] == [
+        "sandbox_cold_start_latency_split_211_acceptance",
+    ]
+    assert "executor_context_pack_211_acceptance" not in context_evidence["runtime_acceptance_evidence"]
+    assert context_evidence["runtime_acceptance_evidence"]["sandbox_cold_start_latency_split_211_acceptance"][
+        "timings"
+    ]["sandbox_container_cold_start_latency_ms"] > 0
     assert "public_admin_projection_audit_baseline" in domains["frontend_projection"]["implemented"]
     assert "frontend_projection_audit_cli" in domains["frontend_projection"]["implemented"]
     assert "frontend_ci_projection_audit_integration" in domains["frontend_projection"]["implemented"]
@@ -219,6 +317,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "frontend_legacy_route_policy_mapping" in domains["frontend_projection"]["implemented"]
     assert "frontend_active_legacy_route_policy_audit" in domains["frontend_projection"]["implemented"]
     assert "frontend_active_browser_projection_audit_clear" in domains["frontend_projection"]["implemented"]
+    assert "frontend_run_playback_context_provenance_projection" in domains["frontend_projection"]["implemented"]
     assert "inactive_legacy_secret_like_frontend_sources_quarantined" in domains["frontend_projection"]["implemented"]
     assert "frontend_profile_envvar_surface_fail_closed" in domains["frontend_projection"]["implemented"]
     assert "admin_runtime_capacity_governance_frontend_section" in domains["frontend_projection"]["implemented"]
@@ -237,6 +336,20 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "verify the packaged frontend image on a Docker-capable host before release acceptance" in domains["frontend_projection"]["next_checks"]
     assert "enforce frontend checks in CI before closing source ownership" not in domains["frontend_projection"]["next_checks"]
     projection_evidence = domains["frontend_projection"]["evidence"]["projection_audit"]
+    packaged_contract = domains["frontend_projection"]["evidence"]["packaged_runtime_smoke_contract"]
+    assert packaged_contract["schema_version"] == "ai-platform.frontend-packaged-runtime-smoke.v1"
+    assert packaged_contract["evidence_contract"]["schema_version"] == (
+        "ai-platform.frontend-packaged-runtime-smoke-evidence.v1"
+    )
+    assert packaged_contract["evidence_contract"]["write_path"] == (
+        "frontend_release.packaged_runtime_smoke.<commit_sha>"
+    )
+    assert packaged_contract["status"] == "blocked_missing_runtime_evidence"
+    assert "packaged_frontend_runtime_smoke_evidence_missing" in packaged_contract["blockers"]
+    assert "frontend_packaged_runtime_smoke" not in packaged_contract["closed_evidence_items"]
+    assert "sudo -n docker build" in " ".join(packaged_contract["operator_commands"])
+    assert packaged_contract["runtime_policy"] == "docker_capable_host_only_no_local_windows_docker"
+    assert packaged_contract["does_not_close_g6_g9_or_21"] is True
     assert projection_evidence["schema_version"] == "ai-platform.frontend-projection-audit.v1"
     assert projection_evidence["status"] == "pass_with_policy_gaps"
     assert projection_evidence["summary"]["active_forbidden_projection_violations"] == 0
@@ -352,14 +465,18 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     assert "memory_export_erasure_evidence_snapshot" in markdown
     assert "context_snapshot_public_provenance_projection_contract" in markdown
     assert "user_visible_context_provenance_api_projection_source_tests" in markdown
+    assert "frontend_context_provenance_playback_source_tests" in markdown
     assert "office_execution_tier_router" in markdown
     assert "source_level_context_pack_persistence_and_versioning" in markdown
     assert "- office_context_pack_persistence_and_versioning" not in markdown
     assert "executor_context_pack_prompt_injection_source_tests" in markdown
     assert "sandbox_cold_start_latency_split_source_contract" in markdown
+    open_gaps = markdown.split("## Domains", 1)[0]
+    assert "executor_context_pack_211_acceptance" in open_gaps
+    assert "sandbox_cold_start_latency_split_211_acceptance" not in open_gaps
+    assert "closed runtime gaps" in markdown
     assert "executor_context_pack_211_acceptance" in markdown
     assert "sandbox_cold_start_latency_split_211_acceptance" in markdown
-    open_gaps = markdown.split("## Domains", 1)[0]
     assert "memory_export_erasure_evidence" not in open_gaps
     assert "callback-secret" not in markdown
     assert ".claude/skills" not in markdown

@@ -267,6 +267,53 @@ def test_gate_status_snapshot_records_s1_post_merge_211_verification_requirement
     assert "capacity_default_increase_allowed=false" in gate_status_text
 
 
+def test_s2_sandbox_runtime_smoke_contract_records_pr44_evidence_without_closing_g6_g9():
+    gate_status_text = read(GATE_STATUS_DOC)
+    governance_text = read(GOVERNANCE_READINESS_DOC)
+    roadmap_text = read(ROADMAP)
+    release_evidence_text = read(RELEASE_EVIDENCE_INDEX)
+
+    for text in (gate_status_text, governance_text, roadmap_text):
+        assert "sandbox_runtime_smoke_contract" in text
+        assert "211_sandbox_latency_split_smoke" in text
+        assert "scripts/generate_sandbox_runtime_evidence_211.py" in text
+        assert "scripts/verify_sandbox_runtime_211.py" in text
+        assert "sudo -n docker" in text
+        assert "ai-platform:local" in text
+        assert "non_expansion_invariants" in text
+        assert "ordinary_user_high_risk_sandbox_allowed=false" in text
+        assert "ordinary_user_multi_agent_allowed=false" in text
+        assert "sandbox_cold_start_latency_split_211_acceptance" in text
+        assert "executor_context_pack_211_acceptance" in text
+        assert "executor_context_pack_runtime_acceptance_contract" in text
+        assert "ai-platform.executor-context-pack-runtime-acceptance.v1" in text
+        assert "scripts/generate_executor_context_pack_evidence_211.py" in text
+        assert "scripts/verify_executor_context_pack_211.py" in text
+        assert "app.repositories.get_context_snapshot_for_worker" in text
+        assert "app.context_builder.executor_context_pack_from_snapshot" in text
+        assert "prompt_includes_bounded_summary" in text
+        assert "fresh" in text
+        assert "source_functions" in text
+        assert "long_term_cross_session_memory_enabled=false" in text
+        assert "PR #44" in text
+        assert "does not close G6" in text or "does not close G6/G9" in text
+
+    assert "Docker sandbox production hardening is closed" not in gate_status_text
+    assert "Docker sandbox production hardening is closed" not in governance_text
+    assert "Docker sandbox production hardening is closed" not in roadmap_text
+    assert "2026-06-16-211-office-context-pr44-executor-context-pack-runtime-acceptance.json" in release_evidence_text
+    assert "2026-06-16-211-office-context-pr44-sandbox-latency-split-runtime-acceptance.json" in release_evidence_text
+    assert "executor_context_pack_211_acceptance" in release_evidence_text
+    assert "sandbox_cold_start_latency_split_211_acceptance" in release_evidence_text
+    assert "ordinary_user_high_risk_sandbox_allowed=false" in release_evidence_text
+    assert "ordinary_user_multi_agent_allowed=false" in release_evidence_text
+    assert "production_concurrency_defaults_raised=false" in release_evidence_text
+    assert "does not claim production Docker sandbox hardening" in release_evidence_text
+    assert "Superseded insufficient PR #44 executor context-pack evidence" in release_evidence_text
+    assert "does not close `executor_context_pack_211_acceptance`" in release_evidence_text
+    assert "G6/G9 closure" in release_evidence_text
+
+
 def test_foundation_alpha_closure_records_stage_complete_baseline_and_boundaries():
     closure_text = read(FOUNDATION_ALPHA_CLOSURE_DOC)
     prd_text = read(PRD)
@@ -635,7 +682,9 @@ def test_env_template_satisfies_required_runtime_defaults_without_real_secrets()
     assert "SANDBOX_CALLBACK_TOKEN=change_me_sandbox_callback_token" in env_text
     assert "EXISTING_AUTH_BASE_URL=http://10.56.0.25:7263" in env_text
     assert "EXISTING_USER_INFO_BASE_URL=http://10.56.0.25:5166" in env_text
-    assert "CLAUDE_AGENT_SDK_MAX_TURNS=48" in env_text
+    assert "CLAUDE_AGENT_SDK_MAX_TURNS=128" in env_text
+    assert "CLAUDE_AGENT_SDK_EFFORT=xhigh" in env_text
+    assert "CLAUDE_AGENT_SDK_MAX_THINKING_TOKENS=16384" in env_text
     assert "EXISTING_AUTH_BASE_URL=http://10.56.0.211" not in env_text
     assert "sk-" not in env_text
     assert "Bearer " not in env_text
@@ -672,7 +721,14 @@ def test_compose_build_does_not_forward_secret_capable_package_index_args():
 def test_compose_forwards_claude_agent_sdk_max_turns_to_api_and_worker():
     compose_text = read(COMPOSE)
 
-    assert compose_text.count("CLAUDE_AGENT_SDK_MAX_TURNS: ${CLAUDE_AGENT_SDK_MAX_TURNS:-48}") == 2
+    assert compose_text.count("CLAUDE_AGENT_SDK_MAX_TURNS: ${CLAUDE_AGENT_SDK_MAX_TURNS:-128}") == 2
+    assert compose_text.count("CLAUDE_AGENT_SDK_EFFORT: ${CLAUDE_AGENT_SDK_EFFORT:-xhigh}") == 2
+    assert (
+        compose_text.count(
+            "CLAUDE_AGENT_SDK_MAX_THINKING_TOKENS: ${CLAUDE_AGENT_SDK_MAX_THINKING_TOKENS:-16384}"
+        )
+        == 2
+    )
 
 
 def test_agents_lock_211_runtime_verification_and_rebase_deploy_rules():
@@ -745,7 +801,7 @@ def test_frontend_source_import_is_documented_without_replacing_current_runtime(
     assert "G8/G10 Long Task and Multi-Agent work are not implemented" in combined_text
     assert "Docker compose one-command startup is not a current" in combined_text
     assert "tools/office_context_readiness.py" in combined_text
-    assert "frontend context provenance acceptance" in combined_text
+    assert "frontend run-playback context provenance" in combined_text
     assert "C:\\Users" not in combined_text
     assert "/api/ai/workbench" not in combined_text
 
@@ -1001,8 +1057,9 @@ def test_office_context_docs_track_source_level_context_pack_versioning_without_
         assert "source_level_context_pack_persistence_and_versioning" in text
         assert "context_pack_version" in text
         assert "context_pack_generated_at" in text
-        assert "211 executor context-pack acceptance" in text
-        assert "frontend context provenance acceptance" in text
+        assert "PR #44" in text
+        assert "211 executor context-pack" in text
+        assert "frontend run-playback context provenance" in text
         assert "long-term cross-session memory" in text
         assert "ordinary-user G8/G10 exposure" in text
         assert "C:\\Users" not in text
@@ -1015,6 +1072,8 @@ def test_office_context_docs_track_source_level_context_pack_versioning_without_
 def test_frontend_docs_record_packaged_runtime_smoke_contract_and_211_blocker():
     frontend_text = read(FRONTEND_MIGRATION_DOC)
     roadmap_text = read(ROADMAP)
+    governance_text = read(GOVERNANCE_READINESS_DOC)
+    gate_status_text = read(GATE_STATUS_DOC)
 
     for text in (frontend_text, roadmap_text):
         assert "tools/frontend_packaged_runtime_smoke.py" in text
@@ -1031,6 +1090,14 @@ def test_frontend_docs_record_packaged_runtime_smoke_contract_and_211_blocker():
         assert "nginx:1.27-alpine" in text
         assert "not release acceptance" in text
         assert "C:\\Users" not in text
+
+    for text in (governance_text, gate_status_text, roadmap_text):
+        assert "packaged_runtime_smoke_contract" in text
+        assert "ai-platform.frontend-packaged-runtime-smoke.v1" in text
+        assert "frontend_packaged_runtime_smoke_evidence_missing" in text
+        assert "docker_capable_host_only_no_local_windows_docker" in text
+        assert "frontend_packaged_image_delivery_and_release_acceptance" in text
+        assert "does not close" in text or "does not by itself close" in text
 
 
 def test_prd_records_claude_code_deerflow_boundary_without_second_runtime():

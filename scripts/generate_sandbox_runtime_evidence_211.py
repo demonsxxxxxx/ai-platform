@@ -30,6 +30,13 @@ TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 SAFE_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9_.-]+")
 EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime-211.v1"
 LATENCY_SCHEMA_VERSION = "ai-platform.sandbox-latency-split.v1"
+NON_EXPANSION_INVARIANTS = {
+    "ordinary_user_high_risk_sandbox_allowed": False,
+    "admin_or_allowlist_only": True,
+    "production_concurrency_defaults_raised": False,
+    "docker_sandbox_production_hardening_claimed": False,
+    "ordinary_user_multi_agent_allowed": False,
+}
 
 
 def _safe_run_id(value: str) -> str:
@@ -117,6 +124,7 @@ class EvidenceRecorder:
             "cancelled_container_id": self.cancelled_container_id,
             "timings": self.timings,
             "hardening": self.hardening,
+            "non_expansion_invariants": dict(NON_EXPANSION_INVARIANTS),
         }
 
     def write(self, evidence_path: str | Path) -> None:
@@ -232,6 +240,7 @@ def _platform_hardening_evidence(
 ) -> dict[str, object]:
     return {
         "lease_isolation": {
+            "evidence_class": "live_platform_probe",
             "tenant_id": "tenant-a",
             "workspace_id": "workspace-a",
             "user_id": "user-a",
@@ -243,17 +252,20 @@ def _platform_hardening_evidence(
             "host_paths_redacted": True,
         },
         "workspace_isolation": {
+            "evidence_class": "live_platform_probe",
             "workspace_container_path": "/workspace",
             "inputs_container_path": "/workspace/inputs",
             "host_paths_redacted": True,
             "marker_path_is_container_path": True,
         },
         "cleanup": {
+            "evidence_class": "live_platform_probe",
             "ephemeral_container_removed": True,
             "cancel_probe_container_removed": True,
             "active_lease_released": bool(recorded_lease_id and recorded_lease_id == released_lease_id),
         },
         "resource_timeout": {
+            "evidence_class": "source_regression_guard",
             "max_seconds_enforced": True,
             "timeout_error_code": "executor_health_timeout",
             "failed_container_removed": True,
@@ -263,6 +275,7 @@ def _platform_hardening_evidence(
             ],
         },
         "failure_fallback": {
+            "evidence_class": "source_regression_guard",
             "dispatch_failure_stops_container": True,
             "lease_record_failure_stops_container": True,
             "db_lease_not_released_when_stop_fails": True,
@@ -272,10 +285,20 @@ def _platform_hardening_evidence(
                 "tests/test_sandbox_runtime.py::test_runtime_stops_live_container_when_lease_recording_fails",
             ],
         },
+        "cached_lease_revalidation": {
+            "evidence_class": "source_regression_guard",
+            "cached_lease_revalidates_scope_labels": True,
+            "scope_mismatch_fails_closed": True,
+            "tenant_workspace_user_session_checked": True,
+            "source_regression_tests": [
+                "tests/test_sandbox_container_provider.py::test_docker_provider_cached_lease_revalidates_container_scope_labels",
+            ],
+        },
         "source": {
             "runtime_submit": "app.runtime.sandbox.runtime.SandboxRuntime.submit",
             "workspace_root": "[redacted-path]" if str(workspace_root) else "",
             "resource_timeout_and_failure_fallback": "source_regression_tests_plus_live_platform_runtime_smoke",
+            "cached_lease_revalidation": "source_regression_tests_plus_live_platform_runtime_smoke",
         },
     }
 
@@ -467,7 +490,12 @@ def _wait_for_callbacks(recorder: EvidenceRecorder, timeout_seconds: float) -> b
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Generate ai-platform sandbox runtime evidence on 211")
+    parser = argparse.ArgumentParser(
+        description=(
+            'Generate ai-platform sandbox runtime evidence on 211; use --docker-cmd "sudo -n docker" '
+            "on 211 and keep this as controlled admin/allowlist evidence."
+        )
+    )
     parser.add_argument("--executor-url", default=os.environ.get("AI_PLATFORM_EXECUTOR_URL", ""))
     parser.add_argument(
         "--workspace-root",
@@ -479,8 +507,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--run-id", default=os.environ.get("AI_PLATFORM_SANDBOX_RUN_ID", f"sandbox-smoke-{uuid.uuid4().hex[:8]}"))
     parser.add_argument("--callback-token", default=os.environ.get("SANDBOX_CALLBACK_TOKEN", "sandbox-smoke-callback-token"))
-    parser.add_argument("--docker-cmd", default=os.environ.get("DOCKER_CMD", "docker"))
-    parser.add_argument("--cancel-image", default=os.environ.get("AI_PLATFORM_CANCEL_PROBE_IMAGE", "ai-platform:local"))
+    parser.add_argument(
+        "--docker-cmd",
+        default=os.environ.get("DOCKER_CMD", "docker"),
+        help='Docker command; use --docker-cmd "sudo -n docker" on 211.',
+    )
+    parser.add_argument(
+        "--cancel-image",
+        default=os.environ.get("AI_PLATFORM_CANCEL_PROBE_IMAGE", "ai-platform:local"),
+        help="Verifier-owned cancel probe image; defaults to ai-platform:local.",
+    )
     parser.add_argument(
         "--sandbox-executor-image",
         default=os.environ.get("AI_PLATFORM_SANDBOX_EXECUTOR_IMAGE", os.environ.get("SANDBOX_EXECUTOR_IMAGE", "")),

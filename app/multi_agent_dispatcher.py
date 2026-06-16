@@ -112,6 +112,7 @@ async def _dispatch_one_ready_parent(
         principal=principal,
         queue_principal=owner_principal,
         source="worker_multi_agent_dispatcher",
+        authorized_source_run_id=run_id,
     )
     return {
         "run_id": run_id,

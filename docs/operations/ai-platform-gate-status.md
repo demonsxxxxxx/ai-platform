@@ -427,7 +427,7 @@ follow-up for S2 instead of a standalone S1 stage blocker.
 | G0-G1 Source Authority / Security Baseline | Foundation Alpha POC has fresh 211 source/deploy/source-revision/runtime-subject label evidence, company-login audit evidence, focused Auth/RBAC smoke evidence, and cross-user/cross-tenant artifact denial evidence; keep under regression. | PRD v2, tech acceptance matrix, roadmap, guardrails, source-authority tests, repo-local compose context, frontend source migration, redacted deploy templates, and 2026-06-15 380de6b POC release evidence. | Full issue/PR/review closure path, production auth rollout, and external env-file/deployment-layout reconciliation are still required before production closure. |
 | G2-G4 Control Plane MVP | Substantial coverage; keep under regression. | Session/run/file/artifact/skill/tool/memory/event/audit contracts, repositories, routes, schema indexes, and focused tests. | Full regression before PR/deploy, plus no executor-owned platform schema drift. |
 | G5 Run Lifecycle / Worker Runtime V1 | Foundation Alpha POC verified queue/run/worker execution and Admin capacity/backpressure projection; Foundation Runtime concurrency evidence is current for `380de6b`; not capacity-closed. | Tenant-aware queue lease, worker maintenance, active-run admission, bounded metadata, Admin Runtime capacity/backpressure projection, #20 roadmap closure notes, 2026-06-15 380de6b POC verifier evidence, and 2026-06-15 380de6b Foundation Runtime concurrency evidence. | #21 is currently closed in GitHub, but recorded seven-gate load evidence, large queue bounded lookup pressure, and multi-tenant load evidence are still missing. Production defaults stay unchanged. |
-| G6 Tool / Skill / Memory Governance | Admin Runtime governance projection now has focused 211 smoke evidence for the POC runtime, and Foundation readiness records `memory_context_controls` with `session_scoped_memory=true`, `ordinary_user_opt_out=true`, `retention_cleanup=true`, `delete_redaction=true`, `public_admin_projection_safe=true`, `long_term_cross_session_memory_fail_closed=true`, exact tool-permission decision lookup source tests, source-level context-pack persistence/versioning, and user-visible context provenance API projection source tests; G6 remains partial and ordinary-user expansion remains blocked. | Tool policy taxonomy/history, exact tool-permission decision lookup source tests, public permission-card projection, skill release/dependency policy contracts, memory delete/retention/redaction/export readiness, office context-pack architecture readiness, `source_level_context_pack_persistence_and_versioning`, `context_pack_version`, `context_pack_generated_at`, context snapshot public provenance projection contract, user-visible context provenance API projection source tests, governance readiness CLI, POC runs using governed skills, and 2026-06-15 380de6b governance runtime smoke evidence. | Legacy frontend route remap/policy enforcement, signed package or SBOM review evidence, dependency vulnerability/license evidence, 211 executor context-pack acceptance, execution-tier router acceptance, document-centric follow-up state, frontend context provenance acceptance, full dashboard/visual acceptance, long-term cross-session memory policy closure, ordinary-user G8/G10 exposure controls, and broader 211 acceptance. |
+| G6 Tool / Skill / Memory Governance | Admin Runtime governance projection now has focused 211 smoke evidence for the POC runtime, and Foundation readiness records `memory_context_controls` with `session_scoped_memory=true`, `ordinary_user_opt_out=true`, `retention_cleanup=true`, `delete_redaction=true`, `public_admin_projection_safe=true`, `long_term_cross_session_memory_fail_closed=true`, exact tool-permission decision lookup source tests, source-level context-pack persistence/versioning, user-visible context provenance API projection source tests, frontend run-playback context provenance projection source tests, document-centric follow-up state source tests, and reviewed PR #44 211 sandbox latency split evidence; executor context-pack 211 acceptance is reopened until fresh positive source-artifact and public input-key redaction evidence exists. G6 remains partial and ordinary-user expansion remains blocked. | Tool policy taxonomy/history, exact tool-permission decision lookup source tests, public permission-card projection, skill release/dependency policy contracts, memory delete/retention/redaction/export readiness, office context-pack architecture readiness, `source_level_context_pack_persistence_and_versioning`, `context_pack_version`, `context_pack_generated_at`, context snapshot public provenance projection contract, user-visible context provenance API projection source tests, frontend run-playback context provenance projection source tests, document-centric follow-up state source tests, PR #44 `office-context-runtime` sandbox latency evidence, governance readiness CLI, POC runs using governed skills, and 2026-06-15 380de6b governance runtime smoke evidence. | Executor context-pack 211 acceptance, legacy frontend route remap/policy enforcement, signed package or SBOM review evidence, dependency vulnerability/license evidence, full dashboard/visual acceptance, long-term cross-session memory policy closure, ordinary-user G8/G10 exposure controls, production Docker sandbox hardening, and broader 211 acceptance. |
 | G7 Sandbox / Resource Hardening | Blocked for high-risk expansion. | Fake provider remains local/test-only; capacity docs expose sandbox limits and missing hardening warnings. | Docker provider hardening, egress/quota policy, orphan cleanup, container security options, and Docker-capable 211 smoke. |
 | G8 Multi-Agent Controlled Beta | Feature-flagged only. | Dispatcher and child-run admission work exists behind current controls. | Tenant-aware scheduling quota/backpressure, #21 capacity evidence, observability, sandbox, and tool governance gates must pass before ordinary-user exposure. |
 | G9 Observability / Quality / Ops | Foundation Alpha POC has enough redacted Admin Runtime visibility for controlled operation through reviewed release-evidence and alert/trace runtime acceptance; G9 remains partial for Operations Beta. | Admin Runtime overview, capacity/governance/observability readiness docs and tools, error taxonomy/dashboard contracts, release-evidence contracts, reviewed 211 release-evidence runtime export/retention acceptance for `380de6b`, reviewed 211 alert/trace export runtime acceptance for `380de6b`, trace/audit export contracts, frontend projection audit, and reviewed 211 POC smoke entry. | S2/G9 closure still requires runtime dashboard acceptance, recorded capacity evidence, model-gateway backpressure evidence, golden-set eval runtime, alert delivery enablement/runtime calibration, and remaining Admin Runtime observability follow-ups; these do not independently block S1 POC stage acceptance once the explicit runtime acceptance evidence is present. |
@@ -439,8 +439,71 @@ follow-up for S2 instead of a standalone S1 stage blocker.
 | --- | --- | --- |
 | #17 frontend source migration | Source lives under `frontend/web` with projection audit, `ci:verify`, release traceability, GitHub Actions workflow, packaged frontend image definition, and 211 thin-shell POC smoke. | Run or refresh frontend install/lint/build when changing browser code; complete packaged frontend image smoke/release acceptance on 211 or another Docker-capable host. |
 | #21 capacity baseline | GitHub issue #21 is currently closed, but baseline plan, snapshot/verdict/profile tools, bounded probe harness, and Admin Runtime capacity/backpressure visibility remain a capacity-upgrade evidence gate; bounded probes now fail closed when successful Admin Runtime overview responses miss required baseline sections. | Record approved load evidence for the seven gates before raising any production default. Until then every profile remains `do_not_raise_without_recorded_load_test_evidence`. |
-| G6 governance | Source-level policies and readiness contracts exist, source-level context-pack persistence/versioning records `context_pack_version` / `context_pack_generated_at`, and the Admin Runtime governance projection has a focused 211 smoke. | Convert contracts into full dashboard/visual acceptance, 211 executor context-pack acceptance, frontend context provenance acceptance, and real reviewed Skill release evidence; keep long-term cross-session memory fail-closed. |
+| G6 governance | Source-level policies and readiness contracts exist, source-level context-pack persistence/versioning records `context_pack_version` / `context_pack_generated_at`, frontend run-playback context provenance has source tests, the Admin Runtime governance projection has a focused 211 smoke, and PR #44 records reviewed 211 sandbox latency split evidence. 211 executor context-pack acceptance remains open. | Regenerate executor context-pack 211 live evidence with positive source-run artifact scope and public input-key redaction, keep PR #44 sandbox runtime evidence under regression, convert contracts into full dashboard/visual acceptance, add real reviewed Skill release evidence, and keep long-term cross-session memory fail-closed. |
 | G8/G10 expansion | Not a current implementation target. | Keep feature flags and do not broaden ordinary-user G8/G10 exposure until G5/G6/G7/G9 gates are closed. |
+
+S2 sandbox runtime smoke now has a source-level
+`sandbox_runtime_smoke_contract` for `211_sandbox_latency_split_smoke`. The
+contract points operators to
+`scripts/generate_sandbox_runtime_evidence_211.py` and
+`scripts/verify_sandbox_runtime_211.py`, uses `sudo -n docker`, prefers the
+already-local cancel probe image `ai-platform:local`, and requires
+`non_expansion_invariants` including
+`ordinary_user_high_risk_sandbox_allowed=false` and
+`ordinary_user_multi_agent_allowed=false`. Reviewed PR #44 evidence now records
+`sandbox_cold_start_latency_split_211_acceptance` for the controlled verifier
+run; this still does not close Docker sandbox hardening, G6/G9, or ordinary-user
+sandbox expansion. Its hardening section must separate `live_platform_probe` evidence
+for lease/workspace/cleanup from `source_regression_guard` evidence for
+timeout/failure/cached-lease behavior.
+
+The office executor context-pack path now also has
+`executor_context_pack_runtime_acceptance_contract` with schema
+`ai-platform.executor-context-pack-runtime-acceptance.v1`. Its default
+generator/verifier output records
+`source_probe_evidence_strength=source_probe_on_target_runtime`, a binding
+check that is not live worker-run acceptance. Closure requires
+`required_live_evidence_strength=live_worker_run_payload` from
+`scripts/generate_executor_context_pack_evidence_211.py --live-run-id <run_id>`
+followed by `scripts/verify_executor_context_pack_211.py --run-id <run_id>
+--require-live-run-payload`. It anchors the remaining 211 acceptance to
+`scripts/generate_executor_context_pack_evidence_211.py`,
+`scripts/verify_executor_context_pack_211.py`,
+`app.repositories.get_context_snapshot_for_worker`,
+`app.context_builder.executor_context_pack_from_snapshot`,
+`app.executors.claude_agent_sdk_runner._context_pack_prompt_section`, and the
+worker prompt-injection path. Accepted evidence must prove
+`live_worker_run_payload`, `run_row_loaded`, `context_snapshot_id_present`,
+`scoped_context_snapshot_loaded`,
+`worker_context_ref_rebuilt_from_db_snapshot`,
+`prompt_includes_bounded_summary`, `prompt_includes_context_pack_version`,
+`prompt_includes_context_pack_generated_at`, `raw_storage_identifiers_absent`,
+`sandbox_runtime_paths_absent`, `executor_private_content_absent`, and
+`source_run_artifact_scope_tenant_workspace_user_session`, with fresh
+`generated_at` evidence and explicit `source_functions` binding. Live evidence
+must carry those per-item booleans under the verifier-checked
+`runtime_evidence` JSON section. Source-probe
+evidence still carries `does_not_close_211_acceptance=true` and
+`runtime_acceptance_requires_real_run_payload=true`; the superseded PR #44 live
+evidence carried `runtime_run_payload_verified=true` but does not satisfy the
+current `source_run_artifact_count_positive` and public input-key redaction
+checks for the named #22 runtime gap. Its
+invariants keep
+`ordinary_user_multi_agent_allowed=false`,
+`ordinary_user_high_risk_sandbox_allowed=false`, and
+`long_term_cross_session_memory_enabled=false`. `executor_context_pack_211_acceptance`
+remains open for #22 and does not close G6/G9, ordinary-user G8/G10 exposure,
+or long-term memory policy.
+
+Frontend packaged delivery now has the same fail-closed visibility through
+`packaged_runtime_smoke_contract`, sourced from
+`tools/frontend_packaged_runtime_smoke.py` with schema
+`ai-platform.frontend-packaged-runtime-smoke.v1`. Current governance readiness
+keeps it at `blocked_missing_runtime_evidence` with
+`frontend_packaged_runtime_smoke_evidence_missing`, runtime policy
+`docker_capable_host_only_no_local_windows_docker`, and the remaining
+`frontend_packaged_image_delivery_and_release_acceptance` blocker. This does
+not close packaged frontend release acceptance, G6/G9, or #21 capacity.
 
 ## Frontend Projection Boundary
 

@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   Box,
   CheckCircle,
+  ClipboardList,
   Clock,
   Download,
   ExternalLink,
@@ -23,6 +24,7 @@ import {
   buildRunPlaybackLoadingViewModel,
   buildRunPlaybackPanelViewModel,
   type RunPlaybackArtifactItem,
+  type RunPlaybackContextProvenanceViewModel,
   type RunPlaybackDisplayStatus,
   type RunPlaybackPanelSummary,
   type RunPlaybackPanelViewModel,
@@ -98,6 +100,9 @@ export function RunPlaybackPanel({ runId, panelKey }: RunPlaybackPanelProps) {
         {viewModel.state === "empty" && <EmptyBlock />}
         {viewModel.state === "ready" && (
           <div className="space-y-4">
+            <ContextProvenanceSection
+              contextProvenance={viewModel.contextProvenance}
+            />
             <TimelineSection items={viewModel.timeline} />
             <ArtifactsSection artifacts={viewModel.artifacts} />
             <MultiAgentSection
@@ -145,6 +150,106 @@ function SummaryBlock({ summary }: { summary: RunPlaybackPanelSummary }) {
         </div>
       )}
     </div>
+  );
+}
+
+function ContextProvenanceSection({
+  contextProvenance,
+}: {
+  contextProvenance: RunPlaybackContextProvenanceViewModel | null;
+}) {
+  const { t } = useTranslation();
+  if (!contextProvenance) {
+    return null;
+  }
+
+  const detailFields = [
+    {
+      label: t("runPlayback.context.executionTier"),
+      value: contextProvenance.executionTier,
+    },
+    {
+      label: t("runPlayback.context.contextPackVersion"),
+      value: contextProvenance.contextPackVersion,
+    },
+    {
+      label: t("runPlayback.context.generatedAt"),
+      value: contextProvenance.contextPackGeneratedAt,
+    },
+    {
+      label: t("runPlayback.context.latestArtifactVersion"),
+      value: contextProvenance.latestArtifactVersion,
+    },
+    {
+      label: t("runPlayback.context.source"),
+      value: contextProvenance.source,
+    },
+  ].filter((field) => field.value);
+
+  return (
+    <PanelSection
+      icon={<ClipboardList size={14} />}
+      title={t("runPlayback.context.title")}
+      count={
+        contextProvenance.referencedMaterials.length +
+        contextProvenance.inputKeys.length
+      }
+    >
+      <div className="rounded-md border border-stone-200 bg-white px-2.5 py-2 dark:border-stone-800 dark:bg-stone-900/30">
+        {detailFields.length > 0 && (
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {detailFields.map((field) => (
+              <div key={field.label} className="min-w-0">
+                <div className="text-[10px] font-medium uppercase text-stone-400 dark:text-stone-500">
+                  {field.label}
+                </div>
+                <div
+                  className="mt-0.5 truncate text-xs text-stone-700 dark:text-stone-200"
+                  title={field.value ?? undefined}
+                >
+                  {field.value}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {contextProvenance.referencedMaterials.length > 0 && (
+          <div className="mt-2 min-w-0">
+            <div className="text-[10px] font-medium uppercase text-stone-400 dark:text-stone-500">
+              {t("runPlayback.context.referencedMaterials")}
+            </div>
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {contextProvenance.referencedMaterials.map((item) => (
+                <span
+                  key={item.label}
+                  className="inline-flex items-center gap-1 rounded-md border border-stone-200 bg-stone-50 px-2 py-1 text-[11px] text-stone-600 dark:border-stone-800 dark:bg-stone-900/40 dark:text-stone-300"
+                >
+                  <span>{t(`runPlayback.context.counts.${item.label}`)}</span>
+                  <span className="font-semibold tabular-nums">{item.value}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        {contextProvenance.inputKeys.length > 0 && (
+          <div className="mt-2 min-w-0">
+            <div className="text-[10px] font-medium uppercase text-stone-400 dark:text-stone-500">
+              {t("runPlayback.context.inputKeys")}
+            </div>
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {contextProvenance.inputKeys.map((key) => (
+                <span
+                  key={key}
+                  className="rounded-md bg-stone-100 px-1.5 py-0.5 text-[10px] font-medium text-stone-600 dark:bg-stone-800 dark:text-stone-300"
+                >
+                  {key}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </PanelSection>
   );
 }
 

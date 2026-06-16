@@ -171,9 +171,19 @@ async def test_worker_dispatcher_dispatches_candidate_parent_and_enqueues_child(
             "audit_id": "aud-handoff",
         }
 
-    async def prepare_queue(conn, *, copied, principal, queue_principal=None, source):
-        calls.append(("prepare", copied["run_id"], principal.user_id, queue_principal.user_id, source))
+    async def prepare_queue(conn, *, copied, principal, queue_principal=None, source, authorized_source_run_id=None):
+        calls.append(
+            (
+                "prepare",
+                copied["run_id"],
+                principal.user_id,
+                queue_principal.user_id,
+                source,
+                authorized_source_run_id,
+            )
+        )
         assert source == "worker_multi_agent_dispatcher"
+        assert authorized_source_run_id == "run-parent"
         return {"tenant_id": "default", "run_id": copied["run_id"], "context_snapshot_id": "ctx-child"}
 
     async def enqueue(payload):
@@ -341,7 +351,8 @@ async def test_worker_dispatcher_compensates_child_handoff_when_enqueue_fails(mo
             "audit_id": "aud-handoff",
         }
 
-    async def prepare_queue(conn, *, copied, principal, queue_principal=None, source):
+    async def prepare_queue(conn, *, copied, principal, queue_principal=None, source, authorized_source_run_id=None):
+        assert authorized_source_run_id == "run-parent"
         return {"tenant_id": "default", "run_id": copied["run_id"], "context_snapshot_id": "ctx-child"}
 
     async def enqueue(payload):

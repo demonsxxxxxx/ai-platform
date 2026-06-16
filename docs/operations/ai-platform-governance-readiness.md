@@ -5,10 +5,13 @@ Date: 2026-06-12
 This document records the current G6 Tool / Skill / Memory Governance baseline.
 It is an operator readiness snapshot, not a gate-closure claim. G6 remains
 partial until frontend route policy enforcement/remap, release governance
-evidence, 211 executor context-pack acceptance, document-centric follow-up state,
-211 sandbox latency split acceptance, frontend context provenance acceptance,
-quarantined inactive legacy source remap, packaged frontend image
-delivery/release acceptance, and ordinary-user G9 acceptance are complete.
+evidence, quarantined inactive legacy source remap, packaged frontend image
+delivery/release acceptance, full dashboard/visual acceptance, production
+Docker sandbox hardening, and ordinary-user G9 acceptance are complete. PR #44
+currently keeps reviewed 211 sandbox latency split evidence for the named #22
+runtime gap, while the executor context-pack 211 acceptance remains open until
+fresh live evidence proves positive source-run artifact scope and public
+input-key redaction.
 
 Generate the current readiness snapshot from the repository root:
 
@@ -72,7 +75,7 @@ or secret-like runtime configuration.
 | --- | --- | --- |
 | Tool permission | Admin tool policy inventory, tenant-scoped policy update audit, bounded admin change-history projection through `GET /api/ai/admin/tool-policies/history`, user request/decision flow, exact `tool_call_id` / stable request-fingerprint decision lookup source tests, fail-closed risk/write policy evaluation, public permission-card projection, audit-visible legacy route policy mapping, secret-safe allow/ask/deny taxonomy evidence through `tools/tool_policy_readiness.py`, platform-registered-MCP-only policy evidence with ordinary-user custom MCP disabled, and contract-only Admin bulk-review dashboard readiness through `tools/tool_policy_bulk_review_readiness.py` / `admin_policy_bulk_review_dashboard_contract` | Policy enforcement or ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel surfaces, plus `admin_policy_bulk_review_runtime_acceptance`, `admin_policy_bulk_review_visual_acceptance`, and `admin_policy_bulk_review_211_acceptance` |
 | Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock, secret-safe skill release readiness snapshot, pending review-manifest template entrypoint, source-level `ai-platform.skill-dependency-review-policy.v1` contract, source-level `ai-platform.skill-signed-package-evidence-contract.v1` / `skill_signed_package_evidence_contract`, source-level validation for signed-package evidence JSON, and contract-only Admin Skill release dashboard readiness through `tools/skill_release_dashboard_readiness.py` / `admin_skill_release_dashboard_contract` | SBOM or signed-package release evidence plus reviewed manifests, dependency vulnerability/license evidence, `skill_dependency_review_policy_runtime_acceptance`, plus `admin_skill_release_dashboard_runtime_acceptance`, `admin_skill_release_dashboard_visual_acceptance`, and `admin_skill_release_dashboard_211_acceptance` |
-| Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py`, source-level office context-pack contract/readiness through `tools/office_context_readiness.py`, source-level context-pack persistence/versioning through `source_level_context_pack_persistence_and_versioning`, context snapshot public provenance projection with `context_pack_version` and `context_pack_generated_at`, user-visible context provenance API projection source tests, source-level office execution-tier router tests, executor context-pack prompt injection source tests, and the source-level sandbox cold-start latency split observability contract | 211 executor context-pack acceptance, document-centric follow-up state, 211 sandbox cold-start latency split acceptance, and frontend context provenance acceptance |
+| Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py`, source-level office context-pack contract/readiness through `tools/office_context_readiness.py`, source-level context-pack persistence/versioning through `source_level_context_pack_persistence_and_versioning`, context snapshot public provenance projection with `context_pack_version` and `context_pack_generated_at`, user-visible context provenance API projection source tests, frontend run-playback context provenance projection source tests, source-level office execution-tier router tests, executor context-pack prompt injection source tests, document-centric follow-up state source tests, the source-level sandbox cold-start latency split observability contract, and reviewed PR #44 211 sandbox cold-start latency split evidence. Executor context-pack 211 acceptance remains open pending fresh positive source-artifact evidence and public input-key redaction proof. | Full G6/G9 dashboard/visual acceptance, executor context-pack 211 acceptance, long-term cross-session memory policy closure, production Docker sandbox hardening, and ordinary-user rollout acceptance |
 | Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest with build-provenance same-commit gate, packaged frontend image definition traceability, non-push CI packaged-image build/provenance contract, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Profile env-var surface removed from the active browser entry graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Quarantined inactive legacy model/channel/envvar sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image smoke and release acceptance on 211 or another Docker-capable host |
 
 The frontend projection evidence now records three current structured blockers:
@@ -202,10 +205,9 @@ the running `2384e19` image. The reviewed release evidence entry is
 This smoke records only the focused Admin Runtime governance projection proof for
 the Foundation Alpha POC. It does not close ordinary-user confirmation-card UX,
 full Admin dashboard/visual acceptance, signed-package/SBOM review evidence,
-dependency vulnerability/license evidence, office context-pack
-persistence/versioning, 211 executor context-pack acceptance, execution-tier
-router acceptance, frontend context provenance acceptance, or broader production
-governance rollout.
+dependency vulnerability/license evidence, execution-tier router acceptance,
+frontend context provenance acceptance, PR #44 office context runtime evidence,
+or broader production governance rollout.
 
 On 2026-06-08, the 211 source snapshot and API/worker runtime were updated to
 commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` with image
@@ -350,11 +352,13 @@ audit payload that records policy scope, mode, change booleans, and redacted
 reason without sample content or metadata. This does not close memory
 governance by itself: office workflow context continuity now has source-level
 context-pack persistence/versioning, user-visible context provenance API
-projection source tests, source-level execution-tier routing tests, and the
-sandbox latency split observability source contract, but still needs 211
-executor context-pack acceptance, document-centric follow-up state, 211 sandbox
-cold-start latency split acceptance, and frontend context provenance
-acceptance.
+projection source tests, frontend run-playback context provenance projection
+source tests, source-level execution-tier routing tests, document-centric
+follow-up state source tests, the sandbox latency split observability source
+contract, and reviewed PR #44 211 sandbox cold-start latency split evidence.
+The executor context-pack 211 evidence is retained as superseded history because
+the historical live run had no source artifact count and predates the public
+input-key leakage guard; that #22 runtime gap remains open.
 
 `tools/office_context_readiness.py` now records the source-level #22
 context-pack readiness contract for office-heavy workflows with schema
@@ -370,9 +374,10 @@ executor-private payloads, or secret-like runtime paths. The current
 carry source-level public provenance fields for `referenced_materials`,
 `used_context_summary`, `latest_artifact_version`, `execution_tier`, and
 `context_pack_version` / `context_pack_generated_at`; those fields contain
-counts, safe input keys, tier, a bounded public context-pack version, and
-generated time rather than raw message/file/artifact/memory IDs, and are
-covered by source-level API projection tests. The
+counts, safe input keys, memory policy source/read flags, tier, an optional
+manifest-supplied bounded public artifact version, a bounded public context-pack
+version, and generated time rather than raw message/file/artifact/memory IDs,
+and are covered by source-level API projection tests. The
 owner-scoped context snapshot API response no longer returns `included_*_ids`;
 those IDs stay in the scoped database row and worker lookup path only to compute
 public counts. Worker-side executor `context_ref` reconstruction resolves
@@ -387,15 +392,92 @@ public `context_pack_version` fact in source-level snapshot/projection paths
 without adding a new database schema. Source-level tests now route lightweight
 writing to `sdk_only_writing`, document generation/review/translation skills to
 `document_worker`, and explicit sandbox/script/browser work to `heavy_sandbox`
-without starting Docker during routing. This still does not provide 211
-executor context-pack acceptance, enable long-term cross-session memory, start
-Docker for lightweight office tasks, provide frontend context provenance
-acceptance, or expand ordinary-user G8/G10 exposure.
+without starting Docker during routing. Frontend run playback now has
+source-level context provenance projection tests, but full S2 frontend/runtime
+acceptance still depends on packaged frontend image evidence. Reviewed PR #44
+release evidence records 211 sandbox latency split acceptance for #22; executor
+context-pack 211 acceptance remains open until fresh live evidence proves
+positive source-run artifact scope and public input keys free of
+`copied_from_run_id`, `source_run_id`, `parent_run_id`, and `run_id`. This still
+does not enable long-term cross-session memory or start Docker for lightweight
+office tasks. It does not expand ordinary-user G8/G10 exposure.
 The source-level sandbox latency split observability contract separates lease
 acquisition, container cold start, healthcheck, executor dispatch/model work,
-document processing, cleanup, and total runtime timings, but 211 sandbox
-latency split acceptance is still required before closing the cold-start UX
-gap.
+document processing, cleanup, and total runtime timings. Reviewed PR #44
+evidence records the 211 sandbox latency split for the named #22 cold-start
+evidence gap, while production Docker sandbox hardening remains open. The 211
+sandbox runtime verifier now also requires sandbox hardening
+evidence for lease/workspace isolation, cleanup, resource timeout fallback,
+failure fallback, and cached lease scope revalidation before accepting the
+runtime smoke payload.
+
+The same source snapshot exposes `sandbox_runtime_smoke_contract` for
+`211_sandbox_latency_split_smoke`. Operators must generate evidence with
+`scripts/generate_sandbox_runtime_evidence_211.py`, verify it with
+`scripts/verify_sandbox_runtime_211.py`, use `sudo -n docker` on 211, and prefer
+the already-local cancel probe image `ai-platform:local`. The evidence must
+include `non_expansion_invariants` with
+`ordinary_user_high_risk_sandbox_allowed=false` and
+`ordinary_user_multi_agent_allowed=false`. Reviewed PR #44 evidence now records
+`sandbox_cold_start_latency_split_211_acceptance` for the controlled verifier
+run; this still does not close Docker sandbox production hardening, G6, or G9.
+The
+hardening section must label lease/workspace/cleanup checks as
+`live_platform_probe` and timeout/failure/cached-lease checks as
+`source_regression_guard`, so source-regression coverage is not confused with
+live runtime proof.
+
+Office context-pack 211 acceptance is now represented by
+`executor_context_pack_runtime_acceptance_contract` with schema
+`ai-platform.executor-context-pack-runtime-acceptance.v1`. The default
+generator mode produces source-probe evidence with
+`source_probe_evidence_strength=source_probe_on_target_runtime`; this is a
+binding check, not accepted 211 closure evidence. Accepted 211 evidence must
+carry `required_live_evidence_strength=live_worker_run_payload` from a real
+worker-run payload. The closure path must generate evidence with
+`scripts/generate_executor_context_pack_evidence_211.py --live-run-id <run_id>`
+and verify it with `scripts/verify_executor_context_pack_211.py --run-id
+<run_id> --require-live-run-payload`. It ties the remaining acceptance to
+`scripts/generate_executor_context_pack_evidence_211.py`,
+`scripts/verify_executor_context_pack_211.py`,
+`app.repositories.get_context_snapshot_for_worker`,
+`app.context_builder.executor_context_pack_from_snapshot`,
+`app.executors.claude_agent_sdk_runner._context_pack_prompt_section`, and the
+worker prompt-injection path. Accepted runtime evidence must include
+`live_worker_run_payload`, `run_row_loaded`, `context_snapshot_id_present`,
+`scoped_context_snapshot_loaded`,
+`worker_context_ref_rebuilt_from_db_snapshot`,
+`prompt_includes_bounded_summary`, `prompt_includes_context_pack_version`,
+`prompt_includes_context_pack_generated_at`, `raw_storage_identifiers_absent`,
+`sandbox_runtime_paths_absent`, `executor_private_content_absent`,
+`long_term_memory_read_false`, and
+`source_run_artifact_scope_tenant_workspace_user_session`, and
+`source_run_artifact_count_positive`, with fresh `generated_at` evidence and
+explicit `source_functions` binding. Live evidence must also show public
+context `input_keys` without `copied_from_run_id`, `source_run_id`,
+`parent_run_id`, or `run_id`. Live evidence must carry those per-item booleans
+under the verifier-checked `runtime_evidence` JSON section. Source-probe
+evidence carries `does_not_close_211_acceptance=true` and
+`runtime_acceptance_requires_real_run_payload=true`; the superseded PR #44 live
+evidence carried `runtime_run_payload_verified=true` but does not satisfy the
+current positive source-artifact and public input-key checks for the named #22
+runtime gap.
+`non_expansion_invariants` keep `ordinary_user_multi_agent_allowed=false`,
+`ordinary_user_high_risk_sandbox_allowed=false`,
+`lightweight_office_tasks_start_sandbox_by_default=false`,
+`long_term_cross_session_memory_enabled=false`, and ordinary users limited to
+public projections. `executor_context_pack_211_acceptance` remains open for #22
+and does not close G6 or G9.
+
+Frontend projection readiness now also exposes
+`packaged_runtime_smoke_contract` from
+`tools/frontend_packaged_runtime_smoke.py` with schema
+`ai-platform.frontend-packaged-runtime-smoke.v1`. With no accepted runtime
+evidence it remains `blocked_missing_runtime_evidence` with
+`frontend_packaged_runtime_smoke_evidence_missing`, runtime policy
+`docker_capable_host_only_no_local_windows_docker`, and the remaining
+`frontend_packaged_image_delivery_and_release_acceptance` gap. This does not
+close G6/G9, #21 capacity, or packaged frontend release acceptance by itself.
 
 On 2026-06-08, commit `f7c6b0d9114748fa249acb88da6584851c48aa96` was synced to
 the 211 repo-local source target and deployed to API/worker with image
@@ -410,9 +492,12 @@ token, bearer token, or client-secret markers. The smoke used the existing 211
 runtime `.env` path through compose without printing or copying secret values.
 Local source readiness for the same commit reports no missing memory erasure
 evidence markers. The former bounded context-pack product-contract gap is now
-split into source-level context-pack persistence/versioning plus explicit office
-context-pack runtime, follow-up state, 211 sandbox latency acceptance, and
-frontend acceptance gaps.
+split into source-level context-pack persistence/versioning plus explicit 211
+executor and 211 sandbox latency acceptance gaps. Document-centric follow-up
+state is now source-tested for copy, retry, and resume context snapshots, and
+cached Docker sandbox lease reuse is source-tested to fail closed on
+tenant/workspace/user/session label drift, but both still need runtime evidence
+before #22 closure.
 
 ## Gate Rule
 

@@ -1672,6 +1672,13 @@ def _build_governance_summary(settings: object | None) -> dict[str, Any]:
         for item in memory_governance.get("gaps", [])
         if isinstance(item, str) and item.strip()
     ] if isinstance(memory_governance.get("gaps"), list) else []
+    memory_evidence = _safe_runtime_check(memory_governance.get("evidence"))
+    office_context = _safe_runtime_check(memory_evidence.get("office_context_pack_readiness"))
+    closed_runtime_gaps = [
+        item
+        for item in office_context.get("closed_runtime_gaps", [])
+        if isinstance(item, str) and item.strip()
+    ] if isinstance(office_context.get("closed_runtime_gaps"), list) else []
     memory_context_controls = {
         "status": "verified_current_scope"
         if {
@@ -1698,6 +1705,7 @@ def _build_governance_summary(settings: object | None) -> dict[str, Any]:
             "long_term_cross_session_memory_default_fail_closed" in memory_implemented_set
         ),
         "open_gaps": memory_gaps,
+        "closed_runtime_gaps": closed_runtime_gaps,
     }
     return {
         "governance_readiness_status": governance["status"],

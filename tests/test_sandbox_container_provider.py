@@ -441,6 +441,34 @@ async def test_docker_provider_does_not_reuse_same_run_container_with_mismatched
 
 
 @pytest.mark.asyncio
+async def test_docker_provider_cached_lease_revalidates_container_scope_labels():
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+    await provider.create_or_reuse(request(), workspace())
+    fake.containers_by_name["executor-exec-run-a"].labels.update(
+        {
+            "ai-platform.tenant_id": "tenant-b",
+            "ai-platform.workspace_id": "workspace-b",
+            "ai-platform.user_id": "user-b",
+            "ai-platform.session_id": "session-b",
+        }
+    )
+    fake.containers_by_name["executor-exec-run-a"].attrs["Config"]["Labels"] = fake.containers_by_name[
+        "executor-exec-run-a"
+    ].labels
+
+    with pytest.raises(ContainerStartFailedError):
+        await provider.create_or_reuse(request(), workspace())
+
+    assert len(fake.created) == 1
+
+
+@pytest.mark.asyncio
 async def test_docker_provider_maps_resource_limits_to_docker_create_kwargs_without_disabling_executor_network():
     from app.runtime.sandbox.container_provider import DockerContainerProvider
 

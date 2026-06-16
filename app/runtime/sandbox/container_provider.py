@@ -380,7 +380,15 @@ class DockerContainerProvider:
             raise DockerUnavailableError("Docker daemon is unavailable") from exc
         existing = self._leases.get(container_id)
         if existing is not None:
-            return existing
+            recovered_existing = await self._reuse_existing_container(
+                existing,
+                settings.sandbox_container_start_timeout_seconds,
+            )
+            if recovered_existing is None:
+                self._leases.pop(container_id, None)
+                raise ContainerStartFailedError()
+            self._leases[recovered_existing.container_id] = recovered_existing
+            return recovered_existing
 
         bootstrap_lease = _lease_from_request("docker", request, workspace, executor_url=_executor_url())
         recovered = await self._reuse_existing_container(

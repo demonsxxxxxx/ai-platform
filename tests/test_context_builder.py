@@ -18,6 +18,9 @@ def test_initial_context_summary_strips_context_private_aliases_from_input_keys(
         skill_id="general-chat",
         input_payload={
             "message": "hello",
+            "copied_from_run_id": "run-source",
+            "source_run_id": "run-source",
+            "parent_run_id": "run-parent",
             "raw_storage_key": "storage-key-value",
             "sandbox_workdir": "relative-workdir",
             "executor_private_payload": {"token": "hidden"},
@@ -34,6 +37,9 @@ def test_initial_context_summary_strips_context_private_aliases_from_input_keys(
     assert summary["used_context_summary"]["input_keys"] == ["message", "nested"]
     serialized = str(summary).lower()
     assert "raw_storage_key" not in serialized
+    assert "copied_from_run_id" not in serialized
+    assert "source_run_id" not in serialized
+    assert "parent_run_id" not in serialized
     assert "sandbox_workdir" not in serialized
     assert "executor_private_payload" not in serialized
     assert "storage-key-value" not in serialized
@@ -178,6 +184,47 @@ def test_ensure_public_context_provenance_preserves_safe_top_level_legacy_source
     assert projected["context_pack_generated_at"] == "2026-06-12T01:23:45Z"
     serialized = str(projected).lower()
     assert "stored_context_snapshot" not in serialized
+
+
+def test_public_context_provenance_preserves_stored_source_and_falls_back_from_unknown_source():
+    stored = public_context_provenance(
+        source="stored_context_snapshot",
+        input_payload={"message": "hello"},
+        message_count=1,
+    )
+    unknown = public_context_provenance(
+        source="private_runtime_source",
+        input_payload={"message": "hello"},
+        message_count=1,
+    )
+
+    assert stored["used_context_summary"]["source"] == "stored_context_snapshot"
+    assert unknown["used_context_summary"]["source"] == "stored_context_snapshot"
+    assert "private_runtime_source" not in str(unknown)
+
+
+def test_public_context_provenance_rejects_unsafe_direct_explainability_values():
+    projected = public_context_provenance(
+        source="runs_api",
+        input_payload={"message": "hello"},
+        memory_policy_source="private_policy",
+        latest_artifact_version="tenants/default/runs/run-a/artifacts/private.docx",
+        execution_tier="root_shell",
+        context_pack_version="sha256:" + "a" * 64,
+        generated_at="/workspace/private/context.json",
+    )
+
+    assert projected["used_context_summary"]["memory_policy_source"] == "not_recorded"
+    assert projected["latest_artifact_version"] is None
+    assert projected["execution_tier"] == "sdk_only_writing"
+    assert projected["context_pack_version"] == "v1"
+    assert projected["context_pack_generated_at"] != "/workspace/private/context.json"
+    assert datetime.fromisoformat(projected["context_pack_generated_at"].replace("Z", "+00:00"))
+    serialized = str(projected).lower()
+    assert "private_policy" not in serialized
+    assert "private.docx" not in serialized
+    assert "root_shell" not in serialized
+    assert "/workspace/private" not in serialized
 
 
 def test_ensure_public_context_provenance_rejects_unsafe_stored_explainability_fields():
@@ -510,3 +557,394 @@ def test_initial_context_summary_clamps_long_term_memory_policy_projection():
 
     assert summary["memory_policy"]["memory_enabled"] is True
     assert summary["memory_policy"]["long_term_memory_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_record_initial_context_snapshot_adds_source_run_artifact_followup_state(monkeypatch):
+    calls = []
+
+    async def fake_get_effective_memory_policy(conn, **kwargs):
+        return {
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "agent_id": kwargs["agent_id"],
+            "memory_enabled": True,
+            "long_term_memory_enabled": False,
+            "retention_days": 90,
+            "source": "default",
+        }
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id, for_update=False):
+        calls.append(("authorize_source", tenant_id, user_id, run_id, for_update))
+        return {
+            "id": run_id,
+            "tenant_id": tenant_id,
+            "workspace_id": "default",
+            "user_id": user_id,
+            "session_id": "session-a",
+        }
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        calls.append(("source_artifacts", tenant_id, run_id))
+        return [
+            {
+                "id": "art-v1",
+                "artifact_type": "reviewed_docx",
+                "storage_key": "tenants/tenant-a/workspaces/default/runs/run-source/artifacts/v1.docx",
+                "manifest_json": {"artifact_version": "v1"},
+            },
+            {
+                "id": "art-v2",
+                "artifact_type": "reviewed_docx",
+                "storage_key": "tenants/tenant-a/workspaces/default/runs/run-source/artifacts/v2.docx",
+                "manifest_json": {"document_version": "v2"},
+            },
+        ]
+
+    async def fake_create_context_snapshot(conn, **kwargs):
+        calls.append(("snapshot", kwargs))
+        return {"id": "ctx-followup"}
+
+    async def fake_update_run_context_snapshot_ref(conn, **kwargs):
+        calls.append(("run_ref", kwargs))
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-followup"
+
+    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context_builder.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create_context_snapshot)
+    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", fake_update_run_context_snapshot_ref)
+    monkeypatch.setattr("app.context_builder.repositories.append_event", fake_append_event)
+
+    context_ref = await record_initial_context_snapshot(
+        object(),
+        tenant_id="tenant-a",
+        workspace_id="default",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-followup",
+        trace_id="trace-followup",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        input_payload={"message": "continue previous document"},
+        message_ids=["msg-followup"],
+        file_ids=["file-a"],
+        source="copy_run",
+        source_run_id="run-source",
+    )
+
+    assert ("authorize_source", "tenant-a", "user-a", "run-source", False) in calls
+    assert ("source_artifacts", "tenant-a", "run-source") in calls
+    snapshot_call = next(item[1] for item in calls if item[0] == "snapshot")
+    assert snapshot_call["included_artifact_ids"] == ["art-v1", "art-v2"]
+    assert snapshot_call["payload_json"]["referenced_materials"]["artifact_count"] == 2
+    assert snapshot_call["payload_json"]["latest_artifact_version"] == "v2"
+
+    assert context_ref["referenced_materials"]["artifact_count"] == 2
+    assert context_ref["latest_artifact_version"] == "v2"
+    serialized_ref = str(context_ref).lower()
+    assert "art-v1" not in serialized_ref
+    assert "art-v2" not in serialized_ref
+    assert "storage_key" not in serialized_ref
+    assert "v1.docx" not in serialized_ref
+
+
+@pytest.mark.asyncio
+async def test_record_initial_context_snapshot_does_not_invent_artifact_version_from_count(monkeypatch):
+    calls = []
+
+    async def fake_get_effective_memory_policy(conn, **kwargs):
+        return {
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "agent_id": kwargs["agent_id"],
+            "memory_enabled": True,
+            "long_term_memory_enabled": False,
+            "retention_days": 90,
+            "source": "default",
+        }
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id, for_update=False):
+        return {
+            "id": run_id,
+            "tenant_id": tenant_id,
+            "workspace_id": "default",
+            "user_id": user_id,
+            "session_id": "session-a",
+        }
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "art-a",
+                "artifact_type": "reviewed_docx",
+                "manifest_json": {"schema_version": "ai-platform.artifact-manifest.v1"},
+            },
+            {
+                "id": "art-b",
+                "artifact_type": "reviewed_docx",
+                "manifest_json": {"artifact_version": "artifact-secret-id"},
+            },
+        ]
+
+    async def fake_create_context_snapshot(conn, **kwargs):
+        calls.append(("snapshot", kwargs))
+        return {"id": "ctx-followup"}
+
+    async def fake_update_run_context_snapshot_ref(conn, **kwargs):
+        calls.append(("run_ref", kwargs))
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-followup"
+
+    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context_builder.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create_context_snapshot)
+    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", fake_update_run_context_snapshot_ref)
+    monkeypatch.setattr("app.context_builder.repositories.append_event", fake_append_event)
+
+    context_ref = await record_initial_context_snapshot(
+        object(),
+        tenant_id="tenant-a",
+        workspace_id="default",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-followup",
+        trace_id="trace-followup",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        input_payload={"message": "continue previous document"},
+        message_ids=["msg-followup"],
+        file_ids=["file-a"],
+        source="copy_run",
+        source_run_id="run-source",
+    )
+
+    snapshot_call = next(item[1] for item in calls if item[0] == "snapshot")
+    assert snapshot_call["included_artifact_ids"] == ["art-a", "art-b"]
+    assert snapshot_call["payload_json"]["referenced_materials"]["artifact_count"] == 2
+    assert snapshot_call["payload_json"]["latest_artifact_version"] is None
+    assert context_ref["referenced_materials"]["artifact_count"] == 2
+    assert context_ref["latest_artifact_version"] is None
+
+
+@pytest.mark.asyncio
+async def test_record_initial_context_snapshot_skips_source_artifacts_without_same_scope_authorization(monkeypatch):
+    calls = []
+
+    async def fake_get_effective_memory_policy(conn, **kwargs):
+        return {
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "agent_id": kwargs["agent_id"],
+            "memory_enabled": True,
+            "long_term_memory_enabled": False,
+            "retention_days": 90,
+            "source": "default",
+        }
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id, for_update=False):
+        calls.append(("authorize_source", tenant_id, user_id, run_id, for_update))
+        return None
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        calls.append(("source_artifacts", tenant_id, run_id))
+        raise AssertionError("unauthorized follow-up source run artifacts must not be read")
+
+    async def fake_create_context_snapshot(conn, **kwargs):
+        calls.append(("snapshot", kwargs))
+        return {"id": "ctx-followup"}
+
+    async def fake_update_run_context_snapshot_ref(conn, **kwargs):
+        calls.append(("run_ref", kwargs))
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-followup"
+
+    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context_builder.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create_context_snapshot)
+    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", fake_update_run_context_snapshot_ref)
+    monkeypatch.setattr("app.context_builder.repositories.append_event", fake_append_event)
+
+    context_ref = await record_initial_context_snapshot(
+        object(),
+        tenant_id="tenant-a",
+        workspace_id="default",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-followup",
+        trace_id="trace-followup",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        input_payload={"message": "continue previous document"},
+        message_ids=["msg-followup"],
+        file_ids=["file-a"],
+        source="copy_run",
+        source_run_id="run-cross-user",
+    )
+
+    assert ("authorize_source", "tenant-a", "user-a", "run-cross-user", False) in calls
+    assert not any(item[0] == "source_artifacts" for item in calls)
+    snapshot_call = next(item[1] for item in calls if item[0] == "snapshot")
+    assert snapshot_call["included_artifact_ids"] == []
+    assert snapshot_call["payload_json"]["referenced_materials"]["artifact_count"] == 0
+    assert snapshot_call["payload_json"]["latest_artifact_version"] is None
+    assert context_ref["referenced_materials"]["artifact_count"] == 0
+    assert context_ref["latest_artifact_version"] is None
+
+
+@pytest.mark.asyncio
+async def test_record_initial_context_snapshot_requires_source_artifacts_same_workspace_and_session(monkeypatch):
+    calls = []
+
+    async def fake_get_effective_memory_policy(conn, **kwargs):
+        return {
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "agent_id": kwargs["agent_id"],
+            "memory_enabled": True,
+            "long_term_memory_enabled": False,
+            "retention_days": 90,
+            "source": "default",
+        }
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id, for_update=False):
+        calls.append(("authorize_source", tenant_id, user_id, run_id, for_update))
+        return {
+            "id": run_id,
+            "tenant_id": tenant_id,
+            "workspace_id": "other-workspace",
+            "user_id": user_id,
+            "session_id": "other-session",
+        }
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        calls.append(("source_artifacts", tenant_id, run_id))
+        raise AssertionError("cross-workspace or cross-session source artifacts must not be read")
+
+    async def fake_create_context_snapshot(conn, **kwargs):
+        calls.append(("snapshot", kwargs))
+        return {"id": "ctx-followup"}
+
+    async def fake_update_run_context_snapshot_ref(conn, **kwargs):
+        calls.append(("run_ref", kwargs))
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-followup"
+
+    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context_builder.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create_context_snapshot)
+    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", fake_update_run_context_snapshot_ref)
+    monkeypatch.setattr("app.context_builder.repositories.append_event", fake_append_event)
+
+    context_ref = await record_initial_context_snapshot(
+        object(),
+        tenant_id="tenant-a",
+        workspace_id="default",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-followup",
+        trace_id="trace-followup",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        input_payload={"message": "continue previous document"},
+        message_ids=["msg-followup"],
+        file_ids=["file-a"],
+        source="copy_run",
+        source_run_id="run-other-scope",
+    )
+
+    assert ("authorize_source", "tenant-a", "user-a", "run-other-scope", False) in calls
+    assert not any(item[0] == "source_artifacts" for item in calls)
+    snapshot_call = next(item[1] for item in calls if item[0] == "snapshot")
+    assert snapshot_call["included_artifact_ids"] == []
+    assert snapshot_call["payload_json"]["referenced_materials"]["artifact_count"] == 0
+    assert context_ref["referenced_materials"]["artifact_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_record_initial_context_snapshot_requires_source_artifacts_same_tenant_and_user(monkeypatch):
+    calls = []
+
+    async def fake_get_effective_memory_policy(conn, **kwargs):
+        return {
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "agent_id": kwargs["agent_id"],
+            "memory_enabled": True,
+            "long_term_memory_enabled": False,
+            "retention_days": 90,
+            "source": "default",
+        }
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id, for_update=False):
+        calls.append(("authorize_source", tenant_id, user_id, run_id, for_update))
+        return {
+            "id": run_id,
+            "tenant_id": "tenant-b",
+            "workspace_id": "default",
+            "user_id": "user-b",
+            "session_id": "session-a",
+        }
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        calls.append(("source_artifacts", tenant_id, run_id))
+        raise AssertionError("cross-tenant or cross-user source artifacts must not be read")
+
+    async def fake_create_context_snapshot(conn, **kwargs):
+        calls.append(("snapshot", kwargs))
+        return {"id": "ctx-followup"}
+
+    async def fake_update_run_context_snapshot_ref(conn, **kwargs):
+        calls.append(("run_ref", kwargs))
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-followup"
+
+    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context_builder.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create_context_snapshot)
+    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", fake_update_run_context_snapshot_ref)
+    monkeypatch.setattr("app.context_builder.repositories.append_event", fake_append_event)
+
+    context_ref = await record_initial_context_snapshot(
+        object(),
+        tenant_id="tenant-a",
+        workspace_id="default",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-followup",
+        trace_id="trace-followup",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        input_payload={"message": "continue previous document"},
+        message_ids=["msg-followup"],
+        file_ids=["file-a"],
+        source="copy_run",
+        source_run_id="run-other-owner",
+    )
+
+    assert ("authorize_source", "tenant-a", "user-a", "run-other-owner", False) in calls
+    assert not any(item[0] == "source_artifacts" for item in calls)
+    snapshot_call = next(item[1] for item in calls if item[0] == "snapshot")
+    assert snapshot_call["included_artifact_ids"] == []
+    assert snapshot_call["payload_json"]["referenced_materials"]["artifact_count"] == 0
+    assert context_ref["referenced_materials"]["artifact_count"] == 0
