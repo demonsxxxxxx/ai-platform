@@ -11,8 +11,6 @@ SCHEMA_VERSION = "ai-platform.office-context-pack-readiness.v1"
 GATE_NAME = "G6/G9/#22 Office Context Pack Architecture"
 _PR44_BRANCH = "codex/issue22-sandbox-latency-split"
 _PR44_RUNTIME_MARKER = "pr44-s2-verifier-20260616083334"
-_S2_0_RUNTIME_SUBJECT_SHA = "8e0389ea621a57f3ded2044e410943cc0d298571"
-_S2_0_RUNTIME_IMAGE = "ai-platform:8e0389e-main-runtime-rebase"
 
 _ALLOWED_CONTEXT_SOURCES = [
     "uploaded_source_documents",
@@ -305,22 +303,39 @@ def _entry_is_pr44_runtime_evidence(payload: dict[str, Any]) -> bool:
     )
 
 
-def _entry_is_s2_0_executor_runtime_evidence(payload: dict[str, Any]) -> bool:
+def _entry_has_runtime_subject_binding(payload: dict[str, Any]) -> bool:
+    runtime_subject = payload.get("runtime_subject_commit_sha")
+    if not isinstance(runtime_subject, str) or not runtime_subject:
+        return False
     source_ref = payload.get("source_ref")
     if not isinstance(source_ref, dict):
         return False
-    return (
-        payload.get("runtime_subject_commit_sha") == _S2_0_RUNTIME_SUBJECT_SHA
-        and source_ref.get("branch") == "main"
-        and source_ref.get("runtime_source_marker") == _S2_0_RUNTIME_SUBJECT_SHA
-        and source_ref.get("image") == _S2_0_RUNTIME_IMAGE
-        and source_ref.get("source_tree_dirty") is False
-    )
+    if source_ref.get("branch") != "main":
+        return False
+    if source_ref.get("runtime_source_marker") != runtime_subject:
+        return False
+    if source_ref.get("source_tree_dirty") is not False:
+        return False
+    image = source_ref.get("image")
+    if not isinstance(image, str) or not image.startswith("ai-platform:"):
+        return False
+    source_snapshot = source_ref.get("source_snapshot")
+    if not isinstance(source_snapshot, dict):
+        return False
+    if source_snapshot.get("runtime_subject_commit_sha") != runtime_subject:
+        return False
+    if source_snapshot.get("source_tree_dirty") is not False:
+        return False
+    if source_snapshot.get("runtime_affecting_changes_since_runtime_subject") != []:
+        return False
+    if source_snapshot.get("runtime_affecting_dirty_paths") != []:
+        return False
+    return True
 
 
 def _entry_is_accepted_runtime_evidence(payload: dict[str, Any], artifact_kind: str) -> bool:
     if artifact_kind == "executor_context_pack_211_acceptance":
-        return _entry_is_pr44_runtime_evidence(payload) or _entry_is_s2_0_executor_runtime_evidence(payload)
+        return _entry_is_pr44_runtime_evidence(payload) or _entry_has_runtime_subject_binding(payload)
     return _entry_is_pr44_runtime_evidence(payload)
 
 

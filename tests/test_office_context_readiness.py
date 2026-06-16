@@ -196,6 +196,7 @@ def _write_office_runtime_entry(
     runtime_source_marker: str = "pr44-s2-verifier-20260616083334",
     image: str = "ai-platform:pr44-s2-verifier-20260616083334",
     source_tree_dirty: bool = True,
+    source_snapshot: dict | None = None,
 ) -> None:
     evidence_dir = repo_root / "docs" / "release-evidence" / "office-context-runtime" / evidence_dir_name
     evidence_dir.mkdir(parents=True, exist_ok=True)
@@ -237,6 +238,8 @@ def _write_office_runtime_entry(
             "G6/G9 gate closure still requires broader governance, observability, frontend, and production-hardening gates.",
         ],
     }
+    if source_snapshot is not None:
+        payload["source_ref"]["source_snapshot"] = source_snapshot
     (evidence_dir / f"{evidence_id}.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
@@ -559,6 +562,14 @@ def test_office_context_readiness_accepts_reviewed_8e0389e_executor_context_pack
         runtime_source_marker=runtime_subject_sha,
         image="ai-platform:8e0389e-main-runtime-rebase",
         source_tree_dirty=False,
+        source_snapshot={
+            "schema_version": "ai-platform.source-snapshot.v1",
+            "source_tree_commit_sha": "494243efa847a831db95539716390b7d66d60480",
+            "source_tree_dirty": False,
+            "runtime_subject_commit_sha": runtime_subject_sha,
+            "runtime_affecting_changes_since_runtime_subject": [],
+            "runtime_affecting_dirty_paths": [],
+        },
     )
 
     readiness = build_office_context_readiness(repo_root=tmp_path)
@@ -585,6 +596,160 @@ def test_office_context_readiness_accepts_reviewed_8e0389e_executor_context_pack
         "runtime_run_payload_verified": True,
         "does_not_close_g6_g9": True,
     }
+
+
+def test_office_context_readiness_accepts_future_main_executor_context_pack_evidence_with_clean_snapshot(tmp_path):
+    runtime_subject_sha = "1234567890abcdef1234567890abcdef12345678"
+    _write_office_runtime_entry(
+        tmp_path,
+        evidence_id="2026-06-18-211-office-context-main-executor-context-pack-runtime-acceptance",
+        artifact_kind="executor_context_pack_211_acceptance",
+        verifier="scripts/verify_executor_context_pack_211.py",
+        runtime_key="executor_context_pack_211_acceptance",
+        runtime_payload={
+            **_valid_executor_context_pack_evidence(),
+            "run_id": "run_future_main",
+        },
+        verifier_checks=[
+            "check_executor_context_pack_evidence",
+            "check_no_secret_leakage",
+        ],
+        evidence_dir_name="future-main-runtime-rebase",
+        commit_sha="fedcba0987654321fedcba0987654321fedcba09",
+        runtime_subject_commit_sha=runtime_subject_sha,
+        pr_refs=[],
+        source_branch="main",
+        runtime_source_marker=runtime_subject_sha,
+        image="ai-platform:future-main-runtime-rebase",
+        source_tree_dirty=False,
+        source_snapshot={
+            "schema_version": "ai-platform.source-snapshot.v1",
+            "source_tree_commit_sha": "fedcba0987654321fedcba0987654321fedcba09",
+            "source_tree_dirty": False,
+            "runtime_subject_commit_sha": runtime_subject_sha,
+            "runtime_affecting_changes_since_runtime_subject": [],
+            "runtime_affecting_dirty_paths": [],
+        },
+    )
+
+    readiness = build_office_context_readiness(repo_root=tmp_path)
+
+    assert readiness["open_gaps"] == ["sandbox_cold_start_latency_split_211_acceptance"]
+    executor_evidence = readiness["runtime_acceptance_evidence"]["executor_context_pack_211_acceptance"]
+    assert executor_evidence["runtime_subject"] == "future-main-runtime-rebase"
+    assert executor_evidence["run_id"] == "run_future_main"
+
+
+def test_office_context_readiness_rejects_executor_context_evidence_without_source_snapshot(tmp_path):
+    runtime_subject_sha = "8e0389ea621a57f3ded2044e410943cc0d298571"
+    _write_office_runtime_entry(
+        tmp_path,
+        evidence_id="2026-06-17-211-office-context-8e0389e-executor-context-pack-runtime-acceptance",
+        artifact_kind="executor_context_pack_211_acceptance",
+        verifier="scripts/verify_executor_context_pack_211.py",
+        runtime_key="executor_context_pack_211_acceptance",
+        runtime_payload=_valid_executor_context_pack_evidence(),
+        verifier_checks=[
+            "check_executor_context_pack_evidence",
+            "check_no_secret_leakage",
+        ],
+        evidence_dir_name="8e0389e-main-runtime-rebase",
+        commit_sha="494243efa847a831db95539716390b7d66d60480",
+        runtime_subject_commit_sha=runtime_subject_sha,
+        pr_refs=[],
+        source_branch="main",
+        runtime_source_marker=runtime_subject_sha,
+        image="ai-platform:8e0389e-main-runtime-rebase",
+        source_tree_dirty=False,
+    )
+
+    readiness = build_office_context_readiness(repo_root=tmp_path)
+
+    assert readiness["open_gaps"] == [
+        "executor_context_pack_211_acceptance",
+        "sandbox_cold_start_latency_split_211_acceptance",
+    ]
+    assert "executor_context_pack_211_acceptance" not in readiness["runtime_acceptance_evidence"]
+
+
+def test_office_context_readiness_rejects_executor_context_evidence_with_runtime_affecting_delta(tmp_path):
+    runtime_subject_sha = "8e0389ea621a57f3ded2044e410943cc0d298571"
+    _write_office_runtime_entry(
+        tmp_path,
+        evidence_id="2026-06-17-211-office-context-8e0389e-executor-context-pack-runtime-acceptance",
+        artifact_kind="executor_context_pack_211_acceptance",
+        verifier="scripts/verify_executor_context_pack_211.py",
+        runtime_key="executor_context_pack_211_acceptance",
+        runtime_payload=_valid_executor_context_pack_evidence(),
+        verifier_checks=[
+            "check_executor_context_pack_evidence",
+            "check_no_secret_leakage",
+        ],
+        evidence_dir_name="8e0389e-main-runtime-rebase",
+        commit_sha="494243efa847a831db95539716390b7d66d60480",
+        runtime_subject_commit_sha=runtime_subject_sha,
+        pr_refs=[],
+        source_branch="main",
+        runtime_source_marker=runtime_subject_sha,
+        image="ai-platform:8e0389e-main-runtime-rebase",
+        source_tree_dirty=False,
+        source_snapshot={
+            "schema_version": "ai-platform.source-snapshot.v1",
+            "source_tree_commit_sha": "494243efa847a831db95539716390b7d66d60480",
+            "source_tree_dirty": False,
+            "runtime_subject_commit_sha": runtime_subject_sha,
+            "runtime_affecting_changes_since_runtime_subject": ["app/office_context_readiness.py"],
+            "runtime_affecting_dirty_paths": [],
+        },
+    )
+
+    readiness = build_office_context_readiness(repo_root=tmp_path)
+
+    assert readiness["open_gaps"] == [
+        "executor_context_pack_211_acceptance",
+        "sandbox_cold_start_latency_split_211_acceptance",
+    ]
+    assert "executor_context_pack_211_acceptance" not in readiness["runtime_acceptance_evidence"]
+
+
+def test_office_context_readiness_rejects_executor_context_evidence_with_runtime_affecting_dirty_paths(tmp_path):
+    runtime_subject_sha = "8e0389ea621a57f3ded2044e410943cc0d298571"
+    _write_office_runtime_entry(
+        tmp_path,
+        evidence_id="2026-06-17-211-office-context-8e0389e-executor-context-pack-runtime-acceptance",
+        artifact_kind="executor_context_pack_211_acceptance",
+        verifier="scripts/verify_executor_context_pack_211.py",
+        runtime_key="executor_context_pack_211_acceptance",
+        runtime_payload=_valid_executor_context_pack_evidence(),
+        verifier_checks=[
+            "check_executor_context_pack_evidence",
+            "check_no_secret_leakage",
+        ],
+        evidence_dir_name="8e0389e-main-runtime-rebase",
+        commit_sha="494243efa847a831db95539716390b7d66d60480",
+        runtime_subject_commit_sha=runtime_subject_sha,
+        pr_refs=[],
+        source_branch="main",
+        runtime_source_marker=runtime_subject_sha,
+        image="ai-platform:8e0389e-main-runtime-rebase",
+        source_tree_dirty=False,
+        source_snapshot={
+            "schema_version": "ai-platform.source-snapshot.v1",
+            "source_tree_commit_sha": "494243efa847a831db95539716390b7d66d60480",
+            "source_tree_dirty": False,
+            "runtime_subject_commit_sha": runtime_subject_sha,
+            "runtime_affecting_changes_since_runtime_subject": [],
+            "runtime_affecting_dirty_paths": ["tools/wrap_foundation_alpha_evidence.py"],
+        },
+    )
+
+    readiness = build_office_context_readiness(repo_root=tmp_path)
+
+    assert readiness["open_gaps"] == [
+        "executor_context_pack_211_acceptance",
+        "sandbox_cold_start_latency_split_211_acceptance",
+    ]
+    assert "executor_context_pack_211_acceptance" not in readiness["runtime_acceptance_evidence"]
 
 
 def test_office_context_readiness_rejects_unreviewed_runtime_evidence(tmp_path):
