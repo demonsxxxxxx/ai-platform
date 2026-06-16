@@ -142,12 +142,16 @@ release-evidence runtime acceptance, and alert/trace export runtime acceptance:
 `docs/release-evidence/foundation-alpha-poc/8e0389ea621a57f3ded2044e410943cc0d298571/2026-06-16-211-foundation-alpha-poc-8e0389e-governance-runtime-smoke.json`,
 `docs/release-evidence/foundation-alpha-poc/8e0389ea621a57f3ded2044e410943cc0d298571/2026-06-16-211-foundation-alpha-poc-8e0389e-release-evidence-runtime-acceptance.json`, and
 `docs/release-evidence/foundation-alpha-poc/8e0389ea621a57f3ded2044e410943cc0d298571/2026-06-16-211-foundation-alpha-poc-8e0389e-alert-trace-export-runtime-acceptance.json`.
-The corresponding Foundation Runtime concurrency rerun is recorded as blocked:
+The initial 2026-06-16 Foundation Runtime concurrency rerun is retained as
+failed-closed diagnostics:
 `docs/release-evidence/foundation-runtime-concurrency/8e0389ea621a57f3ded2044e410943cc0d298571-frc-s2-0-20260616/2026-06-16-211-foundation-alpha-poc-8e0389e-foundation-runtime-concurrency-readiness-blocked.json`.
+The 2026-06-17 rerun is the current accepted Foundation Runtime concurrency
+evidence for this runtime subject:
+`docs/release-evidence/foundation-runtime-concurrency/8e0389ea621a57f3ded2044e410943cc0d298571-frc-s2-0-20260617/2026-06-17-211-foundation-alpha-poc-8e0389e-foundation-runtime-concurrency.json`.
 The local readiness summary now reports
 `runtime_rollout_required_for_current_source=false`,
 `runtime_relevant_source_verified_by_running_runtime=true`, and
-`stage_acceptance_blockers=["foundation_runtime_concurrency_evidence"]`.
+`stage_acceptance_blockers=[]`.
 
 The full 380de6b POC evidence refresh includes reviewed, redacted entries for
 runtime POC smoke, Auth/RBAC smoke, Admin Runtime governance smoke,

@@ -45,9 +45,9 @@
     },
     "runtime_source": {
       "commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
-      "evidence_root": "docs/release-evidence",
+      "runtime_subject_commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
       "image": "ai-platform:8e0389e-main-runtime-rebase",
-      "runtime_subject_commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571"
+      "evidence_root": "docs/release-evidence"
     },
     "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
     "verifier": "tools/verify_release_evidence_runtime_acceptance.py"

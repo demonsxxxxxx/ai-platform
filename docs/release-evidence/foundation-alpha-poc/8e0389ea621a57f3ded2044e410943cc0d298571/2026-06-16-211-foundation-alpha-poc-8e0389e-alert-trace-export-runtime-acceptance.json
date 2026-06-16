@@ -46,23 +46,17 @@
         "redaction_scan_status": "passed",
         "schema_version": "ai-platform.alert-trace-export-runtime-acceptance.v1",
         "source": {
-          "base_url": "http://127.0.0.1:8020",
           "commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
-          "gateway_secret_supplied": true,
           "image": "ai-platform:8e0389e-main-runtime-rebase",
-          "runtime_subject_commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
-          "tenant_id": "default"
+          "runtime_subject_commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571"
         },
         "status": "accepted_for_operator_review"
       }
     },
     "runtime_source": {
-      "base_url": "http://127.0.0.1:8020",
       "commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
-      "gateway_secret_supplied": true,
-      "image": "ai-platform:8e0389e-main-runtime-rebase",
       "runtime_subject_commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
-      "tenant_id": "default"
+      "image": "ai-platform:8e0389e-main-runtime-rebase"
     },
     "schema_version": "ai-platform.alert-trace-export-runtime-acceptance.v1",
     "verifier": "tools/verify_alert_trace_export_runtime_acceptance.py"

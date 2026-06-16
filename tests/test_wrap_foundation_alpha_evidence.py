@@ -37,7 +37,9 @@ def test_wraps_auth_rbac_verifier_output_as_reviewed_release_evidence_entry():
         "ok": True,
         "redaction_scan_status": "passed",
         "source": {
+            "commit_sha": COMMIT,
             "gateway_secret_supplied": True,
+            "image": IMAGE,
         },
         "checks": {
             "unauthenticated_auth_me": {"status": 401},
@@ -59,6 +61,7 @@ def test_wraps_auth_rbac_verifier_output_as_reviewed_release_evidence_entry():
         image_labels=image_labels(),
         source_snapshot=source_snapshot(),
         command="python3 tools/verify_auth_rbac_smoke.py --base-url http://127.0.0.1:8020",
+        review_status="reviewed",
     )
 
     assert entry["schema_version"] == "ai-platform.release-evidence-entry.v1"
@@ -76,7 +79,10 @@ def test_wraps_auth_rbac_verifier_output_as_reviewed_release_evidence_entry():
     assert entry["evidence_ref"]["schema_version"] == "ai-platform.auth-rbac-smoke.v1"
     assert entry["evidence_ref"]["result"] == "ok:true"
     assert entry["evidence_ref"]["runtime_checks"] == verifier_output["checks"]
-    assert entry["evidence_ref"]["runtime_source"]["gateway_secret_supplied"] is True
+    assert entry["evidence_ref"]["runtime_source"] == {
+        "commit_sha": COMMIT,
+        "image": IMAGE,
+    }
 
 
 def test_rejects_image_label_mismatch_for_runtime_subject():
@@ -102,6 +108,7 @@ def test_rejects_image_label_mismatch_for_runtime_subject():
             image_labels=labels,
             source_snapshot=source_snapshot(),
             command="python3 tools/verify_auth_rbac_smoke.py",
+            review_status="reviewed",
         )
 
 
@@ -131,6 +138,8 @@ def test_normalizes_poc_gate_list_into_runtime_checks_map():
         image_labels=image_labels(),
         source_snapshot=source_snapshot(),
         command="python3 tools/verify_poc_gate.py --api-url http://127.0.0.1:8020",
+        redaction_scan_status="passed",
+        review_status="reviewed",
     )
 
     assert entry["evidence_ref"]["schema_version"] == "ai-platform.poc-gate.v1"
@@ -170,6 +179,13 @@ def test_redacts_runtime_paths_and_storage_keys_from_wrapped_checks():
                 "evidence": {
                     "env_path": "/opt/ai-platform/deploy/ai-platform/.env",
                     "claude_agent_sdk_enabled": True,
+                    "source": {
+                        "base_url": "http://127.0.0.1:8020",
+                        "commit_sha": COMMIT,
+                        "gateway_secret_supplied": True,
+                        "image": IMAGE,
+                        "tenant_id": "default",
+                    },
                 },
             },
         ],
@@ -188,11 +204,117 @@ def test_redacts_runtime_paths_and_storage_keys_from_wrapped_checks():
         image_labels=image_labels(),
         source_snapshot=source_snapshot(),
         command="python3 tools/verify_poc_gate.py",
+        redaction_scan_status="passed",
+        review_status="reviewed",
     )
 
     serialized = str(entry["evidence_ref"]["runtime_checks"])
     assert "/opt/ai-platform/" not in serialized
     assert "artifact_storage_key" not in serialized
     assert "tenants/default" not in serialized
+    assert "base_url" not in serialized
+    assert "tenant_id" not in serialized
+    assert "gateway_secret_supplied" not in serialized
     assert entry["evidence_ref"]["runtime_checks"]["lambchat_frontend_dist_api_boundary"]["path"] == "<redacted-path>"
     assert entry["evidence_ref"]["runtime_checks"]["runtime_config"]["env_path"] == "<redacted-path>"
+    assert entry["evidence_ref"]["runtime_checks"]["runtime_config"]["source"] == {
+        "commit_sha": COMMIT,
+        "image": IMAGE,
+    }
+
+
+def test_requires_explicit_review_status_before_marking_evidence_reviewed():
+    verifier_output = {
+        "schema_version": "ai-platform.auth-rbac-smoke.v1",
+        "ok": True,
+        "redaction_scan_status": "passed",
+        "checks": {"admin_runtime": {"status": 200}},
+    }
+
+    with pytest.raises(ValueError, match="review_status_required"):
+        build_release_evidence_entry(
+            evidence_id="missing-review",
+            verifier="tools/verify_auth_rbac_smoke.py",
+            artifact_kind="211_runtime_smoke",
+            verifier_output=verifier_output,
+            commit_sha=COMMIT,
+            runtime_subject_commit_sha=COMMIT,
+            captured_at="2026-06-16T22:45:00+08:00",
+            image=IMAGE,
+            image_id=IMAGE_ID,
+            image_labels=image_labels(),
+            source_snapshot=source_snapshot(),
+            command="python3 tools/verify_auth_rbac_smoke.py",
+        )
+
+
+def test_requires_explicit_redaction_scan_status_when_verifier_omits_it():
+    verifier_output = {
+        "schema_version": "ai-platform.poc-gate.v1",
+        "ok": True,
+        "checks": {"lambchat_frontend": {"status": 200}},
+    }
+
+    with pytest.raises(ValueError, match="redaction_scan_status_required"):
+        build_release_evidence_entry(
+            evidence_id="missing-redaction",
+            verifier="tools/verify_poc_gate.py",
+            artifact_kind="211_runtime_smoke",
+            verifier_output=verifier_output,
+            commit_sha=COMMIT,
+            runtime_subject_commit_sha=COMMIT,
+            captured_at="2026-06-16T22:45:00+08:00",
+            image=IMAGE,
+            image_id=IMAGE_ID,
+            image_labels=image_labels(),
+            source_snapshot=source_snapshot(),
+            command="python3 tools/verify_poc_gate.py",
+            review_status="reviewed",
+        )
+
+
+def test_redacts_runtime_source_metadata_before_writing_evidence_ref():
+    verifier_output = {
+        "schema_version": "ai-platform.auth-rbac-smoke.v1",
+        "ok": True,
+        "redaction_scan_status": "passed",
+        "source": {
+            "base_url": "http://127.0.0.1:8020",
+            "env_path": "/home/xinlin.jiang/ai-platform-phaseb/deploy/ai-platform/.env",
+            "callback_token": "secret-callback",
+            "gateway_secret_supplied": True,
+            "nested": {
+                "storage_key": "tenants/default/workspaces/default/private",
+                "path": "C:\\Users\\Xinlin.jiang\\secret.txt",
+            },
+        },
+        "checks": {"admin_runtime": {"status": 200}},
+    }
+
+    entry = build_release_evidence_entry(
+        evidence_id="redacted-source",
+        verifier="tools/verify_auth_rbac_smoke.py",
+        artifact_kind="211_runtime_smoke",
+        verifier_output=verifier_output,
+        commit_sha=COMMIT,
+        runtime_subject_commit_sha=COMMIT,
+        captured_at="2026-06-16T22:45:00+08:00",
+        image=IMAGE,
+        image_id=IMAGE_ID,
+        image_labels=image_labels(),
+        source_snapshot=source_snapshot(),
+        command="python3 tools/verify_auth_rbac_smoke.py",
+        review_status="reviewed",
+    )
+
+    runtime_source = entry["evidence_ref"]["runtime_source"]
+    serialized = str(runtime_source)
+    assert runtime_source == {}
+    assert "callback_token" not in serialized
+    assert "storage_key" not in serialized
+    assert "base_url" not in serialized
+    assert "tenant_id" not in serialized
+    assert "gateway_secret_supplied" not in serialized
+    assert "/home/xinlin.jiang" not in serialized
+    assert "C:\\Users" not in serialized
+    assert "tenants/default" not in serialized

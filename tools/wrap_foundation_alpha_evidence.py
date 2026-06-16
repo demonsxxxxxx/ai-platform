@@ -26,9 +26,14 @@ _WRAPPED_CHECK_KEYS = {
 }
 
 _DROP_KEYS = {
+    "api_key",
     "artifact_storage_key",
+    "authorization",
+    "callback_token",
+    "password",
     "storage_key",
     "raw_storage_key",
+    "token",
 }
 _PATH_KEYS = {
     "env_path",
@@ -37,6 +42,15 @@ _PATH_KEYS = {
     "work_dir",
     "workspace",
     "workspace_root",
+}
+_SECRET_KEY_PARTS = ("api_key", "authorization", "callback_token", "password", "secret", "token")
+_REDACTION_SCAN_STATUSES = {"failed", "passed"}
+_REVIEW_STATUSES = {"reviewed"}
+_RUNTIME_SOURCE_SAFE_KEYS = {
+    "commit_sha",
+    "evidence_root",
+    "image",
+    "runtime_subject_commit_sha",
 }
 
 
@@ -52,9 +66,14 @@ def _now_iso() -> str:
 
 
 def _redact_runtime_value(key: str | None, value: Any) -> Any:
+    normalized_key = key.lower() if isinstance(key, str) else ""
     if isinstance(value, dict):
         return {
-            child_key: _redact_runtime_value(child_key, child_value)
+            child_key: (
+                _redact_runtime_source(child_value)
+                if child_key == "source" and isinstance(child_value, dict)
+                else _redact_runtime_value(child_key, child_value)
+            )
             for child_key, child_value in value.items()
             if child_key not in _DROP_KEYS
         }
@@ -62,6 +81,8 @@ def _redact_runtime_value(key: str | None, value: Any) -> Any:
         return [_redact_runtime_value(key, item) for item in value]
     if isinstance(value, str):
         normalized = value.replace("\\", "/")
+        if any(part in normalized_key for part in _SECRET_KEY_PARTS):
+            return "<redacted-secret>"
         if key in _PATH_KEYS and (normalized.startswith("/") or ":" in normalized[:3]):
             return "<redacted-path>"
         if normalized.startswith("/home/") or "/home/" in normalized:
@@ -73,6 +94,16 @@ def _redact_runtime_value(key: str | None, value: Any) -> Any:
 
 def _redact_runtime_checks(checks: dict[str, Any]) -> dict[str, Any]:
     redacted = _redact_runtime_value(None, checks)
+    return redacted if isinstance(redacted, dict) else {}
+
+
+def _redact_runtime_source(source: dict[str, Any]) -> dict[str, Any]:
+    safe_source = {
+        key: value
+        for key, value in source.items()
+        if key in _RUNTIME_SOURCE_SAFE_KEYS
+    }
+    redacted = _redact_runtime_value(None, safe_source)
     return redacted if isinstance(redacted, dict) else {}
 
 
@@ -110,11 +141,28 @@ def _result(verifier_output: dict[str, Any]) -> str:
     return "ok:true" if verifier_output.get("ok") is True else "ok:false"
 
 
-def _redaction_scan_status(verifier_output: dict[str, Any]) -> str:
+def _redaction_scan_status(
+    verifier_output: dict[str, Any],
+    *,
+    explicit_status: str | None = None,
+) -> str:
     status = verifier_output.get("redaction_scan_status")
-    if status in {"passed", "failed"}:
-        return str(status)
-    return "passed" if verifier_output.get("ok") is True else "failed"
+    if status is not None and status not in _REDACTION_SCAN_STATUSES:
+        raise ValueError("invalid_redaction_scan_status")
+    if explicit_status is not None and explicit_status not in _REDACTION_SCAN_STATUSES:
+        raise ValueError("invalid_redaction_scan_status")
+    if status is not None and explicit_status is not None and status != explicit_status:
+        raise ValueError("redaction_scan_status_mismatch")
+    resolved = status or explicit_status
+    if resolved is None:
+        raise ValueError("redaction_scan_status_required")
+    return str(resolved)
+
+
+def _review_status(review_status: str | None) -> str:
+    if review_status not in _REVIEW_STATUSES:
+        raise ValueError("review_status_required")
+    return str(review_status)
 
 
 def _require_matching_labels(image_labels: dict[str, Any], runtime_subject_commit_sha: str) -> None:
@@ -196,15 +244,18 @@ def build_release_evidence_entry(
     source_snapshot: dict[str, Any] | None,
     command: str,
     api_health: dict[str, Any] | None = None,
+    redaction_scan_status: str | None = None,
+    review_status: str | None = None,
     issue_refs: list[str] | None = None,
     pr_refs: list[str] | None = None,
     open_followups: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Return a reviewed, redacted release-evidence entry for one verifier output."""
+    """Return an explicitly reviewed and redaction-scanned release-evidence entry."""
     _require_matching_labels(image_labels, runtime_subject_commit_sha)
     runtime_checks = _runtime_checks(verifier, verifier_output)
     if not runtime_checks:
         raise ValueError("missing_runtime_checks")
+    runtime_source = verifier_output.get("source") if isinstance(verifier_output.get("source"), dict) else {}
 
     return {
         "schema_version": ENTRY_SCHEMA_VERSION,
@@ -217,8 +268,11 @@ def build_release_evidence_entry(
         "issue_refs": issue_refs or [],
         "pr_refs": pr_refs or [],
         "open_followups": open_followups or [],
-        "redaction_scan_status": _redaction_scan_status(verifier_output),
-        "review_status": "reviewed",
+        "redaction_scan_status": _redaction_scan_status(
+            verifier_output,
+            explicit_status=redaction_scan_status,
+        ),
+        "review_status": _review_status(review_status),
         "source_ref": _source_ref(
             commit_sha=commit_sha,
             runtime_subject_commit_sha=runtime_subject_commit_sha,
@@ -235,14 +289,14 @@ def build_release_evidence_entry(
             "command": command,
             "result": _result(verifier_output),
             "runtime_checks": runtime_checks,
-            "runtime_source": verifier_output.get("source", {}),
+            "runtime_source": _redact_runtime_source(runtime_source),
         },
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Wrap 211 Foundation Alpha verifier output as reviewed release evidence."
+        description="Wrap 211 Foundation Alpha verifier output as explicitly reviewed release evidence."
     )
     parser.add_argument("--verifier-output", required=True)
     parser.add_argument("--verifier", required=True)
@@ -257,6 +311,20 @@ def main() -> int:
     parser.add_argument("--source-snapshot-json")
     parser.add_argument("--api-health-json")
     parser.add_argument("--command", required=True)
+    parser.add_argument(
+        "--redaction-scan-status",
+        choices=sorted(_REDACTION_SCAN_STATUSES),
+        help=(
+            "Explicit redaction scan result. Required when the verifier output does not "
+            "already contain redaction_scan_status."
+        ),
+    )
+    parser.add_argument(
+        "--review-status",
+        required=True,
+        choices=sorted(_REVIEW_STATUSES),
+        help="Explicit human or workflow review status for the wrapped release evidence.",
+    )
     parser.add_argument("--issue-ref", action="append", default=[])
     parser.add_argument("--pr-ref", action="append", default=[])
     parser.add_argument("--open-followup", action="append", default=[])
@@ -277,6 +345,8 @@ def main() -> int:
         source_snapshot=_load_json(args.source_snapshot_json) if args.source_snapshot_json else None,
         api_health=_load_json(args.api_health_json) if args.api_health_json else None,
         command=args.command,
+        redaction_scan_status=args.redaction_scan_status,
+        review_status=args.review_status,
         issue_refs=list(args.issue_ref),
         pr_refs=list(args.pr_ref),
         open_followups=list(args.open_followup),
