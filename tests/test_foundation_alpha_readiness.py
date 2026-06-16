@@ -1543,6 +1543,14 @@ def test_foundation_alpha_readiness_classifies_source_metadata_paths_as_runtime_
         )
         is False
     )
+    assert (
+        foundation_alpha_readiness._is_runtime_affecting_path(
+            "assets/multi-agent-architecture-illustrations/01-xiaohei-agent-architecture.png"
+        )
+        is False
+    )
+    assert foundation_alpha_readiness._is_runtime_affecting_path("output/imagegen/preview.png") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("output/platform-runs/latest/result.docx") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("ai-platform-cdc09ba.tar") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("app/routes/runs.py") is True
 
