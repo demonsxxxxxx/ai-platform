@@ -26,11 +26,31 @@ worker containers are `ai-platform-api` and `ai-platform-worker`.
 
 | Phase | Name | Target meaning | What remains blocked |
 | --- | --- | --- | --- |
-| S0 | Current Review Baseline | Current source has substantial control-plane work and multiple readiness contracts, but several gates still lack runtime evidence. | No gate may be auto-closed from this document. |
-| S1 | Foundation Alpha | Internal controlled foundation loop: source authority, control-plane contracts, safe projections, permission cards, admin visibility, release-evidence routing, and fail-closed governance are reviewable and 211-verifiable. | Production concurrency increases, high-risk Docker sandbox exposure, ordinary-user multi-agent, and long-term memory by default. |
-| S2 | Governance / Operations Beta | G6/G7/G9 evidence becomes operational: skill release evidence, memory retention/delete/redaction, tool policy enforcement, Docker sandbox hardening, Admin Runtime dashboard acceptance, and recorded capacity evidence. | Department rollout and ordinary-user multi-agent expansion until selected workflows and rollback evidence exist. |
+| S0 | Historical Review Baseline | Superseded review state before S1 acceptance. Use only for historical comparison. | No gate may be auto-closed from historical S0 wording. |
+| S1 | Foundation Alpha | Achieved controlled internal foundation loop: source authority, control-plane contracts, safe projections, permission cards, admin visibility, release-evidence routing, fail-closed governance, and 211 POC evidence are accepted for the internal baseline. | Production concurrency increases, high-risk Docker sandbox exposure, ordinary-user multi-agent, department rollout, and long-term memory by default. |
+| S2 | Governance / Operations Beta | Turn the accepted S1 baseline into operational governance: signed Skill/SBOM evidence, dependency/license/vulnerability review, memory retention/delete/redaction operations, tool policy enforcement, Docker sandbox hardening in the SDK skill path, Admin Runtime dashboard acceptance, and recorded capacity evidence. | Department rollout and ordinary-user multi-agent expansion until selected workflows and rollback evidence exist. |
 | S3 | Controlled Workflow Beta | One or two internal workflows run with explicit owners, cost/quality/audit/rollback evidence, and controlled multi-agent or long-task use where gates allow it. | Broad department rollout and unbounded platform exposure. |
 | S4 | Department Rollout | Department-level usage with support model, release evidence retention, alerting, regression gates, capacity profile, and rollback procedure. | External/public productization unless separately approved. |
+
+### 1.1 S1 Accepted Baseline
+
+S1 / Foundation Alpha is accepted for the controlled internal baseline. The
+compact closure record is
+`docs/operations/ai-platform-foundation-alpha-closure.md`, and the
+operator-facing summary remains:
+
+```powershell
+python tools\foundation_alpha_readiness.py --format json
+```
+
+This accepted baseline covers the internal POC loop, source/runtime relation,
+211 runtime POC smoke, Auth/RBAC/tenant/redaction evidence, platform-owned
+contracts and projections, governed skill runs, exact permission and artifact
+isolation controls, memory/context fail-closed controls, Admin Runtime
+visibility, and Foundation Runtime concurrency correctness. It does not expand
+production capacity, ordinary-user multi-agent, Docker sandbox hardening,
+department rollout, long-term cross-session memory, packaged frontend release,
+or signed Skill/SBOM/license/vulnerability closure.
 
 ## 2. Open-Source Absorption Standard
 
@@ -42,7 +62,7 @@ evidence, or source authority.
 | --- | --- | --- | --- | --- |
 | Codex CLI | Workspace, approval policy, event sourcing, skills, shell/tool/sandbox vocabulary, bounded context. | Workspace boundary, approval modes, command/network/MCP approval vocabulary, run event stream shape, skill/plugin packaging ideas, turn/context ergonomics. | Single-user identity model, personal memory assumptions, local-only source authority, ungoverned global skill lookup. | Any Codex adapter must use platform-issued workspace, `run_tool_permission_requests`, `run_events`, and `run_skill_snapshots`. |
 | Poco Claw | Claude Agent SDK runtime platformization, runtime registry, collaboration UX, run drawer/playback/artifacts. | SDK client/service separation, persistent runtime lifecycle ideas, idle/sleep/resume/keepalive concepts, execution drawer UX, private agent state separation. | Docker socket exposure as a default trust boundary, Poco tenancy as enterprise source of truth, bypassing ai-platform RBAC/quota/audit. | Runtime UX and SDK service design can be borrowed only behind ai-platform tenant, quota, event, and audit contracts. |
-| DeerFlow 2.0 | Long-horizon workflows, subagent/concurrency concepts, research/report product shape. | Per-user/thread isolation techniques, guardrail middleware ideas, memory scoping patterns, long-task planning/report flow, subagent limit patterns. | A second scheduler/control plane, uncontrolled shell/MCP exposure, DeerFlow memory as enterprise memory authority. | G8/G10 may borrow concepts only after G5/G6/G7/G9 gates allow controlled long-task or multi-agent exposure. |
+| DeerFlow 2.0 | Long-horizon planning/report product shape, bounded subagent context concepts, concurrency-limit patterns, and lineage/report UX. | Task decomposition vocabulary, per-user/thread isolation ideas, guardrail middleware ideas, memory scoping patterns, long-task planning/report flow, and subagent limit patterns. | A second scheduler/control plane, execution-layer subagent harness, uncontrolled shell/MCP exposure, DeerFlow memory as enterprise memory authority. | G8/G10 may borrow concepts only after G5/G6/G7/G9 gates allow controlled long-task or multi-agent exposure. Claude Agent SDK remains the execution layer. |
 | LambChat | Frontend shell and existing `frontend/web` source baseline. | React/Vite shell, chat/task surface starting point, selected UI patterns after projection audit. | Model/channel/env-var management as product truth, private payload reads, raw runtime/admin backdoors. | Frontend acceptance requires public/admin projection audit and same-commit build/release traceability. |
 | new-api / model gateway patterns | Model gateway routing, provider abstraction, token/cost/latency accounting. | Provider routing concepts, OpenAI-compatible surface ideas, cost/token observability. | Platform RBAC, tenant audit, memory/tool governance, secret exposure to frontend. | Model gateway work must feed Admin Runtime capacity/backpressure and cost/token/latency projections. |
 | AgentScope | Concept vocabulary only unless reopened. | Agent/service/skill/workspace vocabulary when useful. | Active adapter direction, identity/RBAC/artifact/memory source of truth. | No implementation gate depends on AgentScope unless a future issue explicitly reopens it. |
@@ -126,9 +146,9 @@ image matches the exact current source tree.
 
 | Field | Standard |
 | --- | --- |
-| Current state | Claude Agent SDK runner and worker adapter exist; permission handling, pinned skill staging, and event reporting are partially implemented; Codex CLI is a reference, not yet an active platform adapter. |
+| Current state | Claude Agent SDK runner and worker adapter are the active execution route; permission handling, pinned skill staging, artifact/event reporting, and SDK tool allowlisting exist and must remain platform-governed; Codex CLI is a reference, not yet an active platform adapter. |
 | S1 target | The active executor consumes platform payloads, workspace, skill snapshots, tool policy, and event sink; it cannot bypass tenant, queue, or audit contracts. |
-| S2 target | Codex-style execution events, command/test/diff summaries, approval requests, and tool results are normalized into platform ledgers. |
+| S2 target | Codex-style execution events, command/test/diff summaries, approval requests, tool results, SDK Agent/subagent tool events, artifact collection, and token/cost usage are normalized into platform ledgers. |
 | S3/S4 target | Optional Codex adapter or SDK runtime variants can be introduced only through the same platform contract and evidence gates. |
 | Reference sources | Codex CLI for workspace/approval/event/skills mechanics; Poco Claw for Claude Agent SDK platformization and runtime UX. |
 | S1 acceptance | Executor runs use platform-issued workspace, `run_tool_permission_requests` for approval, `run_events` for replay/audit, and `run_skill_snapshots` for skill staging; executor-private logs are not source of truth. |
@@ -227,18 +247,20 @@ image matches the exact current source tree.
 | --- | --- |
 | Current state | Dispatcher, child admission, handoff, reconciliation, rollup, cancel propagation, and worker dispatcher work exists behind controls; ordinary-user exposure remains blocked. |
 | S1 target | Multi-agent stays feature-flagged/internal only; no ordinary-user beta. |
-| S2 target | Parent/child run ledger, quota/backpressure, cancellation, provenance, and observability pass controlled internal evidence. |
+| S2 target | Claude Agent SDK agent/subagent execution is governed through platform payloads, tool allowlists, permission policy, artifact/event/token ledgers, and sandbox policy; parent/child run ledger, quota/backpressure, cancellation, provenance, and observability pass controlled internal evidence. |
 | S3 target | One or two owner-approved long-task workflows can use controlled multi-agent or subagent patterns. |
 | S4 target | Department rollout uses capacity profiles, quality gates, audit, cost, and rollback evidence. |
-| Reference sources | DeerFlow 2.0 long-horizon/subagent patterns; Codex CLI internal subagents as concept only; Poco collaboration UX. |
-| S1 acceptance | No ordinary-user multi-agent exposure before G5/G6/G7/G9 closure; child fanout must go through active-run admission, tenant quota, backpressure, event projection, and parent cancel semantics. |
+| Reference sources | Claude Agent SDK Agent/subagent capability for execution; DeerFlow 2.0 long-horizon/subagent planning patterns as concept only; Codex CLI internal subagents as concept only; Poco collaboration UX. |
+| S1 acceptance | No ordinary-user multi-agent exposure before G5/G6/G7/G9 closure; SDK-private subagents are not automatically platform multi-agent runs; any platform-visible child fanout must go through active-run admission, tenant quota, backpressure, event projection, and parent cancel semantics. |
 
 ## 4. First-Stage Acceptance Checklist
 
-Foundation Alpha is accepted only when the following S1 checks are proven with
-the listed evidence. If a required S1 check is missing, the verdict is
-`S1 blocked / not accepted`. Later-gate blockers must be recorded as blocked,
-not counted as accepted S1 evidence.
+Foundation Alpha is accepted for the current controlled internal baseline. The
+following checks describe the accepted S1 regression envelope: future source,
+runtime, or evidence changes must preserve these properties or explicitly
+downgrade the S1 state back to `local partial` / `211 verification required`.
+Later-gate blockers remain blocked after S1 acceptance and must not be counted
+as production or beta evidence.
 
 | Check | Acceptance standard |
 | --- | --- |
@@ -266,5 +288,6 @@ not counted as accepted S1 evidence.
   do not keep appending it to PRD or roadmap prose.
 - Update this document when a module's target phase, reference-source boundary,
   or acceptance criterion changes.
-- Before marking S1 accepted, run source-authority docs tests and the focused
-  tests for any module whose acceptance statement changed.
+- Before changing S1 acceptance status or expanding beyond S1 boundaries, run
+  source-authority docs tests and the focused tests for any module whose
+  acceptance statement changed.

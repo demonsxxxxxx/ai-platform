@@ -14,6 +14,20 @@
 
 本路线图不维护已退出范围对象的名称清单。后续执行只按本文“当前主链路”和 P0 交付门槛推进；未列入当前主链路的入口、服务、端口、页面或候选方案，不作为计划依据。
 
+## 当前阶段标记
+
+S1 / Foundation Alpha 已达成并作为 controlled internal baseline 接受。闭合记录
+保存在 `docs/operations/ai-platform-foundation-alpha-closure.md`，当前路线图不再
+把 S1 当作待完成阶段反复前冲。后续工作从 S2+ gate 推进：治理/运维、真实
+SDK skill 路径下的 sandbox hardening、Skill 依赖和发布证据、Admin Runtime
+acceptance、capacity recorded evidence，以及受控的 G8/G10 multi-agent/long-task
+工作流。
+
+S1 的边界仍然不变：不提高生产并发默认值，不开放 ordinary-user multi-agent，
+不宣称 Docker sandbox hardening，不开放部门 rollout，不默认启用长期跨会话
+memory，不关闭 packaged frontend release，也不关闭 signed Skill/SBOM/license/
+vulnerability evidence。
+
 ## 2026-06-06 Gate-Based Roadmap Sync
 
 本节按 GitHub issues #15/#16/#17 同步路线图职责：路线图只作为 product gates、当前状态、阻塞项与下一决策的工具；211 image hash、smoke 输出、逐 PR 执行证据后续应进入独立 release evidence 或 slice execution plan。本文后面的历史段落先保留为 legacy accumulated evidence，不再把新的短期执行流水继续追加成产品需求。
@@ -25,33 +39,36 @@
 3. G5 Run Lifecycle / Worker Runtime V1：queue、lease、heartbeat、retry、dead-letter、cancel、resume、checkpoint、idempotency 可审计、可运营。
 4. G6 Tool / Skill / Memory Governance：skill versioning、release policy、dependency policy、tool allow/deny/ask、memory retention、redaction、delete flow 可运营。
 5. G7 Sandbox / Resource Hardening：Docker provider 生产验证、network/egress policy、runtime quota、orphan cleanup job、container security options 与 211 smoke 通过后，才允许扩大高风险 sandbox/tool。
-6. G8 Multi-Agent Controlled Beta：dispatcher、handoff、child reconciliation、parent rollup、parent cancel 与 worker dispatcher 继续 feature-flagged；普通用户曝光前必须先通过 tenant-aware scheduler/quota gate。
+6. G8 Multi-Agent Controlled Beta：平台 parent/child ledger、dispatcher、handoff、child reconciliation、parent rollup、parent cancel 与 worker dispatcher 继续 feature-flagged；执行层 agent/subagent 能力走 Claude Agent SDK，普通用户曝光前必须先通过 tenant-aware scheduler/quota gate。
 7. G9 Observability / Quality / Ops：Admin runtime、cost/token/latency metrics、error taxonomy、golden-set eval、trace/audit export 与 alert 进入 beta 前 gate。
 8. G10 Internal Beta / Department Rollout：选择 1-2 个真实内网流程（如文档审查、翻译、SOP/RAG、长任务报告）明确运营 owner 后再放量。
 
 当前优先级不是 Docker compose 一键启动或 package delivery，而是公司内网定制化后端 Agent 平台的可运营基础：AD/company auth 与 session、tenant/workspace/user 隔离、多租户高并发、DB connection pool、tenant-aware queue/quota、bounded queue metadata、tenant-aware worker maintenance、Admin Runtime/Observability、Memory/Context、Tool Permission、Agent Frontend 用户闭环。前端源码进入本仓库、backend/worker/frontend 同 commit versioning、monorepo 与多镜像交付进入路线图；compose 一键启动与 packaged delivery 只作为后续 milestone。
 
-P2 Long Task / Multi-Agent Runtime 不再继续默认前冲。checkpoint、subagent、artifact tree、provenance、resume/cancel/retry 与多 agent 调度只能在前置 auth/session、tenant isolation、fair scheduling、quota/backpressure、observability 和 sandbox/tool risk gates 验收后继续扩大。
+P2 Long Task / Multi-Agent Runtime 不再继续默认前冲。checkpoint、subagent、artifact tree、provenance、resume/cancel/retry 与多 agent 调度只能在前置 auth/session、tenant isolation、fair scheduling、quota/backpressure、observability 和 sandbox/tool risk gates 验收后继续扩大。执行层路线是 Claude Agent SDK；DeerFlow 只能吸收编排、拆解、上下文和报告模式，不能作为运行时、scheduler 或 control plane。
 
-### Claude Code / DeerFlow Boundary And Long Task Product Contract
+### Claude Agent SDK / DeerFlow Boundary And Long Task Product Contract
 
 Issue #23 records the PRD boundary before deeper long-task, office-document,
-artifact, and multi-agent UX work starts. Claude Code / Claude Agent SDK remains
-the preferred execution kernel. DeerFlow is not a second runtime to clone; it is
-absorbed only as a platform-level long-horizon product contract and
-orchestration-pattern reference.
+artifact, and multi-agent UX work starts. Claude Agent SDK is the execution
+kernel for skills, tools, artifacts, token/cost accounting, and agent/subagent
+execution. Claude Code / Codex CLI remains a reference for workspace,
+approval, event, skill, and bounded-context mechanics. DeerFlow is not a
+second runtime to clone; it is absorbed only as a platform-level long-horizon
+product contract and orchestration-pattern reference.
 
 The later `Long Task Product Contract / Office Artifact Flow` gate must be
 defined and reviewed before ordinary-user G8/G10 expansion. That gate covers:
 
 - parent / child run decomposition and state ledger
-- subagent progress stream and concurrency limits
+- Claude Agent SDK agent/subagent tool enablement, progress stream, permission
+  policy, and concurrency limits
 - artifact ledger, preview, download, versioning, and reuse
 - context pack, long-task context compression, resume, and replay
 - cancel / retry / timeout semantics owned by the platform
 
 This boundary prevents two drift paths: copying DeerFlow as a second control
-plane/runtime, and treating Claude Code executor-private logs, internal
+plane/runtime, and treating Claude SDK executor-private logs, SDK-private
 subagents, or artifact internals as sufficient platform facts. Platform RBAC,
 tool policy, sandbox lease, artifact ACL, audit, redaction, replay, and
 observability remain the source-of-truth contracts.

@@ -1,9 +1,12 @@
 # AI Platform Product PRD v2
 
-> Status: active product PRD.
+> Status: active product PRD. S1 / Foundation Alpha is accepted for the
+> controlled internal baseline; later work starts from S2+ unless runtime
+> evidence is invalidated by a future source or deployment change.
 >
 > Purpose: restate the ai-platform product goal, architecture, reference-source
-> boundaries, module weaknesses, gate roadmap, and first-stage completion target.
+> boundaries, module weaknesses, gate roadmap, accepted first-stage baseline,
+> and next-stage direction.
 > The 2026-05-29 PRD remains a migration appendix for detailed contract checks
 > that have not yet been moved into this PRD, guardrails, or focused acceptance
 > documents.
@@ -47,6 +50,7 @@ Use these documents together:
 | [Technical acceptance matrix](./2026-06-11-ai-platform-tech-acceptance.md) | Current module state, phased target state, open-source absorption boundaries, and S1 acceptance standards. |
 | [Foundation roadmap](../plans/2026-06-02-ai-platform-foundation-roadmap.md) | Execution sequencing, gate progress, current blockers, and next slices. It should not keep growing into a release-evidence ledger. |
 | [Gate status snapshot](../../operations/ai-platform-gate-status.md) | Current gate state, remaining evidence, and operational risk summary. |
+| [Foundation Alpha closure](../../operations/ai-platform-foundation-alpha-closure.md) | Compact S1 acceptance record, accepted baseline, closure boundaries, and operator readiness commands. |
 | [Guardrails](../../agent-rules/ai-platform-guardrails.md) | Implementation rules, source authority, verification policy, and security boundaries. The canonical path is `docs/agent-rules/ai-platform-guardrails.md`. |
 | [GitHub issue and PR workflow](../../agent-rules/github-issue-pr-workflow.md) | Goal-sized work, gate closures, and defect closure use issue -> PR -> review -> merge -> deploy/smoke when required -> close issue with evidence. The canonical path is `docs/agent-rules/github-issue-pr-workflow.md`. |
 | [Release evidence records](../../release-evidence/README.md) | Per-commit or per-gate evidence such as test output, image labels, smoke results, review notes, and runtime captures. |
@@ -93,7 +97,7 @@ Reference snapshots used for this draft:
 | ai-platform itself | Enterprise control plane, tenant/workspace/user/session boundaries, RBAC, queue admission, audit, release evidence. | Historical paths or stale implementation notes. | Product and architecture source of truth. |
 | Codex CLI | Tool approval vocabulary, shell/sandbox permission model, skill/plugin packaging patterns, conversation/turn/context concepts, bounded context fragments, operator-grade CLI ergonomics. | Single-user identity assumptions, personal local memory model, non-enterprise tenancy. | Strong reference for tools, skills, sandbox vocabulary, and context mechanics. |
 | Poco Claw | Claude Agent SDK platformization, persistent runtime registry, idle/sleep/resume/keepalive, team/server/channel collaboration UX, run drawer/playback/artifact surfaces, agent private state separation. | Enterprise tenant source of truth, unrestricted Docker socket assumptions, any fallback that bypasses ai-platform RBAC/quota/audit. | Strong reference for SDK runtime platformization and collaborative runtime UX. |
-| DeerFlow 2.0 | Long-horizon agent harness, per-user/per-thread isolation techniques, memory scoping, guardrail middleware, subagent/concurrency concepts, research/report product patterns. | A second long-task control plane, direct replacement for ai-platform worker/runtime, uncontrolled MCP/shell exposure. | Concept reference for long-horizon workflows after foundation gates. |
+| DeerFlow 2.0 | Long-horizon planning/report patterns, task decomposition vocabulary, bounded subagent context, memory scoping, guardrail middleware, lineage/report UX, and concurrency-limit ideas. | A second long-task control plane, direct replacement for ai-platform worker/runtime, execution-layer subagent harness, uncontrolled MCP/shell exposure. | Concept reference only for long-horizon orchestration and report UX after foundation gates. Claude Agent SDK remains the execution layer. |
 | LambChat | Existing `frontend/web` migration baseline, React/Vite shell, chat/task UI starting point. | Admin/runtime governance, tenancy, private payload access, model/channel/env-var management as product truth. | Frontend source baseline only. |
 | new-api / model gateway patterns | Model gateway routing, token/cost/latency accounting, upstream-provider operational concepts. | Platform RBAC, tenant audit, or memory/tool governance. | Reference for model gateway integration and observability. |
 | AgentScope | Agent/service/skill/workspace vocabulary and adapter ideas. | Product authority for enterprise auth, RBAC, artifact ACL, or memory policy. | Downgraded concept reference unless a concrete adapter gate is reopened. |
@@ -109,8 +113,9 @@ This PRD changes the old reference posture in three ways:
    Reopening an AgentScope adapter requires a new issue, gate, and source
    authority review.
 3. DeerFlow 2.0 remains a long-horizon workflow and subagent/concurrency concept
-   reference. It is not a second ai-platform runtime, scheduler, or memory
-   authority.
+   reference. It is not a second ai-platform runtime, scheduler, execution
+   harness, or memory authority. Multi-agent execution must route through
+   Claude Agent SDK capabilities under ai-platform governance.
 
 ### 4.2 Codex / Executor Kernel Boundary
 
@@ -164,7 +169,7 @@ Company Auth / Tenant Boundary
        -> executor adapter payloads
        -> sandbox lease and cleanup
   -> Claude Agent SDK Execution Kernel
-       -> skills, tools, filesystem/shell mediation
+       -> skills, tools, Agent/subagent capability, filesystem/shell mediation
        -> private executor payloads
   -> Admin Runtime / Observability
        -> queue, run, sandbox, capacity, token/cost/latency/error, audit, release evidence
@@ -195,6 +200,15 @@ The executor runtime is replaceable, but the platform contract is not. Claude
 Agent SDK is the current primary execution kernel. It must receive bounded,
 platform-produced payloads and return events, artifacts, tool requests, and
 status through platform-owned repositories and projections.
+
+For multi-agent and long-task execution, the execution-layer route is Claude
+Agent SDK. ai-platform may enable SDK agent/subagent tools, skills, and shell or
+filesystem mediation only through platform-issued payloads, pinned skill
+snapshots, permission policy, sandbox leases, event sinks, artifact collection,
+and token/cost accounting. DeerFlow-style decomposition, bounded worker context,
+report lineage, and concurrency-limit ideas can shape product contracts, but
+DeerFlow itself must not become the worker scheduler, control plane, memory
+authority, or hidden execution harness.
 
 Executors must not:
 
@@ -279,12 +293,36 @@ can remain only as historical aliases in release notes or archived plans.
 | G9 Observability / Quality / Ops | Admin Runtime, cost/token/latency/error taxonomy, golden-set eval, trace/export, alerts, and release evidence are operational. | Dashboard acceptance, recorded load evidence, model-gateway evidence, alert calibration, trace/export smoke, release evidence export. |
 | G10 Internal Beta / Department Rollout | 1-2 real internal workflows run with owners, cost/quality/audit/rollback evidence, and support model. | Workflow owner signoff, 211 smoke, rollback proof, issue/PR/release evidence, documented limits. |
 
-## 8. First Stage Definition
+## 8. First Stage Accepted Baseline
 
-The first stage should be named **Foundation Alpha / internal controlled
-foundation loop**.
+The first stage is named **Foundation Alpha / internal controlled foundation
+loop**. It is now accepted for the controlled internal baseline. The compact
+closure record is `docs/operations/ai-platform-foundation-alpha-closure.md`
+([Foundation Alpha closure](../../operations/ai-platform-foundation-alpha-closure.md));
+the operator-facing readiness summary remains:
 
-The first stage is reached when:
+```powershell
+python tools\foundation_alpha_readiness.py --format json
+```
+
+S1 acceptance means the platform has current reviewed evidence for the internal
+POC loop, including source/runtime relation, 211 runtime POC smoke,
+Auth/RBAC/tenant/redaction smoke, governed skill runs, permission and projection
+controls, memory/context fail-closed controls, Admin Runtime visibility,
+Foundation Runtime concurrency correctness, artifact ACL isolation, pinned skill
+snapshots, and release-evidence/alert-trace runtime acceptance.
+
+The accepted baseline is bounded. It does not:
+
+1. Raise production concurrency defaults.
+2. Open ordinary-user multi-agent exposure.
+3. Claim Docker sandbox hardening.
+4. Permit department rollout.
+5. Enable long-term cross-session memory by default.
+6. Close packaged frontend image release acceptance.
+7. Close signed Skill package, SBOM, license, or vulnerability evidence.
+
+The first stage was accepted after:
 
 1. G0-G1 are basic-operational and backed by fresh local plus 211 evidence.
 2. G2-G4 contracts are stable enough that frontend, worker, and executor changes
@@ -317,7 +355,7 @@ In one sentence:
 | PRD/roadmap/guardrails | G0-G10 language unified; P0/P1/P2 only historical; external reference boundaries updated. |
 | Technical acceptance matrix | [Technical acceptance matrix](./2026-06-11-ai-platform-tech-acceptance.md) lists each module's current state, staged target, open-source reference source, and S1 acceptance standard; Foundation Alpha cannot be accepted if the matrix contradicts PRD, roadmap, guardrails, or gate status. |
 | Issue/PR workflow | [GitHub issue and PR workflow](../../agent-rules/github-issue-pr-workflow.md) is linked from this PRD; goal-sized work opens or references issues; closure uses PR/review/tests/211 evidence where required. |
-| Foundation Alpha readiness | `tools/foundation_alpha_readiness.py --format json` is the operator-facing S1 summary. It separates exact current-source verification from runtime-relevant source coverage: `current_source_verified_by_running_runtime=true` and `controlled_poc_loop_verified_for_current_source=true` require the running image to match the current source tree, while `runtime_relevant_source_verified_by_running_runtime=true` only means later docs/tests/evidence/readiness records are outside the running image. If `current_source_exact_runtime_commit_match=false`, the summary must show `runtime_current_for_runtime_relevant_source` with empty runtime-affecting changes before operators reuse the recorded controlled core POC loop evidence. Production claims, capacity default increases, Docker sandbox hardening, ordinary-user multi-agent exposure, and stage closure remain blocked until `foundation_alpha_stage_complete=true`. |
+| Foundation Alpha readiness | `tools/foundation_alpha_readiness.py --format json` is the operator-facing S1 summary. It separates exact current-source verification from runtime-relevant source coverage: `current_source_verified_by_running_runtime=true` and `controlled_poc_loop_verified_for_current_source=true` require the running image to match the current source tree, while `runtime_relevant_source_verified_by_running_runtime=true` only means later docs/tests/evidence/readiness records are outside the running image. If `current_source_exact_runtime_commit_match=false`, the summary must show `runtime_current_for_runtime_relevant_source` with empty runtime-affecting changes before operators reuse the recorded controlled core POC loop evidence. The accepted S1 baseline requires `foundation_alpha_stage_complete=true` and no stage acceptance blockers. Production claims, capacity default increases, Docker sandbox hardening, ordinary-user multi-agent exposure, and department rollout remain blocked by later gates even after S1 acceptance. |
 | Frontend source | `frontend/web` has reproducible install/lint/type/build or a precise blocker; projection audit has no active private-payload violations. |
 | Admin Runtime | Queue/run/sandbox/capacity/backpressure overview exists and has 211 smoke evidence. |
 | Capacity baseline | #21 has a recorded evidence plan or harness; default production concurrency is not raised without evidence. |
@@ -346,22 +384,24 @@ This PRD is active, but product-source changes still require review discipline:
 
 ## 11. Immediate Next Roadmap Slices
 
-Recommended order after PRD review:
+Recommended order after S1 acceptance:
 
-1. **Docs source-authority cleanup**: make this PRD v2 the active product source,
-   slim the foundation roadmap into gate state and next decisions, and move
-   release evidence to evidence-specific files.
-2. **G0-G1 evidence refresh**: run fresh 211 source/deploy/runtime label parity
-   checks plus auth/session/RBAC/tenant/redaction smoke.
-3. **#21 capacity baseline**: complete recorded load evidence for the seven
+1. **S2 governance and operations baseline**: keep this PRD, the technical
+   acceptance matrix, roadmap, guardrails, gate status, and closure note aligned
+   while moving dynamic evidence into release-evidence records.
+2. **G7 sandbox hardening**: integrate Docker-provider execution into the real
+   SDK skill path with security options, egress/quota policy, orphan cleanup,
+   and Docker-capable 211 smoke before high-risk sandbox exposure.
+3. **G6 skill and tool governance**: complete signed Skill package or SBOM
+   evidence, dependency/license/vulnerability review, policy dashboard
+   acceptance, and exact permission enforcement for write/high-risk tools.
+4. **#21 capacity baseline**: complete recorded load evidence for the seven
    required gates; keep production defaults unchanged until evidence passes.
-4. **G6 governance closure slice**: close frontend route remap/enforcement gaps,
-   produce reviewed skill release evidence, and prove memory delete/retention
-   behavior.
 5. **G9 Admin Runtime acceptance**: dashboard/operator acceptance, alert
    delivery calibration, model-gateway backpressure evidence, trace/export, and
    release-evidence runtime export.
-6. **G7 sandbox hardening**: Docker provider security and 211 smoke on a
-   Docker-capable host.
-7. **G8/G10 planning**: only after prior gates, choose 1-2 internal workflows
-   with owners and keep multi-agent exposure controlled.
+6. **G8/G10 Claude Agent SDK multi-agent planning**: only after prior gates,
+   choose 1-2 internal workflows with owners. Use Claude Agent SDK for
+   execution-layer agent/subagent capability; absorb DeerFlow only as
+   decomposition, report-lineage, bounded-context, and concurrency-limit
+   product patterns.
