@@ -29,6 +29,7 @@ _RUNTIME_NEUTRAL_PATH_PREFIXES = (
     "assets/multi-agent-architecture-illustrations/",
     "docs/",
     "output/",
+    "runtime-evidence/",
     "tests/",
 )
 _RUNTIME_NEUTRAL_EXACT_PATHS = {
