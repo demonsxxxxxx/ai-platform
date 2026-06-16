@@ -13,7 +13,6 @@ from app.skills.release_dashboard_readiness import build_skill_release_dashboard
 
 
 _DASHBOARD_GAPS = [
-    "admin_skill_release_dashboard_runtime_acceptance",
     "admin_skill_release_dashboard_visual_acceptance",
     "admin_skill_release_dashboard_211_acceptance",
 ]
@@ -78,7 +77,7 @@ def test_skill_release_dashboard_readiness_contract_is_safe_and_does_not_close_g
 
     assert readiness["schema_version"] == "ai-platform.skill-release-dashboard-readiness.v1"
     assert readiness["status"] == "partial_blocked"
-    assert readiness["policy"] == "contract_only_not_runtime_dashboard_acceptance"
+    assert readiness["policy"] == "source_runtime_acceptance_recorded_not_visual_or_211"
     assert readiness["does_not_close_g6"] is True
     assert readiness["dashboard_contract"] == {
         "schema_version": "ai-platform.skill-release-dashboard-contract.v1",
@@ -125,11 +124,56 @@ def test_skill_release_dashboard_readiness_contract_is_safe_and_does_not_close_g
             "review_evidence_drilldown",
         ],
     }
+    assert readiness["runtime_acceptance"] == {
+        "schema_version": "ai-platform.skill-release-dashboard-runtime-acceptance.v1",
+        "status": "source_route_tests_recorded",
+        "evidence_strength": "source_route_tests",
+        "source_routes": [
+            "GET /api/ai/admin/skills/{skill_id}",
+            "POST /api/ai/admin/skills/sync-builtin",
+            "POST /api/ai/admin/skills/{skill_id}/versions/upload",
+            "GET /api/ai/admin/skills/{skill_id}/versions/diff",
+            "POST /api/ai/admin/skills/{skill_id}/promote",
+            "POST /api/ai/admin/skills/{skill_id}/rollback",
+        ],
+        "covered_runtime_controls": [
+            "ordinary_user_denied_detail",
+            "same_tenant_admin_detail_projection",
+            "sync_builtin_dependency_policy_enforced",
+            "upload_admin_only_and_dependency_policy_enforced",
+            "version_diff_admin_only_projection",
+            "promote_policy_and_audit_controls",
+            "rollback_policy_and_audit_controls",
+            "materialization_fail_closed",
+        ],
+        "source_tests": [
+            "tests/test_admin_skills.py::test_admin_skill_detail_requires_admin",
+            "tests/test_admin_skills.py::test_admin_skill_detail_returns_skill_versions_and_snapshots",
+            "tests/test_admin_skills.py::test_admin_sync_builtin_skills_records_registry_versions_dependencies_and_snapshots",
+            "tests/test_admin_skills.py::test_admin_sync_builtin_skills_rejects_dependency_policy_violation",
+            "tests/test_admin_skills.py::test_admin_upload_skill_package_requires_admin",
+            "tests/test_admin_skills.py::test_admin_upload_skill_package_rejects_missing_internal_dependency",
+            "tests/test_admin_skills.py::test_admin_upload_skill_package_stores_object_and_upserts_skill_version",
+            "tests/test_admin_skills.py::test_admin_upload_skill_package_rejects_unknown_skill_before_storage",
+            "tests/test_admin_skills.py::test_admin_skill_release_routes_require_admin",
+            "tests/test_admin_skills.py::test_admin_skill_version_diff_returns_manifest_changes",
+            "tests/test_admin_skills.py::test_admin_promote_skill_version_sets_release_policy_and_audit",
+            "tests/test_admin_skills.py::test_admin_promote_rejects_inactive_skill_version",
+            "tests/test_admin_skills.py::test_admin_promote_rejects_builtin_version_that_cannot_be_materialized",
+            "tests/test_admin_skills.py::test_admin_rollback_skill_version_sets_release_policy_and_audit",
+            "tests/test_admin_skills.py::test_admin_rollback_requires_existing_policy",
+            "tests/test_admin_skills.py::test_admin_rollback_missing_version_returns_404",
+        ],
+        "forbidden_payload_classes": readiness["forbidden_payload_classes"],
+        "does_not_close_g6": True,
+        "does_not_close_visual_acceptance": True,
+        "does_not_close_211_acceptance": True,
+    }
     assert readiness["open_gaps"] == [
-        "admin_skill_release_dashboard_runtime_acceptance",
         "admin_skill_release_dashboard_visual_acceptance",
         "admin_skill_release_dashboard_211_acceptance",
     ]
+    assert "admin_skill_release_dashboard_runtime_acceptance" not in readiness["open_gaps"]
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
     assert "executor_private_payload" not in serialized
@@ -269,7 +313,9 @@ def test_skill_release_readiness_markdown_is_gap_first_and_operator_readable(tmp
     assert "ai-platform.skill-dependency-review-policy.v1" in markdown
     assert "ai-platform.skill-signed-package-evidence-contract.v1" in markdown
     assert "ai-platform.skill-release-dashboard-contract.v1" in markdown
-    assert "admin_skill_release_dashboard_runtime_acceptance" in markdown
+    assert "source_route_tests_recorded" in markdown
+    open_gap_section = markdown.split("## Open Gaps", 1)[1].split("## Summary", 1)[0]
+    assert "admin_skill_release_dashboard_runtime_acceptance" not in open_gap_section
     assert "source_validation_enabled_not_evidence_satisfied" in markdown
     assert "enabled_for_repository_signed_package_evidence_json" in markdown
     assert "general-chat" in markdown

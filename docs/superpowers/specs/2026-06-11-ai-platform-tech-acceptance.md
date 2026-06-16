@@ -184,7 +184,7 @@ image matches the exact current source tree.
 
 | Field | Standard |
 | --- | --- |
-| Current state | `skill_versions`, `run_skill_snapshots`, pinned manifests, release decisions, pin mismatch checks, used-skill recording, and readiness contracts exist; SBOM/signature/license/vulnerability evidence remains partial. |
+| Current state | `skill_versions`, `run_skill_snapshots`, pinned manifests, release decisions, pin mismatch checks, used-skill recording, readiness contracts, and Admin Skill release dashboard source-route runtime-control tests exist; SBOM/signature/license/vulnerability evidence, visual acceptance, and 211 acceptance remain partial. |
 | S1 target | Runs use published or governed skill versions and pinned snapshots; global mutable skill lookup is not a production behavior. |
 | S2 target | Skill release dashboard and manifests include signed package or SBOM evidence, license review, vulnerability review, dependency policy, and Admin acceptance. |
 | S3/S4 target | Department workflows use reviewed skill packages with release evidence and rollback path. |
