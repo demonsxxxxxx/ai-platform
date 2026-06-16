@@ -1551,6 +1551,12 @@ def test_foundation_alpha_readiness_classifies_source_metadata_paths_as_runtime_
     )
     assert foundation_alpha_readiness._is_runtime_affecting_path("output/imagegen/preview.png") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("output/platform-runs/latest/result.docx") is False
+    assert (
+        foundation_alpha_readiness._is_runtime_affecting_path(
+            "runtime-evidence/foundation-alpha/latest-readiness.json"
+        )
+        is False
+    )
     assert foundation_alpha_readiness._is_runtime_affecting_path("ai-platform-cdc09ba.tar") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("app/routes/runs.py") is True
 
