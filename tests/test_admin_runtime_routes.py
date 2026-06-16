@@ -1014,6 +1014,14 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
         "formal_error_taxonomy_contract"
         in body["observability_readiness"]["domains"]["error_taxonomy"]["implemented"]
     )
+    export_acceptance = body["observability_readiness"]["domains"]["alerts_and_exports"]["evidence"][
+        "release_evidence"
+    ]["export_acceptance"]
+    assert export_acceptance["schema_version"] == "ai-platform.release-evidence-export-acceptance.v1"
+    assert export_acceptance["safe_entry_count"] >= 1
+    assert "entries" not in export_acceptance
+    assert "blocked_entries" not in export_acceptance
+    assert "excluded_entries" not in export_acceptance
     assert "callback_token" not in str(body["governance"]).lower()
     assert "sandbox_workspace_root" not in str(body["governance"]).lower()
     assert ".claude/skills" not in str(body["governance"])

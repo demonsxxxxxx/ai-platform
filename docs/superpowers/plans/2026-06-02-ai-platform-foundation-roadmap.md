@@ -636,6 +636,26 @@ acceptance on 211 or another Docker-capable host, and ordinary-user G9
 acceptance. Do not use this baseline
 to expand sandbox privilege, raw Skill selection, or ordinary-user G8/G10 exposure.
 
+The Skill dependency-review runtime acceptance path is explicit but still open
+until reviewed 211 evidence exists. `tools/skill_release_readiness.py` publishes
+the `ai-platform.skill-dependency-review-runtime-acceptance.v1` contract, and
+`tools/verify_governance_runtime_smoke.py` emits the nested
+`skill_dependency_review_policy_runtime_acceptance` runtime payload while
+keeping the top-level verifier schema
+`ai-platform.governance-runtime-smoke.v1` for existing POC evidence consumers.
+Operators must wrap that output with
+`tools/wrap_foundation_alpha_evidence.py --gate "G6 Skill Release / Dependency Governance"`
+and store the reviewed, redacted entry under
+`docs/release-evidence/skill-release-runtime/<runtime-subject>/`. Readiness
+accepts only reviewed entries with artifact kind
+`skill_dependency_review_policy_runtime_acceptance`, verifier
+`tools/verify_governance_runtime_smoke.py`, passed redaction scan, required
+verifier checks, required Admin Runtime projection checks, and non-expansion
+invariants that keep ordinary-user multi-agent, long-term cross-session memory,
+production concurrency defaults, and Docker sandbox hardening closed. Closing
+this runtime gap does not close G6, signed package/SBOM review, dependency
+vulnerability/license review, or Admin Skill release dashboard acceptance.
+
 The #22 office context-pack work now has source-level architecture readiness,
 source-level context-pack persistence/versioning evidence, user-visible API
 projection source tests, source-level execution-tier routing tests, and
