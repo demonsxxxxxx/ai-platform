@@ -20,7 +20,10 @@ _SDK_ENV_ALLOWLIST = {
     "LC_ALL",
 }
 
-_SDK_AVAILABLE_TOOLS = ["Read", "Glob", "LS", "Bash"]
+_SDK_BASE_AVAILABLE_TOOLS = ["Read", "Glob", "LS", "Bash"]
+# Claude Agent SDK invokes custom subagents through the built-in Agent tool.
+_SDK_SUBAGENT_TOOLS = ["Agent"]
+_SDK_AVAILABLE_TOOLS = [*_SDK_BASE_AVAILABLE_TOOLS, *_SDK_SUBAGENT_TOOLS]
 _SDK_AUTO_ALLOWED_TOOLS = {"Read", "Glob", "LS"}
 _SDK_PLATFORM_DISALLOWED_TOOLS = ["Write", "Edit", "NotebookEdit"]
 _SDK_PROJECT_SETTING_FILES = (".claude/settings.json", ".claude/settings.local.json")
@@ -296,6 +299,12 @@ def _full_access_requested(settings: object) -> bool:
     return _safe_permission_mode(getattr(settings, "claude_agent_permission_mode", "dontAsk")) == "bypassPermissions"
 
 
+def _sdk_tools_for_mode(*, full_access: bool = False) -> list[str]:
+    if full_access:
+        return list(_SDK_AVAILABLE_TOOLS)
+    return list(_SDK_BASE_AVAILABLE_TOOLS)
+
+
 def _sdk_permission_mode(value: object, *, full_access: bool = False) -> str:
     mode = _safe_permission_mode(value)
     if full_access and mode == "bypassPermissions":
@@ -307,7 +316,7 @@ def _sdk_permission_mode(value: object, *, full_access: bool = False) -> str:
 
 def _safe_allowed_tools(value: object, *, full_access: bool = False) -> list[str]:
     if full_access:
-        return list(_SDK_AVAILABLE_TOOLS)
+        return _sdk_tools_for_mode(full_access=True)
     allowed: list[str] = []
     for tool_name in _split_csv(str(value or "Read,Glob,LS")):
         if tool_name in _SDK_AUTO_ALLOWED_TOOLS and tool_name not in allowed:
@@ -580,7 +589,7 @@ async def run_claude_agent_sdk(
             await on_skill_use(skill_name, metadata)
 
     async def can_use_tool(tool_name: str, tool_input: dict[str, Any], _context=None):
-        if full_access and tool_name in _SDK_AVAILABLE_TOOLS:
+        if full_access and tool_name in _sdk_tools_for_mode(full_access=True):
             return PermissionResultAllow()
         if tool_name == "Bash" and isinstance(tool_input, dict):
             command = str(tool_input.get("command") or "")
@@ -724,7 +733,7 @@ async def run_claude_agent_sdk(
     options = ClaudeAgentOptions(
         cwd=str(cwd),
         model=settings.claude_agent_model or settings.anthropic_model or None,
-        tools=list(_SDK_AVAILABLE_TOOLS),
+        tools=_sdk_tools_for_mode(full_access=full_access),
         permission_mode=permission_mode,
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,

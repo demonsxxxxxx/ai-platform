@@ -1491,6 +1491,7 @@ async def test_sdk_runner_passes_staged_skill_names(monkeypatch, tmp_path):
 
     assert result.message == "ok"
     assert captured["skills"] == ["qa-file-reviewer"]
+    assert captured["tools"] == ["Read", "Glob", "LS", "Bash"]
     assert captured["permission_mode"] == "dontAsk"
     assert captured["allowed_tools"] == ["Read", "Glob", "LS"]
     assert captured["disallowed_tools"] == ["Write", "Edit", "NotebookEdit"]
@@ -3614,13 +3615,15 @@ async def test_sdk_runner_honors_explicit_full_access_tool_policy_override(monke
 
     assert result.message == "ok"
     assert captured["permission_mode"] == "dontAsk"
-    assert captured["tools"] == ["Read", "Glob", "LS", "Bash"]
-    assert captured["allowed_tools"] == ["Read", "Glob", "LS", "Bash"]
+    assert captured["tools"] == ["Read", "Glob", "LS", "Bash", "Agent"]
+    assert captured["allowed_tools"] == ["Read", "Glob", "LS", "Bash", "Agent"]
     assert captured["disallowed_tools"] == []
     assert callable(captured["can_use_tool"])
     can_use_tool = captured["can_use_tool"]
     allowed = await can_use_tool("Bash", {"command": "python custom_translate.py"}, None)
     assert allowed.behavior == "allow"
+    agent_allowed = await can_use_tool("Agent", {"agent": "reference-fact-extraction"}, None)
+    assert agent_allowed.behavior == "allow"
     pre_tool_hook = captured["hooks"]["PreToolUse"][0].hooks[0]
     pre_tool_result = await pre_tool_hook(
         {
