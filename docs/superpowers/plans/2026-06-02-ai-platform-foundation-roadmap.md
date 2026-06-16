@@ -16,12 +16,22 @@
 
 ## 当前阶段标记
 
-S1 / Foundation Alpha 已达成并作为 controlled internal baseline 接受。闭合记录
-保存在 `docs/operations/ai-platform-foundation-alpha-closure.md`，当前路线图不再
-把 S1 当作待完成阶段反复前冲。后续工作从 S2+ gate 推进：治理/运维、真实
-SDK skill 路径下的 sandbox hardening、Skill 依赖和发布证据、Admin Runtime
-acceptance、capacity recorded evidence，以及受控的 G8/G10 multi-agent/long-task
-工作流。
+S1 / Foundation Alpha 已作为 `380de6b` runtime subject 的 historical controlled
+baseline 接受。闭合记录保存在
+`docs/operations/ai-platform-foundation-alpha-closure.md`，当前路线图不再把该
+历史 baseline 当作待完成阶段反复前冲。
+
+当前 main/source 是否仍可宣称 current-source S1 complete，只看
+`python tools\foundation_alpha_readiness.py --format json`。如果 readiness 报
+`foundation_alpha_stage_complete=false`、
+`foundation_alpha_stage_status=runtime_rollout_required`，或 blocker 包含
+`foundation_runtime_concurrency_evidence`，则先进入 **S2-0 latest-main evidence
+refresh**：更新 211 runtime，重跑 Foundation Runtime concurrency evidence 和
+readiness，直到当前 source 不再被 runtime/concurrency evidence 阻塞。
+
+S2+ 后续 gate 包括：治理/运维、真实 SDK skill 路径下的 sandbox hardening、
+Skill 依赖和发布证据、Admin Runtime acceptance、capacity-upgrade recorded
+evidence，以及受控的 G8/G10 multi-agent/long-task 工作流。
 
 S1 的边界仍然不变：不提高生产并发默认值，不开放 ordinary-user multi-agent，
 不宣称 Docker sandbox hardening，不开放部门 rollout，不默认启用长期跨会话
@@ -124,7 +134,7 @@ GitHub issue #20 已作为 G5 多租户高并发 gate 的收敛切片在 `main` 
 
 ### G5 / G9 Capacity Baseline Status
 
-Issue #21 is currently closed in GitHub, but the recorded capacity-evidence gate
+Issue #21 is currently closed in GitHub, but the recorded capacity-upgrade evidence gate
 still blocks any production concurrency default increase.
 The first baseline step is now captured in
 `docs/operations/ai-platform-capacity-baseline.md` and exposed through the

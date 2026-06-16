@@ -2,13 +2,23 @@
 
 Date: 2026-06-15
 
-Status: Foundation Alpha stage complete.
+Status: Foundation Alpha historical baseline accepted for the `380de6b`
+runtime subject.
 
 This note is the compact delivery closure for S1 / Foundation Alpha. It does
 not replace the PRD, technical acceptance matrix, gate status snapshot, or
 release-evidence records. It points operators to the current accepted baseline
 and records the boundaries that must not be expanded by reading S1 as
 production readiness.
+
+This note is not a claim that every later source revision is already verified by
+the running runtime. For the current source tree, always run
+`python tools\foundation_alpha_readiness.py --format json`. If it reports
+`foundation_alpha_stage_complete=false`,
+`foundation_alpha_stage_status=runtime_rollout_required`, or a
+`foundation_runtime_concurrency_evidence` blocker, report the latest source as
+requiring S2-0 runtime/concurrency/readiness refresh before making a
+current-source S1 completion claim.
 
 ## Accepted Baseline
 
@@ -20,10 +30,11 @@ production readiness.
   `sha256:e36e4dfad072cdd12b841019db3ccbcdef4b63ccf5262869c994757fef5663f9`.
 - Source relation: `runtime_current_for_runtime_relevant_source`.
 
-The running runtime does not exactly match the current source tree because the
-current source includes docs, tests, evidence, and readiness-record updates
-after the runtime subject. The readiness summary must therefore be read as
-runtime-relevant source coverage, not exact current-source runtime verification:
+For this accepted baseline, the running runtime did not exactly match the
+closure source tree because that source included docs, tests, evidence, and
+readiness-record updates after the runtime subject. The readiness summary for
+that snapshot was therefore read as runtime-relevant source coverage, not exact
+current-source runtime verification:
 
 - `foundation_alpha_stage_complete=true`
 - `stage_acceptance_blockers=[]`

@@ -138,12 +138,16 @@ def test_active_prd_v2_records_appendix_and_closure_workflow_authority():
     prd_text = read(PRD)
     tech_text = read(TECH_ACCEPTANCE)
     workflow_text = read(GITHUB_WORKFLOW)
+    compact_prd_text = " ".join(prd_text.split())
 
     assert "Status: active product PRD" in prd_text
-    assert "S1 / Foundation Alpha is accepted" in prd_text
+    assert "S1 / Foundation Alpha historical baseline is" in prd_text
+    assert "Current-source S1 status is not" in compact_prd_text
+    assert "assumed from that closure" in compact_prd_text
     assert "Status: active companion acceptance document" in tech_text
     assert "docs/operations/ai-platform-foundation-alpha-closure.md" in prd_text
     assert "docs/operations/ai-platform-foundation-alpha-closure.md" in tech_text
+    assert "S2-0 latest-main runtime/concurrency/readiness refresh" in tech_text
     assert "2026-05-29 PRD remains a migration appendix" in prd_text
     assert "This PRD v2 is the active product source" in prd_text
     assert "tools/foundation_alpha_readiness.py --format json" in prd_text
@@ -324,12 +328,16 @@ def test_foundation_alpha_closure_records_stage_complete_baseline_and_boundaries
     roadmap_text = read(ROADMAP)
     gate_status_text = read(GATE_STATUS_DOC)
 
-    assert "Status: Foundation Alpha stage complete" in closure_text
+    assert "Status: Foundation Alpha historical baseline accepted" in closure_text
     assert ACTIVE_CLOSURE_SOURCE_TREE_SHA in closure_text
     assert ACTIVE_RUNTIME_SUBJECT_SHA in closure_text
     assert ACTIVE_RUNTIME_IMAGE in closure_text
     assert ACTIVE_RUNTIME_IMAGE_ID in closure_text
     assert "runtime_current_for_runtime_relevant_source" in closure_text
+    assert "This note is not a claim that every later source revision is already verified" in closure_text
+    assert "foundation_alpha_stage_status=runtime_rollout_required" in closure_text
+    assert "foundation_runtime_concurrency_evidence" in closure_text
+    assert "S2-0 runtime/concurrency/readiness refresh" in closure_text
     assert "foundation_alpha_stage_complete=true" in closure_text
     assert "stage_acceptance_blockers=[]" in closure_text
     assert "runtime_relevant_source_verified_by_running_runtime=true" in closure_text
@@ -362,6 +370,32 @@ def test_foundation_alpha_closure_records_stage_complete_baseline_and_boundaries
     assert "production readiness" in closure_text
     assert "not production readiness" in closure_text
     assert "C:\\Users" not in closure_text
+
+
+def test_prd_records_s1_historical_baseline_and_latest_main_refresh_gate():
+    prd_text = read(PRD)
+    tech_text = read(TECH_ACCEPTANCE)
+    roadmap_text = read(ROADMAP)
+    closure_text = read(FOUNDATION_ALPHA_CLOSURE_DOC)
+    compact_roadmap_text = " ".join(roadmap_text.split())
+
+    for text in (prd_text, tech_text, roadmap_text, closure_text):
+        assert "380de6b" in text
+        assert "foundation_runtime_concurrency_evidence" in text
+        assert "runtime_rollout_required" in text
+        assert "S2-0" in text
+        assert "C:\\Users" not in text
+
+    assert "current-source S1 complete" in prd_text
+    assert "latest current-source claims require a fresh readiness result" in prd_text
+    assert "S2-0 latest-main evidence refresh" in prd_text
+    assert "capacity-upgrade evidence gate" in prd_text
+    assert "#21 has a recorded evidence plan or harness" not in prd_text
+    assert "#21 recorded load evidence missing" not in prd_text
+    assert "Blocks first-stage closure evidence" not in prd_text
+    assert "fresh 211 auth/session/RBAC/tenant smoke is still required" not in tech_text
+    assert "#21 remains blocked until recorded evidence exists" not in tech_text
+    assert "当前 main/source 是否仍可宣称 current-source S1 complete" in compact_roadmap_text
 
 
 def test_committed_source_runtime_relation_manifest_keeps_clean_checkout_readiness_truthful():

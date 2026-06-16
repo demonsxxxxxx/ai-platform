@@ -1,8 +1,9 @@
 # AI Platform Product PRD v2
 
-> Status: active product PRD. S1 / Foundation Alpha is accepted for the
-> controlled internal baseline; later work starts from S2+ unless runtime
-> evidence is invalidated by a future source or deployment change.
+> Status: active product PRD. S1 / Foundation Alpha historical baseline is
+> accepted for the `380de6b` runtime subject. Current-source S1 status is not
+> assumed from that closure; it is determined by
+> `tools/foundation_alpha_readiness.py --format json`.
 >
 > Purpose: restate the ai-platform product goal, architecture, reference-source
 > boundaries, module weaknesses, gate roadmap, accepted first-stage baseline,
@@ -46,11 +47,11 @@ Use these documents together:
 
 | Document | Responsibility |
 | --- | --- |
-| This PRD v2 | Product goal, architecture, reference boundaries, module contracts, gate roadmap, first-stage target. |
+| This PRD v2 | Product goal, architecture, reference boundaries, module contracts, gate roadmap, accepted first-stage baseline, and next-stage direction. |
 | [Technical acceptance matrix](./2026-06-11-ai-platform-tech-acceptance.md) | Current module state, phased target state, open-source absorption boundaries, and S1 acceptance standards. |
 | [Foundation roadmap](../plans/2026-06-02-ai-platform-foundation-roadmap.md) | Execution sequencing, gate progress, current blockers, and next slices. It should not keep growing into a release-evidence ledger. |
 | [Gate status snapshot](../../operations/ai-platform-gate-status.md) | Current gate state, remaining evidence, and operational risk summary. |
-| [Foundation Alpha closure](../../operations/ai-platform-foundation-alpha-closure.md) | Compact S1 acceptance record, accepted baseline, closure boundaries, and operator readiness commands. |
+| [Foundation Alpha closure](../../operations/ai-platform-foundation-alpha-closure.md) | Compact S1 historical baseline record, accepted `380de6b` runtime-subject evidence, closure boundaries, and operator readiness commands. |
 | [Guardrails](../../agent-rules/ai-platform-guardrails.md) | Implementation rules, source authority, verification policy, and security boundaries. The canonical path is `docs/agent-rules/ai-platform-guardrails.md`. |
 | [GitHub issue and PR workflow](../../agent-rules/github-issue-pr-workflow.md) | Goal-sized work, gate closures, and defect closure use issue -> PR -> review -> merge -> deploy/smoke when required -> close issue with evidence. The canonical path is `docs/agent-rules/github-issue-pr-workflow.md`. |
 | [Release evidence records](../../release-evidence/README.md) | Per-commit or per-gate evidence such as test output, image labels, smoke results, review notes, and runtime captures. |
@@ -236,10 +237,10 @@ map, not a gate-closure claim.
 
 | Area | Existing foundation | Thin or missing part | Stage impact |
 | --- | --- | --- | --- |
-| G0-G1 source authority / security | Source docs, guardrails, source-authority tests, frontend source migration. | Fresh 211 parity evidence, AD/session/RBAC/tenant isolation smoke, stale deploy-path reconciliation. | Blocks first-stage closure evidence. |
-| Auth/session/RBAC | Trusted header, company login path, admin role, gateway secret tests. | Login still risks default-tenant assumptions; needs cross-tenant and ordinary/admin 211 smoke. | Blocks ordinary-user rollout claims. |
+| G0-G1 source authority / security | Source docs, guardrails, source-authority tests, frontend source migration, and accepted `380de6b` S1 source/runtime/Auth/RBAC evidence. | Latest current-source runtime parity and Foundation Runtime concurrency evidence must be refreshed whenever readiness reports `runtime_rollout_required`. | Blocks current-source S1 completion and next-stage unrestricted claims, but does not erase the historical S1 baseline. |
+| Auth/session/RBAC | Trusted header, company login path, admin role, gateway secret tests, and accepted `380de6b` 211 Auth/RBAC/tenant/redaction smoke. | Keep cross-tenant and ordinary/admin paths under regression; rerun 211 smoke for runtime-affecting source changes before current-source claims. | Blocks ordinary-user rollout claims. |
 | Control plane schema | Session/run/file/artifact/skill/tool/memory/event/audit contracts and indexes exist. | Wide blast radius; executor schema drift must stay guarded by regression tests. | Requires full regression before PR/deploy. |
-| Queue/worker/concurrency | Tenant-aware queue lease, worker maintenance, active-run admission, bounded metadata. | #21 recorded load evidence missing; production concurrency defaults must not be raised without load proof. | Blocks high-concurrency gate. |
+| Queue/worker/concurrency | Tenant-aware queue lease, worker maintenance, active-run admission, bounded metadata, and accepted `380de6b` Foundation Runtime concurrency evidence. | The GitHub #21 issue is closed, but the capacity-upgrade evidence gate still lacks recorded seven-gate load evidence; latest current-source Foundation Runtime concurrency evidence must be refreshed when readiness requires it. | Blocks high-concurrency gate and current-source S1 completion when `foundation_runtime_concurrency_evidence` is listed as a readiness blocker. |
 | Admin Runtime / Observability | Admin overview, capacity/backpressure projections, readiness tools. | Per-surface latency, model-gateway backpressure, golden-set eval, alert delivery, trace/export, release-evidence runtime acceptance remain partial. | Blocks beta operations. |
 | Sandbox | Lease/cleanup/provider abstractions and tests exist; fake provider remains useful locally. | Docker provider hardening, egress/quota policy, orphan cleanup evidence, container security options, 211 Docker smoke. | Blocks high-risk sandbox/tool expansion. |
 | Memory/context | Session-bound memory, opt-out, retention cleanup, redaction, admin inventory. | Document-centric context pack runtime persistence/injection, frontend provenance, long-term memory policy closure. | Long memory remains fail-closed. |
@@ -286,7 +287,7 @@ can remain only as historical aliases in release notes or archived plans.
 | --- | --- | --- |
 | G0-G1 Source Authority / Security Baseline | Local source, 211 source, deploy composition, runtime labels, frontend source, docs, company auth/session, RBAC, tenant/workspace/user boundaries, redaction, and deny-by-default tool posture point to the same authority. | Source-authority tests, same-commit evidence, 211 label/source parity, stale-path reconciliation, 211 auth/RBAC/tenant smoke, redaction checks, gateway/header enforcement tests. |
 | G2-G4 Control Plane MVP | Core platform contracts are stable and executor-independent. | Contract tests, repository tests, route tests, schema drift checks, full regression before merge/deploy. |
-| G5 Run Lifecycle / Worker Runtime V1 | Queue, lease, heartbeat, retry, dead-letter, cancel, resume, checkpoint, idempotency, admission, and backpressure are operational. | Tenant-aware tests, bounded metadata proof, #21 load/capacity evidence, 211 worker smoke. |
+| G5 Run Lifecycle / Worker Runtime V1 | Queue, lease, heartbeat, retry, dead-letter, cancel, resume, checkpoint, idempotency, admission, and backpressure are operational. | Tenant-aware tests, bounded metadata proof, recorded capacity-upgrade evidence, Foundation Runtime concurrency evidence, and 211 worker smoke. |
 | G6 Tool / Skill / Memory Governance | Tool, skill, and memory policies are enforceable, auditable, and fail-closed. | Policy tests, frontend projection audit, skill review evidence, memory retention/delete/redaction evidence, admin acceptance. |
 | G7 Sandbox / Resource Hardening | Docker provider, network/egress, quota, cleanup, and container security are proven. | Docker-capable host smoke, security-option evidence, orphan cleanup proof, no default overexposure. |
 | G8 Multi-Agent Controlled Beta | Multi-agent dispatch, handoff, child reconciliation, parent rollup/cancel, quota, and backpressure are controlled. | Feature-flagged internal proof, tenant quota evidence, no ordinary-user exposure before prior gates. |
@@ -296,8 +297,9 @@ can remain only as historical aliases in release notes or archived plans.
 ## 8. First Stage Accepted Baseline
 
 The first stage is named **Foundation Alpha / internal controlled foundation
-loop**. It is now accepted for the controlled internal baseline. The compact
-closure record is `docs/operations/ai-platform-foundation-alpha-closure.md`
+loop**. Its historical controlled baseline is accepted for the `380de6b`
+runtime subject. The compact closure record is
+`docs/operations/ai-platform-foundation-alpha-closure.md`
 ([Foundation Alpha closure](../../operations/ai-platform-foundation-alpha-closure.md));
 the operator-facing readiness summary remains:
 
@@ -305,12 +307,19 @@ the operator-facing readiness summary remains:
 python tools\foundation_alpha_readiness.py --format json
 ```
 
-S1 acceptance means the platform has current reviewed evidence for the internal
-POC loop, including source/runtime relation, 211 runtime POC smoke,
+S1 baseline acceptance means the platform has reviewed evidence for the internal
+POC loop at the accepted runtime subject, including source/runtime relation, 211 runtime POC smoke,
 Auth/RBAC/tenant/redaction smoke, governed skill runs, permission and projection
 controls, memory/context fail-closed controls, Admin Runtime visibility,
 Foundation Runtime concurrency correctness, artifact ACL isolation, pinned skill
 snapshots, and release-evidence/alert-trace runtime acceptance.
+
+Current-source completion is a separate status check. If the readiness tool
+reports `foundation_alpha_stage_complete=false`,
+`foundation_alpha_stage_status=runtime_rollout_required`, or
+`stage_acceptance_blockers` containing `foundation_runtime_concurrency_evidence`,
+report the latest source as **S2-0 latest-main evidence refresh required**,
+not as current-source S1 complete.
 
 The accepted baseline is bounded. It does not:
 
@@ -329,8 +338,8 @@ The first stage was accepted after:
    can be reviewed against platform-owned contracts.
 3. G5 is operational for controlled internal workloads, but this does not mean
    high-concurrency readiness, department beta, or ordinary-user multi-agent
-   exposure. High-concurrency default increases remain blocked until #21
-   recorded load evidence is complete.
+   exposure. High-concurrency default increases remain blocked until the
+   capacity-upgrade evidence gate has recorded load evidence.
 4. G6 has a usable fail-closed baseline: ordinary users see permission cards and
    safe public projections; admins can inspect policy and evidence; long-term
    memory and production skill release remain controlled.
@@ -355,10 +364,10 @@ In one sentence:
 | PRD/roadmap/guardrails | G0-G10 language unified; P0/P1/P2 only historical; external reference boundaries updated. |
 | Technical acceptance matrix | [Technical acceptance matrix](./2026-06-11-ai-platform-tech-acceptance.md) lists each module's current state, staged target, open-source reference source, and S1 acceptance standard; Foundation Alpha cannot be accepted if the matrix contradicts PRD, roadmap, guardrails, or gate status. |
 | Issue/PR workflow | [GitHub issue and PR workflow](../../agent-rules/github-issue-pr-workflow.md) is linked from this PRD; goal-sized work opens or references issues; closure uses PR/review/tests/211 evidence where required. |
-| Foundation Alpha readiness | `tools/foundation_alpha_readiness.py --format json` is the operator-facing S1 summary. It separates exact current-source verification from runtime-relevant source coverage: `current_source_verified_by_running_runtime=true` and `controlled_poc_loop_verified_for_current_source=true` require the running image to match the current source tree, while `runtime_relevant_source_verified_by_running_runtime=true` only means later docs/tests/evidence/readiness records are outside the running image. If `current_source_exact_runtime_commit_match=false`, the summary must show `runtime_current_for_runtime_relevant_source` with empty runtime-affecting changes before operators reuse the recorded controlled core POC loop evidence. The accepted S1 baseline requires `foundation_alpha_stage_complete=true` and no stage acceptance blockers. Production claims, capacity default increases, Docker sandbox hardening, ordinary-user multi-agent exposure, and department rollout remain blocked by later gates even after S1 acceptance. |
+| Foundation Alpha readiness | `tools/foundation_alpha_readiness.py --format json` is the operator-facing S1 summary. It separates exact current-source verification from runtime-relevant source coverage: `current_source_verified_by_running_runtime=true` and `controlled_poc_loop_verified_for_current_source=true` require the running image to match the current source tree, while `runtime_relevant_source_verified_by_running_runtime=true` only means later docs/tests/evidence/readiness records are outside the running image. If `current_source_exact_runtime_commit_match=false`, the summary must show `runtime_current_for_runtime_relevant_source` with empty runtime-affecting changes before operators reuse the recorded controlled core POC loop evidence. The accepted historical S1 baseline records `foundation_alpha_stage_complete=true` for its accepted subject; latest current-source claims require a fresh readiness result with no stage acceptance blockers. Production claims, capacity default increases, Docker sandbox hardening, ordinary-user multi-agent exposure, and department rollout remain blocked by later gates even after S1 baseline acceptance. |
 | Frontend source | `frontend/web` has reproducible install/lint/type/build or a precise blocker; projection audit has no active private-payload violations. |
 | Admin Runtime | Queue/run/sandbox/capacity/backpressure overview exists and has 211 smoke evidence. |
-| Capacity baseline | #21 has a recorded evidence plan or harness; default production concurrency is not raised without evidence. |
+| Capacity evidence gate | GitHub #21 is closed, but the capacity-upgrade evidence gate still needs recorded seven-gate load evidence; default production concurrency is not raised without that evidence. |
 | Tool permission | User confirmation card and admin policy flow operate through public/admin projections. |
 | Memory/context | Opt-out, retention, redaction, delete/export readiness, and context provenance are documented and tested for the current scope. |
 | Skill governance | Release/readiness manifests exist; production skill release is blocked without SBOM/signature/license/vulnerability evidence. |
@@ -386,21 +395,27 @@ This PRD is active, but product-source changes still require review discipline:
 
 Recommended order after S1 acceptance:
 
-1. **S2 governance and operations baseline**: keep this PRD, the technical
+1. **S2-0 latest-main evidence refresh**: roll out the latest main/current
+   source to the target runtime and refresh Foundation Alpha readiness,
+   Foundation Runtime concurrency evidence, and 211 smoke until the readiness
+   summary no longer reports `runtime_rollout_required` or
+   `foundation_runtime_concurrency_evidence` as a stage blocker.
+2. **S2 governance and operations baseline**: keep this PRD, the technical
    acceptance matrix, roadmap, guardrails, gate status, and closure note aligned
    while moving dynamic evidence into release-evidence records.
-2. **G7 sandbox hardening**: integrate Docker-provider execution into the real
+3. **G7 sandbox hardening**: integrate Docker-provider execution into the real
    SDK skill path with security options, egress/quota policy, orphan cleanup,
    and Docker-capable 211 smoke before high-risk sandbox exposure.
-3. **G6 skill and tool governance**: complete signed Skill package or SBOM
+4. **G6 skill and tool governance**: complete signed Skill package or SBOM
    evidence, dependency/license/vulnerability review, policy dashboard
    acceptance, and exact permission enforcement for write/high-risk tools.
-4. **#21 capacity baseline**: complete recorded load evidence for the seven
-   required gates; keep production defaults unchanged until evidence passes.
-5. **G9 Admin Runtime acceptance**: dashboard/operator acceptance, alert
+5. **Capacity-upgrade evidence gate**: complete recorded load evidence for the
+   seven required gates; keep production defaults unchanged until evidence
+   passes.
+6. **G9 Admin Runtime acceptance**: dashboard/operator acceptance, alert
    delivery calibration, model-gateway backpressure evidence, trace/export, and
    release-evidence runtime export.
-6. **G8/G10 Claude Agent SDK multi-agent planning**: only after prior gates,
+7. **G8/G10 Claude Agent SDK multi-agent planning**: only after prior gates,
    choose 1-2 internal workflows with owners. Use Claude Agent SDK for
    execution-layer agent/subagent capability; absorb DeerFlow only as
    decomposition, report-lineage, bounded-context, and concurrency-limit

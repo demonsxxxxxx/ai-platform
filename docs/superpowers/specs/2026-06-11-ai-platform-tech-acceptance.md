@@ -27,15 +27,15 @@ worker containers are `ai-platform-api` and `ai-platform-worker`.
 | Phase | Name | Target meaning | What remains blocked |
 | --- | --- | --- | --- |
 | S0 | Historical Review Baseline | Superseded review state before S1 acceptance. Use only for historical comparison. | No gate may be auto-closed from historical S0 wording. |
-| S1 | Foundation Alpha | Achieved controlled internal foundation loop: source authority, control-plane contracts, safe projections, permission cards, admin visibility, release-evidence routing, fail-closed governance, and 211 POC evidence are accepted for the internal baseline. | Production concurrency increases, high-risk Docker sandbox exposure, ordinary-user multi-agent, department rollout, and long-term memory by default. |
-| S2 | Governance / Operations Beta | Turn the accepted S1 baseline into operational governance: signed Skill/SBOM evidence, dependency/license/vulnerability review, memory retention/delete/redaction operations, tool policy enforcement, Docker sandbox hardening in the SDK skill path, Admin Runtime dashboard acceptance, and recorded capacity evidence. | Department rollout and ordinary-user multi-agent expansion until selected workflows and rollback evidence exist. |
+| S1 | Foundation Alpha | Historical controlled internal foundation loop accepted for the `380de6b` runtime subject: source authority, control-plane contracts, safe projections, permission cards, admin visibility, release-evidence routing, fail-closed governance, and 211 POC evidence are accepted for that baseline. | Current-source S1 completion when readiness reports `runtime_rollout_required`, production concurrency increases, high-risk Docker sandbox exposure, ordinary-user multi-agent, department rollout, and long-term memory by default. |
+| S2 | Governance / Operations Beta | First run S2-0 latest-main evidence refresh when readiness requires it, then turn the accepted S1 baseline into operational governance: signed Skill/SBOM evidence, dependency/license/vulnerability review, memory retention/delete/redaction operations, tool policy enforcement, Docker sandbox hardening in the SDK skill path, Admin Runtime dashboard acceptance, and recorded capacity-upgrade evidence. | Department rollout and ordinary-user multi-agent expansion until selected workflows and rollback evidence exist. |
 | S3 | Controlled Workflow Beta | One or two internal workflows run with explicit owners, cost/quality/audit/rollback evidence, and controlled multi-agent or long-task use where gates allow it. | Broad department rollout and unbounded platform exposure. |
 | S4 | Department Rollout | Department-level usage with support model, release evidence retention, alerting, regression gates, capacity profile, and rollback procedure. | External/public productization unless separately approved. |
 
 ### 1.1 S1 Accepted Baseline
 
-S1 / Foundation Alpha is accepted for the controlled internal baseline. The
-compact closure record is
+S1 / Foundation Alpha is accepted as a historical controlled baseline for the
+`380de6b` runtime subject. The compact closure record is
 `docs/operations/ai-platform-foundation-alpha-closure.md`, and the
 operator-facing summary remains:
 
@@ -47,10 +47,15 @@ This accepted baseline covers the internal POC loop, source/runtime relation,
 211 runtime POC smoke, Auth/RBAC/tenant/redaction evidence, platform-owned
 contracts and projections, governed skill runs, exact permission and artifact
 isolation controls, memory/context fail-closed controls, Admin Runtime
-visibility, and Foundation Runtime concurrency correctness. It does not expand
-production capacity, ordinary-user multi-agent, Docker sandbox hardening,
-department rollout, long-term cross-session memory, packaged frontend release,
-or signed Skill/SBOM/license/vulnerability closure.
+visibility, and Foundation Runtime concurrency correctness for the accepted
+runtime subject. For the latest source, this document defers to readiness
+output: if `foundation_alpha_stage_complete=false`,
+`foundation_alpha_stage_status=runtime_rollout_required`, or
+`foundation_runtime_concurrency_evidence` appears in stage blockers, the next
+step is S2-0 latest-main runtime/concurrency/readiness refresh. The accepted
+baseline does not expand production capacity, ordinary-user multi-agent, Docker
+sandbox hardening, department rollout, long-term cross-session memory,
+packaged frontend release, or signed Skill/SBOM/license/vulnerability closure.
 
 ## 2. Open-Source Absorption Standard
 
@@ -102,7 +107,7 @@ image matches the exact current source tree.
 
 | Field | Standard |
 | --- | --- |
-| Current state | Trusted principal, company login path, admin role, gateway secret, and tenant/user tests exist; fresh 211 auth/session/RBAC/tenant smoke is still required. |
+| Current state | Trusted principal, company login path, admin role, gateway secret, tenant/user tests, and accepted `380de6b` 211 Auth/RBAC/tenant/redaction smoke exist; fresh 211 smoke is required for current-source claims when runtime-affecting changes have not been rolled out. |
 | S1 target | Company auth/session, admin/ordinary role checks, tenant/workspace/user isolation, and redaction are basic-operational on 211. |
 | S2 target | Cross-tenant and cross-role regression evidence is part of PR/deploy gates. |
 | S3/S4 target | Department workflows have explicit owner, tenant, workspace, role, audit, support, and rollback model. |
@@ -135,12 +140,12 @@ image matches the exact current source tree.
 
 | Field | Standard |
 | --- | --- |
-| Current state | Tenant-aware queue lease, worker maintenance, active-run admission, bounded metadata, and Admin Runtime capacity/backpressure projections exist. #21 recorded load evidence remains missing. |
+| Current state | Tenant-aware queue lease, worker maintenance, active-run admission, bounded metadata, Admin Runtime capacity/backpressure projections, and accepted `380de6b` Foundation Runtime concurrency evidence exist. GitHub #21 is closed, but the capacity-upgrade evidence gate still lacks recorded seven-gate load evidence. |
 | S1 target | Normal controlled internal workloads run under existing defaults; capacity state is visible to admins; defaults are not raised. |
 | S2 target | Seven-gate recorded load evidence exists for API burst, run creation burst, queue depth/lease latency, worker start, model gateway timeout/backpressure, sandbox/container pressure, and cleanup. |
 | S3/S4 target | Capacity profiles can be operator-reviewed and selected without weakening tenant fairness or fail-closed policy. |
 | Reference sources | Codex event signals for command/test/approval traces; new-api concepts for model-gateway backpressure; ai-platform owns quota/admission. |
-| S1 acceptance | Queue/worker/capacity focused tests and Admin Runtime smoke or captured projection show queue/admission/backpressure/capacity status; #21 remains blocked until recorded evidence exists; no production default increases are committed without load proof. |
+| S1 acceptance | Queue/worker/capacity focused tests and Admin Runtime smoke or captured projection show queue/admission/backpressure/capacity status; the capacity-upgrade evidence gate remains blocked until recorded evidence exists; no production default increases are committed without load proof. |
 
 ### 3.6 Executor Runtime And Codex / Claude Adapter Boundary
 
@@ -255,20 +260,21 @@ image matches the exact current source tree.
 
 ## 4. First-Stage Acceptance Checklist
 
-Foundation Alpha is accepted for the current controlled internal baseline. The
-following checks describe the accepted S1 regression envelope: future source,
-runtime, or evidence changes must preserve these properties or explicitly
-downgrade the S1 state back to `local partial` / `211 verification required`.
-Later-gate blockers remain blocked after S1 acceptance and must not be counted
-as production or beta evidence.
+Foundation Alpha is accepted for the `380de6b` controlled internal baseline.
+The following checks describe the accepted S1 regression envelope: future
+source, runtime, or evidence changes must preserve these properties or
+explicitly downgrade the current-source state back to `local partial` /
+`211 verification required` / `runtime_rollout_required`. Later-gate blockers
+remain blocked after S1 baseline acceptance and must not be counted as
+production or beta evidence.
 
 | Check | Acceptance standard |
 | --- | --- |
 | Source authority | PRD v2, tech acceptance matrix, roadmap, guardrails, gate status, and source-authority tests agree on responsibilities. |
-| Security baseline | Fresh 211 evidence covers auth/session/RBAC/tenant isolation/redaction. Missing evidence yields `S1 blocked / not accepted`, with blockers recorded separately in gate status. |
+| Security baseline | Accepted `380de6b` 211 evidence covers auth/session/RBAC/tenant isolation/redaction; latest current-source claims require fresh evidence when readiness reports runtime rollout required. |
 | Control plane contracts | Related contract/repository/route tests pass for touched areas; executor does not define platform schema. |
 | DB/storage/deploy | Schema, DB pool, storage namespace, file/artifact access, and deploy config checks are redacted, tenant-scoped, and source-authority aligned. |
-| Capacity | Admin Runtime shows current limits and missing evidence; production defaults are not raised without #21 recorded load evidence. |
+| Capacity | Admin Runtime shows current limits and missing evidence; production defaults are not raised without recorded capacity-upgrade evidence. |
 | Model gateway | Admin projections expose model-gateway limit/backpressure gaps without secrets, and no default increase is made without recorded evidence. |
 | Tool approval | Write/high-risk tool calls are blocked without exact decisions; permission cards and admin policy use public/admin projections. |
 | Skills | Runs stage pinned skill snapshots and reject content hash mismatches; production release remains blocked without reviewed evidence. |
