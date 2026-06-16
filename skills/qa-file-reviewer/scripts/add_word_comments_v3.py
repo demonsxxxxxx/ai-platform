@@ -3,7 +3,7 @@
 """
 Document Reviewer - Word Comment Writer
 
-将审核 JSON 写入 Word 批注，保留源文档已有批注并输出对账结果。
+将审核 JSON 写入 Word 批注，保留源文档已有人工批注，并剥离旧的自动审核批注。
 
 Usage:
     python scripts/add_word_comments_v3.py <input_docx> <review_json> <output_docx>
@@ -19,7 +19,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import sys
 import zipfile
 from collections import Counter
@@ -40,6 +39,13 @@ NS = {"w": WML_NS, "r": REL_NS, "ct": CT_NS}
 W = f"{{{WML_NS}}}"
 R = f"{{{REL_NS}}}"
 CT = f"{{{CT_NS}}}"
+
+AUTOMATED_COMMENT_AUTHORS = {
+    "QA审核系统",
+    "文件审核系统",
+    "Codex Document Reviewer",
+    "Document Reviewer",
+}
 
 IGNORABLE_PREFIX_NAMESPACE_URIS = {
     "w14": "http://schemas.microsoft.com/office/word/2010/wordml",
@@ -73,12 +79,17 @@ def normalize_anchor_char(char: str) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Write review comments into a DOCX while preserving existing comments."
+        description="Write review comments into a DOCX while preserving human comments."
     )
     parser.add_argument("input_docx")
     parser.add_argument("review_json")
     parser.add_argument("output_docx")
     parser.add_argument("--author", default="文件审核系统")
+    parser.add_argument(
+        "--preserve-automated-comments",
+        action="store_true",
+        help="Keep prior automated reviewer comments instead of stripping them before this run.",
+    )
     return parser.parse_args()
 
 
@@ -436,6 +447,53 @@ def existing_comment_ids(comments_root: etree._Element) -> List[int]:
     return ids
 
 
+def automated_comment_ids(comments_root: etree._Element) -> set[str]:
+    ids: set[str] = set()
+    for comment in comments_root.findall(".//w:comment", NS):
+        author = (comment.get(f"{W}author") or "").strip()
+        raw_id = comment.get(f"{W}id")
+        if raw_id is not None and author in AUTOMATED_COMMENT_AUTHORS:
+            ids.add(str(raw_id))
+    return ids
+
+
+def remove_nodes_by_comment_id(root: etree._Element, ids: set[str]) -> int:
+    removed = 0
+    if not ids:
+        return removed
+    for tag in ("commentRangeStart", "commentRangeEnd", "commentReference"):
+        for node in list(root.findall(f".//w:{tag}", NS)):
+            raw_id = node.get(f"{W}id")
+            if raw_id not in ids:
+                continue
+            parent = node.getparent()
+            if parent is not None:
+                parent.remove(node)
+                removed += 1
+    return removed
+
+
+def strip_prior_automated_comments(
+    document_root: etree._Element, comments_root: etree._Element
+) -> int:
+    ids = automated_comment_ids(comments_root)
+    if not ids:
+        return 0
+
+    removed_defs = 0
+    for comment in list(comments_root.findall(".//w:comment", NS)):
+        raw_id = comment.get(f"{W}id")
+        if raw_id not in ids:
+            continue
+        parent = comment.getparent()
+        if parent is not None:
+            parent.remove(comment)
+            removed_defs += 1
+
+    remove_nodes_by_comment_id(document_root, ids)
+    return removed_defs
+
+
 def next_comment_id(comments_root: etree._Element) -> int:
     ids = existing_comment_ids(comments_root)
     return max(ids) + 1 if ids else 0
@@ -623,6 +681,15 @@ def search_paragraph_by_text(
     return matches[0][1]
 
 
+def is_strict_agent_anchor_issue(issue: Dict[str, Any]) -> bool:
+    if issue.get("unit_id"):
+        return True
+    if str(issue.get("branch") or "") == "llm_full_review":
+        return True
+    source = str(issue.get("source") or "").casefold()
+    return "agent-review" in source or source == "agent"
+
+
 def resolve_target_paragraph(
     paragraphs: List[etree._Element], issue: Dict[str, Any]
 ) -> Tuple[Optional[etree._Element], Dict[str, Any]]:
@@ -640,6 +707,14 @@ def resolve_target_paragraph(
                 "confidence": "high",
                 "paragraph_number": paragraph_number,
             }
+
+    if is_strict_agent_anchor_issue(issue):
+        return None, {
+            "strategy": "needs_human_review",
+            "confidence": "low",
+            "reason": "strict agent anchor did not match the target paragraph",
+            "paragraph_number": paragraph_number,
+        }
 
     if original:
         paragraph = search_paragraph_by_text(paragraphs, original, location)
@@ -713,32 +788,17 @@ def select_anchor_candidate(
                 seen.add(span_key)
                 candidates.append(candidate)
 
-    for source_key in ("anchor_text", "original", "evidence"):
-        needle = issue.get(source_key) or ""
-        if not needle:
-            continue
-        if source_key == "evidence":
-            anchor_text = issue.get("anchor_text") or issue.get("original") or ""
-            if needle == anchor_text:
+    if not is_strict_agent_anchor_issue(issue):
+        for source_key in ("anchor_text", "original", "evidence"):
+            needle = issue.get(source_key) or ""
+            if not needle:
                 continue
+            if source_key == "evidence":
+                anchor_text = issue.get("anchor_text") or issue.get("original") or ""
+                if needle == anchor_text:
+                    continue
 
-        for candidate in find_text_spans(source_text, str(needle)):
-            span_key = (candidate["start"], candidate["end"], candidate["match_method"])
-            if span_key in seen:
-                continue
-            seen.add(span_key)
-            candidates.append(
-                {
-                    "start": candidate["start"],
-                    "end": candidate["end"],
-                    "match_method": candidate["match_method"],
-                    "anchor_source": source_key,
-                }
-            )
-
-    for source_key in ("issue", "suggestion"):
-        for needle in quoted_anchor_needles(str(issue.get(source_key) or "")):
-            for candidate in find_text_spans(source_text, needle):
+            for candidate in find_text_spans(source_text, str(needle)):
                 span_key = (candidate["start"], candidate["end"], candidate["match_method"])
                 if span_key in seen:
                     continue
@@ -751,6 +811,22 @@ def select_anchor_candidate(
                         "anchor_source": source_key,
                     }
                 )
+
+        for source_key in ("issue", "suggestion"):
+            for needle in quoted_anchor_needles(str(issue.get(source_key) or "")):
+                for candidate in find_text_spans(source_text, needle):
+                    span_key = (candidate["start"], candidate["end"], candidate["match_method"])
+                    if span_key in seen:
+                        continue
+                    seen.add(span_key)
+                    candidates.append(
+                        {
+                            "start": candidate["start"],
+                            "end": candidate["end"],
+                            "match_method": candidate["match_method"],
+                            "anchor_source": source_key,
+                        }
+                    )
 
     valid_candidates: List[Dict[str, Any]] = []
     for candidate in candidates:
@@ -1060,7 +1136,12 @@ def append_bottom_comment(
 
 
 def add_comments_improved(
-    input_docx: str, review_json: str, output_docx: str, author: str = "文件审核系统"
+    input_docx: str,
+    review_json: str,
+    output_docx: str,
+    author: str = "文件审核系统",
+    *,
+    strip_automated_comments: bool = True,
 ) -> Dict[str, Any]:
     with open(review_json, "r", encoding="utf-8-sig") as handle:
         review_data = json.load(handle)
@@ -1068,35 +1149,6 @@ def add_comments_improved(
     issues = review_data.get("issues", [])
     if not isinstance(issues, list):
         raise ValueError("review_json issues must be a list")
-
-    if not issues:
-        output_path = Path(output_docx)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        if os.path.abspath(input_docx) != os.path.abspath(output_docx):
-            shutil.copy2(input_docx, output_docx)
-        return {
-            "success": True,
-            "message": "No issues to add as comments; copied source document to output",
-            "comments_added": 0,
-            "comments_failed": 0,
-            "comments_expected": 0,
-            "comments_actual": 0,
-            "existing_comments": 0,
-            "positioning_quality": {
-                "by_span": 0,
-                "by_exact_text": 0,
-                "by_contains_text": 0,
-                "by_inference": 0,
-                "by_document_end": 0,
-                "by_expected_document_end": 0,
-                "by_anchor_failure_document_end": 0,
-                "by_ambiguous_anchor": 0,
-                "by_high_risk_ambiguous_anchor": 0,
-                "failed": 0,
-                "warnings": [],
-            },
-            "output_document": output_docx,
-        }
 
     warnings: List[Dict[str, Any]] = []
     positioning_stats = Counter()
@@ -1136,6 +1188,11 @@ def add_comments_improved(
 
         ensure_comments_part(rels_tree, ct_tree, comments_root)
 
+        removed_existing = (
+            strip_prior_automated_comments(document_root, comments_root)
+            if strip_automated_comments
+            else 0
+        )
         existing_total = len(existing_comment_ids(comments_root))
         comment_id = next_comment_id(comments_root)
 
@@ -1159,6 +1216,17 @@ def add_comments_improved(
                 if not planned_document_end:
                     target_range, meta = resolve_target_range(paragraphs, issue, used_spans_by_paragraph)
                 if target_range is None:
+                    if is_strict_agent_anchor_issue(issue) and not planned_document_end:
+                        failed += 1
+                        warnings.append(
+                            {
+                                "index": index,
+                                "issue": issue.get("issue", "")[:80],
+                                "location": issue.get("location", ""),
+                                "reason": meta.get("reason") or "strict agent anchor could not be materialized",
+                            }
+                        )
+                        continue
                     if not appended_heading:
                         append_paragraph_to_body(document_root, "未定位审核意见")
                         appended_heading = True
@@ -1274,6 +1342,7 @@ def add_comments_improved(
             "comments_expected": expected,
             "comments_actual": existing_total + added,
             "existing_comments": existing_total,
+            "removed_existing_comments": removed_existing,
             "positioning_quality": {
                 "by_span": positioning_stats["by_span"],
                 "by_exact_text": positioning_stats["by_exact_text"],
@@ -1324,7 +1393,11 @@ def main() -> int:
     print()
 
     result = add_comments_improved(
-        args.input_docx, args.review_json, args.output_docx, author=args.author
+        args.input_docx,
+        args.review_json,
+        args.output_docx,
+        author=args.author,
+        strip_automated_comments=not args.preserve_automated_comments,
     )
 
     print("=" * 70)
@@ -1334,6 +1407,7 @@ def main() -> int:
         print(f"   新增批注数: {result['comments_added']}")
         print(f"   失败批注数: {result['comments_failed']}")
         print(f"   旧批注数: {result['existing_comments']}")
+        print(f"   已剥离旧自动批注数: {result.get('removed_existing_comments', 0)}")
         print(f"   输出文档: {result['output_document']}")
         validation = result.get("validation_report")
         if validation:

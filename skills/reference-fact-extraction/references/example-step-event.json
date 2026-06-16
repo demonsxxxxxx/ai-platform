@@ -1,0 +1,19 @@
+{
+  "schema_version": "reference-fact-extraction-step-event-v1",
+  "user_message": "Extract a verified fact packet from these source files.",
+  "project_root": "D:/path/to/project",
+  "output_dir": "D:/path/to/project/outputs/fact-extraction-run-001",
+  "profile_id": "ctd-32s73-stability",
+  "sources": [
+    "references/stability-report.docx",
+    "references/stability-data.xlsx"
+  ],
+  "forbidden_sources": [
+    "references/已完成的申报资料.docx"
+  ],
+  "provided_artifacts": {},
+  "options": {
+    "output_mode": "domain_native",
+    "auto_ocr_pdf": true
+  }
+}

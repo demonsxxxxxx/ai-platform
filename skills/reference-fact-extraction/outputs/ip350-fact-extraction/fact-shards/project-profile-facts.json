@@ -1,0 +1,215 @@
+{
+  "schema_version": "ctd-32s73-fact-shard-v1",
+  "profile_id": "ctd-32s73-stability",
+  "shard_type": "project_profile",
+  "facts": {
+    "project_profile": {
+      "product_name": "IP350",
+      "product_expression": "IP350原液（MWN110原液）",
+      "sample_type": "原液 / DS",
+      "project_code": "IP350",
+      "specification": "200 L",
+      "reference_standard_batch": "IP350DSC20250901RS",
+      "batches": [
+        {
+          "batch_no": "IP350DSC20250901",
+          "role": "非临床 / 毒理批",
+          "sample_type": "原液 / DS",
+          "source_refs": [
+            {
+              "source_file": "参考文件1-项目基本信息收集表.docx",
+              "location": "table 0 rows 13-15",
+              "evidence_text": "原液批号；IP350DSC20250901；200 L；非临床"
+            },
+            {
+              "source_file": "参考文件2-原液稳定性考察方案.docx",
+              "location": "table 2 row 1",
+              "evidence_text": "IP350原液 IP350 DS / IP350DSC20250901 / 200L / 毒理批 Toxicology Batch"
+            }
+          ]
+        },
+        {
+          "batch_no": "IP350DSC20251002",
+          "role": "临床 / GMP批",
+          "sample_type": "原液 / DS",
+          "source_refs": [
+            {
+              "source_file": "参考文件1-项目基本信息收集表.docx",
+              "location": "table 0 rows 13-15",
+              "evidence_text": "原液批号；IP350DSC20251002；200 L；临床"
+            },
+            {
+              "source_file": "参考文件2-原液稳定性考察方案.docx",
+              "location": "table 2 row 2",
+              "evidence_text": "IP350原液 IP350 DS / IP350DSC20251002 / 200L / GMP批 GMP Batch"
+            }
+          ]
+        }
+      ],
+      "batches_by_sample_type": {
+        "原液": [
+          {
+            "batch_no": "IP350DSC20250901",
+            "role": "非临床 / 毒理批",
+            "sample_type": "原液 / DS"
+          },
+          {
+            "batch_no": "IP350DSC20251002",
+            "role": "临床 / GMP批",
+            "sample_type": "原液 / DS"
+          }
+        ]
+      },
+      "source_refs": [
+        {
+          "source_file": "参考文件2-原液稳定性考察方案.docx",
+          "location": "paragraphs 5, 7; table 2 rows 1-2; table 3 row 1",
+          "evidence_text": "考察IP350原液的稳定性；IP350 Drug Substance (DS)；IP350参考品批号 IP350DSC20250901RS"
+        },
+        {
+          "source_file": "参考文件4-稳定性试验数据汇总.xlsx",
+          "location": "sheets 原液长期 and 原液加速 row 1",
+          "evidence_text": "项目编号 Project No. / IP350 / 产品名称 Product Name / IP350原液（MWN110原液） IP350 DS (MWN110 DS)"
+        }
+      ]
+    },
+    "sources": {
+      "allowed": [
+        {
+          "source_id": "SRC-001",
+          "path": "C:/Users/Yanan.Liu/Desktop/3.2.S.7.3 申报资料智能体测试范例-真实数据/3.2.S.7.3-IP350/参考文件1-项目基本信息收集表.docx",
+          "type": "docx",
+          "status": "used",
+          "extraction_method": "builtin_source_indexer",
+          "reader": {
+            "name": "python-docx",
+            "purpose": "项目基本信息表格抽取"
+          },
+          "evidence_refs": [
+            "table 0 rows 11-15: 项目编号、参考品批号、原液批号、规模、用途"
+          ]
+        },
+        {
+          "source_id": "SRC-002",
+          "path": "C:/Users/Yanan.Liu/Desktop/3.2.S.7.3 申报资料智能体测试范例-真实数据/3.2.S.7.3-IP350/参考文件2-原液稳定性考察方案.docx",
+          "type": "docx",
+          "status": "used",
+          "extraction_method": "builtin_source_indexer",
+          "reader": {
+            "name": "python-docx",
+            "purpose": "稳定性方案段落和表格抽取"
+          },
+          "evidence_refs": [
+            "paragraphs 5,7,9,11 and tables 2-4: 原液/DS身份、批号、参考品、研究条件"
+          ]
+        },
+        {
+          "source_id": "SRC-003",
+          "path": "C:/Users/Yanan.Liu/Desktop/3.2.S.7.3 申报资料智能体测试范例-真实数据/3.2.S.7.3-IP350/参考文件3-原液和成品影响因素试验考察报告.docx",
+          "type": "docx",
+          "status": "partially_used",
+          "extraction_method": "builtin_source_indexer",
+          "reader": {
+            "name": "python-docx",
+            "purpose": "影响因素样品信息交叉核对"
+          },
+          "evidence_refs": [
+            "table 1 row 2 and table 2 rows 1-2: DS定义和原液批号交叉核对"
+          ]
+        },
+        {
+          "source_id": "SRC-004",
+          "path": "C:/Users/Yanan.Liu/Desktop/3.2.S.7.3 申报资料智能体测试范例-真实数据/3.2.S.7.3-IP350/参考文件4-稳定性试验数据汇总.xlsx",
+          "type": "xlsx",
+          "status": "partially_used",
+          "extraction_method": "builtin_source_indexer",
+          "reader": {
+            "name": "openpyxl",
+            "purpose": "原液长期/加速工作表表头交叉核对"
+          },
+          "evidence_refs": [
+            "sheet 原液长期 row 1; sheet 原液加速 row 1: 项目编号和产品名称"
+          ]
+        }
+      ],
+      "forbidden": [
+        {
+          "path": "C:/Users/Yanan.Liu/Desktop/3.2.S.7.3 申报资料智能体测试范例-真实数据/3.2.S.7.3-IP350/已完成的申报资料-32s73-稳定性数据.docx",
+          "reason": "已完成申报资料默认禁止作为事实来源或参考",
+          "status": "excluded"
+        }
+      ],
+      "ocr_manifests": []
+    },
+    "docx_render_plan": {
+      "template_id": "ctd-32s73-stability-template-v2",
+      "template_path": "assets/templates/ctd-32s73-stability-template-v2.docx",
+      "body_prose_action": "body_sections",
+      "render_scope": {
+        "source_batch_count": 2,
+        "rendered_batches": [
+          "IP350DSC20250901",
+          "IP350DSC20251002"
+        ],
+        "omitted_batches": [],
+        "batch_structure_action": "keep"
+      },
+      "batch_count_action": "keep",
+      "table_actions": [
+        {
+          "action": "render_all_confirmed_ds_batches",
+          "batches": [
+            "IP350DSC20250901",
+            "IP350DSC20251002"
+          ]
+        }
+      ],
+      "caption_actions": [
+        {
+          "action": "use_product_expression_for_ds_specific_titles",
+          "value": "IP350原液（MWN110原液）"
+        }
+      ],
+      "manual_refresh_items": []
+    },
+    "missing_evidence": [],
+    "manual_review_items": [
+      {
+        "field": "project_profile.product_name/product_expression",
+        "issue": "来源中同时出现 IP350原液、IP350 DS 和 IP350原液（MWN110原液）表达；事实包保留 product_name=IP350、product_expression=IP350原液（MWN110原液）。"
+      }
+    ],
+    "conflicts": [
+      {
+        "field": "project_profile.batches.role",
+        "type": "source_wording_variation",
+        "resolution": "合并基本信息表的 非临床/临床 与方案中的 毒理批/GMP批。"
+      }
+    ]
+  },
+  "agent_provenance": {
+    "execution_mode": "subagent",
+    "extraction_agent": "reference_fact_extraction_agent",
+    "validation_agent": "reference_fact_validation_agent",
+    "validation_status": "passed_with_warnings",
+    "extraction_completed_at": "2026-06-01T07:55:00Z",
+    "validation_completed_at": "2026-06-01T08:02:00Z",
+    "source_materials_reviewed": [
+      "fact-extraction-request.json",
+      "source-index.md",
+      "source-index.json",
+      "参考文件1-项目基本信息收集表.docx",
+      "参考文件2-原液稳定性考察方案.docx",
+      "参考文件3-原液和成品影响因素试验考察报告.docx",
+      "参考文件4-稳定性试验数据汇总.xlsx"
+    ],
+    "validation_checks": [
+      "section ownership checked",
+      "source traceability checked",
+      "forbidden completed申报资料 exclusion checked",
+      "batch/profile alignment checked",
+      "render plan enum corrected to keep for two rendered batches"
+    ],
+    "validation_notes": "独立校验确认项目身份、原液批次、参考品批号和2批渲染范围由允许来源支持；产品名存在表达差异，已作为 manual_review_items 记录。"
+  }
+}

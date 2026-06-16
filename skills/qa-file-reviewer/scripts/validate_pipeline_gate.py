@@ -183,6 +183,36 @@ def is_global_word_comment_issue(item: Dict[str, Any]) -> bool:
     return any(marker in combined for marker in ("全文", "全篇", "整体", "全局"))
 
 
+def is_visible_agent_comment_issue(item: Dict[str, Any], comments_added: int | None) -> bool:
+    if comments_added is None or comments_added == 0:
+        return False
+    if as_text(item.get("comment_visibility")) != "word_comment":
+        return False
+    if as_text(item.get("branch")) == "llm_full_review":
+        return True
+    source = as_text(item.get("source")).casefold()
+    return source == "agent" or "agent-review" in source
+
+
+def visible_agent_issue_label(row: str, item: Dict[str, Any]) -> str:
+    unit_id = as_text(item.get("unit_id"))
+    if unit_id:
+        return f"{row} unit_id={unit_id} visible agent issue"
+    return f"{row} visible agent issue"
+
+
+def compact_text(value: Any) -> str:
+    return "".join(as_text(value).split()).casefold()
+
+
+def anchor_quote_covers_anchor_text(item: Dict[str, Any]) -> bool:
+    quote = compact_text(item.get("anchor_quote"))
+    anchor_text = compact_text(item.get("anchor_text"))
+    if not quote or not anchor_text:
+        return False
+    return quote in anchor_text or anchor_text in quote
+
+
 def load_json(path: Path) -> Dict[str, Any]:
     try:
         text = path.read_text(encoding="utf-8")
@@ -355,7 +385,8 @@ def validate_issues(
                 errors.append(f"{row} external evidence dependent issues must set a concrete external_evidence_type")
 
         comments_added = item.get("comments_added", 1)
-        if to_non_negative_int(comments_added) is None:
+        comments_added_int = to_non_negative_int(comments_added)
+        if comments_added_int is None:
             errors.append(f"{row}.comments_added must be a non-negative integer")
 
         match_method = as_text(item.get("match_method"))
@@ -364,7 +395,22 @@ def validate_issues(
         if match_method == "fallback":
             errors.append(f"{row}.match_method=fallback is not allowed in final review output")
 
-        if to_non_negative_int(comments_added) != 0:
+        if is_visible_agent_comment_issue(item, comments_added_int):
+            label = visible_agent_issue_label(row, item)
+            if not has_value(item.get("unit_id")):
+                errors.append(f"{label} must include unit_id for agent insertion")
+            if not isinstance(item.get("anchor_span"), dict):
+                errors.append(f"{label} must include anchor_span dict before Word comment insertion")
+            if not has_value(item.get("anchor_locator")):
+                errors.append(f"{label} must include anchor_locator before Word comment insertion")
+            if not has_value(item.get("anchor_text")):
+                errors.append(f"{label} must include anchor_text before Word comment insertion")
+            if not anchor_quote_covers_anchor_text(item):
+                errors.append(f"{label} must include anchor_quote matching anchor_text for agent insertion")
+            if match_method in {"fallback", "inference"}:
+                errors.append(f"{label} must not use match_method={match_method} for automatic comment insertion")
+
+        if comments_added_int != 0:
             if status and status not in {"confirmed", "needs_user_check"}:
                 errors.append(f"{row} with comments_added>0 has unsupported status={status}")
             if not isinstance(item.get("anchor_span"), dict):

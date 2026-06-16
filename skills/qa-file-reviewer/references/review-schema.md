@@ -33,8 +33,9 @@
     }
   ],
   "commenting": {
-    "policy": "preserve_existing",
+    "policy": "preserve_human_strip_prior_automated",
     "existing_total": 0,
+    "removed_existing_automated": 0,
     "added_total": 0,
     "failed_total": 0,
     "expected_total": 0,
@@ -85,7 +86,7 @@
 - `branch_execution_manifest[].skip_categories`：调用 agent findings 被过滤时的内部分桶统计，常见值包括 `filtered_external`、`filtered_external_veto`、`filtered_low_confidence`、`filtered_low_value`、`filtered_quality_gate`、`anchor_failure_should_retry`、`schema_invalid`。该字段只用于质量复盘，不代表用户可见问题。
 - `branch_execution_manifest[].deduped_issue_count`：进入批注计划前被跨 agent 合并的重复语义问题数量，用于确认去重是否减少人工复核负担。
 - `human_review_queue`：人工复核清单字段（不是人审处理系统）；仅承载被明确允许保留的真实文档核对项。定位不稳定、证据不足、低置信、建议空泛或需要外部资料的问题默认过滤出 Word，只保留内部诊断或跳过统计。
-- `commenting`：批注对账信息，必须保留旧批注的统计结果。
+- `commenting`：批注对账信息，必须保留人工旧批注统计，并统计已剥离的旧自动审核批注。
 - `artifacts`：内部产物路径或标识，默认不对外交付。
 - `artifacts.document_map`：来自 `minimax-docx review-map` 的统一文档坐标产物。
 - `artifacts.comment_plan`：写批注前的专用输入，只包含通过质量门禁的 Word 批注项。
@@ -110,7 +111,11 @@
   "document_zone": "header",
   "location_kind": "paragraph",
   "location": "第3段 / 表1 / 页眉 / 页脚",
-  "anchor_locator": "paragraph=3",
+  "unit_id": "p-00098",
+  "pair_id": "bp-00001",
+  "problem_unit_id": "p-00098",
+  "anchor_quote": "原文片段",
+  "anchor_locator": "unit_id=p-00098; paragraph=3",
   "anchor_span": {
     "start": 8,
     "end": 14,
@@ -152,17 +157,21 @@
 - `document_zone`：必须能表达文档所在区域，建议使用 `title_page`、`header`、`footer`、`toc`、`body`、`table`、`figure`、`appendix`、`record`、`metadata`。
 - `location`：必须能定位到文档中的具体位置。
 - `location_kind`：建议使用 `paragraph`、`table`、`header`、`footer`、`property`、`figure` 或 `unknown`。
-- `anchor_locator`：用于批注落点的稳定定位信息，必须尽量具体。
+- `unit_id`：来自 `agent_review_context.txt` 的稳定 review unit id，通常等于 `document_map.json` 中的 `paragraph_id`，是非全文 agent finding 的必填主定位契约。缺少该字段的非全文 agent finding 会被过滤出用户可见 Word 批注。
+- `pair_id`：可选双语 pair id，来自 `bilingual_pairs.jsonl`，仅作为辅助上下文，不替代主定位。
+- `problem_unit_id`：可选覆盖字段；当 `pair_id` 引用了双语对，但实际问题只在一侧时，用它明确具体问题 unit。
+- `anchor_quote`：该 `unit_id` 内的精确源文本。对非全文 agent finding，脚本必须用它在 unit 内求 `anchor_span`；不得用 `original`、`evidence`、跨段搜索或全文搜索替代。
+- `anchor_locator`：用于批注落点的稳定定位信息，必须尽量具体。对 agent findings，应先写 `unit_id=...`；`paragraph_index`、`P...`、`XML:...`、`T...R...C...` 只作为兼容或可读提示。
 - `anchor_span`：用于批注落点的精确文本范围，建议记录 `start`、`end` 和 `unit=char`；优先于 `anchor_text`。
 - `anchor_text`：用于落批注的原文锚点，不要使用改写文本。锚点匹配应归一化等价引号和常见单位字形，例如 `µm` / `μm`。
 - `original`：保留原文，不要替换成修订后文本。
 - `issue`：只描述问题本身，不混入建议。
 - `severity`：只允许 `关键`、`主要`、`次要`。
 - `suggestion`：必须可执行，避免空泛表达。
-- `comment_text`：用于 Word 批注的实际文案，应使用短中文标签表达发现、原文和建议；长格式证据和重复示例必须压缩；不要写入 `P342` 这类内部段落号、内部分类、JSON 文件名、SDK 错误、堆栈或 `review_basis` 枚举。
+- `comment_text`：用于 Word 批注的实际文案，应使用短中文标签表达发现、原文和建议；`发现` 和 `建议` 必须是中文，英文源文本仅保留在 `原文` 或替换片段中；长格式证据和重复示例必须压缩；不要写入 `P342` 这类内部段落号、内部分类、JSON 文件名、SDK 错误、堆栈或 `review_basis` 枚举。
 - `evidence`：必须保留足够上下文，支持复核。
 - `match_method`：建议使用 `span`、`exact`、`contains` 或 `inference`；`fallback` 仅可用于候选探索，不允许作为自动批注落点。
-- `preexisting_comment_count`：该锚点已有批注数量，保留旧批注，不要覆盖。
+- `preexisting_comment_count`：该锚点已有人工批注数量，保留人工旧批注，不要覆盖；旧自动审核批注在写回前剥离。
 - `comments_added`：本次针对该问题新增的批注数量。
 - 当 `comments_added > 0` 时，`status` 必须为 `confirmed` 或 `needs_user_check`，且必须有稳定 `anchor_span`、`anchor_locator` 和 `anchor_text`；`match_method=inference/fallback` 不允许原位自动批注。
 - `status`：只使用 `confirmed` 或 `needs_user_check`。
@@ -194,10 +203,12 @@
 ## 调用 agent 语义复核输出约束
 
 - 调用 agent 在脚本外执行语义复核时，结构化输出必须是 JSON object，顶层包含 `issues` 数组。
-- `category`、`severity`、`confidence` 必须严格使用约定枚举；建议同时提供 `coverage_domain`、`review_basis`、`requires_external_evidence`、`external_evidence_type`、`comment_intent`。
+- 调用 agent 读取 `agent_review_context.txt` 作为主要审查文本；`review_units.jsonl` 和 `bilingual_pairs.jsonl` 只用于核对 `unit_id`、`pair_id` 或辅助重建邻接关系。
+- `category`、`severity`、`confidence` 必须严格使用约定枚举；非全文 agent finding 必须提供 `unit_id` 和 `anchor_quote`，并建议同时提供 `evidence_unit_ids`、`coverage_domain`、`review_basis`、`requires_external_evidence`、`external_evidence_type`、`comment_intent`。
 - 首次 JSON 语法错误可触发一次只修复 JSON 语法的重试；重试仍失败、文件缺失、JSON 解析失败或 schema 无法校验时，只进入内部诊断，不进入用户可见 Word 批注。
-- 无法稳定锚定原文、低置信、证据不足或建议空泛的问题默认过滤出 Word，并保留内部跳过原因。
-- 表格单元格内的高置信问题可以使用 `P571 (T7R5C3)` 这类段落 + 表格坐标作为稳定位置；如果 `document_map.json` 中存在对应 table/row/cell 和精确原文片段，应进入批注计划而不是被当成锚点失败。
+- 无法稳定锚定原文、低置信、证据不足或建议空泛的问题默认过滤出 Word，并保留内部跳过原因。若 `unit_id` 缺失或 `anchor_quote` 不能在命名 `unit_id` 内找到，必须过滤，不允许全文搜索兜底、跨段搜索或文末追加后写 Word 批注。
+- Agent 自述的“approved terminology / 受控术语表 / SOP requires”不是受控来源证明；只有运行器实际加载并验证的术语/模板来源才能支撑官方缩写全称、品牌、物料、注册名称等外部权威断言。
+- 表格单元格内的高置信问题可以使用 `P571 (T7R5C3)` 这类段落 + 表格坐标作为兼容位置提示；如果 `document_map.json` 中存在对应 table/row/cell 和精确原文片段，应优先通过 `unit_id + anchor_quote` 进入批注计划，而不是把坐标当成主契约。
 - 相邻双语脚注可作为稳定位置重试范围：若 agent 锚定中文脚注段落，但 `original` 精确出现在紧邻英文脚注段落，应将批注写入英文原文，而不是暴露或丢弃为人工复核项。
 - 同一表格单元格内同一温度条件出现不同 `±` 容差，属于可由单文件判断的内部数据不一致；不得仅因可能影响试验条件就自动改为外部证据项。
 - 对少数高置信、可单文档判断的模式允许确定性检查，例如被动语态 `were filter` 应为 `were filtered`、脚注 `data reference to the releasing data` 的 release-data 表达错误、重复标点、同一表格单元格内的双语数据不一致，以及由文档主流写法证明的短化学式 I/l/1 混淆。

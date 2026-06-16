@@ -1,0 +1,44 @@
+{
+  "schema_version": "reference-fact-extraction-step-response-v1",
+  "state": "DOMAIN_SHARDS_REQUIRED",
+  "reply": "Primary context shard is available. Submit the verified domain fact shards produced by the required extraction and validation subagents; if subagents are unavailable, report SUBAGENT_REQUIRED.",
+  "done": false,
+  "final": false,
+  "terminal_kind": "paused_recoverable",
+  "delivery_status": "not_ready",
+  "recoverable": true,
+  "recovery_mode": "submit_fact_shards",
+  "allowed_next_events": [
+    {
+      "schema_version": "reference-fact-extraction-step-event-v1",
+      "output_dir": "D:\\new1\\AI\\skill\\reference-fact-extraction\\outputs\\ip350-fact-extraction",
+      "profile_id": "ctd-32s73-stability",
+      "provided_artifacts": {
+        "long_term_stability_facts": "D:\\new1\\AI\\skill\\reference-fact-extraction\\outputs\\ip350-fact-extraction\\fact-shards\\long-term-stability-facts.json",
+        "accelerated_stability_facts": "D:\\new1\\AI\\skill\\reference-fact-extraction\\outputs\\ip350-fact-extraction\\fact-shards\\accelerated-stability-facts.json",
+        "stress_study_facts": "D:\\new1\\AI\\skill\\reference-fact-extraction\\outputs\\ip350-fact-extraction\\fact-shards\\stress-study-facts.json"
+      }
+    }
+  ],
+  "required_artifacts": [
+    "long_term_stability_facts",
+    "accelerated_stability_facts",
+    "stress_study_facts"
+  ],
+  "blocking_reasons": [],
+  "artifacts": {
+    "source_index_json": "D:\\new1\\AI\\skill\\reference-fact-extraction\\outputs\\ip350-fact-extraction\\source-index.json",
+    "source_index_md": "D:\\new1\\AI\\skill\\reference-fact-extraction\\outputs\\ip350-fact-extraction\\source-index.md",
+    "fact_shard_validation": "D:\\new1\\AI\\skill\\reference-fact-extraction\\outputs\\ip350-fact-extraction\\fact-shard-validation.json",
+    "fact_extraction_request": "D:\\new1\\AI\\skill\\reference-fact-extraction\\outputs\\ip350-fact-extraction\\fact-extraction-request.json"
+  },
+  "gates": {
+    "subagent": {
+      "subagent_required": true,
+      "required_execution_mode": "subagent",
+      "extraction_agent": "reference_fact_extraction_agent",
+      "validation_agent": "reference_fact_validation_agent",
+      "fallback_when_unavailable": "SUBAGENT_REQUIRED"
+    }
+  }
+}

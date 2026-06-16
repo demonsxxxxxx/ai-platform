@@ -1,0 +1,26 @@
+{
+  "schema_version": "reference-fact-extraction-step-event-v1",
+  "user_message": "提交已独立核验的 project_profile fact shard。",
+  "project_root": "d:/new1/AI/skill/reference-fact-extraction",
+  "output_dir": "D:/new1/AI/skill/reference-fact-extraction/outputs/ip350-fact-extraction",
+  "profile_id": "ctd-32s73-stability",
+  "sources": [
+    "C:/Users/Yanan.Liu/Desktop/3.2.S.7.3 申报资料智能体测试范例-真实数据/3.2.S.7.3-IP350/参考文件1-项目基本信息收集表.docx",
+    "C:/Users/Yanan.Liu/Desktop/3.2.S.7.3 申报资料智能体测试范例-真实数据/3.2.S.7.3-IP350/参考文件2-原液稳定性考察方案.docx",
+    "C:/Users/Yanan.Liu/Desktop/3.2.S.7.3 申报资料智能体测试范例-真实数据/3.2.S.7.3-IP350/参考文件3-原液和成品影响因素试验考察报告.docx",
+    "C:/Users/Yanan.Liu/Desktop/3.2.S.7.3 申报资料智能体测试范例-真实数据/3.2.S.7.3-IP350/参考文件4-稳定性试验数据汇总.xlsx"
+  ],
+  "forbidden_sources": [
+    {
+      "path": "C:/Users/Yanan.Liu/Desktop/3.2.S.7.3 申报资料智能体测试范例-真实数据/3.2.S.7.3-IP350/已完成的申报资料-32s73-稳定性数据.docx",
+      "reason": "已完成申报资料默认禁止作为事实来源或参考"
+    }
+  ],
+  "provided_artifacts": {
+    "project_profile_facts": "D:/new1/AI/skill/reference-fact-extraction/outputs/ip350-fact-extraction/fact-shards/project-profile-facts.json"
+  },
+  "options": {
+    "output_mode": "domain_native",
+    "auto_ocr_pdf": true
+  }
+}

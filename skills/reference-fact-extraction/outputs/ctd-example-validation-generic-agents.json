@@ -1,0 +1,20 @@
+{
+  "schema_version": "reference-fact-packet-validation-v1",
+  "profile_id": "ctd-32s73-stability",
+  "output_mode": "domain_native",
+  "path": "profiles\\ctd-32s73-stability\\example-fact-packet.json",
+  "errors": [
+    {
+      "level": "error",
+      "path": "trend_charts.charts",
+      "message": "Base fact packet must defer trend charts; charts must be empty until downstream trend stage."
+    },
+    {
+      "level": "error",
+      "path": "body_sections",
+      "message": "Base fact packet must defer body section text to downstream body stage."
+    }
+  ],
+  "warnings": [],
+  "passed": false
+}

@@ -31,6 +31,11 @@ from docx.oxml.ns import qn
 from add_word_comments_v3 import add_comments_improved
 from qa_comment_adjudicator import adjudicate_issues
 
+try:
+    from validate_agent_context_package import validate_package as validate_agent_context_package
+except ModuleNotFoundError:  # Support package-style imports in tests/tools.
+    from .validate_agent_context_package import validate_package as validate_agent_context_package
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPT_DIR.parent
@@ -136,6 +141,7 @@ EN_CHAR_PATTERN = re.compile(r"[A-Za-z]")
 HANGUL_PATTERN = re.compile(r"[\uac00-\ud7af]")
 ASCII_WORD_PATTERN = re.compile(r"[A-Za-z]{2,}")
 TABLE_EXTRA_SPACE_PATTERN = re.compile(r"(?:\n\s{2,}|[A-Za-z]\s{2,}[A-Za-z])")
+TABLE_NOTE_PREFIXES = ("注：", "注:", "Note:", "NOTE:", "备注：", "说明：")
 ZH_DOMINANT_TERM_ENDINGS = {"肽"}
 ZH_NEAR_VARIANT_ENDINGS = {"肽", "太", "胎"}
 EN_DOMINANT_TERM_SUFFIXES = ("glutide",)
@@ -195,6 +201,14 @@ def parse_args() -> argparse.Namespace:
         help=(
             "External semantic review JSON produced by the calling agent. "
             "May be passed multiple times. The script validates and merges it, but never calls an LLM itself."
+        ),
+    )
+    parser.add_argument(
+        "--agent-context-manifest",
+        default="",
+        help=(
+            "Optional agent_context_manifest.json from export_agent_review_context.py --context-version v2. "
+            "When omitted, <output_dir>/agent_context_manifest.json is used if present."
         ),
     )
     return parser.parse_args()
@@ -636,6 +650,69 @@ def is_body_text_paragraph(paragraph: Any) -> bool:
     return bool(text.strip()) and (name == "Normal (Web)" or "正文" in name)
 
 
+def length_pt(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    pt = getattr(value, "pt", None)
+    if pt is None:
+        return None
+    return round(float(pt), 2)
+
+
+def paragraph_has_zero_before_after_spacing(paragraph: Any) -> bool:
+    before = paragraph_spacing_pt(paragraph, "space_before")
+    after = paragraph_spacing_pt(paragraph, "space_after")
+    return before is not None and after is not None and approx_equal(before, 0.0) and approx_equal(after, 0.0)
+
+
+def paragraph_spacing_pt(paragraph: Any, attr_name: str) -> Optional[float]:
+    paragraph_format = getattr(paragraph, "paragraph_format", None)
+    if paragraph_format is not None:
+        direct = length_pt(getattr(paragraph_format, attr_name, None))
+        if direct is not None:
+            return direct
+
+    seen: set[int] = set()
+    current = getattr(paragraph, "style", None)
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        style_format = getattr(current, "paragraph_format", None)
+        if style_format is not None:
+            inherited = length_pt(getattr(style_format, attr_name, None))
+            if inherited is not None:
+                return inherited
+        current = getattr(current, "base_style", None)
+    return None
+
+
+def paragraph_is_adjacent_to_table(paragraph: Any) -> bool:
+    element = getattr(paragraph, "_p", None)
+    if element is None:
+        return False
+    previous_element = element.getprevious()
+    next_element = element.getnext()
+    table_tag = qn("w:tbl")
+    return (
+        (previous_element is not None and previous_element.tag == table_tag)
+        or (next_element is not None and next_element.tag == table_tag)
+    )
+
+
+def is_table_note_paragraph(paragraph: Any) -> bool:
+    text = (getattr(paragraph, "text", "") or "").strip()
+    if not text:
+        return False
+    sizes = paragraph_effective_font_sizes(paragraph)
+    has_table_note_font = bool(sizes) and all(approx_equal(size, TABLE_FONT_SIZE_PT) for size in sizes)
+    if not has_table_note_font:
+        return False
+    if not paragraph_has_zero_before_after_spacing(paragraph):
+        return False
+    if not paragraph_is_adjacent_to_table(paragraph):
+        return False
+    return text.startswith(TABLE_NOTE_PREFIXES) or len(text) <= 160
+
+
 def footer_compact_text(section: Any) -> str:
     text = "".join(paragraph.text for paragraph in section.footer.paragraphs if paragraph.text.strip())
     return compact_text(text)
@@ -1044,6 +1121,66 @@ def visible_comment_field(value: str, field_name: str) -> str:
     return trim_comment_field(strip_internal_comment_locators(value), comment_field_limit(field_name))
 
 
+def localize_visible_issue_text(value: str) -> str:
+    text = str(value or "").strip()
+    if not text or has_chinese(text):
+        return text
+
+    compact = re.sub(r"\s+", " ", text).strip()
+    match = re.search(r"missing space between\s+(.+?)\s+and\s+(.+?)[.。]?$", compact, flags=re.IGNORECASE)
+    if match:
+        return f"{match.group(1).strip()} 与 {match.group(2).strip()} 之间缺少空格。"
+
+    match = re.search(r"duplicate adjacent token[:：]?\s*[`\"'“”‘’]?([^`\"'“”‘’]+)[`\"'“”‘’]?", compact, flags=re.IGNORECASE)
+    if match:
+        return f"英文存在相邻重复词：`{match.group(1).strip()}`。"
+
+    match = re.search(
+        r"(?:typographical error|typo|spelling error)[:：]?\s*[`\"'“”‘’]?([^`\"'“”‘’]+)[`\"'“”‘’]?\s+(?:should be|is misspelled and should be)\s+[`\"'“”‘’]?([^`\"'“”‘’]+)[`\"'“”‘’]?",
+        compact,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return f"英文拼写错误：`{match.group(1).strip()}` 应为 `{match.group(2).strip()}`。"
+
+    match = re.search(r"[`\"'“”‘’]([^`\"'“”‘’]{1,80})[`\"'“”‘’]\s+should be\s+[`\"'“”‘’]([^`\"'“”‘’]{1,80})[`\"'“”‘’]", compact, flags=re.IGNORECASE)
+    if match:
+        return f"英文表述错误：`{match.group(1).strip()}` 应为 `{match.group(2).strip()}`。"
+
+    if any(token in compact.casefold() for token in ("grammar", "grammatical", "passive voice", "verb form")):
+        return "英文语法或动词形式存在需修订的问题。"
+    if any(token in compact.casefold() for token in ("mismatch", "inconsistent", "differs", "different")):
+        return "原文存在前后或中英文不一致的问题。"
+    return "英文原文存在需修订的问题。"
+
+
+def localize_visible_suggestion_text(value: str) -> str:
+    text = str(value or "").strip()
+    if not text or has_chinese(text):
+        return text
+
+    compact = re.sub(r"\s+", " ", text).strip()
+    match = re.search(r"insert a space between\s+(.+?)\s+and\s+(.+?)[.。]?$", compact, flags=re.IGNORECASE)
+    if match:
+        return f"在 {match.group(1).strip()} 和 {match.group(2).strip()} 之间补充空格。"
+
+    replacement_patterns = (
+        r"(?:replace|change|revise|correct)\s+[`\"'“”‘’]?([^`\"'“”‘’]+?)[`\"'“”‘’]?\s+(?:with|to)\s+[`\"'“”‘’]?([^`\"'“”‘’]+?)[`\"'“”‘’]?[.。]?$",
+        r"(?:replace|change|revise|correct)\s+.+?\s+(?:with|to)\s+[`\"'“”‘’]([^`\"'“”‘’]+)[`\"'“”‘’][.。]?$",
+    )
+    for pattern in replacement_patterns:
+        match = re.search(pattern, compact, flags=re.IGNORECASE)
+        if match:
+            source = match.group(1).strip()
+            target = match.group(2).strip()
+            if source and target:
+                return f"将 `{source}` 改为 `{target}`。"
+
+    if compact.casefold().startswith("add "):
+        return f"按批注位置补充缺失内容：{compact[4:].strip().rstrip('.')}。"
+    return "按批注位置核对并修订该处英文表述。"
+
+
 def comment_field_limit(field_name: str) -> int:
     return COMMENT_FIELD_LIMITS.get(field_name, MAX_COMMENT_FIELD_CHARS)
 
@@ -1066,6 +1203,10 @@ def is_global_summary_issue(issue: Dict[str, Any]) -> bool:
 
 def is_explicit_agent_global_summary_issue(raw_issue: Dict[str, Any], comment_intent: str = "") -> bool:
     return str(comment_intent or raw_issue.get("comment_intent") or "").strip() == "global_summary"
+
+
+def agent_issue_requires_unit_locator(raw_issue: Dict[str, Any], comment_intent: str = "") -> bool:
+    return True
 
 
 def has_explicit_source_evidence(raw_issue: Dict[str, Any]) -> bool:
@@ -1418,34 +1559,63 @@ def is_external_brand_or_product_name_claim(raw_issue: Dict[str, Any]) -> bool:
 
 
 def has_approved_term_or_template_basis(raw_issue: Dict[str, Any]) -> bool:
-    basis = str(raw_issue.get("review_basis") or "").casefold()
-    coverage = str(raw_issue.get("coverage_domain") or "").casefold()
-    combined = "\n".join(str(raw_issue.get(key) or "") for key in ("issue", "suggestion", "evidence"))
-    if any(marker in basis for marker in ("company_standard", "approved_terminology", "template_requirement")):
-        return True
-    if any(marker in coverage for marker in ("company_standard", "approved_terminology", "template_requirement")):
-        return True
-    return any(
-        marker in combined
-        for marker in (
-            "公司标准明确要求",
-            "模板要求明确",
-            "受控术语表",
-            "批准术语",
-            "approved terminology",
-            "controlled terminology",
-            "template requirement",
-        )
-    )
+    """Return true only for runner-verified approved rule sources.
+
+    Agent metadata or prose such as `company_standard` is not itself proof of a
+    controlled template, terminology source, or company rule. Deterministic
+    runner branches encode the currently verified company-standard rules.
+    """
+
+    return False
+
+
+def has_explicit_controlled_term_source(raw_issue: Dict[str, Any]) -> bool:
+    """Return true only for runner-verified controlled sources.
+
+    Agent prose or metadata such as `company_standard` is not proof. Until a
+    glossary/template source is loaded and verified by the runner, model-only
+    official terminology rewrites stay external.
+    """
+
+    return False
 
 
 def is_external_official_terminology_rewrite(raw_issue: Dict[str, Any]) -> bool:
     """Filter official-term rewrites that need a controlled terminology source."""
 
-    if has_approved_term_or_template_basis(raw_issue):
+    if has_explicit_controlled_term_source(raw_issue):
         return False
     combined = "\n".join(str(raw_issue.get(key) or "") for key in ("original", "issue", "suggestion", "evidence"))
     lowered = combined.casefold()
+    acronym_authority_claim = (
+        any(
+            token in combined
+            for token in (
+                "缩写",
+                "缩略语",
+                "英文全称",
+                "正确全称",
+                "标准全称",
+                "官方全称",
+                "标准英文名称",
+                "官方中文名称",
+                "官方英文名称",
+            )
+        )
+        or any(
+            token in lowered
+            for token in (
+                "acronym",
+                "abbreviation",
+                "correct full name",
+                "standard full name",
+                "official full name",
+                "official english name",
+                "official chinese name",
+                "regulatory abbreviation",
+            )
+        )
+    )
     domain_claim = any(
         token in combined
         for token in (
@@ -1463,6 +1633,7 @@ def is_external_official_terminology_rewrite(raw_issue: Dict[str, Any]) -> bool:
             "官方名称",
             "官方术语",
             "标准名称",
+            "官方",
         )
     ) or any(
         token in lowered
@@ -1475,6 +1646,7 @@ def is_external_official_terminology_rewrite(raw_issue: Dict[str, Any]) -> bool:
             "controlled term",
             "standard name",
             "material name",
+            "official",
         )
     )
     rewrite_claim = any(
@@ -1487,6 +1659,9 @@ def is_external_official_terminology_rewrite(raw_issue: Dict[str, Any]) -> bool:
             "改为",
             "标准表述",
             "规范表述",
+            "正确全称",
+            "正确名称",
+            "更正为",
         )
     ) or any(
         token in lowered
@@ -1496,8 +1671,13 @@ def is_external_official_terminology_rewrite(raw_issue: Dict[str, Any]) -> bool:
             "standardize as",
             "should be named",
             "should be written as",
+            "correct full name",
+            "correct name",
+            "revise to",
         )
     )
+    if acronym_authority_claim and rewrite_claim:
+        return True
     if not domain_claim or not rewrite_claim:
         return False
     if any(token in combined for token in ("数值", "温度", "条件", "方法", "DS", "DP", "原液", "制剂不一致")):
@@ -1555,7 +1735,7 @@ def is_high_risk_formula_semantic_issue(raw_issue: Dict[str, Any]) -> bool:
         for key in ("issue", "suggestion", "evidence")
     )
     basis = str(raw_issue.get("review_basis") or "").strip()
-    if basis == "company_standard":
+    if basis == "company_standard" and has_approved_term_or_template_basis(raw_issue):
         return False
     formula_like = bool(re.search(r"[=<>|±*/]", original)) or (
         "%" in original and bool(re.search(r"[A-Za-z]", original))
@@ -1602,6 +1782,52 @@ def is_objective_formula_case_issue(raw_issue: Dict[str, Any]) -> bool:
     return False
 
 
+def has_repeated_whitespace_span(value: str) -> bool:
+    normalized_original = str(value or "").replace("\u00a0", " ").replace("\u3000", " ").replace("\t", "  ")
+    has_repeated_inline_space = bool(re.search(r"\S {2,}\S", normalized_original))
+    has_repeated_leading_space = bool(re.search(r"(?m)^ {2,}\S", normalized_original))
+    return has_repeated_inline_space or has_repeated_leading_space
+
+
+def is_objective_repeated_whitespace_issue(raw_issue: Dict[str, Any]) -> bool:
+    """Allow exact repeated-whitespace defects while still filtering style-only spacing claims."""
+
+    category = str(raw_issue.get("category") or "").strip()
+    if category not in {"en_language", "zh_language", "bilingual_consistency", "semantic_consistency"}:
+        return False
+    original = str(raw_issue.get("original") or "")
+    if not original:
+        return False
+    if not has_repeated_whitespace_span(original):
+        return False
+    combined = "\n".join(
+        str(raw_issue.get(key) or "")
+        for key in ("issue", "suggestion", "evidence", "original")
+    )
+    lowered = combined.casefold()
+    has_space_marker = any(
+        marker in lowered
+        for marker in (
+            "extra space",
+            "extra spaces",
+            "multiple spaces",
+            "consecutive spaces",
+            "repeated spaces",
+            "redundant spaces",
+            "重复空格",
+            "连续空格",
+            "多个空格",
+            "多余空格",
+            "空格过多",
+            "前导空格",
+            "缩进",
+        )
+    )
+    if not has_space_marker:
+        return False
+    return has_actionable_agent_suggestion(raw_issue)
+
+
 def is_objective_source_local_typo_issue(raw_issue: Dict[str, Any]) -> bool:
     """Allow exact, source-local typo findings while still filtering style noise.
 
@@ -1645,6 +1871,10 @@ def is_objective_source_local_typo_issue(raw_issue: Dict[str, Any]) -> bool:
     if not has_actionable_agent_suggestion(raw_issue):
         return False
     return True
+
+
+def is_objective_repeated_whitespace_anchor(raw_issue: Dict[str, Any], anchor_text: str) -> bool:
+    return is_objective_repeated_whitespace_issue(raw_issue) and has_repeated_whitespace_span(anchor_text)
 
 
 def is_direct_internal_source_contradiction(issue: Dict[str, Any]) -> bool:
@@ -1799,7 +2029,7 @@ def passes_user_visible_agent_quality_gate(
         return False
     if has_stable_anchor:
         return True
-    return is_explicit_agent_global_summary_issue(raw_issue, comment_intent)
+    return False
 
 
 def is_current_date_regulatory_status_noise(issue: Dict[str, Any]) -> bool:
@@ -1853,13 +2083,13 @@ def build_comment_text(
     parts = []
     if check_required and "需核对" not in issue and "人工核对" not in issue:
         issue = f"{issue}（需核对后确认）"
-    parts.append(f"{issue_label}：{visible_comment_field(issue, 'issue')}")
+    parts.append(f"{issue_label}：{visible_comment_field(localize_visible_issue_text(issue), 'issue')}")
     if original:
         parts.append(f"原文：{visible_comment_field(original, 'original')}")
     if suggestion:
         if check_required and "核对" not in suggestion:
             suggestion = f"先核对相关依据；{suggestion}"
-        parts.append(f"{suggestion_label}：{visible_comment_field(suggestion, 'suggestion')}")
+        parts.append(f"{suggestion_label}：{visible_comment_field(localize_visible_suggestion_text(suggestion), 'suggestion')}")
     return "\n".join(parts)
 
 
@@ -1928,6 +2158,12 @@ def make_issue(
         normalized_status = ISSUE_STATUS_NEEDS_USER_CHECK
         normalized_review_basis = "external_required"
         normalized_coverage_domain = "external_check"
+    normalized_comment_visibility = comment_visibility or "word_comment"
+    normalized_comments_added = int(comments_added or 0)
+    if normalized_comments_added <= 0 and normalized_comment_visibility == "word_comment":
+        normalized_comment_visibility = "internal"
+    if normalized_comment_visibility != "word_comment":
+        normalized_comments_added = 0
     issue_data: Dict[str, Any] = {
         "id": f"issue-{issue_id:04d}",
         "rule_id": rule_id,
@@ -1959,10 +2195,10 @@ def make_issue(
         "evidence": evidence,
         "match_method": match_method,
         "preexisting_comment_count": 0,
-        "comments_added": comments_added,
+        "comments_added": normalized_comments_added,
         "confidence": confidence,
         "status": normalized_status,
-        "comment_visibility": comment_visibility or "word_comment",
+        "comment_visibility": normalized_comment_visibility,
         "requires_external_evidence": requires_external,
         "external_evidence_type": external_type,
         "coverage_domain": normalized_coverage_domain,
@@ -2356,6 +2592,8 @@ def run_format_branch(
     for paragraph in doc.paragraphs:
         if not is_body_text_paragraph(paragraph):
             continue
+        if is_table_note_paragraph(paragraph):
+            continue
         sizes = paragraph_effective_font_sizes(paragraph)
         if sizes and any(not approx_equal(size, BODY_FONT_SIZE_PT) for size in sizes):
             text = paragraph.text.strip()
@@ -2501,6 +2739,7 @@ def run_format_branch(
         anchor_text = str(first_record.get("text") or "").strip()
         anchor_fields = anchor_fields_from_record(first_record, anchor_text)
         evidence = format_grouped_examples((item[0], item[1]) for item in table_spacing_examples)
+        has_stable_anchor = bool(anchor_fields["comments_added"])
         issues.append(
             make_issue(
                 issue_id,
@@ -2521,8 +2760,12 @@ def run_format_branch(
                 comments_added=anchor_fields["comments_added"],
                 confidence="medium",
                 match_method=anchor_fields["match_method"],
-                comment_visibility="internal",
-                notes="低价值表格空白/缩进格式项仅保留为内部诊断，不写入 Word 批注。",
+                comment_visibility="word_comment" if has_stable_anchor else "internal",
+                notes=(
+                    "表格连续空格/前导缩进为客观格式错误，已有稳定锚点时写入代表性批注。"
+                    if has_stable_anchor
+                    else "表格空白/缩进格式项缺少稳定锚点，仅保留为内部诊断。"
+                ),
             )
         )
 
@@ -2541,25 +2784,27 @@ def run_project_branch(paragraphs: Sequence[Dict[str, Any]], current_project: st
         text = str(record.get("text", ""))
         if paragraph_document_zone(record) == "table":
             continue
-        matches = {item for item in PROJECT_PATTERN.findall(text) if item not in aliases}
-        if not matches:
+        candidate_matches: List[Tuple[str, re.Match[str]]] = []
+        for match_obj in PROJECT_PATTERN.finditer(text):
+            item = match_obj.group(0)
+            if item in aliases:
+                continue
+            context = text[max(0, match_obj.start() - 30) : min(len(text), match_obj.end() + 30)].lower()
+            if any(word.lower() in context for word in allow_words):
+                continue
+            if is_project_code_biological_context(item, context):
+                continue
+            if is_current_project_subentity_context(item, aliases, context):
+                continue
+            candidate_matches.append((item, match_obj))
+        if not candidate_matches:
             continue
         location = paragraph_location(record)
         anchor_locator = paragraph_anchor_locator(record)
         document_zone = paragraph_document_zone(record)
         location_kind = paragraph_location_kind(record)
 
-        other = sorted(
-            matches,
-            key=lambda item: next((match.start() for match in PROJECT_PATTERN.finditer(text) if match.group(0) == item), 10**9),
-        )[0]
-        match_obj = next((match for match in PROJECT_PATTERN.finditer(text) if match.group(0) == other), None)
-        if match_obj is not None:
-            context = text[max(0, match_obj.start() - 30) : min(len(text), match_obj.end() + 30)].lower()
-            if any(word.lower() in context for word in allow_words):
-                continue
-            if is_project_code_biological_context(other, context):
-                continue
+        other, match_obj = candidate_matches[0]
         span = find_exact_span(text, other)
         status = "confirmed" if span else ISSUE_STATUS_NEEDS_USER_CHECK
         issues.append(
@@ -2596,6 +2841,55 @@ def is_project_code_biological_context(code: str, context: str) -> bool:
     if not value.startswith(("HEK", "CHO")):
         return False
     return any(term in text for term in ("cell", "cells", "cell line", "细胞", "细胞系"))
+
+
+def is_current_project_subentity_context(code: str, current_aliases: set[str], context: str) -> bool:
+    value = str(code or "").upper()
+    aliases = {str(alias or "").upper() for alias in current_aliases if alias}
+    if not any(len(value) == len(alias) + 1 and value.startswith(alias) and value[-1:].isalpha() for alias in aliases):
+        return False
+    text = str(context or "").lower()
+    if re.search(rf"{re.escape(value.lower())}\s*-", text):
+        return True
+    subentity_terms = (
+        "分子",
+        "氨基酸",
+        "序列",
+        "目的基因",
+        "基因",
+        "信号肽",
+        "表达载体",
+        "载体",
+        "质粒",
+        "片段",
+        "构建体",
+        "构建",
+        "克隆",
+        "酶切",
+        "转化",
+        "菌落",
+        "重组",
+        "snts",
+        "sp1",
+        "sp2",
+        "ptt5",
+        "molecule",
+        "sequence",
+        "gene",
+        "signal peptide",
+        "expression vector",
+        "vector",
+        "plasmid",
+        "fragment",
+        "construct",
+        "construction",
+        "clone",
+        "cloning",
+        "digestion",
+        "transformation",
+        "recombinant",
+    )
+    return any(term in text for term in subentity_terms)
 
 
 def content_issue(
@@ -2726,6 +3020,21 @@ def method_tokens_from_chinese_text(text: str) -> set[str]:
         match.group(1)
         for match in re.finditer(r"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9-]{1,})\s*法", text or "")
     }
+
+
+def has_substantive_chinese_text_outside_method_marker(text: str) -> bool:
+    """Return true when a Chinese source line contains more than a bare method marker."""
+
+    stripped = str(text or "")
+    for term in sorted(method_tokens_from_chinese_text(stripped), key=len, reverse=True):
+        stripped = re.sub(
+            rf"[（(]?\s*{re.escape(term)}\s*法\s*[)）]?",
+            "",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+    remaining_zh = "".join(ZH_CHAR_PATTERN.findall(stripped))
+    return len(remaining_zh) >= 2
 
 
 def bounded_edit_distance(left: str, right: str, limit: int = 1) -> int:
@@ -2890,18 +3199,6 @@ def detect_confusable_formula_variant_issues(
             if expected:
                 findings.append((record, "CONTENT-EN-FORMULA-CONFUSABLE-001", candidate, expected, "en"))
     return findings
-
-
-def wrong_method_translation_fragment(method: str, english_text: str) -> Optional[str]:
-    escaped = re.escape(method)
-    if re.search(rf"\b{escaped}\s+Method\b", english_text or "", flags=re.IGNORECASE):
-        return None
-    match = re.search(rf"\b{escaped}\s+[A-Za-z]*Method\b", english_text or "", flags=re.IGNORECASE)
-    if match:
-        return match.group(0)
-    if re.search(rf"\b{escaped}\b", english_text or "", flags=re.IGNORECASE):
-        return method
-    return None
 
 
 SEC_MONOMER_ZH_PATTERN = re.compile(
@@ -3274,20 +3571,6 @@ def run_content_consistency_branch(paragraphs: Sequence[Dict[str, Any]], next_is
                     evidence=f"表格方案组别: {', '.join('Group ' + str(item) for item in sorted(protocol_group_numbers))}; 原文: {text}",
                 )
 
-        if has_chinese(text) and has_english(text):
-            for term in sorted(method_tokens_from_chinese_text(text)):
-                wrong_fragment = wrong_method_translation_fragment(term, text)
-                if wrong_fragment and term.upper() == "LC-MS":
-                    add(
-                        record,
-                        rule_id="CONTENT-BI-003",
-                        original=wrong_fragment,
-                        issue=f"中文写作 `{term}法`，英文对应位置未使用稳定的 `{term} Method` 表达。",
-                        suggestion=f"将英文方法表述统一为 `{term} Method`，并核对该检测项中英文是否一一对应。",
-                        severity="关键",
-                        evidence=text,
-                    )
-
     for index, record in enumerate(paragraphs[:-1]):
         text = str(record.get("text", "")).strip()
         next_record = paragraphs[index + 1]
@@ -3296,21 +3579,12 @@ def run_content_consistency_branch(paragraphs: Sequence[Dict[str, Any]], next_is
             continue
 
         if has_chinese(text) and has_english(next_text):
-            for term in sorted(method_tokens_from_chinese_text(text)):
-                wrong_fragment = wrong_method_translation_fragment(term, next_text)
-                if wrong_fragment and term.upper() == "LC-MS":
-                    add(
-                        next_record,
-                        rule_id="CONTENT-BI-003",
-                        original=wrong_fragment,
-                        issue=f"中文写作 `{term}法`，英文对应位置未使用稳定的 `{term} Method` 表达。",
-                        suggestion=f"将英文方法表述统一为 `{term} Method`，并核对该检测项中英文是否一一对应。",
-                        severity="关键",
-                        evidence=f"中文: {text}; 英文: {next_text}",
-                    )
-            missing_terms = sorted(
-                term for term in method_tokens_from_chinese_text(text) if term.lower() not in next_text.lower()
-            )
+            if has_substantive_chinese_text_outside_method_marker(text):
+                missing_terms = sorted(
+                    term for term in method_tokens_from_chinese_text(text) if term.lower() not in next_text.lower()
+                )
+            else:
+                missing_terms = []
             if missing_terms:
                 add(
                     next_record,
@@ -3410,6 +3684,72 @@ def load_json_with_repair(path: Path) -> Dict[str, Any]:
     return payload
 
 
+def load_agent_context_unit_ids(
+    manifest_path: Path,
+    *,
+    require_manifest: bool = False,
+) -> Tuple[Optional[set[str]], Dict[str, Any]]:
+    """Load allowed unit IDs from a context v2 package if one is available.
+
+    Missing manifests keep backward compatibility and return ``None``. Existing
+    but invalid manifests fail closed with an empty set so stale or incomplete
+    context packages cannot authorize agent findings outside the reviewed
+    context.
+    """
+
+    metadata: Dict[str, Any] = {
+        "context_manifest": str(manifest_path),
+        "context_manifest_found": False,
+        "context_manifest_valid": False,
+        "context_unit_count": 0,
+    }
+    if not manifest_path.exists():
+        if require_manifest:
+            metadata["status"] = "failed"
+            metadata["context_manifest_error"] = f"agent context manifest not found: {manifest_path}"
+            metadata["context_manifest_mode"] = "required_missing"
+            return set(), metadata
+        metadata["context_manifest_mode"] = "legacy_no_context_manifest"
+        metadata["agent_merge_unrestricted_for_legacy_context"] = True
+        return None, metadata
+
+    metadata["context_manifest_found"] = True
+    try:
+        validation_errors = validate_agent_context_package(manifest_path)
+        metadata["context_manifest_validation_errors"] = validation_errors
+        if validation_errors:
+            raise ValueError("context package validation failed: " + "; ".join(validation_errors[:10]))
+
+        manifest = load_json_with_repair(manifest_path)
+        unit_index_name = str(manifest.get("unit_index") or "").strip()
+        if not unit_index_name:
+            raise ValueError("agent context manifest missing unit_index")
+        unit_index_path = manifest_path.parent / unit_index_name
+        if not unit_index_path.exists():
+            raise FileNotFoundError(f"agent context unit index not found: {unit_index_path}")
+
+        unit_ids: set[str] = set()
+        with unit_index_path.open("r", encoding="utf-8-sig") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise ValueError(f"{unit_index_path.name}:{line_number}: JSONL row must be an object")
+                unit_id = str(row.get("unit_id") or "").strip()
+                if unit_id:
+                    unit_ids.add(unit_id)
+        metadata["context_unit_index"] = str(unit_index_path)
+        metadata["context_unit_count"] = len(unit_ids)
+        metadata["context_manifest_valid"] = True
+        metadata["context_manifest_mode"] = "v2_manifest"
+        return unit_ids, metadata
+    except Exception as exc:
+        metadata["context_manifest_error"] = describe_exception(exc)
+        metadata["status"] = "failed"
+        return set(), metadata
+
+
 def make_human_review_item(
     branch: str,
     reason: str,
@@ -3501,6 +3841,70 @@ def int_record_field(record: Dict[str, Any], field_name: str) -> Optional[int]:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def agent_unit_id(raw_issue: Dict[str, Any]) -> str:
+    return str(raw_issue.get("problem_unit_id") or raw_issue.get("unit_id") or "").strip()
+
+
+def add_record_unit_key(index: Dict[str, Dict[str, Any]], key: Any, record: Dict[str, Any]) -> None:
+    text = str(key or "").strip()
+    if text:
+        index.setdefault(text.casefold(), record)
+
+
+def build_record_unit_index(paragraphs: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    index: Dict[str, Dict[str, Any]] = {}
+    for ordinal, record in enumerate(paragraphs, start=1):
+        unit_id = str(record.get("unit_id") or "").strip()
+        paragraph_id = str(record.get("paragraph_id") or "").strip()
+        for key in (unit_id, paragraph_id):
+            if not key:
+                continue
+            add_record_unit_key(index, key, record)
+            add_record_unit_key(index, f"u:{key}", record)
+
+        xml_index = int_record_field(record, "xml_index")
+        if xml_index is not None:
+            add_record_unit_key(index, f"xml-{xml_index:05d}", record)
+            add_record_unit_key(index, f"xml:{xml_index}", record)
+
+        add_record_unit_key(index, f"u-{ordinal:05d}", record)
+    return index
+
+
+def locate_record_by_unit_id(
+    paragraphs: Sequence[Dict[str, Any]],
+    raw_issue: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    unit_id = agent_unit_id(raw_issue)
+    if not unit_id:
+        return None
+    return build_record_unit_index(paragraphs).get(unit_id.casefold())
+
+
+def find_anchor_quote_span(record: Dict[str, Any], raw_issue: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], str]:
+    text = str(record.get("text") or "")
+    candidate = strip_agent_text_label(str(raw_issue.get("anchor_quote") or "")).strip(" \t\r\n:：;；,，。.-")
+    if not candidate or has_weak_agent_anchor(candidate):
+        return None, ""
+    span = find_exact_span(text, candidate)
+    if span:
+        return span, candidate
+    return None, ""
+
+
+def compact_source_anchor_text(value: Any) -> str:
+    text = strip_agent_text_label(str(value or "")).strip(" \t\r\n:：;；,，。.-")
+    return normalized_text(text).casefold()
+
+
+def source_anchor_texts_compatible(left: Any, right: Any) -> bool:
+    left_norm = compact_source_anchor_text(left)
+    right_norm = compact_source_anchor_text(right)
+    if not left_norm or not right_norm:
+        return False
+    return left_norm in right_norm or right_norm in left_norm
 
 
 def nearby_llm_target_records(
@@ -3627,16 +4031,26 @@ def resolve_llm_anchor(
     paragraph_text: str,
     raw_issue: Dict[str, Any],
 ) -> Tuple[Optional[Dict[str, Any]], str]:
-    original = strip_agent_text_label(str(raw_issue.get("original", ""))).strip(" \t\r\n:：;；,，。.-")
+    raw_original = strip_agent_text_label(str(raw_issue.get("original", "")))
+    if is_objective_repeated_whitespace_issue(raw_issue):
+        original = raw_original.strip(" \t\r\n")
+    else:
+        original = raw_original.strip(" \t\r\n:：;；,，。.-")
     reject_replacement_target_anchor = not is_objective_formula_case_issue(raw_issue)
     preferred_error = preferred_error_anchor_from_issue(paragraph_text, raw_issue, original)
     if preferred_error:
         preferred_span = find_exact_span(paragraph_text, preferred_error) or find_first_exact_span(paragraph_text, preferred_error)
-        if preferred_span and not (reject_replacement_target_anchor and anchor_is_replacement_target(raw_issue, preferred_error)):
+        if preferred_span and not (
+            reject_replacement_target_anchor
+            and should_reject_replacement_target_anchor(raw_issue, preferred_error)
+        ):
             return preferred_span, preferred_error
     if original:
         original_span = find_exact_span(paragraph_text, original) or find_first_exact_span(paragraph_text, original)
-        if original_span and not (reject_replacement_target_anchor and anchor_is_replacement_target(raw_issue, original)):
+        if original_span and not (
+            reject_replacement_target_anchor
+            and should_reject_replacement_target_anchor(raw_issue, original)
+        ):
             return original_span, original
 
     candidates = sorted(
@@ -3649,7 +4063,10 @@ def resolve_llm_anchor(
         ),
     )
     for candidate in candidates:
-        if reject_replacement_target_anchor and anchor_is_replacement_target(raw_issue, candidate):
+        if (
+            reject_replacement_target_anchor
+            and should_reject_replacement_target_anchor(raw_issue, candidate)
+        ):
             continue
         span = find_exact_span(paragraph_text, candidate) or find_first_exact_span(paragraph_text, candidate)
         if span:
@@ -3725,6 +4142,12 @@ def should_reject_replacement_target_anchor(raw_issue: Dict[str, Any], anchor_te
     if not anchor_is_replacement_target(raw_issue, anchor_text):
         return False
     if is_objective_formula_case_issue(raw_issue):
+        return False
+    if is_objective_repeated_whitespace_anchor(raw_issue, anchor_text):
+        return False
+    combined = "\n".join(str(raw_issue.get(key) or "") for key in ("issue", "suggestion", "evidence", "original"))
+    lowered = combined.casefold()
+    if ("缺少空格" in combined or "missing space" in lowered) and str(raw_issue.get("original") or "").strip() == str(anchor_text or "").strip():
         return False
     return True
 
@@ -3836,6 +4259,10 @@ def is_low_value_llm_style_issue(raw_issue: Dict[str, Any]) -> bool:
 
     if is_objective_formula_case_issue(raw_issue):
         return False
+    if is_objective_repeated_whitespace_issue(raw_issue):
+        return False
+    if is_signature_date_placeholder_column_claim(raw_issue):
+        return True
 
     issue_suggestion = f"{issue}\n{suggestion}"
     lowered_issue_suggestion = issue_suggestion.casefold()
@@ -3979,6 +4406,18 @@ def is_low_value_llm_style_issue(raw_issue: Dict[str, Any]) -> bool:
         return True
 
     if (
+        "/" in original
+        and ("空格" in combined or "space" in lowered or "spacing" in lowered)
+        and (
+            any(token in combined for token in ("斜杠", "前后空格", "空格格式", "格式统一"))
+            or any(token in lowered for token in ("slash", "solidus"))
+        )
+        and not is_objective_repeated_whitespace_issue(raw_issue)
+        and not any(token in combined for token in ("数值不一致", "方法不一致", "条件不一致", "错译", "矛盾", "含义改变"))
+    ):
+        return True
+
+    if (
         any(token in combined for token in ("同一文档", "不同表格", "混用"))
         and any(token in combined for token in ("格式不一致", "格式统一", "应统一", "建议统一"))
         and not any(token in combined for token in ("缺少空格", "漏空格", "拼写错误", "数值", "方法", "条件", "错译", "矛盾"))
@@ -4007,8 +4446,11 @@ def is_low_value_llm_style_issue(raw_issue: Dict[str, Any]) -> bool:
     ):
         return True
 
-    if any(token in lowered for token in ("inconsistent capitalization", "capitalization style", "title case")) and not any(
-        token in lowered for token in ("company standard", "template requirement", "terminology", "proper noun", "abbreviation", "misspelled")
+    capitalization_has_source_local_basis = any(
+        token in lowered for token in ("terminology", "proper noun", "abbreviation", "misspelled")
+    )
+    if any(token in lowered for token in ("inconsistent capitalization", "capitalization style", "title case")) and not (
+        has_approved_term_or_template_basis(raw_issue) or capitalization_has_source_local_basis
     ):
         return True
 
@@ -4016,11 +4458,6 @@ def is_low_value_llm_style_issue(raw_issue: Dict[str, Any]) -> bool:
         any(token in combined for token in ("动词冗余", "语义重复", "赘余动词", "结构冗余", "成分冗余", "进行执行"))
         or any(token in lowered for token in ("redundant verb", "redundant wording", "word redundancy"))
     ) and not any(token in combined for token in ("数据", "数值", "方法不一致", "条件不一致", "错译", "合规", "影响含义")):
-        return True
-
-    if re.search(r"[\u4e00-\u9fff]\s{2,}[\u4e00-\u9fff]", original) and any(
-        token in lowered for token in ("personal name", "name", "extra spaces", "spacing")
-    ):
         return True
 
     if (
@@ -4071,8 +4508,9 @@ def is_low_value_llm_style_issue(raw_issue: Dict[str, Any]) -> bool:
     ):
         return True
 
-    if any(token in combined for token in ("大小写", "首字母大写", "首字母未大写", "标题大小写")) and not any(
-        token in combined for token in ("公司标准", "模板要求", "术语", "专有名词", "缩写", "拼写")
+    if any(token in combined for token in ("大小写", "首字母大写", "首字母未大写", "标题大小写")) and not (
+        has_approved_term_or_template_basis(raw_issue)
+        or any(token in combined for token in ("术语", "专有名词", "缩写", "拼写"))
     ):
         return True
 
@@ -4108,10 +4546,60 @@ def is_nonlocal_na_percentage_table_claim(raw_issue: Dict[str, Any], record: Opt
     return "核对" in combined and any(token in combined for token in ("数据", "记录", "检测"))
 
 
+def is_signature_date_placeholder_column_claim(raw_issue: Dict[str, Any]) -> bool:
+    """Filter electronic-form signature/date placeholder column complaints.
+
+    SOP and execution-form drafts often expose print-signature placeholder
+    headers while row content only carries business columns. Without a verified
+    template rule, this is not a source-local document defect.
+    """
+
+    combined = "\n".join(
+        str(raw_issue.get(key) or "")
+        for key in ("original", "issue", "suggestion", "evidence", "anchor_quote")
+    )
+    lowered = combined.casefold()
+    signature_headers = (
+        ("签字/日期" in combined or "签名/日期" in combined or "signature/date" in lowered)
+        and ("复核/日期" in combined or "审核/日期" in combined or "review/date" in lowered)
+    )
+    if not signature_headers:
+        return False
+    column_mismatch_claim = (
+        (
+            "表头" in combined
+            and "数据行" in combined
+            and any(token in combined for token in ("列数", "列结构", "定义了", "只有", "仅包含", "无第", "缺少"))
+        )
+        or (
+            "header row" in lowered
+            and "data row" in lowered
+            and any(token in lowered for token in ("column", "absent", "missing", "only have"))
+        )
+    )
+    if not column_mismatch_claim:
+        return False
+    correction_targets_signature_columns = any(
+        token in combined
+        for token in (
+            "补充签字/日期",
+            "补充签名/日期",
+            "补充复核/日期",
+            "缩减表头",
+            "调整表头列数",
+            "统一表头与数据行",
+        )
+    ) or any(token in lowered for token in ("signature/date", "review/date", "adjust the header", "align the column"))
+    return correction_targets_signature_columns and not has_approved_term_or_template_basis(raw_issue)
+
+
 def make_llm_issue(
     issue_id: int,
     paragraphs: Sequence[Dict[str, Any]],
     raw_issue: Dict[str, Any],
+    *,
+    require_unit_locator: bool = False,
+    allowed_unit_ids: set[str] | None = None,
 ) -> Optional[Dict[str, Any]]:
     if validate_llm_issue_payload(raw_issue):
         return None
@@ -4126,15 +4614,38 @@ def make_llm_issue(
     if not original or not issue or not suggestion:
         return None
 
-    record = locate_llm_record(paragraphs, raw_issue)
+    unit_id = agent_unit_id(raw_issue)
+    if allowed_unit_ids is not None and unit_id:
+        normalized_allowed_unit_ids = {str(allowed_unit_id).strip().casefold() for allowed_unit_id in allowed_unit_ids}
+        if unit_id.casefold() not in normalized_allowed_unit_ids:
+            return None
+    early_comment_intent = normalize_enum(raw_issue.get("comment_intent"), ALLOWED_COMMENT_INTENTS, "")
+    if is_explicit_agent_global_summary_issue(raw_issue, early_comment_intent) and not unit_id:
+        return None
+    if require_unit_locator and agent_issue_requires_unit_locator(raw_issue, early_comment_intent) and not unit_id:
+        return None
+    if unit_id:
+        record = locate_record_by_unit_id(paragraphs, raw_issue)
+        if record is None:
+            return None
+        span, anchor_text = find_anchor_quote_span(record, raw_issue)
+        if not span:
+            return None
+        if not source_anchor_texts_compatible(original, anchor_text):
+            return None
+    else:
+        record = locate_llm_record(paragraphs, raw_issue)
+        paragraph_text_value = str(record.get("text", "")) if record else ""
+        span, anchor_text = resolve_llm_anchor(paragraph_text_value, raw_issue) if record else (None, original)
     if is_nonlocal_na_percentage_table_claim(raw_issue, record):
         return None
     paragraph_text_value = str(record.get("text", "")) if record else ""
-    span, anchor_text = resolve_llm_anchor(paragraph_text_value, raw_issue) if record else (None, original)
     if span and should_reject_replacement_target_anchor(raw_issue, anchor_text):
         span = None
     if is_unsafe_embedded_numeric_anchor(paragraph_text_value, span, anchor_text, raw_issue):
         span = None
+    if unit_id and not span:
+        return None
     if record and not span:
         for nearby_record in nearby_llm_target_records(paragraphs, raw_issue, record):
             if nearby_record is record:
@@ -4157,7 +4668,7 @@ def make_llm_issue(
         if unique_anchor:
             record, span, anchor_text = unique_anchor
     has_stable_anchor = bool(record and span) and not has_weak_agent_anchor(anchor_text)
-    comment_intent = normalize_enum(raw_issue.get("comment_intent"), ALLOWED_COMMENT_INTENTS, "")
+    comment_intent = early_comment_intent
     external_type = str(raw_issue.get("external_evidence_type") or "").strip()
     coverage_domain = str(raw_issue.get("coverage_domain") or "").strip()
     review_basis = str(raw_issue.get("review_basis") or "").strip()
@@ -4179,7 +4690,7 @@ def make_llm_issue(
     status = ISSUE_STATUS_CONFIRMED
     is_global_summary = is_explicit_agent_global_summary_issue(raw_issue, comment_intent)
     severity = normalized_agent_visible_severity(severity, raw_issue)
-    return make_issue(
+    issue_data = make_issue(
         issue_id,
         rule_id=LLM_CATEGORY_RULES[category],
         branch=LLM_REVIEW_BRANCH,
@@ -4206,11 +4717,19 @@ def make_llm_issue(
         review_basis=review_basis,
         comment_intent=comment_intent,
     )
+    if unit_id:
+        issue_data["unit_id"] = unit_id
+    for field_name in ("problem_unit_id", "pair_id", "anchor_quote", "evidence_unit_ids"):
+        if field_name in raw_issue:
+            issue_data[field_name] = raw_issue[field_name]
+    return issue_data
 
 
 def classify_skipped_agent_issue(
     raw_issue: Dict[str, Any],
     paragraphs: Sequence[Dict[str, Any]],
+    *,
+    allowed_unit_ids: set[str] | None = None,
 ) -> Tuple[str, str]:
     """Classify hidden semantic findings so audit logs distinguish noise from retriable misses."""
 
@@ -4234,6 +4753,13 @@ def classify_skipped_agent_issue(
     )
     if requires_external or comment_intent == "request_check":
         return "filtered_external", "requires external evidence or manual source records"
+    if agent_issue_requires_unit_locator(raw_issue, comment_intent) and not agent_unit_id(raw_issue):
+        return "missing_unit_locator", "non-global agent finding missing required unit_id locator"
+    unit_id = agent_unit_id(raw_issue)
+    if allowed_unit_ids is not None and unit_id:
+        normalized_allowed_unit_ids = {str(allowed_unit_id).strip().casefold() for allowed_unit_id in allowed_unit_ids}
+        if unit_id.casefold() not in normalized_allowed_unit_ids:
+            return "missing_unit_locator", "agent finding unit_id is not present in the exported context package"
     if confidence == "low":
         return "filtered_low_confidence", "low-confidence finding filtered"
     objective_typo = is_objective_source_local_typo_issue(raw_issue)
@@ -4262,6 +4788,10 @@ def classify_skipped_agent_issue(
     if is_unsafe_embedded_numeric_anchor(paragraph_text_value, span, anchor_text, raw_issue):
         span = None
     has_stable_anchor = bool(record and span) and not has_weak_agent_anchor(anchor_text)
+    if agent_issue_requires_unit_locator(raw_issue, comment_intent):
+        anchor_quote = strip_agent_text_label(str(raw_issue.get("anchor_quote") or "")).strip(" \t\r\n:：;；,，。.-")
+        if not agent_unit_id(raw_issue) or not anchor_quote or has_weak_agent_anchor(anchor_quote):
+            return "missing_unit_locator", "agent finding missing required unit_id or anchor_quote locator"
     if not has_stable_anchor and not is_explicit_agent_global_summary_issue(raw_issue, comment_intent):
         return "anchor_failure_should_retry", "high-value finding could not be mapped to a stable source span"
 
@@ -4337,6 +4867,8 @@ def load_agent_review_issues(
     review_json_paths: Sequence[str],
     paragraphs: Sequence[Dict[str, Any]],
     next_issue_id: int,
+    *,
+    allowed_unit_ids: set[str] | None = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Load semantic findings produced by an outer agent or SDK subagents.
 
@@ -4400,13 +4932,15 @@ def load_agent_review_issues(
                 agent_role=str(payload.get("agent_role") or "").strip(),
             )
             normalized_agent_role = str(payload.get("agent_role") or "").strip()
-            if (
-                is_risk_classifier_agent_role(normalized_agent_role)
+            is_risk_classifier_agent = is_risk_classifier_agent_role(normalized_agent_role)
+            is_risk_classifier_veto = bool(
+                is_risk_classifier_agent
                 and (
                     normalized_issue.get("requires_external_evidence")
                     or str(normalized_issue.get("comment_intent") or "") == "request_check"
                 )
-            ):
+            )
+            if is_risk_classifier_veto:
                 external_vetoes.append(normalized_issue)
             if is_current_date_regulatory_status_noise(normalized_issue):
                 skipped_agent_issue_count += 1
@@ -4418,7 +4952,26 @@ def load_agent_review_issues(
                 skipped_agent_issue_count += 1
                 skip_categories["schema_invalid"] += 1
                 continue
-            issue = make_llm_issue(issue_id, paragraphs, normalized_issue)
+            if is_risk_classifier_agent and not is_risk_classifier_veto:
+                skipped_agent_issue_count += 1
+                skip_categories["filtered_quality_gate"] += 1
+                human_review_items.append(
+                    make_human_review_item(
+                        LLM_REVIEW_BRANCH,
+                        f"{path.name} issue #{raw_index} skipped: risk classifier outputs are gating signals, not direct findings",
+                        str(normalized_issue.get("unit_id") or normalized_issue.get("paragraph_index") or path.name),
+                        user_visible=False,
+                        skip_category="filtered_quality_gate",
+                    )
+                )
+                continue
+            issue = make_llm_issue(
+                issue_id,
+                paragraphs,
+                normalized_issue,
+                require_unit_locator=True,
+                allowed_unit_ids=allowed_unit_ids,
+            )
             if issue:
                 issue["source"] = "qa-file-reviewer-agent-review"
                 issue["source_agent"] = str(payload.get("agent_role") or issue.get("source_agent") or "calling-agent")
@@ -4427,7 +4980,11 @@ def load_agent_review_issues(
                 continue
             location = str(normalized_issue.get("paragraph_index", "")).strip()
             skipped_agent_issue_count += 1
-            skip_category, skip_reason = classify_skipped_agent_issue(normalized_issue, paragraphs)
+            skip_category, skip_reason = classify_skipped_agent_issue(
+                normalized_issue,
+                paragraphs,
+                allowed_unit_ids=allowed_unit_ids,
+            )
             skip_categories[skip_category] += 1
             human_review_items.append(
                 make_human_review_item(
@@ -4515,6 +5072,7 @@ def build_manifest_entry(
             "schema_invalid_count",
             "skipped_agent_issue_count",
             "skip_categories",
+            "agent_context",
         ):
             if key in branch_details:
                 entry[key] = branch_details[key]
@@ -4584,7 +5142,7 @@ def is_user_visible_issue(issue: Dict[str, Any]) -> bool:
         return False
     if issue.get("comments_added", 1) != 0:
         return True
-    return str(issue.get("comment_intent") or "") == "global_summary" or bool(issue.get("append_to_document_end"))
+    return bool(issue.get("append_to_document_end"))
 
 
 def user_visible_issues(issues: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -4709,6 +5267,9 @@ def validate_comment_positioning_quality(commenting: Dict[str, Any]) -> List[str
         if "by_anchor_failure_document_end" in positioning
         else int(positioning.get("by_document_end") or 0)
     )
+    if document_end > 0:
+        failures.append(f"anchor-failed comments must not fall back to document end: {document_end}/{expected_total}")
+        return failures
     if expected_total <= 0 or document_end <= MAX_DOCUMENT_END_FALLBACK_COMMENTS:
         return failures
 
@@ -4972,8 +5533,9 @@ def build_review_payload(
         "branch_execution_manifest": list(manifest),
         "human_review_queue": human_review_queue,
         "commenting": {
-            "policy": "preserve_existing",
+            "policy": "preserve_human_strip_prior_automated",
             "existing_total": 0,
+            "removed_existing_automated": 0,
             "added_total": 0,
             "failed_total": 0,
             "expected_total": 0,
@@ -5086,6 +5648,9 @@ def build_detailed_report(
             f"{int(commenting.get('added_total', 0) or 0)}/"
             f"{int(commenting.get('failed_total', 0) or 0)}"
         )
+        removed_existing = int(commenting.get("removed_existing_automated", 0) or 0)
+        if removed_existing:
+            lines.append(f"已剥离旧自动批注: {removed_existing}")
         if warnings:
             lines.append("未写入批注的定位问题:")
             for item in warnings[:5]:
@@ -5156,11 +5721,35 @@ def main() -> int:
     manifest, issues = execute_branches(doc, review_paragraphs, current_project)
     if args.agent_review_json:
         agent_review_started = time.perf_counter()
-        agent_issues, agent_metadata = load_agent_review_issues(
-            args.agent_review_json,
-            review_paragraphs,
-            next_issue_id=len(issues) + 1,
+        context_manifest_path = (
+            Path(args.agent_context_manifest).expanduser().resolve()
+            if args.agent_context_manifest
+            else output_dir / "agent_context_manifest.json"
         )
+        allowed_agent_unit_ids, agent_context_metadata = load_agent_context_unit_ids(
+            context_manifest_path,
+            require_manifest=bool(args.agent_context_manifest),
+        )
+        if agent_context_metadata.get("status") == "failed":
+            agent_issues = []
+            agent_metadata = {
+                "status": "failed",
+                "error": str(agent_context_metadata.get("context_manifest_error") or "agent context manifest invalid"),
+                "human_review_items": [],
+                "source_files": list(args.agent_review_json),
+                "source_file_count": len(args.agent_review_json),
+                "loaded_issue_count": 0,
+                "schema_invalid_count": 0,
+                "skipped_agent_issue_count": 0,
+                "skip_categories": {},
+            }
+        else:
+            agent_issues, agent_metadata = load_agent_review_issues(
+                args.agent_review_json,
+                review_paragraphs,
+                next_issue_id=len(issues) + 1,
+                allowed_unit_ids=allowed_agent_unit_ids,
+            )
         manifest.append(
             build_manifest_entry(
                 LLM_REVIEW_BRANCH,
@@ -5177,6 +5766,7 @@ def main() -> int:
                     "schema_invalid_count": agent_metadata.get("schema_invalid_count", 0),
                     "skipped_agent_issue_count": agent_metadata.get("skipped_agent_issue_count", 0),
                     "skip_categories": agent_metadata.get("skip_categories", {}),
+                    "agent_context": agent_context_metadata,
                 },
             )
         )
@@ -5234,7 +5824,7 @@ def main() -> int:
         if not args.keep_json_artifacts:
             for artifact in cleanup_json_artifacts:
                 remove_if_exists(artifact)
-        return 0
+        return 1
 
     if args.with_comments:
         commented_docx = str(output_dir / f"{output_stem}_reviewed.docx")
@@ -5259,6 +5849,7 @@ def main() -> int:
         payload["commenting"].update(
             {
                 "existing_total": comment_result.get("existing_comments", 0),
+                "removed_existing_automated": comment_result.get("removed_existing_comments", 0),
                 "added_total": comment_result.get("comments_added", 0),
                 "failed_total": comment_result.get("comments_failed", 0),
                 "expected_total": comment_result.get("comments_expected", 0),

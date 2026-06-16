@@ -1,0 +1,39 @@
+{
+  "schema_version": "reference-fact-extraction-step-response-v1",
+  "state": "PRIMARY_CONTEXT_SHARD_REQUIRED",
+  "reply": "Source index is ready. Submit the verified primary context fact shard produced by the required extraction and validation subagents; if subagents are unavailable, report SUBAGENT_REQUIRED.",
+  "done": false,
+  "final": false,
+  "terminal_kind": "paused_recoverable",
+  "delivery_status": "not_ready",
+  "recoverable": true,
+  "recovery_mode": "submit_fact_shards",
+  "allowed_next_events": [
+    {
+      "schema_version": "reference-fact-extraction-step-event-v1",
+      "output_dir": "D:\\new1\\AI\\skill\\reference-fact-extraction\\outputs\\ip350-fact-extraction",
+      "profile_id": "ctd-32s73-stability",
+      "provided_artifacts": {
+        "project_profile_facts": "D:\\new1\\AI\\skill\\reference-fact-extraction\\outputs\\ip350-fact-extraction\\fact-shards\\project-profile-facts.json"
+      }
+    }
+  ],
+  "required_artifacts": [
+    "project_profile_facts"
+  ],
+  "blocking_reasons": [],
+  "artifacts": {
+    "source_index_json": "D:\\new1\\AI\\skill\\reference-fact-extraction\\outputs\\ip350-fact-extraction\\source-index.json",
+    "source_index_md": "D:\\new1\\AI\\skill\\reference-fact-extraction\\outputs\\ip350-fact-extraction\\source-index.md",
+    "fact_extraction_request": "D:\\new1\\AI\\skill\\reference-fact-extraction\\outputs\\ip350-fact-extraction\\fact-extraction-request.json"
+  },
+  "gates": {
+    "subagent": {
+      "subagent_required": true,
+      "required_execution_mode": "subagent",
+      "extraction_agent": "reference_fact_extraction_agent",
+      "validation_agent": "reference_fact_validation_agent",
+      "fallback_when_unavailable": "SUBAGENT_REQUIRED"
+    }
+  }
+}

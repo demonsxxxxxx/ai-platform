@@ -59,6 +59,45 @@ def find_first_exact_span(source_text: str, needle: str) -> Optional[Dict[str, A
     }
 
 
+def _span_bounds(span: Any) -> Optional[Tuple[int, int]]:
+    if not isinstance(span, dict):
+        return None
+    try:
+        start = int(span.get("start"))
+        end = int(span.get("end"))
+    except (TypeError, ValueError):
+        return None
+    if start < 0 or end <= start:
+        return None
+    return start, end
+
+
+def _has_stable_precomputed_unit_anchor(issue: Dict[str, Any], paragraph_text: str) -> bool:
+    if not str(issue.get("unit_id") or "").strip():
+        return False
+    anchor_text = str(issue.get("anchor_text") or "")
+    if not anchor_text.strip():
+        return False
+    bounds = _span_bounds(issue.get("anchor_span"))
+    if bounds is None:
+        return False
+    start, end = bounds
+    if end > len(paragraph_text):
+        return False
+    anchored_text = paragraph_text[start:end]
+    if anchored_text == anchor_text:
+        return True
+    return normalize_text(anchored_text).casefold() == normalize_text(anchor_text).casefold()
+
+
+def _may_backfill_anchor_locator(issue: Dict[str, Any]) -> bool:
+    return not str(issue.get("unit_id") or "").strip()
+
+
+def _set_comments_added_if_word_comment(issue: Dict[str, Any]) -> None:
+    issue["comments_added"] = 1 if issue.get("comment_visibility", "word_comment") == "word_comment" else 0
+
+
 def _paragraph_index_from_text(text: str) -> str:
     match = re.search(r"\d+", str(text or ""))
     return str(int(match.group(0))) if match else ""
@@ -382,6 +421,37 @@ def _same_location_semantic_paraphrase(first: Dict[str, Any], second: Dict[str, 
     return _semantic_text_overlap(first, second) >= 0.5
 
 
+def _comments_added_count(issue: Dict[str, Any]) -> int:
+    try:
+        return int(issue.get("comments_added") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _same_location_overlapping_anchor_duplicate(first: Dict[str, Any], second: Dict[str, Any]) -> bool:
+    if str(first.get("branch") or "") != LLM_REVIEW_BRANCH:
+        return False
+    if str(second.get("branch") or "") != LLM_REVIEW_BRANCH:
+        return False
+    if _issue_location_key(first) != _issue_location_key(second):
+        return False
+    if _comments_added_count(first) <= 0 or _comments_added_count(second) <= 0:
+        return False
+
+    first_bounds = _span_bounds(first.get("anchor_span"))
+    second_bounds = _span_bounds(second.get("anchor_span"))
+    if first_bounds is None or second_bounds is None:
+        return False
+    if min(first_bounds[1], second_bounds[1]) <= max(first_bounds[0], second_bounds[0]):
+        return False
+
+    first_anchor = normalize_text(str(first.get("anchor_text") or first.get("anchor_quote") or "")).casefold()
+    second_anchor = normalize_text(str(second.get("anchor_text") or second.get("anchor_quote") or "")).casefold()
+    if len(first_anchor) < 3 or len(second_anchor) < 3:
+        return False
+    return first_anchor == second_anchor or first_anchor in second_anchor or second_anchor in first_anchor
+
+
 def _same_location_cross_branch_anchor_duplicate(first: Dict[str, Any], second: Dict[str, Any]) -> bool:
     first_branch = str(first.get("branch") or "")
     second_branch = str(second.get("branch") or "")
@@ -670,6 +740,16 @@ def _has_more_specific_anchor_candidate(
     return False
 
 
+def _unit_anchor_quote_allows_candidate(issue: Dict[str, Any], phrase: str) -> bool:
+    if not str(issue.get("unit_id") or "").strip():
+        return True
+    quote_norm = normalize_text(str(issue.get("anchor_quote") or "")).casefold()
+    phrase_norm = normalize_text(str(phrase or "")).casefold()
+    if not quote_norm or not phrase_norm:
+        return False
+    return quote_norm in phrase_norm or phrase_norm in quote_norm
+
+
 def _parse_anchor_locator_xml(anchor_locator: str) -> str:
     match = re.search(r"paragraph\s*=\s*(\d+)", str(anchor_locator or ""), flags=re.IGNORECASE)
     return str(int(match.group(1))) if match else ""
@@ -678,6 +758,7 @@ def _parse_anchor_locator_xml(anchor_locator: str) -> str:
 def _resolve_issue_record(issue: Dict[str, Any], paragraphs: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     by_xml: Dict[str, Dict[str, Any]] = {}
     by_logical: Dict[str, Dict[str, Any]] = {}
+    by_unit: Dict[str, Dict[str, Any]] = {}
     for record in paragraphs:
         xml_index = _paragraph_index_from_text(record.get("xml_index"))
         logical_index = _paragraph_index_from_text(record.get("logical_index"))
@@ -685,6 +766,14 @@ def _resolve_issue_record(issue: Dict[str, Any], paragraphs: Sequence[Dict[str, 
             by_xml[xml_index] = record
         if logical_index and logical_index not in by_logical:
             by_logical[logical_index] = record
+        for unit_field in ("paragraph_id", "unit_id"):
+            unit_id = str(record.get(unit_field) or "").strip()
+            if unit_id and unit_id not in by_unit:
+                by_unit[unit_id] = record
+
+    issue_unit_id = str(issue.get("unit_id") or "").strip()
+    if issue_unit_id and issue_unit_id in by_unit:
+        return by_unit[issue_unit_id]
 
     anchor_xml = _parse_anchor_locator_xml(str(issue.get("anchor_locator") or ""))
     if anchor_xml:
@@ -741,6 +830,7 @@ def _adjudicate_anchor_with_record(
         updated,
         [*_targeted_source_anchor_candidates(updated, paragraph_text), *_extract_quoted_phrases(updated)],
     )
+    candidates = [phrase for phrase in candidates if _unit_anchor_quote_allows_candidate(updated, phrase)]
     has_more_specific_anchor = _has_more_specific_anchor_candidate(paragraph_text, current_anchor, candidates)
     needs_refine = (
         current_span is None
@@ -753,7 +843,7 @@ def _adjudicate_anchor_with_record(
 
     if not needs_refine:
         used_anchor_norms.add(current_norm)
-        if not str(updated.get("anchor_locator") or "").strip():
+        if _may_backfill_anchor_locator(updated) and not str(updated.get("anchor_locator") or "").strip():
             updated["anchor_locator"] = f"paragraph={record.get('xml_index', '')}"
         return updated
 
@@ -792,12 +882,12 @@ def _adjudicate_anchor_with_record(
         if original_span is None or len(original_text) > len(best_value) * 2:
             updated["original"] = best_value
         updated["anchor_span"] = best_span
-        updated["comments_added"] = 1
+        _set_comments_added_if_word_comment(updated)
         updated["match_method"] = "span"
         notes = str(updated.get("notes") or "").strip()
         adjudication_note = "anchor refined by pre-comment adjudication"
         updated["notes"] = f"{notes}; {adjudication_note}" if notes else adjudication_note
-        if not str(updated.get("anchor_locator") or "").strip():
+        if _may_backfill_anchor_locator(updated) and not str(updated.get("anchor_locator") or "").strip():
             updated["anchor_locator"] = f"paragraph={record.get('xml_index', '')}"
         used_anchor_norms.add(best_norm)
         return updated
@@ -810,8 +900,8 @@ def _adjudicate_anchor_with_record(
     ):
         used_anchor_norms.add(current_norm)
         updated["anchor_span"] = current_span
-        updated["comments_added"] = 1
-        if not str(updated.get("anchor_locator") or "").strip():
+        _set_comments_added_if_word_comment(updated)
+        if _may_backfill_anchor_locator(updated) and not str(updated.get("anchor_locator") or "").strip():
             updated["anchor_locator"] = f"paragraph={record.get('xml_index', '')}"
     return updated
 
@@ -844,6 +934,7 @@ def _dedupe_semantic_duplicates(issues: Iterable[Dict[str, Any]]) -> List[Dict[s
                 for index, existing in enumerate(result)
                 if _same_location_semantic_duplicate(issue, existing)
                 or _same_location_semantic_paraphrase(issue, existing)
+                or _same_location_overlapping_anchor_duplicate(issue, existing)
                 or _same_location_cross_branch_anchor_duplicate(issue, existing)
                 or _same_location_cross_branch_replacement_duplicate(issue, existing)
                 or _same_location_cross_branch_semantic_duplicate(issue, existing)

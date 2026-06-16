@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reference-fact-shard.schema.json",
+  "title": "Reference Fact Shard",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema_version", "profile_id", "shard_type", "agent_provenance"],
+  "properties": {
+    "schema_version": {"const": "reference-fact-shard-v1"},
+    "profile_id": {"type": "string"},
+    "shard_type": {"type": "string"},
+    "facts": {"type": "object", "additionalProperties": true},
+    "missing_evidence": {"type": "array"},
+    "manual_review_items": {"type": "array"},
+    "conflicts": {"type": "array"},
+    "agent_provenance": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["execution_mode", "extraction_agent", "validation_agent", "validation_status", "source_materials_reviewed", "validation_checks"],
+      "properties": {
+        "execution_mode": {"type": "string", "const": "subagent"},
+        "extraction_agent": {"type": "string"},
+        "validation_agent": {"type": "string"},
+        "validation_status": {"type": "string", "enum": ["passed", "passed_with_warnings"]},
+        "extraction_completed_at": {"type": "string"},
+        "validation_completed_at": {"type": "string"},
+        "source_materials_reviewed": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "validation_checks": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "validation_notes": {"type": "string"}
+      }
+    }
+  }
+}

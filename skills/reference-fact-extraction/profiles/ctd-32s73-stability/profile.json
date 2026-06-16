@@ -1,0 +1,97 @@
+{
+  "profile_id": "ctd-32s73-stability",
+  "display_name": "CTD 3.2.S.7.3 稳定性数据事实抽取",
+  "profile_version": "v1",
+  "supported_source_types": ["docx", "xlsx", "xlsm", "pdf", "image", "txt", "md", "json", "csv", "tsv"],
+  "default_forbidden_source_patterns": ["已完成的申报资料*", "~$*"],
+  "primary_context_shard": "project_profile",
+  "schema_versions": {
+    "generic_fact_shard": "reference-fact-shard-v1",
+    "domain_fact_shard": "ctd-32s73-fact-shard-v1",
+    "generic_fact_packet": "reference-fact-packet-v1",
+    "domain_fact_packet": "ctd-32s73-fact-packet-v1"
+  },
+  "default_output_mode": "domain_native",
+  "output_modes": ["generic", "domain_native"],
+  "validation_profile": "ctd_32s73_base",
+  "contract_files": [
+    "fact-packet-contract.md",
+    "field-extraction-map.md",
+    "validation.md",
+    "example-fact-packet.json"
+  ],
+  "domain_native_output": {
+    "schema_version": "ctd-32s73-fact-packet-v1",
+    "top_level_sections": [
+      "schema_version",
+      "project_profile",
+      "sources",
+      "long_term",
+      "accelerated",
+      "stress_study",
+      "trend_charts",
+      "body_sections",
+      "docx_render_plan",
+      "missing_evidence",
+      "manual_review_items",
+      "agent_provenance"
+    ],
+    "deferred_sections": {
+      "trend_charts": {"charts": [], "status": "deferred_until_trend_charts_required"},
+      "body_sections": {}
+    },
+    "section_sources": {
+      "project_profile": "facts.project_profile",
+      "sources": "sources",
+      "long_term": "facts.long_term",
+      "accelerated": "facts.accelerated",
+      "stress_study": "facts.stress_study",
+      "trend_charts": "facts.trend_charts",
+      "body_sections": "facts.body_sections",
+      "docx_render_plan": "facts.docx_render_plan",
+      "missing_evidence": "missing_evidence",
+      "manual_review_items": "manual_review_items",
+      "agent_provenance": "agent_provenance"
+    }
+  },
+  "shared_sections": ["missing_evidence", "manual_review_items", "conflicts"],
+  "fact_sections": ["project_profile", "sources", "docx_render_plan", "long_term", "accelerated", "stress_study", "trend_charts", "body_sections"],
+  "shards": [
+    {
+      "shard_type": "project_profile",
+      "label": "project-profile",
+      "artifact_key": "project_profile_facts",
+      "path_name": "project-profile-facts",
+      "depends_on": [],
+      "allowed_sections": ["project_profile", "sources", "docx_render_plan", "missing_evidence", "manual_review_items", "conflicts"],
+      "required_sections": ["project_profile", "sources", "docx_render_plan"]
+    },
+    {
+      "shard_type": "long_term",
+      "label": "long-term-stability",
+      "artifact_key": "long_term_stability_facts",
+      "path_name": "long-term-stability-facts",
+      "depends_on": ["project_profile"],
+      "allowed_sections": ["long_term", "missing_evidence", "manual_review_items", "conflicts"],
+      "required_sections": ["long_term"]
+    },
+    {
+      "shard_type": "accelerated",
+      "label": "accelerated-stability",
+      "artifact_key": "accelerated_stability_facts",
+      "path_name": "accelerated-stability-facts",
+      "depends_on": ["project_profile"],
+      "allowed_sections": ["accelerated", "missing_evidence", "manual_review_items", "conflicts"],
+      "required_sections": ["accelerated"]
+    },
+    {
+      "shard_type": "stress_study",
+      "label": "stress-study",
+      "artifact_key": "stress_study_facts",
+      "path_name": "stress-study-facts",
+      "depends_on": ["project_profile"],
+      "allowed_sections": ["stress_study", "missing_evidence", "manual_review_items", "conflicts"],
+      "required_sections": ["stress_study"]
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "schema_version": "reference-fact-shard-validation-report-v1",
+  "profile_id": "ctd-32s73-stability",
+  "reports": [
+    {
+      "schema_version": "reference-fact-shard-validation-v1",
+      "profile_id": "ctd-32s73-stability",
+      "shard_type": "project_profile",
+      "shard_label": "project-profile",
+      "path": "D:\\new1\\AI\\skill\\reference-fact-extraction\\outputs\\ip350-fact-extraction\\fact-shards\\project-profile-facts.json",
+      "agent_provenance": {
+        "execution_mode": "subagent",
+        "extraction_agent": "reference_fact_extraction_agent",
+        "validation_agent": "reference_fact_validation_agent",
+        "validation_status": "passed_with_warnings",
+        "extraction_completed_at": "2026-06-01T07:55:00Z",
+        "validation_completed_at": "2026-06-01T08:02:00Z",
+        "source_materials_reviewed": [
+          "fact-extraction-request.json",
+          "source-index.md",
+          "source-index.json",
+          "参考文件1-项目基本信息收集表.docx",
+          "参考文件2-原液稳定性考察方案.docx",
+          "参考文件3-原液和成品影响因素试验考察报告.docx",
+          "参考文件4-稳定性试验数据汇总.xlsx"
+        ],
+        "validation_checks": [
+          "section ownership checked",
+          "source traceability checked",
+          "forbidden completed申报资料 exclusion checked",
+          "batch/profile alignment checked",
+          "render plan enum corrected to keep for two rendered batches"
+        ],
+        "validation_notes": "独立校验确认项目身份、原液批次、参考品批号和2批渲染范围由允许来源支持；产品名存在表达差异，已作为 manual_review_items 记录。"
+      },
+      "errors": [],
+      "warnings": [],
+      "passed": true
+    }
+  ],
+  "passed": true
+}

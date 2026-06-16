@@ -1,0 +1,4 @@
+interface:
+  display_name: "CTD 3.2.S.7.3 Stability Fill"
+  short_description: "Fill CTD stability Word sections"
+  default_prompt: "Use $ctd-32s73-stability-template-fill to generate a CTD 3.2.S.7.3 stability-data Word section from the allowed project sources."
