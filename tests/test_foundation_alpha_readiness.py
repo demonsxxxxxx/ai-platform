@@ -11,7 +11,7 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
-ACTIVE_RUNTIME_SUBJECT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
+ACTIVE_RUNTIME_SUBJECT_SHA = "8e0389ea621a57f3ded2044e410943cc0d298571"
 HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
@@ -1533,6 +1533,8 @@ def test_foundation_alpha_readiness_classifies_source_metadata_paths_as_runtime_
     assert foundation_alpha_readiness._is_runtime_affecting_path("tools/frontend_release_traceability.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("tools/verify_auth_rbac_smoke.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("tools/verify_governance_runtime_smoke.py") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("tools/wrap_foundation_alpha_evidence.py") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("tests/test_wrap_foundation_alpha_evidence.py") is False
     assert (
         foundation_alpha_readiness._is_runtime_affecting_path(
             "assets/ai-platform-architecture-illustrations/01-controlled-execution-cabin.svg"
@@ -2378,7 +2380,9 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "runtime_rollout_required_for_current_source": False,
         "foundation_alpha_stage_complete": False,
         "foundation_alpha_stage_status": "core_poc_loop_verified_followups_open",
-        "stage_acceptance_blockers": ["ordinary_user_acceptance_for_quarantined_legacy_routes"],
+        "stage_acceptance_blockers": [
+            "ordinary_user_acceptance_for_quarantined_legacy_routes",
+        ],
         "can_enter_next_stage_without_restrictions": False,
         "production_claim_allowed": False,
         "ordinary_user_multi_agent_allowed": False,
@@ -2403,7 +2407,9 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
             "ordinary_user_multi_agent_exposure",
             "department_rollout",
         ],
-        "next_recommended_slices": ["ordinary_user_acceptance_for_quarantined_legacy_routes"],
+        "next_recommended_slices": [
+            "ordinary_user_acceptance_for_quarantined_legacy_routes",
+        ],
     }
 
     assert set(readiness["domains"]) == {
@@ -2423,7 +2429,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     ] == [404, 404]
     assert readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["auth_rbac"][
         "artifact_preview_cross_tenant_statuses"
-    ] == [404]
+    ] == [404, 404]
     assert readiness["domains"]["g0_g1_source_authority_security"]["evidence"]["auth_rbac"][
         "broader_auth_session_rbac_tenant_redaction_regression_verified"
     ] is True
@@ -2436,7 +2442,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"]["document_review_attachment_run"] == {
         "status": "succeeded",
         "skill_id": "qa-file-reviewer",
-        "artifact_types": ["report_txt", "result_json", "reviewed_docx"],
+        "artifact_types": ["report_txt", "reviewed_docx"],
         "playback_contract_version": "ai-platform.run-playback.v1",
     }
     assert (
@@ -2491,7 +2497,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         readiness["domains"]["g2_g4_control_plane_contracts"]["evidence"]["artifact_preview_isolation"][
             "checked_artifacts"
         ]
-        == 1
+        == 2
     )
     assert readiness["domains"]["g6_poc_governance"]["evidence"]["governance_readiness_status"] == "partial_blocked"
     memory_context_controls = readiness["domains"]["g6_poc_governance"]["evidence"]["memory_context_controls"]

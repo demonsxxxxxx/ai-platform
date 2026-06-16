@@ -14,14 +14,14 @@ SCHEMA_VERSION = "ai-platform.foundation-alpha-poc-readiness.v1"
 SOURCE_SNAPSHOT_SCHEMA_VERSION = "ai-platform.source-snapshot.v1"
 SOURCE_RUNTIME_RELATION_MANIFEST_SCHEMA_VERSION = "ai-platform.source-runtime-relation-manifest.v1"
 STAGE_NAME = "Foundation Alpha POC"
-RUNTIME_SUBJECT_COMMIT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
+RUNTIME_SUBJECT_COMMIT_SHA = "8e0389ea621a57f3ded2044e410943cc0d298571"
 _ROOT = Path(__file__).resolve().parents[1]
 _EVIDENCE_BASE_ROOT = _ROOT / "docs/release-evidence/foundation-alpha-poc"
 _FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT = _ROOT / "docs/release-evidence/foundation-runtime-concurrency"
 _SOURCE_RUNTIME_RELATION_MANIFEST = _EVIDENCE_BASE_ROOT / "source-runtime-relation-manifest.json"
 _EVIDENCE_ROOT = _EVIDENCE_BASE_ROOT / RUNTIME_SUBJECT_COMMIT_SHA
-_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-15-211-foundation-alpha-poc-380de6b-runtime-poc-smoke.json"
-_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-15-211-foundation-alpha-poc-380de6b-auth-rbac-smoke.json"
+_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-16-211-foundation-alpha-poc-8e0389e-runtime-poc-smoke.json"
+_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-16-211-foundation-alpha-poc-8e0389e-auth-rbac-smoke.json"
 _SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
 _SOURCE_SNAPSHOT_MARKER = _ROOT / ".ai-platform-source-snapshot.json"
 _RUNTIME_NEUTRAL_PATH_PREFIXES = (
@@ -39,6 +39,7 @@ _RUNTIME_NEUTRAL_EXACT_PATHS = {
     "tools/verify_auth_rbac_smoke.py",
     "tools/verify_governance_runtime_smoke.py",
     "tools/verify_multiuser_poc.py",
+    "tools/wrap_foundation_alpha_evidence.py",
     "tests/test_source_authority_docs.py",
 }
 
@@ -915,6 +916,23 @@ def _context_material_count(value: Any) -> tuple[int, bool]:
 
 def _artifact_review_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     document_review = _safe_runtime_check(runtime_checks.get("document_review_attachment_run"))
+    if not document_review:
+        word_review = _safe_runtime_check(runtime_checks.get("word_review_attachment_chat"))
+        word_review_run = _safe_runtime_check(word_review.get("run"))
+        word_review_playback = _safe_runtime_check(word_review.get("playback"))
+        artifacts = word_review_run.get("artifacts")
+        artifact_types = [
+            artifact.get("artifact_type")
+            for artifact in artifacts
+            if isinstance(artifact, dict) and isinstance(artifact.get("artifact_type"), str)
+        ] if isinstance(artifacts, list) else []
+        return {
+            "status": word_review_run.get("status"),
+            "skill_id": word_review_run.get("skill_id"),
+            "artifact_types": sorted(artifact_types),
+            "playback_contract_version": word_review_playback.get("contract_version"),
+        }
+
     artifact_types = document_review.get("artifact_types")
     if not isinstance(artifact_types, list):
         artifact_types = document_review.get("artifact_type_summary")
@@ -1046,22 +1064,40 @@ def _governed_skill_runs_summary(runtime_checks: dict[str, Any]) -> dict[str, An
 
 def _projection_summary(runtime_checks: dict[str, Any]) -> dict[str, Any]:
     frontend = _safe_runtime_check(runtime_checks.get("lambchat_frontend"))
-    boundary = _safe_runtime_check(runtime_checks.get("frontend_dist_api_boundary"))
+    boundary = _safe_runtime_check(
+        runtime_checks.get("frontend_dist_api_boundary")
+        or runtime_checks.get("lambchat_frontend_dist_api_boundary")
+    )
     same_origin_api_health = _safe_runtime_check(runtime_checks.get("same_origin_api_health"))
+    if not same_origin_api_health:
+        origin_api = _safe_runtime_check(runtime_checks.get("lambchat_frontend_origin_api"))
+        payload = _safe_runtime_check(origin_api.get("payload"))
+        same_origin_api_health = {
+            "status": origin_api.get("status"),
+            "payload_status": payload.get("status"),
+        }
     if same_origin_api_health.get("status") is None and same_origin_api_health.get("api_status") is not None:
         same_origin_api_health["status"] = same_origin_api_health.get("api_status")
+    download_isolation = _safe_runtime_check(runtime_checks.get("artifact_download_isolation"))
+    preview_isolation = _safe_runtime_check(runtime_checks.get("artifact_preview_isolation"))
     return {
         "frontend_http_status": frontend.get("status") or runtime_checks.get("frontend_http_status"),
         "same_origin_api_health": same_origin_api_health,
         "forbidden_reference_count": boundary.get("forbidden_reference_count")
         if boundary.get("forbidden_reference_count") is not None
         else runtime_checks.get("frontend_forbidden_reference_count"),
-        "artifact_download_cross_user_statuses": _safe_runtime_check(
-            runtime_checks.get("artifact_download_isolation")
-        ).get("cross_user_statuses"),
-        "artifact_preview_cross_user_statuses": _safe_runtime_check(
-            runtime_checks.get("artifact_preview_isolation")
-        ).get("cross_user_statuses"),
+        "artifact_download_cross_user_statuses": download_isolation.get("cross_user_statuses")
+        or [
+            item.get("cross_user_status")
+            for item in download_isolation.get("results", [])
+            if isinstance(item, dict)
+        ],
+        "artifact_preview_cross_user_statuses": preview_isolation.get("cross_user_statuses")
+        or [
+            item.get("cross_user_status")
+            for item in preview_isolation.get("results", [])
+            if isinstance(item, dict)
+        ],
     }
 
 

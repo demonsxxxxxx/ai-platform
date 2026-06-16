@@ -77,6 +77,8 @@ FORBIDDEN_PUBLIC_VALUE_PATTERNS = (
     re.compile(r"\b(?:api[_-]?key|client[_-]?secret|database[_-]?url|password|redis[_-]?url|token)\s*[:=]", re.IGNORECASE),
     re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_-]{8,}\b", re.IGNORECASE),
 )
+RUN_ID_RE = re.compile(r"\brun=(?P<run_id>run_[A-Za-z0-9_]+|run-[A-Za-z0-9_-]+)\b")
+SESSION_ID_RE = re.compile(r"\bsession=(?P<session_id>ses_[A-Za-z0-9_]+|ses-[A-Za-z0-9_-]+)\b")
 
 
 @dataclass(frozen=True)
@@ -1957,6 +1959,254 @@ def _skill_snapshot_summary(run_payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _extract_failed_case_ids(message: str) -> dict[str, str]:
+    run_match = RUN_ID_RE.search(message)
+    session_match = SESSION_ID_RE.search(message)
+    ids: dict[str, str] = {}
+    if run_match:
+        ids["run_id"] = run_match.group("run_id")
+    if session_match:
+        ids["session_id"] = session_match.group("session_id")
+    return ids
+
+
+def _safe_count_map(value: Any, allowed_keys: set[str]) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, int] = {}
+    for key in sorted(allowed_keys):
+        raw = value.get(key)
+        if type(raw) is int:
+            result[key] = raw
+    return result
+
+
+def _safe_bool_map(value: Any, allowed_keys: set[str]) -> dict[str, bool]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, bool] = {}
+    for key in sorted(allowed_keys):
+        raw = value.get(key)
+        if type(raw) is bool:
+            result[key] = raw
+    return result
+
+
+def _failed_case_queue_insight_summary(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    summary: dict[str, Any] = {}
+    reason = str(value.get("reason") or "").strip()
+    if reason:
+        summary["reason"] = reason
+    depths = _safe_count_map(
+        value.get("depths"),
+        {
+            "dead_letter",
+            "processing",
+            "queued",
+            "tenant_processing",
+            "tenant_queued",
+        },
+    )
+    if depths:
+        summary["depths"] = depths
+    workers = _safe_count_map(value.get("workers"), {"active"})
+    if workers:
+        summary["workers"] = workers
+    capacity = _safe_count_map(
+        value.get("capacity"),
+        {
+            "available_worker_slots",
+            "max_active_worker_runs",
+            "queue_lease_scan_limit",
+            "queue_tenant_processing_limit",
+            "queue_user_processing_limit",
+        },
+    )
+    capacity.update(_safe_bool_map(value.get("capacity"), {"processing_saturated"}))
+    if capacity:
+        summary["capacity"] = capacity
+    throttling = _safe_count_map(
+        value.get("throttling"),
+        {
+            "tenant_processing",
+            "tenant_processing_limit",
+            "user_processing_limit",
+        },
+    )
+    throttling.update(
+        _safe_bool_map(
+            value.get("throttling"),
+            {
+                "tenant_processing_saturated",
+                "user_processing_saturated",
+            },
+        )
+    )
+    if throttling:
+        summary["throttling"] = throttling
+    return summary
+
+
+def _failed_case_sandbox_lease_summary(value: Any) -> dict[str, Any]:
+    leases = value if isinstance(value, list) else []
+    status_counts: dict[str, int] = {}
+    provider_counts: dict[str, int] = {}
+    active_count = 0
+    for lease in leases:
+        if not isinstance(lease, dict):
+            continue
+        status = str(lease.get("status") or "unknown").strip().lower() or "unknown"
+        provider = str(lease.get("provider") or "unknown").strip().lower() or "unknown"
+        status_counts[status] = status_counts.get(status, 0) + 1
+        provider_counts[provider] = provider_counts.get(provider, 0) + 1
+        if status == "active":
+            active_count += 1
+    return {
+        "active_count": active_count,
+        "provider_counts": dict(sorted(provider_counts.items())),
+        "status_counts": dict(sorted(status_counts.items())),
+        "total_count": len([lease for lease in leases if isinstance(lease, dict)]),
+    }
+
+
+def _run_detail_failed_case_summary(status: int, payload: Any) -> dict[str, Any]:
+    summary: dict[str, Any] = {"status_code": status}
+    if not isinstance(payload, dict):
+        summary["payload_type"] = type(payload).__name__
+        return summary
+    run = payload.get("run") if isinstance(payload.get("run"), dict) else payload
+    run_status = str(run.get("status") or payload.get("status") or "").strip()
+    if run_status:
+        summary["run_status"] = run_status
+    queue_position = (
+        payload.get("queue_position")
+        if type(payload.get("queue_position")) is int
+        else run.get("queue_position")
+    )
+    if type(queue_position) is int:
+        summary["queue_position"] = queue_position
+    queue_insight = _failed_case_queue_insight_summary(payload.get("queue_insight"))
+    if queue_insight:
+        summary["queue_insight"] = queue_insight
+    summary["sandbox_leases"] = _failed_case_sandbox_lease_summary(payload.get("sandbox_leases"))
+    active_lease_id = _active_sandbox_lease_id(payload)
+    if active_lease_id:
+        summary["active_sandbox_lease_present"] = True
+    return summary
+
+
+def _runtime_overview_failed_case_summary(status: int, payload: Any) -> dict[str, Any]:
+    summary: dict[str, Any] = {"status_code": status}
+    if not isinstance(payload, dict):
+        summary["payload_type"] = type(payload).__name__
+        return summary
+    queue = payload.get("queue") if isinstance(payload.get("queue"), dict) else {}
+    tenant_insight = queue.get("tenant_insight") if isinstance(queue.get("tenant_insight"), dict) else {}
+    queue_insight = _failed_case_queue_insight_summary(tenant_insight)
+    if queue_insight:
+        summary["tenant_queue_insight"] = queue_insight
+    sandbox = payload.get("sandbox") if isinstance(payload.get("sandbox"), dict) else {}
+    sandbox_active_count = sandbox.get("active_lease_count")
+    if type(sandbox_active_count) is int:
+        summary["sandbox_active_lease_count"] = sandbox_active_count
+    capacity = payload.get("capacity") if isinstance(payload.get("capacity"), dict) else {}
+    limits = capacity.get("limits") if isinstance(capacity.get("limits"), dict) else {}
+    worker_limits = limits.get("worker") if isinstance(limits.get("worker"), dict) else {}
+    worker_capacity = _safe_count_map(worker_limits, {"max_active_worker_runs", "max_active_runs_per_user"})
+    if worker_capacity:
+        summary["worker_capacity_limits"] = worker_capacity
+    backpressure = payload.get("backpressure") if isinstance(payload.get("backpressure"), dict) else {}
+    reasons = backpressure.get("reasons") if isinstance(backpressure.get("reasons"), list) else []
+    safe_reasons = sorted({str(reason) for reason in reasons if str(reason).strip()})
+    if safe_reasons:
+        summary["backpressure_reasons"] = safe_reasons
+    return summary
+
+
+def collect_failed_case_diagnostics(
+    api_url: str,
+    account: Account,
+    run_id: str,
+    *,
+    auth_mode: str,
+    trusted_header_role: str,
+) -> dict[str, Any]:
+    if not run_id:
+        return {}
+    diagnostics: dict[str, Any] = {}
+    headers: dict[str, str] = {}
+    try:
+        headers = auth_headers(
+            api_url,
+            account,
+            auth_mode=auth_mode,
+            trusted_header_role=trusted_header_role,
+        )
+        status, payload = json_request(
+            "GET",
+            f"{api_url.rstrip()}/api/ai/admin/runs/{run_id}",
+            headers=headers,
+            timeout=30,
+        )
+        diagnostics["run_detail"] = _run_detail_failed_case_summary(status, payload)
+    except Exception as exc:
+        diagnostics["run_detail"] = {
+            "error_type": type(exc).__name__,
+            "status_code": 0,
+        }
+    try:
+        if not headers:
+            raise RuntimeError("failed_case_diagnostics_auth_unavailable")
+        status, payload = json_request(
+            "GET",
+            f"{api_url.rstrip()}/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+            headers=headers,
+            timeout=30,
+        )
+        diagnostics["runtime_overview"] = _runtime_overview_failed_case_summary(status, payload)
+    except Exception as exc:
+        diagnostics["runtime_overview"] = {
+            "error_type": type(exc).__name__,
+            "status_code": 0,
+        }
+    return diagnostics
+
+
+def build_failed_case_record(
+    api_url: str,
+    spec: CaseSpec,
+    exc: Exception,
+    *,
+    auth_mode: str,
+    trusted_header_role: str,
+) -> dict[str, Any]:
+    message = str(exc)
+    record: dict[str, Any] = {
+        "tenant_id": spec.account.tenant_id,
+        "account": spec.account.label,
+        "case": spec.case_name,
+        "scenario": spec.scenario,
+        "agent_id": spec.agent_id,
+        "skill_id": spec.skill_id,
+        "error_type": type(exc).__name__,
+        "message": message,
+    }
+    record.update(_extract_failed_case_ids(message))
+    run_id = str(record.get("run_id") or "")
+    diagnostics = collect_failed_case_diagnostics(
+        api_url,
+        spec.account,
+        run_id,
+        auth_mode=auth_mode,
+        trusted_header_role=trusted_header_role,
+    )
+    if diagnostics:
+        record["diagnostics"] = diagnostics
+    return record
+
+
 def attach_run_detail_probe_results(
     api_url: str,
     results: list[dict[str, Any]],
@@ -2584,6 +2834,7 @@ def main() -> int:
             raise SystemExit(str(exc)) from exc
         run_creation_role = "developer" if args.use_fixture_agents else args.trusted_header_role
         admin_probe_role = run_creation_role if run_creation_role == "developer" else None
+        failure_diagnostics_role = "developer" if args.auth_mode == "trusted-header" else run_creation_role
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(specs)) as pool:
             future_specs = {
                 pool.submit(
@@ -2612,16 +2863,13 @@ def main() -> int:
                     results.append(future.result())
                 except Exception as exc:
                     failed_cases.append(
-                        {
-                            "tenant_id": spec.account.tenant_id,
-                            "account": spec.account.label,
-                            "case": spec.case_name,
-                            "scenario": spec.scenario,
-                            "agent_id": spec.agent_id,
-                            "skill_id": spec.skill_id,
-                            "error_type": type(exc).__name__,
-                            "message": str(exc),
-                        }
+                        build_failed_case_record(
+                            args.api_url,
+                            spec,
+                            exc,
+                            auth_mode=args.auth_mode,
+                            trusted_header_role=failure_diagnostics_role,
+                        )
                     )
         attach_artifact_acl_probe_results(
             args.api_url,
