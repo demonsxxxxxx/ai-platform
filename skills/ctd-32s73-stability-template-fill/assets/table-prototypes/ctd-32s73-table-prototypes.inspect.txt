@@ -1,0 +1,166 @@
+FILE=assets\table-prototypes\ctd-32s73-table-prototypes.docx
+PARAGRAPHS=152
+TABLES=19
+INLINE_SHAPES=18
+PLACEHOLDERS
+  XXX=200
+  IPXXX=36
+  单抗/原液=43
+  {{=15
+  }}=15
+  已完成的申报资料=0
+  时间（小时）=8
+CAPTION_AND_SECTION_PARAGRAPHS
+  [0] style='toc 1' text='目录'
+  [1] style='toc 1' text='表目录 2'
+  [2] style='toc 1' text='图目录 3'
+  [3] style='toc 1' text='缩略语表 4'
+  [4] style='toc 1' text='3.2.S.7.3 稳定性数据 5'
+  [5] style='toc 1' text='1 长期条件考察结果 5'
+  [6] style='toc 1' text='2 单抗/原液加速条件考察结果 16'
+  [7] style='toc 1' text='3 单抗/原液影响因素研究 25'
+  [8] style='toc 2' text='3.1 单抗/原液影响因素研究结果 25'
+  [15] style='toc 2' text='3.2 单抗/原液影响因素研究结论 33'
+  [18] style='报告正文' text='表目录'
+  [19] style='table of figures' text='表3.2.S.7.3- 1 长期稳定性试验结果（批号：IPXXX-4，XXX℃ ± XXX℃，XXX） 6'
+  [20] style='table of figures' text='表3.2.S.7.3- 2 长期稳定性试验结果（批号：IPXXX-5，XXX℃±XXX℃，XXX） 8'
+  [21] style='table of figures' text='表3.2.S.7.3- 4 单抗加速稳定性试验结果（批号：IPXXX-4，XXX℃ ± XXX℃） 17'
+  [22] style='table of figures' text='表3.2.S.7.3- 5 单抗加速稳定性试验结果（批号：IPXXX-5，XXX℃ ± XXX℃） 18'
+  [23] style='table of figures' text='表3.2.S.7.3- 6 IPXXX-4光照试验结果（25℃ ± 2℃/60%RH ± 5%RH，5000 Lux ± 500 Lux） 25'
+  [24] style='table of figures' text='表3.2.S.7.3- 7 IPXXX-5光照试验结果（25℃ ± 2℃/60%RH ± 5%RH，5000 Lux ± 500 Lux） 26'
+  [25] style='table of figures' text='表3.2.S.7.3- 8 IPXXX-4振荡试验结果（室温，300 rpm，避光） 26'
+  [26] style='table of figures' text='表3.2.S.7.3- 9 IPXXX-5振荡试验结果（室温，300 rpm，避光） 27'
+  [27] style='table of figures' text='表3.2.S.7.3- 10 IPXXX-4冻融试验结果（XXX℃） 27'
+  [28] style='table of figures' text='表3.2.S.7.3- 11 IPXXX-5冻融试验结果（XXX℃） 28'
+  [29] style='table of figures' text='表3.2.S.7.3- 12 IPXXX-4高温试验结果（25℃ ± 2℃，60% RH ± 5% RH，避光） 29'
+  [30] style='table of figures' text='表3.2.S.7.3- 13 IPXXX-5高温试验结果（25℃ ± 2℃，60% RH ± 5% RH，避光） 29'
+  [31] style='table of figures' text='表3.2.S.7.3- 14 IPXXX-4 低pH试验结果（25℃ ± 2℃，60% RH ± 5% RH，pH=XXX） 30'
+  [32] style='table of figures' text='表3.2.S.7.3- 15 IPXXX-5 低pH试验结果（25℃ ± 2℃，60% RH ± 5% RH，pH=XXX） 30'
+  [33] style='table of figures' text='表3.2.S.7.3- 16 IPXXX-4 高pH试验结果（25℃ ± 2℃，60% RH ± 5% RH，pH= XXX） 31'
+  [34] style='table of figures' text='表3.2.S.7.3- 17 IPXXX-5 高pH试验结果（25℃ ± 2℃，60% RH ± 5% RH，pH= XXX） 31'
+  [35] style='table of figures' text='表3.2.S.7.3- 18 IPXXX-4氧化试验结果（含0.3%H2O2，25℃ ± 2℃，60% RH ± 5% RH） 32'
+  [36] style='table of figures' text='表3.2.S.7.3- 19 IPXXX-4氧化试验结果（含0.3%H2O2，25℃ ± 2℃，60% RH ± 5% RH） 33'
+  [37] style='报告正文' text='图目录'
+  [38] style='table of figures' text='图3.2.S.7.3- 1单抗/原液长期条件（XXX℃ ± XXX℃）SEC单体纯度稳定性趋势图 11'
+  [39] style='table of figures' text='图3.2.S.7.3- 2单抗/原液长期条件（XXX℃ ± XXX℃）非还原型CE-SDS纯度稳定性趋势图 11'
+  [40] style='table of figures' text='图3.2.S.7.3- 3单抗/原液长期条件（XXX℃ ± XXX℃）还原型CE-SDS纯度稳定性趋势图 12'
+  [41] style='table of figures' text='图3.2.S.7.3- 4单抗/原液长期条件（XXX℃ ± XXX℃）电荷变异体-酸性组分稳定性趋势图 12'
+  [42] style='table of figures' text='图3.2.S.7.3- 5单抗/原液长期条件（XXX℃ ± XXX℃）电荷变异体-主峰稳定性趋势图 13'
+  [43] style='table of figures' text='图3.2.S.7.3- 6单抗/原液长期条件（XXX℃ ± XXX℃）电荷变异体-碱性组分稳定性趋势图 13'
+  [44] style='table of figures' text='图3.2.S.7.3- 7单抗/原液长期条件（XXX℃ ± XXX℃）蛋白浓度稳定性趋势图 14'
+  [45] style='table of figures' text='图3.2.S.7.3- 8单抗/原液长期条件（XXX℃ ± XXX℃）结合活性（ELISA）稳定性趋势图 14'
+  [46] style='table of figures' text='图3.2.S.7.3- 9单抗/原液长期条件（XXX℃ ± XXX℃）pH稳定性趋势图 15'
+  [47] style='table of figures' text='图3.2.S.7.3- 11单抗/原液加速条件（XXX℃ ± XXX℃）SEC纯度稳定性趋势图 20'
+  [48] style='table of figures' text='图3.2.S.7.3- 12单抗/原液加速条件（XXX℃ ± XXX℃）非还原型CE-SDS纯度稳定性趋势图 20'
+  [49] style='table of figures' text='图3.2.S.7.3- 13单抗/原液加速条件（XXX℃ ± XXX℃）还原型CE-SDS纯度稳定性趋势图 21'
+  [50] style='table of figures' text='图3.2.S.7.3- 14单抗/原液加速条件（XXX℃ ± XXX℃）电荷变异体-酸性组分稳定性趋势图 21'
+  [51] style='table of figures' text='图3.2.S.7.3- 15单抗/原液加速条件（XXX℃ ± XXX℃）电荷变异体-主峰稳定性趋势图 22'
+  [52] style='table of figures' text='图3.2.S.7.3- 16单抗/原液加速条件（XXX℃ ± XXX℃）电荷变异体-碱性组分稳定性趋势图 22'
+  [53] style='table of figures' text='图3.2.S.7.3- 17单抗/原液加速条件（XXX℃ ± XXX℃）蛋白浓度稳定性趋势图 23'
+  [54] style='table of figures' text='图3.2.S.7.3- 18单抗/原液加速条件（XXX℃ ± XXX℃）结合活性（ELISA）稳定性趋势图 23'
+  [55] style='table of figures' text='图3.2.S.7.3- 19单抗/原液加速条件（XXX℃ ± XXX℃）pH稳定性趋势图 24'
+  [61] style='Caption' text='3.2.S.7.3 稳定性数据'
+  [62] style='Caption' text='1 长期稳定性考察结果'
+  [65] style='Caption' text='表3.2.S.7.3- 1 长期稳定性试验结果（批号：IPXXX-4，XXX℃ ± XXX℃，XXX）'
+  [66] style='Normal' text='表注：---表示尚未进行到此时间点，样品在持续考察中；N/A表示该时间点无此检项。'
+  [67] style='Caption' text='表3.2.S.7.3- 2 长期稳定性试验结果（批号：IPXXX-5，XXX℃±XXX℃，XXX）'
+  [68] style='Caption' text='表注：---表示尚未进行到此时间点，样品在持续考察中；N/A表示该时间点无此检项。'
+  [72] style='Normal' text='图3.2.S.7.3- 1单抗/原液长期条件（XXX℃ ± XXX℃）SEC单体纯度稳定性趋势图'
+  [74] style='Caption' text='图3.2.S.7.3- 2单抗/原液长期条件（XXX℃ ± XXX℃）非还原型CE-SDS纯度稳定性趋势图'
+  [76] style='Caption' text='图3.2.S.7.3- 3单抗/原液长期条件（XXX℃ ± XXX℃）还原型CE-SDS纯度稳定性趋势图'
+  [78] style='Caption' text='图3.2.S.7.3- 4单抗/原液长期条件（XXX℃ ± XXX℃）电荷变异体-酸性组分稳定性趋势图'
+  [81] style='Caption' text='图3.2.S.7.3- 5单抗/原液长期条件（XXX℃ ± XXX℃）电荷变异体-主峰稳定性趋势图'
+  [83] style='Caption' text='图3.2.S.7.3- 6单抗/原液长期条件（XXX℃ ± XXX℃）电荷变异体-碱性组分稳定性趋势图'
+  [86] style='Caption' text='图3.2.S.7.3- 7单抗/原液长期条件（XXX℃ ± XXX℃）蛋白浓度稳定性趋势图'
+  [88] style='Caption' text='图3.2.S.7.3- 8单抗/原液长期条件（XXX℃ ± XXX℃）结合活性（ELISA）稳定性趋势图'
+  [90] style='Caption' text='图3.2.S.7.3- 9单抗/原液长期条件（XXX℃ ± XXX℃）pH稳定性趋势图'
+  [93] style='Caption' text='{{ACCELERATED_INTRO}}'
+  [95] style='Caption' text='表3.2.S.7.3- 4 单抗加速稳定性试验结果（批号：IPXXX-4，XXX℃ ± XXX℃）'
+  [96] style='Normal' text='表注：N/A表示该时间点无此检项。'
+  [97] style='Caption' text='表3.2.S.7.3- 5 单抗加速稳定性试验结果（批号：IPXXX-5，XXX℃ ± XXX℃）'
+  [98] style='Normal' text='表注：N/A表示该时间点无此检项。'
+  [102] style='Caption' text='图3.2.S.7.3- 11单抗/原液加速条件（XXX℃ ± XXX℃）SEC纯度稳定性趋势图'
+  [104] style='Caption' text='图3.2.S.7.3- 12单抗/原液加速条件（XXX℃ ± XXX℃）非还原型CE-SDS纯度稳定性趋势图'
+  [106] style='报告正文' text='图3.2.S.7.3- 13单抗/原液加速条件（XXX℃ ± XXX℃）还原型CE-SDS纯度稳定性趋势图'
+  [108] style='Caption' text='图3.2.S.7.3- 14单抗/原液加速条件（XXX℃ ± XXX℃）电荷变异体-酸性组分稳定性趋势图'
+  [110] style='Caption' text='图3.2.S.7.3- 15单抗/原液加速条件（XXX℃ ± XXX℃）电荷变异体-主峰稳定性趋势图'
+  [112] style='Caption' text='图3.2.S.7.3- 16单抗/原液加速条件（XXX℃ ± XXX℃）电荷变异体-碱性组分稳定性趋势图'
+  [114] style='Caption' text='图3.2.S.7.3- 17单抗/原液加速条件（XXX℃ ± XXX℃）蛋白浓度稳定性趋势图'
+  [116] style='Caption' text='图3.2.S.7.3- 18单抗/原液加速条件（XXX℃ ± XXX℃）结合活性（ELISA）稳定性趋势图'
+  [118] style='Caption' text='图3.2.S.7.3- 19单抗/原液加速条件（XXX℃ ± XXX℃）pH稳定性趋势图'
+  [119] style='Caption' text='3 单抗/原液影响因素研究'
+  [121] style='报告正文' text='3.1 单抗/原液影响因素研究结果'
+  [124] style='Caption' text='{{STRESS_LIGHT_SUMMARY}}'
+  [125] style='Caption' text='表3.2.S.7.3- 6 IPXXX-4光照试验结果（25℃ ± 2℃/60%RH ± 5%RH，5000 Lux ± 500 Lux）'
+  [126] style='Caption' text='表3.2.S.7.3- 7 IPXXX-5光照试验结果（25℃ ± 2℃/60%RH ± 5%RH，5000 Lux ± 500 Lux）'
+  [129] style='Caption' text='表3.2.S.7.3- 8 IPXXX-4振荡试验结果（室温，300 rpm，避光）'
+  [130] style='Caption' text='表3.2.S.7.3- 9 IPXXX-5振荡试验结果（室温，300 rpm，避光）'
+  [133] style='报告正文' text='表3.2.S.7.3- 10 IPXXX-4冻融试验结果（XXX℃）'
+  [134] style='报告正文' text='表3.2.S.7.3- 11 IPXXX-5冻融试验结果（XXX℃）'
+  [137] style='Caption' text='表3.2.S.7.3- 12 IPXXX-4高温试验结果（25℃ ± 2℃，60% RH ± 5% RH，避光）'
+  [138] style='Caption' text='表3.2.S.7.3- 13 IPXXX-5高温试验结果（25℃ ± 2℃，60% RH ± 5% RH，避光）'
+  [141] style='Caption' text='表3.2.S.7.3- 14 IPXXX-4 低pH试验结果（25℃ ± 2℃，60% RH ± 5% RH，pH=XXX）'
+  [142] style='Caption' text='表3.2.S.7.3- 15 IPXXX-5 低pH试验结果（25℃ ± 2℃，60% RH ± 5% RH，pH=XXX）'
+  [143] style='Caption' text='表3.2.S.7.3- 16 IPXXX-4 高pH试验结果（25℃ ± 2℃，60% RH ± 5% RH，pH= XXX）'
+  [144] style='Caption' text='表3.2.S.7.3- 17 IPXXX-5 高pH试验结果（25℃ ± 2℃，60% RH ± 5% RH，pH= XXX）'
+  [147] style='Caption' text='表3.2.S.7.3- 18 IPXXX-4氧化试验结果（含0.3%H2O2，25℃ ± 2℃，60% RH ± 5% RH）'
+  [148] style='Caption' text='表3.2.S.7.3- 19 IPXXX-4氧化试验结果（含0.3%H2O2，25℃ ± 2℃，60% RH ± 5% RH）'
+  [149] style='报告正文' text='3.2 单抗/原液影响因素研究结论'
+TABLES
+  TABLE[0] logical_rows=4 logical_cols=3
+    row[0] physical_cells=3 ["span=1,v=,text='英文缩写英文缩写英文缩写'", "span=1,v=,text='英文全称英文全称英文全称'", "span=1,v=,text='中文对照中文对照中文对照'"]
+    row[1] physical_cells=3 ["span=1,v=,text='CE-SDSCE-SDSCE-SDS'", "span=1,v=,text='Sodium Dodecyl SulfateCapillary Electrop'", "span=1,v=,text='十二烷基硫酸钠毛细管凝胶电泳十二烷基硫酸钠毛细管凝胶电泳十二烷基硫酸钠毛细管凝胶'"]
+  TABLE[1] logical_rows=20 logical_cols=14
+    row[0] physical_cells=4 ["span=2,v=restart,text='检测项目检测项目检测项目'", "span=1,v=restart,text='检测方法检测方法检测方法'", "span=1,v=restart,text='可接受标准可接受标准可接受标准'", "span=10,v=,text='时间（月）时间（月）时间（月）'"]
+    row[1] physical_cells=13 ["span=2,v=continue,text=''", "span=1,v=continue,text=''", "span=1,v=continue,text=''", "span=1,v=,text='000'", "span=1,v=,text='111'", "span=1,v=,text='333'", "span=1,v=,text='666'", "span=1,v=,text='999'", "span=1,v=,text='121212'", "span=1,v=,text='181818'", "span=1,v=,text='242424'", "span=1,v=,text='303300'", "span=1,v=,text='363366'"]
+  TABLE[2] logical_rows=20 logical_cols=14
+    row[0] physical_cells=4 ["span=2,v=restart,text='检测项目检测项目检测项目'", "span=1,v=restart,text='检测方法检测方法检测方法'", "span=1,v=restart,text='可接受标准可接受标准可接受标准'", "span=10,v=,text='时间（月）时间（月）时间（月）'"]
+    row[1] physical_cells=13 ["span=2,v=continue,text=''", "span=1,v=continue,text=''", "span=1,v=continue,text=''", "span=1,v=,text='000'", "span=1,v=,text='111'", "span=1,v=,text='333'", "span=1,v=,text='666'", "span=1,v=,text='999'", "span=1,v=,text='121212'", "span=1,v=,text='181818'", "span=1,v=,text='242424'", "span=1,v=,text='303300'", "span=1,v=,text='363366'"]
+  TABLE[3] logical_rows=20 logical_cols=8
+    row[0] physical_cells=4 ["span=2,v=restart,text='检测项目检测项目检测项目'", "span=1,v=restart,text='检测方法检测方法检测方法'", "span=1,v=restart,text='可接受标准（仅供参考）可接受标准可接受标准（仅供参考）（仅供参考）'", "span=4,v=,text='时间（月）时间（月）时间（月）'"]
+    row[1] physical_cells=7 ["span=2,v=continue,text=''", "span=1,v=continue,text=''", "span=1,v=continue,text=''", "span=1,v=,text='000'", "span=1,v=,text='111'", "span=1,v=,text='333'", "span=1,v=,text='666'"]
+  TABLE[4] logical_rows=20 logical_cols=8
+    row[0] physical_cells=4 ["span=2,v=restart,text='检测项目检测项目检测项目'", "span=1,v=restart,text='检测方法检测方法检测方法'", "span=1,v=restart,text='可接受标准（仅供参考）可接受标准可接受标准（仅供参考）（仅供参考）'", "span=4,v=,text='时间（月）时间（月）时间（月）'"]
+    row[1] physical_cells=7 ["span=2,v=continue,text=''", "span=1,v=continue,text=''", "span=1,v=continue,text=''", "span=1,v=,text='000'", "span=1,v=,text='111'", "span=1,v=,text='333'", "span=1,v=,text='666'"]
+  TABLE[5] logical_rows=16 logical_cols=6
+    row[0] physical_cells=2 ["span=2,v=restart,text='检测指标检测指标检测指标'", "span=4,v=,text='光照组，时间（天）光照组，时间（天）光照组，时间（天）'"]
+    row[1] physical_cells=5 ["span=2,v=continue,text=''", "span=1,v=,text='000'", "span=1,v=,text='333'", "span=1,v=,text='555'", "span=1,v=,text='101010'"]
+  TABLE[6] logical_rows=16 logical_cols=7
+    row[0] physical_cells=2 ["span=3,v=restart,text='检测指标检测指标检测指标'", "span=4,v=,text='光照组，时间（天）光照组，时间（天）光照组，时间（天）'"]
+    row[1] physical_cells=5 ["span=3,v=continue,text=''", "span=1,v=,text='000'", "span=1,v=,text='333'", "span=1,v=,text='555'", "span=1,v=,text='101010'"]
+  TABLE[7] logical_rows=16 logical_cols=6
+    row[0] physical_cells=2 ["span=3,v=restart,text='检测指标检测指标检测指标'", "span=3,v=,text='振荡组，时间（天）振荡振荡组，时间（天）组，时间（天）'"]
+    row[1] physical_cells=4 ["span=3,v=continue,text=''", "span=1,v=,text='000'", "span=1,v=,text='333'", "span=1,v=,text='555'"]
+  TABLE[8] logical_rows=16 logical_cols=6
+    row[0] physical_cells=2 ["span=3,v=restart,text='检测指标检测指标检测指标'", "span=3,v=,text='振荡组，时间（天）振荡振荡组，时间（天）组，时间（天）'"]
+    row[1] physical_cells=4 ["span=3,v=continue,text=''", "span=1,v=,text='000'", "span=1,v=,text='333'", "span=1,v=,text='555'"]
+  TABLE[9] logical_rows=16 logical_cols=6
+    row[0] physical_cells=2 ["span=3,v=restart,text='检测指标检测指标检测指标'", "span=3,v=,text='时间（循环）时间（时间（循环循环））'"]
+    row[1] physical_cells=4 ["span=3,v=continue,text=''", "span=1,v=,text='000'", "span=1,v=,text='333'", "span=1,v=,text='555'"]
+  TABLE[10] logical_rows=16 logical_cols=6
+    row[0] physical_cells=2 ["span=3,v=restart,text='检测指标检测指标检测指标'", "span=3,v=,text='时间（循环）时间（时间（循环循环））'"]
+    row[1] physical_cells=4 ["span=3,v=continue,text=''", "span=1,v=,text='000'", "span=1,v=,text='333'", "span=1,v=,text='555'"]
+  TABLE[11] logical_rows=16 logical_cols=6
+    row[0] physical_cells=2 ["span=3,v=restart,text='检测指标检测指标检测指标'", "span=3,v=,text='时间（天）时间（时间（天天））'"]
+    row[1] physical_cells=4 ["span=3,v=continue,text=''", "span=1,v=,text='000'", "span=1,v=,text='333'", "span=1,v=,text='555'"]
+  TABLE[12] logical_rows=16 logical_cols=6
+    row[0] physical_cells=2 ["span=3,v=restart,text='检测指标检测指标检测指标'", "span=3,v=,text='时间（天）时间（时间（天天））'"]
+    row[1] physical_cells=4 ["span=3,v=continue,text=''", "span=1,v=,text='000'", "span=1,v=,text='333'", "span=1,v=,text='555'"]
+  TABLE[13] logical_rows=16 logical_cols=7
+    row[0] physical_cells=2 ["span=3,v=restart,text='检测指标检测指标检测指标'", "span=4,v=,text='时间（天）时间（时间（天天））'"]
+    row[1] physical_cells=5 ["span=3,v=continue,text=''", "span=1,v=,text='000'", "span=1,v=,text='111'", "span=1,v=,text='333'", "span=1,v=,text='555'"]
+  TABLE[14] logical_rows=16 logical_cols=7
+    row[0] physical_cells=2 ["span=3,v=restart,text='检测指标检测指标检测指标'", "span=4,v=,text='时间（天）时间（时间（天天））'"]
+    row[1] physical_cells=5 ["span=3,v=continue,text=''", "span=1,v=,text='000'", "span=1,v=,text='111'", "span=1,v=,text='333'", "span=1,v=,text='555'"]
+  TABLE[15] logical_rows=16 logical_cols=7
+    row[0] physical_cells=2 ["span=3,v=restart,text='检测指标检测指标检测指标'", "span=4,v=,text='时间（天）时间（时间（天天））'"]
+    row[1] physical_cells=5 ["span=3,v=continue,text=''", "span=1,v=,text='000'", "span=1,v=,text='111'", "span=1,v=,text='333'", "span=1,v=,text='555'"]
+  TABLE[16] logical_rows=16 logical_cols=7
+    row[0] physical_cells=2 ["span=3,v=restart,text='检测指标检测指标检测指标'", "span=4,v=,text='时间（天）时间（时间（天天））'"]
+    row[1] physical_cells=5 ["span=3,v=continue,text=''", "span=1,v=,text='000'", "span=1,v=,text='111'", "span=1,v=,text='333'", "span=1,v=,text='555'"]
+  TABLE[17] logical_rows=16 logical_cols=7
+    row[0] physical_cells=2 ["span=3,v=restart,text='检测指标检测指标检测指标'", "span=4,v=,text='时间（小时）时间（时间（小时小时））'"]
+    row[1] physical_cells=5 ["span=3,v=continue,text=''", "span=1,v=,text='000'", "span=1,v=,text='444'", "span=1,v=,text='888'", "span=1,v=,text='242424'"]
+  TABLE[18] logical_rows=16 logical_cols=7
+    row[0] physical_cells=2 ["span=3,v=restart,text='检测指标检测指标检测指标'", "span=4,v=,text='时间（小时）时间（时间（小时小时））'"]
+    row[1] physical_cells=5 ["span=3,v=continue,text=''", "span=1,v=,text='000'", "span=1,v=,text='444'", "span=1,v=,text='888'", "span=1,v=,text='242424'"]

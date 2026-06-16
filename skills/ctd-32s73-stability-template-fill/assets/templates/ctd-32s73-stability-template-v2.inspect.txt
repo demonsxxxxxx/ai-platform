@@ -1,0 +1,48 @@
+FILE=assets\templates\ctd-32s73-stability-template-v2.docx
+PARAGRAPHS=43
+TABLES=1
+INLINE_SHAPES=0
+PLACEHOLDERS
+  XXX=0
+  IPXXX=0
+  单抗/原液=7
+  已完成的申报资料=0
+  时间（小时）=0
+  {{TABLE_DIRECTORY}}=1
+  {{FIGURE_DIRECTORY}}=1
+  {{LONG_TERM_TABLE_BLOCK}}=1
+  {{LONG_TERM_FIGURE_BLOCK}}=1
+  {{ACCELERATED_TABLE_BLOCK}}=1
+  {{ACCELERATED_FIGURE_BLOCK}}=1
+  {{STRESS_SECTION_BLOCKS}}=1
+  {{STRESS_LIGHT_TABLE_BLOCK}}=0
+  {{STRESS_OXIDATION_TABLE_BLOCK}}=0
+CAPTION_AND_SECTION_PARAGRAPHS
+  [0] style='toc 1' text='目录'
+  [1] style='toc 1' text='表目录 2'
+  [2] style='toc 1' text='图目录 3'
+  [3] style='toc 1' text='缩略语表 4'
+  [4] style='toc 1' text='3.2.S.7.3 稳定性数据 5'
+  [5] style='toc 1' text='1 长期条件考察结果 5'
+  [6] style='toc 1' text='2 单抗/原液加速条件考察结果 16'
+  [7] style='toc 1' text='3 单抗/原液影响因素研究 25'
+  [8] style='toc 2' text='3.1 单抗/原液影响因素研究结果 25'
+  [9] style='toc 2' text='3.2 单抗/原液影响因素研究结论 33'
+  [12] style='报告正文' text='表目录'
+  [13] style='table of figures' text='{{TABLE_DIRECTORY}}'
+  [14] style='报告正文' text='图目录'
+  [15] style='table of figures' text='{{FIGURE_DIRECTORY}}'
+  [21] style='Caption' text='3.2.S.7.3 稳定性数据'
+  [22] style='Caption' text='1 长期稳定性考察结果'
+  [25] style='Caption' text='{{LONG_TERM_TABLE_BLOCK}}'
+  [28] style='Caption' text='{{LONG_TERM_FIGURE_BLOCK}}'
+  [30] style='Caption' text='{{ACCELERATED_INTRO}}'
+  [32] style='Caption' text='{{ACCELERATED_TABLE_BLOCK}}'
+  [35] style='Caption' text='{{ACCELERATED_FIGURE_BLOCK}}'
+  [36] style='Caption' text='3 单抗/原液影响因素研究'
+  [38] style='报告正文' text='3.1 单抗/原液影响因素研究结果'
+  [40] style='报告正文' text='3.2 单抗/原液影响因素研究结论'
+TABLES
+  TABLE[0] logical_rows=4 logical_cols=3
+    row[0] physical_cells=3 ["span=1,v=,text='英文缩写英文缩写英文缩写'", "span=1,v=,text='英文全称英文全称英文全称'", "span=1,v=,text='中文对照中文对照中文对照'"]
+    row[1] physical_cells=3 ["span=1,v=,text='CE-SDSCE-SDSCE-SDS'", "span=1,v=,text='Sodium Dodecyl SulfateCapillary Electrop'", "span=1,v=,text='十二烷基硫酸钠毛细管凝胶电泳十二烷基硫酸钠毛细管凝胶电泳十二烷基硫酸钠毛细管凝胶'"]

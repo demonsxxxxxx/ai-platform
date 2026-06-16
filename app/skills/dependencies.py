@@ -8,14 +8,17 @@ PUBLIC_WORKBENCH_SKILL_IDS = {
     "qa-file-reviewer",
     "baoyu-translate",
     "ragflow-knowledge-search",
+    "ctd-32s73-stability-template-fill",
 }
 
 INTERNAL_DEPENDENCY_SKILL_IDS = {
     "minimax-docx",
+    "reference-fact-extraction",
 }
 
 SKILL_DEPENDENCIES = {
     "qa-file-reviewer": ["minimax-docx"],
+    "ctd-32s73-stability-template-fill": ["reference-fact-extraction"],
 }
 
 

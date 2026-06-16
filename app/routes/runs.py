@@ -10,7 +10,7 @@ from app import repositories
 from app.artifact_preview import artifact_preview_allowed, artifact_preview_url
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capabilities import get_capability
-from app.context_builder import record_initial_context_snapshot
+from app.context_builder import ensure_public_context_provenance, record_initial_context_snapshot
 from app.db import transaction
 from app.models import (
     CreateRunRequest,
@@ -274,6 +274,8 @@ def artifact_card(row: dict[str, object], principal: AuthPrincipal | None = None
         label = public_text_or_fallback(row.get("label"), artifact_type)
     else:
         label = public_text_or_fallback(row.get("label"), artifact_type)
+    lineage = artifact_lineage_contract(manifest, row=row)
+    lineage.pop("source_run_id", None)
     return {
         "id": artifact_id,
         "artifact_id": artifact_id,
@@ -284,7 +286,7 @@ def artifact_card(row: dict[str, object], principal: AuthPrincipal | None = None
         "download_url": artifact_download_url(artifact_id),
         "preview_url": artifact_preview_url(artifact_id) if artifact_preview_allowed(content_type) else None,
         "status": "available",
-        "lineage": artifact_lineage_contract(manifest, row=row),
+        "lineage": lineage,
         "manifest": artifact_manifest_contract(
             artifact_type=artifact_type,
             manifest=manifest,
@@ -636,6 +638,7 @@ def _artifact_tree_lineage(
     subagent_id: str | None,
 ) -> dict[str, object]:
     projected = artifact_lineage_contract(lineage)
+    projected.pop("source_run_id", None)
     projected.pop("source_step_id", None)
     projected.pop("checkpoint_id", None)
     projected.pop("subagent_id", None)
@@ -1743,6 +1746,55 @@ def run_playback_timeline(
     return timeline
 
 
+def run_context_ref(run: dict[str, object]) -> dict[str, object] | None:
+    source_input = run.get("input_json") if isinstance(run.get("input_json"), dict) else {}
+    context_snapshot = source_input.get("context_snapshot")
+    if not isinstance(context_snapshot, dict):
+        return None
+    context_ref = ensure_public_context_provenance(
+        context_snapshot,
+        source="stored_context_snapshot",
+        message_count=_context_material_count(context_snapshot, "message_count"),
+        file_count=_context_material_count(context_snapshot, "file_count"),
+        artifact_count=_context_material_count(context_snapshot, "artifact_count"),
+        memory_record_count=_context_material_count(context_snapshot, "memory_record_count"),
+        preserve_stored_input_keys=True,
+    )
+    used_context_summary = context_ref.get("used_context_summary")
+    referenced_materials = context_ref.get("referenced_materials")
+    if not isinstance(used_context_summary, dict) or not isinstance(referenced_materials, dict):
+        return None
+    return {
+        "source": used_context_summary.get("source"),
+        "referenced_materials": {
+            "message_count": _safe_public_count(referenced_materials.get("message_count")),
+            "file_count": _safe_public_count(referenced_materials.get("file_count")),
+            "artifact_count": _safe_public_count(referenced_materials.get("artifact_count")),
+            "memory_record_count": _safe_public_count(referenced_materials.get("memory_record_count")),
+        },
+        "used_context_summary": {
+            "source": used_context_summary.get("source"),
+            "input_keys": used_context_summary.get("input_keys") if isinstance(used_context_summary.get("input_keys"), list) else [],
+            "memory_policy_source": used_context_summary.get("memory_policy_source") or "not_recorded",
+            "long_term_memory_read": bool(used_context_summary.get("long_term_memory_read")),
+        },
+        "latest_artifact_version": context_ref.get("latest_artifact_version"),
+        "execution_tier": context_ref.get("execution_tier"),
+        "context_pack_version": context_ref.get("context_pack_version"),
+        "context_pack_generated_at": context_ref.get("context_pack_generated_at"),
+    }
+
+
+def _context_material_count(context_snapshot: dict[str, object], key: str) -> int:
+    materials = context_snapshot.get("referenced_materials")
+    value = materials.get(key) if isinstance(materials, dict) else None
+    return _safe_public_count(value)
+
+
+def _safe_public_count(value: object) -> int:
+    return int(value) if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
 def next_sequence_from_rows(rows: list[dict[str, object]], fallback: int | None = None) -> int:
     return max([int(row.get("sequence") or 0) for row in rows], default=fallback or 0)
 
@@ -1959,6 +2011,10 @@ async def seed_copied_run_steps(conn, *, tenant_id: str, run_id: str, copied_inp
         )
 
 
+def _copied_run_source_run_id(authorized_source_run_id: str | None) -> str | None:
+    return _safe_provenance_graph_id("source_run_id", authorized_source_run_id)
+
+
 async def prepare_copied_run_for_queue(
     conn,
     *,
@@ -1966,13 +2022,16 @@ async def prepare_copied_run_for_queue(
     principal: AuthPrincipal,
     source: str,
     queue_principal: AuthPrincipal | None = None,
+    authorized_source_run_id: str | None = None,
 ) -> dict[str, Any]:
     effective_principal = queue_principal or principal
+    copied_input = copied["input"] if isinstance(copied.get("input"), dict) else {}
+    source_run_id = _copied_run_source_run_id(authorized_source_run_id)
     copied_skill_version = str(copied.get("skill_version") or "")
     skill_manifests = await _governed_skill_manifest_pins(
         conn,
         skill_id=str(copied["skill_id"]),
-        input_payload=copied["input"] if isinstance(copied.get("input"), dict) else {},
+        input_payload=copied_input,
         release_policy_version=copied.get("release_policy_version"),
     )
     copied_skill_version = governed_locked_skill_version(
@@ -2014,10 +2073,11 @@ async def prepare_copied_run_for_queue(
         trace_id=standard_trace_id(str(copied["run_id"])),
         agent_id=str(copied["agent_id"]),
         skill_id=str(copied["skill_id"]),
-        input_payload=copied["input"] if isinstance(copied.get("input"), dict) else {},
+        input_payload=copied_input,
         message_ids=[],
         file_ids=list(copied["file_ids"]),
         source=source,
+        source_run_id=source_run_id,
     )
     for event in initial_run_event_specs(
         agent_id=str(copied["agent_id"]),
@@ -2267,6 +2327,7 @@ async def copy_run(
                     copied=copied,
                     principal=principal,
                     source="copy_run",
+                    authorized_source_run_id=run_id,
                 )
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -2304,6 +2365,7 @@ async def retry_run(
                     copied=copied,
                     principal=principal,
                     source="retry_run",
+                    authorized_source_run_id=run_id,
                 )
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -2344,6 +2406,7 @@ async def resume_run(
                     copied=copied,
                     principal=principal,
                     source="resume_run",
+                    authorized_source_run_id=run_id,
                 )
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -2501,6 +2564,7 @@ async def handoff_multi_agent_dispatch(
                     principal=principal,
                     queue_principal=owner_principal,
                     source="multi_agent_dispatch_handoff",
+                    authorized_source_run_id=run_id,
                 )
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -2583,6 +2647,7 @@ async def tick_multi_agent_dispatch(
                     principal=principal,
                     queue_principal=owner_principal,
                     source="multi_agent_dispatch_tick",
+                    authorized_source_run_id=run_id,
                 )
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -2863,6 +2928,7 @@ async def get_run_playback(
         "artifacts": artifact_cards,
         "steps": step_cards,
         "multi_agent": multi_agent_snapshot_from_steps(run_id, steps, principal=principal),
+        "context_ref": run_context_ref(run),
     }
 
 

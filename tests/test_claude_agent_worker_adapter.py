@@ -287,6 +287,15 @@ def test_qa_file_reviewer_includes_minimax_docx_dependency_when_available():
     assert selected == ["qa-file-reviewer", "minimax-docx"]
 
 
+def test_ctd_stability_template_fill_includes_reference_fact_dependency_when_available():
+    selected = _allowed_skill_names(
+        types.SimpleNamespace(skill_id="ctd-32s73-stability-template-fill", input={}, skill_manifests=[]),
+        ["ctd-32s73-stability-template-fill", "reference-fact-extraction", "general-chat"],
+    )
+
+    assert selected == ["ctd-32s73-stability-template-fill", "reference-fact-extraction"]
+
+
 def test_inferred_used_skill_names_uses_shared_dependency_helper(monkeypatch):
     calls = []
 
@@ -1315,6 +1324,7 @@ def test_build_skill_prompt_includes_bounded_executor_context_pack():
                 "memory_policy_source": "stored",
                 "long_term_memory_read": False,
             },
+            "context_pack_generated_at": "2026-06-12T01:23:45Z",
             "raw_storage_key": "s3://private/object",
             "sandbox_workdir": "/tmp/private",
         },
@@ -1322,6 +1332,7 @@ def test_build_skill_prompt_includes_bounded_executor_context_pack():
 
     assert "Office context pack:" in prompt
     assert "Context pack: 2 message(s), 1 file(s), 1 artifact(s)" in prompt
+    assert "Context pack generated at: 2026-06-12T01:23:45Z" in prompt
     assert "Use this bounded context only as background" in prompt
     assert "raw_storage_key" not in prompt
     assert "s3://private" not in prompt
@@ -1544,6 +1555,8 @@ async def test_sdk_runner_uses_streaming_prompt_for_permission_callback(monkeypa
             "claude_agent_sdk_skills": "",
             "claude_agent_sdk_timeout_seconds": 5,
             "claude_agent_sdk_max_turns": 12,
+            "claude_agent_sdk_effort": "xhigh",
+            "claude_agent_sdk_max_thinking_tokens": 16384,
         },
     )()
     fake_sdk = types.SimpleNamespace(
@@ -1564,6 +1577,9 @@ async def test_sdk_runner_uses_streaming_prompt_for_permission_callback(monkeypa
     )
 
     assert result.message == "ok"
+    assert captured["max_turns"] == 12
+    assert captured["effort"] == "xhigh"
+    assert captured["max_thinking_tokens"] == 16384
     assert captured["prompt_is_stream"] is True
     assert captured["prompt_messages"] == [
         {

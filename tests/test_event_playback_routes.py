@@ -330,7 +330,6 @@ def test_run_playback_projection_redacts_ordinary_user_timeline(monkeypatch):
     assert body["artifacts"][0]["download_url"] == "/api/ai/artifacts/artifact-a/download"
     assert body["artifacts"][0]["preview_url"] == "/api/ai/artifacts/artifact-a/preview"
     assert body["artifacts"][0]["lineage"] == {
-        "source_run_id": "run-a",
         "source_event_id": "evt-6",
         "source_step_id": "step-a",
         "source_file_id": "file-a",
@@ -461,7 +460,6 @@ def test_run_provenance_snapshot_projects_operational_artifact_tree(monkeypatch)
             "checkpoint_id": "checkpoint-a",
             "subagent_id": "subagent-a",
             "lineage": {
-                "source_run_id": "run-a",
                 "source_event_id": "evt-6",
                 "source_step_id": "step-a",
                 "source_file_id": "file-a",

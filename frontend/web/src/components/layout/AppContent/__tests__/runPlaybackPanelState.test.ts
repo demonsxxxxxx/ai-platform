@@ -115,6 +115,31 @@ test("buildRunPlaybackPanelViewModel exposes only public display fields", () => 
         },
       ],
     },
+    context_ref: {
+      context_snapshot_id: "ctx-private",
+      source: "stored_context_snapshot",
+      referenced_materials: {
+        file_count: 2,
+        message_count: 1,
+        memory_record_count: 3,
+        artifact_count: 4,
+        file_ids: ["file-private"],
+      },
+      used_context_summary: {
+        source: "stored_context_snapshot",
+        input_keys: ["attachments", "message", "storage_key"],
+        file_count: 2,
+        message_count: 1,
+        memory_record_count: 3,
+        artifact_count: 4,
+        raw_path: "/workspace/private",
+      },
+      execution_tier: "document_worker",
+      latest_artifact_version: "v7",
+      context_pack_version: "v3",
+      context_pack_generated_at: "2026-06-12T01:23:45Z",
+      storage_key: "private/context.json",
+    },
   } as unknown as RunPlaybackResponse);
 
   assert.equal(viewModel.state, "ready");
@@ -187,11 +212,28 @@ test("buildRunPlaybackPanelViewModel exposes only public display fields", () => 
       },
     ],
   });
+  assert.deepEqual(viewModel.contextProvenance, {
+    source: "stored_context_snapshot",
+    executionTier: "document_worker",
+    contextPackVersion: "v3",
+    contextPackGeneratedAt: "2026-06-12T01:23:45Z",
+    latestArtifactVersion: "v7",
+    referencedMaterials: [
+      { label: "files", value: 2 },
+      { label: "messages", value: 1 },
+      { label: "memory", value: 3 },
+      { label: "artifacts", value: 4 },
+    ],
+    inputKeys: ["attachments", "message"],
+  });
 
   const serialized = JSON.stringify(viewModel);
   for (const field of dangerousFields) {
     assert.equal(serialized.includes(field), false, `${field} leaked`);
   }
+  assert.equal(serialized.includes("ctx-private"), false);
+  assert.equal(serialized.includes("file-private"), false);
+  assert.equal(serialized.includes("/workspace/private"), false);
 });
 
 test("timeline labels and statuses are stable for events, artifacts, and steps", () => {
@@ -261,6 +303,7 @@ test("loading, error, and empty view models do not throw", () => {
     timeline: [],
     artifacts: [],
     multiAgent: { counts: [], steps: [] },
+    contextProvenance: null,
     errorMessage: null,
   });
 
@@ -280,6 +323,7 @@ test("loading, error, and empty view models do not throw", () => {
       timeline: [],
       artifacts: [],
       multiAgent: { counts: [], steps: [] },
+      contextProvenance: null,
       errorMessage: "Network failed",
     },
   );
@@ -297,4 +341,5 @@ test("loading, error, and empty view models do not throw", () => {
   assert.deepEqual(empty.timeline, []);
   assert.deepEqual(empty.artifacts, []);
   assert.deepEqual(empty.multiAgent, { counts: [], steps: [] });
+  assert.equal(empty.contextProvenance, null);
 });

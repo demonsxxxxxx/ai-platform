@@ -1,0 +1,11 @@
+ai-platform Skill release license-policy evidence
+
+Skill: ctd-32s73-stability-template-fill
+Skill content hash: d89f4c9152a348be28498919100fe7cad6dda19dce92069ad0da867a0f1e00e3
+Generated at: 2026-06-16T06:04:09Z
+
+Repository-declared dependency files:
+- requirements.txt
+
+Status: pending_review
+Operator action: confirm third-party license policy before setting license_policy_reviewed=true.

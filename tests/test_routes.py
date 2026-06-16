@@ -555,6 +555,118 @@ def test_run_playback_summary_projects_public_agent_id_for_ordinary_user():
     assert "qa-word-review" not in str(summary)
 
 
+@pytest.mark.asyncio
+async def test_get_run_playback_includes_safe_context_provenance(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "session-a",
+            **RUN_SCHEMA_FIELDS,
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "status": "succeeded",
+            "input_json": {
+                "context_snapshot_id": "ctx-private",
+                "context_snapshot": {
+                    "context_snapshot_id": "ctx-private",
+                    "source": "stored_context_snapshot",
+                    "referenced_materials": {
+                        "file_count": 2,
+                        "message_count": 1,
+                        "memory_record_count": 3,
+                        "artifact_count": 4,
+                        "artifact_ids": ["artifact-private"],
+                        "file_ids": ["file-private"],
+                    },
+                    "used_context_summary": {
+                        "source": "stored_context_snapshot",
+                        "input_keys": [
+                            "attachments",
+                            "message",
+                            "storage_key",
+                            "copied_from_run_id",
+                            "source_run_id",
+                            "parent_run_id",
+                        ],
+                        "file_count": 2,
+                        "message_count": 1,
+                        "memory_record_count": 3,
+                        "artifact_count": 4,
+                        "raw_path": "/workspace/private",
+                    },
+                    "execution_tier": "document_worker",
+                    "latest_artifact_version": "v7",
+                    "context_pack_version": "v3",
+                    "context_pack_generated_at": "2026-06-12T01:23:45Z",
+                    "storage_key": "tenants/private/context.json",
+                    "runtime_path": "/tmp/private",
+                    "work_dir": "/workspace/private",
+                    "payload": {"secret": True},
+                    "manifest": {"storage_key": "tenants/private/manifest.json"},
+                    "manifest_json": {"artifact_ids": ["artifact-private"]},
+                },
+            },
+            "result_json": {},
+            "error_code": None,
+            "error_message": None,
+        }
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id, after_sequence=None, limit=200):
+        return []
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return []
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+
+    response = await get_run_playback("run-a", principal=principal())
+
+    assert response["context_ref"] == {
+        "source": "stored_context_snapshot",
+        "referenced_materials": {
+            "message_count": 1,
+            "file_count": 2,
+            "artifact_count": 4,
+            "memory_record_count": 3,
+        },
+        "used_context_summary": {
+            "source": "stored_context_snapshot",
+            "input_keys": ["attachments", "message"],
+            "memory_policy_source": "not_recorded",
+            "long_term_memory_read": False,
+        },
+        "latest_artifact_version": "v7",
+        "execution_tier": "document_worker",
+        "context_pack_version": "v3",
+        "context_pack_generated_at": "2026-06-12T01:23:45Z",
+    }
+    serialized = json.dumps(response["context_ref"], ensure_ascii=False)
+    for private_fragment in [
+        "ctx-private",
+        "file-private",
+        "artifact-private",
+        "storage_key",
+        "copied_from_run_id",
+        "source_run_id",
+        "parent_run_id",
+        "runtime_path",
+        "work_dir",
+        "payload",
+        "manifest",
+        "manifest_json",
+        "/workspace/private",
+        "tenants/private",
+    ]:
+        assert private_fragment not in serialized
+
+
 def test_run_event_response_sanitizes_runtime_envelope_for_ordinary_user():
     event = run_event_response(
         "run-a",
@@ -746,6 +858,7 @@ def test_artifact_card_redacts_legacy_manifest_worker_paths():
             "size_bytes": 10,
             "manifest_version": "ai-platform.artifact-manifest.v1",
             "manifest_json": {
+                "source_run_id": "run-source",
                 "source_file_id": "file-a",
                 "local_path": "/tmp/worker/output.docx",
                 "nested": {"storage_key": "tenants/default/private.docx"},
@@ -755,6 +868,7 @@ def test_artifact_card_redacts_legacy_manifest_worker_paths():
     )
 
     assert card["manifest"]["schema_version"] == "ai-platform.artifact-manifest.v1"
+    assert "source_run_id" not in card["lineage"]
     assert card["manifest"]["source_file_id"] == "file-a"
     assert "storage_key" not in str(card)
     assert "/tmp/" not in str(card)
@@ -3448,7 +3562,7 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
             "skill_id": "qa-file-reviewer",
             "workspace_id": "default",
             "file_ids": ["file_1"],
-            "input": {"message": "继续审核"},
+            "input": {"message": "继续审核", "copied_from_run_id": run_id},
             "executor_type": "claude-agent-worker",
             "skill_version": "db-version",
             "release_decision": {
@@ -3492,7 +3606,7 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
 
     def fake_skill_manifest_pins(skill_id, input_payload):
         assert skill_id == "qa-file-reviewer"
-        assert input_payload == {"message": "继续审核"}
+        assert input_payload == {"message": "继续审核", "copied_from_run_id": "run_source"}
         return [
             {
                 "skill_id": "qa-file-reviewer",
@@ -3522,6 +3636,7 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
     assert response.run_id == "run_copy"
     assert calls["update"]["skill_version"] == "hash-pin"
     assert calls["context"]["source"] == "copy_run"
+    assert calls["context"]["source_run_id"] == "run_source"
     assert calls["context"]["tenant_id"] == "tenant-a"
     assert calls["context"]["workspace_id"] == "default"
     assert calls["context"]["user_id"] == "user-a"
@@ -3529,7 +3644,7 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
     assert calls["context"]["run_id"] == "run_copy"
     assert calls["context"]["agent_id"] == "qa-word-review"
     assert calls["context"]["skill_id"] == "qa-file-reviewer"
-    assert calls["context"]["input_payload"] == {"message": "继续审核"}
+    assert calls["context"]["input_payload"] == {"message": "继续审核", "copied_from_run_id": "run_source"}
     assert calls["context"]["message_ids"] == []
     assert calls["context"]["file_ids"] == ["file_1"]
     assert calls["queue"]["context_snapshot_id"] == "ctx_copy"
@@ -3537,6 +3652,225 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
     assert calls["queue"]["skill_version"] == "hash-pin"
     assert calls["queue"]["skill_manifests"][0]["content_hash"] == "hash-pin"
     assert any(event["payload"]["skill_version"] == "hash-pin" for event in calls["events"])
+
+
+@pytest.mark.asyncio
+async def test_copy_run_ignores_unsafe_source_run_id_for_followup_context(monkeypatch):
+    calls = {}
+    unsafe_hash_like_run_id = "a" * 64
+
+    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+        return {
+            "session_id": "ses_copy",
+            "run_id": "run_copy",
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "workspace_id": "default",
+            "file_ids": ["file_1"],
+            "input": {
+                "message": "继续审核",
+                "copied_from_run_id": unsafe_hash_like_run_id,
+                "resume": {"copied_from_run_id": unsafe_hash_like_run_id},
+            },
+            "executor_type": "claude-agent-worker",
+            "skill_version": "db-version",
+            "release_decision": {
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "policy_active": False,
+                "selected_version": "db-version",
+                "selected_track": "manifest_pin",
+            },
+        }
+
+    async def fake_update_run_input_skill_version(conn, *, tenant_id, run_id, skill_version):
+        calls["update"] = skill_version
+
+    async def fake_append_event(conn, **kwargs):
+        calls.setdefault("events", []).append(kwargs)
+
+    async def fake_record_context(conn, **kwargs):
+        calls["context"] = kwargs
+        return {
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_snapshot_id": "ctx_copy",
+            "source": kwargs["source"],
+            "message_count": 0,
+            "file_count": len(kwargs.get("file_ids") or []),
+            "memory_record_count": 0,
+        }
+
+    async def fake_seed_copied_run_steps(*args, **kwargs):
+        calls["seed"] = kwargs
+
+    async def fake_enqueue_run(payload):
+        calls["queue"] = payload
+        return 2
+
+    async def fake_queue_insight_for_status(status, tenant_id, **_kwargs):
+        return {"status": status, "tenant_id": tenant_id}
+
+    def fake_skill_manifest_pins(skill_id, input_payload):
+        return [{"skill_id": skill_id, "content_hash": "hash-pin"}]
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
+    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_context)
+    monkeypatch.setattr("app.routes.runs.seed_copied_run_steps", fake_seed_copied_run_steps)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.runs.queue_insight_for_status", fake_queue_insight_for_status)
+    monkeypatch.setattr("app.routes.runs._skill_manifest_pins", fake_skill_manifest_pins)
+
+    response = await copy_run("run_source", principal=principal())
+
+    assert response.run_id == "run_copy"
+    assert calls["context"]["source"] == "copy_run"
+    assert calls["context"]["source_run_id"] == "run_source"
+    assert calls["queue"]["context_snapshot_id"] == "ctx_copy"
+    assert calls["queue"]["skill_version"] == "hash-pin"
+
+
+@pytest.mark.asyncio
+async def test_copy_run_uses_authorized_route_source_when_copied_input_lacks_source_id(monkeypatch):
+    calls = {}
+
+    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+        return {
+            "session_id": "ses_copy",
+            "run_id": "run_copy",
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "workspace_id": "default",
+            "file_ids": ["file_1"],
+            "input": {"message": "继续审核"},
+            "executor_type": "claude-agent-worker",
+            "skill_version": "db-version",
+            "release_decision": {
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "policy_active": False,
+                "selected_version": "db-version",
+                "selected_track": "manifest_pin",
+            },
+        }
+
+    async def fake_update_run_input_skill_version(conn, *, tenant_id, run_id, skill_version):
+        calls["update"] = skill_version
+
+    async def fake_append_event(conn, **kwargs):
+        calls.setdefault("events", []).append(kwargs)
+
+    async def fake_record_context(conn, **kwargs):
+        calls["context"] = kwargs
+        return {
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_snapshot_id": "ctx_copy",
+            "source": kwargs["source"],
+            "message_count": 0,
+            "file_count": len(kwargs.get("file_ids") or []),
+            "memory_record_count": 0,
+        }
+
+    async def fake_seed_copied_run_steps(*args, **kwargs):
+        calls["seed"] = kwargs
+
+    async def fake_enqueue_run(payload):
+        calls["queue"] = payload
+        return 2
+
+    async def fake_queue_insight_for_status(status, tenant_id, **_kwargs):
+        return {"status": status, "tenant_id": tenant_id}
+
+    def fake_skill_manifest_pins(skill_id, input_payload):
+        return [{"skill_id": skill_id, "content_hash": "hash-pin"}]
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
+    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_context)
+    monkeypatch.setattr("app.routes.runs.seed_copied_run_steps", fake_seed_copied_run_steps)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.runs.queue_insight_for_status", fake_queue_insight_for_status)
+    monkeypatch.setattr("app.routes.runs._skill_manifest_pins", fake_skill_manifest_pins)
+
+    response = await copy_run("run_source", principal=principal())
+
+    assert response.run_id == "run_copy"
+    assert calls["context"]["source"] == "copy_run"
+    assert calls["context"]["source_run_id"] == "run_source"
+    assert calls["queue"]["context_snapshot_id"] == "ctx_copy"
+
+
+@pytest.mark.asyncio
+async def test_copy_run_prefers_authorized_route_source_over_payload_source_id(monkeypatch):
+    calls = {}
+
+    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+        return {
+            "session_id": "ses_copy",
+            "run_id": "run_copy",
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "workspace_id": "default",
+            "file_ids": ["file_1"],
+            "input": {"message": "继续审核", "copied_from_run_id": "run_older_ancestor"},
+            "executor_type": "claude-agent-worker",
+            "skill_version": "db-version",
+            "release_decision": {
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "policy_active": False,
+                "selected_version": "db-version",
+                "selected_track": "manifest_pin",
+            },
+        }
+
+    async def fake_update_run_input_skill_version(conn, *, tenant_id, run_id, skill_version):
+        calls["update"] = skill_version
+
+    async def fake_append_event(conn, **kwargs):
+        calls.setdefault("events", []).append(kwargs)
+
+    async def fake_record_context(conn, **kwargs):
+        calls["context"] = kwargs
+        return {
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_snapshot_id": "ctx_copy",
+            "source": kwargs["source"],
+            "message_count": 0,
+            "file_count": len(kwargs.get("file_ids") or []),
+            "memory_record_count": 0,
+        }
+
+    async def fake_seed_copied_run_steps(*args, **kwargs):
+        calls["seed"] = kwargs
+
+    async def fake_enqueue_run(payload):
+        calls["queue"] = payload
+        return 2
+
+    async def fake_queue_insight_for_status(status, tenant_id, **_kwargs):
+        return {"status": status, "tenant_id": tenant_id}
+
+    def fake_skill_manifest_pins(skill_id, input_payload):
+        return [{"skill_id": skill_id, "content_hash": "hash-pin"}]
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
+    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_context)
+    monkeypatch.setattr("app.routes.runs.seed_copied_run_steps", fake_seed_copied_run_steps)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.runs.queue_insight_for_status", fake_queue_insight_for_status)
+    monkeypatch.setattr("app.routes.runs._skill_manifest_pins", fake_skill_manifest_pins)
+
+    response = await copy_run("run_source", principal=principal())
+
+    assert response.run_id == "run_copy"
+    assert calls["context"]["source"] == "copy_run"
+    assert calls["context"]["source_run_id"] == "run_source"
+    assert calls["queue"]["context_snapshot_id"] == "ctx_copy"
 
 
 @pytest.mark.asyncio

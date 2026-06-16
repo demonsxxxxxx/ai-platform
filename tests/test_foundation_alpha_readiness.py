@@ -34,11 +34,11 @@ VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS = {
     "public_admin_projection_safe": True,
     "long_term_cross_session_memory_fail_closed": True,
 }
-REQUIRED_MEMORY_CONTEXT_OPEN_GAPS = {
+REQUIRED_MEMORY_CONTEXT_CLOSED_RUNTIME_GAPS = {
+    "sandbox_cold_start_latency_split_211_acceptance",
+}
+REQUIRED_MEMORY_CONTEXT_OPEN_RUNTIME_GAPS = {
     "executor_context_pack_211_acceptance",
-    "document_centric_followup_state",
-    "sandbox_cold_start_latency_split",
-    "frontend_context_provenance_acceptance",
 }
 
 
@@ -1468,9 +1468,7 @@ def test_foundation_alpha_readiness_removes_signed_skill_followup_when_release_e
                 **VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS,
                 "open_gaps": [
                     "executor_context_pack_211_acceptance",
-                    "document_centric_followup_state",
                     "sandbox_cold_start_latency_split",
-                    "frontend_context_provenance_acceptance",
                 ],
             },
         },
@@ -2501,7 +2499,18 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         key: memory_context_controls[key]
         for key in VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS
     } == VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS
-    assert REQUIRED_MEMORY_CONTEXT_OPEN_GAPS.issubset(set(memory_context_controls["open_gaps"]))
+    assert REQUIRED_MEMORY_CONTEXT_CLOSED_RUNTIME_GAPS.issubset(
+        set(memory_context_controls["closed_runtime_gaps"])
+    )
+    assert not REQUIRED_MEMORY_CONTEXT_CLOSED_RUNTIME_GAPS.intersection(
+        set(memory_context_controls["open_gaps"])
+    )
+    assert REQUIRED_MEMORY_CONTEXT_OPEN_RUNTIME_GAPS.issubset(
+        set(memory_context_controls["open_gaps"])
+    )
+    assert not REQUIRED_MEMORY_CONTEXT_OPEN_RUNTIME_GAPS.intersection(
+        set(memory_context_controls["closed_runtime_gaps"])
+    )
     assert "office_execution_tier_router" not in memory_context_controls["open_gaps"]
     assert readiness["domains"]["g6_poc_governance"]["evidence"]["context_snapshot_public_projection"] == {
         "status": "verified_public_context_projection",
@@ -2552,12 +2561,12 @@ def test_foundation_runtime_concurrency_discovery_accepts_alpha_poc_evidence_wit
 ):
     source_commit = "3843395b180324b165cbca7c59b6d7e1a934e290"
     revision_ref = f"{source_commit}-frc-context-pack-20260614-0535"
-    evidence_base = tmp_path / "foundation-alpha-poc"
-    dedicated_base = tmp_path / "foundation-runtime-concurrency"
+    evidence_base = tmp_path / "fa"
+    dedicated_base = tmp_path / "frc"
     evidence_dir = evidence_base / source_commit
     evidence_dir.mkdir(parents=True)
     dedicated_base.mkdir(parents=True)
-    evidence_path = evidence_dir / "2026-06-14-211-foundation-alpha-poc-3843395-foundation-runtime-concurrency.json"
+    evidence_path = evidence_dir / "frc.json"
     evidence_path.write_text(
         json.dumps(_minimal_foundation_runtime_concurrency_payload(revision_ref)),
         encoding="utf-8",
@@ -2582,8 +2591,8 @@ def test_foundation_runtime_concurrency_discovery_skips_blocked_direct_matches(
     source_commit = "3843395b180324b165cbca7c59b6d7e1a934e290"
     blocked_ref = f"{source_commit}-fr-concurrency-local-20260614-0035"
     verified_ref = f"{source_commit}-frc-context-pack-20260614-0535"
-    evidence_base = tmp_path / "foundation-alpha-poc"
-    dedicated_base = tmp_path / "foundation-runtime-concurrency"
+    evidence_base = tmp_path / "fa"
+    dedicated_base = tmp_path / "frc"
     dedicated_dir = dedicated_base / "blocked"
     verified_dir = evidence_base / source_commit
     dedicated_dir.mkdir(parents=True)
@@ -2591,11 +2600,9 @@ def test_foundation_runtime_concurrency_discovery_skips_blocked_direct_matches(
     blocked_payload = _minimal_foundation_runtime_concurrency_payload(blocked_ref)
     blocked_payload["checks"]["memory_context"].pop("context_snapshot_public_projection_count")
     blocked_payload["checks"]["memory_context"].pop("context_pack_version_sample_count")
-    blocked_path = dedicated_dir / "foundation-runtime-concurrency-evidence-211-20260614-013347.json"
+    blocked_path = dedicated_dir / "blocked.json"
     blocked_path.write_text(json.dumps(blocked_payload), encoding="utf-8")
-    verified_path = (
-        verified_dir / "2026-06-14-211-foundation-alpha-poc-3843395-foundation-runtime-concurrency.json"
-    )
+    verified_path = verified_dir / "verified.json"
     verified_path.write_text(
         json.dumps(_minimal_foundation_runtime_concurrency_payload(verified_ref)),
         encoding="utf-8",
@@ -3933,7 +3940,10 @@ def test_governance_summary_surfaces_memory_context_controls_for_s1_readiness():
         key: controls[key]
         for key in VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS
     } == VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS
-    assert REQUIRED_MEMORY_CONTEXT_OPEN_GAPS.issubset(set(controls["open_gaps"]))
+    assert REQUIRED_MEMORY_CONTEXT_CLOSED_RUNTIME_GAPS.issubset(set(controls["closed_runtime_gaps"]))
+    assert not REQUIRED_MEMORY_CONTEXT_CLOSED_RUNTIME_GAPS.intersection(set(controls["open_gaps"]))
+    assert REQUIRED_MEMORY_CONTEXT_OPEN_RUNTIME_GAPS.issubset(set(controls["open_gaps"]))
+    assert not REQUIRED_MEMORY_CONTEXT_OPEN_RUNTIME_GAPS.intersection(set(controls["closed_runtime_gaps"]))
     assert "office_execution_tier_router" not in controls["open_gaps"]
 
 

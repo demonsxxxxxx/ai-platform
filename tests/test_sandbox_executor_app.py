@@ -70,7 +70,11 @@ def test_executor_execute_posts_running_and_completed_callbacks(tmp_path):
     response = client.post("/v1/tasks/execute", json=task_payload("http://platform/callback"))
 
     assert response.status_code == 200
-    assert response.json() == {"status": "accepted", "run_id": "run-a"}
+    body = response.json()
+    assert body["status"] == "accepted"
+    assert body["run_id"] == "run-a"
+    assert isinstance(body["executor_model_latency_ms"], int)
+    assert isinstance(body["document_processing_latency_ms"], int)
     assert [item[1]["status"] for item in callbacks] == ["running", "completed"]
     assert {item[2] for item in callbacks} == {"secret"}
     assert {item[1]["callback_token_id"] for item in callbacks} == {"cbt_run-a"}
@@ -131,11 +135,12 @@ def test_executor_execute_reports_callback_errors_without_raising(tmp_path):
     response = client.post("/v1/tasks/execute", json=task_payload("http://platform/callback"))
 
     assert response.status_code == 200
-    assert response.json() == {
-        "status": "accepted",
-        "run_id": "run-a",
-        "callback_errors": ["completed"],
-    }
+    body = response.json()
+    assert body["status"] == "accepted"
+    assert body["run_id"] == "run-a"
+    assert body["callback_errors"] == ["completed"]
+    assert isinstance(body["executor_model_latency_ms"], int)
+    assert isinstance(body["document_processing_latency_ms"], int)
     assert callbacks == ["running", "completed"]
 
 

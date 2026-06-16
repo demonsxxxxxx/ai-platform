@@ -90,6 +90,7 @@ def _lease_from_request(
     workspace: WorkspaceLease,
     *,
     executor_url: str,
+    timings: dict[str, int] | None = None,
 ) -> ContainerLease:
     container_id = f"exec-{request.run_id}"
     return ContainerLease(
@@ -107,6 +108,7 @@ def _lease_from_request(
         workspace_host_path=workspace.workspace_host_path,
         workspace_container_path=workspace.workspace_container_path,
         labels={"ai-platform.run_id": request.run_id},
+        timings=timings or {},
     )
 
 
@@ -293,10 +295,12 @@ class DockerContainerProvider:
         *,
         docker_client_factory: Callable[[], Any] | None = None,
         health_probe: Callable[[str, int], bool] | None = None,
+        monotonic: Callable[[], float] | None = None,
     ) -> None:
         self._leases: dict[str, ContainerLease] = {}
         self._docker_client_factory = docker_client_factory
         self._health_probe = health_probe or default_executor_health_probe
+        self._monotonic = monotonic or time.monotonic
         self._client: Any | None = None
 
     def assert_available(self) -> None:
@@ -323,6 +327,9 @@ class DockerContainerProvider:
                 return executor_url
             await asyncio.sleep(0.25)
         raise ExecutorHealthTimeoutError()
+
+    def _elapsed_ms(self, started_at: float) -> int:
+        return max(int(round((self._monotonic() - started_at) * 1000)), 0)
 
     async def _reuse_existing_container(
         self,
@@ -373,7 +380,15 @@ class DockerContainerProvider:
             raise DockerUnavailableError("Docker daemon is unavailable") from exc
         existing = self._leases.get(container_id)
         if existing is not None:
-            return existing
+            recovered_existing = await self._reuse_existing_container(
+                existing,
+                settings.sandbox_container_start_timeout_seconds,
+            )
+            if recovered_existing is None:
+                self._leases.pop(container_id, None)
+                raise ContainerStartFailedError()
+            self._leases[recovered_existing.container_id] = recovered_existing
+            return recovered_existing
 
         bootstrap_lease = _lease_from_request("docker", request, workspace, executor_url=_executor_url())
         recovered = await self._reuse_existing_container(
@@ -383,6 +398,7 @@ class DockerContainerProvider:
         if recovered is not None:
             self._leases[recovered.container_id] = recovered
             return recovered
+        cold_start_started_at = self._monotonic()
         try:
             container = client.containers.create(
                 image=settings.sandbox_executor_image,
@@ -420,6 +436,8 @@ class DockerContainerProvider:
         except ExecutorHealthTimeoutError:
             _stop_and_remove_container(container)
             raise
+        sandbox_container_cold_start_latency_ms = self._elapsed_ms(cold_start_started_at)
+        healthcheck_started_at = self._monotonic()
         try:
             healthy = await asyncio.to_thread(
                 self._health_probe,
@@ -429,11 +447,21 @@ class DockerContainerProvider:
         except Exception as exc:
             _stop_and_remove_container(container)
             raise ExecutorHealthTimeoutError() from exc
+        sandbox_healthcheck_latency_ms = self._elapsed_ms(healthcheck_started_at)
         if not healthy:
             _stop_and_remove_container(container)
             raise ExecutorHealthTimeoutError()
 
-        lease = _lease_from_request("docker", request, workspace, executor_url=executor_url)
+        lease = _lease_from_request(
+            "docker",
+            request,
+            workspace,
+            executor_url=executor_url,
+            timings={
+                "sandbox_container_cold_start_latency_ms": sandbox_container_cold_start_latency_ms,
+                "sandbox_healthcheck_latency_ms": sandbox_healthcheck_latency_ms,
+            },
+        )
         self._leases[lease.container_id] = lease
         return lease
 

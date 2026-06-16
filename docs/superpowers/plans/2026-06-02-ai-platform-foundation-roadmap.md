@@ -603,52 +603,136 @@ files, runtime acceptance for the source-level skill dependency review policy,
 `admin_skill_release_dashboard_runtime_acceptance`,
 `admin_skill_release_dashboard_visual_acceptance`,
 `admin_skill_release_dashboard_211_acceptance`,
-runtime office context-pack persistence/versioning, 211 executor context-pack
-acceptance, document-centric follow-up state, sandbox cold-start latency split,
-frontend context provenance acceptance, quarantined legacy frontend source
-remap, packaged frontend image smoke/release acceptance on 211 or another
-Docker-capable host, and ordinary-user G9 acceptance. Do not use this baseline
-to expand sandbox privilege, raw Skill selection, or ordinary-user G8/G10
-exposure.
+runtime office context-pack persistence/versioning,
+quarantined legacy frontend source remap, packaged frontend image smoke/release
+acceptance on 211 or another Docker-capable host, and ordinary-user G9
+acceptance. Do not use this baseline
+to expand sandbox privilege, raw Skill selection, or ordinary-user G8/G10 exposure.
 
 The #22 office context-pack work now has source-level architecture readiness,
 source-level context-pack persistence/versioning evidence, user-visible API
 projection source tests, source-level execution-tier routing tests, and
-executor prompt-injection tests: `tools/office_context_readiness.py` defines
-bounded allowed context sources, user-visible provenance fields, execution
-tiers, and non-goals, while
+frontend run-playback context provenance source tests, executor prompt-injection
+tests, document-centric follow-up state source tests, plus a sandbox latency
+split observability source contract:
+`tools/office_context_readiness.py` defines bounded allowed context
+sources, user-visible provenance fields, execution tiers, and non-goals, while
 `source_level_context_pack_persistence_and_versioning` preserves a bounded
 public `context_pack_version` fact alongside `context_pack_generated_at` in
 source-level snapshot/projection paths. Source-level router tests route
 lightweight writing to `sdk_only_writing`, document generation/review/translation
 skills to `document_worker`, and explicit sandbox/script/browser work to
-`heavy_sandbox` without starting Docker during routing. This does not add a new
-database schema and does not enable runtime context-pack persistence/versioning,
-211 executor context-pack acceptance, document-centric follow-up state,
-long-term cross-session memory, lightweight-task Docker sandbox startup,
-frontend context provenance acceptance, or ordinary-user G8/G10 exposure. It
-replaces the older single "bounded office context-pack product contract"
-blocker with explicit runtime persistence/versioning, 211 executor,
-follow-up-state, latency, and frontend provenance acceptance gaps.
+`heavy_sandbox` without starting Docker during routing. The sandbox latency split
+contract separates lease acquisition, container cold start, healthcheck, executor
+dispatch/model work, document processing, cleanup, and total runtime timings.
+The document-centric follow-up state source tests record source-run artifact
+linkage for copy, retry, and resume context snapshots while public context refs
+only expose artifact count and bounded latest artifact version. Reviewed PR #44
+release evidence now records 211 sandbox latency split acceptance for #22.
+Executor context-pack 211 acceptance remains open until fresh live evidence
+proves positive source-run artifact scope and public input-key redaction. This
+still does not add a new database schema, enable long-term cross-session memory,
+start Docker for lightweight tasks, or expand ordinary-user G8/G10 exposure. The
+211 sandbox runtime verifier now requires hardening evidence for lease/workspace
+isolation, cleanup, resource timeout fallback, failure fallback, and cached lease
+scope revalidation, so future runtime smoke cannot omit the cached-lease
+scope-drift regression. This replaces the older single "bounded office
+context-pack product contract" blocker with explicit sandbox latency evidence
+and a still-open executor context-pack 211 acceptance requirement.
 
 The 2026-06-11 context provenance follow-up adds source-level public provenance
 fields to created context snapshots and queued `context_snapshot` references:
 `referenced_materials`, `used_context_summary`, `latest_artifact_version`,
 `execution_tier`, `context_pack_version`, and `context_pack_generated_at`. These
-fields expose counts, safe input keys, tier, bounded public context-pack version,
-and generated time only; raw message/file/artifact/memory IDs remain outside the
-public provenance fields and the owner-scoped context snapshot API response,
-with source tests covering the user-visible API projection. The scoped database
-row and worker lookup path still keep those IDs internally to compute public
-counts. Executor private payloads, raw storage keys, sandbox workdirs, and
-secret-like values remain outside the public projection. Worker execution
+fields expose counts, safe input keys, memory policy source/read flags, tier, an
+optional manifest-supplied bounded public artifact version, bounded public
+context-pack version, and generated time only; raw message/file/artifact/memory
+IDs remain outside the public provenance fields and the owner-scoped context
+snapshot API response, with source tests covering the user-visible API
+projection. The scoped database row and worker lookup path still keep those IDs
+internally to compute public counts. Executor private payloads, raw storage
+keys, sandbox workdirs, and secret-like values remain outside the public projection. Worker execution
 resolves existing context snapshots from the scoped DB row and regenerates
 public provenance/counts rather than trusting queue copies or stored payload
-provenance. This narrows the G6/#22 context output gap but does not close 211
-executor context-pack acceptance, runtime context-pack persistence/versioning,
-document-centric follow-up state, frontend context provenance acceptance,
-long-term cross-session memory, sandbox cold-start metrics, or ordinary-user
-G8/G10 gates.
+provenance. This narrows the G6/#22 context output gap; PR #44 later records
+superseded 211 executor context-pack evidence that no longer closes acceptance,
+while long-term cross-session memory, production sandbox hardening, and
+ordinary-user G8/G10 gates remain open.
+
+The document-centric follow-up state source slice now records source-run artifact
+linkage for copy/retry/resume context snapshots. The platform stores source
+artifact IDs internally in `included_artifact_ids` and exposes only
+`referenced_materials.artifact_count` plus `latest_artifact_version` only when
+the source artifact manifest supplies a safe public version. It does not invent
+a version from artifact count. This source-tested control is covered by later
+PR #44 source tests and sandbox latency split evidence, but executor
+context-pack 211 acceptance remains open and it does not close any broader
+G6/G9 gate or ordinary-user G8/G10 exposure.
+
+The S2 sandbox runtime smoke path is now recorded as
+`sandbox_runtime_smoke_contract` for `211_sandbox_latency_split_smoke`. The
+contract uses `scripts/generate_sandbox_runtime_evidence_211.py` to generate
+evidence and `scripts/verify_sandbox_runtime_211.py` to verify it on a
+Docker-capable 211 host with `sudo -n docker`, preferring the already-local
+cancel probe image `ai-platform:local`. The smoke evidence must include
+`non_expansion_invariants` such as
+`ordinary_user_high_risk_sandbox_allowed=false` and
+`ordinary_user_multi_agent_allowed=false`. Reviewed PR #44 evidence now records
+`sandbox_cold_start_latency_split_211_acceptance` for the controlled verifier
+run; this still does not close Docker sandbox production hardening, G6/G9, or
+ordinary-user sandbox/multi-agent expansion. Its hardening evidence must label
+lease/workspace/cleanup checks as `live_platform_probe` and
+timeout/failure/cached-lease checks as `source_regression_guard`.
+
+The S2 office executor context-pack acceptance path is recorded as
+`executor_context_pack_runtime_acceptance_contract` with schema
+`ai-platform.executor-context-pack-runtime-acceptance.v1`. Its default
+generator/verifier output records
+`source_probe_evidence_strength=source_probe_on_target_runtime`, a binding
+check that is not live worker-run acceptance. Closure requires
+`required_live_evidence_strength=live_worker_run_payload` from
+`scripts/generate_executor_context_pack_evidence_211.py --live-run-id <run_id>`
+and `scripts/verify_executor_context_pack_211.py --run-id <run_id>
+--require-live-run-payload`. It ties the remaining 211 worker acceptance to
+`scripts/generate_executor_context_pack_evidence_211.py`,
+`scripts/verify_executor_context_pack_211.py`,
+`app.repositories.get_context_snapshot_for_worker`,
+`app.context_builder.executor_context_pack_from_snapshot`,
+`app.executors.claude_agent_sdk_runner._context_pack_prompt_section`, and the
+worker prompt-injection path. Required live evidence includes
+`live_worker_run_payload`, `run_row_loaded`, `context_snapshot_id_present`,
+`scoped_context_snapshot_loaded`,
+`worker_context_ref_rebuilt_from_db_snapshot`,
+`prompt_includes_bounded_summary`, `prompt_includes_context_pack_version`,
+`prompt_includes_context_pack_generated_at`, `raw_storage_identifiers_absent`,
+`sandbox_runtime_paths_absent`, `executor_private_content_absent`,
+`long_term_memory_read_false`, and
+`source_run_artifact_scope_tenant_workspace_user_session`, and
+`source_run_artifact_count_positive`, with fresh `generated_at` evidence and
+explicit `source_functions` binding. Live evidence must also show public context
+`input_keys` without `copied_from_run_id`, `source_run_id`, `parent_run_id`, or
+`run_id`. Live evidence must carry those per-item booleans under the
+verifier-checked `runtime_evidence` JSON section. Source-probe
+evidence carries `does_not_close_211_acceptance=true` and
+`runtime_acceptance_requires_real_run_payload=true`; the superseded PR #44 live
+evidence carried `runtime_run_payload_verified=true` but does not satisfy the
+current positive source-artifact and public input-key checks for the named #22
+runtime gap. Its
+`non_expansion_invariants` keep `ordinary_user_multi_agent_allowed=false`,
+`ordinary_user_high_risk_sandbox_allowed=false`, and
+`long_term_cross_session_memory_enabled=false`. `executor_context_pack_211_acceptance`
+remains open for #22 and does not close G6/G9 or ordinary-user G8/G10 exposure.
+
+Frontend packaged image release acceptance is also exposed through
+governance readiness as `packaged_runtime_smoke_contract`, backed by
+`tools/frontend_packaged_runtime_smoke.py` and schema
+`ai-platform.frontend-packaged-runtime-smoke.v1`. Until accepted Docker-capable
+host evidence exists, it remains `blocked_missing_runtime_evidence` with
+`frontend_packaged_runtime_smoke_evidence_missing`, runtime policy
+`docker_capable_host_only_no_local_windows_docker`, and the open
+`frontend_packaged_image_delivery_and_release_acceptance` blocker. This does
+not close G6/G9, #21 capacity, or packaged frontend release acceptance by
+itself.
 
 The current context public-summary verifier treats file-context provenance as
 incomplete unless `file_count > 0` is paired with the safe

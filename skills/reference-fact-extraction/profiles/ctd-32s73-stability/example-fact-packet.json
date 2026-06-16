@@ -1,0 +1,469 @@
+{
+  "schema_version": "ctd-32s73-fact-packet-v1",
+  "project_profile": {
+    "project_code": "IP000",
+    "product_expression": "IP000原液",
+    "sample_type": "原液",
+    "batches": [
+      {
+        "batch_no": "IP000DSC20260101",
+        "role": "代表性批次",
+        "source_ref": "参考文件1-项目基本信息收集表.docx"
+      }
+    ]
+  },
+  "sources": {
+    "allowed": [
+      {
+        "path": "参考文件1-项目基本信息收集表.docx",
+        "type": "docx",
+        "extraction_method": "direct_text",
+        "reader": "source-index.docx.python-docx",
+        "status": "used",
+        "used_for": [
+          "project_profile",
+          "batch_list"
+        ]
+      },
+      {
+        "path": "参考文件2-稳定性试验数据汇总.xlsx",
+        "type": "xlsx",
+        "extraction_method": "workbook",
+        "reader": "source-index.xlsx.openpyxl",
+        "status": "used",
+        "used_for": [
+          "long_term",
+          "accelerated"
+        ]
+      }
+    ],
+    "forbidden": [
+      {
+        "path": "已完成的申报资料-32s73-稳定性数据.docx",
+        "type": "docx",
+        "status": "excluded",
+        "reason": "Completed submission is not a fact source for the current project."
+      }
+    ]
+  },
+  "long_term": {
+    "condition": "5±3°C",
+    "planned_timepoints": [
+      "0",
+      "1",
+      "3"
+    ],
+    "completed_timepoints_by_batch": {
+      "IP000DSC20260101": [
+        "0",
+        "1"
+      ]
+    },
+    "marker_semantics": {
+      "blank_within_completed_timepoint": "N/A",
+      "blank_after_completed_timepoint": "---"
+    },
+    "table_render_inputs": [
+      {
+        "role": "long_term",
+        "batch_no": "IP000DSC20260101",
+        "time_header": {
+          "label": "时间（月）",
+          "points": [
+            "0",
+            "1",
+            "3"
+          ]
+        },
+        "rows": [
+          {
+            "group": "性状",
+            "item": "外观",
+            "method": "目视",
+            "acceptance": "应为无色至淡黄色澄清液体",
+            "values": {
+              "0": {
+                "value": "符合规定",
+                "marker": "value",
+                "source_ref": "参考文件2-稳定性试验数据汇总.xlsx:长期稳定性"
+              },
+              "1": {
+                "value": "符合规定",
+                "marker": "value",
+                "source_ref": "参考文件2-稳定性试验数据汇总.xlsx:长期稳定性"
+              },
+              "3": {
+                "value": "---",
+                "marker": "---",
+                "source_ref": "planned_not_reached"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "accelerated": {
+    "condition": "25±2°C，60±5%RH",
+    "planned_timepoints": [
+      "0",
+      "1",
+      "3"
+    ],
+    "completed_timepoints_by_batch": {
+      "IP000DSC20260101": [
+        "0"
+      ]
+    },
+    "marker_semantics": {
+      "blank_within_completed_timepoint": "N/A",
+      "blank_after_completed_timepoint": "---"
+    },
+    "table_render_inputs": [
+      {
+        "role": "accelerated",
+        "batch_no": "IP000DSC20260101",
+        "time_header": {
+          "label": "时间（月）",
+          "points": [
+            "0",
+            "1",
+            "3"
+          ]
+        },
+        "rows": [
+          {
+            "group": "纯度",
+            "item": "SEC-HPLC纯度",
+            "method": "SEC-HPLC",
+            "acceptance": "应符合质量标准",
+            "values": {
+              "0": {
+                "value": "99.1%",
+                "marker": "value",
+                "source_ref": "参考文件2-稳定性试验数据汇总.xlsx:加速稳定性"
+              },
+              "1": {
+                "value": "---",
+                "marker": "---",
+                "source_ref": "planned_not_reached"
+              },
+              "3": {
+                "value": "---",
+                "marker": "---",
+                "source_ref": "planned_not_reached"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "stress_study": {
+    "included_tests": [
+      "高温",
+      "光照"
+    ],
+    "omitted_tests": [
+      {
+        "test": "冻融",
+        "reason": "来源方案未安排"
+      }
+    ],
+    "table_render_inputs": [
+      {
+        "role": "high_temperature_stress",
+        "batch_no": "IP000DSC20260101",
+        "time_header": {
+          "label": "时间（天）",
+          "points": [
+            "0",
+            "5",
+            "10"
+          ]
+        },
+        "rows": [
+          {
+            "item": "外观",
+            "method": "目视",
+            "indicator_method": "外观（目视）",
+            "acceptance": "应为无色至淡黄色澄清液体",
+            "values": {
+              "0": {
+                "value": "符合规定",
+                "marker": "value",
+                "source_ref": "参考文件3-影响因素试验考察报告.docx:高温"
+              },
+              "5": {
+                "value": "符合规定",
+                "marker": "value",
+                "source_ref": "参考文件3-影响因素试验考察报告.docx:高温"
+              },
+              "10": {
+                "value": "符合规定",
+                "marker": "value",
+                "source_ref": "参考文件3-影响因素试验考察报告.docx:高温"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "trend_charts": {
+    "charts": [
+      {
+        "figure_no": 1,
+        "filename": "figure-01.png",
+        "type": "line",
+        "title": "长期稳定性SEC-HPLC纯度变化趋势",
+        "xlabel": "Month",
+        "ylabel": "SEC-HPLC purity (%)",
+        "series": [
+          {
+            "label": "IP000DSC20260101",
+            "x": [
+              "0",
+              "1",
+              "3"
+            ],
+            "y": [
+              "99.2",
+              "99.0",
+              "---"
+            ]
+          }
+        ],
+        "source_ref": "参考文件2-稳定性试验数据汇总.xlsx:长期稳定性"
+      }
+    ]
+  },
+  "body_sections": {
+    "long_term_intro": {
+      "placeholder": "{{LONG_TERM_INTRO}}",
+      "text": "对IP000原液（批号：IP000DSC20260101）进行了5±3°C条件下的长期稳定性考察，考察结果见表3.2.S.7.3- 1。结果表明，截至1个月，已完成时间点的各项检测结果均符合可接受标准，该长期稳定性研究将持续考察至3个月。",
+      "source_refs": [
+        "参考文件1-项目基本信息收集表.docx",
+        "参考文件2-稳定性试验数据汇总.xlsx:长期稳定性"
+      ],
+      "writing_pattern_refs": [
+        "真实结果稿经验沉淀.LONG_TERM_INTRO.ongoing"
+      ]
+    },
+    "long_term_trend_intro": {
+      "placeholder": "{{LONG_TERM_TREND_INTRO}}",
+      "text": "在5±3°C长期稳定性研究条件下，IP000DSC20260101批次已完成时间点的趋势分析见图3.2.S.7.3- 1；原始稳定性图谱见项目来源文件。",
+      "source_refs": [
+        "参考文件2-稳定性试验数据汇总.xlsx:长期稳定性"
+      ],
+      "writing_pattern_refs": [
+        "真实结果稿经验沉淀.LONG_TERM_TREND_INTRO.with_figures"
+      ]
+    },
+    "long_term_trend_summary": {
+      "placeholder": "{{LONG_TERM_TREND_SUMMARY}}",
+      "text": "结果表明：IP000原液长期稳定性研究已完成时间点的检测结果未见明显不利变化；后续趋势判断将在更多时间点完成后继续更新。",
+      "source_refs": [
+        "参考文件2-稳定性试验数据汇总.xlsx:长期稳定性"
+      ],
+      "writing_pattern_refs": [
+        "真实结果稿经验沉淀.LONG_TERM_TREND_SUMMARY.limited_data"
+      ]
+    },
+    "accelerated_intro": {
+      "placeholder": "{{ACCELERATED_INTRO}}",
+      "text": "对IP000原液（批号：IP000DSC20260101）进行了25±2°C，60±5%RH条件下的加速稳定性考察，考察结果见表3.2.S.7.3- 2。结果表明，截至0个月，已完成时间点的检测结果符合可接受标准，该加速稳定性研究将持续考察至3个月。",
+      "source_refs": [
+        "参考文件2-稳定性试验数据汇总.xlsx:加速稳定性"
+      ],
+      "writing_pattern_refs": [
+        "真实结果稿经验沉淀.ACCELERATED_INTRO.stable"
+      ]
+    },
+    "accelerated_trend_intro": {
+      "placeholder": "{{ACCELERATED_TREND_INTRO}}",
+      "text": "在25±2°C，60±5%RH加速稳定性研究条件下，IP000DSC20260101批次已完成时间点的趋势分析见项目趋势图；原始稳定性图谱见项目来源文件。",
+      "source_refs": [
+        "参考文件2-稳定性试验数据汇总.xlsx:加速稳定性"
+      ],
+      "writing_pattern_refs": [
+        "真实结果稿经验沉淀.ACCELERATED_TREND_INTRO.with_figures"
+      ]
+    },
+    "accelerated_trend_summary": {
+      "placeholder": "{{ACCELERATED_TREND_SUMMARY}}",
+      "text": "结果表明：IP000原液加速稳定性研究目前仅完成起始时间点，趋势判断需结合后续时间点继续评估。",
+      "source_refs": [
+        "参考文件2-稳定性试验数据汇总.xlsx:加速稳定性"
+      ],
+      "writing_pattern_refs": [
+        "真实结果稿经验沉淀.ACCELERATED_TREND_SUMMARY.limited_data"
+      ]
+    },
+    "stress_study_intro": {
+      "placeholder": "{{STRESS_STUDY_INTRO}}",
+      "text": "根据来源文件，IP000原液已开展高温和光照影响因素研究；未开展或不适用于本项目的试验在正文和表格中应删除或标记为不适用。",
+      "source_refs": [
+        "参考文件3-影响因素试验考察报告.docx"
+      ],
+      "writing_pattern_refs": [
+        "真实结果稿经验沉淀.STRESS_STUDY_INTRO.actual_tests"
+      ]
+    },
+    "stress_light_reference": {
+      "placeholder": "{{STRESS_LIGHT_REFERENCE}}",
+      "text": "光照试验结果见对应影响因素结果表；原始稳定性图谱见项目来源文件。",
+      "source_refs": [
+        "参考文件3-影响因素试验考察报告.docx:光照"
+      ],
+      "writing_pattern_refs": [
+        "真实结果稿经验沉淀.STRESS_LIGHT_REFERENCE"
+      ]
+    },
+    "stress_light_summary": {
+      "placeholder": "{{STRESS_LIGHT_SUMMARY}}",
+      "text": "光照试验结论应根据来源报告中的具体变化幅度和控制建议填写；示例事实包未提供完整光照结果，因此该段应在正式生成前补充证据或列为人工审查项。",
+      "source_refs": [
+        "参考文件3-影响因素试验考察报告.docx:光照"
+      ],
+      "writing_pattern_refs": [
+        "真实结果稿经验沉淀.STRESS_LIGHT_SUMMARY.mild_or_unclear"
+      ]
+    },
+    "stress_high_temperature_summary": {
+      "placeholder": "{{STRESS_HIGH_TEMPERATURE_SUMMARY}}",
+      "text": "高温试验结果见对应影响因素结果表。结果显示，IP000原液在示例高温条件下各项检测结果均符合来源记录；正式输出应根据完整来源报告补充变化趋势和控制建议。",
+      "source_refs": [
+        "参考文件3-影响因素试验考察报告.docx:高温"
+      ],
+      "writing_pattern_refs": [
+        "真实结果稿经验沉淀.STRESS_HIGH_TEMPERATURE_SUMMARY.changed"
+      ]
+    },
+    "final_stability_conclusion": {
+      "placeholder": "{{FINAL_STABILITY_CONCLUSION}}",
+      "text": "综上，IP000原液的稳定性结论应基于已完成长期、加速和影响因素研究结果持续更新；未提供完整证据的控制建议应列为人工审查项，不得从模板或旧项目申报资料中沿用。",
+      "source_refs": [
+        "参考文件2-稳定性试验数据汇总.xlsx",
+        "参考文件3-影响因素试验考察报告.docx"
+      ],
+      "writing_pattern_refs": [
+        "真实结果稿经验沉淀.FINAL_STABILITY_CONCLUSION.actual_tests_only"
+      ]
+    }
+  },
+  "docx_render_plan": {
+    "template_id": "ctd-32s73-stability-template-v2",
+    "template_path": "assets/templates/ctd-32s73-stability-template-v2.docx",
+    "body_prose_action": "body_sections",
+    "render_scope": {
+      "source_batch_count": 1,
+      "rendered_batches": [
+        "IP000DSC20260101"
+      ],
+      "omitted_batches": [],
+      "batch_structure_action": "shrink"
+    },
+    "batch_count_action": "shrink",
+    "table_actions": [
+      {
+        "action": "generate_table_blocks_from_placeholders",
+        "reason": "Only table_render_inputs are rendered; no second batch table is generated when no second batch input is present."
+      }
+    ],
+    "caption_actions": [
+      {
+        "action": "renumber_or_mark_manual_refresh",
+        "scope": "tables_and_figures"
+      }
+    ],
+    "manual_refresh_items": [
+      "Refresh table of contents and table/figure directories in Word after generation."
+    ]
+  },
+  "missing_evidence": [],
+  "manual_review_items": [
+    {
+      "item": "Confirm table and figure directory numbering after Word field refresh.",
+      "severity": "low"
+    }
+  ],
+  "agent_provenance": {
+    "project_profile": {
+      "execution_mode": "subagent",
+      "extraction_agent": "reference_fact_extraction_agent",
+      "validation_agent": "reference_fact_validation_agent",
+      "validation_status": "passed",
+      "extraction_completed_at": "2026-05-31T08:00:00Z",
+      "validation_completed_at": "2026-05-31T08:05:00Z",
+      "source_materials_reviewed": [
+        "fact-extraction-request.json",
+        "source-index.md",
+        "参考文件1-项目基本信息收集表.docx"
+      ],
+      "validation_checks": [
+        "section ownership checked",
+        "source traceability checked",
+        "batch/profile alignment checked"
+      ],
+      "validation_notes": "Example provenance only; replace with project-specific review notes."
+    },
+    "long_term": {
+      "execution_mode": "subagent",
+      "extraction_agent": "reference_fact_extraction_agent",
+      "validation_agent": "reference_fact_validation_agent",
+      "validation_status": "passed",
+      "extraction_completed_at": "2026-05-31T08:00:00Z",
+      "validation_completed_at": "2026-05-31T08:05:00Z",
+      "source_materials_reviewed": [
+        "fact-extraction-request.json",
+        "validated project_profile",
+        "参考文件4-稳定性试验数据汇总.xlsx"
+      ],
+      "validation_checks": [
+        "section ownership checked",
+        "source traceability checked",
+        "table render inputs checked"
+      ],
+      "validation_notes": "Example provenance only; replace with project-specific review notes."
+    },
+    "accelerated": {
+      "execution_mode": "subagent",
+      "extraction_agent": "reference_fact_extraction_agent",
+      "validation_agent": "reference_fact_validation_agent",
+      "validation_status": "passed",
+      "extraction_completed_at": "2026-05-31T08:00:00Z",
+      "validation_completed_at": "2026-05-31T08:05:00Z",
+      "source_materials_reviewed": [
+        "fact-extraction-request.json",
+        "validated project_profile",
+        "参考文件4-稳定性试验数据汇总.xlsx"
+      ],
+      "validation_checks": [
+        "section ownership checked",
+        "source traceability checked",
+        "table render inputs checked"
+      ],
+      "validation_notes": "Example provenance only; replace with project-specific review notes."
+    },
+    "stress_study": {
+      "execution_mode": "subagent",
+      "extraction_agent": "reference_fact_extraction_agent",
+      "validation_agent": "reference_fact_validation_agent",
+      "validation_status": "passed",
+      "extraction_completed_at": "2026-05-31T08:00:00Z",
+      "validation_completed_at": "2026-05-31T08:05:00Z",
+      "source_materials_reviewed": [
+        "fact-extraction-request.json",
+        "validated project_profile",
+        "参考文件3-原液和成品影响因素试验考察报告.docx"
+      ],
+      "validation_checks": [
+        "section ownership checked",
+        "source traceability checked",
+        "included and omitted tests checked"
+      ],
+      "validation_notes": "Example provenance only; replace with project-specific review notes."
+    }
+  }
+}

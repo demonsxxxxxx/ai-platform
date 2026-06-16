@@ -1,0 +1,36 @@
+{
+  "schema_version": "ctd-32s73-step-response-v1",
+  "state": "FACT_EXTRACTION_REQUIRED",
+  "reply": "状态机停在 FACT_EXTRACTION_REQUIRED，下一步只能提交：fact_packet。",
+  "done": false,
+  "final": false,
+  "terminal_kind": "paused_recoverable",
+  "delivery_status": "not_ready",
+  "recoverable": true,
+  "recovery_mode": "submit_fact_packet",
+  "allowed_next_events": [
+    {
+      "schema_version": "ctd-32s73-step-event-v1",
+      "output_dir": "C:\\path\\to\\project\\outputs\\run-001",
+      "provided_artifacts": {
+        "fact_packet": "C:\\path\\to\\reference-output\\fact-packet.json"
+      }
+    }
+  ],
+  "required_artifacts": [
+    {
+      "name": "fact_packet",
+      "path": "C:\\path\\to\\project\\outputs\\run-001\\fact-packet.json",
+      "reason": "基础事实抽取已迁移到 reference-fact-extraction；请使用 ctd-32s73-stability profile 生成 CTD-native fact-packet.json 后作为 provided_artifacts.fact_packet 提交。"
+    }
+  ],
+  "blocking_reasons": [
+    "Run reference-fact-extraction with profile_id='ctd-32s73-stability' and submit provided_artifacts.fact_packet."
+  ],
+  "summary_path": "C:\\path\\to\\project\\outputs\\run-001\\workflow-summary.json",
+  "artifacts": {
+    "source_index": "C:\\path\\to\\project\\outputs\\run-001\\source-index.json",
+    "source_index_markdown": "C:\\path\\to\\project\\outputs\\run-001\\source-index.md",
+    "fact_packet_request": "C:\\path\\to\\project\\outputs\\run-001\\fact-packet-request.json"
+  }
+}

@@ -65,6 +65,7 @@ test("normalizeRunPlayback fills missing array fields with empty arrays", () => 
   assert.deepEqual(normalized.artifacts, []);
   assert.deepEqual(normalized.steps, []);
   assert.equal(normalized.multi_agent, null);
+  assert.equal(normalized.context_ref, null);
 });
 
 test("normalizeRunPlayback handles empty responses as default playback data", () => {
@@ -75,6 +76,131 @@ test("normalizeRunPlayback handles empty responses as default playback data", ()
   assert.deepEqual(normalized.artifacts, []);
   assert.deepEqual(normalized.steps, []);
   assert.equal(normalized.multi_agent, null);
+  assert.equal(normalized.context_ref, null);
+});
+
+test("normalizeRunPlayback preserves safe context provenance and drops private fields", () => {
+  const normalized = normalizeRunPlayback({
+    context_ref: {
+      context_snapshot_id: "ctx-private",
+      source: "stored_context_snapshot",
+      referenced_materials: {
+        file_count: 2,
+        message_count: 1,
+        memory_record_count: 3,
+        artifact_count: 4,
+        file_ids: ["file-private"],
+        storage_key: "tenants/private/source.docx",
+      },
+      used_context_summary: {
+        source: "stored_context_snapshot",
+        input_keys: ["attachments", "message", "storage_key"],
+        memory_policy_source: "stored",
+        long_term_memory_read: false,
+        file_count: 2,
+        message_count: 1,
+        memory_record_count: 3,
+        artifact_count: 4,
+        raw_path: "/workspace/private",
+      },
+      execution_tier: "document_worker",
+      latest_artifact_version: "v7",
+      context_pack_version: "v3",
+      context_pack_generated_at: "2026-06-12T01:23:45Z",
+      storage_key: "tenants/private/context.json",
+      runtime_path: "/tmp/private",
+      work_dir: "/workspace/private",
+      payload: { secret: true },
+    },
+  } as unknown as RunPlaybackResponse);
+
+  assert.deepEqual(normalized.context_ref, {
+    source: "stored_context_snapshot",
+    referenced_materials: {
+      file_count: 2,
+      message_count: 1,
+      memory_record_count: 3,
+      artifact_count: 4,
+    },
+    used_context_summary: {
+      source: "stored_context_snapshot",
+      input_keys: ["attachments", "message"],
+      memory_policy_source: "stored",
+      long_term_memory_read: false,
+      file_count: 2,
+      message_count: 1,
+      memory_record_count: 3,
+      artifact_count: 4,
+    },
+    execution_tier: "document_worker",
+    latest_artifact_version: "v7",
+    context_pack_version: "v3",
+    context_pack_generated_at: "2026-06-12T01:23:45Z",
+  });
+
+  const serialized = JSON.stringify(normalized.context_ref);
+  for (const privateFragment of [
+    "ctx-private",
+    "file-private",
+    "storage_key",
+    "runtime_path",
+    "work_dir",
+    "payload",
+    "/workspace/private",
+    "tenants/private",
+  ]) {
+    assert.equal(
+      serialized.includes(privateFragment),
+      false,
+      `${privateFragment} leaked into context provenance`,
+    );
+  }
+});
+
+test("normalizeRunPlayback drops unsafe context provenance values", () => {
+  const normalized = normalizeRunPlayback({
+    context_ref: {
+      source: "runtime/path",
+      referenced_materials: {
+        file_count: 1,
+        artifact_count: 1,
+      },
+      used_context_summary: {
+        source: "storage_key",
+        input_keys: ["message"],
+        memory_policy_source: "private_policy",
+        long_term_memory_read: "yes",
+      },
+      execution_tier: "docker_admin_root",
+      latest_artifact_version:
+        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+      context_pack_version: "0123456789abcdef0123456789abcdef",
+      context_pack_generated_at: "/workspace/private/context.json",
+    },
+  } as unknown as RunPlaybackResponse);
+
+  assert.deepEqual(normalized.context_ref, {
+    referenced_materials: {
+      file_count: 1,
+      artifact_count: 1,
+    },
+    used_context_summary: {
+      input_keys: ["message"],
+    },
+  });
+
+  const serialized = JSON.stringify(normalized.context_ref);
+  for (const privateFragment of [
+    "runtime/path",
+    "storage_key",
+    "docker_admin_root",
+    "private_policy",
+    "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    "0123456789abcdef0123456789abcdef",
+    "/workspace/private",
+  ]) {
+    assert.equal(serialized.includes(privateFragment), false);
+  }
 });
 
 test("normalizeRunPlayback sorts timeline by sequence then created_at stably", () => {
@@ -207,6 +333,7 @@ test("normalizeRunPlayback does not pass through dangerous fields", () => {
     "resourceLimits",
     "requestPayload",
     "decisionPayload",
+    "source_run_id",
   ]) {
     assert.equal(
       serialized.includes(dangerousField),
@@ -214,11 +341,7 @@ test("normalizeRunPlayback does not pass through dangerous fields", () => {
       `${dangerousField} leaked into normalized playback`,
     );
   }
-  assert.equal(
-    normalized.artifacts[0]?.lineage?.source_run_id,
-    "run-source",
-    "safe lineage fields should be preserved",
-  );
+  assert.equal(normalized.artifacts[0]?.lineage, undefined);
 });
 
 test("normalizeRunPlayback drops unsafe lineage allowlist values", () => {
@@ -249,7 +372,6 @@ test("normalizeRunPlayback drops unsafe lineage allowlist values", () => {
   } as unknown as RunPlaybackResponse);
 
   assert.deepEqual(normalized.artifacts[0]?.lineage, {
-    source_run_id: "run-source",
     producer_kind: "artifact",
     producer_role: "reviewer",
   });

@@ -49,6 +49,7 @@ PUBLIC_CONTEXT_FORBIDDEN_KEY_ALIASES = {
 PUBLIC_CONTEXT_FORBIDDEN_ID_KEY_ALIASES = {
     "artifactid",
     "artifactids",
+    "copiedfromrunid",
     "fileid",
     "fileids",
     "materialid",
@@ -57,14 +58,20 @@ PUBLIC_CONTEXT_FORBIDDEN_ID_KEY_ALIASES = {
     "memoryrecordids",
     "messageid",
     "messageids",
+    "parentrunid",
     "rawmaterialid",
     "rawmaterialids",
+    "runid",
+    "runids",
     "sourcefileid",
     "sourcefileids",
+    "sourcerunid",
+    "sourcerunids",
 }
 PUBLIC_CONTEXT_FORBIDDEN_ID_TOKEN_SEQUENCES = (
     ("artifact", "id"),
     ("artifact", "ids"),
+    ("copied", "from", "run", "id"),
     ("file", "id"),
     ("file", "ids"),
     ("material", "id"),
@@ -73,8 +80,15 @@ PUBLIC_CONTEXT_FORBIDDEN_ID_TOKEN_SEQUENCES = (
     ("memory", "record", "ids"),
     ("message", "id"),
     ("message", "ids"),
+    ("parent", "run", "id"),
     ("raw", "material", "id"),
     ("raw", "material", "ids"),
+    ("run", "id"),
+    ("run", "ids"),
+    ("source", "file", "id"),
+    ("source", "file", "ids"),
+    ("source", "run", "id"),
+    ("source", "run", "ids"),
 )
 
 PUBLIC_CONTEXT_MATERIAL_COUNT_KEYS = {
@@ -172,6 +186,7 @@ PUBLIC_CONTEXT_SOURCE_VALUES = {
     "resume_run",
     "retry_run",
     "runs_api",
+    "stored_context_snapshot",
     "worker_refresh",
 }
 

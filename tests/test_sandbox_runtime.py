@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.runtime.sandbox.container_provider import FakeContainerProvider
-from app.runtime.sandbox.contracts import SandboxRuntimeRequest, StopResult
+from app.runtime.sandbox.contracts import ContainerLease, SandboxRuntimeRequest, StopResult
 from app.runtime.sandbox.runtime import SandboxRuntime
 
 
@@ -118,6 +118,81 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
     assert lease_calls[0][2].run_id == "run-a"
     assert lease_calls[1][0] == "release"
     assert lease_calls[1][2] == "dispatch_completed"
+
+
+@pytest.mark.asyncio
+async def test_runtime_result_splits_sandbox_cold_start_from_executor_latency(tmp_path, monkeypatch):
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    class Clock:
+        def __init__(self):
+            self.values = iter([1.0, 1.01, 1.07, 1.08, 1.105, 1.110, 1.125, 1.130])
+
+        def monotonic(self):
+            return next(self.values)
+
+    class TimedProvider:
+        async def create_or_reuse(self, request, workspace):
+            return ContainerLease(
+                container_id="exec-run-a",
+                container_name="executor-exec-run-a",
+                provider="fake",
+                executor_url="http://executor.test",
+                tenant_id=request.tenant_id,
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                run_id=request.run_id,
+                sandbox_mode=request.sandbox_mode,
+                browser_enabled=request.browser_enabled,
+                workspace_host_path=workspace.workspace_host_path,
+                timings={
+                    "sandbox_container_cold_start_latency_ms": 40,
+                    "sandbox_healthcheck_latency_ms": 12,
+                },
+            )
+
+        async def stop(self, lease, *, reason: str):
+            return StopResult(container_id=lease.container_id, status="stopped", message=reason)
+
+    async def execute(executor_url, task_request):
+        return {
+            "status": "accepted",
+            "session_id": task_request.session_id,
+            "run_id": task_request.run_id,
+            "executor_model_latency_ms": 21,
+            "document_processing_latency_ms": 8,
+        }
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.runtime.time", Clock(), raising=False)
+
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=TimedProvider(),
+        execute_task=execute,
+        callback_token_resolver=lambda token_id: "secret-token",
+        record_lease=noop_lease,
+        release_lease=noop_lease,
+    )
+
+    result = await runtime.submit(request(sandbox_mode="ephemeral"))
+
+    assert result.timings == {
+        "schema_version": "ai-platform.sandbox-latency-split.v1",
+        "sandbox_lease_acquire_latency_ms": 60,
+        "sandbox_container_cold_start_latency_ms": 40,
+        "sandbox_healthcheck_latency_ms": 12,
+        "sandbox_executor_dispatch_latency_ms": 25,
+        "executor_model_latency_ms": 21,
+        "document_processing_latency_ms": 8,
+        "sandbox_cleanup_latency_ms": 15,
+        "sandbox_total_latency_ms": 130,
+    }
+    assert result.timings["sandbox_executor_dispatch_latency_ms"] < result.timings["sandbox_total_latency_ms"]
+    assert result.timings["sandbox_container_cold_start_latency_ms"] != result.timings["executor_model_latency_ms"]
 
 
 @pytest.mark.asyncio

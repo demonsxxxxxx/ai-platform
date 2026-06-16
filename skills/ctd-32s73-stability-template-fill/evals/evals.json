@@ -1,0 +1,465 @@
+{
+  "skill_name": "ctd-32s73-stability-template-fill",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "评测执行要求：不要调用 Claude 的 Skill 工具来加载 ctd-32s73-stability-template-fill；请直接读取并遵循当前仓库根目录下的 SKILL.md 以及其引用的 references/、assets/templates/、assets/table-prototypes/ 和 scripts/ 文件。必须通过 scripts/skill_step.py 提交 ctd-32s73-step-event-v1 事件启动、恢复和继续流程；不得直接调用 run_state_machine_workflow.py、prepare_generation_workspace.py、run_generation_pipeline.py、render_stability_tables.py、validate_fact_packet.py、validate_generated_docx.py、趋势图或 OCR 内部副作用脚本；不得编写一次性脚本绕过 step/FSM。不得修改 skill 源码、模板资产或 references 文档。所有生成文件必须保存到评测指定的 outputs 目录。使用 skill ctd-32s73-stability-template-fill，为项目 IP350 生成 3.2.S.7.3 稳定性数据 Word 文档。项目目录：${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP350。只能使用参考文件1-项目基本信息收集表.docx、参考文件2-原液稳定性考察方案.docx、参考文件3-原液和成品影响因素试验考察报告.docx、参考文件4-稳定性试验数据汇总.xlsx 作为事实来源。禁止读取、引用或借鉴 已完成的申报资料-32s73-稳定性数据.docx，也不要读取 Word 临时锁文件 ~$成的申报资料-32s73-稳定性数据.docx。使用 skill 自带模板，保持模板段落样式、表格结构、合并单元格、表注和图表标题格式。输出 filled DOCX、evidence summary、validation report 和结构快照。",
+      "expected_output": "生成 IP350 的 3.2.S.7.3 稳定性数据 DOCX，并附证据摘要、验证报告、结构快照；不得使用已完成申报资料作为事实来源。",
+      "files": [
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP350\\参考文件1-项目基本信息收集表.docx",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP350\\参考文件2-原液稳定性考察方案.docx",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP350\\参考文件3-原液和成品影响因素试验考察报告.docx",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP350\\参考文件4-稳定性试验数据汇总.xlsx"
+      ],
+      "assertions": [
+        {
+          "text": "Output bundle includes a filled DOCX, evidence summary, validation report, and generated structure snapshot."
+        },
+        {
+          "text": "Evidence summary states the active template path and confirms the bundled template was used."
+        },
+        {
+          "text": "Evidence summary lists the completed submission document as excluded and not read or used as a fact source."
+        },
+        {
+          "text": "Generated DOCX contains IP350-supported product expression, batch numbers, long-term condition, accelerated condition, and stress-study conditions from the allowed reference files."
+        },
+        {
+          "text": "Generated DOCX contains no unresolved XXX, IPXXX, or 单抗/原液 placeholders unless explicitly justified in validation."
+        },
+        {
+          "text": "Validation report includes representative paragraph style checks and table gridSpan/vMerge checks."
+        },
+        {
+          "text": "Evidence summary lists every allowed reference file from the prompt as a used source or explicitly explains why a listed source was not usable."
+        },
+        {
+          "text": "Output directory contains at least one .docx file for the filled document."
+        },
+        {
+          "text": "Output directory contains an evidence summary file and a validation report file."
+        },
+        {
+          "text": "Output directory contains a generated structure snapshot or the validation report explicitly explains why no snapshot was produced."
+        },
+        {
+          "text": "Final outputs do not remain in scaffold-only state: fact-packet is not pending_fact_extraction, evidence summary does not say pending extraction, and validation report is not only an Initial scaffold validation report."
+        },
+        {
+          "text": "If validation.json is present, it records placeholder, section, table-structure, template-comparison, evidence-summary, scaffold-state, validation-report, and caption-reference checks."
+        },
+        {
+          "text": "If generated DOCX text contains referenced table or figure numbers without matching captions, the validation report lists them as manual-refresh or numbering-gap items."
+        },
+        {
+          "text": "If source evidence supports only one target batch, generated DOCX shrinks the bundled two-batch template by deleting second-batch long-term, accelerated, and stress-study tables plus related captions, references, and directory entries."
+        },
+        {
+          "text": "Single-batch outputs do not copy first-batch results into a nonexistent second batch and do not keep blank second-batch template tables merely to preserve table count."
+        },
+        {
+          "text": "Validation report records any batch-count shrink from the bundled two-batch template, including table-count, numbering, directory, and manual-refresh implications."
+        },
+        {
+          "text": "Validation report explains every warning emitted by validation.json instead of ignoring failed checks."
+        },
+        {
+          "text": "Output directory contains fact-packet.json with schema_version ctd-32s73-fact-packet-v1 and required top-level keys: project_profile, sources, long_term, accelerated, stress_study, trend_charts, docx_render_plan, missing_evidence, and manual_review_items."
+        },
+        {
+          "text": "Output directory contains fact-packet-validation.json, or validation report shows scripts/validate_fact_packet.py was run and explains any fact-packet validation warnings."
+        },
+        {
+          "text": "fact-packet project_profile stores batches as a list and does not rely on ds_batch, main_batch, or first_batch scalar fields to drive rendering."
+        },
+        {
+          "text": "fact-packet docx_render_plan.render_scope records source_batch_count, rendered_batches, omitted_batches, and batch_structure_action; single-batch shrink does not remove source-confirmed batches from project_profile.batches or fabricate a second batch."
+        },
+        {
+          "text": "fact-packet table_render_inputs for long-term, accelerated, and applicable stress-study tables include role, batch_no, time_header points, and rows. target_table_index is not required because table blocks are generated from structural placeholders. Stress-study rows provide the first column as test item plus method and the second column as quality standard or an explicit no-standard marker."
+        },
+        {
+          "text": "Stress-study table_render_inputs are not empty: every rendered stress/influence-factor table has non-empty rows with item, method, acceptance or quality_standard, values, role, batch_no, and time_header points."
+        },
+        {
+          "text": "Rendered stress/influence-factor DOCX tables keep a two-column left data area: first column is test item plus method, second column is quality standard; acceptance is not concatenated into the first column or dropped."
+        },
+        {
+          "text": "Rendered stress/influence-factor DOCX tables have the header 检测指标 merged across the two left columns and vertically merged across the first two header rows: row 0 col 0 gridSpan=2 vMerge=restart; row 1 col 0 gridSpan=2 vMerge=continue."
+        },
+        {
+          "text": "Rendered stress/influence-factor DOCX tables place only time-point labels in the second header row to the right of 检测指标, and the time header gridSpan equals the number of time points."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "评测执行要求：不要调用 Claude 的 Skill 工具来加载 ctd-32s73-stability-template-fill；请直接读取并遵循当前仓库根目录下的 SKILL.md 以及其引用的 references/、assets/templates/、assets/table-prototypes/ 和 scripts/ 文件。必须通过 scripts/skill_step.py 提交 ctd-32s73-step-event-v1 事件启动、恢复和继续流程；不得直接调用 run_state_machine_workflow.py、prepare_generation_workspace.py、run_generation_pipeline.py、render_stability_tables.py、validate_fact_packet.py、validate_generated_docx.py、趋势图或 OCR 内部副作用脚本；不得编写一次性脚本绕过 step/FSM。不得修改 skill 源码、模板资产或 references 文档。所有生成文件必须保存到评测指定的 outputs 目录。使用 skill ctd-32s73-stability-template-fill，为项目 IP319 生成 3.2.S.7.3 稳定性数据 Word 文档。项目目录：${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP319。只能使用参考文件1-项目基本信息收集表-IP319.xlsx、参考文件2-IP319稳定性数据汇总.xlsx、参考文件3-STB(C)-QC-IP319-P-2-001-1.0  IP319单抗稳定性考察方案.pdf、参考文件4-TP(G)-AD-IP319-1-002-1.0 IP319项目单抗影响因素考察实验方案.pdf、参考文件5-TR(G)-AD-IP319-1-027-1.0  IP319项目单抗影响因素试验考察报告.docx、参考文件6-TR(G)-AD-IP319-1-027-1.0 IP319项目单抗影响因素试验考察报告.pdf 作为事实来源。禁止读取、引用或借鉴 已完成的申报资料-32s73稳定性数据.docx。使用 skill 自带模板，保持模板段落样式、表格结构、合并单元格、表注和图表标题格式。输出 filled DOCX、evidence summary、validation report 和结构快照。",
+      "expected_output": "生成 IP319 的 3.2.S.7.3 稳定性数据 DOCX，并附证据摘要、验证报告、结构快照；不得使用已完成申报资料作为事实来源。",
+      "files": [
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP319\\参考文件1-项目基本信息收集表-IP319.xlsx",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP319\\参考文件2-IP319稳定性数据汇总.xlsx",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP319\\参考文件3-STB(C)-QC-IP319-P-2-001-1.0  IP319单抗稳定性考察方案.pdf",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP319\\参考文件4-TP(G)-AD-IP319-1-002-1.0 IP319项目单抗影响因素考察实验方案.pdf",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP319\\参考文件5-TR(G)-AD-IP319-1-027-1.0  IP319项目单抗影响因素试验考察报告.docx",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP319\\参考文件6-TR(G)-AD-IP319-1-027-1.0 IP319项目单抗影响因素试验考察报告.pdf"
+      ],
+      "assertions": [
+        {
+          "text": "Output bundle includes a filled DOCX, evidence summary, validation report, and generated structure snapshot."
+        },
+        {
+          "text": "Evidence summary lists the completed submission document as excluded and not read or used as a fact source."
+        },
+        {
+          "text": "Generated DOCX uses IP319-supported product expression, batches, study conditions, and completed months."
+        },
+        {
+          "text": "Long-term, accelerated, and influence-factor/stress-study sections are present when supported by source files."
+        },
+        {
+          "text": "Long-term and accelerated sections distinguish planned time points from actually completed result time points for each IP319 batch."
+        },
+        {
+          "text": "Validation report includes table count, figure count, time-header units, gridSpan, and vMerge checks."
+        },
+        {
+          "text": "Evidence summary lists every allowed reference file from the prompt as a used source or explicitly explains why a listed source was not usable."
+        },
+        {
+          "text": "Output directory contains at least one .docx file for the filled document."
+        },
+        {
+          "text": "Output directory contains an evidence summary file and a validation report file."
+        },
+        {
+          "text": "Output directory contains a generated structure snapshot or the validation report explicitly explains why no snapshot was produced."
+        },
+        {
+          "text": "Final outputs do not remain in scaffold-only state: fact-packet is not pending_fact_extraction, evidence summary does not say pending extraction, and validation report is not only an Initial scaffold validation report."
+        },
+        {
+          "text": "If validation.json is present, it records placeholder, section, table-structure, template-comparison, evidence-summary, scaffold-state, validation-report, and caption-reference checks."
+        },
+        {
+          "text": "If generated DOCX text contains referenced table or figure numbers without matching captions, the validation report lists them as manual-refresh or numbering-gap items."
+        },
+        {
+          "text": "If source evidence supports only one target batch, generated DOCX shrinks the bundled two-batch template by deleting second-batch long-term, accelerated, and stress-study tables plus related captions, references, and directory entries."
+        },
+        {
+          "text": "Single-batch outputs do not copy first-batch results into a nonexistent second batch and do not keep blank second-batch template tables merely to preserve table count."
+        },
+        {
+          "text": "Validation report records any batch-count shrink from the bundled two-batch template, including table-count, numbering, directory, and manual-refresh implications."
+        },
+        {
+          "text": "Validation report explains every warning emitted by validation.json instead of ignoring failed checks."
+        },
+        {
+          "text": "Output directory contains fact-packet.json with schema_version ctd-32s73-fact-packet-v1 and required top-level keys: project_profile, sources, long_term, accelerated, stress_study, trend_charts, docx_render_plan, missing_evidence, and manual_review_items."
+        },
+        {
+          "text": "Output directory contains fact-packet-validation.json, or validation report shows scripts/validate_fact_packet.py was run and explains any fact-packet validation warnings."
+        },
+        {
+          "text": "fact-packet project_profile stores batches as a list and does not rely on ds_batch, main_batch, or first_batch scalar fields to drive rendering."
+        },
+        {
+          "text": "fact-packet table_render_inputs for long-term, accelerated, and applicable stress-study tables include role, batch_no, time_header points, and rows. target_table_index is not required because table blocks are generated from structural placeholders. Stress-study rows provide the first column as test item plus method and the second column as quality standard or an explicit no-standard marker."
+        },
+        {
+          "text": "Stress-study table_render_inputs are not empty: every rendered stress/influence-factor table has non-empty rows with item, method, acceptance or quality_standard, values, role, batch_no, and time_header points."
+        },
+        {
+          "text": "Rendered stress/influence-factor DOCX tables keep a two-column left data area: first column is test item plus method, second column is quality standard; acceptance is not concatenated into the first column or dropped."
+        },
+        {
+          "text": "Rendered stress/influence-factor DOCX tables have the header 检测指标 merged across the two left columns and vertically merged across the first two header rows: row 0 col 0 gridSpan=2 vMerge=restart; row 1 col 0 gridSpan=2 vMerge=continue."
+        },
+        {
+          "text": "Rendered stress/influence-factor DOCX tables place only time-point labels in the second header row to the right of 检测指标, and the time header gridSpan equals the number of time points."
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "评测执行要求：不要调用 Claude 的 Skill 工具来加载 ctd-32s73-stability-template-fill；请直接读取并遵循当前仓库根目录下的 SKILL.md 以及其引用的 references/、assets/templates/、assets/table-prototypes/ 和 scripts/ 文件。必须通过 scripts/skill_step.py 提交 ctd-32s73-step-event-v1 事件启动、恢复和继续流程；不得直接调用 run_state_machine_workflow.py、prepare_generation_workspace.py、run_generation_pipeline.py、render_stability_tables.py、validate_fact_packet.py、validate_generated_docx.py、趋势图或 OCR 内部副作用脚本；不得编写一次性脚本绕过 step/FSM。不得修改 skill 源码、模板资产或 references 文档。所有生成文件必须保存到评测指定的 outputs 目录。使用 skill ctd-32s73-stability-template-fill，为项目 IP315 生成 3.2.S.7.3 稳定性数据 Word 文档。项目目录：${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP315。只能使用参考文件1-IP315项目基本信息收集表.xlsx、参考文件2-STB(C)-QC-IP315A-P-2-001-2.0  IP315A原液稳定性考察方案.pdf、参考文件3-DSDP稳定性试验数据汇总.xlsx、参考文件4-TP(G)-AD-IP315A-1-001-1.0 IP315A项目原液和制剂影响因素试验考察方案-ZX10.23-hy.docx、参考文件5-TR(G)-AD-IP315A-1-012-1.0 IP315A项目原液和制剂影响因素试验考察报告-20260129-zpl2026.02.02.docx 作为事实来源。禁止读取、引用或借鉴 已完成的申报资料-3.2.S.7.3 稳定性数据.docx。使用 skill 自带模板，保持模板段落样式、表格结构、合并单元格、表注和图表标题格式。输出 filled DOCX、evidence summary、validation report 和结构快照。",
+      "expected_output": "生成 IP315 的 3.2.S.7.3 稳定性数据 DOCX，并附证据摘要、验证报告、结构快照；不得使用已完成申报资料作为事实来源。",
+      "files": [
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP315\\参考文件1-IP315项目基本信息收集表.xlsx",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP315\\参考文件2-STB(C)-QC-IP315A-P-2-001-2.0  IP315A原液稳定性考察方案.pdf",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP315\\参考文件3-DSDP稳定性试验数据汇总.xlsx",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP315\\参考文件4-TP(G)-AD-IP315A-1-001-1.0 IP315A项目原液和制剂影响因素试验考察方案-ZX10.23-hy.docx",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP315\\参考文件5-TR(G)-AD-IP315A-1-012-1.0 IP315A项目原液和制剂影响因素试验考察报告-20260129-zpl2026.02.02.docx"
+      ],
+      "assertions": [
+        {
+          "text": "Output bundle includes a filled DOCX, evidence summary, validation report, and generated structure snapshot."
+        },
+        {
+          "text": "Evidence summary lists the completed submission document as excluded and not read or used as a fact source."
+        },
+        {
+          "text": "Generated DOCX does not mix finished-product facts into the drug-substance section unless explicitly supported by the target section."
+        },
+        {
+          "text": "Generated DOCX includes every IP315 target drug-substance batch that appears in the stability workbook blocks instead of stopping after the first batch block."
+        },
+        {
+          "text": "Stress-study low-pH and high-pH content are extracted and described separately when both are present in source files."
+        },
+        {
+          "text": "Validation report surfaces any source conflicts, missing evidence, or manual confirmation items."
+        },
+        {
+          "text": "Evidence summary lists every allowed reference file from the prompt as a used source or explicitly explains why a listed source was not usable."
+        },
+        {
+          "text": "Output directory contains at least one .docx file for the filled document."
+        },
+        {
+          "text": "Output directory contains an evidence summary file and a validation report file."
+        },
+        {
+          "text": "Output directory contains a generated structure snapshot or the validation report explicitly explains why no snapshot was produced."
+        },
+        {
+          "text": "Final outputs do not remain in scaffold-only state: fact-packet is not pending_fact_extraction, evidence summary does not say pending extraction, and validation report is not only an Initial scaffold validation report."
+        },
+        {
+          "text": "If validation.json is present, it records placeholder, section, table-structure, template-comparison, evidence-summary, scaffold-state, validation-report, and caption-reference checks."
+        },
+        {
+          "text": "If generated DOCX text contains referenced table or figure numbers without matching captions, the validation report lists them as manual-refresh or numbering-gap items."
+        },
+        {
+          "text": "If source evidence supports only one target batch, generated DOCX shrinks the bundled two-batch template by deleting second-batch long-term, accelerated, and stress-study tables plus related captions, references, and directory entries."
+        },
+        {
+          "text": "Single-batch outputs do not copy first-batch results into a nonexistent second batch and do not keep blank second-batch template tables merely to preserve table count."
+        },
+        {
+          "text": "Validation report records any batch-count shrink from the bundled two-batch template, including table-count, numbering, directory, and manual-refresh implications."
+        },
+        {
+          "text": "Validation report explains every warning emitted by validation.json instead of ignoring failed checks."
+        },
+        {
+          "text": "Output directory contains fact-packet.json with schema_version ctd-32s73-fact-packet-v1 and required top-level keys: project_profile, sources, long_term, accelerated, stress_study, trend_charts, docx_render_plan, missing_evidence, and manual_review_items."
+        },
+        {
+          "text": "Output directory contains fact-packet-validation.json, or validation report shows scripts/validate_fact_packet.py was run and explains any fact-packet validation warnings."
+        },
+        {
+          "text": "fact-packet project_profile stores batches as a list and does not rely on ds_batch, main_batch, or first_batch scalar fields to drive rendering."
+        },
+        {
+          "text": "fact-packet table_render_inputs for long-term, accelerated, and applicable stress-study tables include role, batch_no, time_header points, and rows. target_table_index is not required because table blocks are generated from structural placeholders. Stress-study rows provide the first column as test item plus method and the second column as quality standard or an explicit no-standard marker."
+        },
+        {
+          "text": "Stress-study table_render_inputs are not empty: every rendered stress/influence-factor table has non-empty rows with item, method, acceptance or quality_standard, values, role, batch_no, and time_header points."
+        },
+        {
+          "text": "Rendered stress/influence-factor DOCX tables keep a two-column left data area: first column is test item plus method, second column is quality standard; acceptance is not concatenated into the first column or dropped."
+        },
+        {
+          "text": "Rendered stress/influence-factor DOCX tables have the header 检测指标 merged across the two left columns and vertically merged across the first two header rows: row 0 col 0 gridSpan=2 vMerge=restart; row 1 col 0 gridSpan=2 vMerge=continue."
+        },
+        {
+          "text": "Rendered stress/influence-factor DOCX tables place only time-point labels in the second header row to the right of 检测指标, and the time header gridSpan equals the number of time points."
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "评测执行要求：不要调用 Claude 的 Skill 工具来加载 ctd-32s73-stability-template-fill；请直接读取并遵循当前仓库根目录下的 SKILL.md 以及其引用的 references/、assets/templates/、assets/table-prototypes/ 和 scripts/ 文件。必须通过 scripts/skill_step.py 提交 ctd-32s73-step-event-v1 事件启动、恢复和继续流程；不得直接调用 run_state_machine_workflow.py、prepare_generation_workspace.py、run_generation_pipeline.py、render_stability_tables.py、validate_fact_packet.py、validate_generated_docx.py、趋势图或 OCR 内部副作用脚本；不得编写一次性脚本绕过 step/FSM。不得修改 skill 源码、模板资产或 references 文档。所有生成文件必须保存到评测指定的 outputs 目录。使用 skill ctd-32s73-stability-template-fill，为项目 IP248A 生成 3.2.S.7.3 稳定性数据 Word 文档。项目目录：${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP248A。只能使用参考文件1-稳定性试验数据-20260420.xlsx、参考文件2-STB(C)-QC-IP248A-P-2-001-3.0 IP248A原液稳定性考察方案09.22.docx、参考文件3-STB(C)-QC-IP248A-P-2-004-3.0  IP248A原液稳定性考察方案（批号：IP248ADSC20250501、IP248ADSC20250702、批次三）clean.docx、参考文件4-TR(G)-AD-IP248A-1-0028-1.0 IP248A项目原液和成品影响因素试验考察报告-hy.docx、参考文件5-IP248A项目基本信息收集表.docx 作为事实来源。禁止读取、引用或借鉴 已完成的申报资料-3-2-s-7-3稳定性数据.docx。使用 skill 自带模板，保持模板段落样式、表格结构、合并单元格、表注和图表标题格式。若项目有三批或更多批次，应扩展模板表格和标题范围。输出 filled DOCX、evidence summary、validation report 和结构快照。",
+      "expected_output": "生成 IP248A 的 3.2.S.7.3 稳定性数据 DOCX，并附证据摘要、验证报告、结构快照；正确处理多批次扩展，且不得使用已完成申报资料作为事实来源。",
+      "files": [
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP248A\\参考文件1-稳定性试验数据-20260420.xlsx",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP248A\\参考文件2-STB(C)-QC-IP248A-P-2-001-3.0 IP248A原液稳定性考察方案09.22.docx",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP248A\\参考文件3-STB(C)-QC-IP248A-P-2-004-3.0  IP248A原液稳定性考察方案（批号：IP248ADSC20250501、IP248ADSC20250702、批次三）clean.docx",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP248A\\参考文件4-TR(G)-AD-IP248A-1-0028-1.0 IP248A项目原液和成品影响因素试验考察报告-hy.docx",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP248A\\参考文件5-IP248A项目基本信息收集表.docx"
+      ],
+      "assertions": [
+        {
+          "text": "Output bundle includes a filled DOCX, evidence summary, validation report, and generated structure snapshot."
+        },
+        {
+          "text": "Evidence summary lists the completed submission document as excluded and not read or used as a fact source."
+        },
+        {
+          "text": "When three or more batches are supported by source files, generated DOCX expands long-term, accelerated, and stress-study tables consistently."
+        },
+        {
+          "text": "fact-packet docx_render_plan.render_scope keeps all source-confirmed IP248A batches in project_profile.batches, declares rendered_batches and omitted_batches explicitly, and sets batch_structure_action=expand for three rendered batches."
+        },
+        {
+          "text": "The added IP248A third-batch tables contain the third batch's own values or explicit missing-data markers, not copied second-batch results."
+        },
+        {
+          "text": "Body text, table captions, table directory entries or manual-refresh notes include the added batch tables."
+        },
+        {
+          "text": "table-render-manifest.json declares generated_table_slots, and each rendered IP248A table matches the generated role, batch_no, table_index, and caption_no from structural table block placeholders."
+        },
+        {
+          "text": "For the three-batch IP248A structure, table numbering is role-block ordered: long-term 1-3, accelerated 4-6, then stress-study roles continue by batch without appending all third-batch tables to the document end."
+        },
+        {
+          "text": "Newly cloned tables preserve representative paragraph styles, gridSpan, vMerge, column widths, and table notes."
+        },
+        {
+          "text": "Evidence summary lists every allowed reference file from the prompt as a used source or explicitly explains why a listed source was not usable."
+        },
+        {
+          "text": "Output directory contains at least one .docx file for the filled document."
+        },
+        {
+          "text": "Output directory contains an evidence summary file and a validation report file."
+        },
+        {
+          "text": "Output directory contains a generated structure snapshot or the validation report explicitly explains why no snapshot was produced."
+        },
+        {
+          "text": "Final outputs do not remain in scaffold-only state: fact-packet is not pending_fact_extraction, evidence summary does not say pending extraction, and validation report is not only an Initial scaffold validation report."
+        },
+        {
+          "text": "If validation.json is present, it records placeholder, section, table-structure, template-comparison, evidence-summary, scaffold-state, validation-report, and caption-reference checks."
+        },
+        {
+          "text": "If generated DOCX text contains referenced table or figure numbers without matching captions, the validation report lists them as manual-refresh or numbering-gap items."
+        },
+        {
+          "text": "If source evidence supports only one target batch, generated DOCX shrinks the bundled two-batch template by deleting second-batch long-term, accelerated, and stress-study tables plus related captions, references, and directory entries."
+        },
+        {
+          "text": "Single-batch outputs do not copy first-batch results into a nonexistent second batch and do not keep blank second-batch template tables merely to preserve table count."
+        },
+        {
+          "text": "Validation report records any batch-count shrink from the bundled two-batch template, including table-count, numbering, directory, and manual-refresh implications."
+        },
+        {
+          "text": "Validation report explains every warning emitted by validation.json instead of ignoring failed checks."
+        },
+        {
+          "text": "Output directory contains fact-packet.json with schema_version ctd-32s73-fact-packet-v1 and required top-level keys: project_profile, sources, long_term, accelerated, stress_study, trend_charts, docx_render_plan, missing_evidence, and manual_review_items."
+        },
+        {
+          "text": "Output directory contains fact-packet-validation.json, or validation report shows scripts/validate_fact_packet.py was run and explains any fact-packet validation warnings."
+        },
+        {
+          "text": "fact-packet project_profile stores batches as a list and does not rely on ds_batch, main_batch, or first_batch scalar fields to drive rendering."
+        },
+        {
+          "text": "fact-packet table_render_inputs for long-term, accelerated, and applicable stress-study tables include role, batch_no, time_header points, and rows. target_table_index is not required because table blocks are generated from structural placeholders. Stress-study rows provide the first column as test item plus method and the second column as quality standard or an explicit no-standard marker."
+        },
+        {
+          "text": "Stress-study table_render_inputs are not empty: every rendered stress/influence-factor table has non-empty rows with item, method, acceptance or quality_standard, values, role, batch_no, and time_header points."
+        },
+        {
+          "text": "Rendered stress/influence-factor DOCX tables keep a two-column left data area: first column is test item plus method, second column is quality standard; acceptance is not concatenated into the first column or dropped."
+        },
+        {
+          "text": "Rendered stress/influence-factor DOCX tables have the header 检测指标 merged across the two left columns and vertically merged across the first two header rows: row 0 col 0 gridSpan=2 vMerge=restart; row 1 col 0 gridSpan=2 vMerge=continue."
+        },
+        {
+          "text": "Rendered stress/influence-factor DOCX tables place only time-point labels in the second header row to the right of 检测指标, and the time header gridSpan equals the number of time points."
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "评测执行要求：不要调用 Claude 的 Skill 工具来加载 ctd-32s73-stability-template-fill；请直接读取并遵循当前仓库根目录下的 SKILL.md 以及其引用的 references/、assets/templates/、assets/table-prototypes/ 和 scripts/ 文件。必须通过 scripts/skill_step.py 提交 ctd-32s73-step-event-v1 事件启动、恢复和继续流程；不得直接调用 run_state_machine_workflow.py、prepare_generation_workspace.py、run_generation_pipeline.py、render_stability_tables.py、validate_fact_packet.py、validate_generated_docx.py、趋势图或 OCR 内部副作用脚本；不得编写一次性脚本绕过 step/FSM。不得修改 skill 源码、模板资产或 references 文档。所有生成文件必须保存到评测指定的 outputs 目录。使用 skill ctd-32s73-stability-template-fill，为项目 IP177 生成 3.2.S.7.3 稳定性数据 Word 文档。项目目录：${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP177。只能使用参考文件2-STB(C)-QC-IP177-P-2-001-1.0  IP177原液稳定性考察方案.pdf、参考文件3-STB(C)-QC-IP177-R-2-001-1.0  IP177原液稳定性考察报告.docx、参考文件3-STB(C)-QC-IP177-R-2-001-1.0  IP177原液稳定性考察报告.pdf、参考文件4-TP-AD-IP177-1-015-00 IP177原液和成品影响因素试验考察方案.docx、参考文件4-TP-AD-IP177-1-015-00 IP177原液和成品影响因素试验考察方案.pdf、参考文件5-TR-AD-IP177-1-012-00  IP177原液和成品影响因素试验考察报告.docx、参考文件5-TR-AD-IP177-1-012-00 IP177原因和成品影响因素试验考察报告.pdf 作为事实来源。禁止读取、引用或借鉴 已完成的申报资料-3.2.S.7.3 稳定性数据.docx。使用 skill 自带模板，保持模板段落样式、表格结构、合并单元格、表注和图表标题格式。若项目缺少基本信息表，应从稳定性考察报告和方案中提取可追溯事实，无法确认的内容写入 missing-evidence report，不要猜测。输出 filled DOCX、evidence summary、validation report、missing-evidence report 和结构快照。",
+      "expected_output": "生成 IP177 的 3.2.S.7.3 稳定性数据 DOCX，并附证据摘要、验证报告、缺失证据报告和结构快照；不得使用已完成申报资料作为事实来源。",
+      "files": [
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP177\\参考文件1-基本信息.xlsx",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP177\\参考文件2-STB(C)-QC-IP177-P-2-001-1.0  IP177原液稳定性考察方案.pdf",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP177\\参考文件3-STB(C)-QC-IP177-R-2-001-1.0  IP177原液稳定性考察报告.docx",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP177\\参考文件3-STB(C)-QC-IP177-R-2-001-1.0  IP177原液稳定性考察报告.pdf",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP177\\参考文件4-TP-AD-IP177-1-015-00 IP177原液和成品影响因素试验考察方案.docx",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP177\\参考文件4-TP-AD-IP177-1-015-00 IP177原液和成品影响因素试验考察方案.pdf",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP177\\参考文件5-TR-AD-IP177-1-012-00  IP177原液和成品影响因素试验考察报告.docx",
+        "${CTD_EVAL_FIXTURE_ROOT}\\3.2.S.7.3-IP177\\参考文件5-TR-AD-IP177-1-012-00 IP177原因和成品影响因素试验考察报告.pdf"
+      ],
+      "assertions": [
+        {
+          "text": "Output bundle includes a filled DOCX, evidence summary, validation report, missing-evidence report, and generated structure snapshot."
+        },
+        {
+          "text": "Evidence summary lists the completed submission document as excluded and not read or used as a fact source."
+        },
+        {
+          "text": "Missing or uncertain project identity fields are surfaced in the missing-evidence report instead of guessed."
+        },
+        {
+          "text": "Stability conclusions are based on report/workbook data and completed time points, not planned-only protocol time points."
+        },
+        {
+          "text": "Generated DOCX does not infer product identity, specification, or batch role from the excluded completed submission when the basic information table is absent."
+        },
+        {
+          "text": "Validation report includes unresolved placeholder checks, unrelated-source residue checks, and representative table structure checks."
+        },
+        {
+          "text": "Evidence summary lists every allowed reference file from the prompt as a used source or explicitly explains why a listed source was not usable."
+        },
+        {
+          "text": "Output directory contains at least one .docx file for the filled document."
+        },
+        {
+          "text": "Output directory contains an evidence summary file and a validation report file."
+        },
+        {
+          "text": "Output directory contains a generated structure snapshot or the validation report explicitly explains why no snapshot was produced."
+        },
+        {
+          "text": "Final outputs do not remain in scaffold-only state: fact-packet is not pending_fact_extraction, evidence summary does not say pending extraction, and validation report is not only an Initial scaffold validation report."
+        },
+        {
+          "text": "If validation.json is present, it records placeholder, section, table-structure, template-comparison, evidence-summary, scaffold-state, validation-report, and caption-reference checks."
+        },
+        {
+          "text": "If generated DOCX text contains referenced table or figure numbers without matching captions, the validation report lists them as manual-refresh or numbering-gap items."
+        },
+        {
+          "text": "If source evidence supports only one target batch, generated DOCX shrinks the bundled two-batch template by deleting second-batch long-term, accelerated, and stress-study tables plus related captions, references, and directory entries."
+        },
+        {
+          "text": "Single-batch outputs do not copy first-batch results into a nonexistent second batch and do not keep blank second-batch template tables merely to preserve table count."
+        },
+        {
+          "text": "Validation report records any batch-count shrink from the bundled two-batch template, including table-count, numbering, directory, and manual-refresh implications."
+        },
+        {
+          "text": "Validation report explains every warning emitted by validation.json instead of ignoring failed checks."
+        },
+        {
+          "text": "Output directory contains fact-packet.json with schema_version ctd-32s73-fact-packet-v1 and required top-level keys: project_profile, sources, long_term, accelerated, stress_study, trend_charts, docx_render_plan, missing_evidence, and manual_review_items."
+        },
+        {
+          "text": "Output directory contains fact-packet-validation.json, or validation report shows scripts/validate_fact_packet.py was run and explains any fact-packet validation warnings."
+        },
+        {
+          "text": "fact-packet project_profile stores batches as a list and does not rely on ds_batch, main_batch, or first_batch scalar fields to drive rendering."
+        },
+        {
+          "text": "fact-packet table_render_inputs for long-term, accelerated, and applicable stress-study tables include role, batch_no, time_header points, and rows. target_table_index is not required because table blocks are generated from structural placeholders. Stress-study rows provide the first column as test item plus method and the second column as quality standard or an explicit no-standard marker."
+        },
+        {
+          "text": "Stress-study table_render_inputs are not empty: every rendered stress/influence-factor table has non-empty rows with item, method, acceptance or quality_standard, values, role, batch_no, and time_header points."
+        },
+        {
+          "text": "Rendered stress/influence-factor DOCX tables keep a two-column left data area: first column is test item plus method, second column is quality standard; acceptance is not concatenated into the first column or dropped."
+        },
+        {
+          "text": "Rendered stress/influence-factor DOCX tables have the header 检测指标 merged across the two left columns and vertically merged across the first two header rows: row 0 col 0 gridSpan=2 vMerge=restart; row 1 col 0 gridSpan=2 vMerge=continue."
+        },
+        {
+          "text": "Rendered stress/influence-factor DOCX tables place only time-point labels in the second header row to the right of 检测指标, and the time header gridSpan equals the number of time points."
+        }
+      ]
+    }
+  ]
+}

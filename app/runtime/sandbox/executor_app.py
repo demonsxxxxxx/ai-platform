@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -99,7 +100,10 @@ def create_executor_app(
 
     @app.post("/v1/tasks/execute")
     async def execute_task(request: ExecutorTaskRequest) -> dict[str, Any]:
+        started_at = time.monotonic()
+        document_started_at = time.monotonic()
         marker_path = _write_runtime_marker(resolved_workspace_root, request)
+        document_processing_latency_ms = max(int(round((time.monotonic() - document_started_at) * 1000)), 0)
         callback_errors: list[str] = []
         running_event = ExecutorCallbackEvent(
             session_id=request.session_id,
@@ -129,7 +133,13 @@ def create_executor_app(
             except Exception:
                 callback_errors.append(event.status)
 
-        response: dict[str, Any] = {"status": "accepted", "run_id": request.run_id}
+        executor_model_latency_ms = max(int(round((time.monotonic() - started_at) * 1000)), 0)
+        response: dict[str, Any] = {
+            "status": "accepted",
+            "run_id": request.run_id,
+            "executor_model_latency_ms": executor_model_latency_ms,
+            "document_processing_latency_ms": document_processing_latency_ms,
+        }
         if callback_errors:
             response["callback_errors"] = callback_errors
         return response

@@ -28,6 +28,13 @@ from app.public_context_keys import (
 PUBLIC_CONTEXT_EXECUTION_TIERS = {"sdk_only_writing", "document_worker", "heavy_sandbox"}
 PUBLIC_CONTEXT_ARTIFACT_VERSION_RE = re.compile(r"^v\d+(?:[._:-]\d+){0,3}$", re.IGNORECASE)
 PUBLIC_CONTEXT_HASH_LIKE_VALUE_RE = re.compile(r"^[a-f0-9]{32,}$", re.IGNORECASE)
+PUBLIC_ARTIFACT_VERSION_KEYS = (
+    "artifact_version",
+    "document_version",
+    "output_version",
+    "public_version",
+    "revision",
+)
 EXECUTOR_CONTEXT_PACK_SCHEMA_VERSION = "ai-platform.executor-context-pack.v1"
 DEFAULT_CONTEXT_PACK_VERSION = "v1"
 
@@ -185,6 +192,19 @@ def _stored_public_context_latest_artifact_version(payload: dict[str, Any]) -> s
     return value if PUBLIC_CONTEXT_ARTIFACT_VERSION_RE.fullmatch(value) else None
 
 
+def _public_artifact_version_from_manifest(artifact: dict[str, Any]) -> str | None:
+    manifest = artifact.get("manifest_json")
+    if not isinstance(manifest, dict):
+        return None
+    for key in PUBLIC_ARTIFACT_VERSION_KEYS:
+        version = _stored_public_context_latest_artifact_version(
+            {"latest_artifact_version": manifest.get(key)}
+        )
+        if version is not None:
+            return version
+    return None
+
+
 def _stored_public_context_pack_version(payload: dict[str, Any]) -> str | None:
     return safe_public_context_pack_version(payload.get("context_pack_version"))
 
@@ -227,6 +247,21 @@ def public_context_provenance(
 ) -> dict[str, Any]:
     """Build the user-visible context provenance contract without exposing raw ids."""
     sanitized_input = public_context_payload(input_payload or {})
+    safe_source = source if source in PUBLIC_CONTEXT_SOURCE_VALUES else "stored_context_snapshot"
+    safe_memory_policy_source = (
+        memory_policy_source
+        if memory_policy_source in PUBLIC_CONTEXT_MEMORY_POLICY_SOURCE_VALUES
+        else "not_recorded"
+    )
+    safe_latest_artifact_version = _stored_public_context_latest_artifact_version(
+        {"latest_artifact_version": latest_artifact_version}
+    )
+    safe_execution_tier = (
+        execution_tier if execution_tier in PUBLIC_CONTEXT_EXECUTION_TIERS else "sdk_only_writing"
+    )
+    safe_generated_at = _stored_public_context_generated_at(
+        {"context_pack_generated_at": generated_at}
+    )
     safe_input_keys = safe_public_context_input_keys(input_keys) if input_keys is not None else []
     if not safe_input_keys:
         safe_input_keys = sorted(str(key) for key in sanitized_input.keys())
@@ -242,15 +277,15 @@ def public_context_provenance(
             "memory_record_count": max(0, int(memory_record_count)),
         },
         "used_context_summary": {
-            "source": str(source),
+            "source": safe_source,
             "input_keys": safe_input_keys,
-            "memory_policy_source": str(memory_policy_source or "not_recorded"),
+            "memory_policy_source": safe_memory_policy_source,
             "long_term_memory_read": bool(long_term_memory_read),
         },
-        "latest_artifact_version": latest_artifact_version,
-        "execution_tier": str(execution_tier or "sdk_only_writing"),
+        "latest_artifact_version": safe_latest_artifact_version,
+        "execution_tier": safe_execution_tier,
         "context_pack_version": _safe_public_context_pack_version(context_pack_version),
-        "context_pack_generated_at": generated_at or _utc_now_iso(),
+        "context_pack_generated_at": safe_generated_at or _utc_now_iso(),
     }
 
 
@@ -381,6 +416,8 @@ def initial_context_summary(
     input_payload: dict[str, Any],
     message_ids: list[str],
     file_ids: list[str],
+    artifact_count: int = 0,
+    latest_artifact_version: str | None = None,
     memory_record_ids: list[str] | None = None,
     memory_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -420,10 +457,11 @@ def initial_context_summary(
             input_payload=input_payload,
             message_count=len(message_ids),
             file_count=len(file_ids),
-            artifact_count=0,
+            artifact_count=artifact_count,
             memory_record_count=len(memory_ids),
             memory_policy_source=memory_policy_source,
             long_term_memory_read=False,
+            latest_artifact_version=latest_artifact_version,
             execution_tier=str(tier_decision["execution_tier"]),
         )
     )
@@ -445,9 +483,53 @@ async def record_initial_context_snapshot(
     message_ids: list[str] | None = None,
     file_ids: list[str] | None = None,
     source: str,
+    source_run_id: str | None = None,
 ) -> dict[str, Any]:
     included_message_ids = list(message_ids or [])
     included_file_ids = list(file_ids or [])
+    included_artifact_ids: list[str] = []
+    if source_run_id:
+        authorized_source_run = await repositories.get_authorized_run(
+            conn,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            run_id=source_run_id,
+        )
+        if (
+            authorized_source_run is not None
+            and authorized_source_run.get("tenant_id") == tenant_id
+            and authorized_source_run.get("user_id") == user_id
+            and authorized_source_run.get("workspace_id") == workspace_id
+            and authorized_source_run.get("session_id") == session_id
+        ):
+            source_artifacts = await repositories.list_run_artifacts(
+                conn,
+                tenant_id=tenant_id,
+                run_id=source_run_id,
+            )
+            included_artifact_ids = [
+                str(artifact["id"])
+                for artifact in source_artifacts
+                if isinstance(artifact, dict) and artifact.get("id")
+            ]
+            latest_artifact_version = next(
+                (
+                    version
+                    for version in reversed(
+                        [
+                            _public_artifact_version_from_manifest(artifact)
+                            for artifact in source_artifacts
+                            if isinstance(artifact, dict)
+                        ]
+                    )
+                    if version is not None
+                ),
+                None,
+            )
+        else:
+            latest_artifact_version = None
+    else:
+        latest_artifact_version = None
     memory_policy = await repositories.get_effective_memory_policy(
         conn,
         tenant_id=tenant_id,
@@ -462,6 +544,8 @@ async def record_initial_context_snapshot(
         input_payload=input_payload,
         message_ids=included_message_ids,
         file_ids=included_file_ids,
+        artifact_count=len(included_artifact_ids),
+        latest_artifact_version=latest_artifact_version,
         memory_policy=memory_policy,
     )
     memory_policy_summary = {
@@ -481,7 +565,7 @@ async def record_initial_context_snapshot(
         context_kind="executor",
         included_message_ids=included_message_ids,
         included_file_ids=included_file_ids,
-        included_artifact_ids=[],
+        included_artifact_ids=included_artifact_ids,
         included_memory_record_ids=[],
         redaction_summary_json={
             "input_payload_stored": False,

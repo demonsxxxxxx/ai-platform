@@ -1,0 +1,70 @@
+{
+  "schema_version": "ctd-32s73-workflow-state-v1",
+  "run_id": "run-001",
+  "skill_root": "<skill-root>/ctd-32s73-stability-template-fill",
+  "output_dir": "<project-output-root>/run-001",
+  "state": "FACT_EXTRACTION_REQUIRED",
+  "previous_states": [
+    {
+      "state": "NEW",
+      "exited_at": "2026-01-01T00:00:00Z",
+      "status": "completed",
+      "reason": null
+    },
+    {
+      "state": "WORKSPACE_PREPARED",
+      "exited_at": "2026-01-01T00:00:01Z",
+      "status": "completed",
+      "reason": null
+    }
+  ],
+  "template": {
+    "template_id": "ctd-32s73-stability-template-v2",
+    "template_path": "assets/templates/ctd-32s73-stability-template-v2.docx",
+    "contract_path": "references/template-contract.md"
+  },
+  "sources": {
+    "allowed": [
+      {
+        "path": "项目基本信息表.docx",
+        "status": "registered"
+      },
+      {
+        "path": "稳定性试验数据汇总.xlsx",
+        "status": "registered"
+      }
+    ],
+    "forbidden": [
+      {
+        "path": "已完成的申报资料-32s73-稳定性数据.docx",
+        "status": "excluded"
+      }
+    ]
+  },
+  "artifacts": {
+    "source_index": "outputs/run-001/source-index.json",
+    "source_index_markdown": "outputs/run-001/source-index.md",
+    "fact_packet_request": "outputs/run-001/fact-packet-request.json",
+    "fact_packet": null,
+    "fact_packet_validation": null,
+    "body_skeleton_docx": null,
+    "filled_docx": null,
+    "validation_json": null
+  },
+  "automation_boundaries": {
+    "fact_extraction": "external_reference_fact_extraction_ctd_native_fact_packet_required",
+    "trend_chart_extraction": "project_specific_trend_charts_required_after_body_table_fact_packet_validation",
+    "body_sections_drafting": "project_specific_body_sections_required_after_trend_chart_validation",
+    "missing_evidence_recovery": "project_specific_required_when_unresolved",
+    "body_skeleton_docx_editing": "builtin_semantic_placeholder_replacement_with_project_hook_override",
+    "table_rendering": "automated_by_run_generation_pipeline",
+    "docx_validation": "automated_by_validate_generated_docx"
+  },
+  "blocking_reasons": [
+    "Run reference-fact-extraction with profile_id='ctd-32s73-stability' and submit provided_artifacts.fact_packet."
+  ],
+  "trend_charts_validated": false,
+  "body_sections_validated": false,
+  "final": false,
+  "resume_command": "python .\\scripts\\skill_step.py --event .\\outputs\\run-001\\next-step-event.json"
+}

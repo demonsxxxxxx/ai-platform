@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reference-fact-extraction-step-event.schema.json",
+  "title": "Reference Fact Extraction Step Event",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema_version", "output_dir", "profile_id"],
+  "properties": {
+    "schema_version": {"const": "reference-fact-extraction-step-event-v1"},
+    "user_message": {"type": "string"},
+    "project_root": {"type": "string"},
+    "output_dir": {"type": "string", "minLength": 1},
+    "profile_id": {"type": "string", "minLength": 1},
+    "sources": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {"type": "string"},
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "path": {"type": "string"},
+              "file": {"type": "string"},
+              "allowed_for_facts": {"type": "boolean"}
+            }
+          }
+        ]
+      }
+    },
+    "forbidden_sources": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {"type": "string"},
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "path": {"type": "string"},
+              "file": {"type": "string"},
+              "reason": {"type": "string"}
+            }
+          }
+        ]
+      }
+    },
+    "provided_artifacts": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "output_mode": {"type": "string", "enum": ["generic", "domain_native"]},
+        "auto_ocr_pdf": {"type": "boolean"}
+      }
+    }
+  },
+  "not": {
+    "anyOf": [
+      {"required": ["action"]},
+      {"required": ["tool_call"]},
+      {"required": ["next_state"]},
+      {"required": ["state"]},
+      {"required": ["submit"]},
+      {"required": ["finalize"]},
+      {"required": ["render"]},
+      {"required": ["validate"]}
+    ]
+  }
+}

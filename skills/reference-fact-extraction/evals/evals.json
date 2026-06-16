@@ -1,0 +1,82 @@
+{
+  "skill_name": "reference-fact-extraction",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "从这些 Word/Excel/PDF 参考资料中抽取一个带来源引用和独立核验记录的事实包，不要写最终申报资料正文。",
+      "expected_output": "Produces source-index artifacts, requests verified fact shards through subagent-gated allowed_next_events, assembles a validated fact-packet.json, and does not generate final DOCX/PDF content.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "The first recoverable shard-request response includes artifacts.source_index_json, artifacts.source_index_md, artifacts.fact_extraction_request, and uses source-index only as a navigation layer rather than as final evidence."
+        },
+        {
+          "text": "Paused shard-request responses include gates.subagent.subagent_required=true, required_execution_mode=subagent, extraction_agent=reference_fact_extraction_agent, validation_agent=reference_fact_validation_agent, and fallback_when_unavailable=SUBAGENT_REQUIRED."
+        },
+        {
+          "text": "The generated fact-extraction-request.json requires every requested shard to use reference_fact_extraction_agent and reference_fact_validation_agent with execution_mode=subagent."
+        },
+        {
+          "text": "The workflow does not generate a final DOCX/PDF/PPT deliverable; its final candidate is a verified fact-packet.json for downstream consumption."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "请从资料中整理事实 JSON，但不要使用 已完成的申报资料.docx 或 Word 临时文件作为事实来源。",
+      "expected_output": "Registers forbidden sources, excludes them from evidence, and surfaces unsupported facts as missing evidence or manual review items.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "Forbidden sources are recorded in workflow/source-index artifacts but are not cited as fact evidence in any consumable shard or fact packet."
+        },
+        {
+          "text": "Facts that are only present in forbidden files are listed in missing_evidence, manual_review_items, or conflicts rather than guessed."
+        },
+        {
+          "text": "Direct internal script calls remain rejected by runtime_guard; public workflow progression uses scripts/skill_step.py only."
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "先用 CTD 3.2.S.7.3 稳定性 profile 从稳定性报告和数据表生成 fact-packet，后续再交给 Word 模板 skill 使用。",
+      "expected_output": "Selects the ctd-32s73-stability profile, preserves profile-first extraction, and exports a CTD-native fact-packet compatible with the downstream template-fill skill.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "The CTD profile first pauses at PRIMARY_CONTEXT_SHARD_REQUIRED and requests project_profile_facts before long_term/accelerated/stress_study shards."
+        },
+        {
+          "text": "After a verified project_profile_facts artifact is provided, the workflow pauses at DOMAIN_SHARDS_REQUIRED and requests long_term_stability_facts, accelerated_stability_facts, and stress_study_facts."
+        },
+        {
+          "text": "CTD shard scope is profile-defined, while extraction and validation provenance still uses the generic reference_fact_extraction_agent/reference_fact_validation_agent pair."
+        },
+        {
+          "text": "CTD-native output contains schema_version, project_profile, sources, long_term, accelerated, stress_study, trend_charts, body_sections, docx_render_plan, missing_evidence, manual_review_items, and agent_provenance."
+        },
+        {
+          "text": "Base CTD-native fact packets defer trend_charts.charts and body_sections text until downstream trend/body stages."
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "检查一个 fact shard/fact-packet 是否真的能被下游消费，尤其是 agent_provenance 是否合规。",
+      "expected_output": "Rejects legacy profile-specific agent names and same_thread_separated_pass; accepts only subagent provenance from the generic extraction/validation agents.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "A shard or packet with project_profile_fact_extraction_agent or other legacy CTD-specific agent names fails provenance validation."
+        },
+        {
+          "text": "A shard or packet with execution_mode=same_thread_separated_pass fails provenance validation for downstream-consumable facts."
+        },
+        {
+          "text": "A CTD-native fact packet with generic reference_fact_extraction_agent/reference_fact_validation_agent provenance is compatible with the ctd-32s73-stability-template-fill validator."
+        }
+      ]
+    }
+  ]
+}

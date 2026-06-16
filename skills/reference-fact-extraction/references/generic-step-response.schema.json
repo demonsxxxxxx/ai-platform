@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reference-fact-extraction-step-response.schema.json",
+  "title": "Reference Fact Extraction Step Response",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "state",
+    "reply",
+    "done",
+    "final",
+    "terminal_kind",
+    "delivery_status",
+    "recoverable",
+    "recovery_mode",
+    "allowed_next_events",
+    "required_artifacts",
+    "blocking_reasons"
+  ],
+  "properties": {
+    "schema_version": {"const": "reference-fact-extraction-step-response-v1"},
+    "state": {"type": "string"},
+    "reply": {"type": "string"},
+    "done": {"type": "boolean"},
+    "final": {"type": "boolean"},
+    "terminal_kind": {"type": "string"},
+    "delivery_status": {"type": "string", "enum": ["not_ready", "not_deliverable", "final_candidate"]},
+    "recoverable": {"type": "boolean"},
+    "recovery_mode": {"type": "string"},
+    "allowed_next_events": {"type": "array", "items": {"type": "object"}},
+    "required_artifacts": {"type": "array", "items": {"type": "string"}},
+    "blocking_reasons": {"type": "array", "items": {"type": "string"}},
+    "artifacts": {"type": "object", "additionalProperties": true},
+    "gates": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "subagent": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "subagent_required": {"type": "boolean"},
+            "required_execution_mode": {"type": "string"},
+            "extraction_agent": {"type": "string"},
+            "validation_agent": {"type": "string"},
+            "fallback_when_unavailable": {"type": "string"}
+          }
+        }
+      }
+    }
+  }
+}

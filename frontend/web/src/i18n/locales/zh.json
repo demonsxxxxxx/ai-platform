@@ -195,6 +195,22 @@
   "appName": "LambChat",
   "runPlayback": {
     "artifacts": "产物",
+    "context": {
+      "contextPackVersion": "上下文包",
+      "counts": {
+        "artifacts": "产物",
+        "files": "文件",
+        "memory": "记忆",
+        "messages": "消息"
+      },
+      "executionTier": "执行层级",
+      "generatedAt": "生成时间",
+      "inputKeys": "输入键",
+      "latestArtifactVersion": "最新产物",
+      "referencedMaterials": "引用材料",
+      "source": "来源",
+      "title": "上下文来源"
+    },
     "download": "下载",
     "empty": "此运行暂无回放数据。",
     "error": "运行回放加载失败",

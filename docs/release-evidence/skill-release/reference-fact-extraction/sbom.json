@@ -1,0 +1,340 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e396b219007da5c786190f9bf945b08150699ef799a6b667f9e2757085a04fdf"
+        }
+      ],
+      "name": "agents/reference_fact_extraction_agent.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "da0b1fd494539cb55d6f311b9796f6b35fbb8b810dea87066032da7508cde78d"
+        }
+      ],
+      "name": "agents/reference_fact_validation_agent.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "195076e997d27cc264159a7c9a35545ac782a9d4706499e205334b988d89a5ed"
+        }
+      ],
+      "name": "evals/evals.json",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "2cb129af7d05beb1a1464eee21f151683fd38504432c222ab51dff91d622e059"
+        }
+      ],
+      "name": "profiles/ctd-32s73-stability/example-fact-packet.json",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "42ed668bb2330c4aeb95c26f6891a79729a6a3819525f36a3aa604fb36676183"
+        }
+      ],
+      "name": "profiles/ctd-32s73-stability/extraction.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "32befb45ce91798e5c5ba1e6c089ff64b77fcb0e1da41d6afba8634191796c4b"
+        }
+      ],
+      "name": "profiles/ctd-32s73-stability/fact-packet-contract.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8bba3fdd07d978f0f4a73e2f926f0ab39bcfe4f547fb0a38aea29672dc179dd8"
+        }
+      ],
+      "name": "profiles/ctd-32s73-stability/field-extraction-map.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "2c7045a6c2859e23245348ebb16861fc2aa853be26590abf660fb59c3550edfb"
+        }
+      ],
+      "name": "profiles/ctd-32s73-stability/profile.json",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "884820f7ab2678e3ec75e720c2ec013a374fd112496fa85b31f677c3d0983c96"
+        }
+      ],
+      "name": "profiles/ctd-32s73-stability/shard-agents.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "386de3dec7a53d7c9ffa7ca4ff4780f8ad0729e1ef4dd80554e62962642fb77b"
+        }
+      ],
+      "name": "profiles/ctd-32s73-stability/validation.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0e186bdaa2c0038baa65967565d00e30202eba72f2f489616be5f5faf37b32da"
+        }
+      ],
+      "name": "references/example-step-event.json",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "a5a9a242adf6bba5f4516754cb8815ac68a65165373bc026984d1875b1d0aed4"
+        }
+      ],
+      "name": "references/example-step-response.json",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "024cb13740730f0bcea4df8ad60fc99d92a897c23ae6cd0a82eb3326f4246407"
+        }
+      ],
+      "name": "references/generic-fact-extraction.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "fc0ae2df02dd50cfe096c892ecd57bdc03df700f0256311787b01c4369b278f1"
+        }
+      ],
+      "name": "references/generic-fact-packet.schema.json",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "c88054622726fb7bf7e6b08b6a947579b4b8c4add6ecbe35c5e7ddc971c2a0b0"
+        }
+      ],
+      "name": "references/generic-fact-shard.schema.json",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7faa1dc642a4ad083c3eb2627bbebd98b5fcd7aa7d6b6db199908a3d787b8c71"
+        }
+      ],
+      "name": "references/generic-step-event.schema.json",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7f10761c75b0ed22c4732e1368964ac62ae4f6802a11e0e8d01ff000e7291b38"
+        }
+      ],
+      "name": "references/generic-step-response.schema.json",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "aab6df5b62354dc7d1d9e4b60842451cfb39035bb732bc3b607ab394e0a2e166"
+        }
+      ],
+      "name": "references/profile-contract.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "00fb4d1e6fb0daae2194a58c6124bff0f51ca7b7eb7759768835b52beebae659"
+        }
+      ],
+      "name": "references/shard-agent-contract.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e078c1658d50a1f049154b6925aad9c7ce6cd121da2b3ea524c928f01b4af660"
+        }
+      ],
+      "name": "references/source-boundaries.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e5c32a3ef685f6cdc2eacca257e2e4d61a5981ce017d9d42539a899ef0e40116"
+        }
+      ],
+      "name": "references/validation.md",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "186f1738892a48f2fee2c342e388aaac7b3479132e15c34f66c15187c0cf5ee9"
+        }
+      ],
+      "name": "requirements.txt",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "279643dc5d0e75a6380880e196cd9f99877bf29e3bbdbf4e20e118daa4a659c0"
+        }
+      ],
+      "name": "scripts/assemble_fact_packet_from_shards.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "199a9d7e78ab844828138dfb10c0294c0ecea209b62ec0307009aaa412f75ade"
+        }
+      ],
+      "name": "scripts/extract_source_index.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "bfcc5e6a4fa062208565f422e8c24eb189d3d1de54b1c77a51919fb21b0cdf89"
+        }
+      ],
+      "name": "scripts/profile_loader.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "05c39348f249b93c61fec439b618df8675c09a192325724dc2d1f040d4965567"
+        }
+      ],
+      "name": "scripts/runtime_guard.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7b01e02c809cec6fe21c3513667e2e200821d3d107d7af8fbb6c1e3f45bfbdc4"
+        }
+      ],
+      "name": "scripts/skill_step.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "1b065f0bde7e947955b3af2ac6f060c0bf803a4a8c73a38637d44433f7e97690"
+        }
+      ],
+      "name": "scripts/validate_fact_packet.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "897a0276d8595f5e26edd3ab64fd7d84e6290b8d692bd896fd36aa42838eb118"
+        }
+      ],
+      "name": "scripts/validate_fact_shards.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "717be75e2eb9edd1740d9471ccec3b85fcf73d760125c5c0f0a36b32ebb79bde"
+        }
+      ],
+      "name": "scripts/workflow_states.py",
+      "type": "file"
+    },
+    {
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "51ae1077fe76cc0f45c9b810c9d4a1aea52b514163d953f1fe45f7b693a4c77a"
+        }
+      ],
+      "name": "SKILL.md",
+      "type": "file"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "description": ">-",
+      "name": "reference-fact-extraction",
+      "type": "application",
+      "version": "e81703b22e532ccbb7f698fd2c981a7d4777a822b047440fd70331ce9baedde1"
+    },
+    "properties": [
+      {
+        "name": "ai-platform.skill_id",
+        "value": "reference-fact-extraction"
+      },
+      {
+        "name": "ai-platform.skill_content_hash",
+        "value": "e81703b22e532ccbb7f698fd2c981a7d4777a822b047440fd70331ce9baedde1"
+      },
+      {
+        "name": "ai-platform.evidence_status",
+        "value": "pending_review"
+      }
+    ],
+    "timestamp": "2026-06-16T06:04:09Z"
+  },
+  "schema_version": "ai-platform.skill-release-source-sbom.v1",
+  "specVersion": "1.5"
+}

@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ctd-32s73-step-response.schema.json",
+  "title": "CTD 3.2.S.7.3 Step Response",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "state",
+    "reply",
+    "done",
+    "final",
+    "terminal_kind",
+    "delivery_status",
+    "recoverable",
+    "recovery_mode",
+    "allowed_next_events",
+    "required_artifacts",
+    "blocking_reasons"
+  ],
+  "properties": {
+    "schema_version": {"const": "ctd-32s73-step-response-v1"},
+    "state": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "string",
+          "enum": [
+            "NEW",
+            "WORKSPACE_PREPARED",
+            "SOURCES_REGISTERED",
+            "FACT_EXTRACTION_REQUIRED",
+            "FACT_PROJECT_PROFILE_REQUIRED",
+            "FACT_STUDY_SHARDS_REQUIRED",
+            "FACT_PACKET_SUBMITTED",
+            "FACT_PACKET_VALIDATING",
+            "FACT_PACKET_VALID",
+            "FACT_PACKET_REVISION_REQUIRED",
+            "MISSING_EVIDENCE_RECOVERY_REQUIRED",
+            "MISSING_EVIDENCE_RECOVERY_EXHAUSTED",
+            "TREND_CHARTS_REQUIRED",
+            "TREND_CHARTS_SUBMITTED",
+            "TREND_CHARTS_VALIDATING",
+            "TREND_CHARTS_VALID",
+            "TREND_CHARTS_REVISION_REQUIRED",
+            "BODY_SECTIONS_REQUIRED",
+            "BODY_SECTIONS_SUBMITTED",
+            "BODY_SECTIONS_VALIDATING",
+            "BODY_SECTIONS_VALID",
+            "BODY_SECTIONS_REVISION_REQUIRED",
+            "BODY_SKELETON_REQUIRED",
+            "BODY_SKELETON_COMPLETED",
+            "BODY_SKELETON_SKIPPED_INTERMEDIATE_ONLY",
+            "TABLE_RENDER_READY",
+            "PIPELINE_RUNNING",
+            "PIPELINE_COMPLETED",
+            "FINAL_VALIDATING",
+            "COMPLETED_FINAL",
+            "COMPLETED_INTERMEDIATE",
+            "PAUSED",
+            "FAILED"
+          ]
+        }
+      ]
+    },
+    "reply": {"type": "string"},
+    "done": {"type": "boolean"},
+    "final": {"type": "boolean"},
+    "terminal_kind": {
+      "type": "string",
+      "enum": ["running", "paused", "paused_recoverable", "intermediate_not_deliverable", "blocked_not_deliverable", "failed", "final"]
+    },
+    "delivery_status": {
+      "type": "string",
+      "enum": ["not_ready", "not_deliverable", "final_candidate"]
+    },
+    "recoverable": {"type": "boolean"},
+    "recovery_mode": {
+      "type": "string",
+      "enum": ["none", "submit_fact_packet", "submit_fact_packet_after_failed_validation", "submit_body_skeleton_docx"]
+    },
+    "allowed_next_events": {"type": "array", "items": {"type": "object"}},
+    "required_artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "path", "reason"],
+        "properties": {
+          "name": {
+            "enum": [
+              "fact_packet",
+              "body_skeleton_docx"
+            ]
+          },
+          "path": {"type": "string"},
+          "reason": {"type": "string"}
+        }
+      }
+    },
+    "blocking_reasons": {"type": "array", "items": {"type": "string"}},
+    "summary_path": {"type": ["string", "null"]},
+    "artifacts": {"type": "object"},
+    "artifact_profile": {"type": "string", "enum": ["delivery", "audit", "full"]},
+    "artifact_directories": {"type": "object"},
+    "workflow_result": {"type": "object"},
+    "status": {"type": "string"},
+    "rejection_reasons": {"type": "array", "items": {"type": "string"}}
+  }
+}

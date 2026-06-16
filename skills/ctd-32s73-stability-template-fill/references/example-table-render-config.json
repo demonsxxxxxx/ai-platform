@@ -1,0 +1,93 @@
+{
+  "template_docx": "assets/templates/ctd-32s73-stability-template-v2.docx",
+  "table_prototype_docx": "assets/table-prototypes/ctd-32s73-table-prototypes.docx",
+  "output_docx": "outputs/example-table-render/filled.docx",
+  "manifest_path": "outputs/example-table-render/table-render-manifest.json",
+  "template_contract": "ctd-32s73-stability-template-v2",
+  "render_scope": {
+    "source_batch_count": 2,
+    "rendered_batches": [
+      "IP000DSC20260101",
+      "IP000DSC20260202"
+    ],
+    "omitted_batches": [],
+    "batch_structure_action": "keep"
+  },
+  "tables": [
+    {
+      "role": "long_term",
+      "batch_no": "IP000DSC20260101",
+      "time_header": {
+        "label": "时间（月）",
+        "points": [
+          "0",
+          "1",
+          "3"
+        ]
+      },
+      "rows": [
+        {
+          "group": "性状",
+          "item": "外观",
+          "method": "目视",
+          "acceptance": "应为无色至淡黄色澄清液体",
+          "values": {
+            "0": "符合规定",
+            "1": "符合规定",
+            "3": "---"
+          }
+        }
+      ]
+    },
+    {
+      "role": "accelerated",
+      "batch_no": "IP000DSC20260101",
+      "time_header": {
+        "label": "时间（月）",
+        "points": [
+          "0",
+          "1",
+          "3"
+        ]
+      },
+      "rows": [
+        {
+          "group": "纯度",
+          "item": "SEC-HPLC纯度",
+          "method": "SEC-HPLC",
+          "acceptance": "应符合质量标准",
+          "values": {
+            "0": "99.1%",
+            "1": "---",
+            "3": "---"
+          }
+        }
+      ]
+    },
+    {
+      "role": "high_temperature_stress",
+      "batch_no": "IP000DSC20260101",
+      "time_header": {
+        "label": "时间（天）",
+        "points": [
+          "0",
+          "5",
+          "10"
+        ]
+      },
+      "rows": [
+        {
+          "item": "外观",
+          "method": "目视",
+          "indicator_method": "外观（目视）",
+          "acceptance": "应为无色至淡黄色澄清液体",
+          "values": {
+            "0": "符合规定",
+            "5": "符合规定",
+            "10": "符合规定"
+          }
+        }
+      ]
+    }
+  ]
+}

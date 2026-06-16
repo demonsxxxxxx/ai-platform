@@ -448,6 +448,7 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
 
     async def fake_record_initial_context_snapshot(conn, **kwargs):
         assert kwargs["source"] == "retry_run"
+        assert kwargs["source_run_id"] == "run-failed"
         return {"context_snapshot_id": "ctx-retry", "source": "retry_run"}
 
     async def fake_enqueue_run(payload):
@@ -755,6 +756,7 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
     assert calls["resume"] == [("default", "user-a", "run-failed")]
     assert calls["active_limit"] == ("default", "user-a", 3)
     assert calls["context"][0]["source"] == "resume_run"
+    assert calls["context"][0]["source_run_id"] == "run-failed"
     assert calls["enqueue"][0]["context_snapshot_id"] == "ctx_resume_route"
     assert calls["enqueue"][0]["context_snapshot"]["source"] == "resume_run"
     assert calls["enqueue"][0]["input"]["resume"]["completed_step_outputs"] == {"code": "code output"}
@@ -2050,9 +2052,19 @@ def test_multi_agent_dispatch_tick_claims_handoffs_and_enqueues_next_ready_step(
             "audit_id": "aud-handoff",
         }
 
-    async def fake_prepare(conn, *, copied, principal, queue_principal=None, source):
-        calls.append(("prepare", copied["run_id"], principal.user_id, queue_principal.user_id, source))
+    async def fake_prepare(conn, *, copied, principal, queue_principal=None, source, authorized_source_run_id=None):
+        calls.append(
+            (
+                "prepare",
+                copied["run_id"],
+                principal.user_id,
+                queue_principal.user_id,
+                source,
+                authorized_source_run_id,
+            )
+        )
         assert source == "multi_agent_dispatch_tick"
+        assert authorized_source_run_id == "run-parent"
         return {"run_id": copied["run_id"], "context_snapshot_id": "ctx-child"}
 
     async def fake_enqueue(payload):
@@ -2375,6 +2387,7 @@ def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues
     }
     assert calls["handoff"] == [("default", "run-ready", "dispatch-code", "admin-a", 3)]
     assert calls["context"][0]["source"] == "multi_agent_dispatch_handoff"
+    assert calls["context"][0]["source_run_id"] == "run-ready"
     assert calls["context"][0]["user_id"] == "user-a"
     assert calls["context"][0]["run_id"] == "run-child"
     assert calls["queue"][0]["user_id"] == "user-a"

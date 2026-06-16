@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reference-fact-packet.schema.json",
+  "title": "Reference Fact Packet",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "profile_id",
+    "sources",
+    "facts",
+    "missing_evidence",
+    "manual_review_items",
+    "agent_provenance",
+    "verification"
+  ],
+  "properties": {
+    "schema_version": {"const": "reference-fact-packet-v1"},
+    "profile_id": {"type": "string"},
+    "domain_schema_version": {"type": "string"},
+    "sources": {"type": "object", "additionalProperties": true},
+    "facts": {"type": "object", "additionalProperties": true},
+    "missing_evidence": {"type": "array"},
+    "manual_review_items": {"type": "array"},
+    "conflicts": {"type": "array"},
+    "agent_provenance": {"type": "object", "additionalProperties": true},
+    "verification": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "status": {"type": "string"},
+        "verified_shards": {"type": "array"},
+        "blocking_issues": {"type": "array"}
+      }
+    },
+    "assembly_report": {"type": "object", "additionalProperties": true}
+  }
+}

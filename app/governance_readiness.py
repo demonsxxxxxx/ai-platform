@@ -1,4 +1,5 @@
 from typing import Any
+from pathlib import Path
 
 from app.office_context_readiness import build_office_context_readiness
 from app.skills.release_readiness import build_skill_release_readiness
@@ -116,10 +117,33 @@ def _frontend_projection_audit_evidence() -> dict[str, Any]:
     }
 
 
+def _frontend_packaged_runtime_smoke_contract() -> dict[str, Any]:
+    from tools.frontend_packaged_runtime_smoke import (
+        build_frontend_packaged_runtime_smoke_readiness,
+    )
+
+    readiness = build_frontend_packaged_runtime_smoke_readiness()
+    return {
+        "schema_version": readiness["schema_version"],
+        "gate": readiness["gate"],
+        "status": readiness["status"],
+        "evidence_contract": readiness["evidence_contract"],
+        "operator_commands": readiness["operator_commands"],
+        "runtime_policy": readiness["runtime_policy"],
+        "does_not_close_g6_g9_or_21": readiness["does_not_close_g6_g9_or_21"],
+        "does_not_enable_compose_one_command_startup": readiness[
+            "does_not_enable_compose_one_command_startup"
+        ],
+        "blockers": readiness["blockers"],
+        "closed_evidence_items": readiness["closed_evidence_items"],
+    }
+
+
 def build_governance_readiness(
     settings: object | None = None,
     *,
     include_frontend_projection_audit: bool = False,
+    repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """Build a secret-safe G6 governance readiness baseline for Admin Runtime and CLI use."""
     resolved_settings = settings or _default_settings()
@@ -129,11 +153,45 @@ def build_governance_readiness(
     skill_release_dashboard = skill_release_readiness["admin_skill_release_dashboard"]
     tool_policy_readiness = build_tool_policy_readiness()
     bulk_review_evidence = tool_policy_readiness["evidence"]["admin_policy_bulk_review_dashboard"]
-    office_context_readiness = build_office_context_readiness()
+    office_context_readiness = build_office_context_readiness(repo_root=repo_root)
     frontend_projection_evidence = (
-        {"projection_audit": _frontend_projection_audit_evidence()}
+        {
+            "projection_audit": _frontend_projection_audit_evidence(),
+            "packaged_runtime_smoke_contract": _frontend_packaged_runtime_smoke_contract(),
+        }
         if include_frontend_projection_audit
         else None
+    )
+    office_context_next_checks = [
+        "keep delete, retention, and export erasure evidence current through tools/memory_erasure_readiness.py",
+        "keep cross-session long-term memory disabled until policy and acceptance are complete",
+        "use tools/office_context_readiness.py to keep the office context-pack source contract, prompt injection tests, and sandbox latency split contract current",
+        "keep context snapshot public provenance limited to counts, safe input keys, memory policy source/read flag, execution tier, bounded artifact/context-pack versions, and generated time",
+    ]
+    if "executor_context_pack_211_acceptance" in office_context_readiness["open_gaps"]:
+        office_context_next_checks.append("record 211 executor context-pack acceptance before closing #22")
+    else:
+        office_context_next_checks.append("keep reviewed PR #44 211 executor context-pack evidence under regression")
+    office_context_next_checks.extend(
+        [
+            "keep run playback context provenance limited to counts, safe input keys, memory policy source/read flag, execution tier, bounded artifact/context-pack versions, and context pack metadata",
+            "keep document-centric follow-up state source tests current for copy, retry, and resume runs",
+        ]
+    )
+    if "sandbox_cold_start_latency_split_211_acceptance" in office_context_readiness["open_gaps"]:
+        office_context_next_checks.append(
+            "record 211 sandbox latency split acceptance before closing the cold-start UX gap"
+        )
+    else:
+        office_context_next_checks.append(
+            "keep reviewed PR #44 211 sandbox latency split evidence under regression"
+        )
+    office_context_next_checks.extend(
+        [
+            "keep sandbox hardening evidence tied to lease/workspace isolation, cleanup, timeout, and failure fallback",
+            "keep cached Docker sandbox lease reuse fail-closed on tenant/workspace/user/session label drift",
+            "do not start Docker sandbox for lightweight office writing tasks by default",
+        ]
     )
     domains = {
         "tool_permission": _domain(
@@ -236,22 +294,15 @@ def build_governance_readiness(
                 "executor_context_pack_prompt_injection_source_tests",
                 "source_level_context_pack_persistence_and_versioning",
                 "user_visible_context_provenance_api_projection_source_tests",
+                "frontend_context_provenance_playback_source_tests",
                 "office_execution_tier_router_source_tests",
+                "document_centric_followup_state_source_tests",
+                "sandbox_cold_start_latency_split_source_contract",
+                "sandbox_runtime_hardening_source_verifier_contract",
+                "sandbox_cached_lease_scope_revalidation_source_tests",
             ],
-            gaps=[
-                "executor_context_pack_211_acceptance",
-                "document_centric_followup_state",
-                "sandbox_cold_start_latency_split",
-                "frontend_context_provenance_acceptance",
-            ],
-            next_checks=[
-                "keep delete, retention, and export erasure evidence current through tools/memory_erasure_readiness.py",
-                "keep cross-session long-term memory disabled until policy and acceptance are complete",
-                "use tools/office_context_readiness.py to keep the office context-pack source contract and prompt injection tests current",
-                "keep context snapshot public provenance limited to counts, safe input keys, execution tier, and generated time",
-                "record 211 executor context-pack acceptance before closing #22",
-                "do not start Docker sandbox for lightweight office writing tasks by default",
-            ],
+            gaps=office_context_readiness["open_gaps"],
+            next_checks=office_context_next_checks,
             evidence={
                 "office_context_pack_readiness": {
                     "schema_version": office_context_readiness["schema_version"],
@@ -264,10 +315,24 @@ def build_governance_readiness(
                         ),
                         "execution_tiers": len(office_context_readiness["execution_tiers"]),
                         "open_gaps": len(office_context_readiness["open_gaps"]),
+                        "closed_runtime_gaps": len(office_context_readiness["closed_runtime_gaps"]),
                         "sandbox_default_for_lightweight_office_tasks": office_context_readiness[
                             "policy"
                         ]["lightweight_office_tasks_start_sandbox_by_default"],
                     },
+                    "closed_runtime_gaps": office_context_readiness["closed_runtime_gaps"],
+                    "runtime_acceptance_evidence": office_context_readiness[
+                        "runtime_acceptance_evidence"
+                    ],
+                    "sandbox_latency_observability": office_context_readiness[
+                        "sandbox_latency_observability"
+                    ],
+                    "sandbox_runtime_smoke_contract": office_context_readiness[
+                        "sandbox_runtime_smoke_contract"
+                    ],
+                    "executor_context_pack_runtime_acceptance_contract": office_context_readiness[
+                        "executor_context_pack_runtime_acceptance_contract"
+                    ],
                     "open_gaps": office_context_readiness["open_gaps"],
                 }
             },
@@ -286,6 +351,7 @@ def build_governance_readiness(
                 "frontend_legacy_route_policy_mapping",
                 "frontend_active_legacy_route_policy_audit",
                 "frontend_active_browser_projection_audit_clear",
+                "frontend_run_playback_context_provenance_projection",
                 "inactive_legacy_secret_like_frontend_sources_quarantined",
                 "frontend_profile_envvar_surface_fail_closed",
                 "admin_runtime_capacity_governance_frontend_section",
@@ -403,6 +469,22 @@ def render_governance_readiness_markdown(readiness: dict[str, Any]) -> str:
                     f"- admin skill release dashboard readiness `{skill_dashboard.get('schema_version')}` status "
                     f"`{skill_dashboard.get('status')}`\n"
                     f"- admin skill release dashboard contract `{contract.get('schema_version')}`\n"
+                )
+        office_context = (
+            evidence.get("office_context_pack_readiness")
+            if isinstance(evidence, dict)
+            else None
+        )
+        if isinstance(office_context, dict):
+            closed_runtime_gaps = office_context.get("closed_runtime_gaps")
+            if isinstance(closed_runtime_gaps, list) and closed_runtime_gaps:
+                evidence_lines += (
+                    "\nEvidence:\n\n"
+                    f"- office context readiness `{office_context.get('schema_version')}` status "
+                    f"`{office_context.get('status')}`\n"
+                    "- closed runtime gaps `"
+                    + ", ".join(str(item) for item in closed_runtime_gaps)
+                    + "`\n"
                 )
         sections.append(
             f"### {name}\n\n"

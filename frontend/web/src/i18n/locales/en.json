@@ -195,6 +195,22 @@
   "appName": "LambChat",
   "runPlayback": {
     "artifacts": "Artifacts",
+    "context": {
+      "contextPackVersion": "Pack",
+      "counts": {
+        "artifacts": "Artifacts",
+        "files": "Files",
+        "memory": "Memory",
+        "messages": "Messages"
+      },
+      "executionTier": "Tier",
+      "generatedAt": "Generated",
+      "inputKeys": "Input keys",
+      "latestArtifactVersion": "Latest artifact",
+      "referencedMaterials": "Referenced materials",
+      "source": "Source",
+      "title": "Context provenance"
+    },
     "download": "Download",
     "empty": "No playback data for this run yet.",
     "error": "Failed to load playback",
