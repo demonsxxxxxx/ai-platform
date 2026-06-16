@@ -303,13 +303,44 @@ def _entry_is_pr44_runtime_evidence(payload: dict[str, Any]) -> bool:
     )
 
 
+def _entry_has_runtime_subject_binding(payload: dict[str, Any]) -> bool:
+    runtime_subject = payload.get("runtime_subject_commit_sha")
+    source_ref = payload.get("source_ref")
+    if not isinstance(runtime_subject, str) or not runtime_subject:
+        return False
+    if not isinstance(source_ref, dict):
+        return False
+    marker = source_ref.get("runtime_source_marker")
+    if marker != runtime_subject:
+        return False
+    source_snapshot = source_ref.get("source_snapshot")
+    if not isinstance(source_snapshot, dict):
+        return False
+    snapshot_runtime_subject = source_snapshot.get("runtime_subject_commit_sha")
+    runtime_affecting_changes = source_snapshot.get("runtime_affecting_changes_since_runtime_subject")
+    runtime_affecting_dirty_paths = source_snapshot.get("runtime_affecting_dirty_paths")
+    if snapshot_runtime_subject != runtime_subject:
+        return False
+    if runtime_affecting_changes != []:
+        return False
+    if runtime_affecting_dirty_paths != []:
+        return False
+    return True
+
+
 def _entry_is_reviewed(payload: dict[str, Any], artifact_kind: str, verifier: str) -> bool:
     evidence_ref = payload.get("evidence_ref")
     return (
         payload.get("schema_version") == "ai-platform.release-evidence-entry.v1"
         and payload.get("gate") == GATE_NAME
         and payload.get("artifact_kind") == artifact_kind
-        and _entry_is_pr44_runtime_evidence(payload)
+        and (
+            _entry_is_pr44_runtime_evidence(payload)
+            or (
+                artifact_kind == "executor_context_pack_211_acceptance"
+                and _entry_has_runtime_subject_binding(payload)
+            )
+        )
         and payload.get("redaction_scan_status") == "passed"
         and payload.get("review_status") == "reviewed"
         and isinstance(evidence_ref, dict)

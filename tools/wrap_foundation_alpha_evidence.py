@@ -114,6 +114,8 @@ def _runtime_checks(verifier: str, verifier_output: dict[str, Any]) -> dict[str,
     checks = verifier_output.get("checks")
     if isinstance(checks, dict):
         return _redact_runtime_checks(checks)
+    if isinstance(checks, list):
+        return _redact_runtime_checks({"verifier_checks": checks})
 
     gates = verifier_output.get("gates")
     if isinstance(gates, list):
@@ -138,6 +140,13 @@ def _schema_version(verifier: str, verifier_output: dict[str, Any]) -> str:
 
 
 def _result(verifier_output: dict[str, Any]) -> str:
+    checks = verifier_output.get("checks")
+    if isinstance(checks, list) and checks:
+        all_passed = all(
+            isinstance(check, dict) and check.get("passed") is True
+            for check in checks
+        )
+        return "ok:true" if all_passed else "ok:false"
     return "ok:true" if verifier_output.get("ok") is True else "ok:false"
 
 
@@ -243,6 +252,8 @@ def build_release_evidence_entry(
     image_labels: dict[str, Any],
     source_snapshot: dict[str, Any] | None,
     command: str,
+    gate: str = GATE,
+    runtime_check_payloads: dict[str, Any] | None = None,
     api_health: dict[str, Any] | None = None,
     redaction_scan_status: str | None = None,
     review_status: str | None = None,
@@ -253,6 +264,8 @@ def build_release_evidence_entry(
     """Return an explicitly reviewed and redaction-scanned release-evidence entry."""
     _require_matching_labels(image_labels, runtime_subject_commit_sha)
     runtime_checks = _runtime_checks(verifier, verifier_output)
+    if runtime_check_payloads:
+        runtime_checks.update(_redact_runtime_checks(runtime_check_payloads))
     if not runtime_checks:
         raise ValueError("missing_runtime_checks")
     runtime_source = verifier_output.get("source") if isinstance(verifier_output.get("source"), dict) else {}
@@ -264,7 +277,7 @@ def build_release_evidence_entry(
         "commit_sha": commit_sha,
         "runtime_subject_commit_sha": runtime_subject_commit_sha,
         "evidence_id": evidence_id,
-        "gate": GATE,
+        "gate": gate,
         "issue_refs": issue_refs or [],
         "pr_refs": pr_refs or [],
         "open_followups": open_followups or [],
@@ -311,6 +324,17 @@ def main() -> int:
     parser.add_argument("--source-snapshot-json")
     parser.add_argument("--api-health-json")
     parser.add_argument("--command", required=True)
+    parser.add_argument("--gate", default=GATE)
+    parser.add_argument(
+        "--runtime-check-payload",
+        action="append",
+        default=[],
+        metavar="KEY=JSON_PATH",
+        help=(
+            "Attach an additional runtime evidence payload under evidence_ref.runtime_checks[KEY]. "
+            "Use for verifiers whose --json output contains only verifier_checks."
+        ),
+    )
     parser.add_argument(
         "--redaction-scan-status",
         choices=sorted(_REDACTION_SCAN_STATUSES),
@@ -330,6 +354,14 @@ def main() -> int:
     parser.add_argument("--open-followup", action="append", default=[])
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
+    runtime_check_payloads: dict[str, Any] = {}
+    for item in args.runtime_check_payload:
+        if "=" not in item:
+            raise ValueError("runtime_check_payload_requires_key_equals_path")
+        key, path = item.split("=", 1)
+        if not key or not path:
+            raise ValueError("runtime_check_payload_requires_key_equals_path")
+        runtime_check_payloads[key] = _load_json(path)
 
     entry = build_release_evidence_entry(
         evidence_id=args.evidence_id,
@@ -345,6 +377,8 @@ def main() -> int:
         source_snapshot=_load_json(args.source_snapshot_json) if args.source_snapshot_json else None,
         api_health=_load_json(args.api_health_json) if args.api_health_json else None,
         command=args.command,
+        gate=args.gate,
+        runtime_check_payloads=runtime_check_payloads or None,
         redaction_scan_status=args.redaction_scan_status,
         review_status=args.review_status,
         issue_refs=list(args.issue_ref),

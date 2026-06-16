@@ -589,6 +589,61 @@ def test_office_context_readiness_requires_pr44_runtime_evidence_binding(tmp_pat
     assert readiness["runtime_acceptance_evidence"] == {}
 
 
+def test_office_context_readiness_accepts_latest_main_executor_context_evidence(tmp_path):
+    _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    evidence_root = tmp_path / "docs/release-evidence/office-context-runtime/pr44"
+    executor_path = next(evidence_root.glob("*executor-context-pack*.json"))
+    payload = json.loads(executor_path.read_text(encoding="utf-8"))
+    payload["commit_sha"] = "494243efa847a831db95539716390b7d66d60480"
+    payload["runtime_subject_commit_sha"] = "8e0389ea621a57f3ded2044e410943cc0d298571"
+    payload["pr_refs"] = ["#52"]
+    payload["source_ref"] = {
+        "branch": "main",
+        "runtime_source_marker": "8e0389ea621a57f3ded2044e410943cc0d298571",
+        "image": "ai-platform:8e0389e-main-runtime-rebase",
+        "containers": ["ai-platform-api", "ai-platform-worker"],
+        "source_tree_dirty": False,
+        "source_snapshot": {
+            "source_tree_commit_sha": "494243efa847a831db95539716390b7d66d60480",
+            "runtime_subject_commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
+            "runtime_affecting_changes_since_runtime_subject": [],
+            "runtime_affecting_dirty_paths": [],
+        },
+    }
+    payload["evidence_id"] = "2026-06-17-211-office-context-main-executor-context-pack-runtime-acceptance"
+    payload["evidence_ref"]["runtime_checks"]["executor_context_pack_211_acceptance"][
+        "run_id"
+    ] = "run_live_latest_main"
+    executor_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    readiness = build_office_context_readiness(repo_root=tmp_path)
+
+    assert readiness["open_gaps"] == []
+    executor_evidence = readiness["runtime_acceptance_evidence"]["executor_context_pack_211_acceptance"]
+    assert executor_evidence["runtime_subject"] == "8e0389e-main-runtime-rebase"
+    assert executor_evidence["run_id"] == "run_live_latest_main"
+
+
+def test_office_context_readiness_rejects_executor_context_evidence_without_source_snapshot(tmp_path):
+    _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    evidence_root = tmp_path / "docs/release-evidence/office-context-runtime/pr44"
+    executor_path = next(evidence_root.glob("*executor-context-pack*.json"))
+    payload = json.loads(executor_path.read_text(encoding="utf-8"))
+    payload["runtime_subject_commit_sha"] = "8e0389ea621a57f3ded2044e410943cc0d298571"
+    payload["source_ref"] = {
+        "branch": "main",
+        "runtime_source_marker": "8e0389ea621a57f3ded2044e410943cc0d298571",
+        "image": "ai-platform:8e0389e-main-runtime-rebase",
+        "containers": ["ai-platform-api", "ai-platform-worker"],
+    }
+    executor_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    readiness = build_office_context_readiness(repo_root=tmp_path)
+
+    assert readiness["open_gaps"] == ["executor_context_pack_211_acceptance"]
+    assert "executor_context_pack_211_acceptance" not in readiness["runtime_acceptance_evidence"]
+
+
 def test_office_context_readiness_rejects_incomplete_sandbox_hardening_evidence(tmp_path):
     _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
     evidence_path = next(
