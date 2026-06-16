@@ -5,11 +5,14 @@
   "evidence_id": "2026-06-16-211-office-context-pr44-executor-context-pack-runtime-acceptance",
   "evidence_ref": {
     "command": "python3 scripts/verify_executor_context_pack_211.py --evidence-file <redacted> --run-id run_f417cf0ac1104d5884ed58e0f111fd00 --require-live-run-payload --json",
-    "result": "ok:true",
+    "current_acceptance_status": "superseded:not-current-acceptance",
+    "historical_verifier_result": "ok:true",
+    "result": "superseded:not-current-acceptance",
     "runtime_checks": {
       "executor_context_pack_211_acceptance": {
         "does_not_close_211_acceptance": true,
         "evidence_strength": "superseded_live_worker_run_payload_insufficient",
+        "superseded_reason": "Historical verifier output predates the positive source-run artifact scope and public input-key leakage guards required for current executor context-pack 211 acceptance.",
         "generated_at": "2026-06-16T00:36:27+00:00",
         "live_run_checks": {
           "context_pack_schema_present": true,
@@ -70,6 +73,7 @@
         },
         "runtime_mode": "worker",
         "runtime_run_payload_verified": true,
+        "runtime_run_payload_verified_for_historical_verifier_only": true,
         "schema_version": "ai-platform.executor-context-pack-211.v1",
         "scope_checks": {
           "session_id_scoped": true,
