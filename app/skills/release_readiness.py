@@ -1271,9 +1271,17 @@ def render_skill_release_readiness_markdown(readiness: dict[str, Any]) -> str:
     dashboard_lines = "- none"
     if isinstance(dashboard, dict):
         contract = dashboard.get("dashboard_contract")
+        runtime_acceptance = dashboard.get("runtime_acceptance")
         if isinstance(contract, dict):
             dashboard_gaps = ", ".join(dashboard.get("open_gaps", []))
             dashboard_controls = ", ".join(contract.get("required_dashboard_controls", []))
+            runtime_acceptance_lines = ""
+            if isinstance(runtime_acceptance, dict):
+                runtime_acceptance_lines = (
+                    f"\n- Runtime acceptance: `{runtime_acceptance.get('status')}`"
+                    f"\n- Runtime acceptance evidence strength: `{runtime_acceptance.get('evidence_strength')}`"
+                    f"\n- Runtime acceptance does not close 211: `{runtime_acceptance.get('does_not_close_211_acceptance')}`"
+                )
             dashboard_lines = (
                 f"- Readiness schema: `{dashboard.get('schema_version')}`\n"
                 f"- Status: `{dashboard.get('status')}`\n"
@@ -1283,6 +1291,7 @@ def render_skill_release_readiness_markdown(readiness: dict[str, Any]) -> str:
                 f"- Required controls: `{dashboard_controls}`\n"
                 f"- Open gaps: `{dashboard_gaps}`\n"
                 f"- Does not close G6: `{dashboard.get('does_not_close_g6')}`"
+                f"{runtime_acceptance_lines}"
             )
     skill_lines = []
     for item in readiness["skills"]:

@@ -118,10 +118,13 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "skill_signed_package_evidence_contract" in domains["skill_governance"]["implemented"]
     assert "skill_signed_package_evidence_source_validation" in domains["skill_governance"]["implemented"]
     assert "admin_skill_release_dashboard_contract" in domains["skill_governance"]["implemented"]
+    assert "admin_skill_release_dashboard_runtime_acceptance_source_route_tests" in domains["skill_governance"][
+        "implemented"
+    ]
     assert "signed_skill_package_or_sbom_release_gate" in domains["skill_governance"]["gaps"]
     assert "skill_dependency_review_policy_runtime_acceptance" in domains["skill_governance"]["gaps"]
     assert "admin_skill_release_dashboard_acceptance" not in domains["skill_governance"]["gaps"]
-    assert "admin_skill_release_dashboard_runtime_acceptance" in domains["skill_governance"]["gaps"]
+    assert "admin_skill_release_dashboard_runtime_acceptance" not in domains["skill_governance"]["gaps"]
     assert "admin_skill_release_dashboard_visual_acceptance" in domains["skill_governance"]["gaps"]
     assert "admin_skill_release_dashboard_211_acceptance" in domains["skill_governance"]["gaps"]
     release_evidence = domains["skill_governance"]["evidence"]["release_readiness"]
@@ -185,8 +188,9 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert dashboard_evidence["dashboard_contract"]["schema_version"] == (
         "ai-platform.skill-release-dashboard-contract.v1"
     )
+    assert dashboard_evidence["runtime_acceptance"]["status"] == "source_route_tests_recorded"
+    assert dashboard_evidence["runtime_acceptance"]["does_not_close_211_acceptance"] is True
     assert dashboard_evidence["open_gaps"] == [
-        "admin_skill_release_dashboard_runtime_acceptance",
         "admin_skill_release_dashboard_visual_acceptance",
         "admin_skill_release_dashboard_211_acceptance",
     ]
@@ -501,7 +505,9 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     assert "ai-platform.skill-signed-package-evidence-contract.v1" in markdown
     assert "admin_skill_release_dashboard_contract" in markdown
     assert "ai-platform.skill-release-dashboard-contract.v1" in markdown
-    assert "admin_skill_release_dashboard_runtime_acceptance" in markdown
+    open_gaps = markdown.split("## Domains", 1)[0]
+    assert "admin_skill_release_dashboard_runtime_acceptance" not in open_gaps
+    assert "source_route_tests_recorded" in markdown
     assert "memory_delete_retention_erasure_evidence_snapshot" in markdown
     assert "memory_export_erasure_evidence_snapshot" in markdown
     assert "context_snapshot_public_provenance_projection_contract" in markdown
