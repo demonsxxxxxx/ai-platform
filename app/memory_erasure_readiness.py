@@ -215,7 +215,7 @@ def build_memory_erasure_readiness(repo_root: Path | None = None) -> dict[str, A
         )
     else:
         executor_policy = (
-            "reviewed PR #44 executor context-pack 211 acceptance follows "
+            "reviewed executor context-pack 211 acceptance follows "
             "office_context_readiness.executor_context_pack_runtime_acceptance_contract"
         )
     if "sandbox_cold_start_latency_split_211_acceptance" in office_context_readiness["closed_runtime_gaps"]:

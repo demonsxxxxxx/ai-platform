@@ -1,3 +1,7 @@
+import json
+import subprocess
+import sys
+
 import pytest
 
 from tools.wrap_foundation_alpha_evidence import build_release_evidence_entry
@@ -405,3 +409,202 @@ def test_redacts_runtime_source_metadata_before_writing_evidence_ref():
     assert "/home/xinlin.jiang" not in serialized
     assert "C:\\Users" not in serialized
     assert "tenants/default" not in serialized
+
+
+def test_wraps_list_style_verifier_checks_and_attached_runtime_payload():
+    verifier_output = {
+        "schema_version": "ai-platform.executor-context-pack-211-verifier.v1",
+        "checks": [
+            {
+                "name": "check_executor_context_pack_evidence",
+                "passed": True,
+                "message": "executor context-pack live worker-run evidence present",
+            },
+            {
+                "name": "check_no_secret_leakage",
+                "passed": True,
+                "message": "no sensitive evidence detected",
+            },
+        ],
+        "redaction_scan_status": "passed",
+    }
+    runtime_payload = {
+        "schema_version": "ai-platform.executor-context-pack-211.v1",
+        "run_id": "run-live",
+        "public_context_summary": {
+            "input_keys": ["attachments", "message"],
+            "referenced_material_counts": {"artifact_count": 1},
+        },
+        "raw_storage_key": "tenants/default/private/raw-object",
+        "executor_private_payload": {
+            "prompt": "internal prompt material",
+            "token": "secret-token",
+        },
+        "sandbox_workdir": "/tmp/ai-platform/private/run-live",
+    }
+
+    entry = build_release_evidence_entry(
+        evidence_id="2026-06-17-211-office-context-executor-context-pack-runtime-acceptance",
+        verifier="scripts/verify_executor_context_pack_211.py",
+        artifact_kind="executor_context_pack_211_acceptance",
+        verifier_output=verifier_output,
+        commit_sha=COMMIT,
+        runtime_subject_commit_sha=COMMIT,
+        captured_at="2026-06-17T10:00:00+08:00",
+        image=IMAGE,
+        image_id=IMAGE_ID,
+        image_labels=image_labels(),
+        source_snapshot=source_snapshot(),
+        command="python3 scripts/verify_executor_context_pack_211.py --run-id run-live --require-live-run-payload --json",
+        gate="G6/G9/#22 Office Context Pack Architecture",
+        runtime_check_payloads={"executor_context_pack_211_acceptance": runtime_payload},
+        review_status="reviewed",
+    )
+
+    runtime_checks = entry["evidence_ref"]["runtime_checks"]
+    serialized = json.dumps(entry, ensure_ascii=False)
+    assert entry["gate"] == "G6/G9/#22 Office Context Pack Architecture"
+    assert entry["artifact_kind"] == "executor_context_pack_211_acceptance"
+    assert entry["evidence_ref"]["result"] == "ok:true"
+    assert runtime_checks["verifier_checks"] == verifier_output["checks"]
+    assert runtime_checks["executor_context_pack_211_acceptance"]["run_id"] == "run-live"
+    assert "raw_storage_key" not in serialized
+    assert "executor_private_payload" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "internal prompt material" not in serialized
+    assert "tenants/default/private" not in serialized
+
+
+def test_requires_real_source_snapshot_for_release_evidence_entry():
+    verifier_output = {
+        "schema_version": "ai-platform.executor-context-pack-211-verifier.v1",
+        "checks": [
+            {
+                "name": "check_executor_context_pack_evidence",
+                "passed": True,
+                "message": "executor context-pack live worker-run evidence present",
+            },
+        ],
+        "redaction_scan_status": "passed",
+    }
+
+    with pytest.raises(ValueError, match="source_snapshot_required"):
+        build_release_evidence_entry(
+            evidence_id="missing-source-snapshot",
+            verifier="scripts/verify_executor_context_pack_211.py",
+            artifact_kind="executor_context_pack_211_acceptance",
+            verifier_output=verifier_output,
+            commit_sha=COMMIT,
+            runtime_subject_commit_sha=COMMIT,
+            captured_at="2026-06-17T10:00:00+08:00",
+            image=IMAGE,
+            image_id=IMAGE_ID,
+            image_labels=image_labels(),
+            source_snapshot=None,
+            command="python3 scripts/verify_executor_context_pack_211.py --run-id run-live --json",
+            gate="G6/G9/#22 Office Context Pack Architecture",
+            review_status="reviewed",
+        )
+
+
+def test_wrap_cli_accepts_executor_context_runtime_payload_file(tmp_path):
+    verifier_output_path = tmp_path / "verifier-output.json"
+    runtime_payload_path = tmp_path / "runtime-payload.json"
+    labels_path = tmp_path / "labels.json"
+    snapshot_path = tmp_path / "source-snapshot.json"
+    output_path = tmp_path / "entry.json"
+    verifier_output_path.write_text(
+        json.dumps(
+            {
+                "checks": [
+                    {
+                        "name": "check_executor_context_pack_evidence",
+                        "passed": True,
+                        "message": "executor context-pack live worker-run evidence present",
+                    },
+                    {
+                        "name": "check_no_secret_leakage",
+                        "passed": True,
+                        "message": "no sensitive evidence detected",
+                    },
+                ],
+                "redaction_scan_status": "passed",
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime_payload_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.executor-context-pack-211.v1",
+                "run_id": "run-live",
+                "public_context_summary": {
+                    "input_keys": ["attachments", "message"],
+                    "referenced_material_counts": {"artifact_count": 1},
+                },
+                "raw_storage_key": "tenants/default/private/raw-object",
+                "executor_private_payload": {
+                    "prompt": "internal prompt material",
+                    "token": "secret-token",
+                },
+                "sandbox_workdir": "/tmp/ai-platform/private/run-live",
+            }
+        ),
+        encoding="utf-8",
+    )
+    labels_path.write_text(json.dumps(image_labels()), encoding="utf-8")
+    snapshot_path.write_text(json.dumps(source_snapshot()), encoding="utf-8")
+
+    subprocess.run(
+        [
+            sys.executable,
+            "tools/wrap_foundation_alpha_evidence.py",
+            "--verifier-output",
+            str(verifier_output_path),
+            "--verifier",
+            "scripts/verify_executor_context_pack_211.py",
+            "--artifact-kind",
+            "executor_context_pack_211_acceptance",
+            "--evidence-id",
+            "2026-06-17-211-office-context-executor-context-pack-runtime-acceptance",
+            "--commit-sha",
+            COMMIT,
+            "--runtime-subject-commit-sha",
+            COMMIT,
+            "--captured-at",
+            "2026-06-17T10:00:00+08:00",
+            "--image",
+            IMAGE,
+            "--image-id",
+            IMAGE_ID,
+            "--image-labels-json",
+            str(labels_path),
+            "--source-snapshot-json",
+            str(snapshot_path),
+            "--command",
+            "python3 scripts/verify_executor_context_pack_211.py --run-id run-live --require-live-run-payload --json",
+            "--gate",
+            "G6/G9/#22 Office Context Pack Architecture",
+            "--runtime-check-payload",
+            f"executor_context_pack_211_acceptance={runtime_payload_path}",
+            "--review-status",
+            "reviewed",
+            "--output",
+            str(output_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    entry = json.loads(output_path.read_text(encoding="utf-8"))
+    runtime_checks = entry["evidence_ref"]["runtime_checks"]
+    serialized = json.dumps(entry, ensure_ascii=False)
+    assert entry["gate"] == "G6/G9/#22 Office Context Pack Architecture"
+    assert runtime_checks["verifier_checks"][0]["passed"] is True
+    assert runtime_checks["executor_context_pack_211_acceptance"]["run_id"] == "run-live"
+    assert "raw_storage_key" not in serialized
+    assert "executor_private_payload" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "internal prompt material" not in serialized
+    assert "tenants/default/private" not in serialized

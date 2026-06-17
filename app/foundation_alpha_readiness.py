@@ -26,7 +26,10 @@ _SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
 _SOURCE_SNAPSHOT_MARKER = _ROOT / ".ai-platform-source-snapshot.json"
 _RUNTIME_NEUTRAL_PATH_PREFIXES = (
     "assets/ai-platform-architecture-illustrations/",
+    "assets/multi-agent-architecture-illustrations/",
     "docs/",
+    "output/",
+    "runtime-evidence/",
     "tests/",
 )
 _RUNTIME_NEUTRAL_EXACT_PATHS = {
@@ -34,6 +37,9 @@ _RUNTIME_NEUTRAL_EXACT_PATHS = {
     "AGENTS.md",
     "app/capacity_bounded_load_harness.py",
     "app/foundation_alpha_readiness.py",
+    "app/governance_readiness.py",
+    "app/memory_erasure_readiness.py",
+    "app/office_context_readiness.py",
     "tools/foundation_alpha_readiness.py",
     "tools/frontend_release_traceability.py",
     "tools/verify_auth_rbac_smoke.py",

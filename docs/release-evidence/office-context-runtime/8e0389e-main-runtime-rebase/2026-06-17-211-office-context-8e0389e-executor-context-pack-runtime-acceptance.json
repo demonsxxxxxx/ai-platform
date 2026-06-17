@@ -1,0 +1,159 @@
+{
+  "artifact_kind": "executor_context_pack_211_acceptance",
+  "captured_at": "2026-06-17T02:12:16+08:00",
+  "commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
+  "evidence_id": "2026-06-17-211-office-context-8e0389e-executor-context-pack-runtime-acceptance",
+  "evidence_ref": {
+    "command": "PYTHONPATH=/app python scripts/verify_executor_context_pack_211.py --evidence-file <redacted> --run-id run_a618c52ee5c148a185254b68e1c81b9e --require-live-run-payload --json",
+    "result": "ok:true",
+    "runtime_checks": {
+      "executor_context_pack_211_acceptance": {
+        "does_not_close_211_acceptance": false,
+        "evidence_strength": "live_worker_run_payload",
+        "generated_at": "2026-06-16T17:57:21+00:00",
+        "live_run_checks": {
+          "context_pack_schema_present": true,
+          "context_snapshot_id_present": true,
+          "run_row_loaded": true,
+          "scoped_context_snapshot_loaded": true,
+          "worker_context_ref_rebuilt_from_db_snapshot": true
+        },
+        "non_expansion_invariants": {
+          "lightweight_office_tasks_start_sandbox_by_default": false,
+          "long_term_cross_session_memory_enabled": false,
+          "ordinary_user_high_risk_sandbox_allowed": false,
+          "ordinary_user_multi_agent_allowed": false,
+          "public_projection_only_for_ordinary_users": true
+        },
+        "prompt_checks": {
+          "bounded_summary_present": true,
+          "context_pack_generated_at_present": true,
+          "context_pack_version_present": true,
+          "executor_private_content_absent": true,
+          "long_term_memory_read_false": true,
+          "raw_storage_identifiers_absent": true,
+          "sandbox_runtime_paths_absent": true
+        },
+        "public_context_summary": {
+          "context_pack_generated_at_present": true,
+          "context_pack_version": "v1",
+          "execution_tier": "document_worker",
+          "input_keys": [
+            "attachments",
+            "message"
+          ],
+          "referenced_material_counts": {
+            "artifact_count": 2,
+            "file_count": 1,
+            "memory_record_count": 0,
+            "message_count": 0
+          }
+        },
+        "run_id": "run_a618c52ee5c148a185254b68e1c81b9e",
+        "runtime_acceptance_requires_real_run_payload": false,
+        "runtime_evidence": {
+          "context_snapshot_id_present": true,
+          "executor_private_content_absent": true,
+          "fresh_generated_at": true,
+          "live_worker_run_payload": true,
+          "long_term_memory_read_false": true,
+          "prompt_includes_bounded_summary": true,
+          "prompt_includes_context_pack_generated_at": true,
+          "prompt_includes_context_pack_version": true,
+          "raw_storage_identifiers_absent": true,
+          "run_row_loaded": true,
+          "sandbox_runtime_paths_absent": true,
+          "scoped_context_snapshot_loaded": true,
+          "source_functions_bound_to_current_runtime": true,
+          "source_run_artifact_count_positive": true,
+          "source_run_artifact_scope_tenant_workspace_user_session": true,
+          "worker_context_ref_rebuilt_from_db_snapshot": true
+        },
+        "runtime_mode": "worker",
+        "runtime_run_payload_verified": true,
+        "schema_version": "ai-platform.executor-context-pack-211.v1",
+        "scope_checks": {
+          "session_id_scoped": true,
+          "source_run_artifact_count_positive": true,
+          "source_run_artifact_scope_verified": true,
+          "tenant_id_scoped": true,
+          "user_id_scoped": true,
+          "workspace_id_scoped": true
+        },
+        "source_functions": [
+          "app.repositories.get_context_snapshot_for_worker",
+          "app.context_builder.executor_context_pack_from_snapshot",
+          "app.executors.claude_agent_sdk_runner._context_pack_prompt_section",
+          "app.executors.claude_agent_worker.build_skill_prompt_context_pack_injection",
+          "app.worker._context_snapshot_ref_from_row"
+        ],
+        "source_schema_version": "ai-platform.executor-context-pack.v1"
+      },
+      "verifier_checks": [
+        {
+          "name": "check_executor_context_pack_evidence",
+          "passed": true
+        },
+        {
+          "name": "check_no_secret_leakage",
+          "passed": true
+        }
+      ]
+    },
+    "verifier": "scripts/verify_executor_context_pack_211.py"
+  },
+  "gate": "G6/G9/#22 Office Context Pack Architecture",
+  "issue_refs": [
+    "#22"
+  ],
+  "open_followups": [
+    "This evidence closes only the named executor_context_pack_211_acceptance runtime gap for #22.",
+    "G6/G9 gate closure remains open until broader governance, observability, frontend packaged runtime, and production hardening gates are separately evidenced.",
+    "This evidence does not claim production readiness, Docker sandbox hardening, ordinary-user multi-agent exposure, long-term cross-session memory, or production concurrency default increases."
+  ],
+  "pr_refs": [],
+  "redaction_scan_status": "passed",
+  "review_notes": [
+    "211 live copy-run evidence for run_a618c52ee5c148a185254b68e1c81b9e was generated inside ai-platform-api on ai-platform:8e0389e-main-runtime-rebase.",
+    "Verifier checks passed for live worker-run context-pack evidence and no secret leakage.",
+    "The public context summary proves positive source-run artifact scope with artifact_count=2 and public input_keys limited to attachments and message."
+  ],
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "branch": "main",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "image": "ai-platform:8e0389e-main-runtime-rebase",
+    "image_id": "sha256:02d2a32bad783857cf140f5bbc20369603e96617b34dc3cdcbf2b8be7728cf0a",
+    "image_labels": {
+      "ai-platform.runtime-subject": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "ai-platform.runtime_subject": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "ai-platform.source-revision": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "ai-platform.source.note": "origin-main-8e0389e-s2-0-runtime-only-rebase",
+      "ai-platform.source_revision": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "ai-platform.source_tree_commit": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "org.opencontainers.image.revision": "8e0389ea621a57f3ded2044e410943cc0d298571"
+    },
+    "repo_local_env_present": false,
+    "runtime_boundary": {
+      "api_container": "ai-platform-api",
+      "worker_container": "ai-platform-worker"
+    },
+    "runtime_source_marker": "8e0389ea621a57f3ded2044e410943cc0d298571",
+    "source_snapshot": {
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "runtime_subject_commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "source_tree_commit_sha": "494243efa847a831db95539716390b7d66d60480",
+      "source_tree_dirty": false
+    },
+    "source_tree_dirty": false
+  }
+}
