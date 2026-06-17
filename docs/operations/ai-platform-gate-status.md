@@ -1,6 +1,6 @@
 # ai-platform Gate Status Snapshot
 
-Date: 2026-06-12
+Date: 2026-06-17
 
 This snapshot keeps the current PRD, foundation roadmap, guardrails, repository
 code, 211 runtime, and issue-driven priorities aligned. It is not automatic
@@ -238,14 +238,14 @@ lacks measured concurrency overlap, `queue_probe_sample_count`,
 `runtime_run_detail` sandbox lease provenance, and negative tool-permission
 reuse probes. The 2026-06-14 `5d3d7e2` PR #40 rerun and the 2026-06-14
 `79495bf` PR #40 rerun are retained as superseded reviewed evidence after the
-merged-main refresh. The 2026-06-15 `380de6b` rerun is the current accepted
-Foundation Runtime concurrency evidence: readiness status is
+merged-main refresh. The 2026-06-15 `380de6b` rerun is the historical accepted
+Foundation Runtime concurrency baseline evidence: readiness status is
 `verified_foundation_runtime_concurrency`, it records 12 concurrent cases,
 2 tenants, 4 users, 12 run/session samples, measured client timestamp overlap,
 queue probe sample count 12, runtime-run-detail sandbox lease provenance,
 12 public context projection samples, 12 pinned snapshot binding samples, and
 48 denied negative tool-permission reuse probes. This closes only the
-Foundation Runtime concurrency evidence gap for the `380de6b` runtime-relevant
+Foundation Runtime concurrency evidence gap for the historical `380de6b` runtime-relevant
 source. It does not raise production concurrency defaults, does not open
 ordinary-user multi-agent, does not claim Docker sandbox hardening, does not
 permit department rollout, and does not replace the broader Foundation Alpha
