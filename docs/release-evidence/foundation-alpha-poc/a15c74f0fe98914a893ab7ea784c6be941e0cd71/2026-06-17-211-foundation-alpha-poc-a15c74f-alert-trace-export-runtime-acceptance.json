@@ -47,7 +47,7 @@
         "schema_version": "ai-platform.alert-trace-export-runtime-acceptance.v1",
         "source": {
           "commit_sha": "a15c74f0fe98914a893ab7ea784c6be941e0cd71",
-          "image": "ai-platform:a15c74f-s2-g6-tool-policy",
+          "image": "ai-platform:a15c74f-s2-g6-tool-policy-v2",
           "runtime_subject_commit_sha": "a15c74f0fe98914a893ab7ea784c6be941e0cd71"
         },
         "status": "accepted_for_operator_review"
@@ -55,7 +55,7 @@
     },
     "runtime_source": {
       "commit_sha": "a15c74f0fe98914a893ab7ea784c6be941e0cd71",
-      "image": "ai-platform:a15c74f-s2-g6-tool-policy",
+      "image": "ai-platform:a15c74f-s2-g6-tool-policy-v2",
       "runtime_subject_commit_sha": "a15c74f0fe98914a893ab7ea784c6be941e0cd71"
     },
     "schema_version": "ai-platform.alert-trace-export-runtime-acceptance.v1",

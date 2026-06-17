@@ -52,7 +52,7 @@
     },
     "runtime_source": {
       "commit_sha": "a15c74f0fe98914a893ab7ea784c6be941e0cd71",
-      "image": "ai-platform:a15c74f-s2-g6-tool-policy"
+      "image": "ai-platform:a15c74f-s2-g6-tool-policy-v2"
     },
     "schema_version": "ai-platform.auth-rbac-smoke.v1",
     "verifier": "tools/verify_auth_rbac_smoke.py"

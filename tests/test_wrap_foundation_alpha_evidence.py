@@ -241,6 +241,9 @@ def test_redacts_host_paths_from_source_ref_image_labels():
             "com.docker.compose.project.working_dir": (
                 "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform"
             ),
+            "com.docker.compose.project.windows_env_file": (
+                "C:\\Users\\Xinlin.jiang\\deploy\\ai-platform\\.env"
+            ),
         }
     )
     entry = build_release_evidence_entry(
@@ -270,7 +273,9 @@ def test_redacts_host_paths_from_source_ref_image_labels():
     assert image_label_projection["com.docker.compose.project.config_files"] == "<redacted-path>"
     assert image_label_projection["com.docker.compose.project.environment_file"] == "<redacted-path>"
     assert image_label_projection["com.docker.compose.project.working_dir"] == "<redacted-path>"
+    assert image_label_projection["com.docker.compose.project.windows_env_file"] == "<redacted-path>"
     assert "/home/xinlin.jiang" not in json.dumps(image_label_projection)
+    assert "C:\\Users" not in json.dumps(image_label_projection)
 
 
 def test_requires_explicit_review_status_before_marking_evidence_reviewed():

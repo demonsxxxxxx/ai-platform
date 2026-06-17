@@ -86,7 +86,10 @@ def _redact_runtime_value(key: str | None, value: Any) -> Any:
         normalized = value.replace("\\", "/")
         if any(part in normalized_key for part in _SECRET_KEY_PARTS):
             return "<redacted-secret>"
-        if key in _PATH_KEYS and (normalized.startswith("/") or ":" in normalized[:3]):
+        is_windows_absolute_path = len(normalized) >= 3 and normalized[1:3] == ":/"
+        if key in _PATH_KEYS and (normalized.startswith("/") or is_windows_absolute_path):
+            return "<redacted-path>"
+        if is_windows_absolute_path:
             return "<redacted-path>"
         if normalized.startswith("/home/") or "/home/" in normalized:
             return "<redacted-path>"
