@@ -238,7 +238,6 @@ def build_release_evidence_entry(
     evidence_id: str,
     verifier: str,
     artifact_kind: str,
-    gate: str = GATE,
     verifier_output: dict[str, Any],
     commit_sha: str,
     runtime_subject_commit_sha: str,
@@ -312,7 +311,6 @@ def main() -> int:
     parser.add_argument("--verifier-output", required=True)
     parser.add_argument("--verifier", required=True)
     parser.add_argument("--artifact-kind", default="211_runtime_smoke")
-    parser.add_argument("--gate", default=GATE)
     parser.add_argument("--evidence-id", required=True)
     parser.add_argument("--commit-sha", required=True)
     parser.add_argument("--runtime-subject-commit-sha", required=True)
@@ -366,7 +364,6 @@ def main() -> int:
         evidence_id=args.evidence_id,
         verifier=args.verifier,
         artifact_kind=args.artifact_kind,
-        gate=args.gate,
         verifier_output=_load_json(args.verifier_output),
         commit_sha=args.commit_sha,
         runtime_subject_commit_sha=args.runtime_subject_commit_sha,
