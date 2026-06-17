@@ -90,7 +90,7 @@ is not production readiness.
 S1 completion does not:
 
 - raise production concurrency defaults
-- open ordinary-user multi-agent exposure
+- open platform-level multi-run orchestration exposure
 - claim Docker sandbox hardening
 - permit department rollout
 - enable long-term cross-session memory by default
