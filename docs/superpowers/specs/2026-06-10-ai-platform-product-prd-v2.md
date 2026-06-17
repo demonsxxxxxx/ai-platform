@@ -25,11 +25,11 @@ The target platform must support:
 
 | Capability | Target |
 | --- | --- |
-| Multi-tenant control plane | Tenant, workspace, user, session, run, file, artifact, tool, skill, memory, event, and audit are platform-owned contracts. |
+| Multi-tenant control plane | The core execution chain is `tenant_id -> workspace_id -> user_id -> session_id -> run_id`; files, artifacts, tools, skills, context, events, and audit attach to that chain as governed projections. |
 | Governed execution | Claude Agent SDK is the current primary execution kernel; executors consume platform payloads and do not define platform schema. |
 | Public/admin projections | Frontend and ordinary users consume only public or admin projections; executor private payloads remain private. |
 | Operational evidence | Gate closure requires code, tests, review, issue/PR traceability, deployment evidence, and 211 runtime smoke where relevant. |
-| Controlled expansion | High-risk sandbox, write tools, production concurrency increases, and ordinary-user multi-agent exposure remain gate-blocked until evidence is complete. |
+| Controlled expansion | High-risk sandbox, write tools, production concurrency increases, long-term memory, and platform-owned multi-run orchestration remain gate-blocked until evidence is complete. |
 
 ## 2. Non-Goals
 
@@ -38,7 +38,7 @@ The target platform must support:
 | Single-user desktop assistant clone | The platform must solve tenant isolation, RBAC, quota, audit, and operations first. |
 | Docker compose one-command delivery as the current acceptance gate | Current priority is the internal company deployment baseline; compose packaging is a later delivery milestone. |
 | A second independent runtime/control plane | External projects can inform implementation, but ai-platform remains the source of truth for identity, tenancy, audit, quota, release, and governance. |
-| Ordinary-user multi-agent beta before foundation gates | G8/G10 depends on G5/G6/G7/G9 evidence and must stay feature-flagged. |
+| Platform-owned multi-run multi-agent runtime as a current requirement | Claude Agent SDK is the execution layer. SDK-internal agent/subagent behavior is governed as one platform run unless a later gate explicitly reopens platform-level orchestration. |
 | Long-term cross-session memory by default | Long-term memory must remain fail-closed until opt-out, retention, deletion, redaction, and tenant policy are proven. |
 
 ## 3. Document Authority
@@ -88,20 +88,18 @@ Reference snapshots used for this draft:
 | --- | --- |
 | Codex CLI | local review clone `openai-codex-20260610-124630`, commit `00a25e1e0c6eecf076dcb989f4065c578c262ae7` |
 | Poco Claw | local review clone `poco-claw-20260610-152718`, commit `7a61cb9f0e871f75f5623448f849f1e3d1958e35` |
-| DeerFlow 2.0 | local review clone `deer-flow-20260610-prd-review`, commit `a57d05fe0a83551e928c5832183323cd29456687` |
 | LambChat | current imported `frontend/web` source and migration notes; source baseline only |
-| new-api | model-gateway reference only; not a platform authority source; refresh separately before model-gateway implementation work |
-| AgentScope | prior PRD reference now downgraded to concept-only; no active snapshot is required unless reopened by a new gate |
 
 | Source | What to absorb | What not to copy | Current role |
 | --- | --- | --- | --- |
 | ai-platform itself | Enterprise control plane, tenant/workspace/user/session boundaries, RBAC, queue admission, audit, release evidence. | Historical paths or stale implementation notes. | Product and architecture source of truth. |
 | Codex CLI | Tool approval vocabulary, shell/sandbox permission model, skill/plugin packaging patterns, conversation/turn/context concepts, bounded context fragments, operator-grade CLI ergonomics. | Single-user identity assumptions, personal local memory model, non-enterprise tenancy. | Strong reference for tools, skills, sandbox vocabulary, and context mechanics. |
 | Poco Claw | Claude Agent SDK platformization, persistent runtime registry, idle/sleep/resume/keepalive, team/server/channel collaboration UX, run drawer/playback/artifact surfaces, agent private state separation. | Enterprise tenant source of truth, unrestricted Docker socket assumptions, any fallback that bypasses ai-platform RBAC/quota/audit. | Strong reference for SDK runtime platformization and collaborative runtime UX. |
-| DeerFlow 2.0 | Long-horizon planning/report patterns, task decomposition vocabulary, bounded subagent context, memory scoping, guardrail middleware, lineage/report UX, and concurrency-limit ideas. | A second long-task control plane, direct replacement for ai-platform worker/runtime, execution-layer subagent harness, uncontrolled MCP/shell exposure. | Concept reference only for long-horizon orchestration and report UX after foundation gates. Claude Agent SDK remains the execution layer. |
 | LambChat | Existing `frontend/web` migration baseline, React/Vite shell, chat/task UI starting point. | Admin/runtime governance, tenancy, private payload access, model/channel/env-var management as product truth. | Frontend source baseline only. |
-| new-api / model gateway patterns | Model gateway routing, token/cost/latency accounting, upstream-provider operational concepts. | Platform RBAC, tenant audit, or memory/tool governance. | Reference for model gateway integration and observability. |
-| AgentScope | Agent/service/skill/workspace vocabulary and adapter ideas. | Product authority for enterprise auth, RBAC, artifact ACL, or memory policy. | Downgraded concept reference unless a concrete adapter gate is reopened. |
+
+Historical references not listed above are intentionally omitted from the active
+PRD route. Reopening any omitted project as an implementation reference requires
+a focused issue, gate, and source-authority review.
 
 ### 4.1 Changes From The 2026-05-29 PRD
 
@@ -110,13 +108,11 @@ This PRD changes the old reference posture in three ways:
 1. Codex CLI becomes the stronger reference for workspace, approval, shell/tool,
    event, and skill mechanics, but not for identity, tenant memory, audit, or
    enterprise source of truth.
-2. AgentScope is downgraded from active adapter direction to concept reference.
-   Reopening an AgentScope adapter requires a new issue, gate, and source
-   authority review.
-3. DeerFlow 2.0 remains a long-horizon workflow and subagent/concurrency concept
-   reference. It is not a second ai-platform runtime, scheduler, execution
-   harness, or memory authority. Multi-agent execution must route through
-   Claude Agent SDK capabilities under ai-platform governance.
+2. Poco Claw remains the strongest reference for Claude Agent SDK runtime
+   platformization and collaborative execution UX, but not for enterprise
+   tenancy or security boundaries.
+3. Omitted historical references must not create fields, gates, or adapters
+   unless a future focused design explicitly reopens them.
 
 ### 4.2 Codex / Executor Kernel Boundary
 
@@ -148,9 +144,10 @@ Non-negotiable boundary:
 - Executor-private logs, Claude/Codex internal logs, raw command output, private
   subagent state, and private artifact metadata are never the platform source of
   truth.
-- CLI-internal subagents are not automatically platform multi-agent runs.
-  Platform multi-agent scheduling requires parent/child run ledger, admission,
-  tenant quota, backpressure, event projection, and cancellation semantics.
+- SDK-internal agents or subagents are not platform multi-agent runs. Current
+  PRD scope treats them as execution-kernel behavior inside one governed
+  platform run. Platform-visible multi-run orchestration requires a future gate
+  and must not leak into the current core field set.
 - Approval decisions must bind to exact `tool_call_id` or a stable request
   fingerprint. A broad "latest allow for this tool/action" lookup is not
   acceptable for replay or high-risk write operations.
@@ -170,7 +167,7 @@ Company Auth / Tenant Boundary
        -> executor adapter payloads
        -> sandbox lease and cleanup
   -> Claude Agent SDK Execution Kernel
-       -> skills, tools, Agent/subagent capability, filesystem/shell mediation
+       -> skills, tools, SDK-managed agent/subagent capability, filesystem/shell mediation
        -> private executor payloads
   -> Admin Runtime / Observability
        -> queue, run, sandbox, capacity, token/cost/latency/error, audit, release evidence
@@ -179,13 +176,31 @@ Company Auth / Tenant Boundary
        -> admin runtime and governance views
 ```
 
+### 5.0 Core Field Set
+
+The PRD core field set should stay small. These fields define the platform
+execution coordinate system:
+
+| Layer | Required fields | Purpose |
+| --- | --- | --- |
+| Isolation | `tenant_id`, `workspace_id`, `user_id` | Organization, workspace, and user boundary. |
+| Conversation and execution | `session_id`, `run_id` | Session context and one concrete execution attempt. |
+| Capability binding | `agent_id`, `skill_id`, `skill_version` | User-facing capability and pinned Skill package used by the run. |
+| Governance attachments | `tool_call_id`, `context_snapshot_id`, `sandbox_lease_id`, `file_id`, `artifact_id`, `trace_id` | Permission, context, sandbox, input/output, and observability ledgers attached to the run. |
+
+Fields such as `parent_run_id`, `child_run_id`, `dispatch_id`, or
+`multi_agent_*` are not part of the current PRD core field set. They are
+deferred orchestration fields and should not appear in ordinary-user product
+contracts unless a later platform-level orchestration gate is explicitly
+reopened.
+
 ### 5.1 Control Plane
 
 The control plane owns all durable product contracts:
 
 - Identity and tenancy: tenant, workspace, user, role, session.
 - Run lifecycle: queued, leased, running, terminal states, retry, resume, cancel,
-  checkpoint, parent/child relationships.
+  checkpoint, and provenance links.
 - Files and artifacts: user-visible projections, ACL, provenance, redaction.
 - Tool governance: allow, ask, deny, user confirmation, admin policy, audit.
 - Skill governance: version, release decision, dependency policy, provenance,
@@ -202,21 +217,20 @@ Agent SDK is the current primary execution kernel. It must receive bounded,
 platform-produced payloads and return events, artifacts, tool requests, and
 status through platform-owned repositories and projections.
 
-For multi-agent and long-task execution, the execution-layer route is Claude
-Agent SDK. ai-platform may enable SDK agent/subagent tools, skills, and shell or
-filesystem mediation only through platform-issued payloads, pinned skill
-snapshots, permission policy, sandbox leases, event sinks, artifact collection,
-and token/cost accounting. DeerFlow-style decomposition, bounded worker context,
-report lineage, and concurrency-limit ideas can shape product contracts, but
-DeerFlow itself must not become the worker scheduler, control plane, memory
-authority, or hidden execution harness.
+For any task that uses multiple agents or subagents, the execution-layer route
+is Claude Agent SDK. ai-platform governs that execution through platform-issued
+payloads, pinned skill snapshots, permission policy, sandbox leases, event
+sinks, artifact collection, and token/cost accounting. The platform should not
+create a separate multi-agent scheduler, parent/child run tree, or external
+execution harness as part of the current roadmap.
 
 Executors must not:
 
 - Create platform schema.
 - Expose private payloads to ordinary-user frontend code.
 - Bypass tenant quota, active-run admission, tool policy, or sandbox lease.
-- Turn multi-agent child fanout into hidden unbounded work.
+- Turn SDK-internal agent/subagent fanout into hidden unbounded work outside
+  platform quotas, event sinks, artifact collection, and cost accounting.
 
 ### 5.3 Frontend
 
@@ -248,7 +262,7 @@ map, not a gate-closure claim.
 | Skill governance | SDK staging, pin mismatch checks, used-skill recording, release-readiness contracts, and source-route tests for Admin Skill release dashboard runtime controls. | SBOM/signed package, license/vulnerability review, reviewed evidence files, Admin Skill release visual acceptance, and Admin Skill release 211 acceptance. | Blocks production-grade skill release. |
 | Frontend web | `frontend/web`, projection audit, lint/type/build scripts, release traceability and CI direction. | Projection audit still has policy gaps; inactive legacy model/channel/env-var sources remain quarantined; packaged smoke incomplete. | Blocks G6/G9 rollout closure. |
 | Artifacts/playback/events | Artifact cards, run playback, SSE/event projections, redaction tests. | New event or artifact types can bypass projection discipline if tests are not added. | Requires continuous projection audit. |
-| Multi-agent runtime | Dispatcher, child admission, reconcile/rollup/cancel work exists behind controls. | Depends on G5/G6/G7/G9; not ready for ordinary users. | Feature-flag only before later gate. |
+| Advanced SDK subagent / long-task patterns | Claude Agent SDK is the execution path; the platform governs one run with payload, permission, sandbox, events, artifacts, and cost ledgers. | Platform-owned parent/child run orchestration and dispatcher work is deferred and must not shape current ordinary-user contracts. | Parking-lot only until a later gate explicitly reopens platform-level orchestration. |
 
 ### 6.1 Detailed Contract Appendix During Migration
 
@@ -290,7 +304,7 @@ can remain only as historical aliases in release notes or archived plans.
 | G5 Run Lifecycle / Worker Runtime V1 | Queue, lease, heartbeat, retry, dead-letter, cancel, resume, checkpoint, idempotency, admission, and backpressure are operational. | Tenant-aware tests, bounded metadata proof, recorded capacity-upgrade evidence, Foundation Runtime concurrency evidence, and 211 worker smoke. |
 | G6 Tool / Skill / Memory Governance | Tool, skill, and memory policies are enforceable, auditable, and fail-closed. | Policy tests, frontend projection audit, skill review evidence, memory retention/delete/redaction evidence, admin acceptance. |
 | G7 Sandbox / Resource Hardening | Docker provider, network/egress, quota, cleanup, and container security are proven. | Docker-capable host smoke, security-option evidence, orphan cleanup proof, no default overexposure. |
-| G8 Multi-Agent Controlled Beta | Multi-agent dispatch, handoff, child reconciliation, parent rollup/cancel, quota, and backpressure are controlled. | Feature-flagged internal proof, tenant quota evidence, no ordinary-user exposure before prior gates. |
+| G8 Multi-Agent Controlled Beta | Deferred parking-lot for platform-level multi-run orchestration. Current execution-layer multi-agent/subagent capability stays inside Claude Agent SDK and is governed as a platform run. | Reopen only with a focused issue, tenant quota/backpressure design, event/artifact/cancel semantics, and no ordinary-user exposure before prior gates. |
 | G9 Observability / Quality / Ops | Admin Runtime, cost/token/latency/error taxonomy, golden-set eval, trace/export, alerts, and release evidence are operational. | Dashboard acceptance, recorded load evidence, model-gateway evidence, alert calibration, trace/export smoke, release evidence export. |
 | G10 Internal Beta / Department Rollout | 1-2 real internal workflows run with owners, cost/quality/audit/rollback evidence, and support model. | Workflow owner signoff, 211 smoke, rollback proof, issue/PR/release evidence, documented limits. |
 
@@ -324,7 +338,7 @@ not as current-source S1 complete.
 The accepted baseline is bounded. It does not:
 
 1. Raise production concurrency defaults.
-2. Open ordinary-user multi-agent exposure.
+2. Open ordinary-user platform-level multi-run orchestration exposure.
 3. Claim Docker sandbox hardening.
 4. Permit department rollout.
 5. Enable long-term cross-session memory by default.
@@ -337,8 +351,8 @@ The first stage was accepted after:
 2. G2-G4 contracts are stable enough that frontend, worker, and executor changes
    can be reviewed against platform-owned contracts.
 3. G5 is operational for controlled internal workloads, but this does not mean
-   high-concurrency readiness, department beta, or ordinary-user multi-agent
-   exposure. High-concurrency default increases remain blocked until the
+   high-concurrency readiness, department beta, or ordinary-user platform-level
+   multi-run orchestration exposure. High-concurrency default increases remain blocked until the
    capacity-upgrade evidence gate has recorded load evidence.
 4. G6 has a usable fail-closed baseline: ordinary users see permission cards and
    safe public projections; admins can inspect policy and evidence; long-term
@@ -355,7 +369,8 @@ In one sentence:
 > Foundation Alpha means the enterprise multi-tenant Agent platform has an
 > auditable, regression-tested, 211-verifiable control-plane loop; production
 > concurrency increases, high-risk sandbox/tool expansion, long-term memory by
-> default, and ordinary-user multi-agent exposure remain gate-blocked.
+> default, and platform-level multi-run orchestration exposure remain
+> gate-blocked.
 
 ## 9. First-Stage Deliverables
 
@@ -364,7 +379,7 @@ In one sentence:
 | PRD/roadmap/guardrails | G0-G10 language unified; P0/P1/P2 only historical; external reference boundaries updated. |
 | Technical acceptance matrix | [Technical acceptance matrix](./2026-06-11-ai-platform-tech-acceptance.md) lists each module's current state, staged target, open-source reference source, and S1 acceptance standard; Foundation Alpha cannot be accepted if the matrix contradicts PRD, roadmap, guardrails, or gate status. |
 | Issue/PR workflow | [GitHub issue and PR workflow](../../agent-rules/github-issue-pr-workflow.md) is linked from this PRD; goal-sized work opens or references issues; closure uses PR/review/tests/211 evidence where required. |
-| Foundation Alpha readiness | `tools/foundation_alpha_readiness.py --format json` is the operator-facing S1 summary. It separates exact current-source verification from runtime-relevant source coverage: `current_source_verified_by_running_runtime=true` and `controlled_poc_loop_verified_for_current_source=true` require the running image to match the current source tree, while `runtime_relevant_source_verified_by_running_runtime=true` only means later docs/tests/evidence/readiness records are outside the running image. If `current_source_exact_runtime_commit_match=false`, the summary must show `runtime_current_for_runtime_relevant_source` with empty runtime-affecting changes before operators reuse the recorded controlled core POC loop evidence. The accepted historical S1 baseline records `foundation_alpha_stage_complete=true` for its accepted subject; latest current-source claims require a fresh readiness result with no stage acceptance blockers. Production claims, capacity default increases, Docker sandbox hardening, ordinary-user multi-agent exposure, and department rollout remain blocked by later gates even after S1 baseline acceptance. |
+| Foundation Alpha readiness | `tools/foundation_alpha_readiness.py --format json` is the operator-facing S1 summary. It separates exact current-source verification from runtime-relevant source coverage: `current_source_verified_by_running_runtime=true` and `controlled_poc_loop_verified_for_current_source=true` require the running image to match the current source tree, while `runtime_relevant_source_verified_by_running_runtime=true` only means later docs/tests/evidence/readiness records are outside the running image. If `current_source_exact_runtime_commit_match=false`, the summary must show `runtime_current_for_runtime_relevant_source` with empty runtime-affecting changes before operators reuse the recorded controlled core POC loop evidence. The accepted historical S1 baseline records `foundation_alpha_stage_complete=true` for its accepted subject; latest current-source claims require a fresh readiness result with no stage acceptance blockers. Production claims, capacity default increases, Docker sandbox hardening, platform-level multi-run orchestration exposure, and department rollout remain blocked by later gates even after S1 baseline acceptance. |
 | Frontend source | `frontend/web` has reproducible install/lint/type/build or a precise blocker; projection audit has no active private-payload violations. |
 | Admin Runtime | Queue/run/sandbox/capacity/backpressure overview exists and has 211 smoke evidence. |
 | Capacity evidence gate | GitHub #21 is closed, but the capacity-upgrade evidence gate still needs recorded seven-gate load evidence; default production concurrency is not raised without that evidence. |
@@ -372,7 +387,7 @@ In one sentence:
 | Memory/context | Opt-out, retention, redaction, delete/export readiness, and context provenance are documented and tested for the current scope. |
 | Skill governance | Release/readiness manifests exist; production skill release is blocked without SBOM/signature/license/vulnerability evidence. |
 | Sandbox | Fake provider remains local/test; Docker provider hardening is a separate G7 evidence gate. |
-| Multi-agent | Internal feature flags only; no ordinary-user expansion before G5/G6/G7/G9 closure. |
+| Advanced SDK subagent / long-task patterns | Claude Agent SDK may use internal agent/subagent capability under one governed platform run. Platform-owned parent/child run orchestration stays out of the current deliverable set. |
 
 ## 10. Change And Review Workflow For This PRD
 
@@ -380,7 +395,7 @@ This PRD is active, but product-source changes still require review discipline:
 
 1. Self-review for stale project references, contradictions, and missing module
    risks.
-2. Multi-agent read-only review for large or gate-moving changes: one reviewer
+2. Independent read-only review for large or gate-moving changes: one reviewer
    checks product/reference-source consistency, another checks module/gate
    realism against code.
 3. User or product-owner review for business direction, first-stage target, or
@@ -415,8 +430,8 @@ Recommended order after S1 acceptance:
 6. **G9 Admin Runtime acceptance**: dashboard/operator acceptance, alert
    delivery calibration, model-gateway backpressure evidence, trace/export, and
    release-evidence runtime export.
-7. **G8/G10 Claude Agent SDK multi-agent planning**: only after prior gates,
-   choose 1-2 internal workflows with owners. Use Claude Agent SDK for
-   execution-layer agent/subagent capability; absorb DeerFlow only as
-   decomposition, report-lineage, bounded-context, and concurrency-limit
-   product patterns.
+7. **G8/G10 advanced Claude Agent SDK task-pattern planning**: only after prior
+   gates, choose 1-2 internal workflows with owners. Use Claude Agent SDK for
+   execution-layer agent/subagent capability inside governed runs. Do not
+   introduce platform-owned parent/child orchestration unless a focused future
+   gate reopens it.
