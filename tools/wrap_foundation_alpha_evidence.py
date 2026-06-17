@@ -210,6 +210,7 @@ def _source_ref(
 ) -> dict[str, Any]:
     runtime_source = verifier_output.get("source") if isinstance(verifier_output.get("source"), dict) else {}
     gateway_secret_supplied = runtime_source.get("gateway_secret_supplied")
+    redacted_image_labels = _redact_runtime_value("image_labels", image_labels)
     return {
         "branch": "main",
         "runtime_commit": runtime_subject_commit_sha,
@@ -218,7 +219,7 @@ def _source_ref(
         "source_revision_alias_label_status": "source_revision_alias_label_current",
         "image": image,
         "image_id": image_id,
-        "image_labels": image_labels,
+        "image_labels": redacted_image_labels if isinstance(redacted_image_labels, dict) else {},
         "api_health": api_health or {"route": "/api/ai/health", "status": "ok"},
         "containers": ["ai-platform-api", "ai-platform-worker"],
         "repo_local_env_present": False,

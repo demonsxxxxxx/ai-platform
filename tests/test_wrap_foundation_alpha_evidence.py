@@ -227,6 +227,52 @@ def test_redacts_runtime_paths_and_storage_keys_from_wrapped_checks():
     }
 
 
+def test_redacts_host_paths_from_source_ref_image_labels():
+    labels = image_labels()
+    labels.update(
+        {
+            "com.docker.compose.project.config_files": (
+                "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/"
+                "deploy/ai-platform/docker-compose.yml"
+            ),
+            "com.docker.compose.project.environment_file": (
+                "/home/xinlin.jiang/ai-platform-phaseb/deploy/ai-platform/.env"
+            ),
+            "com.docker.compose.project.working_dir": (
+                "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform"
+            ),
+        }
+    )
+    entry = build_release_evidence_entry(
+        evidence_id="redacted-label-paths",
+        verifier="tools/verify_auth_rbac_smoke.py",
+        artifact_kind="211_runtime_smoke",
+        verifier_output={
+            "schema_version": "ai-platform.auth-rbac-smoke.v1",
+            "ok": True,
+            "redaction_scan_status": "passed",
+            "checks": {"admin_runtime": {"status": 200}},
+        },
+        commit_sha=COMMIT,
+        runtime_subject_commit_sha=COMMIT,
+        captured_at="2026-06-16T22:45:00+08:00",
+        image=IMAGE,
+        image_id=IMAGE_ID,
+        image_labels=labels,
+        source_snapshot=source_snapshot(),
+        command="python3 tools/verify_auth_rbac_smoke.py",
+        review_status="reviewed",
+    )
+
+    image_label_projection = entry["source_ref"]["image_labels"]
+    assert image_label_projection["ai-platform.source-revision"] == COMMIT
+    assert image_label_projection["org.opencontainers.image.revision"] == COMMIT
+    assert image_label_projection["com.docker.compose.project.config_files"] == "<redacted-path>"
+    assert image_label_projection["com.docker.compose.project.environment_file"] == "<redacted-path>"
+    assert image_label_projection["com.docker.compose.project.working_dir"] == "<redacted-path>"
+    assert "/home/xinlin.jiang" not in json.dumps(image_label_projection)
+
+
 def test_requires_explicit_review_status_before_marking_evidence_reviewed():
     verifier_output = {
         "schema_version": "ai-platform.auth-rbac-smoke.v1",
