@@ -25,24 +25,24 @@ RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_RUNTIME_RELATION_MANIFEST = (
     ROOT / "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json"
 )
-ACTIVE_RUNTIME_SUBJECT_SHA = "8e0389ea621a57f3ded2044e410943cc0d298571"
-ACTIVE_SOURCE_TREE_SHA = "8e0389ea621a57f3ded2044e410943cc0d298571"
+ACTIVE_RUNTIME_SUBJECT_SHA = "a15c74f0fe98914a893ab7ea784c6be941e0cd71"
+ACTIVE_SOURCE_TREE_SHA = "a15c74f0fe98914a893ab7ea784c6be941e0cd71"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_SUBJECT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
 ACTIVE_CLOSURE_SOURCE_TREE_SHA = "3c06c5351517028111c18a365ff9a24ed22ffa33"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE = "ai-platform:380de6b-merged-main-runtime"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE_ID = "sha256:e36e4dfad072cdd12b841019db3ccbcdef4b63ccf5262869c994757fef5663f9"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:8e0389e-main-runtime-rebase"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:02d2a32bad783857cf140f5bbc20369603e96617b34dc3cdcbf2b8be7728cf0a"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-16-211-foundation-alpha-poc-8e0389e-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-16-211-foundation-alpha-poc-8e0389e-auth-rbac-smoke"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:a15c74f-s2-g6-tool-policy-v2"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:034743395992439d3c7370a465ccfe6013975b5243723727b678ef6aa89a2def"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-17-211-foundation-alpha-poc-a15c74f-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-17-211-foundation-alpha-poc-a15c74f-auth-rbac-smoke"
 ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID = (
-    "2026-06-16-211-foundation-alpha-poc-8e0389e-governance-runtime-smoke"
+    "2026-06-17-211-foundation-alpha-poc-a15c74f-governance-runtime-smoke"
 )
 ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-16-211-foundation-alpha-poc-8e0389e-release-evidence-runtime-acceptance"
+    "2026-06-17-211-foundation-alpha-poc-a15c74f-release-evidence-runtime-acceptance"
 )
 ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-16-211-foundation-alpha-poc-8e0389e-alert-trace-export-runtime-acceptance"
+    "2026-06-17-211-foundation-alpha-poc-a15c74f-alert-trace-export-runtime-acceptance"
 )
 CBBFAFF_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
 CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
@@ -484,15 +484,18 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     ]
     smoke_followups = "\n".join(payload["open_followups"])
     assert "alert_delivery_and_trace_export_211_acceptance" not in smoke_followups
-    assert "Foundation Runtime concurrency evidence is blocked" in smoke_followups
-    assert "runtime-only rebase was used as a labeled workaround" in smoke_followups
-    assert "Docker sandbox hardening remains unclaimed" in smoke_followups
-    assert "ordinary-user multi-agent exposure remains blocked" in smoke_followups
+    assert "Foundation Runtime concurrency evidence is blocked" not in smoke_followups
+    assert "capacity_upgrade_evidence_gate" in smoke_followups
+    assert "g7_docker_sandbox_hardening" in smoke_followups
+    assert "g8_ordinary_user_multi_agent_exposure" in smoke_followups
 
     release_evidence_index = read(RELEASE_EVIDENCE_INDEX)
+    gate_status_text = read(GATE_STATUS_DOC)
+    compact_gate_status_text = " ".join(gate_status_text.split())
     assert f"{ACTIVE_AUTH_RBAC_EVIDENCE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_POC_SMOKE_EVIDENCE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID}.json" in release_evidence_index
+    assert "runtime-only rebase workaround" in compact_gate_status_text
     assert f"{ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID}.json" in release_evidence_index
     assert "2026-06-13-211-foundation-alpha-poc-cbbfaff-governance-runtime-smoke.json" in release_evidence_index
@@ -936,7 +939,11 @@ def test_gate_status_records_foundation_runtime_concurrency_context_pack_blocker
         assert "79495bf" in text
         assert "380de6b" in text
         assert "negative decision-reuse probes" in text
-        assert "current accepted Foundation Runtime concurrency evidence" in compact_text
+        assert (
+            "Foundation Runtime concurrency evidence"
+            if text == roadmap_text
+            else "current-subject Foundation Runtime concurrency evidence"
+        ) in compact_text
         assert "Foundation Runtime" in text
         assert "concurrency" in text
         assert "multi-agent" in text
@@ -950,12 +957,15 @@ def test_gate_status_records_foundation_runtime_concurrency_context_pack_blocker
     assert "79495bf4954017351db6d19494a16099fe2ee0bf" in release_evidence_text
     assert "2026-06-14-211-foundation-alpha-poc-79495bf-foundation-runtime-concurrency.json" in release_evidence_text
     assert ACTIVE_RUNTIME_SUBJECT_SHA in release_evidence_text
+    assert "a15c74f0fe98914a893ab7ea784c6be941e0cd71" in release_evidence_text
+    assert "2026-06-17-211-foundation-alpha-poc-a15c74f-foundation-runtime-concurrency.json" in release_evidence_text
     assert "2026-06-15-211-foundation-alpha-poc-380de6b-foundation-runtime-concurrency.json" in release_evidence_text
-    assert "verified_foundation_runtime_concurrency" not in release_evidence_text
+    assert "verified_foundation_runtime_concurrency" in release_evidence_text
     assert "negative tool-permission reuse probes" in release_evidence_text
     assert "queue_probe_sample_count" in release_evidence_text
     assert "does not raise production concurrency defaults" in release_evidence_text
-    assert "open ordinary-user multi-agent" in release_evidence_text
+    assert "fresh current-subject evidence under #65" in release_evidence_text
+    assert "open platform-level multi-run orchestration" in release_evidence_text
 
 
 def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
