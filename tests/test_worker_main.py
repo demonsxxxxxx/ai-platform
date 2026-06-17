@@ -70,6 +70,59 @@ async def test_run_once_acknowledges_completed_message(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_once_keeps_queue_maintenance_running_during_long_processing(monkeypatch):
+    calls = []
+    maintenance_seen_during_processing = asyncio.Event()
+
+    class Settings:
+        max_active_worker_runs = 3
+        queue_tenant_processing_limit = 0
+        queue_user_processing_limit = 0
+        queue_lease_scan_limit = 50
+        worker_maintenance_interval_seconds = 0.01
+
+    async def reclaim_expired_leases():
+        calls.append(("reclaim",))
+        if ("process_started",) in calls and calls.count(("reclaim",)) >= 2:
+            maintenance_seen_during_processing.set()
+
+    async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
+        calls.append(("lease", worker_id, max_processing_runs))
+        return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a")
+
+    async def process_run_payload(payload, registry=None, worker_id=None):
+        calls.append(("process_started",))
+        await asyncio.wait_for(maintenance_seen_during_processing.wait(), timeout=0.5)
+        calls.append(("process_finished",))
+        return WorkerOutcome(status="succeeded", run_id=payload["run_id"])
+
+    async def ack_run(raw, message_id=None):
+        calls.append(("ack", raw, message_id))
+
+    async def fail_leased_run(raw, *, error_code, error_message, message_id=None, worker_id=None):
+        calls.append(("fail", raw, error_code, error_message, message_id, worker_id))
+
+    async def heartbeat_run(message_id, worker_id):
+        calls.append(("heartbeat", message_id, worker_id))
+
+    monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
+    monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
+    monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
+    monkeypatch.setattr("app.worker_main.queue.ack_run", ack_run)
+    monkeypatch.setattr("app.worker_main.queue.fail_leased_run", fail_leased_run)
+    monkeypatch.setattr("app.worker_main.queue.heartbeat_run", heartbeat_run)
+
+    outcome = await run_once(timeout_seconds=1, worker_id="worker-a", heartbeat_interval_seconds=60)
+
+    assert outcome.status == "succeeded"
+    assert calls.count(("reclaim",)) >= 2
+    assert calls.index(("reclaim",)) < calls.index(("process_started",))
+    assert calls.index(("process_started",)) < calls.index(("process_finished",))
+    assert calls.index(("process_finished",)) < calls.index(("ack", "raw-run", "msg-a"))
+
+
+@pytest.mark.asyncio
 async def test_run_once_dead_letters_unhandled_outcome(monkeypatch):
     calls = []
 

@@ -20,6 +20,7 @@ _SUCCESSFUL_PROVIDER_CLEANUP_STATUSES = {"stopped", "not_found"}
 _OVERVIEW_FORBIDDEN_KEYS = {"skillid"}
 _DATABASE_POOL_CONFIG_KEYS = {"min_size", "max_size", "timeout_seconds", "max_waiting"}
 _QUEUE_DEPTH_KEYS = {"dead_letter", "processing", "queued", "tenant_processing", "tenant_queued"}
+_QUEUE_PROCESSING_STATE_KEYS = {"active", "missing_metadata", "reclaimable", "stale"}
 _QUEUE_CAPACITY_KEYS = {
     "available_worker_slots",
     "max_active_worker_runs",
@@ -38,6 +39,8 @@ _QUEUE_THROTTLING_KEYS = {
 _QUEUE_USER_THROTTLING_KEYS = {"processing", "processing_saturated", "queued"}
 _QUEUE_REASON_VALUES = {
     "queued_behind_existing_work",
+    "processing_lease_reclaimable",
+    "processing_lease_stale",
     "tenant_quota_full",
     "user_quota_full",
     "worker_available",
@@ -193,6 +196,9 @@ def _sanitize_queue_status(value: object) -> dict[str, object]:
     workers = _sanitize_queue_workers(status.get("workers"))
     if workers:
         payload["workers"] = workers
+    processing_state = _sanitize_numeric_map(status.get("processing_state"), _QUEUE_PROCESSING_STATE_KEYS)
+    if processing_state:
+        payload["processing_state"] = processing_state
     return payload
 
 
@@ -233,6 +239,9 @@ def _sanitize_queue_insight(value: object) -> dict[str, object]:
     workers = _sanitize_queue_workers(insight.get("workers"))
     if workers:
         payload["workers"] = workers
+    processing_state = _sanitize_numeric_map(insight.get("processing_state"), _QUEUE_PROCESSING_STATE_KEYS)
+    if processing_state:
+        payload["processing_state"] = processing_state
     capacity = _sanitize_numeric_bool_map(insight.get("capacity"), _QUEUE_CAPACITY_KEYS)
     if capacity:
         payload["capacity"] = capacity
@@ -322,12 +331,13 @@ def _queue_backpressure_snapshot(queue_insight: object) -> dict[str, object]:
     throttling = insight.get("throttling") if isinstance(insight.get("throttling"), dict) else {}
     users = throttling.get("users") if isinstance(throttling.get("users"), dict) else {}
     queue_sample = insight.get("queue_sample") if isinstance(insight.get("queue_sample"), dict) else {}
+    processing_state = _sanitize_numeric_map(insight.get("processing_state"), _QUEUE_PROCESSING_STATE_KEYS)
     saturated_users = sum(
         1
         for user_state in users.values()
         if isinstance(user_state, dict) and bool(user_state.get("processing_saturated"))
     )
-    return {
+    snapshot = {
         "reason": _safe_queue_reason(insight.get("reason")),
         "worker_capacity": {
             "max_active_worker_runs": _coerce_int(capacity.get("max_active_worker_runs")),
@@ -354,6 +364,9 @@ def _queue_backpressure_snapshot(queue_insight: object) -> dict[str, object]:
             "queued_sample_complete": bool(queue_sample.get("queued_sample_complete")),
         },
     }
+    if processing_state:
+        snapshot["processing_state"] = processing_state
+    return snapshot
 
 
 def _database_pool_backpressure_snapshot(database_pool: object) -> dict[str, object]:
@@ -418,6 +431,11 @@ def _backpressure_snapshot(
     queue_reason = queue.get("reason")
     if isinstance(queue_reason, str) and queue_reason in _QUEUE_BACKPRESSURE_REASON_VALUES:
         reasons.append(queue_reason)
+    processing_state = queue.get("processing_state") if isinstance(queue.get("processing_state"), dict) else {}
+    if _coerce_int(processing_state.get("reclaimable")) > 0:
+        reasons.append("processing_lease_reclaimable")
+    elif _coerce_int(processing_state.get("stale")) > 0:
+        reasons.append("processing_lease_stale")
     worker_capacity = queue["worker_capacity"] if isinstance(queue.get("worker_capacity"), dict) else {}
     if worker_capacity.get("processing_saturated"):
         reasons.append("worker_capacity_saturated")

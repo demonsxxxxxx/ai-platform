@@ -613,11 +613,23 @@ async def get_queue_status() -> dict[str, Any]:
         queued = await redis.llen(keys.queued)
         processing = await redis.llen(keys.processing)
         dead_letter = await redis.llen(keys.dead_letter)
+        processing_items = await redis.lrange(keys.processing, 0, -1)
+        processing_meta = await redis.hgetall(keys.processing_meta)
         worker_heartbeats = await redis.hgetall(keys.worker_heartbeat)
+        now = _now()
         active_worker_heartbeats = _active_worker_heartbeats(
             worker_heartbeats,
-            now=_now(),
+            now=now,
             ttl_seconds=float(getattr(settings, "worker_heartbeat_ttl_seconds", 60.0)),
+        )
+        processing_state = _processing_state_snapshot(
+            processing_items,
+            processing_meta,
+            active_worker_heartbeats=active_worker_heartbeats,
+            now=now,
+            visibility_timeout_seconds=int(
+                getattr(settings, "queue_lease_visibility_timeout_seconds", DEFAULT_VISIBILITY_TIMEOUT_SECONDS)
+            ),
         )
         return {
             "depths": {
@@ -625,6 +637,7 @@ async def get_queue_status() -> dict[str, Any]:
                 "processing": int(processing),
                 "dead_letter": int(dead_letter),
             },
+            "processing_state": processing_state,
             "keys": {
                 "queued": keys.queued,
                 "processing": keys.processing,
@@ -798,6 +811,63 @@ def _capacity_snapshot(*, processing: int, max_active_worker_runs: int) -> dict[
     }
 
 
+def _processing_state_snapshot(
+    raw_items: list[str],
+    meta_items: dict[str, str],
+    *,
+    active_worker_heartbeats: dict[str, str],
+    now: float,
+    visibility_timeout_seconds: int,
+    tenant_id: str | None = None,
+) -> dict[str, int]:
+    active = 0
+    stale = 0
+    reclaimable = 0
+    missing_metadata = 0
+    for raw in raw_items:
+        message_id = message_id_for_raw(raw)
+        raw_meta = meta_items.get(message_id)
+        payload_tenant_id = ""
+        if tenant_id:
+            try:
+                payload_tenant_id = QueueRunPayload.model_validate_json(raw).tenant_id
+            except Exception:
+                payload_tenant_id = ""
+        if not raw_meta:
+            if tenant_id and payload_tenant_id != tenant_id:
+                continue
+            missing_metadata += 1
+            stale += 1
+            reclaimable += 1
+            continue
+        try:
+            meta = json.loads(raw_meta)
+        except (TypeError, json.JSONDecodeError):
+            meta = {}
+        meta_tenant_id = str(meta.get("tenant_id") or "")
+        if tenant_id and (meta_tenant_id or payload_tenant_id) != tenant_id:
+            continue
+        worker_id = str(meta.get("worker_id") or "")
+        try:
+            heartbeat_at = float(meta.get("heartbeat_at") or meta.get("leased_at") or 0)
+        except (TypeError, ValueError):
+            heartbeat_at = 0.0
+        lease_expired = visibility_timeout_seconds > 0 and now - heartbeat_at > visibility_timeout_seconds
+        worker_active = bool(worker_id and worker_id in active_worker_heartbeats)
+        if lease_expired:
+            reclaimable += 1
+        if lease_expired or not worker_active:
+            stale += 1
+        else:
+            active += 1
+    return {
+        "active": active,
+        "stale": stale,
+        "reclaimable": reclaimable,
+        "missing_metadata": missing_metadata,
+    }
+
+
 def _queue_throttling_snapshot(
     *,
     tenant_id: str,
@@ -846,7 +916,18 @@ def _queue_throttling_snapshot(
     return snapshot
 
 
-def _queue_reason(*, queued: int, processing: int, active_workers: int, max_active_worker_runs: int) -> str:
+def _queue_reason(
+    *,
+    queued: int,
+    processing: int,
+    active_workers: int,
+    max_active_worker_runs: int,
+    processing_state: dict[str, int],
+) -> str:
+    if queued > 0 and processing_state.get("reclaimable", 0) > 0:
+        return "processing_lease_reclaimable"
+    if queued > 0 and processing_state.get("stale", 0) > 0:
+        return "processing_lease_stale"
     if max_active_worker_runs > 0 and processing >= max_active_worker_runs:
         return "worker_capacity_full"
     if active_workers > processing:
@@ -877,12 +958,24 @@ async def get_queue_insight(
         )
         processing_items = await redis.lrange(keys.processing, 0, -1)
         worker_heartbeats = await redis.hgetall(keys.worker_heartbeat)
+        now = _now()
         active_worker_heartbeats = _active_worker_heartbeats(
             worker_heartbeats,
-            now=_now(),
+            now=now,
             ttl_seconds=float(getattr(settings, "worker_heartbeat_ttl_seconds", 60.0)),
         )
         active_workers = len(active_worker_heartbeats)
+        processing_meta = await redis.hgetall(keys.processing_meta)
+        processing_state = _processing_state_snapshot(
+            processing_items,
+            processing_meta,
+            active_worker_heartbeats=active_worker_heartbeats,
+            now=now,
+            visibility_timeout_seconds=int(
+                getattr(settings, "queue_lease_visibility_timeout_seconds", DEFAULT_VISIBILITY_TIMEOUT_SECONDS)
+            ),
+            tenant_id=tenant_id,
+        )
         max_active_worker_runs = int(settings.max_active_worker_runs)
         capacity = _capacity_snapshot(
             processing=processing_depth,
@@ -920,6 +1013,7 @@ async def get_queue_insight(
             processing=processing_depth,
             active_workers=active_workers,
             max_active_worker_runs=max_active_worker_runs,
+            processing_state=processing_state,
         )
         if tenant_queued > 0 and throttling["tenant_processing_saturated"]:
             reason = "tenant_quota_full"
@@ -947,6 +1041,7 @@ async def get_queue_insight(
                 "tenant_processing": tenant_counts.get(tenant_id, 0),
             },
             "workers": {"active": active_workers},
+            "processing_state": processing_state,
             "capacity": capacity,
             "queue_sample": queue_sample,
             "throttling": throttling,
