@@ -1860,6 +1860,22 @@ async def test_get_queue_insight_skips_malformed_entries(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_queue_insight_reports_worker_available_for_empty_queue(monkeypatch):
+    fake = FakeRedis()
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    insight = await queue.get_queue_insight("tenant-a")
+
+    assert insight["depths"]["queued"] == 0
+    assert insight["depths"]["processing"] == 0
+    assert insight["reason"] == "worker_available"
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_updates_processing_meta_and_worker(monkeypatch):
     raw = payload_json()
     message_id = queue.message_id_for_raw(raw)

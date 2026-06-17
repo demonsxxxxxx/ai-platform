@@ -924,10 +924,12 @@ def _queue_reason(
     max_active_worker_runs: int,
     processing_state: dict[str, int],
 ) -> str:
-    if queued > 0 and processing_state.get("reclaimable", 0) > 0:
+    if processing_state.get("reclaimable", 0) > 0:
         return "processing_lease_reclaimable"
-    if queued > 0 and processing_state.get("stale", 0) > 0:
+    if processing_state.get("stale", 0) > 0:
         return "processing_lease_stale"
+    if queued <= 0 and processing <= 0:
+        return "worker_available"
     if max_active_worker_runs > 0 and processing >= max_active_worker_runs:
         return "worker_capacity_full"
     if active_workers > processing:
