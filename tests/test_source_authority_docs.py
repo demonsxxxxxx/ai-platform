@@ -939,7 +939,11 @@ def test_gate_status_records_foundation_runtime_concurrency_context_pack_blocker
         assert "79495bf" in text
         assert "380de6b" in text
         assert "negative decision-reuse probes" in text
-        assert "current accepted Foundation Runtime concurrency evidence" in compact_text
+        assert (
+            "Foundation Runtime concurrency evidence"
+            if text == roadmap_text
+            else "current-subject Foundation Runtime concurrency evidence"
+        ) in compact_text
         assert "Foundation Runtime" in text
         assert "concurrency" in text
         assert "multi-agent" in text
@@ -960,7 +964,8 @@ def test_gate_status_records_foundation_runtime_concurrency_context_pack_blocker
     assert "negative tool-permission reuse probes" in release_evidence_text
     assert "queue_probe_sample_count" in release_evidence_text
     assert "does not raise production concurrency defaults" in release_evidence_text
-    assert "open ordinary-user multi-agent" in release_evidence_text
+    assert "fresh current-subject evidence under #65" in release_evidence_text
+    assert "open platform-level multi-run orchestration" in release_evidence_text
 
 
 def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
