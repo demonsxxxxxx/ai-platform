@@ -91,7 +91,9 @@ async def run_worker_maintenance(settings: object | None = None) -> None:
     await cleanup_expired_sandbox_leases()
     await cleanup_expired_memory_records_for_worker(settings)
     await dispatch_multi_agent_ready_steps_for_worker(settings)
-    await queue.reclaim_expired_leases()
+    await queue.reclaim_expired_leases(
+        visibility_timeout_seconds=int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900))
+    )
 
 
 def _worker_maintenance_interval_seconds(settings: object) -> float:
