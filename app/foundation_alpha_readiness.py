@@ -26,7 +26,10 @@ _SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
 _SOURCE_SNAPSHOT_MARKER = _ROOT / ".ai-platform-source-snapshot.json"
 _RUNTIME_NEUTRAL_PATH_PREFIXES = (
     "assets/ai-platform-architecture-illustrations/",
+    "assets/multi-agent-architecture-illustrations/",
     "docs/",
+    "output/",
+    "runtime-evidence/",
     "tests/",
 )
 _RUNTIME_NEUTRAL_EXACT_PATHS = {

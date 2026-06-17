@@ -208,6 +208,7 @@ def build_governance_readiness(
                 "exact_tool_permission_decision_lookup_source_tests",
                 "admin_policy_change_history_projection",
                 "admin_policy_bulk_review_dashboard_contract",
+                "admin_policy_bulk_review_runtime_acceptance_source_route_tests",
             ],
             gaps=[
                 "legacy_frontend_route_policy_enforcement_or_ai_platform_remap",
@@ -232,6 +233,7 @@ def build_governance_readiness(
                     "status": bulk_review_evidence["status"],
                     "policy": bulk_review_evidence["policy"],
                     "dashboard_contract": bulk_review_evidence["dashboard_contract"],
+                    "runtime_acceptance": bulk_review_evidence["runtime_acceptance"],
                     "open_gaps": bulk_review_evidence["open_gaps"],
                     "does_not_close_g6": bulk_review_evidence["does_not_close_g6"],
                 },
@@ -438,6 +440,12 @@ def render_governance_readiness_markdown(readiness: dict[str, Any]) -> str:
                     f"- admin bulk review readiness `{bulk_review.get('schema_version')}` status "
                     f"`{bulk_review.get('status')}`\n"
                     f"- admin bulk review dashboard contract `{contract.get('schema_version')}`\n"
+                )
+            runtime_acceptance = bulk_review.get("runtime_acceptance")
+            if isinstance(runtime_acceptance, dict):
+                evidence_lines += (
+                    f"- admin bulk review runtime acceptance `{runtime_acceptance.get('schema_version')}` status "
+                    f"`{runtime_acceptance.get('status')}`\n"
                 )
         release_readiness = evidence.get("release_readiness") if isinstance(evidence, dict) else None
         if isinstance(release_readiness, dict):

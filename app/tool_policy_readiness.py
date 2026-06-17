@@ -86,6 +86,7 @@ def build_tool_policy_readiness() -> dict[str, Any]:
         "ordinary_user_custom_mcp_disabled",
         "admin_policy_change_history_projection",
         "admin_policy_bulk_review_dashboard_contract",
+        "admin_policy_bulk_review_runtime_acceptance_source_route_tests",
         "exact_tool_permission_decision_lookup_source_tests",
     ]
     open_gaps = [
@@ -124,6 +125,7 @@ def build_tool_policy_readiness() -> dict[str, Any]:
                 "status": bulk_review_readiness["status"],
                 "policy": bulk_review_readiness["policy"],
                 "dashboard_contract": bulk_review_readiness["dashboard_contract"],
+                "runtime_acceptance": bulk_review_readiness["runtime_acceptance"],
                 "open_gaps": bulk_review_readiness["open_gaps"],
                 "does_not_close_g6": bulk_review_readiness["does_not_close_g6"],
             }
@@ -143,11 +145,19 @@ def render_tool_policy_readiness_markdown(readiness: dict[str, Any]) -> str:
     bulk_contract_lines = ""
     if isinstance(bulk_review, dict):
         contract = bulk_review.get("dashboard_contract")
+        runtime_acceptance = bulk_review.get("runtime_acceptance")
+        runtime_acceptance_line = ""
+        if isinstance(runtime_acceptance, dict):
+            runtime_acceptance_line = (
+                f"Runtime acceptance: `{runtime_acceptance.get('status')}` "
+                f"using `{runtime_acceptance.get('evidence_strength')}`\n\n"
+            )
         if isinstance(contract, dict):
             bulk_contract_lines = (
                 "## Admin Bulk Review Dashboard Contract\n\n"
                 f"Schema: `{contract.get('schema_version')}`\n\n"
                 f"Policy: `{bulk_review.get('policy')}`\n\n"
+                f"{runtime_acceptance_line}"
             )
     case_lines = "\n".join(
         "- "

@@ -173,7 +173,7 @@ image matches the exact current source tree.
 
 | Field | Standard |
 | --- | --- |
-| Current state | Allow/ask/deny taxonomy, user permission card, admin policy/history routes, and permission events exist; legacy frontend route remap/enforcement and runtime acceptance remain partial. |
+| Current state | Allow/ask/deny taxonomy, user permission card, admin policy/history routes, permission events, and admin bulk-review source-route runtime-control tests exist; legacy frontend route remap/enforcement, visual acceptance, and 211 acceptance remain partial. |
 | S1 target | Ordinary users see safe permission cards; write-capable or high-risk tool calls require exact permission decisions; admin can inspect policy/history. |
 | S2 target | Shell, network, MCP, and filesystem approvals share the same durable request/decision policy model. |
 | S3/S4 target | Workflow-specific tool policies can be reviewed and audited per tenant/workspace without raw private payload exposure. |
