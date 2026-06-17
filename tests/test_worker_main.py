@@ -33,10 +33,38 @@ def default_sandbox_cleanup(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_worker_maintenance_uses_configured_queue_visibility_timeout(monkeypatch):
+    calls = []
+
+    class Settings:
+        queue_lease_visibility_timeout_seconds = 12
+
+    async def dispatch_multi_agent_ready_steps_for_worker(settings):
+        calls.append(("dispatch", settings.queue_lease_visibility_timeout_seconds))
+
+    async def reclaim_expired_leases(**kwargs):
+        calls.append(("reclaim", kwargs))
+        return {"reclaimed": 0, "dead_lettered": 0}
+
+    monkeypatch.setattr(
+        "app.worker_main.dispatch_multi_agent_ready_steps_for_worker",
+        dispatch_multi_agent_ready_steps_for_worker,
+    )
+    monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
+
+    await worker_main.run_worker_maintenance(Settings())
+
+    assert calls == [
+        ("dispatch", 12),
+        ("reclaim", {"visibility_timeout_seconds": 12}),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_run_once_acknowledges_completed_message(monkeypatch):
     calls = []
 
-    async def reclaim_expired_leases():
+    async def reclaim_expired_leases(**_kwargs):
         calls.append(("reclaim",))
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
@@ -70,10 +98,63 @@ async def test_run_once_acknowledges_completed_message(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_once_keeps_queue_maintenance_running_during_long_processing(monkeypatch):
+    calls = []
+    maintenance_seen_during_processing = asyncio.Event()
+
+    class Settings:
+        max_active_worker_runs = 3
+        queue_tenant_processing_limit = 0
+        queue_user_processing_limit = 0
+        queue_lease_scan_limit = 50
+        worker_maintenance_interval_seconds = 0.01
+
+    async def reclaim_expired_leases(**_kwargs):
+        calls.append(("reclaim",))
+        if ("process_started",) in calls and calls.count(("reclaim",)) >= 2:
+            maintenance_seen_during_processing.set()
+
+    async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
+        calls.append(("lease", worker_id, max_processing_runs))
+        return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a")
+
+    async def process_run_payload(payload, registry=None, worker_id=None):
+        calls.append(("process_started",))
+        await asyncio.wait_for(maintenance_seen_during_processing.wait(), timeout=0.5)
+        calls.append(("process_finished",))
+        return WorkerOutcome(status="succeeded", run_id=payload["run_id"])
+
+    async def ack_run(raw, message_id=None):
+        calls.append(("ack", raw, message_id))
+
+    async def fail_leased_run(raw, *, error_code, error_message, message_id=None, worker_id=None):
+        calls.append(("fail", raw, error_code, error_message, message_id, worker_id))
+
+    async def heartbeat_run(message_id, worker_id):
+        calls.append(("heartbeat", message_id, worker_id))
+
+    monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
+    monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
+    monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
+    monkeypatch.setattr("app.worker_main.queue.ack_run", ack_run)
+    monkeypatch.setattr("app.worker_main.queue.fail_leased_run", fail_leased_run)
+    monkeypatch.setattr("app.worker_main.queue.heartbeat_run", heartbeat_run)
+
+    outcome = await run_once(timeout_seconds=1, worker_id="worker-a", heartbeat_interval_seconds=60)
+
+    assert outcome.status == "succeeded"
+    assert calls.count(("reclaim",)) >= 2
+    assert calls.index(("reclaim",)) < calls.index(("process_started",))
+    assert calls.index(("process_started",)) < calls.index(("process_finished",))
+    assert calls.index(("process_finished",)) < calls.index(("ack", "raw-run", "msg-a"))
+
+
+@pytest.mark.asyncio
 async def test_run_once_dead_letters_unhandled_outcome(monkeypatch):
     calls = []
 
-    async def reclaim_expired_leases():
+    async def reclaim_expired_leases(**_kwargs):
         calls.append(("reclaim",))
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
@@ -108,7 +189,7 @@ async def test_run_once_dead_letters_unhandled_outcome(monkeypatch):
 async def test_run_once_acknowledges_cancelled_message(monkeypatch):
     calls = []
 
-    async def reclaim_expired_leases():
+    async def reclaim_expired_leases(**_kwargs):
         calls.append(("reclaim",))
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
@@ -150,7 +231,7 @@ async def test_run_once_acknowledges_cancelled_message(monkeypatch):
 async def test_run_once_dead_letters_process_exception(monkeypatch):
     calls = []
 
-    async def reclaim_expired_leases():
+    async def reclaim_expired_leases(**_kwargs):
         calls.append(("reclaim",))
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
@@ -193,7 +274,7 @@ async def test_run_once_dead_letters_process_exception(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_once_returns_idle_without_message(monkeypatch):
-    async def reclaim_expired_leases():
+    async def reclaim_expired_leases(**_kwargs):
         return {"reclaimed": 0, "dead_lettered": 0}
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
@@ -212,7 +293,7 @@ async def test_run_once_returns_idle_without_message(monkeypatch):
 async def test_run_once_passes_global_worker_capacity_to_queue(monkeypatch):
     calls = []
 
-    async def reclaim_expired_leases():
+    async def reclaim_expired_leases(**_kwargs):
         calls.append(("reclaim",))
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
@@ -242,7 +323,7 @@ async def test_run_once_passes_queue_quota_settings_to_queue(monkeypatch):
         queue_user_processing_limit = 1
         queue_lease_scan_limit = 25
 
-    async def reclaim_expired_leases():
+    async def reclaim_expired_leases(**_kwargs):
         calls.append(("reclaim",))
 
     async def lease_run(
@@ -324,7 +405,7 @@ async def test_run_once_cleans_expired_sandbox_leases_before_leasing_queue(monke
         calls.append(("sandbox_cleanup",))
         return []
 
-    async def reclaim_expired_leases():
+    async def reclaim_expired_leases(**_kwargs):
         calls.append(("queue_reclaim",))
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
@@ -394,7 +475,7 @@ async def test_run_once_cleans_expired_memory_records_across_tenant_workspaces(m
         calls.append(("audit", kwargs))
         return "audit-id"
 
-    async def reclaim_expired_leases():
+    async def reclaim_expired_leases(**_kwargs):
         calls.append(("queue_reclaim",))
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
@@ -491,7 +572,7 @@ async def test_run_once_cleans_expired_memory_records_when_due(monkeypatch):
         calls.append(("audit", kwargs))
         return "audit-a"
 
-    async def reclaim_expired_leases():
+    async def reclaim_expired_leases(**_kwargs):
         calls.append(("queue_reclaim",))
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
@@ -563,7 +644,7 @@ async def test_run_once_does_not_audit_memory_cleanup_when_no_records_deleted(mo
     async def append_audit_log(conn, **kwargs):
         calls.append(("audit", kwargs))
 
-    async def reclaim_expired_leases():
+    async def reclaim_expired_leases(**_kwargs):
         calls.append(("queue_reclaim",))
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
@@ -617,7 +698,7 @@ async def test_run_once_skips_memory_cleanup_until_interval_elapsed(monkeypatch)
     async def append_audit_log(conn, **kwargs):
         calls.append(("audit", kwargs))
 
-    async def reclaim_expired_leases():
+    async def reclaim_expired_leases(**_kwargs):
         calls.append(("queue_reclaim",))
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
@@ -675,7 +756,7 @@ async def test_run_once_skips_memory_cleanup_when_disabled(monkeypatch):
     async def cleanup_expired_memory_records(conn, **kwargs):
         raise AssertionError("disabled memory cleanup must not scan memory records")
 
-    async def reclaim_expired_leases():
+    async def reclaim_expired_leases(**_kwargs):
         calls.append(("queue_reclaim",))
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
@@ -707,7 +788,7 @@ async def test_run_once_does_not_reclaim_queue_when_sandbox_cleanup_fails(monkey
         calls.append(("sandbox_cleanup",))
         raise RuntimeError("sandbox cleanup failed")
 
-    async def reclaim_expired_leases():
+    async def reclaim_expired_leases(**_kwargs):
         calls.append(("queue_reclaim",))
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
@@ -744,7 +825,7 @@ async def test_run_once_dispatches_multi_agent_ready_steps_before_queue_lease(mo
         calls.append(("multi_agent_dispatch", settings))
         return [{"run_id": "run-parent", "status": "queued"}]
 
-    async def reclaim_expired_leases():
+    async def reclaim_expired_leases(**_kwargs):
         calls.append(("queue_reclaim",))
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):

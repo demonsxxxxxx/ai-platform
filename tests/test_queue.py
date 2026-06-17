@@ -1250,6 +1250,12 @@ async def test_get_queue_status_reports_depths_and_keys(monkeypatch):
             "processing": 2,
             "dead_letter": 1,
         },
+        "processing_state": {
+            "active": 0,
+            "stale": 0,
+            "reclaimable": 0,
+            "missing_metadata": 0,
+        },
         "keys": {
             "queued": queue.QUEUE_KEY,
             "processing": queue.PROCESSING_KEY,
@@ -1341,6 +1347,12 @@ async def test_get_queue_insight_counts_tenant_queued_and_processing(monkeypatch
             "tenant_processing": 1,
         },
         "workers": {"active": 2},
+        "processing_state": {
+            "active": 1,
+            "stale": 0,
+            "reclaimable": 0,
+            "missing_metadata": 0,
+        },
         "capacity": {
             "max_active_worker_runs": 3,
             "processing_saturated": False,
@@ -1507,6 +1519,9 @@ async def test_get_queue_insight_reports_worker_capacity_full(monkeypatch):
         queue_key_prefix = "ai-platform:runs"
         max_active_worker_runs = 3
 
+    processing_a_raw = queue_payload(run_id="run-processing-a", tenant_id="tenant-a", user_id="user-a").model_dump_json()
+    processing_b_raw = queue_payload(run_id="run-processing-b", tenant_id="tenant-b", user_id="user-b").model_dump_json()
+    processing_c_raw = queue_payload(run_id="run-processing-c", tenant_id="tenant-c", user_id="user-c").model_dump_json()
     fake = FakeRedis(
         lengths={
             queue.QUEUE_KEY: 1,
@@ -1514,15 +1529,17 @@ async def test_get_queue_insight_reports_worker_capacity_full(monkeypatch):
             queue.DEAD_LETTER_KEY: 0,
         },
         queued=[payload_json()],
-        processing=[
-            queue_payload(run_id="run-processing-a", tenant_id="tenant-a", user_id="user-a").model_dump_json(),
-            queue_payload(run_id="run-processing-b", tenant_id="tenant-b", user_id="user-b").model_dump_json(),
-            queue_payload(run_id="run-processing-c", tenant_id="tenant-c", user_id="user-c").model_dump_json(),
-        ],
+        processing=[processing_a_raw, processing_b_raw, processing_c_raw],
         meta={
-            "msg-a": json.dumps({"tenant_id": "tenant-a", "worker_id": "worker-a"}),
-            "msg-b": json.dumps({"tenant_id": "tenant-b", "worker_id": "worker-b"}),
-            "msg-c": json.dumps({"tenant_id": "tenant-c", "worker_id": "worker-c"}),
+            queue.message_id_for_raw(processing_a_raw): json.dumps(
+                {"tenant_id": "tenant-a", "worker_id": "worker-a", "heartbeat_at": 100.0}
+            ),
+            queue.message_id_for_raw(processing_b_raw): json.dumps(
+                {"tenant_id": "tenant-b", "worker_id": "worker-b", "heartbeat_at": 101.0}
+            ),
+            queue.message_id_for_raw(processing_c_raw): json.dumps(
+                {"tenant_id": "tenant-c", "worker_id": "worker-c", "heartbeat_at": 102.0}
+            ),
         },
         workers={"worker-a": "100.0", "worker-b": "101.0", "worker-c": "102.0"},
     )
@@ -1532,6 +1549,7 @@ async def test_get_queue_insight_reports_worker_capacity_full(monkeypatch):
 
     monkeypatch.setattr("app.queue.get_settings", lambda: Settings())
     monkeypatch.setattr("app.queue.get_redis", get_redis)
+    monkeypatch.setattr("app.queue._now", lambda: 120.0)
 
     insight = await queue.get_queue_insight("tenant-a")
 
@@ -1544,6 +1562,68 @@ async def test_get_queue_insight_reports_worker_capacity_full(monkeypatch):
         "queue_user_processing_limit": 0,
         "queue_lease_scan_limit": 50,
     }
+
+
+@pytest.mark.asyncio
+async def test_get_queue_insight_distinguishes_active_and_reclaimable_processing_leases(monkeypatch):
+    class Settings:
+        queue_key_prefix = "ai-platform:runs"
+        max_active_worker_runs = 3
+        worker_heartbeat_ttl_seconds = 30.0
+        queue_lease_visibility_timeout_seconds = 60
+        queue_tenant_processing_limit = 0
+        queue_user_processing_limit = 0
+        queue_lease_scan_limit = 50
+        queue_insight_scan_limit = 25
+
+    queued_raw = queue_payload(run_id="run-queued", tenant_id="tenant-a", user_id="user-a").model_dump_json()
+    active_raw = queue_payload(run_id="run-active", tenant_id="tenant-a", user_id="user-a").model_dump_json()
+    reclaimable_raw = queue_payload(run_id="run-reclaimable", tenant_id="tenant-a", user_id="user-b").model_dump_json()
+    active_message_id = queue.message_id_for_raw(active_raw)
+    reclaimable_message_id = queue.message_id_for_raw(reclaimable_raw)
+    fake = FakeRedis(
+        lengths={queue.QUEUE_KEY: 1, queue.PROCESSING_KEY: 2, queue.DEAD_LETTER_KEY: 0},
+        queued=[queued_raw],
+        processing=[active_raw, reclaimable_raw],
+        meta={
+            active_message_id: json.dumps(
+                {
+                    "tenant_id": "tenant-a",
+                    "user_id": "user-a",
+                    "worker_id": "worker-active",
+                    "heartbeat_at": 100.0,
+                }
+            ),
+            reclaimable_message_id: json.dumps(
+                {
+                    "tenant_id": "tenant-a",
+                    "user_id": "user-b",
+                    "worker_id": "worker-gone",
+                    "heartbeat_at": 1.0,
+                }
+            ),
+        },
+        workers={"worker-active": "100.0"},
+    )
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+    monkeypatch.setattr("app.queue._now", lambda: 120.0)
+
+    insight = await queue.get_queue_insight("tenant-a", include_user_breakdown=True)
+
+    assert insight["reason"] == "processing_lease_reclaimable"
+    assert insight["processing_state"] == {
+        "active": 1,
+        "stale": 1,
+        "reclaimable": 1,
+        "missing_metadata": 0,
+    }
+    assert insight["depths"]["processing"] == 2
+    assert insight["workers"] == {"active": 1}
 
 
 @pytest.mark.asyncio
@@ -1777,6 +1857,22 @@ async def test_get_queue_insight_skips_malformed_entries(monkeypatch):
     assert insight["depths"]["tenant_queued"] == 0
     assert insight["depths"]["tenant_processing"] == 0
     assert insight["reason"] == "queued_behind_existing_work"
+
+
+@pytest.mark.asyncio
+async def test_get_queue_insight_reports_worker_available_for_empty_queue(monkeypatch):
+    fake = FakeRedis()
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    insight = await queue.get_queue_insight("tenant-a")
+
+    assert insight["depths"]["queued"] == 0
+    assert insight["depths"]["processing"] == 0
+    assert insight["reason"] == "worker_available"
 
 
 @pytest.mark.asyncio

@@ -359,7 +359,7 @@ def test_foundation_alpha_closure_records_stage_complete_baseline_and_boundaries
 
     for boundary in (
         "raise production concurrency defaults",
-        "open ordinary-user multi-agent exposure",
+        "open platform-level multi-run orchestration exposure",
         "claim Docker sandbox hardening",
         "permit department rollout",
         "enable long-term cross-session memory by default",
@@ -370,7 +370,10 @@ def test_foundation_alpha_closure_records_stage_complete_baseline_and_boundaries
 
     for authority_text in (prd_text, tech_text, roadmap_text, gate_status_text):
         assert "Foundation Alpha" in authority_text
-        assert "ordinary-user multi-agent" in authority_text
+        assert (
+            "platform-level multi-run orchestration" in authority_text
+            or "ordinary-user multi-agent" in authority_text
+        )
         assert "Docker sandbox" in authority_text
 
     assert "production readiness" in closure_text
@@ -1151,7 +1154,7 @@ def test_frontend_docs_record_packaged_runtime_smoke_contract_and_211_blocker():
         assert "does not close" in text or "does not by itself close" in text
 
 
-def test_prd_records_claude_code_deerflow_boundary_without_second_runtime():
+def test_prd_records_claude_sdk_execution_boundary_without_second_runtime():
     prd_text = read(PRD)
     tech_text = read(TECH_ACCEPTANCE)
     roadmap_text = read(ROADMAP)
@@ -1159,39 +1162,30 @@ def test_prd_records_claude_code_deerflow_boundary_without_second_runtime():
     compact_roadmap_text = " ".join(roadmap_text.split())
 
     assert "Claude Agent SDK is the current primary execution kernel" in prd_text
-    assert "DeerFlow 2.0 remains a long-horizon workflow and subagent/concurrency concept" in prd_text
-    assert "It is not a second ai-platform runtime, scheduler, execution harness, or memory" in compact_prd_text
-    assert "authority" in prd_text
-    assert "Multi-agent execution must route through Claude Agent SDK capabilities" in compact_prd_text
+    assert "Historical references not listed above are intentionally omitted" in prd_text
+    assert "Current PRD scope treats them as execution-kernel behavior inside one governed" in compact_prd_text
+    assert "not part of the current PRD core field set" in prd_text
     assert "Executor-private logs" in prd_text
     assert "private artifact metadata are never the platform source" in prd_text
     assert "truth" in prd_text
     assert "A second independent runtime/control plane" in prd_text
-    assert "direct replacement for ai-platform worker/runtime" in prd_text
-    assert "execution-layer subagent harness" in prd_text
-    assert "DeerFlow itself must not become the worker scheduler" in prd_text
-    assert "CLI-internal subagents are not automatically platform multi-agent runs" in prd_text
+    assert "create a separate multi-agent scheduler" in prd_text
+    assert "SDK-internal agents or subagents are not platform multi-agent runs" in prd_text
+    assert "new-api" not in prd_text
+    assert "AgentScope" not in prd_text
+    assert "DeerFlow" not in prd_text
     assert "G8 Multi-Agent Controlled Beta" in prd_text
     assert "G10 Internal Beta / Department Rollout" in prd_text
-    assert "Long Task Product Contract Adapter (DeerFlow pattern)" not in prd_text
-    assert "Claude Agent SDK remains the execution layer" in tech_text
-    assert "Claude Agent SDK Agent/subagent capability for execution" in tech_text
+    assert "Advanced Claude Agent SDK Task Patterns" in tech_text
+    assert "Historical references not listed above are intentionally omitted" in tech_text
     assert "SDK-private subagents are not automatically platform multi-agent runs" in tech_text
-    assert "execution-layer subagent harness" in tech_text
+    assert "new-api" not in tech_text
+    assert "AgentScope" not in tech_text
+    assert "DeerFlow" not in tech_text
 
     assert "Long Task Product Contract / Office Artifact Flow" in roadmap_text
-    for required in (
-        "parent / child run decomposition and state ledger",
-        "Claude Agent SDK agent/subagent tool enablement",
-        "artifact ledger, preview, download, versioning, and reuse",
-        "context pack, long-task context compression, resume, and replay",
-        "cancel / retry / timeout semantics owned by the platform",
-    ):
-        assert required in roadmap_text
-    assert "DeerFlow is not a second runtime to clone" in compact_roadmap_text
     assert "execution kernel for skills, tools, artifacts, token/cost accounting, and agent/subagent execution" in compact_roadmap_text
     assert "执行层路线是 Claude Agent SDK" in roadmap_text
-    assert "不能作为运行时、scheduler 或 control plane" in roadmap_text
     assert "C:\\Users" not in prd_text
     assert "C:\\Users" not in tech_text
     assert "C:\\Users" not in roadmap_text

@@ -106,11 +106,25 @@ def test_compose_forwards_queue_quota_settings_to_api_and_worker():
         "QUEUE_USER_PROCESSING_LIMIT": "0",
         "QUEUE_LEASE_SCAN_LIMIT": "50",
         "QUEUE_INSIGHT_SCAN_LIMIT": "500",
+        "QUEUE_LEASE_VISIBILITY_TIMEOUT_SECONDS": "900",
     }
     for name, default in expected_settings.items():
         assert f"{name}={default}" in env_example_text
         assert f"{name}: ${{{name}:-{default}}}" in api_section
         assert f"{name}: ${{{name}:-{default}}}" in worker_section
+
+
+def test_worker_compose_forwards_maintenance_interval_setting():
+    compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
+    env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+    api_section = compose_text.split("\n  api:", 1)[1].split("\n  worker:", 1)[0]
+    worker_section = compose_text.split("\n  worker:", 1)[1].split("\nvolumes:", 1)[0]
+
+    name = "WORKER_MAINTENANCE_INTERVAL_SECONDS"
+    default = "30"
+    assert f"{name}={default}" in env_example_text
+    assert f"{name}: ${{{name}:-{default}}}" in worker_section
+    assert name not in api_section
 
 
 def test_poc_gate_default_env_path_matches_repo_local_211_deploy():

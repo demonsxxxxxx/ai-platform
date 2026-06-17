@@ -1,5 +1,7 @@
 import argparse
 import asyncio
+import contextlib
+import logging
 import socket
 import time
 import uuid
@@ -17,6 +19,7 @@ from app.worker import WorkerOutcome, process_run_payload
 
 
 _next_memory_cleanup_at = 0.0
+logger = logging.getLogger(__name__)
 
 
 def default_worker_id() -> str:
@@ -83,6 +86,37 @@ async def cleanup_expired_memory_records_for_worker(settings: object | None = No
     return rows
 
 
+async def run_worker_maintenance(settings: object | None = None) -> None:
+    settings = settings or get_settings()
+    await cleanup_expired_sandbox_leases()
+    await cleanup_expired_memory_records_for_worker(settings)
+    await dispatch_multi_agent_ready_steps_for_worker(settings)
+    await queue.reclaim_expired_leases(
+        visibility_timeout_seconds=int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900))
+    )
+
+
+def _worker_maintenance_interval_seconds(settings: object) -> float:
+    try:
+        interval = float(getattr(settings, "worker_maintenance_interval_seconds", 30.0))
+    except (TypeError, ValueError):
+        return 30.0
+    return max(interval, 0.0)
+
+
+async def _maintenance_until_done(settings: object, interval_seconds: float) -> None:
+    if interval_seconds <= 0:
+        return
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await run_worker_maintenance(settings)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Worker background maintenance failed")
+
+
 async def run_once(
     registry: AdapterRegistry | None = None,
     timeout_seconds: int = 5,
@@ -92,10 +126,7 @@ async def run_once(
 ) -> WorkerOutcome:
     resolved_worker_id = worker_id or default_worker_id()
     settings = get_settings()
-    await cleanup_expired_sandbox_leases()
-    await cleanup_expired_memory_records_for_worker(settings)
-    await dispatch_multi_agent_ready_steps_for_worker(settings)
-    await queue.reclaim_expired_leases()
+    await run_worker_maintenance(settings)
     message = await queue.lease_run(
         timeout_seconds=timeout_seconds,
         worker_id=resolved_worker_id,
@@ -110,6 +141,9 @@ async def run_once(
     heartbeat_task = asyncio.create_task(
         _heartbeat_until_done(message.message_id, resolved_worker_id, heartbeat_interval_seconds)
     )
+    maintenance_task = asyncio.create_task(
+        _maintenance_until_done(settings, _worker_maintenance_interval_seconds(settings))
+    )
     try:
         try:
             outcome = await process_run_payload(message.payload, registry=registry, worker_id=resolved_worker_id)
@@ -121,11 +155,11 @@ async def run_once(
                 error_message=str(exc),
             )
     finally:
-        heartbeat_task.cancel()
-        try:
-            await heartbeat_task
-        except asyncio.CancelledError:
-            pass
+        for task in (heartbeat_task, maintenance_task):
+            task.cancel()
+        for task in (heartbeat_task, maintenance_task):
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
     if outcome.status in {"succeeded", "failed", "skipped", "cancelled"}:
         await queue.ack_run(message.raw, message_id=message.message_id)
     else:

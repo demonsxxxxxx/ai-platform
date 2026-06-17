@@ -307,6 +307,8 @@ _LOAD_TEST_OPERATOR_WORKFLOW = [
 ]
 _BACKPRESSURE_REASON_VALUES = {
     "active_run_limit_saturated",
+    "processing_lease_reclaimable",
+    "processing_lease_stale",
     "queued_behind_existing_work",
     "tenant_quota_full",
     "user_quota_full",
@@ -319,6 +321,7 @@ _BACKPRESSURE_REASON_VALUES = {
     "database_pool_waiting_saturated",
 }
 _QUEUE_DEPTH_KEYS = {"queued", "processing", "dead_letter", "tenant_queued", "tenant_processing"}
+_QUEUE_PROCESSING_STATE_KEYS = {"active", "missing_metadata", "reclaimable", "stale"}
 _QUEUE_CAPACITY_KEYS = {
     "max_active_worker_runs",
     "available_worker_slots",
@@ -487,6 +490,10 @@ def _queue_live_signals(overview: dict[str, Any]) -> dict[str, object]:
         },
         "active_worker_heartbeats": worker_count,
         "reason": str(insight.get("reason")) if str(insight.get("reason") or "") in _BACKPRESSURE_REASON_VALUES else None,
+        "processing_state": {
+            **_numeric_bool_map(status.get("processing_state"), _QUEUE_PROCESSING_STATE_KEYS),
+            **_numeric_bool_map(insight.get("processing_state"), _QUEUE_PROCESSING_STATE_KEYS),
+        },
         "capacity": _numeric_bool_map(insight.get("capacity"), _QUEUE_CAPACITY_KEYS),
         "sample": _numeric_bool_map(insight.get("queue_sample"), _QUEUE_SAMPLE_KEYS),
         "throttling": _numeric_bool_map(
@@ -1585,6 +1592,7 @@ def _safe_snapshot_live_signals(snapshot: dict[str, Any]) -> dict[str, object]:
             "depths": _numeric_bool_map(queue.get("depths"), _QUEUE_DEPTH_KEYS),
             "active_worker_heartbeats": _coerce_int(queue.get("active_worker_heartbeats")),
             "reason": str(queue.get("reason")) if str(queue.get("reason") or "") in _BACKPRESSURE_REASON_VALUES else None,
+            "processing_state": _numeric_bool_map(queue.get("processing_state"), _QUEUE_PROCESSING_STATE_KEYS),
             "capacity": _numeric_bool_map(queue.get("capacity"), _QUEUE_CAPACITY_KEYS),
             "sample": _numeric_bool_map(queue.get("sample"), _QUEUE_SAMPLE_KEYS),
             "throttling": _numeric_bool_map(

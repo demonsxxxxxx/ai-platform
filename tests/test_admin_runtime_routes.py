@@ -176,6 +176,65 @@ def test_admin_runtime_queue_omits_raw_redis_keys(monkeypatch):
     assert "insight-secret" not in serialized
 
 
+def test_admin_runtime_queue_sanitizes_processing_state(monkeypatch):
+    async def fake_queue_status():
+        return {
+            "depths": {"queued": 1, "processing": 2, "dead_letter": 0},
+            "processing_state": {
+                "active": 1,
+                "stale": 1,
+                "reclaimable": 1,
+                "missing_metadata": 0,
+                "worker_id": "worker-secret",
+            },
+            "keys": {"processing": "ai-platform:runs:processing"},
+        }
+
+    async def fake_queue_insight(tenant_id, **kwargs):
+        assert tenant_id == "default"
+        assert kwargs == {"include_user_breakdown": True}
+        return {
+            "tenant_id": tenant_id,
+            "reason": "processing_lease_reclaimable",
+            "processing_state": {
+                "active": 1,
+                "stale": 1,
+                "reclaimable": 1,
+                "missing_metadata": 0,
+                "run_id": "run-secret",
+            },
+            "raw_queue_payload": "token=queue-secret",
+        }
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_runtime.get_queue_status", fake_queue_status)
+    monkeypatch.setattr("app.routes.admin_runtime.get_queue_insight", fake_queue_insight)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/admin/runtime/queue", headers=admin_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["queue"]["processing_state"] == {
+        "active": 1,
+        "stale": 1,
+        "reclaimable": 1,
+        "missing_metadata": 0,
+    }
+    assert body["tenant_insight"]["reason"] == "processing_lease_reclaimable"
+    assert body["tenant_insight"]["processing_state"] == {
+        "active": 1,
+        "stale": 1,
+        "reclaimable": 1,
+        "missing_metadata": 0,
+    }
+    serialized = str(body)
+    assert "worker-secret" not in serialized
+    assert "run-secret" not in serialized
+    assert "queue-secret" not in serialized
+    assert "ai-platform:runs:processing" not in serialized
+
+
 def test_admin_runtime_containers_returns_provider_status(monkeypatch):
     class FakeProvider:
         async def list_runtime_containers(self, filters):
