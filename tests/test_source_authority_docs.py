@@ -1068,6 +1068,7 @@ def test_governance_docs_record_skill_dependency_review_policy_without_closing_g
         assert "ai-platform.skill-release-dashboard-contract.v1" in text
         assert "ai-platform.skill-dependency-review-policy.v1" in text
         assert "ai-platform.skill-signed-package-evidence-contract.v1" in text
+        assert "ai-platform.skill-dependency-review-runtime-acceptance.v1" in text
         assert "skill_signed_package_evidence_contract" in text
         assert "ai-platform.skill-release-review.v1" in text
         assert "sbom_reviewed" in text
@@ -1075,6 +1076,8 @@ def test_governance_docs_record_skill_dependency_review_policy_without_closing_g
         assert "vulnerability_reviewed" in text
         assert "dependency_vulnerability_or_license_policy" in text
         assert "skill_dependency_review_policy_runtime_acceptance" in text
+        assert "tools/verify_governance_runtime_smoke.py" in text
+        assert "docs/release-evidence/skill-release-runtime" in text
         assert "admin_skill_release_dashboard_contract" in text
         assert "admin_skill_release_dashboard_runtime_acceptance" in text
         assert "admin_skill_release_dashboard_visual_acceptance" in text

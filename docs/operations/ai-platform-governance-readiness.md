@@ -320,6 +320,27 @@ evidence, `skill_dependency_review_policy_runtime_acceptance`,
 dashboard are accepted through runtime/Admin release evidence. Ordinary users
 must still not be exposed to raw Skill selection or staging internals.
 
+The Skill dependency-review runtime acceptance path is now explicit but still
+open until reviewed 211 evidence exists. `tools/skill_release_readiness.py`
+publishes the
+`ai-platform.skill-dependency-review-runtime-acceptance.v1` contract, and
+`tools/verify_governance_runtime_smoke.py` emits the nested
+`skill_dependency_review_policy_runtime_acceptance` runtime payload while
+keeping the top-level verifier schema
+`ai-platform.governance-runtime-smoke.v1` for existing POC evidence consumers.
+Operators must wrap that output with
+`tools/wrap_foundation_alpha_evidence.py --gate "G6 Skill Release / Dependency Governance"`
+and store the reviewed, redacted entry under
+`docs/release-evidence/skill-release-runtime/<runtime-subject>/`. Readiness
+accepts only reviewed entries with artifact kind
+`skill_dependency_review_policy_runtime_acceptance`, verifier
+`tools/verify_governance_runtime_smoke.py`, passed redaction scan, required
+verifier checks, required Admin Runtime projection checks, and non-expansion
+invariants that keep ordinary-user multi-agent, long-term cross-session memory,
+production concurrency defaults, and Docker sandbox hardening closed. Closing
+this runtime gap does not close G6, signed package/SBOM review, dependency
+vulnerability/license review, or Admin Skill release dashboard acceptance.
+
 The same CLI can now generate a pending review-manifest template:
 `python tools/skill_release_readiness.py --review-template --skill-id <skill-id>
 --format json`. By default this writes only to stdout; operators must pass

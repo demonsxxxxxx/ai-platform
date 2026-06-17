@@ -22,10 +22,14 @@ from app.skills.registry import BuiltinSkillRegistry
 SCHEMA_VERSION = "ai-platform.skill-release-readiness.v1"
 DEPENDENCY_REVIEW_POLICY_SCHEMA_VERSION = "ai-platform.skill-dependency-review-policy.v1"
 SIGNED_PACKAGE_EVIDENCE_CONTRACT_SCHEMA_VERSION = "ai-platform.skill-signed-package-evidence-contract.v1"
+DEPENDENCY_REVIEW_RUNTIME_ACCEPTANCE_SCHEMA_VERSION = (
+    "ai-platform.skill-dependency-review-runtime-acceptance.v1"
+)
 GATE_NAME = "G6 Skill Release / Dependency Governance"
 DEPENDENCY_REVIEW_POLICY_RUNTIME_GAP = "skill_dependency_review_policy_runtime_acceptance"
 EVIDENCE_SCAFFOLD_SCHEMA_VERSION = "ai-platform.skill-release-evidence-scaffold.v1"
 _EXTERNAL_EVIDENCE_PREFIX = "external-release-evidence"
+_RUNTIME_EVIDENCE_ROOT = "docs/release-evidence/skill-release-runtime"
 
 _PACKAGE_METADATA_FILES = {"_meta.json", ".clawhub/origin.json"}
 _REQUIREMENTS_FILES = {
@@ -150,6 +154,40 @@ _DEPENDENCY_REVIEW_POLICY = {
     "rejects_placeholder_evidence_refs": True,
     "rejects_secret_like_evidence_refs": True,
     "signed_package_evidence_contract": _SIGNED_PACKAGE_EVIDENCE_CONTRACT,
+    "does_not_close_g6": True,
+}
+_DEPENDENCY_REVIEW_RUNTIME_ACCEPTANCE_CONTRACT = {
+    "schema_version": DEPENDENCY_REVIEW_RUNTIME_ACCEPTANCE_SCHEMA_VERSION,
+    "target": "211_api_admin_runtime",
+    "artifact_kind": DEPENDENCY_REVIEW_POLICY_RUNTIME_GAP,
+    "verifier_script": "tools/verify_governance_runtime_smoke.py",
+    "verifier_schema_version": "ai-platform.governance-runtime-smoke.v1",
+    "runtime_payload_schema_version": DEPENDENCY_REVIEW_RUNTIME_ACCEPTANCE_SCHEMA_VERSION,
+    "runtime_acceptance_requires_real_admin_runtime_payload": True,
+    "required_verifier_checks": [
+        "check_admin_runtime_governance_projection",
+        "check_skill_dependency_review_runtime_acceptance",
+        "check_no_secret_leakage",
+    ],
+    "required_runtime_checks": [
+        "ordinary_user_admin_runtime_denied",
+        "same_tenant_admin_runtime_projection",
+        "skill_release_readiness_present",
+        "dependency_review_policy_present",
+        "review_manifest_flags_projected",
+        "skill_inventory_summary_projected",
+        "raw_skill_package_storage_absent",
+        "executor_private_material_absent",
+        "sandbox_working_directory_absent",
+        "secret_like_values_absent",
+    ],
+    "non_expansion_invariants": {
+        "ordinary_user_multi_agent_allowed": False,
+        "long_term_cross_session_memory_enabled": False,
+        "production_concurrency_defaults_raised": False,
+        "docker_sandbox_production_hardening_claimed": False,
+    },
+    "acceptance_gap": DEPENDENCY_REVIEW_POLICY_RUNTIME_GAP,
     "does_not_close_g6": True,
 }
 _SKILL_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
@@ -729,7 +767,156 @@ def _skill_blockers(
     return blockers
 
 
-def _open_gaps(skills: list[dict[str, Any]], *, inventory_present: bool) -> list[str]:
+def _load_runtime_json(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _runtime_evidence_repo_root(runtime_root: Path) -> Path:
+    normalized = runtime_root.resolve()
+    if normalized.name == "skill-release-runtime":
+        release_evidence = normalized.parent
+        if release_evidence.name == "release-evidence" and release_evidence.parent.name == "docs":
+            return release_evidence.parent.parent
+    return normalized.parent
+
+
+def _runtime_path_for_output(path: Path, *, runtime_root: Path) -> str:
+    repo_root = _runtime_evidence_repo_root(runtime_root)
+    try:
+        return path.resolve().relative_to(repo_root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _runtime_subject(payload: dict[str, Any]) -> str:
+    source_ref = payload.get("source_ref")
+    if not isinstance(source_ref, dict):
+        return ""
+    image = str(source_ref.get("image") or "")
+    marker = str(source_ref.get("runtime_source_marker") or "")
+    if image.startswith("ai-platform:"):
+        return image.removeprefix("ai-platform:")
+    return marker
+
+
+def _runtime_verifier_checks_passed(payload: dict[str, Any]) -> bool:
+    evidence_ref = payload.get("evidence_ref")
+    runtime_checks = evidence_ref.get("runtime_checks") if isinstance(evidence_ref, dict) else {}
+    checks = runtime_checks.get("verifier_checks") if isinstance(runtime_checks, dict) else None
+    if not isinstance(checks, list):
+        return False
+    passed = {
+        item.get("name")
+        for item in checks
+        if isinstance(item, dict) and item.get("passed") is True
+    }
+    return set(_DEPENDENCY_REVIEW_RUNTIME_ACCEPTANCE_CONTRACT["required_verifier_checks"]).issubset(
+        passed
+    )
+
+
+def _runtime_acceptance_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    evidence_ref = payload.get("evidence_ref")
+    runtime_checks = evidence_ref.get("runtime_checks") if isinstance(evidence_ref, dict) else {}
+    runtime_payload = (
+        runtime_checks.get(DEPENDENCY_REVIEW_POLICY_RUNTIME_GAP)
+        if isinstance(runtime_checks, dict)
+        else None
+    )
+    return runtime_payload if isinstance(runtime_payload, dict) else None
+
+
+def _all_runtime_checks_true(evidence: dict[str, Any]) -> bool:
+    checks = evidence.get("checks")
+    if not isinstance(checks, dict):
+        return False
+    return all(
+        checks.get(field) is True
+        for field in _DEPENDENCY_REVIEW_RUNTIME_ACCEPTANCE_CONTRACT["required_runtime_checks"]
+    )
+
+
+def _runtime_acceptance_summary(
+    payload: dict[str, Any],
+    *,
+    path: Path,
+    runtime_root: Path,
+) -> dict[str, Any] | None:
+    evidence_ref = payload.get("evidence_ref")
+    if not isinstance(evidence_ref, dict):
+        return None
+    if (
+        payload.get("schema_version") != "ai-platform.release-evidence-entry.v1"
+        or payload.get("gate") != GATE_NAME
+        or payload.get("artifact_kind") != DEPENDENCY_REVIEW_POLICY_RUNTIME_GAP
+        or payload.get("redaction_scan_status") != "passed"
+        or payload.get("review_status") not in {"reviewed", "accepted"}
+        or evidence_ref.get("verifier")
+        != _DEPENDENCY_REVIEW_RUNTIME_ACCEPTANCE_CONTRACT["verifier_script"]
+        or evidence_ref.get("schema_version")
+        != _DEPENDENCY_REVIEW_RUNTIME_ACCEPTANCE_CONTRACT["verifier_schema_version"]
+        or evidence_ref.get("result") != "ok:true"
+        or not _runtime_verifier_checks_passed(payload)
+    ):
+        return None
+
+    evidence = _runtime_acceptance_payload(payload)
+    if evidence is None:
+        return None
+    if (
+        evidence.get("schema_version") != DEPENDENCY_REVIEW_RUNTIME_ACCEPTANCE_SCHEMA_VERSION
+        or evidence.get("status") != "verified_runtime_acceptance"
+        or evidence.get("target") != _DEPENDENCY_REVIEW_RUNTIME_ACCEPTANCE_CONTRACT["target"]
+        or evidence.get("runtime_acceptance_requires_real_admin_runtime_payload") is not False
+        or evidence.get("does_not_close_runtime_acceptance") is not False
+        or evidence.get("runtime_payload_verified") is not True
+        or not _all_runtime_checks_true(evidence)
+        or evidence.get("non_expansion_invariants")
+        != _DEPENDENCY_REVIEW_RUNTIME_ACCEPTANCE_CONTRACT["non_expansion_invariants"]
+    ):
+        return None
+
+    runtime_subject = _runtime_subject(payload)
+    if not runtime_subject:
+        return None
+    return {
+        "status": "verified_211_runtime_acceptance",
+        "artifact_kind": DEPENDENCY_REVIEW_POLICY_RUNTIME_GAP,
+        "evidence_id": payload.get("evidence_id"),
+        "path": _runtime_path_for_output(path, runtime_root=runtime_root),
+        "verifier": _DEPENDENCY_REVIEW_RUNTIME_ACCEPTANCE_CONTRACT["verifier_script"],
+        "runtime_subject": runtime_subject,
+        "target": evidence.get("target"),
+        "runtime_payload_verified": evidence.get("runtime_payload_verified"),
+        "does_not_close_g6": True,
+    }
+
+
+def _runtime_acceptance_evidence(runtime_evidence_root: str | Path | None) -> dict[str, dict[str, Any]]:
+    root = Path(runtime_evidence_root or _RUNTIME_EVIDENCE_ROOT)
+    if not root.is_dir():
+        return {}
+    summaries: dict[str, dict[str, Any]] = {}
+    for path in sorted(root.rglob("*.json")):
+        payload = _load_runtime_json(path)
+        if payload is None:
+            continue
+        summary = _runtime_acceptance_summary(payload, path=path, runtime_root=root)
+        if summary is not None:
+            summaries[DEPENDENCY_REVIEW_POLICY_RUNTIME_GAP] = summary
+    return summaries
+
+
+def _open_gaps(
+    skills: list[dict[str, Any]],
+    *,
+    inventory_present: bool,
+    runtime_acceptance_evidence: dict[str, dict[str, Any]],
+) -> list[str]:
     gaps: list[str] = []
     if not inventory_present:
         gaps.append("skill_inventory_missing_or_empty")
@@ -749,7 +936,8 @@ def _open_gaps(skills: list[dict[str, Any]], *, inventory_present: bool) -> list
         for item in skills
     ):
         gaps.append("dependency_vulnerability_or_license_policy")
-    gaps.append(DEPENDENCY_REVIEW_POLICY_RUNTIME_GAP)
+    if DEPENDENCY_REVIEW_POLICY_RUNTIME_GAP not in runtime_acceptance_evidence:
+        gaps.append(DEPENDENCY_REVIEW_POLICY_RUNTIME_GAP)
     return gaps
 
 
@@ -757,10 +945,12 @@ def build_skill_release_readiness(
     *,
     skills_root: str | Path = "skills",
     skill_release_evidence_root: str | Path | None = None,
+    runtime_evidence_root: str | Path | None = _RUNTIME_EVIDENCE_ROOT,
 ) -> dict[str, Any]:
     """Build a secret-safe, offline skill release governance evidence snapshot."""
     root = Path(skills_root)
     evidence_root = Path(skill_release_evidence_root) if skill_release_evidence_root is not None else None
+    runtime_acceptance_evidence = _runtime_acceptance_evidence(runtime_evidence_root)
     dashboard_readiness = build_skill_release_dashboard_readiness()
     builtin_skills = BuiltinSkillRegistry(root).list_builtin_skills()
     available_skill_ids = {skill.name for skill in builtin_skills}
@@ -805,7 +995,11 @@ def build_skill_release_readiness(
 
     inventory_present = bool(root.exists() and skill_items)
     open_gaps = [
-        *_open_gaps(skill_items, inventory_present=inventory_present),
+        *_open_gaps(
+            skill_items,
+            inventory_present=inventory_present,
+            runtime_acceptance_evidence=runtime_acceptance_evidence,
+        ),
         *dashboard_readiness["open_gaps"],
     ]
     return {
@@ -848,6 +1042,15 @@ def build_skill_release_readiness(
         },
         "skills": skill_items,
         "dependency_review_policy": deepcopy(_DEPENDENCY_REVIEW_POLICY),
+        "dependency_review_runtime_acceptance_contract": deepcopy(
+            _DEPENDENCY_REVIEW_RUNTIME_ACCEPTANCE_CONTRACT
+        ),
+        "runtime_acceptance_evidence": runtime_acceptance_evidence,
+        "closed_runtime_gaps": [
+            DEPENDENCY_REVIEW_POLICY_RUNTIME_GAP
+            for gap in [DEPENDENCY_REVIEW_POLICY_RUNTIME_GAP]
+            if gap in runtime_acceptance_evidence
+        ],
         "admin_skill_release_dashboard": dashboard_readiness,
         "open_gaps": open_gaps,
         "evidence_policy": (
@@ -1038,13 +1241,47 @@ def render_skill_release_readiness_markdown(readiness: dict[str, Any]) -> str:
             f"- Does not close G6: `{policy.get('does_not_close_g6')}`"
             f"{signed_contract_lines}"
         )
+    runtime_contract = readiness.get("dependency_review_runtime_acceptance_contract")
+    runtime_lines = "- none"
+    if isinstance(runtime_contract, dict):
+        required_checks = ", ".join(runtime_contract.get("required_runtime_checks", []))
+        verifier_checks = ", ".join(runtime_contract.get("required_verifier_checks", []))
+        closed_runtime_gaps = ", ".join(readiness.get("closed_runtime_gaps", [])) or "none"
+        runtime_evidence = readiness.get("runtime_acceptance_evidence")
+        evidence_items = ""
+        if isinstance(runtime_evidence, dict):
+            evidence_items = "\n".join(
+                f"- `{gap}`: `{item.get('status')}` via `{item.get('path')}`"
+                for gap, item in runtime_evidence.items()
+                if isinstance(item, dict)
+            )
+        runtime_lines = (
+            f"- Schema: `{runtime_contract.get('schema_version')}`\n"
+            f"- Target: `{runtime_contract.get('target')}`\n"
+            f"- Verifier: `{runtime_contract.get('verifier_script')}`\n"
+            f"- Acceptance gap: `{runtime_contract.get('acceptance_gap')}`\n"
+            f"- Runtime payload required: `{runtime_contract.get('runtime_acceptance_requires_real_admin_runtime_payload')}`\n"
+            f"- Required runtime checks: `{required_checks}`\n"
+            f"- Required verifier checks: `{verifier_checks}`\n"
+            f"- Closed runtime gaps: `{closed_runtime_gaps}`\n"
+            f"- Does not close G6: `{runtime_contract.get('does_not_close_g6')}`\n"
+            f"{evidence_items or '- Runtime evidence: none'}"
+        )
     dashboard = readiness.get("admin_skill_release_dashboard")
     dashboard_lines = "- none"
     if isinstance(dashboard, dict):
         contract = dashboard.get("dashboard_contract")
+        runtime_acceptance = dashboard.get("runtime_acceptance")
         if isinstance(contract, dict):
             dashboard_gaps = ", ".join(dashboard.get("open_gaps", []))
             dashboard_controls = ", ".join(contract.get("required_dashboard_controls", []))
+            runtime_acceptance_lines = ""
+            if isinstance(runtime_acceptance, dict):
+                runtime_acceptance_lines = (
+                    f"\n- Runtime acceptance: `{runtime_acceptance.get('status')}`"
+                    f"\n- Runtime acceptance evidence strength: `{runtime_acceptance.get('evidence_strength')}`"
+                    f"\n- Runtime acceptance does not close 211: `{runtime_acceptance.get('does_not_close_211_acceptance')}`"
+                )
             dashboard_lines = (
                 f"- Readiness schema: `{dashboard.get('schema_version')}`\n"
                 f"- Status: `{dashboard.get('status')}`\n"
@@ -1054,6 +1291,7 @@ def render_skill_release_readiness_markdown(readiness: dict[str, Any]) -> str:
                 f"- Required controls: `{dashboard_controls}`\n"
                 f"- Open gaps: `{dashboard_gaps}`\n"
                 f"- Does not close G6: `{dashboard.get('does_not_close_g6')}`"
+                f"{runtime_acceptance_lines}"
             )
     skill_lines = []
     for item in readiness["skills"]:
@@ -1080,6 +1318,8 @@ def render_skill_release_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"- Skills with vulnerability evidence: `{readiness['summary']['skills_with_vulnerability_evidence']}`\n\n"
         "## Dependency Review Policy\n\n"
         f"{policy_lines}\n\n"
+        "## Dependency Review Runtime Acceptance\n\n"
+        f"{runtime_lines}\n\n"
         "## Admin Skill Release Dashboard Contract\n\n"
         f"{dashboard_lines}\n\n"
         "## Skills\n\n"

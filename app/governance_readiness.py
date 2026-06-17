@@ -252,6 +252,7 @@ def build_governance_readiness(
                 "skill_signed_package_evidence_contract",
                 "skill_signed_package_evidence_source_validation",
                 "admin_skill_release_dashboard_contract",
+                "admin_skill_release_dashboard_runtime_acceptance_source_route_tests",
             ],
             gaps=skill_release_readiness["open_gaps"],
             next_checks=[
@@ -268,6 +269,15 @@ def build_governance_readiness(
                     "dependency_review_policy": skill_release_readiness[
                         "dependency_review_policy"
                     ],
+                    "dependency_review_runtime_acceptance_contract": skill_release_readiness[
+                        "dependency_review_runtime_acceptance_contract"
+                    ],
+                    "runtime_acceptance_evidence": skill_release_readiness[
+                        "runtime_acceptance_evidence"
+                    ],
+                    "closed_runtime_gaps": skill_release_readiness[
+                        "closed_runtime_gaps"
+                    ],
                     "open_gaps": skill_release_readiness["open_gaps"],
                 },
                 "admin_skill_release_dashboard": {
@@ -275,6 +285,7 @@ def build_governance_readiness(
                     "status": skill_release_dashboard["status"],
                     "policy": skill_release_dashboard["policy"],
                     "dashboard_contract": skill_release_dashboard["dashboard_contract"],
+                    "runtime_acceptance": skill_release_dashboard["runtime_acceptance"],
                     "open_gaps": skill_release_dashboard["open_gaps"],
                     "does_not_close_g6": skill_release_dashboard["does_not_close_g6"],
                 }
@@ -450,11 +461,27 @@ def render_governance_readiness_markdown(readiness: dict[str, Any]) -> str:
             policy = release_readiness.get("dependency_review_policy")
             if isinstance(policy, dict):
                 signed_contract = policy.get("signed_package_evidence_contract")
+                runtime_contract = release_readiness.get(
+                    "dependency_review_runtime_acceptance_contract"
+                )
                 signed_contract_line = ""
                 if isinstance(signed_contract, dict):
                     signed_contract_line = (
                         f"- signed package evidence contract `{signed_contract.get('schema_version')}` status "
                         f"`{signed_contract.get('status')}`\n"
+                    )
+                runtime_contract_line = ""
+                if isinstance(runtime_contract, dict):
+                    closed_runtime_gaps = release_readiness.get("closed_runtime_gaps")
+                    runtime_gap_status = (
+                        "closed"
+                        if isinstance(closed_runtime_gaps, list)
+                        and runtime_contract.get("acceptance_gap") in closed_runtime_gaps
+                        else "open"
+                    )
+                    runtime_contract_line = (
+                        f"- dependency review runtime acceptance `{runtime_contract.get('schema_version')}` "
+                        f"via `{runtime_contract.get('verifier_script')}`; runtime gaps {runtime_gap_status}\n"
                     )
                 evidence_lines += (
                     "\nEvidence:\n\n"
@@ -463,6 +490,7 @@ def render_governance_readiness_markdown(readiness: dict[str, Any]) -> str:
                     f"- dependency review policy `{policy.get('schema_version')}` status "
                     f"`{policy.get('status')}`\n"
                     f"{signed_contract_line}"
+                    f"{runtime_contract_line}"
                 )
         skill_dashboard = (
             evidence.get("admin_skill_release_dashboard")
@@ -477,6 +505,13 @@ def render_governance_readiness_markdown(readiness: dict[str, Any]) -> str:
                     f"- admin skill release dashboard readiness `{skill_dashboard.get('schema_version')}` status "
                     f"`{skill_dashboard.get('status')}`\n"
                     f"- admin skill release dashboard contract `{contract.get('schema_version')}`\n"
+                )
+            runtime_acceptance = skill_dashboard.get("runtime_acceptance")
+            if isinstance(runtime_acceptance, dict):
+                evidence_lines += (
+                    f"- admin skill release dashboard runtime acceptance "
+                    f"`{runtime_acceptance.get('schema_version')}` status "
+                    f"`{runtime_acceptance.get('status')}`\n"
                 )
         office_context = (
             evidence.get("office_context_pack_readiness")

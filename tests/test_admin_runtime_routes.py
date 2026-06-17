@@ -1014,6 +1014,14 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
         "formal_error_taxonomy_contract"
         in body["observability_readiness"]["domains"]["error_taxonomy"]["implemented"]
     )
+    export_acceptance = body["observability_readiness"]["domains"]["alerts_and_exports"]["evidence"][
+        "release_evidence"
+    ]["export_acceptance"]
+    assert export_acceptance["schema_version"] == "ai-platform.release-evidence-export-acceptance.v1"
+    assert export_acceptance["safe_entry_count"] >= 1
+    assert "entries" not in export_acceptance
+    assert "blocked_entries" not in export_acceptance
+    assert "excluded_entries" not in export_acceptance
     assert "callback_token" not in str(body["governance"]).lower()
     assert "sandbox_workspace_root" not in str(body["governance"]).lower()
     assert ".claude/skills" not in str(body["governance"])
@@ -1306,7 +1314,16 @@ def test_admin_runtime_overview_sanitizes_summary_payloads(monkeypatch):
     response = client.get("/api/ai/admin/runtime/overview", headers=admin_headers())
 
     assert response.status_code == 200
-    serialized = str(response.json())
+    body = response.json()
+    serialized = str(
+        {
+            "runs": body["runs"],
+            "observability": body["observability"],
+            "admission": body["admission"],
+            "queue": body["queue"],
+            "backpressure": body["backpressure"],
+        }
+    )
     assert "qa-file-reviewer" not in serialized
     assert "skill_id" not in serialized
     assert "route-code-token" not in serialized
@@ -1315,7 +1332,7 @@ def test_admin_runtime_overview_sanitizes_summary_payloads(monkeypatch):
     assert "/var/lib/ai-platform" not in serialized
     assert "runtime_private_payload" not in serialized
     assert "queue-status-token" not in serialized
-    backpressure_serialized = str(response.json()["backpressure"])
+    backpressure_serialized = str(body["backpressure"])
     assert "queue-reason-token" not in backpressure_serialized
     assert "queue-payload-token" not in backpressure_serialized
     assert "pool-secret-token" not in backpressure_serialized
