@@ -73,6 +73,79 @@ def _signed_package_evidence(**overrides):
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _valid_skill_dependency_runtime_acceptance() -> dict:
+    return {
+        "schema_version": "ai-platform.skill-dependency-review-runtime-acceptance.v1",
+        "status": "verified_runtime_acceptance",
+        "target": "211_api_admin_runtime",
+        "runtime_acceptance_requires_real_admin_runtime_payload": False,
+        "does_not_close_runtime_acceptance": False,
+        "runtime_payload_verified": True,
+        "checks": {
+            "ordinary_user_admin_runtime_denied": True,
+            "same_tenant_admin_runtime_projection": True,
+            "skill_release_readiness_present": True,
+            "dependency_review_policy_present": True,
+            "review_manifest_flags_projected": True,
+            "skill_inventory_summary_projected": True,
+            "raw_skill_package_storage_absent": True,
+            "executor_private_material_absent": True,
+            "sandbox_working_directory_absent": True,
+            "secret_like_values_absent": True,
+        },
+        "non_expansion_invariants": {
+            "ordinary_user_multi_agent_allowed": False,
+            "long_term_cross_session_memory_enabled": False,
+            "production_concurrency_defaults_raised": False,
+            "docker_sandbox_production_hardening_claimed": False,
+        },
+    }
+
+
+def _write_skill_dependency_runtime_entry(repo_root, *, runtime_payload=None) -> None:
+    evidence_dir = repo_root / "docs" / "release-evidence" / "skill-release-runtime" / "8e0389e"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": "ai-platform.release-evidence-entry.v1",
+        "evidence_id": "2026-06-17-211-skill-release-8e0389e-dependency-review-runtime-acceptance",
+        "commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
+        "runtime_subject_commit_sha": "8e0389ea621a57f3ded2044e410943cc0d298571",
+        "gate": "G6 Skill Release / Dependency Governance",
+        "issue_refs": ["#22"],
+        "pr_refs": ["#52"],
+        "artifact_kind": "skill_dependency_review_policy_runtime_acceptance",
+        "captured_at": "2026-06-17T10:00:00+08:00",
+        "source_ref": {
+            "runtime_source_marker": "8e0389ea621a57f3ded2044e410943cc0d298571",
+            "image": "ai-platform:8e0389e-main-runtime-rebase",
+            "containers": ["ai-platform-api", "ai-platform-worker"],
+            "source_tree_dirty": False,
+        },
+        "evidence_ref": {
+            "verifier": "tools/verify_governance_runtime_smoke.py",
+            "schema_version": "ai-platform.governance-runtime-smoke.v1",
+            "result": "ok:true",
+            "runtime_checks": {
+                "skill_dependency_review_policy_runtime_acceptance": runtime_payload
+                or _valid_skill_dependency_runtime_acceptance(),
+                "verifier_checks": [
+                    {"name": "check_admin_runtime_governance_projection", "passed": True},
+                    {"name": "check_skill_dependency_review_runtime_acceptance", "passed": True},
+                    {"name": "check_no_secret_leakage", "passed": True},
+                ],
+            },
+        },
+        "redaction_scan_status": "passed",
+        "review_status": "reviewed",
+        "review_notes": [
+            "Reviewed 211 Admin Runtime projection for Skill dependency review policy acceptance.",
+            "This closes only skill_dependency_review_policy_runtime_acceptance and does not close G6.",
+        ],
+    }
+    target = evidence_dir / f"{payload['evidence_id']}.json"
+    target.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
 def test_skill_release_dashboard_readiness_contract_is_safe_and_does_not_close_g6():
     readiness = build_skill_release_dashboard_readiness()
 
@@ -194,6 +267,31 @@ def test_skill_release_readiness_records_policy_gaps_without_secret_or_absolute_
     assert policy["rejects_placeholder_evidence_refs"] is True
     assert policy["rejects_secret_like_evidence_refs"] is True
     assert policy["does_not_close_g6"] is True
+    runtime_contract = readiness["dependency_review_runtime_acceptance_contract"]
+    assert runtime_contract["schema_version"] == (
+        "ai-platform.skill-dependency-review-runtime-acceptance.v1"
+    )
+    assert runtime_contract["verifier_script"] == "tools/verify_governance_runtime_smoke.py"
+    assert runtime_contract["verifier_schema_version"] == "ai-platform.governance-runtime-smoke.v1"
+    assert runtime_contract["runtime_payload_schema_version"] == (
+        "ai-platform.skill-dependency-review-runtime-acceptance.v1"
+    )
+    assert runtime_contract["target"] == "211_api_admin_runtime"
+    assert runtime_contract["acceptance_gap"] == "skill_dependency_review_policy_runtime_acceptance"
+    assert runtime_contract["runtime_acceptance_requires_real_admin_runtime_payload"] is True
+    assert "check_skill_dependency_review_runtime_acceptance" in runtime_contract[
+        "required_verifier_checks"
+    ]
+    assert "review_manifest_flags_projected" in runtime_contract["required_runtime_checks"]
+    assert runtime_contract["non_expansion_invariants"] == {
+        "ordinary_user_multi_agent_allowed": False,
+        "long_term_cross_session_memory_enabled": False,
+        "production_concurrency_defaults_raised": False,
+        "docker_sandbox_production_hardening_claimed": False,
+    }
+    assert runtime_contract["does_not_close_g6"] is True
+    assert readiness["runtime_acceptance_evidence"] == {}
+    assert readiness["closed_runtime_gaps"] == []
     signed_contract = policy["signed_package_evidence_contract"]
     assert signed_contract["schema_version"] == "ai-platform.skill-signed-package-evidence-contract.v1"
     assert signed_contract["status"] == "source_validation_enabled_not_evidence_satisfied"
@@ -268,6 +366,12 @@ def test_skill_release_readiness_markdown_is_gap_first_and_operator_readable(tmp
     assert "dependency_vulnerability_or_license_policy" in markdown
     assert "ai-platform.skill-dependency-review-policy.v1" in markdown
     assert "ai-platform.skill-signed-package-evidence-contract.v1" in markdown
+    assert "## Dependency Review Runtime Acceptance" in markdown
+    assert "ai-platform.skill-dependency-review-runtime-acceptance.v1" in markdown
+    assert "tools/verify_governance_runtime_smoke.py" in markdown
+    assert "skill_dependency_review_policy_runtime_acceptance" in markdown
+    assert "check_skill_dependency_review_runtime_acceptance" in markdown
+    assert "Runtime evidence: none" in markdown
     assert "ai-platform.skill-release-dashboard-contract.v1" in markdown
     assert "admin_skill_release_dashboard_runtime_acceptance" in markdown
     assert "source_validation_enabled_not_evidence_satisfied" in markdown
@@ -671,6 +775,93 @@ def test_skill_release_review_manifest_accepts_valid_signed_package_evidence(tmp
     assert skill["release_review"]["status"] == "passed"
     assert skill["release_review"]["evidence_files_verified"] is True
     assert skill["blockers"] == []
+
+
+def test_skill_release_readiness_closes_only_runtime_gap_from_reviewed_runtime_acceptance(
+    tmp_path,
+):
+    skills_root = tmp_path / "skills"
+    _write_skill(
+        skills_root,
+        "general-chat",
+        "Default chat capability.",
+        {
+            "evidence/ai-platform-signed-package-evidence.json": _signed_package_evidence(),
+            "legal/LICENSE": "reviewed license text",
+            "security/npm-audit.json": "{}",
+            "ai-platform-skill-release-review.json": _passed_review_manifest(
+                "general-chat",
+                {
+                    "sbom_or_signed_package": ["evidence/ai-platform-signed-package-evidence.json"],
+                    "license_policy": ["legal/LICENSE"],
+                    "vulnerability_scan": ["security/npm-audit.json"],
+                },
+            ),
+        },
+    )
+    _write_skill_dependency_runtime_entry(tmp_path)
+
+    readiness = build_skill_release_readiness(
+        skills_root=skills_root,
+        skill_release_evidence_root=tmp_path / "docs" / "release-evidence" / "skill-release",
+        runtime_evidence_root=tmp_path / "docs" / "release-evidence" / "skill-release-runtime",
+    )
+
+    assert "skill_dependency_review_policy_runtime_acceptance" not in readiness["open_gaps"]
+    assert readiness["closed_runtime_gaps"] == [
+        "skill_dependency_review_policy_runtime_acceptance"
+    ]
+    assert readiness["runtime_acceptance_evidence"][
+        "skill_dependency_review_policy_runtime_acceptance"
+    ] == {
+        "artifact_kind": "skill_dependency_review_policy_runtime_acceptance",
+        "does_not_close_g6": True,
+        "evidence_id": "2026-06-17-211-skill-release-8e0389e-dependency-review-runtime-acceptance",
+        "path": "docs/release-evidence/skill-release-runtime/8e0389e/2026-06-17-211-skill-release-8e0389e-dependency-review-runtime-acceptance.json",
+        "runtime_payload_verified": True,
+        "runtime_subject": "8e0389e-main-runtime-rebase",
+        "status": "verified_211_runtime_acceptance",
+        "target": "211_api_admin_runtime",
+        "verifier": "tools/verify_governance_runtime_smoke.py",
+    }
+    assert readiness["status"] == "partial_blocked"
+    assert readiness["open_gaps"] == _DASHBOARD_GAPS
+
+
+def test_skill_dependency_runtime_acceptance_fails_closed_on_expansion_invariant(
+    tmp_path,
+):
+    skills_root = tmp_path / "skills"
+    _write_skill(
+        skills_root,
+        "general-chat",
+        "Default chat capability.",
+        {
+            "evidence/sbom.json": "{}",
+            "legal/LICENSE": "reviewed license text",
+            "security/npm-audit.json": "{}",
+            "ai-platform-skill-release-review.json": _passed_review_manifest(
+                "general-chat",
+                {
+                    "sbom_or_signed_package": ["evidence/sbom.json"],
+                    "license_policy": ["legal/LICENSE"],
+                    "vulnerability_scan": ["security/npm-audit.json"],
+                },
+            ),
+        },
+    )
+    runtime_payload = _valid_skill_dependency_runtime_acceptance()
+    runtime_payload["non_expansion_invariants"]["ordinary_user_multi_agent_allowed"] = True
+    _write_skill_dependency_runtime_entry(tmp_path, runtime_payload=runtime_payload)
+
+    readiness = build_skill_release_readiness(
+        skills_root=skills_root,
+        runtime_evidence_root=tmp_path / "docs" / "release-evidence" / "skill-release-runtime",
+    )
+
+    assert "skill_dependency_review_policy_runtime_acceptance" in readiness["open_gaps"]
+    assert readiness["closed_runtime_gaps"] == []
+    assert readiness["runtime_acceptance_evidence"] == {}
 
 
 def test_skill_release_review_manifest_rejects_invalid_signed_package_evidence(tmp_path):

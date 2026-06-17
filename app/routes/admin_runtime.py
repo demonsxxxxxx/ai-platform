@@ -85,6 +85,44 @@ def _governance_overview_projection(settings: object) -> dict[str, object]:
     return readiness
 
 
+def _observability_readiness_overview_projection(settings: object) -> dict[str, object]:
+    readiness = _sanitize_dict(build_observability_readiness(settings))
+    domains = readiness.get("domains")
+    if not isinstance(domains, dict):
+        return readiness
+    alerts = domains.get("alerts_and_exports")
+    if not isinstance(alerts, dict):
+        return readiness
+    evidence = alerts.get("evidence")
+    if not isinstance(evidence, dict):
+        return readiness
+    release_evidence = evidence.get("release_evidence")
+    if not isinstance(release_evidence, dict):
+        return readiness
+    export_acceptance = release_evidence.get("export_acceptance")
+    if isinstance(export_acceptance, dict):
+        evidence_summary_keys = {
+            "schema_version",
+            "gate",
+            "status",
+            "export_policy",
+            "evidence_root",
+            "entry_count",
+            "safe_entry_count",
+            "blockers",
+            "blocked_entry_count",
+            "excluded_entry_count",
+            "safe_entry_fields",
+            "open_gaps",
+            "does_not_export_raw_runtime_payloads",
+            "does_not_close_g9",
+        }
+        release_evidence["export_acceptance"] = {
+            key: value for key, value in export_acceptance.items() if key in evidence_summary_keys
+        }
+    return readiness
+
+
 def _drop_overview_forbidden_keys(value: object) -> object:
     if isinstance(value, dict):
         cleaned: dict[str, object] = {}
@@ -591,7 +629,7 @@ async def admin_runtime_overview(
         "observability": _sanitize_observability_summary(observability_summary),
         "capacity": capacity,
         "governance": _governance_overview_projection(get_settings()),
-        "observability_readiness": build_observability_readiness(get_settings()),
+        "observability_readiness": _observability_readiness_overview_projection(get_settings()),
         "database_pool": database_pool,
         "admission": admission,
         "backpressure": _backpressure_snapshot(

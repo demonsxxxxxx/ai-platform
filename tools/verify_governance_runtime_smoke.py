@@ -25,6 +25,10 @@ from tools.verify_auth_rbac_smoke import (
 
 
 SCHEMA_VERSION = "ai-platform.governance-runtime-smoke.v1"
+SKILL_DEPENDENCY_RUNTIME_ACCEPTANCE_SCHEMA_VERSION = (
+    "ai-platform.skill-dependency-review-runtime-acceptance.v1"
+)
+SKILL_DEPENDENCY_RUNTIME_GAP = "skill_dependency_review_policy_runtime_acceptance"
 ADMIN_RUNTIME_ROUTE = "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"
 GOVERNANCE_SCHEMA_VERSION = "ai-platform.governance-readiness.v1"
 REQUIRED_GOVERNANCE_DOMAINS = (
@@ -60,6 +64,29 @@ ALLOWED_POLICY_TEXT_PATH_PARTS = {
     "forbidden_payload_classes",
     "next_checks",
 }
+REQUIRED_SKILL_REVIEW_FLAGS = (
+    "sbom_reviewed",
+    "license_policy_reviewed",
+    "vulnerability_reviewed",
+)
+SKILL_DEPENDENCY_RUNTIME_CHECKS = (
+    "ordinary_user_admin_runtime_denied",
+    "same_tenant_admin_runtime_projection",
+    "skill_release_readiness_present",
+    "dependency_review_policy_present",
+    "review_manifest_flags_projected",
+    "skill_inventory_summary_projected",
+    "raw_skill_package_storage_absent",
+    "executor_private_material_absent",
+    "sandbox_working_directory_absent",
+    "secret_like_values_absent",
+)
+SKILL_DEPENDENCY_NON_EXPANSION_INVARIANTS = {
+    "ordinary_user_multi_agent_allowed": False,
+    "long_term_cross_session_memory_enabled": False,
+    "production_concurrency_defaults_raised": False,
+    "docker_sandbox_production_hardening_claimed": False,
+}
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -90,6 +117,17 @@ def _contains_key_recursive(value: Any, key_name: str) -> bool:
         )
     if isinstance(value, list):
         return any(_contains_key_recursive(item, key_name) for item in value)
+    return False
+
+
+def _contains_any_key_recursive(value: Any, key_names: set[str]) -> bool:
+    if isinstance(value, dict):
+        return any(
+            str(key) in key_names or _contains_any_key_recursive(item, key_names)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_contains_any_key_recursive(item, key_names) for item in value)
     return False
 
 
@@ -141,12 +179,35 @@ def _tool_permission_summary(domain: dict[str, Any]) -> dict[str, object]:
 
 def _skill_governance_summary(domain: dict[str, Any]) -> dict[str, object]:
     evidence = _as_dict(domain.get("evidence"))
-    dashboard = _as_dict(evidence.get("admin_skill_release_dashboard"))
+    release_readiness = _as_dict(evidence.get("release_readiness"))
+    dependency_policy = _as_dict(release_readiness.get("dependency_review_policy"))
+    runtime_contract = _as_dict(release_readiness.get("dependency_review_runtime_acceptance_contract"))
+    review_flags = {str(item) for item in _as_list(dependency_policy.get("required_review_flags"))}
+    inventory_summary = _as_dict(release_readiness.get("summary"))
+    runtime_gaps = {str(item) for item in _as_list(release_readiness.get("open_gaps"))}
     return {
         "domain_status": str(domain.get("status") or ""),
-        "release_readiness_present": isinstance(evidence.get("release_readiness"), dict),
+        "release_readiness_present": bool(release_readiness),
         "dashboard_present": isinstance(evidence.get("admin_skill_release_dashboard"), dict),
         "dashboard_contract_exposed": _contains_key_recursive(evidence, "dashboard_contract"),
+        "dependency_review_policy_present": (
+            dependency_policy.get("schema_version") == "ai-platform.skill-dependency-review-policy.v1"
+            and dependency_policy.get("does_not_close_g6") is True
+        ),
+        "runtime_acceptance_contract_present": (
+            runtime_contract.get("schema_version") == SKILL_DEPENDENCY_RUNTIME_ACCEPTANCE_SCHEMA_VERSION
+            and runtime_contract.get("verifier_script") == "tools/verify_governance_runtime_smoke.py"
+            and runtime_contract.get("verifier_schema_version") == SCHEMA_VERSION
+            and runtime_contract.get("runtime_payload_schema_version")
+            == SKILL_DEPENDENCY_RUNTIME_ACCEPTANCE_SCHEMA_VERSION
+            and runtime_contract.get("target") == "211_api_admin_runtime"
+            and runtime_contract.get("acceptance_gap") == SKILL_DEPENDENCY_RUNTIME_GAP
+            and runtime_contract.get("does_not_close_g6") is True
+        ),
+        "review_manifest_flags_projected": set(REQUIRED_SKILL_REVIEW_FLAGS).issubset(review_flags),
+        "skill_inventory_summary_projected": isinstance(inventory_summary.get("total_skills"), int)
+        and inventory_summary.get("total_skills", 0) >= 1,
+        "runtime_gap_open": SKILL_DEPENDENCY_RUNTIME_GAP in runtime_gaps,
         "implemented_version_registry": _has_implemented(domain, "skill_version_registry"),
         "implemented_snapshot_lock": _has_implemented(domain, "skill_snapshot_and_release_decision_lock"),
         "gap_count": len(_as_list(domain.get("gaps"))),
@@ -209,6 +270,10 @@ def _governance_summary_ok(summary: dict[str, object]) -> bool:
         and bool(tool_permission.get("implemented_policy_taxonomy"))
         and bool(tool_permission.get("implemented_bulk_review_dashboard"))
         and bool(skill_governance.get("release_readiness_present"))
+        and bool(skill_governance.get("dependency_review_policy_present"))
+        and bool(skill_governance.get("runtime_acceptance_contract_present"))
+        and bool(skill_governance.get("review_manifest_flags_projected"))
+        and bool(skill_governance.get("skill_inventory_summary_projected"))
         and bool(skill_governance.get("dashboard_present"))
         and not bool(skill_governance.get("dashboard_contract_exposed"))
         and bool(skill_governance.get("implemented_version_registry"))
@@ -218,6 +283,81 @@ def _governance_summary_ok(summary: dict[str, object]) -> bool:
         and bool(memory_governance.get("office_context_readiness_present"))
         and not bool(summary.get("forbidden_projection_terms_present"))
     )
+
+
+def _skill_dependency_review_runtime_acceptance(
+    *,
+    ordinary_status: int,
+    ordinary_detail: str,
+    admin_status: int,
+    admin_summary: dict[str, object],
+    admin_payload: Any,
+    redaction_failed: bool,
+) -> dict[str, object]:
+    skill_governance = _as_dict(admin_summary.get("skill_governance"))
+    forbidden_keys_present = _contains_any_key_recursive(
+        admin_payload,
+        {
+            "executor_private_payload",
+            "runtime_private_payload",
+            "private_payload",
+            "sandbox_workdir",
+            "storage_key",
+            "raw_storage_key",
+        },
+    )
+    checks = {
+        "ordinary_user_admin_runtime_denied": (
+            ordinary_status == 403 and ordinary_detail == "not_ai_admin"
+        ),
+        "same_tenant_admin_runtime_projection": (
+            admin_status == 200 and admin_summary.get("tenant_matches_requested") is True
+        ),
+        "skill_release_readiness_present": skill_governance.get("release_readiness_present") is True,
+        "dependency_review_policy_present": (
+            skill_governance.get("dependency_review_policy_present") is True
+        ),
+        "review_manifest_flags_projected": (
+            skill_governance.get("review_manifest_flags_projected") is True
+        ),
+        "skill_inventory_summary_projected": (
+            skill_governance.get("skill_inventory_summary_projected") is True
+        ),
+        "raw_skill_package_storage_absent": not forbidden_keys_present,
+        "executor_private_material_absent": not forbidden_keys_present,
+        "sandbox_working_directory_absent": not forbidden_keys_present,
+        "secret_like_values_absent": not redaction_failed,
+    }
+    runtime_payload_verified = all(checks.get(name) is True for name in SKILL_DEPENDENCY_RUNTIME_CHECKS)
+    return {
+        "schema_version": SKILL_DEPENDENCY_RUNTIME_ACCEPTANCE_SCHEMA_VERSION,
+        "status": "verified_runtime_acceptance" if runtime_payload_verified else "blocked_runtime_acceptance",
+        "target": "211_api_admin_runtime",
+        "runtime_acceptance_requires_real_admin_runtime_payload": False,
+        "does_not_close_runtime_acceptance": False,
+        "runtime_payload_verified": runtime_payload_verified,
+        "checks": checks,
+        "non_expansion_invariants": dict(SKILL_DEPENDENCY_NON_EXPANSION_INVARIANTS),
+    }
+
+
+def _verifier_checks(
+    *,
+    governance_projection_ok: bool,
+    skill_dependency_acceptance: dict[str, object],
+    redaction_failed: bool,
+) -> list[dict[str, object]]:
+    return [
+        {
+            "name": "check_admin_runtime_governance_projection",
+            "passed": governance_projection_ok,
+        },
+        {
+            "name": "check_skill_dependency_review_runtime_acceptance",
+            "passed": skill_dependency_acceptance.get("runtime_payload_verified") is True,
+        },
+        {"name": "check_no_secret_leakage", "passed": not redaction_failed},
+    ]
 
 
 def build_governance_runtime_smoke(
@@ -261,11 +401,31 @@ def build_governance_runtime_smoke(
             bool(admin_summary["forbidden_projection_terms_present"]),
         ]
     )
+    ordinary_detail = _detail(ordinary_payload, redactions=(gateway_secret,))
+    governance_projection_ok = (
+        ordinary_status == 403
+        and ordinary_detail == "not_ai_admin"
+        and admin_status == 200
+        and _governance_summary_ok(admin_summary)
+    )
+    skill_dependency_acceptance = _skill_dependency_review_runtime_acceptance(
+        ordinary_status=ordinary_status,
+        ordinary_detail=ordinary_detail,
+        admin_status=admin_status,
+        admin_summary=admin_summary,
+        admin_payload=admin_payload,
+        redaction_failed=redaction_failed,
+    )
+    verifier_checks = _verifier_checks(
+        governance_projection_ok=governance_projection_ok,
+        skill_dependency_acceptance=skill_dependency_acceptance,
+        redaction_failed=redaction_failed,
+    )
     checks = {
         "ordinary_admin_runtime": {
             "route": ADMIN_RUNTIME_ROUTE,
             "status": ordinary_status,
-            "detail": _detail(ordinary_payload, redactions=(gateway_secret,)),
+            "detail": ordinary_detail,
             "expected_status": 403,
         },
         "admin_runtime_governance": {
@@ -274,14 +434,10 @@ def build_governance_runtime_smoke(
             "expected_status": 200,
             **admin_summary,
         },
+        SKILL_DEPENDENCY_RUNTIME_GAP: skill_dependency_acceptance,
+        "verifier_checks": verifier_checks,
     }
-    ok = (
-        ordinary_status == 403
-        and checks["ordinary_admin_runtime"]["detail"] == "not_ai_admin"
-        and admin_status == 200
-        and _governance_summary_ok(admin_summary)
-        and not redaction_failed
-    )
+    ok = governance_projection_ok and skill_dependency_acceptance["runtime_payload_verified"] is True and not redaction_failed
     return {
         "schema_version": SCHEMA_VERSION,
         "ok": ok,

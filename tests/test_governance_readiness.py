@@ -151,6 +151,32 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
         "enabled_for_repository_signed_package_evidence_json"
     )
     assert release_evidence["dependency_review_policy"]["does_not_close_g6"] is True
+    runtime_contract = release_evidence["dependency_review_runtime_acceptance_contract"]
+    assert runtime_contract["schema_version"] == (
+        "ai-platform.skill-dependency-review-runtime-acceptance.v1"
+    )
+    assert runtime_contract["verifier_script"] == "tools/verify_governance_runtime_smoke.py"
+    assert runtime_contract["verifier_schema_version"] == "ai-platform.governance-runtime-smoke.v1"
+    assert runtime_contract["runtime_payload_schema_version"] == (
+        "ai-platform.skill-dependency-review-runtime-acceptance.v1"
+    )
+    assert runtime_contract["target"] == "211_api_admin_runtime"
+    assert runtime_contract["acceptance_gap"] == "skill_dependency_review_policy_runtime_acceptance"
+    assert runtime_contract["runtime_acceptance_requires_real_admin_runtime_payload"] is True
+    assert "check_admin_runtime_governance_projection" in runtime_contract["required_verifier_checks"]
+    assert "check_skill_dependency_review_runtime_acceptance" in runtime_contract[
+        "required_verifier_checks"
+    ]
+    assert "review_manifest_flags_projected" in runtime_contract["required_runtime_checks"]
+    assert runtime_contract["non_expansion_invariants"] == {
+        "ordinary_user_multi_agent_allowed": False,
+        "long_term_cross_session_memory_enabled": False,
+        "production_concurrency_defaults_raised": False,
+        "docker_sandbox_production_hardening_claimed": False,
+    }
+    assert runtime_contract["does_not_close_g6"] is True
+    assert release_evidence["runtime_acceptance_evidence"] == {}
+    assert release_evidence["closed_runtime_gaps"] == []
     assert "signed_skill_package_or_sbom_release_gate" in release_evidence["open_gaps"]
     assert "dependency_vulnerability_or_license_policy" in release_evidence["open_gaps"]
     assert "skill_dependency_review_policy_runtime_acceptance" in release_evidence["open_gaps"]
@@ -467,6 +493,10 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     assert "skill_dependency_review_policy_contract" in markdown
     assert "skill_dependency_review_policy_runtime_acceptance" in markdown
     assert "ai-platform.skill-dependency-review-policy.v1" in markdown
+    assert "dependency review runtime acceptance" in markdown
+    assert "ai-platform.skill-dependency-review-runtime-acceptance.v1" in markdown
+    assert "tools/verify_governance_runtime_smoke.py" in markdown
+    assert "runtime gaps open" in markdown
     assert "skill_signed_package_evidence_contract" in markdown
     assert "ai-platform.skill-signed-package-evidence-contract.v1" in markdown
     assert "admin_skill_release_dashboard_contract" in markdown

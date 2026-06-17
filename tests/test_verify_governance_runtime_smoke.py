@@ -81,6 +81,61 @@ def governance_payload(tenant_id="default", *, overrides=None):
                         "release_readiness": {
                             "schema_version": "ai-platform.skill-release-readiness.v1",
                             "status": "partial_blocked",
+                            "summary": {
+                                "total_skills": 2,
+                                "public_workbench_skills": 1,
+                                "internal_dependency_skills": 1,
+                                "skills_with_declared_dependencies": 1,
+                            },
+                            "dependency_review_policy": {
+                                "schema_version": "ai-platform.skill-dependency-review-policy.v1",
+                                "status": "contract_only_not_runtime_satisfied",
+                                "required_review_flags": [
+                                    "sbom_reviewed",
+                                    "license_policy_reviewed",
+                                    "vulnerability_reviewed",
+                                ],
+                                "does_not_close_g6": True,
+                            },
+                            "dependency_review_runtime_acceptance_contract": {
+                                "schema_version": (
+                                    "ai-platform.skill-dependency-review-runtime-acceptance.v1"
+                                ),
+                                "verifier_script": "tools/verify_governance_runtime_smoke.py",
+                                "verifier_schema_version": "ai-platform.governance-runtime-smoke.v1",
+                                "runtime_payload_schema_version": (
+                                    "ai-platform.skill-dependency-review-runtime-acceptance.v1"
+                                ),
+                                "target": "211_api_admin_runtime",
+                                "acceptance_gap": "skill_dependency_review_policy_runtime_acceptance",
+                                "runtime_acceptance_requires_real_admin_runtime_payload": True,
+                                "required_verifier_checks": [
+                                    "check_admin_runtime_governance_projection",
+                                    "check_skill_dependency_review_runtime_acceptance",
+                                    "check_no_secret_leakage",
+                                ],
+                                "required_runtime_checks": [
+                                    "ordinary_user_admin_runtime_denied",
+                                    "same_tenant_admin_runtime_projection",
+                                    "skill_release_readiness_present",
+                                    "dependency_review_policy_present",
+                                    "review_manifest_flags_projected",
+                                    "skill_inventory_summary_projected",
+                                    "raw_skill_package_storage_absent",
+                                    "executor_private_material_absent",
+                                    "sandbox_working_directory_absent",
+                                    "secret_like_values_absent",
+                                ],
+                                "non_expansion_invariants": {
+                                    "ordinary_user_multi_agent_allowed": False,
+                                    "long_term_cross_session_memory_enabled": False,
+                                    "production_concurrency_defaults_raised": False,
+                                    "docker_sandbox_production_hardening_claimed": False,
+                                },
+                                "does_not_close_g6": True,
+                            },
+                            "closed_runtime_gaps": [],
+                            "runtime_acceptance_evidence": {},
                             "open_gaps": ["skill_dependency_review_policy_runtime_acceptance"],
                         },
                         "admin_skill_release_dashboard": {
@@ -181,6 +236,20 @@ class MissingImplementedControlHandler(GovernanceRuntimeHandler):
         super().do_GET()
 
 
+class MissingDependencyReviewPolicyHandler(GovernanceRuntimeHandler):
+    def do_GET(self):  # noqa: N802
+        if self.path.startswith("/api/ai/admin/runtime/overview") and "admin" in self.headers.get("X-AI-Roles", ""):
+            payload = governance_payload(self.headers.get("X-AI-Tenant-ID", "default"))
+            release_readiness = payload["governance"]["domains"]["skill_governance"]["evidence"][
+                "release_readiness"
+            ]
+            release_readiness.pop("dependency_review_policy")
+            release_readiness["summary"] = {}
+            self._send_json(200, payload)
+            return
+        super().do_GET()
+
+
 class LeakyGovernanceHandler(GovernanceRuntimeHandler):
     def do_GET(self):  # noqa: N802
         if self.path.startswith("/api/ai/admin/runtime/overview") and "admin" in self.headers.get("X-AI-Roles", ""):
@@ -261,6 +330,11 @@ def test_governance_runtime_smoke_checks_admin_only_governance_domains_and_redac
     assert admin["tool_permission"]["implemented_policy_taxonomy"] is True
     assert admin["tool_permission"]["implemented_bulk_review_dashboard"] is True
     assert admin["skill_governance"]["release_readiness_present"] is True
+    assert admin["skill_governance"]["dependency_review_policy_present"] is True
+    assert admin["skill_governance"]["runtime_acceptance_contract_present"] is True
+    assert admin["skill_governance"]["review_manifest_flags_projected"] is True
+    assert admin["skill_governance"]["skill_inventory_summary_projected"] is True
+    assert admin["skill_governance"]["runtime_gap_open"] is True
     assert admin["skill_governance"]["dashboard_present"] is True
     assert admin["skill_governance"]["dashboard_contract_exposed"] is False
     assert admin["skill_governance"]["implemented_version_registry"] is True
@@ -268,6 +342,37 @@ def test_governance_runtime_smoke_checks_admin_only_governance_domains_and_redac
     assert admin["memory_governance"]["long_term_fail_closed_present"] is True
     assert admin["memory_governance"]["context_provenance_present"] is True
     assert admin["memory_governance"]["office_context_readiness_present"] is True
+    acceptance = payload["checks"]["skill_dependency_review_policy_runtime_acceptance"]
+    assert acceptance == {
+        "schema_version": "ai-platform.skill-dependency-review-runtime-acceptance.v1",
+        "status": "verified_runtime_acceptance",
+        "target": "211_api_admin_runtime",
+        "runtime_acceptance_requires_real_admin_runtime_payload": False,
+        "does_not_close_runtime_acceptance": False,
+        "runtime_payload_verified": True,
+        "checks": {
+            "ordinary_user_admin_runtime_denied": True,
+            "same_tenant_admin_runtime_projection": True,
+            "skill_release_readiness_present": True,
+            "dependency_review_policy_present": True,
+            "review_manifest_flags_projected": True,
+            "skill_inventory_summary_projected": True,
+            "raw_skill_package_storage_absent": True,
+            "executor_private_material_absent": True,
+            "sandbox_working_directory_absent": True,
+            "secret_like_values_absent": True,
+        },
+        "non_expansion_invariants": {
+            "ordinary_user_multi_agent_allowed": False,
+            "long_term_cross_session_memory_enabled": False,
+            "production_concurrency_defaults_raised": False,
+            "docker_sandbox_production_hardening_claimed": False,
+        },
+    }
+    verifier_checks = payload["checks"]["verifier_checks"]
+    assert {"name": "check_admin_runtime_governance_projection", "passed": True} in verifier_checks
+    assert {"name": "check_skill_dependency_review_runtime_acceptance", "passed": True} in verifier_checks
+    assert {"name": "check_no_secret_leakage", "passed": True} in verifier_checks
     serialized = json.dumps(payload, ensure_ascii=False).lower()
     assert "test-secret" not in serialized
     assert "executor_private_payload" not in serialized
@@ -309,6 +414,38 @@ def test_governance_runtime_smoke_fails_closed_when_implemented_controls_missing
     assert admin["tool_permission"]["implemented_bulk_review_dashboard"] is False
     assert admin["skill_governance"]["implemented_version_registry"] is False
     assert admin["skill_governance"]["implemented_snapshot_lock"] is False
+    acceptance = payload["checks"]["skill_dependency_review_policy_runtime_acceptance"]
+    assert acceptance["runtime_payload_verified"] is True
+    assert {"name": "check_admin_runtime_governance_projection", "passed": False} in payload[
+        "checks"
+    ]["verifier_checks"]
+    assert {"name": "check_skill_dependency_review_runtime_acceptance", "passed": True} in payload[
+        "checks"
+    ]["verifier_checks"]
+
+
+def test_governance_runtime_smoke_fails_closed_when_dependency_review_policy_missing():
+    smoke = load_smoke_module()
+    server = run_server(MissingDependencyReviewPolicyHandler)
+    try:
+        payload = smoke.build_governance_runtime_smoke(
+            base_url=f"http://127.0.0.1:{server.server_port}",
+            gateway_secret="test-secret",
+            timeout_seconds=5,
+        )
+    finally:
+        server.shutdown()
+
+    assert payload["ok"] is False
+    acceptance = payload["checks"]["skill_dependency_review_policy_runtime_acceptance"]
+    assert acceptance["status"] == "blocked_runtime_acceptance"
+    assert acceptance["runtime_payload_verified"] is False
+    assert acceptance["checks"]["dependency_review_policy_present"] is False
+    assert acceptance["checks"]["review_manifest_flags_projected"] is False
+    assert acceptance["checks"]["skill_inventory_summary_projected"] is False
+    assert {"name": "check_skill_dependency_review_runtime_acceptance", "passed": False} in payload[
+        "checks"
+    ]["verifier_checks"]
 
 
 def test_governance_runtime_smoke_fails_closed_on_private_projection_marker():

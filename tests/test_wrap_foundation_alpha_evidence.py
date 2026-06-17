@@ -89,6 +89,93 @@ def test_wraps_auth_rbac_verifier_output_as_reviewed_release_evidence_entry():
     }
 
 
+def test_wraps_skill_dependency_runtime_acceptance_under_g6_gate():
+    runtime_acceptance = {
+        "schema_version": "ai-platform.skill-dependency-review-runtime-acceptance.v1",
+        "status": "verified_runtime_acceptance",
+        "target": "211_api_admin_runtime",
+        "runtime_acceptance_requires_real_admin_runtime_payload": False,
+        "does_not_close_runtime_acceptance": False,
+        "runtime_payload_verified": True,
+        "checks": {
+            "ordinary_user_admin_runtime_denied": True,
+            "same_tenant_admin_runtime_projection": True,
+            "skill_release_readiness_present": True,
+            "dependency_review_policy_present": True,
+            "review_manifest_flags_projected": True,
+            "skill_inventory_summary_projected": True,
+            "raw_skill_package_storage_absent": True,
+            "executor_private_material_absent": True,
+            "sandbox_working_directory_absent": True,
+            "secret_like_values_absent": True,
+        },
+        "non_expansion_invariants": {
+            "ordinary_user_multi_agent_allowed": False,
+            "long_term_cross_session_memory_enabled": False,
+            "production_concurrency_defaults_raised": False,
+            "docker_sandbox_production_hardening_claimed": False,
+        },
+    }
+    verifier_output = {
+        "schema_version": "ai-platform.governance-runtime-smoke.v1",
+        "ok": True,
+        "redaction_scan_status": "passed",
+        "source": {
+            "commit_sha": COMMIT,
+            "gateway_secret_supplied": True,
+            "image": IMAGE,
+        },
+        "checks": {
+            "ordinary_admin_runtime": {"status": 403, "detail": "not_ai_admin"},
+            "admin_runtime_governance": {
+                "status": 200,
+                "tenant_matches_requested": True,
+                "governance_schema_version": "ai-platform.governance-readiness.v1",
+                "governance_status_allowed": True,
+                "required_domains_present": True,
+                "forbidden_projection_terms_present": False,
+            },
+            "skill_dependency_review_policy_runtime_acceptance": runtime_acceptance,
+            "verifier_checks": [
+                {"name": "check_admin_runtime_governance_projection", "passed": True},
+                {"name": "check_skill_dependency_review_runtime_acceptance", "passed": True},
+                {"name": "check_no_secret_leakage", "passed": True},
+            ],
+        },
+    }
+
+    entry = build_release_evidence_entry(
+        evidence_id="2026-06-17-211-skill-release-8e0389e-dependency-review-runtime-acceptance",
+        verifier="tools/verify_governance_runtime_smoke.py",
+        artifact_kind="skill_dependency_review_policy_runtime_acceptance",
+        gate="G6 Skill Release / Dependency Governance",
+        verifier_output=verifier_output,
+        commit_sha=COMMIT,
+        runtime_subject_commit_sha=COMMIT,
+        captured_at="2026-06-17T10:00:00+08:00",
+        image=IMAGE,
+        image_id=IMAGE_ID,
+        image_labels=image_labels(),
+        source_snapshot=source_snapshot(),
+        command="python3 tools/verify_governance_runtime_smoke.py --base-url http://127.0.0.1:8020",
+        review_status="reviewed",
+        issue_refs=["#22"],
+        pr_refs=["#52"],
+    )
+
+    assert entry["schema_version"] == "ai-platform.release-evidence-entry.v1"
+    assert entry["gate"] == "G6 Skill Release / Dependency Governance"
+    assert entry["artifact_kind"] == "skill_dependency_review_policy_runtime_acceptance"
+    assert entry["evidence_ref"]["verifier"] == "tools/verify_governance_runtime_smoke.py"
+    assert entry["evidence_ref"]["schema_version"] == "ai-platform.governance-runtime-smoke.v1"
+    assert entry["evidence_ref"]["runtime_checks"][
+        "skill_dependency_review_policy_runtime_acceptance"
+    ] == runtime_acceptance
+    assert {"name": "check_skill_dependency_review_runtime_acceptance", "passed": True} in entry[
+        "evidence_ref"
+    ]["runtime_checks"]["verifier_checks"]
+
+
 def test_rejects_image_label_mismatch_for_runtime_subject():
     labels = image_labels()
     labels["org.opencontainers.image.revision"] = "6ae06fdb624636e4255a1fe3bc8a0c188bd3ef6b"
