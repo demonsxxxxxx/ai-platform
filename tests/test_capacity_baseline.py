@@ -1259,24 +1259,100 @@ def test_capacity_profile_readiness_blocks_all_profiles_without_recorded_load_ev
     assert target_profile["safe_concurrency_claim"] == "not_claimed"
 
 
-def test_capacity_profile_readiness_requires_operator_review_after_complete_gate_evidence():
+def test_capacity_profile_readiness_keeps_non_b3_profiles_reviewable_after_complete_gate_evidence():
     readiness = build_capacity_gate_readiness(_snapshot_with_complete_recorded_gates())
 
     profile_readiness = build_capacity_profile_readiness(readiness)
 
     assert readiness["status"] == "ready_for_operator_review"
-    assert profile_readiness["status"] == "operator_review_required"
-    assert profile_readiness["production_default_decision"] == "operator_review_required_before_default_change"
-    assert {profile["status"] for profile in profile_readiness["profiles"]} == {
-        "operator_review_required"
-    }
+    assert profile_readiness["status"] == "blocked_missing_profile_evidence"
+    assert profile_readiness["production_default_decision"] == (
+        "do_not_raise_without_recorded_load_test_evidence"
+    )
+    assert profile_readiness["profiles"][0]["status"] == "blocked_missing_profile_evidence"
+    assert {
+        profile["status"] for profile in profile_readiness["profiles"][1:]
+    } == {"operator_review_required"}
     assert all(
         profile["production_default_decision"] == "operator_review_required_before_default_change"
-        for profile in profile_readiness["profiles"]
+        for profile in profile_readiness["profiles"][1:]
     )
     assert all(profile["automatic_default_raise"] is False for profile in profile_readiness["profiles"])
     assert all(profile["safe_concurrency_claim"] == "not_claimed" for profile in profile_readiness["profiles"])
-    assert "operator_review_required_before_default_change" in profile_readiness["blocking_policy"]
+    assert "b3_10x4_profile_evidence_missing" in profile_readiness["blocking_policy"]
+
+
+def test_capacity_profile_readiness_blocks_b3_target_without_sdk_subagent_profile_evidence():
+    readiness = build_capacity_gate_readiness(_snapshot_with_complete_recorded_gates())
+
+    profile_readiness = build_capacity_profile_readiness(readiness)
+    target_profile = profile_readiness["profiles"][0]
+
+    assert readiness["status"] == "ready_for_operator_review"
+    assert profile_readiness["status"] == "blocked_missing_profile_evidence"
+    assert profile_readiness["production_default_decision"] == (
+        "do_not_raise_without_recorded_load_test_evidence"
+    )
+    assert "b3_10x4_profile_evidence_missing" in profile_readiness["blocking_policy"]
+    assert target_profile["id"] == "b3_10x4_sdk_subagents"
+    assert target_profile["status"] == "blocked_missing_profile_evidence"
+    assert target_profile["missing_profile_evidence"] == [
+        "observed_concurrent_sessions",
+        "observed_peak_sdk_subagents_per_session",
+        "sdk_subagent_fanout_measurement_ref",
+    ]
+    assert target_profile["production_default_decision"] == (
+        "do_not_raise_without_recorded_load_test_evidence"
+    )
+
+
+def test_capacity_profile_readiness_allows_b3_operator_review_with_sdk_subagent_profile_evidence():
+    snapshot = _snapshot_with_complete_recorded_gates()
+    snapshot["load_test_evidence"]["profile_evidence"] = {
+        "b3_10x4_sdk_subagents": {
+            "observed_concurrent_sessions": 10,
+            "observed_peak_sdk_subagents_per_session": 4,
+            "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
+        }
+    }
+    readiness = build_capacity_gate_readiness(snapshot)
+
+    profile_readiness = build_capacity_profile_readiness(readiness)
+    target_profile = profile_readiness["profiles"][0]
+
+    assert profile_readiness["status"] == "operator_review_required"
+    assert target_profile["status"] == "operator_review_required"
+    assert target_profile["profile_evidence_status"] == "accepted"
+    assert target_profile["missing_profile_evidence"] == []
+    assert target_profile["observed_profile_evidence"] == {
+        "observed_concurrent_sessions": 10,
+        "observed_peak_sdk_subagents_per_session": 4,
+        "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
+    }
+    assert target_profile["safe_concurrency_claim"] == "not_claimed"
+
+
+def test_capacity_profile_readiness_rejects_under_target_sdk_subagent_profile_evidence():
+    snapshot = _snapshot_with_complete_recorded_gates()
+    snapshot["load_test_evidence"]["profile_evidence"] = {
+        "b3_10x4_sdk_subagents": {
+            "observed_concurrent_sessions": 9,
+            "observed_peak_sdk_subagents_per_session": 3,
+            "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
+        }
+    }
+    readiness = build_capacity_gate_readiness(snapshot)
+
+    profile_readiness = build_capacity_profile_readiness(readiness)
+    target_profile = profile_readiness["profiles"][0]
+
+    assert profile_readiness["status"] == "blocked_missing_profile_evidence"
+    assert target_profile["profile_evidence_status"] == "missing"
+    assert target_profile["missing_profile_evidence"] == [
+        "observed_concurrent_sessions",
+        "observed_peak_sdk_subagents_per_session",
+    ]
+    assert target_profile["observed_profile_evidence"] == {}
 
 
 def test_capacity_profile_readiness_recomputes_inconsistent_gate_readiness_fail_closed():
@@ -1358,6 +1434,9 @@ def test_capacity_profile_readiness_is_secret_safe_and_markdown_gap_first():
 
     assert "Status: `blocked_missing_load_test_evidence`" in markdown
     assert "conservative_internal" in markdown
+    assert "Missing profile evidence" in markdown
+    assert "observed_concurrent_sessions" in markdown
+    assert "sdk_subagent_fanout_measurement_ref" in markdown
     serialized = json.dumps(profile_readiness, ensure_ascii=False).lower() + markdown.lower()
     assert "sk-secret" not in serialized
     assert "tenants/default/private" not in serialized
