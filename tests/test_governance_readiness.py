@@ -8,6 +8,7 @@ from app.governance_readiness import build_governance_readiness, render_governan
 
 B1_GATE_BOUNDARY_GAPS = [
     "b1_issue_review_and_closure_evidence",
+    "b1_runtime_evidence_review_against_merged_source",
 ]
 
 
@@ -254,6 +255,9 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "211_memory_enabled_document_workflow_smoke" not in b1_evidence["open_gaps"]
     assert "b1_memory_export_boundary" in b1_evidence["closed_gate_boundary_gaps"]
     assert "b1_rollback_boundary" in b1_evidence["closed_gate_boundary_gaps"]
+    assert "b1_runtime_evidence_review_against_merged_source" not in b1_evidence[
+        "closed_gate_boundary_gaps"
+    ]
     assert b1_evidence["gate_boundary_evidence"]["b1_memory_export_boundary"]["status"] == (
         "recorded_local_contract"
     )
@@ -262,6 +266,12 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
         "recorded_local_contract"
     )
     assert b1_evidence["gate_boundary_evidence"]["b1_rollback_boundary"]["does_not_close_b1_gate"] is True
+    runtime_review = b1_evidence["gate_boundary_evidence"]["b1_runtime_evidence_review_against_merged_source"]
+    assert runtime_review["status"] == "runtime_affecting_delta_requires_fresh_211_smoke"
+    assert "app/b2_sandbox_readiness.py" in runtime_review[
+        "runtime_affecting_changes_since_runtime_subject"
+    ]
+    assert runtime_review["closed_gap"] is None
     assert b1_evidence["runtime_acceptance_evidence"]["211_memory_enabled_document_workflow_smoke"][
         "status"
     ] == "verified_211_runtime_acceptance"

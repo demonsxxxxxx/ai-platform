@@ -11,7 +11,7 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
-ACTIVE_RUNTIME_SUBJECT_SHA = "569887369e0358f08a408c473395521b22c8e0a7"
+ACTIVE_RUNTIME_SUBJECT_SHA = "14808bc8335b5f70e770a55db713b8faf4bfa664"
 HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
@@ -1924,10 +1924,29 @@ def test_foundation_alpha_readiness_uses_committed_source_runtime_manifest_when_
         },
         raising=False,
     )
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_governance_summary",
+        lambda _settings: {
+            "governance_readiness_status": "test_manifest_fallback",
+            "ordinary_user_policy": "test",
+            "open_gap_count": 0,
+            "open_gaps": [],
+            "memory_context_controls": {
+                "status": "verified_current_scope",
+                "open_gaps": [],
+                "closed_runtime_gaps": [],
+            },
+        },
+        raising=False,
+    )
 
     def runtime_subject_diff_missing(command, **_kwargs):
-        assert command == ["git", "diff", "--name-only", f"{CURRENT_SOURCE_SHA}..HEAD"]
-        raise subprocess.CalledProcessError(128, command, stderr="bad revision")
+        if command == ["git", "diff", "--name-only", f"{CURRENT_SOURCE_SHA}..HEAD"]:
+            raise subprocess.CalledProcessError(128, command, stderr="bad revision")
+        if command == ["git", "status", "--porcelain"]:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        raise AssertionError(f"unexpected subprocess.run: {command!r}")
 
     monkeypatch.setattr(foundation_alpha_readiness.subprocess, "run", runtime_subject_diff_missing)
 
@@ -2017,10 +2036,29 @@ def test_foundation_alpha_readiness_rejects_stale_source_runtime_manifest_with_r
         },
         raising=False,
     )
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_governance_summary",
+        lambda _settings: {
+            "governance_readiness_status": "test_stale_manifest_rejected",
+            "ordinary_user_policy": "test",
+            "open_gap_count": 0,
+            "open_gaps": [],
+            "memory_context_controls": {
+                "status": "verified_current_scope",
+                "open_gaps": [],
+                "closed_runtime_gaps": [],
+            },
+        },
+        raising=False,
+    )
 
     def runtime_subject_diff_missing(command, **_kwargs):
-        assert command == ["git", "diff", "--name-only", f"{CURRENT_SOURCE_SHA}..HEAD"]
-        raise subprocess.CalledProcessError(128, command, stderr="bad revision")
+        if command == ["git", "diff", "--name-only", f"{CURRENT_SOURCE_SHA}..HEAD"]:
+            raise subprocess.CalledProcessError(128, command, stderr="bad revision")
+        if command == ["git", "status", "--porcelain"]:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        raise AssertionError(f"unexpected subprocess.run: {command!r}")
 
     monkeypatch.setattr(foundation_alpha_readiness.subprocess, "run", runtime_subject_diff_missing)
 

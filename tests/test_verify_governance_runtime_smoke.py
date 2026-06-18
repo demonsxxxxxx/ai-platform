@@ -274,6 +274,44 @@ class LeakyPolicyTextHandler(GovernanceRuntimeHandler):
         super().do_GET()
 
 
+class RequiredEvidencePolicyTextHandler(GovernanceRuntimeHandler):
+    def do_GET(self):  # noqa: N802
+        if self.path.startswith("/api/ai/admin/runtime/overview") and "admin" in self.headers.get("X-AI-Roles", ""):
+            payload = governance_payload(self.headers.get("X-AI-Tenant-ID", "default"))
+            payload["governance"]["domains"]["memory_governance"]["evidence"][
+                "b1_memory_context_readiness"
+            ] = {
+                "schema_version": "ai-platform.b1-memory-context-readiness.v1",
+                "runtime_acceptance": {
+                    "required_evidence": [
+                        "redaction scan proves executor private payload and callback token material are absent",
+                    ]
+                },
+            }
+            self._send_json(200, payload)
+            return
+        super().do_GET()
+
+
+class LeakyRequiredEvidencePolicyTextHandler(GovernanceRuntimeHandler):
+    def do_GET(self):  # noqa: N802
+        if self.path.startswith("/api/ai/admin/runtime/overview") and "admin" in self.headers.get("X-AI-Roles", ""):
+            payload = governance_payload(self.headers.get("X-AI-Tenant-ID", "default"))
+            payload["governance"]["domains"]["memory_governance"]["evidence"][
+                "b1_memory_context_readiness"
+            ] = {
+                "schema_version": "ai-platform.b1-memory-context-readiness.v1",
+                "runtime_acceptance": {
+                    "required_evidence": [
+                        "executor-private payload: tenant/default/runs/run-a/private.json",
+                    ]
+                },
+            }
+            self._send_json(200, payload)
+            return
+        super().do_GET()
+
+
 class SkillDashboardContractLeakHandler(GovernanceRuntimeHandler):
     def do_GET(self):  # noqa: N802
         if self.path.startswith("/api/ai/admin/runtime/overview") and "admin" in self.headers.get("X-AI-Roles", ""):
@@ -468,6 +506,40 @@ def test_governance_runtime_smoke_fails_closed_on_private_projection_marker():
 def test_governance_runtime_smoke_fails_closed_on_private_value_inside_policy_text():
     smoke = load_smoke_module()
     server = run_server(LeakyPolicyTextHandler)
+    try:
+        payload = smoke.build_governance_runtime_smoke(
+            base_url=f"http://127.0.0.1:{server.server_port}",
+            gateway_secret="test-secret",
+            timeout_seconds=5,
+        )
+    finally:
+        server.shutdown()
+
+    assert payload["ok"] is False
+    assert payload["checks"]["admin_runtime_governance"]["forbidden_projection_terms_present"] is True
+    assert payload["redaction_scan_status"] == "failed"
+
+
+def test_governance_runtime_smoke_allows_required_evidence_policy_labels():
+    smoke = load_smoke_module()
+    server = run_server(RequiredEvidencePolicyTextHandler)
+    try:
+        payload = smoke.build_governance_runtime_smoke(
+            base_url=f"http://127.0.0.1:{server.server_port}",
+            gateway_secret="test-secret",
+            timeout_seconds=5,
+        )
+    finally:
+        server.shutdown()
+
+    assert payload["ok"] is True
+    assert payload["checks"]["admin_runtime_governance"]["forbidden_projection_terms_present"] is False
+    assert payload["redaction_scan_status"] == "passed"
+
+
+def test_governance_runtime_smoke_fails_closed_on_private_value_inside_required_evidence():
+    smoke = load_smoke_module()
+    server = run_server(LeakyRequiredEvidencePolicyTextHandler)
     try:
         payload = smoke.build_governance_runtime_smoke(
             base_url=f"http://127.0.0.1:{server.server_port}",
