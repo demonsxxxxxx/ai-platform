@@ -153,6 +153,36 @@ def test_release_evidence_export_acceptance_fails_closed_on_host_and_socket_path
     assert "c:\\users" not in serialized
 
 
+def test_release_evidence_export_acceptance_fails_closed_on_each_host_or_socket_marker(tmp_path):
+    unsafe_values = [
+        "/home/service/ai-platform/.env",
+        "/Users/service/ai-platform/.env",
+        "/var/run/docker.sock",
+    ]
+
+    for index, unsafe_value in enumerate(unsafe_values):
+        evidence_root = tmp_path / f"case-{index}"
+        unsafe_entry = _valid_entry(
+            evidence_id=f"unsafe-marker-{index}",
+            evidence_ref={
+                "verifier": "tools/verify_poc_gate.py",
+                "result": "ok:true",
+                "runtime_checks": {
+                    "single_unsafe_marker": unsafe_value,
+                },
+            },
+        )
+        _write_entry(evidence_root, unsafe_entry)
+
+        acceptance = build_release_evidence_export_acceptance(evidence_root=evidence_root)
+
+        assert acceptance["status"] == "blocked_forbidden_evidence"
+        assert acceptance["safe_entry_count"] == 0
+        assert acceptance["blocked_entry_count"] == 1
+        assert acceptance["blocked_entries"][0]["reasons"] == ["forbidden_marker_detected"]
+        assert unsafe_value.lower() not in json.dumps(acceptance, ensure_ascii=False).lower()
+
+
 def test_release_evidence_export_acceptance_excludes_non_entry_evidence_namespaces(tmp_path):
     _write_entry(tmp_path, _valid_entry())
     skill_release_dir = tmp_path / "skill-release" / "qa-file-reviewer"

@@ -197,10 +197,14 @@ def _entry_has_runtime_subject_binding(payload: dict[str, Any], *, path: Path) -
         return False
     if image_labels.get("org.opencontainers.image.revision") != runtime_subject:
         return False
+    if image_labels.get("ai-platform.source_tree_commit") != runtime_subject:
+        return False
     source_snapshot = source_ref.get("source_snapshot")
     if not isinstance(source_snapshot, dict):
         return False
     if source_snapshot.get("runtime_subject_commit_sha") != runtime_subject:
+        return False
+    if source_snapshot.get("source_tree_commit_sha") != runtime_subject:
         return False
     if source_snapshot.get("source_tree_dirty") is not False:
         return False
@@ -279,6 +283,12 @@ def _b2_smoke_evidence_summary(
         or evidence.get("redaction_scan_status") != "passed"
     ):
         return None
+    non_expansion_invariants = evidence.get("non_expansion_invariants")
+    if not isinstance(non_expansion_invariants, dict):
+        return None
+    for key, expected in _NON_EXPANSION_INVARIANTS.items():
+        if non_expansion_invariants.get(key) is not expected:
+            return None
     return {
         "status": "verified_211_runtime_acceptance",
         "artifact_kind": RUNTIME_ACCEPTANCE_ARTIFACT_KIND,

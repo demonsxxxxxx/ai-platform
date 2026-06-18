@@ -42,6 +42,9 @@ def write_future_reviewed_b2_smoke(
     *,
     commit_sha: str = FUTURE_RUNTIME_SUBJECT,
     directory_commit: str = FUTURE_RUNTIME_SUBJECT,
+    source_tree_commit_sha: str = FUTURE_RUNTIME_SUBJECT,
+    image_source_tree_commit: str = FUTURE_RUNTIME_SUBJECT,
+    ordinary_user_high_risk_sandbox_allowed: bool = False,
 ) -> None:
     payload = json.loads(CURRENT_B2_EVIDENCE_PATH.read_text(encoding="utf-8"))
     payload["captured_at"] = "2026-06-20T00:01:02+08:00"
@@ -56,10 +59,14 @@ def write_future_reviewed_b2_smoke(
     source_ref["image"] = f"ai-platform:{FUTURE_RUNTIME_TAG}"
     source_ref["runtime_source_marker"] = FUTURE_RUNTIME_SUBJECT
     source_ref["image_labels"]["ai-platform.source_revision"] = FUTURE_RUNTIME_SUBJECT
-    source_ref["image_labels"]["ai-platform.source_tree_commit"] = FUTURE_RUNTIME_SUBJECT
+    source_ref["image_labels"]["ai-platform.source_tree_commit"] = image_source_tree_commit
     source_ref["image_labels"]["org.opencontainers.image.revision"] = FUTURE_RUNTIME_SUBJECT
     source_ref["source_snapshot"]["runtime_subject_commit_sha"] = FUTURE_RUNTIME_SUBJECT
-    source_ref["source_snapshot"]["source_tree_commit_sha"] = FUTURE_RUNTIME_SUBJECT
+    source_ref["source_snapshot"]["source_tree_commit_sha"] = source_tree_commit_sha
+
+    smoke["non_expansion_invariants"]["ordinary_user_high_risk_sandbox_allowed"] = (
+        ordinary_user_high_risk_sandbox_allowed
+    )
 
     evidence_path = (
         repo_root
@@ -201,6 +208,45 @@ def test_b2_sandbox_readiness_rejects_smoke_stored_under_wrong_runtime_subject(t
     write_future_reviewed_b2_smoke(
         tmp_path,
         directory_commit="0000000000000000000000000000000000000000",
+    )
+
+    readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
+
+    assert readiness["status"] == "local_contract_ready_runtime_smoke_required"
+    assert readiness["runtime_acceptance"]["status"] == "missing_211_real_sandbox_smoke"
+    assert readiness["runtime_acceptance_evidence"] == {}
+
+
+def test_b2_sandbox_readiness_rejects_smoke_with_mismatched_source_tree_commit(tmp_path):
+    write_future_reviewed_b2_smoke(
+        tmp_path,
+        source_tree_commit_sha="0000000000000000000000000000000000000000",
+    )
+
+    readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
+
+    assert readiness["status"] == "local_contract_ready_runtime_smoke_required"
+    assert readiness["runtime_acceptance"]["status"] == "missing_211_real_sandbox_smoke"
+    assert readiness["runtime_acceptance_evidence"] == {}
+
+
+def test_b2_sandbox_readiness_rejects_smoke_with_mismatched_image_source_tree_commit(tmp_path):
+    write_future_reviewed_b2_smoke(
+        tmp_path,
+        image_source_tree_commit="0000000000000000000000000000000000000000",
+    )
+
+    readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
+
+    assert readiness["status"] == "local_contract_ready_runtime_smoke_required"
+    assert readiness["runtime_acceptance"]["status"] == "missing_211_real_sandbox_smoke"
+    assert readiness["runtime_acceptance_evidence"] == {}
+
+
+def test_b2_sandbox_readiness_rejects_smoke_with_expanded_user_sandbox_invariant(tmp_path):
+    write_future_reviewed_b2_smoke(
+        tmp_path,
+        ordinary_user_high_risk_sandbox_allowed=True,
     )
 
     readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
