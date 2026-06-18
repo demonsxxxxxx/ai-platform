@@ -519,6 +519,12 @@ def test_render_capacity_load_test_plan_markdown_is_repeatable_and_safe():
     assert "assemble_evidence_bundle_draft" in markdown
     assert "assemble_recorded_gate_snapshot" in markdown
     assert "record_cleanup_proof" in markdown
+    assert "## Target Profile" in markdown
+    assert "`b3_10x4_sdk_subagents`" in markdown
+    assert "Stage: `B3`" in markdown
+    assert "Concurrent sessions: `10`" in markdown
+    assert "Peak SDK subagents per session: `4`" in markdown
+    assert "Measurement first: `true`" in markdown
     assert "capacity_bounded_load_harness.py" in markdown
     assert "capacity_evidence_bundle.py" in markdown
     assert "capacity_recorded_gate_snapshot.py" in markdown
