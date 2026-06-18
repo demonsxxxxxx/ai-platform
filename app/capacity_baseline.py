@@ -136,6 +136,11 @@ _B3_TARGET_PROFILE = {
     "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
     "status_label_before_evidence": "local partial",
 }
+_PROFILE_EVIDENCE_REQUIRED_FIELDS = (
+    "observed_concurrent_sessions",
+    "observed_peak_sdk_subagents_per_session",
+    "sdk_subagent_fanout_measurement_ref",
+)
 
 
 def _default_settings() -> object:
@@ -969,6 +974,7 @@ def build_capacity_evidence_snapshot(
             "status": "missing",
             "required_evidence": _LOAD_TEST_REQUIRED_EVIDENCE,
             "required_gates": LOAD_TEST_GATES,
+            "profile_evidence": {},
         },
         "capacity_answer": "safe_max_concurrency_unproven_without_recorded_load_test_evidence",
         "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
@@ -1129,6 +1135,49 @@ def _safe_capacity_evidence_ref(value: object) -> str | None:
     if any(part.lower() in _EVIDENCE_REF_UNSAFE_SEGMENTS for part in parts):
         return None
     return text
+
+
+def _safe_b3_profile_evidence(value: object) -> dict[str, Any]:
+    source = _dict(value)
+    observed_sessions = _coerce_int(source.get("observed_concurrent_sessions"))
+    observed_subagents = _coerce_int(source.get("observed_peak_sdk_subagents_per_session"))
+    measurement_ref = _safe_capacity_evidence_ref(source.get("sdk_subagent_fanout_measurement_ref"))
+    result: dict[str, Any] = {}
+    if observed_sessions > 0:
+        result["observed_concurrent_sessions"] = observed_sessions
+    if observed_subagents > 0:
+        result["observed_peak_sdk_subagents_per_session"] = observed_subagents
+    if measurement_ref is not None:
+        result["sdk_subagent_fanout_measurement_ref"] = measurement_ref
+    return result
+
+
+def _safe_profile_evidence(value: object) -> dict[str, Any]:
+    source = _dict(value)
+    b3_evidence = _safe_b3_profile_evidence(source.get(_B3_TARGET_PROFILE_ID))
+    return {_B3_TARGET_PROFILE_ID: b3_evidence} if b3_evidence else {}
+
+
+def _b3_profile_evidence_status(profile_evidence: dict[str, Any]) -> dict[str, Any]:
+    b3_evidence = _safe_b3_profile_evidence(_dict(profile_evidence).get(_B3_TARGET_PROFILE_ID))
+    target_sessions = _coerce_int(_B3_TARGET_PROFILE["concurrent_sessions"])
+    target_subagents = _coerce_int(_B3_TARGET_PROFILE["peak_sdk_subagents_per_session"])
+    observed_sessions = _coerce_int(b3_evidence.get("observed_concurrent_sessions"))
+    observed_subagents = _coerce_int(b3_evidence.get("observed_peak_sdk_subagents_per_session"))
+    missing = [
+        field
+        for field in _PROFILE_EVIDENCE_REQUIRED_FIELDS
+        if field not in b3_evidence
+    ]
+    if "observed_concurrent_sessions" not in missing and observed_sessions < target_sessions:
+        missing.append("observed_concurrent_sessions")
+    if "observed_peak_sdk_subagents_per_session" not in missing and observed_subagents < target_subagents:
+        missing.append("observed_peak_sdk_subagents_per_session")
+    return {
+        "status": "accepted" if not missing else "missing",
+        "observed_profile_evidence": b3_evidence if not missing else {},
+        "missing_profile_evidence": missing,
+    }
 
 
 def _load_gate_evidence_summary(
@@ -1621,6 +1670,7 @@ def _safe_load_test_evidence(value: object) -> dict[str, Any]:
         "status": "recorded" if recorded_gates else "missing",
         "required_evidence": list(_LOAD_TEST_REQUIRED_EVIDENCE),
         "required_gates": list(LOAD_TEST_GATES),
+        "profile_evidence": _safe_profile_evidence(source.get("profile_evidence")),
     }
     if recorded_gates:
         result["recorded_gates"] = recorded_gates
@@ -1817,6 +1867,7 @@ def build_capacity_gate_readiness(snapshot: dict[str, Any]) -> dict[str, Any]:
         },
         "admin_runtime_evidence": admin_runtime_evidence,
         "load_test_evidence_status": _safe_identity(load_test_evidence.get("status") or "missing"),
+        "profile_evidence": _safe_profile_evidence(load_test_evidence.get("profile_evidence")),
         "load_test_gates": [
             {
                 "gate": gate,
@@ -1921,6 +1972,7 @@ def _safe_capacity_gate_readiness(readiness: dict[str, Any]) -> dict[str, Any]:
             )
     if not missing_gates_complete or not invalid_load_test_evidence_complete or not load_test_gates_complete:
         missing_gates = list(LOAD_TEST_GATES)
+    profile_evidence = _safe_profile_evidence(readiness.get("profile_evidence"))
 
     if missing_sections:
         status = "blocked_missing_admin_runtime_sections"
@@ -1950,6 +2002,7 @@ def _safe_capacity_gate_readiness(readiness: dict[str, Any]) -> dict[str, Any]:
         ],
         "missing_load_test_gates": missing_gates,
         "invalid_load_test_evidence": invalid_load_test_evidence,
+        "profile_evidence": profile_evidence,
         "production_default_decision": _safe_identity(
             readiness.get("production_default_decision") or "do_not_raise_without_recorded_load_test_evidence"
         ),
@@ -1985,8 +2038,35 @@ def build_capacity_profile_readiness(payload: dict[str, Any]) -> dict[str, Any]:
         for section in _dict(gate_readiness.get("admin_runtime_evidence")).get("missing_sections", [])
         if section in _LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS
     ]
+    profile_evidence = _safe_profile_evidence(gate_readiness.get("profile_evidence"))
+    b3_profile = _b3_profile_evidence_status(profile_evidence)
+    b3_profile_missing = (
+        gate_status == "ready_for_operator_review"
+        and b3_profile["status"] != "accepted"
+    )
+    overall_status = (
+        "blocked_missing_profile_evidence"
+        if b3_profile_missing
+        else profile_status
+    )
+    overall_production_default_decision = (
+        "do_not_raise_without_recorded_load_test_evidence"
+        if b3_profile_missing
+        else production_default_decision
+    )
     profiles: list[dict[str, Any]] = []
     for profile in _CAPACITY_PROFILE_CATALOG:
+        is_b3_target = profile["id"] == _B3_TARGET_PROFILE_ID
+        item_status = (
+            "blocked_missing_profile_evidence"
+            if b3_profile_missing and is_b3_target
+            else profile_status
+        )
+        item_production_default_decision = (
+            "do_not_raise_without_recorded_load_test_evidence"
+            if b3_profile_missing and is_b3_target
+            else production_default_decision
+        )
         profiles.append(
             {
                 "id": profile["id"],
@@ -1995,23 +2075,32 @@ def build_capacity_profile_readiness(payload: dict[str, Any]) -> dict[str, Any]:
                 "intent": profile["intent"],
                 "target_profile": dict(profile["target_profile"]),
                 "measurement_first": True,
-                "status": profile_status,
+                "status": item_status,
                 "required_admin_runtime_sections": list(_LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS),
                 "required_load_test_gates": list(profile["required_load_test_gates"]),
                 "missing_admin_runtime_sections": missing_sections,
                 "missing_load_test_gates": missing_gates,
                 "invalid_load_test_gates": invalid_gates,
+                "profile_evidence_status": (
+                    b3_profile["status"] if is_b3_target else "not_required_for_profile"
+                ),
+                "missing_profile_evidence": (
+                    b3_profile["missing_profile_evidence"] if is_b3_target else []
+                ),
+                "observed_profile_evidence": (
+                    b3_profile["observed_profile_evidence"] if is_b3_target else {}
+                ),
                 "profile_specific_requirements": list(profile["profile_specific_requirements"]),
                 "safe_concurrency_claim": "not_claimed",
                 "automatic_default_raise": False,
-                "production_default_decision": production_default_decision,
+                "production_default_decision": item_production_default_decision,
                 "does_not_raise_defaults": True,
             }
         )
 
     return {
         "schema_version": "ai-platform.capacity-profile-readiness.v1",
-        "status": profile_status,
+        "status": overall_status,
         "source_gate_readiness": {
             "schema_version": gate_readiness["schema_version"],
             "status": gate_status,
@@ -2019,15 +2108,19 @@ def build_capacity_profile_readiness(payload: dict[str, Any]) -> dict[str, Any]:
             "missing_admin_runtime_sections": missing_sections,
             "missing_load_test_gates": missing_gates,
             "invalid_load_test_gates": invalid_gates,
+            "profile_evidence": profile_evidence,
         },
         "profiles": profiles,
         "required_evidence": list(_LOAD_TEST_REQUIRED_EVIDENCE),
         "blocking_policy": (
+            "b3_10x4_profile_evidence_missing; do_not_raise_without_recorded_load_test_evidence; no automatic default raise"
+            if b3_profile_missing
+            else
             "operator_review_required_before_default_change; no automatic default raise"
             if gate_status == "ready_for_operator_review"
             else "do_not_raise_without_recorded_load_test_evidence; no automatic default raise"
         ),
-        "production_default_decision": production_default_decision,
+        "production_default_decision": overall_production_default_decision,
         "does_not_raise_defaults": True,
     }
 
@@ -2304,11 +2397,19 @@ def render_capacity_profile_readiness_markdown(readiness: dict[str, Any]) -> str
     missing_gates = "\n".join(
         f"- {gate}" for gate in source.get("missing_load_test_gates", [])
     ) or "- none"
+    missing_profile_evidence_items: list[str] = []
     rows = []
     for profile in readiness.get("profiles", []):
         item = _dict(profile)
         profile_missing_gates = item.get("missing_load_test_gates")
         missing_count = len(profile_missing_gates) if isinstance(profile_missing_gates, list) else 0
+        missing_profile_evidence = item.get("missing_profile_evidence")
+        if isinstance(missing_profile_evidence, list):
+            missing_profile_evidence_items.extend(
+                str(field)
+                for field in missing_profile_evidence
+                if str(field).strip()
+            )
         rows.append(
             (
                 f"| {item.get('id', 'unknown')} | `{item.get('status', 'unknown')}` | "
@@ -2316,6 +2417,11 @@ def render_capacity_profile_readiness_markdown(readiness: dict[str, Any]) -> str
             )
         )
     profile_rows = "\n".join(rows)
+    missing_profile_evidence = (
+        "\n".join(f"- {field}" for field in sorted(set(missing_profile_evidence_items)))
+        if missing_profile_evidence_items
+        else "- none"
+    )
     return (
         "# ai-platform Capacity Profile Readiness\n\n"
         f"Schema: `{readiness['schema_version']}`\n\n"
@@ -2325,6 +2431,8 @@ def render_capacity_profile_readiness_markdown(readiness: dict[str, Any]) -> str
         f"{missing_sections}\n\n"
         "## Missing Load-Test Gates\n\n"
         f"{missing_gates}\n\n"
+        "## Missing profile evidence\n\n"
+        f"{missing_profile_evidence}\n\n"
         "## Profiles\n\n"
         "| Profile | Status | Production default decision | Missing gates |\n"
         "| --- | --- | --- | --- |\n"
