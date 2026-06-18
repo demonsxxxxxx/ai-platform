@@ -1,6 +1,7 @@
 from typing import Any
 from pathlib import Path
 
+from app.b1_memory_context_readiness import build_b1_memory_context_readiness
 from app.office_context_readiness import build_office_context_readiness
 from app.skills.release_readiness import build_skill_release_readiness
 from app.tool_policy_readiness import build_tool_policy_readiness
@@ -154,6 +155,7 @@ def build_governance_readiness(
     tool_policy_readiness = build_tool_policy_readiness()
     bulk_review_evidence = tool_policy_readiness["evidence"]["admin_policy_bulk_review_dashboard"]
     office_context_readiness = build_office_context_readiness(repo_root=repo_root)
+    b1_memory_context_readiness = build_b1_memory_context_readiness(repo_root=repo_root)
     frontend_projection_evidence = (
         {
             "projection_audit": _frontend_projection_audit_evidence(),
@@ -314,9 +316,33 @@ def build_governance_readiness(
                 "sandbox_runtime_hardening_source_verifier_contract",
                 "sandbox_cached_lease_scope_revalidation_source_tests",
             ],
-            gaps=office_context_readiness["open_gaps"],
+            gaps=[
+                *office_context_readiness["open_gaps"],
+                *b1_memory_context_readiness["open_gaps"],
+            ],
             next_checks=office_context_next_checks,
             evidence={
+                "b1_memory_context_readiness": {
+                    "schema_version": b1_memory_context_readiness["schema_version"],
+                    "backend_stage": b1_memory_context_readiness["backend_stage"],
+                    "issue": b1_memory_context_readiness["issue"],
+                    "status": b1_memory_context_readiness["status"],
+                    "status_label": b1_memory_context_readiness["status_label"],
+                    "ordinary_user_policy": b1_memory_context_readiness[
+                        "ordinary_user_policy"
+                    ],
+                    "implemented_control_count": len(
+                        b1_memory_context_readiness["implemented_controls"]
+                    ),
+                    "runtime_acceptance": b1_memory_context_readiness[
+                        "runtime_acceptance"
+                    ],
+                    "open_gaps": b1_memory_context_readiness["open_gaps"],
+                    "non_expansion_invariants": b1_memory_context_readiness[
+                        "non_expansion_invariants"
+                    ],
+                    "evidence_policy": b1_memory_context_readiness["evidence_policy"],
+                },
                 "office_context_pack_readiness": {
                     "schema_version": office_context_readiness["schema_version"],
                     "status": office_context_readiness["status"],
@@ -518,6 +544,24 @@ def render_governance_readiness_markdown(readiness: dict[str, Any]) -> str:
             if isinstance(evidence, dict)
             else None
         )
+        b1_memory_context = (
+            evidence.get("b1_memory_context_readiness")
+            if isinstance(evidence, dict)
+            else None
+        )
+        if isinstance(b1_memory_context, dict):
+            runtime_acceptance = b1_memory_context.get("runtime_acceptance")
+            acceptance_gap = None
+            if isinstance(runtime_acceptance, dict):
+                acceptance_gap = runtime_acceptance.get("acceptance_gap")
+            evidence_lines += (
+                "\nEvidence:\n\n"
+                f"- B1 memory/context readiness `{b1_memory_context.get('schema_version')}` status "
+                f"`{b1_memory_context.get('status')}` with status label "
+                f"`{b1_memory_context.get('status_label')}`\n"
+            )
+            if acceptance_gap:
+                evidence_lines += f"- B1 runtime acceptance gap `{acceptance_gap}`\n"
         if isinstance(office_context, dict):
             closed_runtime_gaps = office_context.get("closed_runtime_gaps")
             if isinstance(closed_runtime_gaps, list) and closed_runtime_gaps:

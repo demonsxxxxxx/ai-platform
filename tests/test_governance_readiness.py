@@ -225,6 +225,23 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "office_execution_tier_router" not in domains["memory_governance"]["gaps"]
     assert "sandbox_cold_start_latency_split" not in domains["memory_governance"]["gaps"]
     assert "sandbox_cold_start_latency_split_211_acceptance" not in domains["memory_governance"]["gaps"]
+    assert "211_memory_enabled_document_workflow_smoke" in domains["memory_governance"]["gaps"]
+    assert "211_memory_enabled_document_workflow_smoke" in readiness["open_gaps"]
+    b1_evidence = domains["memory_governance"]["evidence"]["b1_memory_context_readiness"]
+    assert b1_evidence["schema_version"] == "ai-platform.b1-memory-context-readiness.v1"
+    assert b1_evidence["status"] == "local_controls_ready_runtime_smoke_required"
+    assert b1_evidence["status_label"] == "local partial"
+    assert b1_evidence["runtime_acceptance"]["acceptance_gap"] == (
+        "211_memory_enabled_document_workflow_smoke"
+    )
+    assert b1_evidence["open_gaps"] == ["211_memory_enabled_document_workflow_smoke"]
+    assert b1_evidence["non_expansion_invariants"] == {
+        "long_term_cross_session_memory_enabled": False,
+        "public_projection_only_for_ordinary_users": True,
+        "stores_private_executor_material_as_memory": False,
+        "frontend_state_is_canonical_context": False,
+        "production_claim_allowed": False,
+    }
     context_evidence = domains["memory_governance"]["evidence"]["office_context_pack_readiness"]
     assert context_evidence["schema_version"] == "ai-platform.office-context-pack-readiness.v1"
     assert context_evidence["status"] == "runtime_acceptance_recorded"
@@ -407,6 +424,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "callback-secret" not in serialized
     assert "tenant-secret" not in serialized
     assert "docker://token" not in serialized
+    assert "211 verified" not in serialized
     assert "sandbox_workspace_root" not in serialized
     assert "sandbox_workdir" not in serialized
     assert "storage_key" not in serialized
@@ -510,6 +528,10 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     assert "source_route_tests_recorded" in markdown
     assert "memory_delete_retention_erasure_evidence_snapshot" in markdown
     assert "memory_export_erasure_evidence_snapshot" in markdown
+    assert "b1 memory/context readiness" in markdown.lower()
+    assert "ai-platform.b1-memory-context-readiness.v1" in markdown
+    assert "211_memory_enabled_document_workflow_smoke" in markdown
+    assert "local partial" in markdown
     assert "context_snapshot_public_provenance_projection_contract" in markdown
     assert "user_visible_context_provenance_api_projection_source_tests" in markdown
     assert "frontend_context_provenance_playback_source_tests" in markdown
@@ -527,6 +549,7 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     assert "memory_export_erasure_evidence" not in open_gaps
     assert "callback-secret" not in markdown
     assert ".claude/skills" not in markdown
+    assert "211 verified" not in markdown.lower()
 
 
 def test_governance_readiness_cli_outputs_json_without_secret_markers():
@@ -547,3 +570,4 @@ def test_governance_readiness_cli_outputs_json_without_secret_markers():
     assert "tool_permission" in payload["domains"]
     assert "callback-secret" not in result.stdout
     assert "tenant-secret" not in result.stdout
+    assert "211 verified" not in result.stdout.lower()
