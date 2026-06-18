@@ -197,11 +197,14 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
 
     for shortlist in (
         "| Priority | Stage | Reference code to inspect first | Why it is relevant now |",
-        "| 1 | B2 | OpenHands sandbox runtime, E2B Code Interpreter execution API, Daytona workspace lifecycle | Current open backend issue is real sandbox evidence; these references map to lifecycle and artifact/callback behavior. |",
-        "| 2 | B3 | LiteLLM proxy budgets/rate limits, Temporal/Celery worker semantics | Capacity target depends on model-gateway backpressure and durable worker behavior. |",
-        "| 3 | B4 | Backstage catalog metadata, Dify/Open WebUI tool or app management, LibreChat tool UI contracts | Skills management needs release metadata, catalog UX, and run-time selection boundaries. |",
+        "| 1 | B2 | OpenHands sandbox runtime, E2B Code Interpreter execution API, Daytona workspace lifecycle |",
+        "| 2 | B3 | LiteLLM proxy budgets/rate limits, Temporal/Celery worker semantics |",
+        "| 3 | B4 | Backstage catalog metadata, Dify/Open WebUI tool or app management, LibreChat tool UI contracts |",
     ):
         assert shortlist in text
+
+    assert "The highest-priority B2 risk is real sandbox evidence" in text
+    assert "Current open backend issue is real sandbox evidence" not in text
 
     assert "DeerFlow" not in text
     assert "AgentScope" not in text
