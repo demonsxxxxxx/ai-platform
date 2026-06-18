@@ -54,7 +54,7 @@ ADDITIONAL_FORBIDDEN_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 STRICT_PRIVATE_VALUE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
-        r"\b(?:executor[_-]?private[_-]?payload|runtime[_-]?private[_-]?payload|raw[_-]?storage[_-]?key|sandbox[_-]?workdir|storage[_-]?key)\s*[:=]",
+        r"\b(?:executor[\s_-]*private[\s_-]*payload|runtime[\s_-]*private[\s_-]*payload|raw[\s_-]*storage[\s_-]*key|sandbox[\s_-]*workdir|storage[\s_-]*key)\s*[:=]",
         re.IGNORECASE,
     ),
 )
@@ -63,6 +63,7 @@ ALLOWED_POLICY_TEXT_PATH_PARTS = {
     "forbidden_marker_classes",
     "forbidden_payload_classes",
     "next_checks",
+    "required_evidence",
 }
 REQUIRED_SKILL_REVIEW_FLAGS = (
     "sbom_reviewed",
@@ -103,6 +104,10 @@ def _has_implemented(domain: dict[str, Any], name: str) -> bool:
 
 def _is_allowed_policy_text_path(path: tuple[str, ...]) -> bool:
     return any(part in ALLOWED_POLICY_TEXT_PATH_PARTS for part in path)
+
+
+def _is_safe_policy_text_value(path: tuple[str, ...], value: str) -> bool:
+    return _is_allowed_policy_text_path(path) and not _contains_strict_private_value(value)
 
 
 def _contains_strict_private_value(value: str) -> bool:
@@ -146,7 +151,7 @@ def _has_additional_forbidden_marker(payload: Any) -> bool:
                 return True
             if (
                 any(marker in text for marker in ADDITIONAL_FORBIDDEN_VALUE_MARKERS)
-                and not _is_allowed_policy_text_path(path)
+                and not _is_safe_policy_text_value(path, value)
             ):
                 return True
             return any(pattern.search(value) is not None for pattern in ADDITIONAL_FORBIDDEN_PATTERNS)
