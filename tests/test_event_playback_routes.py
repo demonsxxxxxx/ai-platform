@@ -127,6 +127,10 @@ def step_row():
     }
 
 
+async def fake_list_context_snapshots(conn, *, tenant_id, user_id, run_id):
+    return []
+
+
 def test_run_events_route_supports_sequence_replay_cursor(monkeypatch):
     calls = {}
 
@@ -284,6 +288,7 @@ def test_run_playback_projection_redacts_ordinary_user_timeline(monkeypatch):
     monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.routes.runs.repositories.list_context_snapshots", fake_list_context_snapshots)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/playback?after_sequence=5&limit=50", headers=headers())
@@ -734,6 +739,7 @@ def test_run_playback_projects_tool_permission_card_for_ordinary_user(monkeypatc
     monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.routes.runs.repositories.list_context_snapshots", fake_list_context_snapshots)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/playback", headers=headers())
@@ -889,6 +895,7 @@ def test_run_playback_projection_keeps_admin_runtime_controls(monkeypatch):
     monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.routes.runs.repositories.list_context_snapshots", fake_list_context_snapshots)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/playback", headers=admin_headers())
