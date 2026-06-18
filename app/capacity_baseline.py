@@ -20,6 +20,7 @@ CAPACITY_EVIDENCE_BUNDLE_SCHEMA = "ai-platform.capacity-evidence-bundle.v1"
 CAPACITY_RECORDED_GATE_SNAPSHOT_SCHEMA = "ai-platform.capacity-recorded-gate-snapshot.v1"
 CAPACITY_RECORDED_GATE_EVIDENCE_SCHEMA = "ai-platform.capacity-recorded-gate-evidence.v1"
 CAPACITY_PROFILE_IDS = [
+    "b3_10x4_sdk_subagents",
     "conservative_internal",
     "medium_team",
     "high_capacity_1t",
@@ -59,9 +60,30 @@ _CAPACITY_PROFILE_STATUS_BY_GATE_STATUS = {
 }
 _CAPACITY_PROFILE_CATALOG = [
     {
+        "id": "b3_10x4_sdk_subagents",
+        "stage": "B3",
+        "label": "B3 target: 10 sessions x 4 SDK subagents",
+        "intent": "Initial backend productization measurement profile for selected SDK subagent workflows.",
+        "target_profile": {
+            "concurrent_sessions": 10,
+            "peak_sdk_subagents_per_session": 4,
+        },
+        "required_load_test_gates": LOAD_TEST_GATES,
+        "profile_specific_requirements": [
+            "measure 10 concurrent sessions with peak 4 SDK subagents per session",
+            "record queue, worker, model-gateway, sandbox, artifact/event, token/cost, and cleanup pressure",
+            "keep production defaults unchanged until operator-reviewed seven-gate evidence and rollback are recorded",
+        ],
+    },
+    {
         "id": "conservative_internal",
+        "stage": "B3",
         "label": "Conservative internal profile",
         "intent": "Small internal pilot profile for bounded office-agent usage.",
+        "target_profile": {
+            "concurrent_sessions": 0,
+            "peak_sdk_subagents_per_session": 0,
+        },
         "required_load_test_gates": LOAD_TEST_GATES,
         "profile_specific_requirements": [
             "prove current worker, DB pool, queue, sandbox, and model-gateway settings under bounded load",
@@ -71,8 +93,13 @@ _CAPACITY_PROFILE_CATALOG = [
     },
     {
         "id": "medium_team",
+        "stage": "B3",
         "label": "Medium team profile",
         "intent": "Team-level intranet profile that needs tenant/user fairness and sustained queue evidence.",
+        "target_profile": {
+            "concurrent_sessions": 0,
+            "peak_sdk_subagents_per_session": 0,
+        },
         "required_load_test_gates": LOAD_TEST_GATES,
         "profile_specific_requirements": [
             "prove N-tenant and M-user run creation bursts with no noisy-neighbor starvation",
@@ -82,8 +109,13 @@ _CAPACITY_PROFILE_CATALOG = [
     },
     {
         "id": "high_capacity_1t",
+        "stage": "B3",
         "label": "High-capacity 1T-memory server profile",
         "intent": "Large single-server profile; memory size is not accepted as capacity proof.",
+        "target_profile": {
+            "concurrent_sessions": 0,
+            "peak_sdk_subagents_per_session": 0,
+        },
         "required_load_test_gates": LOAD_TEST_GATES,
         "profile_specific_requirements": [
             "do not treat 1T memory as evidence of safe concurrency",
@@ -92,6 +124,18 @@ _CAPACITY_PROFILE_CATALOG = [
         ],
     },
 ]
+
+_B3_TARGET_PROFILE_ID = "b3_10x4_sdk_subagents"
+_B3_TARGET_PROFILE = {
+    "id": _B3_TARGET_PROFILE_ID,
+    "stage": "B3",
+    "concurrent_sessions": 10,
+    "peak_sdk_subagents_per_session": 4,
+    "measurement_first": True,
+    "automatic_default_raise": False,
+    "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+    "status_label_before_evidence": "local partial",
+}
 
 
 def _default_settings() -> object:
@@ -750,9 +794,10 @@ def build_capacity_load_test_plan(
     settings: object | None = None,
     *,
     base_url: str = "http://127.0.0.1:8020",
-    tenants: int = 3,
-    users_per_tenant: int = 5,
-    runs_per_user: int = 2,
+    tenants: int = 1,
+    users_per_tenant: int = 10,
+    runs_per_user: int = 1,
+    peak_sdk_subagents_per_session: int = 4,
     duration_seconds: int = 300,
     scenario: str | None = None,
 ) -> dict[str, Any]:
@@ -762,6 +807,7 @@ def build_capacity_load_test_plan(
         "tenants": max(_coerce_int(tenants, 3), 1),
         "users_per_tenant": max(_coerce_int(users_per_tenant, 5), 1),
         "runs_per_user": max(_coerce_int(runs_per_user, 2), 1),
+        "peak_sdk_subagents_per_session": max(_coerce_int(peak_sdk_subagents_per_session, 4), 0),
         "duration_seconds": max(_coerce_int(duration_seconds, 300), 30),
     }
 
@@ -780,6 +826,7 @@ def build_capacity_load_test_plan(
             f" --tenants {parameters['tenants']}"
             f" --users-per-tenant {parameters['users_per_tenant']}"
             f" --runs-per-user {parameters['runs_per_user']}"
+            f" --peak-sdk-subagents-per-session {parameters['peak_sdk_subagents_per_session']}"
             f" --duration-seconds {parameters['duration_seconds']}"
         )
 
@@ -788,6 +835,7 @@ def build_capacity_load_test_plan(
             "gate": gate,
             "purpose": _LOAD_TEST_GATE_PURPOSES[gate],
             "mode": "dry_run_command_manifest",
+            "target_profile_id": _B3_TARGET_PROFILE_ID,
             "parameters": parameters,
             "command": command_for(gate),
             "required_admin_runtime_sections": _LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS,
@@ -830,6 +878,8 @@ def build_capacity_load_test_plan(
     return {
         "schema_version": "ai-platform.capacity-load-test-plan.v1",
         "baseline": build_capacity_baseline(settings),
+        "target_profile": dict(_B3_TARGET_PROFILE),
+        "parameters": parameters,
         "base_url": safe_base_url,
         "execution_policy": {
             "default_mode": "dry_run_plan_only",
@@ -1940,8 +1990,11 @@ def build_capacity_profile_readiness(payload: dict[str, Any]) -> dict[str, Any]:
         profiles.append(
             {
                 "id": profile["id"],
+                "stage": profile["stage"],
                 "label": profile["label"],
                 "intent": profile["intent"],
+                "target_profile": dict(profile["target_profile"]),
+                "measurement_first": True,
                 "status": profile_status,
                 "required_admin_runtime_sections": list(_LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS),
                 "required_load_test_gates": list(profile["required_load_test_gates"]),
@@ -2042,6 +2095,7 @@ def render_capacity_baseline_markdown(baseline: dict[str, Any]) -> str:
 
 def render_capacity_load_test_plan_markdown(plan: dict[str, Any]) -> str:
     """Render a #21 capacity load-test command manifest as operator-readable Markdown."""
+    target_profile = _dict(plan.get("target_profile"))
     workflow_blocks = []
     for step in plan.get("operator_workflow", []):
         workflow_blocks.append(
@@ -2099,6 +2153,14 @@ def render_capacity_load_test_plan_markdown(plan: dict[str, Any]) -> str:
     return (
         "# ai-platform Capacity Load-Test Plan\n\n"
         f"Schema: `{plan['schema_version']}`\n\n"
+        "## Target Profile\n\n"
+        f"Profile: `{target_profile.get('id', 'unknown')}`\n\n"
+        f"Stage: `{target_profile.get('stage', 'unknown')}`\n\n"
+        f"Concurrent sessions: `{_coerce_int(target_profile.get('concurrent_sessions'))}`\n\n"
+        "Peak SDK subagents per session: "
+        f"`{_coerce_int(target_profile.get('peak_sdk_subagents_per_session'))}`\n\n"
+        "Measurement first: "
+        f"`{str(_coerce_bool(target_profile.get('measurement_first'))).lower()}`\n\n"
         "This is a repeatable command manifest. It does not raise production "
         "concurrency defaults and defaults to dry-run planning until an operator "
         "executes a concrete load harness for the target deployment profile.\n\n"

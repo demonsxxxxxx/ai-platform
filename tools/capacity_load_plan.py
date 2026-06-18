@@ -28,9 +28,10 @@ def main() -> None:
         help="Target API base URL used in the generated command manifest.",
     )
     parser.add_argument("--scenario", choices=tuple(LOAD_TEST_GATES))
-    parser.add_argument("--tenants", type=int, default=3)
-    parser.add_argument("--users-per-tenant", type=int, default=5)
-    parser.add_argument("--runs-per-user", type=int, default=2)
+    parser.add_argument("--tenants", type=int, default=1)
+    parser.add_argument("--users-per-tenant", type=int, default=10)
+    parser.add_argument("--runs-per-user", type=int, default=1)
+    parser.add_argument("--peak-sdk-subagents-per-session", type=int, default=4)
     parser.add_argument("--duration-seconds", type=int, default=300)
     parser.add_argument(
         "--dry-run",
@@ -44,6 +45,7 @@ def main() -> None:
         tenants=args.tenants,
         users_per_tenant=args.users_per_tenant,
         runs_per_user=args.runs_per_user,
+        peak_sdk_subagents_per_session=args.peak_sdk_subagents_per_session,
         duration_seconds=args.duration_seconds,
         scenario=args.scenario,
     )
