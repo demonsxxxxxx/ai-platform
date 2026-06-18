@@ -903,7 +903,8 @@ def test_governance_readiness_doc_records_b1_smoke_without_gate_closure():
     assert "not `gate closable`" in governance_text
     assert "`runtime_affecting_delta_requires_fresh_211_smoke`" in governance_text
     assert "`8c99db16e449f9a03ab96068ce9cd4d4843df9ba`" in governance_text
-    assert "`9687a7720528e2f3068bfcbdccbee45f80458ec0`" in governance_text
+    assert "current source commit is reported dynamically" in governance_text
+    assert "`9687a7720528e2f3068bfcbdccbee45f80458ec0`" not in governance_text
     assert "`app/b1_memory_context_readiness.py`" in governance_text
     assert "`app/release_evidence_export_acceptance.py`" in governance_text
     assert "`app/release_evidence_readiness.py`" in governance_text
