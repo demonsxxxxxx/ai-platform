@@ -1,8 +1,6 @@
 import { useMemo, useCallback, useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { ListTree } from "lucide-react";
-import toast from "react-hot-toast";
-import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../../hooks/useAuth";
 import { ChatMessage } from "../../chat/ChatMessage";
 import { AttachmentPreviewHost } from "../../chat/AttachmentPreviewHost";
@@ -76,7 +74,6 @@ import {
 import { clearSidebarHistory } from "../../chat/ChatMessage/items/sidebarHistoryStore";
 import type { ExternalNavigationTargetFile } from "./externalNavigationState";
 import { isFileLink } from "../../documents/utils";
-import { sessionApi } from "../../../services/api";
 import { buildFileLinkPreviewRequest } from "../../chat/ChatMessage/items/fileLinkPreview";
 
 const FLOATING_SCROLL_BUTTON_OFFSET_CLASS = "bottom-full mb-3";
@@ -84,7 +81,6 @@ const FLOATING_SCROLL_BUTTON_OFFSET_CLASS = "bottom-full mb-3";
 interface ChatViewProps {
   messages: Message[];
   sessionId: string | null;
-  currentRunId: string | null;
   isLoading: boolean;
   isLoadingHistory: boolean;
   connectionStatus?: ConnectionStatus;
@@ -109,27 +105,27 @@ interface ChatViewProps {
   enabledSkillsCount: number;
   totalSkillsCount: number;
   enableSkills: boolean;
-  personaPresets: PersonaPreset[];
-  personaPresetsTotal: number;
-  personaPresetsPage: number;
-  onPersonaPresetsPageChange: (page: number) => void;
-  onPersonaPresetsSearchChange: (query: string) => void;
-  onPersonaPresetsTagChange: (tag: string | null) => void;
-  selectedPersonaPresetId: string | null;
-  selectedPersonaName: string | null;
-  selectedPersonaSnapshot: PersonaPresetSnapshot | null;
-  personaSkillsControlled: boolean;
-  personaPresetsLoading: boolean;
-  personaPresetsMutating: boolean;
-  onUsePersonaPreset: (
+  personaPresets?: PersonaPreset[];
+  personaPresetsTotal?: number;
+  personaPresetsPage?: number;
+  onPersonaPresetsPageChange?: (page: number) => void;
+  onPersonaPresetsSearchChange?: (query: string) => void;
+  onPersonaPresetsTagChange?: (tag: string | null) => void;
+  selectedPersonaPresetId?: string | null;
+  selectedPersonaName?: string | null;
+  selectedPersonaSnapshot?: PersonaPresetSnapshot | null;
+  personaSkillsControlled?: boolean;
+  personaPresetsLoading?: boolean;
+  personaPresetsMutating?: boolean;
+  onUsePersonaPreset?: (
     preset: PersonaPreset,
   ) => Promise<PersonaPresetSnapshot | null>;
-  onTogglePersonaPreference: (
+  onTogglePersonaPreference?: (
     preset: PersonaPreset,
     preference: { is_favorite?: boolean; is_pinned?: boolean },
   ) => Promise<void>;
-  onCopyPersonaPreset: (preset: PersonaPreset) => Promise<void>;
-  onSavePersonaPreset: (
+  onCopyPersonaPreset?: (preset: PersonaPreset) => Promise<void>;
+  onSavePersonaPreset?: (
     preset: PersonaPreset | null,
     data: {
       name: string;
@@ -139,8 +135,8 @@ interface ChatViewProps {
       skill_names: string[];
     },
   ) => Promise<void>;
-  onClearPersonaPreset: () => void;
-  canManagePersonaPresets: boolean;
+  onClearPersonaPreset?: () => void;
+  canManagePersonaPresets?: boolean;
   agentOptions: Record<string, AgentOption>;
   agentOptionValues: Record<string, boolean | string | number>;
   onToggleAgentOption: (key: string, value: boolean | string | number) => void;
@@ -172,7 +168,6 @@ interface ChatViewProps {
 export function ChatView({
   messages,
   sessionId,
-  currentRunId,
   isLoading,
   isLoadingHistory,
   connectionStatus,
@@ -194,24 +189,24 @@ export function ChatView({
   enabledSkillsCount,
   totalSkillsCount,
   enableSkills,
-  personaPresets,
-  personaPresetsTotal,
-  personaPresetsPage,
+  personaPresets = [],
+  personaPresetsTotal = 0,
+  personaPresetsPage = 1,
   onPersonaPresetsPageChange,
   onPersonaPresetsSearchChange,
   onPersonaPresetsTagChange,
-  selectedPersonaPresetId,
-  selectedPersonaName,
-  selectedPersonaSnapshot,
-  personaSkillsControlled,
-  personaPresetsLoading,
-  personaPresetsMutating,
-  onUsePersonaPreset,
+  selectedPersonaPresetId = null,
+  selectedPersonaName = null,
+  selectedPersonaSnapshot = null,
+  personaSkillsControlled = false,
+  personaPresetsLoading = false,
+  personaPresetsMutating = false,
+  onUsePersonaPreset = undefined,
   onTogglePersonaPreference,
   onCopyPersonaPreset,
   onSavePersonaPreset,
   onClearPersonaPreset,
-  canManagePersonaPresets,
+  canManagePersonaPresets = false,
   agentOptions,
   agentOptionValues,
   onToggleAgentOption,
@@ -233,7 +228,6 @@ export function ChatView({
   outlineToggleRef,
 }: ChatViewProps) {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const { user } = useAuth();
   const sessionRunning = isSessionRunning(messages, isLoading);
   const hasVisibleStreamingMessage = messages.some(
@@ -320,8 +314,8 @@ export function ChatView({
 
   const currentPersonaAvatar = useMemo(() => {
     const preset = personaPresets.find((p) => p.id === selectedPersonaPresetId);
-    return preset?.avatar ?? null;
-  }, [personaPresets, selectedPersonaPresetId]);
+    return preset?.avatar ?? selectedPersonaSnapshot?.avatar ?? null;
+  }, [personaPresets, selectedPersonaPresetId, selectedPersonaSnapshot]);
 
   const handleOutlineNavigate = useCallback(
     (anchorId: string, messageIndex: number) => {
@@ -539,22 +533,6 @@ export function ChatView({
   const isMobileViewport =
     typeof window !== "undefined" ? window.innerWidth < 640 : false;
 
-  const handleForkMessage = useCallback(
-    async (messageId: string) => {
-      if (!sessionId) return;
-      try {
-        const response = await sessionApi.forkMessage(sessionId, messageId);
-        toast.success(t("chat.message.forkSuccess"));
-        navigate(`/chat/${response.session.id}`);
-      } catch (error) {
-        toast.error(
-          error instanceof Error ? error.message : t("chat.message.forkFailed"),
-        );
-      }
-    },
-    [navigate, sessionId, t],
-  );
-
   const handleVirtuosoRangeChanged = useCallback((range: ListRange) => {
     setVisibleRange((current) =>
       current?.startIndex === range.startIndex &&
@@ -612,26 +590,23 @@ export function ChatView({
       <ChatMessage
         message={message}
         sessionId={sessionId ?? undefined}
-        runId={currentRunId ?? undefined}
         isLastMessage={index === messages.length - 1}
         personaAvatar={currentPersonaAvatar}
         personaName={selectedPersonaName}
         activePreview={activePreview}
         latestAutoPreview={latestAutoPreview}
         onOpenPreview={handleOpenPreview}
-        onForkMessage={handleForkMessage}
+        onForkMessage={undefined}
       />
     ),
     [
       sessionId,
-      currentRunId,
       messages.length,
       currentPersonaAvatar,
       selectedPersonaName,
       activePreview,
       latestAutoPreview,
       handleOpenPreview,
-      handleForkMessage,
     ],
   );
 

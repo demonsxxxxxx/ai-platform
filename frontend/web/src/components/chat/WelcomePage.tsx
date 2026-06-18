@@ -14,7 +14,6 @@ import {
   getWelcomeSuggestionButtonClass,
 } from "./welcomeLayout";
 import { PersonaAvatarWithLoading } from "../persona/PersonaAvatarWithLoading";
-import { useSettingsContext } from "../../contexts/SettingsContext";
 import type { PersonaPreset, PersonaPresetSnapshot } from "../../types";
 
 interface WelcomePageProps {
@@ -103,23 +102,9 @@ export const WelcomePage = memo(function WelcomePage({
     [],
   );
 
-  const { settings } = useSettingsContext();
-
   const defaultSuggestions = useMemo(() => {
-    const rawValue = settings?.settings?.frontend?.find(
-      (s) => s.key === "WELCOME_SUGGESTIONS",
-    )?.value;
-    const currentLang = i18n.language?.split("-")[0] || "en";
-    if (Array.isArray(rawValue)) return rawValue;
-    if (rawValue && typeof rawValue === "object") {
-      const langMap = rawValue as Record<
-        string,
-        Array<{ icon: string; text: string }>
-      >;
-      return langMap[currentLang] || langMap["en"];
-    }
     return [];
-  }, [settings, i18n.language]);
+  }, []);
 
   const starterPrompts = useMemo(
     () =>
@@ -178,7 +163,7 @@ export const WelcomePage = memo(function WelcomePage({
         <div className="sm:hidden relative mb-3">
           <img
             src="/icons/icon.svg"
-            alt="LambChat"
+            alt="AI Platform"
             className="welcome-icon relative size-10 rounded-full shadow-md ring-1 ring-stone-200/60 dark:ring-stone-700/40"
           />
         </div>

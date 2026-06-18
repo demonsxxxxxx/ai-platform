@@ -15,12 +15,9 @@ import { ToolCallItem } from "./ToolCallItem";
 import { UserMessageBubble } from "./UserMessageBubble";
 import { MessagePartRenderer } from "./MessagePartRenderer";
 import { RevealArtifactsSummary } from "./RevealArtifactsSummary";
-import { FeedbackButtons } from "./FeedbackButtons";
 import { AssistantAvatar } from "./AssistantAvatar";
-import { ShareButton } from "./ShareButton";
 import { CollapsiblePill } from "../../common/CollapsiblePill";
 import { useSettingsContext } from "../../../contexts/SettingsContext";
-import { useAuth } from "../../../hooks/useAuth";
 import { ModelIconImg } from "../../agent/modelIcon.tsx";
 import { shouldCloseTokenDetailsPopover } from "./tokenDetailsPopoverGuards";
 import { resolveTokenUsageModelDetails } from "./tokenUsageModel";
@@ -67,7 +64,6 @@ function ThinkingIndicator() {
 interface ChatMessageProps {
   message: Message;
   sessionId?: string;
-  runId?: string;
   isLastMessage?: boolean;
   onStop?: () => void;
   personaAvatar?: string | null;
@@ -79,7 +75,6 @@ interface ChatMessageProps {
     source?: RevealPreviewOpenSource,
   ) => boolean;
   onForkMessage?: (messageId: string) => void | Promise<void>;
-  showFeedbackAndShareActions?: boolean;
 }
 
 // Token usage statistics button component - ChatGPT style
@@ -241,7 +236,6 @@ function TokenDetailsButton({
 export const ChatMessage = memo(function ChatMessage({
   message,
   sessionId,
-  runId,
   isLastMessage,
   personaAvatar,
   personaName,
@@ -249,11 +243,9 @@ export const ChatMessage = memo(function ChatMessage({
   latestAutoPreview,
   onOpenPreview,
   onForkMessage,
-  showFeedbackAndShareActions = true,
 }: ChatMessageProps) {
   const { t } = useTranslation();
   const { availableModels } = useSettingsContext();
-  const { isAuthenticated } = useAuth();
   const isUser = message.role === "user";
   const isStreaming = message.isStreaming && !message.content;
   const modelDetails = resolveTokenUsageModelDetails({
@@ -454,27 +446,6 @@ export const ChatMessage = memo(function ChatMessage({
                 modelDetails={modelDetails}
                 isLastMessage={isLastMessage}
               />
-            )}
-            {showFeedbackAndShareActions && (
-              <>
-                {/* Feedback buttons */}
-                {isAuthenticated && sessionId && (message.runId || runId) && (
-                  <FeedbackButtons
-                    sessionId={sessionId}
-                    runId={message.runId || runId!}
-                    currentFeedback={message.feedback}
-                    isLastMessage={isLastMessage}
-                  />
-                )}
-                {/* Share button */}
-                {sessionId && (
-                  <ShareButton
-                    sessionId={sessionId}
-                    runId={message.runId || runId}
-                    isLastMessage={isLastMessage}
-                  />
-                )}
-              </>
             )}
           </div>
         )}

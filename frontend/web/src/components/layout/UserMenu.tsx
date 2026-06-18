@@ -14,12 +14,12 @@ import {
 } from "lucide-react";
 import { useAuth } from "../../hooks/useAuth";
 import { useSettingsContext } from "../../contexts/SettingsContext";
-import { Permission } from "../../types";
 import {
   beginSessionSelectionGuard,
   clearSessionSelectionGuard,
 } from "../../utils/sessionSelectionGuard";
 import { useSwipeToClose } from "../../hooks/useSwipeToClose";
+import { canShowSurfaceInNavigation } from "./AppContent/phase1SurfacePolicy";
 
 interface UserMenuProps {
   onShowProfile: () => void;
@@ -27,7 +27,7 @@ interface UserMenuProps {
 
 export function UserMenu({ onShowProfile }: UserMenuProps) {
   const { t } = useTranslation();
-  const { logout, hasAnyPermission, user } = useAuth();
+  const { logout, permissions, user } = useAuth();
   const { enableSkills, enableMemory } = useSettingsContext();
   const navigate = useNavigate();
   const [showMenu, setShowMenu] = useState(false);
@@ -44,14 +44,10 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
     enabled: showMenu && isMobile,
   });
 
-  const canReadSkills =
-    hasAnyPermission([Permission.SKILL_READ]) && enableSkills;
-  const canReadMarketplace =
-    hasAnyPermission([Permission.MARKETPLACE_READ]) && enableSkills;
-  const canReadAnySkills = canReadSkills || canReadMarketplace;
-  const canReadMCP = hasAnyPermission([Permission.MCP_READ]);
-  const canReadChannels = hasAnyPermission([Permission.CHANNEL_READ]);
-  const canManageSettings = hasAnyPermission([Permission.SETTINGS_MANAGE]);
+  const canShow = (
+    tab: Parameters<typeof canShowSurfaceInNavigation>[0],
+    featureEnabled = true,
+  ) => canShowSurfaceInNavigation(tab, permissions, featureEnabled);
 
   // Reactive mobile detection
   useEffect(() => {
@@ -123,21 +119,21 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
       path: "/skills",
       label: t("nav.skills"),
       icon: Sparkles,
-      show: canReadAnySkills,
+      show: canShow("skills", enableSkills),
       matchPaths: ["/skills", "/marketplace"],
     },
-    { path: "/mcp", label: t("nav.mcp"), icon: Server, show: canReadMCP },
+    { path: "/mcp", label: t("nav.mcp"), icon: Server, show: canShow("mcp") },
     {
       path: "/channels",
       label: t("nav.channels"),
       icon: MessageCircle,
-      show: canReadChannels,
+      show: canShow("channels"),
     },
     {
       path: "/memory",
       label: t("nav.memory"),
       icon: Brain,
-      show: enableMemory,
+      show: canShow("memory", enableMemory),
     },
   ];
 
@@ -190,7 +186,7 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
       {visibleNav.length > 0 && <div>{visibleNav.map(renderNavItem)}</div>}
 
       {/* System Settings (only settings page remains here for quick access) */}
-      {canManageSettings && (
+      {canShow("settings") && (
         <button
           type="button"
           className={`${menuItemClass} ${

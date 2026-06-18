@@ -221,6 +221,12 @@ export function useProjectSessionList(
   return useFilteredSessionList({ projectId }, scrollRoot);
 }
 
+export function useSessionList(
+  scrollRoot?: Element | null,
+): UseProjectSessionListReturn {
+  return useFilteredSessionList({}, scrollRoot);
+}
+
 export function useFavoriteSessionList(
   scrollRoot?: Element | null,
 ): UseProjectSessionListReturn {

@@ -50,8 +50,13 @@ export enum Permission {
   CHANNEL_WRITE = "channel:write",
   CHANNEL_DELETE = "channel:delete",
   // Agent
+  AGENT_USE = "agent:use",
   AGENT_READ = "agent:read",
   AGENT_ADMIN = "agent:admin",
+  // Artifact
+  ARTIFACT_DOWNLOAD = "artifact:download",
+  // Admin Runtime
+  ADMIN_STATUS = "admin:status",
   // Model
   MODEL_ADMIN = "model:admin",
   // Marketplace

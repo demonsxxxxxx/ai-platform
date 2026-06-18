@@ -6,7 +6,6 @@ import {
   User,
   Bell,
   Settings,
-  Wrench,
   Cpu,
   Scale,
   LogOut,
@@ -18,7 +17,6 @@ import { APP_NAME } from "../../constants";
 import { ProfileInfoTab } from "./tabs/ProfileInfoTab";
 import { ProfileNotificationTab } from "./tabs/ProfileNotificationTab";
 import { ProfilePreferencesTab } from "./tabs/ProfilePreferencesTab";
-import { ProfileToolsTab } from "./tabs/ProfileToolsTab";
 import { ProfileModelsTab } from "./tabs/ProfileModelsTab";
 import { ProfileTermsTab } from "./tabs/ProfileTermsTab";
 import { useSwipeToClose } from "../../hooks/useSwipeToClose";
@@ -36,7 +34,6 @@ const TAB_ICONS: Record<
   info: User,
   notification: Bell,
   preferences: Settings,
-  tools: Wrench,
   models: Cpu,
   terms: Scale,
 };
@@ -53,7 +50,6 @@ export function ProfileModal({
     | "info"
     | "notification"
     | "preferences"
-    | "tools"
     | "models"
     | "terms"
   >("info");
@@ -107,7 +103,6 @@ export function ProfileModal({
     { key: "info", label: t("profile.title") },
     { key: "notification", label: t("profile.notifications") },
     { key: "preferences", label: t("profile.preferences") },
-    { key: "tools", label: t("profile.toolsTab", "Tools") },
     { key: "models", label: t("profile.modelIntro") },
     { key: "terms", label: t("profile.termsTab") },
   ];
@@ -117,7 +112,6 @@ export function ProfileModal({
       {activeTab === "info" && <ProfileInfoTab />}
       {activeTab === "notification" && <ProfileNotificationTab />}
       {activeTab === "preferences" && <ProfilePreferencesTab />}
-      {activeTab === "tools" && <ProfileToolsTab />}
       {activeTab === "models" && <ProfileModelsTab />}
       {activeTab === "terms" && <ProfileTermsTab />}
     </div>
@@ -140,11 +134,7 @@ export function ProfileModal({
         className ?? ""
       }`}
     >
-      <a
-        href="https://github.com/clivia/LambChat"
-        target="_blank"
-        rel="noopener noreferrer"
-        onClick={(e) => e.stopPropagation()}
+      <div
         className="text-[11px] text-stone-400 dark:text-stone-500 tabular-nums hover:text-stone-600 dark:hover:text-stone-300 transition-colors"
       >
         <span className="font-semibold text-stone-500 dark:text-stone-400 font-serif tracking-tight">
@@ -153,16 +143,12 @@ export function ProfileModal({
         {versionInfo?.app_version && (
           <span className="ml-1 opacity-70">v{versionInfo.app_version}</span>
         )}
-      </a>
-      <a
-        href="https://github.com/clivia/LambChat"
-        target="_blank"
-        rel="noopener noreferrer"
-        onClick={(e) => e.stopPropagation()}
+      </div>
+      <span
         className="px-1.5 sm:px-2 text-[11px] font-medium text-stone-400 dark:text-stone-500 hover:text-stone-600 dark:hover:text-stone-300 transition-colors py-1 rounded-md hover:bg-stone-100 dark:hover:bg-stone-700/60 shrink-0 font-serif"
       >
-        {t("common.poweredBy")}
-      </a>
+        {t("common.poweredBy", "Powered by")} {APP_NAME}
+      </span>
     </div>
   );
 

@@ -1,8 +1,5 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
-import { authenticatedRequest } from "../services/api/authenticatedRequest";
 import type { ToolState, ToolCategory } from "../types";
-
-const API_BASE = "/api";
 
 export function useTools(options?: { enabled?: boolean }) {
   const hookEnabled = options?.enabled !== false;
@@ -11,28 +8,13 @@ export function useTools(options?: { enabled?: boolean }) {
   const [error, setError] = useState<string | null>(null);
   const agentIdRef = useRef<string | undefined>(undefined);
 
-  // 切换 MCP 工具的启用状态（调用 MCP API）
+  // Phase 1 has no ordinary-user MCP lifecycle/preferences contract yet.
   const toggleMcpTool = useCallback(
     async (toolName: string, serverName: string, enabled: boolean) => {
-      if (!hookEnabled) return;
-      try {
-        const baseName = toolName.includes(":")
-          ? toolName.split(":")[1]
-          : toolName;
-        await authenticatedRequest(
-          `${API_BASE}/mcp/${encodeURIComponent(
-            serverName,
-          )}/tools/${encodeURIComponent(baseName)}`,
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ enabled }),
-          },
-        );
-      } catch (err) {
-        console.error("Failed to toggle MCP tool:", err);
-        throw err;
-      }
+      void toolName;
+      void serverName;
+      void enabled;
+      void hookEnabled;
     },
     [hookEnabled],
   );

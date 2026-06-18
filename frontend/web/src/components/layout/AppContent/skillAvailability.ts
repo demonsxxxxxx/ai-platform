@@ -1,4 +1,4 @@
-import type { SkillResponse } from "../../../types";
+import type { AgentInfo, SkillResponse } from "../../../types";
 
 export function buildEffectiveSkills({
   skills,
@@ -31,4 +31,25 @@ export function buildEffectiveSkills({
 
 export function countEnabledSkills(skills: SkillResponse[]): number {
   return skills.filter((skill) => skill.enabled).length;
+}
+
+export function buildSkillOptionsFromAgents(
+  agents: readonly AgentInfo[],
+  currentAgent?: string,
+): SkillResponse[] {
+  return agents
+    .filter((agent) => agent.id !== "general-agent")
+    .map((agent) => ({
+      name: agent.id,
+      description: agent.description || agent.name,
+      tags: ["runtime capability"],
+      enabled: currentAgent ? agent.id === currentAgent : true,
+      source: "manual",
+      content: "",
+      files: {},
+      file_count: 0,
+      installed_from: "manual",
+      is_published: false,
+      marketplace_is_active: true,
+    }));
 }

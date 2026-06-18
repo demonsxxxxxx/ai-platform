@@ -5,12 +5,13 @@ import { Settings, ChevronRight, Check } from "lucide-react";
 import { toast } from "react-hot-toast";
 import { useTheme } from "../../../contexts/ThemeContext";
 import { useSettingsContext } from "../../../contexts/SettingsContext";
-import { authApi, agentConfigApi, agentApi } from "../../../services/api";
+import { authApi, agentApi } from "../../../services/api";
 import { DEFAULT_THINKING_LEVEL_STORAGE_KEY } from "../../layout/AppContent/useAgentOptions";
 import { SkeletonLine } from "../../skeletons";
 import type { AgentInfo } from "../../../types";
 
 const NEWLINE_MODIFIER_KEY = "newlineModifier";
+const DEFAULT_AGENT_ID_STORAGE_KEY = "defaultAgentId";
 
 const LANGUAGES = [
   { code: "en", nativeName: "English" },
@@ -182,7 +183,6 @@ export function ProfilePreferencesTab() {
 
   // Agent preference
   const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [currentAgentPref, setCurrentAgentPref] = useState<string | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<string>("");
   const [agentsLoading, setAgentsLoading] = useState(true);
   const [agentsSaving, setAgentsSaving] = useState(false);
@@ -190,16 +190,11 @@ export function ProfilePreferencesTab() {
   const loadAgents = useCallback(async () => {
     setAgentsLoading(true);
     try {
-      const [agentsRes, prefRes] = await Promise.all([
-        agentApi.list(),
-        agentConfigApi
-          .getUserPreference()
-          .catch(() => ({ default_agent_id: null })),
-      ]);
+      const agentsRes = await agentApi.list();
+      const storedAgentId = localStorage.getItem(DEFAULT_AGENT_ID_STORAGE_KEY);
       setAgents(agentsRes.agents || []);
-      setCurrentAgentPref(prefRes.default_agent_id);
       setSelectedAgent(
-        prefRes.default_agent_id || agentsRes.default_agent || "",
+        storedAgentId || agentsRes.default_agent || "",
       );
     } catch {
       // silent — dropdown will show empty
@@ -256,13 +251,13 @@ export function ProfilePreferencesTab() {
     setOpenDropdown(null);
     setAgentsSaving(true);
     try {
-      await agentConfigApi.setUserPreference(agentId);
-      setCurrentAgentPref(agentId);
+      localStorage.setItem(DEFAULT_AGENT_ID_STORAGE_KEY, agentId);
+      await authApi.updateMetadata({ defaultAgentId: agentId });
       toast.success(t("agentConfig.preferenceSaved"));
       window.dispatchEvent(new CustomEvent("agent-preference-updated"));
     } catch (err) {
       toast.error((err as Error).message || t("agentConfig.saveFailed"));
-      setSelectedAgent(currentAgentPref || "");
+      setSelectedAgent(localStorage.getItem(DEFAULT_AGENT_ID_STORAGE_KEY) || "");
     } finally {
       setAgentsSaving(false);
     }

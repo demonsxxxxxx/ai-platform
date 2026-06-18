@@ -113,7 +113,7 @@ function renderHighlightText(
 
 export function SystemHealthSection() {
   const { t } = useTranslation();
-  const { hasPermission } = useAuth();
+  const { hasAnyPermission } = useAuth();
   const [diagnostics, setDiagnostics] = useState<MemoryDiagnostics | null>(
     null,
   );
@@ -121,7 +121,10 @@ export function SystemHealthSection() {
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
 
-  const canView = hasPermission(Permission.SETTINGS_MANAGE);
+  const canView = hasAnyPermission([
+    Permission.ADMIN_STATUS,
+    Permission.SETTINGS_MANAGE,
+  ]);
 
   const fetchDiagnostics = useCallback(
     async (refresh = false) => {

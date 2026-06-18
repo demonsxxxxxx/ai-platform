@@ -22,6 +22,7 @@ import {
   clearRedirectPath,
 } from "../services/api";
 import { DEFAULT_THINKING_LEVEL_STORAGE_KEY } from "../components/layout/AppContent/useAgentOptions";
+import { normalizePrincipalPermissions } from "../auth/aiPlatformPermissions";
 import { Permission } from "../types";
 import type { User, UserCreate, LoginRequest, AuthState } from "../types";
 import i18n from "../i18n";
@@ -33,6 +34,7 @@ function applyUserMetadata(metadata?: {
   language?: string;
   theme?: string;
   defaultThinkingLevel?: string;
+  defaultAgentId?: string;
   sidebarCollapsed?: string;
 }) {
   if (!metadata) return;
@@ -60,6 +62,11 @@ function applyUserMetadata(metadata?: {
         detail: metadata.defaultThinkingLevel,
       }),
     );
+  }
+
+  if (metadata.defaultAgentId) {
+    localStorage.setItem("defaultAgentId", metadata.defaultAgentId);
+    window.dispatchEvent(new CustomEvent("agent-preference-updated"));
   }
 
   if (metadata.sidebarCollapsed !== undefined) {
@@ -138,6 +145,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             authApi.logout();
             setToken(null);
             setUser(null);
+            setDynamicPermissions([]);
             setIsLoading(false);
             return;
           }
@@ -146,6 +154,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           authApi.logout();
           setToken(null);
           setUser(null);
+          setDynamicPermissions([]);
           setIsLoading(false);
           return;
         }
@@ -159,13 +168,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(currentUser);
         applyUserMetadata(currentUser.metadata);
         // 更新动态权限
-        if (currentUser.permissions) {
-          setDynamicPermissions(
-            currentUser.permissions.filter((p): p is Permission =>
-              Object.values(Permission).includes(p as Permission),
-            ),
-          );
-        }
+        setDynamicPermissions(
+          normalizePrincipalPermissions(currentUser.permissions),
+        );
       } catch (err) {
         // Only treat 401 as auth failure — network errors / server restarts
         // should NOT clear auth state during development.
@@ -185,6 +190,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const handleLogout = () => {
       setToken(null);
       setUser(null);
+      setDynamicPermissions([]);
     };
 
     window.addEventListener("auth:logout", handleLogout);
@@ -206,17 +212,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setUser(currentUser);
           applyUserMetadata(currentUser.metadata);
           // 更新动态权限
-          if (currentUser.permissions) {
-            setDynamicPermissions(
-              currentUser.permissions.filter((p): p is Permission =>
-                Object.values(Permission).includes(p as Permission),
-              ),
-            );
-          }
+          setDynamicPermissions(
+            normalizePrincipalPermissions(currentUser.permissions),
+          );
         } catch {
           // 获取用户信息失败，清除登录状态
           authApi.logout();
           setToken(null);
+          setUser(null);
+          setDynamicPermissions([]);
           setIsLoading(false);
           return null;
         }
@@ -274,13 +278,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setUser(currentUser);
           applyUserMetadata(currentUser.metadata);
           // 更新动态权限
-          if (currentUser.permissions) {
-            setDynamicPermissions(
-              currentUser.permissions.filter((p): p is Permission =>
-                Object.values(Permission).includes(p as Permission),
-              ),
-            );
-          }
+          setDynamicPermissions(
+            normalizePrincipalPermissions(currentUser.permissions),
+          );
         } catch {
           // 忽略用户信息获取失败
         }
@@ -296,6 +296,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     authApi.logout();
     setToken(null);
     setUser(null);
+    setDynamicPermissions([]);
   }, []);
 
   // 刷新用户信息（同时更新动态权限）
@@ -310,13 +311,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(currentUser);
       applyUserMetadata(currentUser.metadata);
       // 更新动态权限
-      if (currentUser.permissions) {
-        setDynamicPermissions(
-          currentUser.permissions.filter((p): p is Permission =>
-            Object.values(Permission).includes(p as Permission),
-          ),
-        );
-      }
+      setDynamicPermissions(normalizePrincipalPermissions(currentUser.permissions));
     } catch (error) {
       console.error("Failed to refresh user info:", error);
     }

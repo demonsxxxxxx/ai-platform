@@ -17,6 +17,7 @@ const settingsPanelSource = readFileSync(
 
 test("admin runtime capacity section consumes only the ai-platform admin overview projection", () => {
   assert.match(sectionSource, /adminRuntimeApi\.getOverview/);
+  assert.match(sectionSource, /Permission\.ADMIN_STATUS/);
   assert.match(sectionSource, /Permission\.SETTINGS_MANAGE/);
   assert.match(
     sectionSource,
@@ -55,12 +56,28 @@ test("admin runtime capacity section consumes only the ai-platform admin overvie
   }
 });
 
-test("admin runtime capacity fetch gate is closed without settings management permission", () => {
+test("admin runtime capacity fetch gate is closed without admin runtime permission", () => {
   assert.equal(shouldFetchAdminRuntimeOverview(false), false);
   assert.equal(shouldFetchAdminRuntimeOverview(true), true);
 });
 
-test("settings panel places admin runtime capacity beside system health", () => {
+test("admin runtime panel places admin runtime capacity beside system health", () => {
+  const adminRuntimePanelSource = readFileSync(
+    join(import.meta.dirname, "../AdminRuntimePanel.tsx"),
+    "utf8",
+  );
+
+  assert.match(
+    adminRuntimePanelSource,
+    /import\s+\{\s*AdminRuntimeCapacitySection\s*\}\s+from\s+"\.\/AdminRuntimeCapacitySection";/,
+  );
+  assert.match(
+    adminRuntimePanelSource,
+    /<SystemHealthSection\s*\/>\s*<AdminRuntimeCapacitySection\s*\/>/,
+  );
+});
+
+test("legacy settings panel is not the Phase 1 Admin Runtime entry", () => {
   assert.match(
     settingsPanelSource,
     /import\s+\{\s*AdminRuntimeCapacitySection\s*\}\s+from\s+"\.\/AdminRuntimeCapacitySection";/,

@@ -11,6 +11,7 @@ import {
 import toast from "react-hot-toast";
 import { PanelHeader } from "../../common/PanelHeader";
 import { useAuth } from "../../../hooks/useAuth";
+import { Permission } from "../../../types";
 import { formatDateTimeShort } from "../../../utils/datetime";
 import {
   cleanupExpiredMemoryRecords,
@@ -23,19 +24,6 @@ import {
   type AiPlatformMemoryRecord,
   type MemoryPolicy,
 } from "../../../services/api/memory";
-
-const MEMORY_ADMIN_ROLES = new Set([
-  "admin",
-  "tenant_admin",
-  "platform_admin",
-  "break_glass_admin",
-]);
-
-function roleCanUseAdminMemory(roles: string[] | undefined): boolean {
-  return Boolean(
-    roles?.some((role) => MEMORY_ADMIN_ROLES.has(role.trim().toLowerCase())),
-  );
-}
 
 function normalizedOptionalId(value: string): string | undefined {
   const trimmed = value.trim();
@@ -200,7 +188,7 @@ function PolicySummary({ policy }: { policy: MemoryPolicy | null }) {
 
 export function MemoryPanel() {
   const { t } = useTranslation();
-  const { user } = useAuth();
+  const { permissions } = useAuth();
   const [workspaceId, setWorkspaceId] = useState("default");
   const [agentId, setAgentId] = useState("document-review");
   const [sessionId, setSessionId] = useState("");
@@ -219,8 +207,10 @@ export function MemoryPanel() {
   const recordsRequestSeq = useRef(0);
 
   const canUseAdminMemory = useMemo(
-    () => roleCanUseAdminMemory(user?.roles),
-    [user?.roles],
+    () =>
+      permissions.includes(Permission.ADMIN_STATUS) ||
+      permissions.includes(Permission.SETTINGS_MANAGE),
+    [permissions],
   );
   const normalizedWorkspaceId = normalizedOptionalId(workspaceId) ?? "default";
   const normalizedAgentId = normalizedOptionalId(agentId);

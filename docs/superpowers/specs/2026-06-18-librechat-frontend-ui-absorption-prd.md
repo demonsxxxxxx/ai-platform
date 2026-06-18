@@ -169,7 +169,7 @@ must include an interface map with each migrated surface classified as
 | --- | --- | --- | --- |
 | Auth/session/RBAC | Replace imported RBAC with ai-platform principal, roles, permissions, tenant, and admin checks. | `/api/auth/*`, `/api/ai/auth/*`, existing frontend auth hooks. | New department or role-management APIs beyond current principal projection. |
 | Chat/session shell | Use current session list, message history, and run creation/streaming behavior. | `/api/ai/chat/sessions`, `/api/ai/chat/stream`, `/api/ai/runs`. | New conversation metadata, sharing, or team inbox features. |
-| Composer Skill picker | Use current agent app and governed skill projections; avoid raw skill IDs in ordinary-user UI. | `/api/ai/agent-apps`, `/api/ai/runs`, existing skill snapshot/run payload rules. | Department-specific Skill availability, marketplace install/purchase, or per-user pinning APIs. |
+| Composer Skill picker | Ordinary users select current public agent/capability projections and submit public `agent_id` values through chat; admin/governance views may inspect agent apps and governed Skills. Avoid raw skill IDs in ordinary-user UI or payload authority. | `/api/agents`, `/api/chat/stream`, `/api/ai/runs`; admin/governance only: `/api/ai/agent-apps`, `/api/ai/admin/skills/*`. | Department-specific Skill availability, marketplace install/purchase, or per-user pinning APIs. |
 | Events/playback/artifacts | Render current public event, playback, artifact preview, and download projections. | `/api/ai/runs/{run_id}/events`, `/api/ai/runs/{run_id}/events/stream`, `/api/ai/runs/{run_id}/playback`, `/api/ai/artifacts/*`. | New artifact trees, richer provenance, or new event families. |
 | Tool permission/MCP execution | Show existing permission cards and admin tool policy surfaces; no new ordinary-user write-tool exposure. | `/api/ai/runs/{run_id}/tool-permissions/*`, `/api/ai/admin/tool-policies*`. | MCP server/tool marketplace, department policy assignment, user-managed server lifecycle. |
 | Skills governance | Keep admin Skill release, upload, promote, rollback, diff, and sync flows where already backed. | `/api/ai/admin/skills/*`. | Public department Skill marketplace, publish/install workflow, SBOM/license UX beyond current contracts. |
@@ -190,9 +190,9 @@ endpoints as product truth.
 | --- | --- | --- | --- |
 | FE-0 | Source, dependency, and interface audit | Pin LibreChat source commit, inventory candidate UI components, classify dependencies, and map every migrated surface to `reuse-current`, `remap-current`, `fail-closed-placeholder`, or `phase-2-backend`. | Issue with source paths, dependency table, license note, explicit rejected backend/data-provider imports, and an endpoint/interface matrix. |
 | FE-1 | Shell, navigation, and RBAC replacement | LibreChat-style shell becomes the default authenticated layout; navigation and route guards use ai-platform principal roles/permissions and fail closed for unsupported surfaces. | Frontend build, route smoke, auth/RBAC smoke, screenshot or browser evidence, no route loss for current admin pages, no unauthorized ordinary-user route access. |
-| FE-2 | Composer, Skills, agents, and existing run APIs | Chat input supports attachments, skill selection, agent/model selection where already projected, and governed execution options using existing ai-platform APIs. | Unit/component tests for selectors, disabled/unavailable states, permission states, run creation, and projection audit. |
+| FE-2 | Composer, Skills, agents, and existing run APIs | Chat input supports attachments, public capability selection, agent/model selection where already projected, and governed execution options using existing ai-platform APIs. Ordinary users use `/api/agents` and never treat persona `skill_names` or raw skill IDs as execution authority. | Unit/component tests for selectors, disabled/unavailable states, permission states, run creation, and projection audit. |
 | FE-3 | Run events, permissions, artifacts, and playback | Streaming events, tool calls, permission cards, artifacts, previews, and run playback appear in the new UI without private leaks using current event/artifact/playback routes. | Event rendering tests, artifact URL safety tests, redaction tests, reconnect/replay checks, browser smoke. |
-| FE-4 | Existing admin/governance remap | Admin Runtime, current Skills governance, tool policies, memory, and any already-backed admin surfaces are integrated into the new shell; missing users/roles/models/MCP/marketplace/settings/notifications features are gated as Phase 2 placeholders. | Permission-gated route tests, admin smoke, projection audit, unavailable-state tests, no ordinary-user access regression. |
+| FE-4 | Existing admin/governance remap | Admin Runtime, current Skills governance, tool policies, memory, model availability, active notifications, and any already-backed admin surfaces are integrated into the new shell; missing users/roles/MCP lifecycle/marketplace/settings CRUD/model CRUD/notification CRUD features are gated as Phase 2 placeholders. | Permission-gated route tests, admin smoke, projection audit, unavailable-state tests, no ordinary-user access regression. |
 | FE-5 | Phase 1 packaged frontend delivery | The Phase 1 frontend builds into the packaged frontend image and serves through the 211 frontend entry with current backend contracts. | Docker-capable build/smoke evidence on 211 or approved host, same-commit label/provenance, release evidence file. |
 
 ### 8.2 Phase 2: Backend-Backed Product Expansion
@@ -208,18 +208,19 @@ endpoints as product truth.
 ### 9.1 Product Acceptance
 
 - Phase 1 ordinary users can login, start a chat/run, upload allowed files,
-  select a currently governed Skill or agent app, submit a task, watch streaming
-  progress, approve or deny permission requests, and download authorized
-  artifacts from the LibreChat-style shell.
+  select a currently public agent/capability from `/api/agents`, submit a task,
+  watch streaming progress, approve or deny permission requests, and download
+  authorized artifacts from the LibreChat-style shell.
 - Phase 1 admin users can access current Admin Runtime, Skills governance, tool
   policies, memory, and any other already-backed ai-platform admin projections
   from the same shell.
-- Phase 1 users/roles/models/MCP/Marketplace/settings/notifications surfaces
+- Phase 1 users/roles/MCP/Marketplace/settings/notifications/model surfaces
   are accepted only when they use an existing ai-platform public/admin
   projection or display a permission-gated Phase 2 unavailable state; they are
   not accepted when backed by LibreChat/LambChat data-provider contracts.
-- Phase 2 completes department Skill marketplace, MCP management, user/role,
-  model, settings, and notification surfaces after backend contracts exist.
+- Phase 2 completes department Skill marketplace, MCP lifecycle management,
+  user/role, model administration, settings CRUD, and notification
+  administration surfaces after backend contracts exist.
 - The Skills experience is present in both chat input and dedicated management
   pages; users should not need to know backend route names to use Skills.
 - Artifact preview and run playback remain first-class parts of the task
@@ -310,8 +311,10 @@ Phase 1 is done only when:
    packaged frontend smoke have recorded evidence.
 6. 211 evidence proves the deployed frontend, backend, worker, source labels,
    and release evidence all point to the same accepted source subject.
-7. Missing users/roles/models/MCP/Marketplace/settings/notifications features
-   are either safely hidden or represented as fail-closed Phase 2 placeholders.
+7. Missing users/roles/MCP lifecycle/Marketplace/settings CRUD/model CRUD and
+   notification CRUD features are either safely hidden or represented as
+   fail-closed Phase 2 placeholders, while existing model availability and
+   active-notification projections remain usable in Phase 1.
 
 The full program is done only when Phase 2 backend contracts also allow
 department Skill marketplace, MCP management, user/role administration, model
