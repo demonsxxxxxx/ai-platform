@@ -399,11 +399,14 @@ def test_release_evidence_readiness_contract_defines_safe_export_location_withou
         "verified subject commit for the runtime, capacity, frontend, or governance artifact under review"
     )
     assert readiness["evidence_contract"]["field_semantics"]["runtime_subject_commit_sha"] == (
-        "runtime source revision proven by 211 source marker and API/worker image labels when artifact_kind is 211_runtime_smoke"
+        "runtime source revision proven by 211 source marker and API/worker image labels for runtime-bound smoke artifacts"
     )
     assert "cannot contain its own final hash" in readiness["evidence_contract"]["field_semantics"]["record_commit_sha"]
     assert readiness["evidence_contract"]["conditional_fields"] == {
         "211_runtime_smoke": [
+            "runtime_subject_commit_sha",
+        ],
+        "211_memory_enabled_document_workflow_smoke": [
             "runtime_subject_commit_sha",
         ]
     }
@@ -415,6 +418,7 @@ def test_release_evidence_readiness_contract_defines_safe_export_location_withou
         "governance_readiness",
         "observability_readiness",
         "alert_trace_export_runtime_acceptance",
+        "211_memory_enabled_document_workflow_smoke",
     ]
     assert readiness["evidence_contract"]["forbidden_marker_classes"] == [
         "executor private payload",

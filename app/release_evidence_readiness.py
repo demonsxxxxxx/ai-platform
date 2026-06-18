@@ -35,7 +35,7 @@ _FIELD_SEMANTICS = {
     "commit_sha": "verified subject commit for the runtime, capacity, frontend, or governance artifact under review",
     "runtime_subject_commit_sha": (
         "runtime source revision proven by 211 source marker and API/worker image labels "
-        "when artifact_kind is 211_runtime_smoke"
+        "for runtime-bound smoke artifacts"
     ),
     "record_commit_sha": (
         "not embedded because a git commit cannot contain its own final hash; "
@@ -44,6 +44,9 @@ _FIELD_SEMANTICS = {
 }
 _CONDITIONAL_FIELDS = {
     "211_runtime_smoke": [
+        "runtime_subject_commit_sha",
+    ],
+    "211_memory_enabled_document_workflow_smoke": [
         "runtime_subject_commit_sha",
     ],
 }
@@ -65,6 +68,7 @@ _ACCEPTED_ARTIFACT_KINDS = [
     "governance_readiness",
     "observability_readiness",
     "alert_trace_export_runtime_acceptance",
+    "211_memory_enabled_document_workflow_smoke",
 ]
 _RETENTION_POLICY = {
     "schema_version": RETENTION_POLICY_SCHEMA_VERSION,

@@ -6,6 +6,14 @@ import sys
 from app.governance_readiness import build_governance_readiness, render_governance_readiness_markdown
 
 
+B1_GATE_BOUNDARY_GAPS = [
+    "b1_issue_review_and_closure_evidence",
+    "b1_runtime_evidence_review_against_merged_source",
+    "b1_memory_export_boundary",
+    "b1_rollback_boundary",
+]
+
+
 class SecretBearingSettings:
     sandbox_container_provider = "docker://token@internal/path"
     sandbox_callback_token = "callback-secret"
@@ -225,11 +233,14 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "office_execution_tier_router" not in domains["memory_governance"]["gaps"]
     assert "sandbox_cold_start_latency_split" not in domains["memory_governance"]["gaps"]
     assert "sandbox_cold_start_latency_split_211_acceptance" not in domains["memory_governance"]["gaps"]
-    assert "211_memory_enabled_document_workflow_smoke" in domains["memory_governance"]["gaps"]
-    assert "211_memory_enabled_document_workflow_smoke" in readiness["open_gaps"]
+    assert "211_memory_enabled_document_workflow_smoke" not in domains["memory_governance"]["gaps"]
+    assert "211_memory_enabled_document_workflow_smoke" not in readiness["open_gaps"]
+    for gap in B1_GATE_BOUNDARY_GAPS:
+        assert gap in domains["memory_governance"]["gaps"]
+        assert gap in readiness["open_gaps"]
     b1_evidence = domains["memory_governance"]["evidence"]["b1_memory_context_readiness"]
     assert b1_evidence["schema_version"] == "ai-platform.b1-memory-context-readiness.v1"
-    assert b1_evidence["status"] == "local_controls_ready_runtime_smoke_required"
+    assert b1_evidence["status"] == "runtime_acceptance_recorded"
     assert b1_evidence["status_label"] == "local partial"
     assert b1_evidence["runtime_acceptance"]["acceptance_gap"] == (
         "211_memory_enabled_document_workflow_smoke"
@@ -238,7 +249,14 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
         "tools/verify_b1_memory_context_workflow.py"
     )
     assert b1_evidence["runtime_acceptance"]["does_not_close_b1_gate"] is True
-    assert b1_evidence["open_gaps"] == ["211_memory_enabled_document_workflow_smoke"]
+    assert b1_evidence["open_gaps"] == B1_GATE_BOUNDARY_GAPS
+    assert "211_memory_enabled_document_workflow_smoke" not in b1_evidence["open_gaps"]
+    assert b1_evidence["runtime_acceptance_evidence"]["211_memory_enabled_document_workflow_smoke"][
+        "status"
+    ] == "verified_211_runtime_acceptance"
+    assert b1_evidence["runtime_acceptance_evidence"]["211_memory_enabled_document_workflow_smoke"][
+        "does_not_close_b1_gate"
+    ] is True
     assert b1_evidence["non_expansion_invariants"] == {
         "long_term_cross_session_memory_enabled": False,
         "public_projection_only_for_ordinary_users": True,
@@ -428,7 +446,8 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "callback-secret" not in serialized
     assert "tenant-secret" not in serialized
     assert "docker://token" not in serialized
-    assert "211 verified" not in serialized
+    assert "211 verified" in serialized
+    assert "gate closable" not in serialized
     assert "sandbox_workspace_root" not in serialized
     assert "sandbox_workdir" not in serialized
     assert "storage_key" not in serialized
@@ -535,7 +554,7 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     assert "b1 memory/context readiness" in markdown.lower()
     assert "ai-platform.b1-memory-context-readiness.v1" in markdown
     assert "211_memory_enabled_document_workflow_smoke" in markdown
-    assert "local partial" in markdown
+    assert "211 verified" in markdown.lower()
     assert "context_snapshot_public_provenance_projection_contract" in markdown
     assert "user_visible_context_provenance_api_projection_source_tests" in markdown
     assert "frontend_context_provenance_playback_source_tests" in markdown
@@ -553,7 +572,7 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     assert "memory_export_erasure_evidence" not in open_gaps
     assert "callback-secret" not in markdown
     assert ".claude/skills" not in markdown
-    assert "211 verified" not in markdown.lower()
+    assert "gate closable" not in markdown.lower()
 
 
 def test_governance_readiness_cli_outputs_json_without_secret_markers():
@@ -574,4 +593,5 @@ def test_governance_readiness_cli_outputs_json_without_secret_markers():
     assert "tool_permission" in payload["domains"]
     assert "callback-secret" not in result.stdout
     assert "tenant-secret" not in result.stdout
-    assert "211 verified" not in result.stdout.lower()
+    assert "211 verified" in result.stdout.lower()
+    assert "gate closable" not in result.stdout.lower()

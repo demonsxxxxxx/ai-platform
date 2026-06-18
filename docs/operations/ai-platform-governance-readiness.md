@@ -388,14 +388,16 @@ input-key leakage guard.
 memory/context rollup with schema `ai-platform.b1-memory-context-readiness.v1`.
 It aggregates the current memory-erasure readiness and office context-pack
 readiness into the backend stage `B1 memory/context usable`, reports status
-`local_controls_ready_runtime_smoke_required`, and keeps status label
-`local partial`. Governance readiness embeds this rollup under
-`domains.memory_governance.evidence.b1_memory_context_readiness` and carries
-`211_memory_enabled_document_workflow_smoke` in the G6 open gaps. This does not
-claim `211 verified`: B1 still requires one selected memory-enabled document
-workflow smoke on 211 with memory policy enabled only for the governed scope,
-context provenance recorded, deleted/redacted memory absent from context, and no
-executor-private payload, raw storage key, or sandbox workdir leakage.
+`runtime_acceptance_recorded`, and keeps the B1 stage status label `local
+partial`. Governance readiness embeds this rollup under
+`domains.memory_governance.evidence.b1_memory_context_readiness`, keeps
+`211_memory_enabled_document_workflow_smoke` out of G6 open gaps after the
+reviewed 211 smoke is recorded, and carries the remaining B1 gate-boundary gaps:
+`b1_issue_review_and_closure_evidence`,
+`b1_runtime_evidence_review_against_merged_source`,
+`b1_memory_export_boundary`, and `b1_rollback_boundary`. The runtime smoke layer
+can report `211 verified` for the selected memory-enabled document workflow,
+but the B1 stage itself remains `local partial` and is not `gate closable`.
 `tools/verify_b1_memory_context_workflow.py` is the reusable verifier entrypoint
 for that smoke and emits schema
 `ai-platform.b1-memory-context-workflow-smoke.v1`; passing it records workflow

@@ -337,6 +337,9 @@ def build_governance_readiness(
                     "runtime_acceptance": b1_memory_context_readiness[
                         "runtime_acceptance"
                     ],
+                    "runtime_acceptance_evidence": b1_memory_context_readiness[
+                        "runtime_acceptance_evidence"
+                    ],
                     "open_gaps": b1_memory_context_readiness["open_gaps"],
                     "non_expansion_invariants": b1_memory_context_readiness[
                         "non_expansion_invariants"
@@ -562,6 +565,11 @@ def render_governance_readiness_markdown(readiness: dict[str, Any]) -> str:
             )
             if acceptance_gap:
                 evidence_lines += f"- B1 runtime acceptance gap `{acceptance_gap}`\n"
+                smoke_label = runtime_acceptance.get("status_label_after_smoke")
+                if smoke_label:
+                    evidence_lines += (
+                        f"- B1 runtime smoke status label `{smoke_label}`\n"
+                    )
         if isinstance(office_context, dict):
             closed_runtime_gaps = office_context.get("closed_runtime_gaps")
             if isinstance(closed_runtime_gaps, list) and closed_runtime_gaps:

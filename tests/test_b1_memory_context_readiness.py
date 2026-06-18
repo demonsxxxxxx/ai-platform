@@ -17,13 +17,20 @@ FORBIDDEN_PRIVATE_MARKERS = [
     "c:\\users",
 ]
 
+B1_GATE_BOUNDARY_GAPS = [
+    "b1_issue_review_and_closure_evidence",
+    "b1_runtime_evidence_review_against_merged_source",
+    "b1_memory_export_boundary",
+    "b1_rollback_boundary",
+]
 
-def test_b1_memory_context_readiness_aggregates_local_controls_and_keeps_211_gap_open():
+
+def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_b1_gate():
     readiness = build_b1_memory_context_readiness()
 
     assert readiness["schema_version"] == "ai-platform.b1-memory-context-readiness.v1"
     assert readiness["backend_stage"] == "B1 memory/context usable"
-    assert readiness["status"] == "local_controls_ready_runtime_smoke_required"
+    assert readiness["status"] == "runtime_acceptance_recorded"
     assert readiness["status_label"] == "local partial"
     assert readiness["issue"] == "#75"
     assert readiness["admin_runtime_projection"] == "/api/ai/admin/runtime/overview"
@@ -51,7 +58,7 @@ def test_b1_memory_context_readiness_aggregates_local_controls_and_keeps_211_gap
     assert readiness["local_evidence"]["office_context_readiness"]["open_gap_count"] == 0
 
     assert readiness["runtime_acceptance"]["required"] is True
-    assert readiness["runtime_acceptance"]["status"] == "missing_211_memory_enabled_document_workflow_smoke"
+    assert readiness["runtime_acceptance"]["status"] == "verified_211_runtime_acceptance"
     assert readiness["runtime_acceptance"]["acceptance_gap"] == "211_memory_enabled_document_workflow_smoke"
     assert readiness["runtime_acceptance"]["verifier_script"] == "tools/verify_b1_memory_context_workflow.py"
     assert (
@@ -60,12 +67,33 @@ def test_b1_memory_context_readiness_aggregates_local_controls_and_keeps_211_gap
     )
     assert readiness["runtime_acceptance"]["target"] == "211_api_memory_context_workflow"
     assert readiness["runtime_acceptance"]["status_label_before_smoke"] == "local partial"
+    assert readiness["runtime_acceptance"]["status_label_after_smoke"] == "211 verified"
     assert readiness["runtime_acceptance"]["does_not_close_b1_gate"] is True
+    assert "issue review and closure evidence" in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
+    assert "runtime evidence review against merged source" in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
     assert "memory export boundary" in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
     assert "rollback boundary" in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
-    assert "status_label_after_smoke" not in readiness["runtime_acceptance"]
-    assert readiness["open_gaps"] == ["211_memory_enabled_document_workflow_smoke"]
-    assert readiness["closed_runtime_gaps"] == readiness["local_evidence"]["memory_erasure_readiness"]["closed_runtime_gaps"]
+    assert readiness["open_gaps"] == B1_GATE_BOUNDARY_GAPS
+    assert "211_memory_enabled_document_workflow_smoke" not in readiness["open_gaps"]
+    assert "211_memory_enabled_document_workflow_smoke" in readiness["closed_runtime_gaps"]
+    assert set(readiness["local_evidence"]["memory_erasure_readiness"]["closed_runtime_gaps"]).issubset(
+        set(readiness["closed_runtime_gaps"])
+    )
+    smoke_evidence = readiness["runtime_acceptance_evidence"]["211_memory_enabled_document_workflow_smoke"]
+    assert smoke_evidence["status"] == "verified_211_runtime_acceptance"
+    assert smoke_evidence["artifact_kind"] == "211_memory_enabled_document_workflow_smoke"
+    assert smoke_evidence["verifier"] == "tools/verify_b1_memory_context_workflow.py"
+    assert smoke_evidence["runtime_subject"] == "8c99db1-b1-playback-runtime-rebase"
+    assert smoke_evidence["memory_record_count"] == 1
+    assert smoke_evidence["checks"]["playback_public_projection"] is True
+    assert smoke_evidence["checks"]["memory_policy_disabled_blocks_list"] is True
+    assert smoke_evidence["redaction_scan_status"] == "passed"
+    assert smoke_evidence["does_not_close_b1_gate"] is True
+    assert smoke_evidence["path"].endswith(
+        "docs/release-evidence/b1-memory-context/"
+        "8c99db16e449f9a03ab96068ce9cd4d4843df9ba/"
+        "2026-06-18-211-b1-memory-context-workflow-smoke.json"
+    )
 
     assert readiness["non_expansion_invariants"] == {
         "long_term_cross_session_memory_enabled": False,
@@ -76,7 +104,12 @@ def test_b1_memory_context_readiness_aggregates_local_controls_and_keeps_211_gap
     }
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
-    assert "211 verified" not in serialized
+    assert "211 verified" in serialized
+    assert "b1_issue_review_and_closure_evidence" in serialized
+    assert "b1_runtime_evidence_review_against_merged_source" in serialized
+    assert "b1_memory_export_boundary" in serialized
+    assert "b1_rollback_boundary" in serialized
+    assert "gate closable" not in serialized
     for marker in FORBIDDEN_PRIVATE_MARKERS:
         assert marker not in serialized
 
@@ -87,12 +120,17 @@ def test_b1_memory_context_readiness_markdown_is_gap_first_and_boundary_explicit
     assert "# ai-platform B1 Memory/Context Readiness" in markdown
     assert "Status label: `local partial`" in markdown
     assert "## Open Gaps" in markdown
-    assert "- 211_memory_enabled_document_workflow_smoke" in markdown
+    assert "- b1_issue_review_and_closure_evidence" in markdown
+    assert "- b1_runtime_evidence_review_against_merged_source" in markdown
+    assert "- b1_memory_export_boundary" in markdown
+    assert "- b1_rollback_boundary" in markdown
+    assert "- none" not in markdown.split("## Runtime Acceptance", 1)[0]
     assert "## Runtime Acceptance" in markdown
-    assert "missing_211_memory_enabled_document_workflow_smoke" in markdown
+    assert "verified_211_runtime_acceptance" in markdown
     assert "tools/verify_b1_memory_context_workflow.py" in markdown
     assert "Does not close B1 gate: `true`" in markdown
-    assert "211 verified" not in markdown.lower()
+    assert "211 verified" in markdown.lower()
+    assert "gate closable" not in markdown.lower()
     assert "does not enable long-term cross-session memory by default" in markdown
     assert "does not store executor-private payloads as memory" in markdown
     assert "does not make frontend state canonical context" in markdown
@@ -109,10 +147,14 @@ def test_b1_memory_context_readiness_cli_outputs_json_without_private_markers():
 
     payload = json.loads(result.stdout)
     assert payload["schema_version"] == "ai-platform.b1-memory-context-readiness.v1"
-    assert payload["status"] == "local_controls_ready_runtime_smoke_required"
+    assert payload["status"] == "runtime_acceptance_recorded"
+    assert payload["status_label"] == "local partial"
     assert payload["runtime_acceptance"]["acceptance_gap"] == "211_memory_enabled_document_workflow_smoke"
     assert payload["runtime_acceptance"]["verifier_script"] == "tools/verify_b1_memory_context_workflow.py"
     assert payload["runtime_acceptance"]["does_not_close_b1_gate"] is True
+    assert payload["open_gaps"] == B1_GATE_BOUNDARY_GAPS
+    assert "211_memory_enabled_document_workflow_smoke" not in payload["open_gaps"]
+    assert "211_memory_enabled_document_workflow_smoke" in payload["closed_runtime_gaps"]
     for marker in FORBIDDEN_PRIVATE_MARKERS:
         assert marker not in result.stdout.lower()
 
