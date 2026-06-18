@@ -20,7 +20,6 @@ FORBIDDEN_PRIVATE_MARKERS = [
 B1_GATE_BOUNDARY_GAPS = [
     "b1_issue_review_and_closure_evidence",
     "b1_runtime_evidence_review_against_merged_source",
-    "b1_rollback_boundary",
 ]
 
 
@@ -70,7 +69,7 @@ def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_
     assert readiness["runtime_acceptance"]["does_not_close_b1_gate"] is True
     assert "issue review and closure evidence" in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
     assert "runtime evidence review against merged source" in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
-    assert "rollback boundary" in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
+    assert "rollback boundary" not in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
     assert "memory export boundary" not in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
     assert readiness["open_gaps"] == B1_GATE_BOUNDARY_GAPS
     assert "211_memory_enabled_document_workflow_smoke" not in readiness["open_gaps"]
@@ -90,12 +89,31 @@ def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_
     assert boundary_evidence["b1_runtime_evidence_review_against_merged_source"]["status"] == (
         "open_pending_merged_source_runtime_review"
     )
-    assert boundary_evidence["b1_rollback_boundary"]["status"] == "open_pending_rollback_boundary"
+    rollback_boundary = boundary_evidence["b1_rollback_boundary"]
+    assert rollback_boundary["status"] == "recorded_local_contract"
+    assert rollback_boundary["closed_gap"] == "b1_rollback_boundary"
+    assert rollback_boundary["does_not_close_b1_gate"] is True
+    assert rollback_boundary["rollback_controls"] == [
+        "disable_memory_policy_for_governed_workflow",
+        "disable_context_pack_injection_for_governed_workflow",
+        "pause_memory_retention_worker_cleanup",
+        "verify_existing_memory_records_remain_scoped_and_exportable",
+        "verify_public_projections_hide_private_context_material",
+        "restore_previous_runtime_configuration_from_release_evidence",
+    ]
+    assert rollback_boundary["operator_steps"] == [
+        "capture current source/runtime subject and Admin Runtime memory/context status",
+        "disable selected workflow memory policy before disabling context-pack injection",
+        "restart or reload API and worker runtime if configuration changed",
+        "run B1 verifier or reduced deny-path smoke to confirm no new memory reads or writes",
+        "record issue comment with source/runtime subject, verification result, and residual caveats",
+    ]
     assert boundary_evidence["b1_issue_review_and_closure_evidence"]["status"] == (
         "open_issue_remains_unclosed"
     )
     assert "211_memory_enabled_document_workflow_smoke" in readiness["closed_runtime_gaps"]
     assert "b1_memory_export_boundary" in readiness["closed_gate_boundary_gaps"]
+    assert "b1_rollback_boundary" in readiness["closed_gate_boundary_gaps"]
     assert set(readiness["local_evidence"]["memory_erasure_readiness"]["closed_runtime_gaps"]).issubset(
         set(readiness["closed_runtime_gaps"])
     )
@@ -142,11 +160,13 @@ def test_b1_memory_context_readiness_markdown_is_gap_first_and_boundary_explicit
     assert "## Open Gaps" in markdown
     assert "- b1_issue_review_and_closure_evidence" in markdown
     assert "- b1_runtime_evidence_review_against_merged_source" in markdown
-    assert "- b1_rollback_boundary" in markdown
+    assert "- b1_rollback_boundary" not in markdown.split("## Closed Gate Boundary Gaps", 1)[0]
     assert "- b1_memory_export_boundary" not in markdown.split("## Closed Gate Boundary Gaps", 1)[0]
     assert "## Closed Gate Boundary Gaps" in markdown
     assert "- b1_memory_export_boundary" in markdown.split("## Closed Gate Boundary Gaps", 1)[1]
+    assert "- b1_rollback_boundary" in markdown.split("## Closed Gate Boundary Gaps", 1)[1]
     assert "ordinary_user_export_excludes_deleted_and_expired_records" in markdown
+    assert "disable_memory_policy_for_governed_workflow" in markdown
     assert "- none" not in markdown.split("## Runtime Acceptance", 1)[0]
     assert "## Runtime Acceptance" in markdown
     assert "verified_211_runtime_acceptance" in markdown
@@ -180,7 +200,11 @@ def test_b1_memory_context_readiness_cli_outputs_json_without_private_markers():
     assert "b1_memory_export_boundary" not in payload["open_gaps"]
     assert "211_memory_enabled_document_workflow_smoke" in payload["closed_runtime_gaps"]
     assert "b1_memory_export_boundary" in payload["closed_gate_boundary_gaps"]
+    assert "b1_rollback_boundary" in payload["closed_gate_boundary_gaps"]
     assert payload["gate_boundary_evidence"]["b1_memory_export_boundary"]["status"] == (
+        "recorded_local_contract"
+    )
+    assert payload["gate_boundary_evidence"]["b1_rollback_boundary"]["status"] == (
         "recorded_local_contract"
     )
     for marker in FORBIDDEN_PRIVATE_MARKERS:

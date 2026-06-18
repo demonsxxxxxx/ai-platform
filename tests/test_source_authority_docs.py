@@ -882,6 +882,9 @@ def test_governance_readiness_doc_records_b1_smoke_without_gate_closure():
     memory_row = next(
         line for line in governance_text.splitlines() if line.startswith("| Memory governance |")
     )
+    memory_columns = [column.strip() for column in memory_row.strip().strip("|").split("|")]
+    memory_implemented = memory_columns[1]
+    memory_remaining = memory_columns[2]
 
     assert "`runtime_acceptance_recorded`" in governance_text
     assert "keeps the B1 stage status label `local" in governance_text
@@ -901,10 +904,11 @@ def test_governance_readiness_doc_records_b1_smoke_without_gate_closure():
     assert "memory export boundary, and rollback" not in governance_text
     assert "`local_controls_ready_runtime_smoke_required`, and keeps status label" not in governance_text
     assert "carries `211_memory_enabled_document_workflow_smoke` in the G6 open gaps" not in governance_text
-    assert "reviewed B1 `211_memory_enabled_document_workflow_smoke` evidence" in memory_row
-    assert "| `211_memory_enabled_document_workflow_smoke`," not in memory_row
-    assert "B1 merged-source runtime evidence review" in memory_row
-    assert "B1 rollback boundary" in memory_row
+    assert "reviewed B1 `211_memory_enabled_document_workflow_smoke` evidence" in memory_implemented
+    assert "B1 rollback boundary local operator contract" in memory_implemented
+    assert "`211_memory_enabled_document_workflow_smoke`" not in memory_remaining
+    assert "B1 merged-source runtime evidence review" in memory_remaining
+    assert "B1 rollback boundary" not in memory_remaining
 
 
 def test_capacity_docs_record_machine_readable_gate_evidence_contract():

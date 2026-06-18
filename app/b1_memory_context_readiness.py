@@ -84,6 +84,23 @@ _MEMORY_EXPORT_BOUNDARY_REQUIRED_CONTROLS = [
     "admin_export_operator_projection_without_content_or_metadata",
 ]
 
+_ROLLBACK_BOUNDARY_CONTROLS = [
+    "disable_memory_policy_for_governed_workflow",
+    "disable_context_pack_injection_for_governed_workflow",
+    "pause_memory_retention_worker_cleanup",
+    "verify_existing_memory_records_remain_scoped_and_exportable",
+    "verify_public_projections_hide_private_context_material",
+    "restore_previous_runtime_configuration_from_release_evidence",
+]
+
+_ROLLBACK_BOUNDARY_OPERATOR_STEPS = [
+    "capture current source/runtime subject and Admin Runtime memory/context status",
+    "disable selected workflow memory policy before disabling context-pack injection",
+    "restart or reload API and worker runtime if configuration changed",
+    "run B1 verifier or reduced deny-path smoke to confirm no new memory reads or writes",
+    "record issue comment with source/runtime subject, verification result, and residual caveats",
+]
+
 
 def _path_for_output(path: Path, repo_root: Path) -> str:
     try:
@@ -296,7 +313,7 @@ def _gate_boundary_evidence(memory_erasure: dict[str, Any]) -> dict[str, dict[st
     return {
         "b1_issue_review_and_closure_evidence": {
             "status": "open_issue_remains_unclosed",
-            "required_next_step": "close #75 only after merged-source runtime review, export boundary, rollback boundary, and final closure evidence are all recorded",
+            "required_next_step": "close #75 only after merged-source runtime review and final closure evidence are recorded",
             "does_not_close_b1_gate": True,
         },
         "b1_runtime_evidence_review_against_merged_source": {
@@ -319,8 +336,11 @@ def _gate_boundary_evidence(memory_erasure: dict[str, Any]) -> dict[str, dict[st
             "does_not_close_b1_gate": True,
         },
         "b1_rollback_boundary": {
-            "status": "open_pending_rollback_boundary",
-            "required_next_step": "record the B1 rollback procedure for disabling governed memory/context workflow exposure and reverting runtime/config state",
+            "status": "recorded_local_contract",
+            "closed_gap": "b1_rollback_boundary",
+            "rollback_controls": list(_ROLLBACK_BOUNDARY_CONTROLS),
+            "operator_steps": list(_ROLLBACK_BOUNDARY_OPERATOR_STEPS),
+            "does_not_run_211_smoke": True,
             "does_not_close_b1_gate": True,
         },
     }
@@ -410,8 +430,10 @@ def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str
             "smoke evidence close only the `211_memory_enabled_document_workflow_smoke` "
             "runtime gap. The memory export boundary is recorded as a local "
             "contract when memory-erasure readiness has the required export "
-            "controls and tests. B1 gate closure still requires issue review, "
-            "merged-source runtime evidence review, and rollback boundary."
+            "controls and tests. The rollback boundary is a local operator "
+            "contract for disabling governed memory/context workflow exposure "
+            "and reverting runtime/config state. B1 gate closure still requires "
+            "issue review and merged-source runtime evidence review."
         ),
     }
 
@@ -443,6 +465,11 @@ def render_b1_memory_context_readiness_markdown(readiness: dict[str, Any]) -> st
         if isinstance(gate_boundary_evidence, dict)
         else None
     )
+    rollback_boundary = (
+        gate_boundary_evidence.get("b1_rollback_boundary")
+        if isinstance(gate_boundary_evidence, dict)
+        else None
+    )
     export_boundary_lines = "- none"
     if isinstance(export_boundary, dict):
         required_controls = export_boundary.get("required_controls")
@@ -455,6 +482,26 @@ def render_b1_memory_context_readiness_markdown(readiness: dict[str, Any]) -> st
             f"- source readiness: `{export_boundary.get('source_readiness')}`\n"
             "- required controls:\n"
             f"{controls_lines}"
+        )
+    rollback_boundary_lines = "- none"
+    if isinstance(rollback_boundary, dict):
+        rollback_controls = rollback_boundary.get("rollback_controls")
+        operator_steps = rollback_boundary.get("operator_steps")
+        if isinstance(rollback_controls, list):
+            rollback_control_lines = "\n".join(f"- {item}" for item in rollback_controls)
+        else:
+            rollback_control_lines = "- none"
+        if isinstance(operator_steps, list):
+            operator_step_lines = "\n".join(f"- {item}" for item in operator_steps)
+        else:
+            operator_step_lines = "- none"
+        rollback_boundary_lines = (
+            f"- status: `{rollback_boundary.get('status')}`\n"
+            f"- does not run 211 smoke: `{str(rollback_boundary.get('does_not_run_211_smoke')).lower()}`\n"
+            "- rollback controls:\n"
+            f"{rollback_control_lines}\n"
+            "- operator steps:\n"
+            f"{operator_step_lines}"
         )
     invariants = "\n".join(
         f"- `{key}`: `{str(value).lower()}`"
@@ -475,6 +522,8 @@ def render_b1_memory_context_readiness_markdown(readiness: dict[str, Any]) -> st
         "## Gate Boundary Evidence\n\n"
         "### B1 Memory Export Boundary\n\n"
         f"{export_boundary_lines}\n\n"
+        "### B1 Rollback Boundary\n\n"
+        f"{rollback_boundary_lines}\n\n"
         "## Runtime Acceptance\n\n"
         f"Required: `{str(runtime['required']).lower()}`\n\n"
         f"Status: `{runtime['status']}`\n\n"
