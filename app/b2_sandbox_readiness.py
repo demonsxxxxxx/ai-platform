@@ -170,9 +170,13 @@ def _runtime_subject(payload: dict[str, Any]) -> str:
     return marker
 
 
-def _entry_has_runtime_subject_binding(payload: dict[str, Any]) -> bool:
+def _entry_has_runtime_subject_binding(payload: dict[str, Any], *, path: Path) -> bool:
     runtime_subject = payload.get("runtime_subject_commit_sha")
     if not isinstance(runtime_subject, str) or not runtime_subject:
+        return False
+    if payload.get("commit_sha") != runtime_subject:
+        return False
+    if path.parent.name != runtime_subject:
         return False
     source_ref = payload.get("source_ref")
     if not isinstance(source_ref, dict):
@@ -207,7 +211,7 @@ def _entry_has_runtime_subject_binding(payload: dict[str, Any]) -> bool:
     return True
 
 
-def _entry_is_reviewed_b2_smoke(payload: dict[str, Any]) -> bool:
+def _entry_is_reviewed_b2_smoke(payload: dict[str, Any], *, path: Path) -> bool:
     evidence_ref = payload.get("evidence_ref")
     return (
         payload.get("schema_version") == "ai-platform.release-evidence-entry.v1"
@@ -215,7 +219,7 @@ def _entry_is_reviewed_b2_smoke(payload: dict[str, Any]) -> bool:
         and payload.get("artifact_kind") == RUNTIME_ACCEPTANCE_ARTIFACT_KIND
         and payload.get("redaction_scan_status") == "passed"
         and payload.get("review_status") == "reviewed"
-        and _entry_has_runtime_subject_binding(payload)
+        and _entry_has_runtime_subject_binding(payload, path=path)
         and isinstance(evidence_ref, dict)
         and evidence_ref.get("verifier") == VERIFIER_SCRIPT
         and evidence_ref.get("result") == "ok:true"
@@ -240,7 +244,7 @@ def _b2_smoke_evidence_summary(
     path: Path,
     repo_root: Path,
 ) -> dict[str, Any] | None:
-    if not _entry_is_reviewed_b2_smoke(payload):
+    if not _entry_is_reviewed_b2_smoke(payload, path=path):
         return None
     evidence = _runtime_payload(payload)
     if evidence is None:

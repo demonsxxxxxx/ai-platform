@@ -126,6 +126,33 @@ def test_release_evidence_export_acceptance_fails_closed_on_private_payload(tmp_
     assert "raw_storage_key" not in serialized
 
 
+def test_release_evidence_export_acceptance_fails_closed_on_host_and_socket_paths(tmp_path):
+    unsafe_entry = _valid_entry(
+        evidence_ref={
+            "verifier": "tools/verify_poc_gate.py",
+            "result": "ok:true",
+            "runtime_checks": {
+                "linux_home_path": "/home/xinlin.jiang/ai-platform-phaseb/deploy/ai-platform/.env",
+                "docker_socket": "/var/run/docker.sock",
+                "windows_home_path": r"C:\Users\Xinlin.jiang\Desktop\secret.txt",
+            },
+        }
+    )
+    _write_entry(tmp_path, unsafe_entry)
+
+    acceptance = build_release_evidence_export_acceptance(evidence_root=tmp_path)
+
+    assert acceptance["status"] == "blocked_forbidden_evidence"
+    assert acceptance["safe_entry_count"] == 0
+    assert acceptance["blocked_entry_count"] == 1
+    assert acceptance["blocked_entries"][0]["reasons"] == ["forbidden_marker_detected"]
+
+    serialized = json.dumps(acceptance, ensure_ascii=False).lower()
+    assert "/home/xinlin" not in serialized
+    assert "/var/run/docker.sock" not in serialized
+    assert "c:\\users" not in serialized
+
+
 def test_release_evidence_export_acceptance_excludes_non_entry_evidence_namespaces(tmp_path):
     _write_entry(tmp_path, _valid_entry())
     skill_release_dir = tmp_path / "skill-release" / "qa-file-reviewer"

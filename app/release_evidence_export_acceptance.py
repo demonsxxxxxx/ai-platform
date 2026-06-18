@@ -54,7 +54,10 @@ _FORBIDDEN_VALUE_PATTERNS = (
     re.compile(r"\bbearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
     re.compile(r"\bsk-[A-Za-z0-9_-]+", re.IGNORECASE),
     re.compile(r"\b(?:postgres|postgresql|mysql|redis)://[^\s\"']+", re.IGNORECASE),
-    re.compile(r"c:\\\\users", re.IGNORECASE),
+    re.compile(r"\bc:\\users\\", re.IGNORECASE),
+    re.compile(r"/home/[^\\s\"']+", re.IGNORECASE),
+    re.compile(r"/users/[^\\s\"']+", re.IGNORECASE),
+    re.compile(r"/var/run/docker\\.sock", re.IGNORECASE),
 )
 _LEGACY_EXCLUSION_REASONS = {
     "missing_runtime_subject_commit_sha",

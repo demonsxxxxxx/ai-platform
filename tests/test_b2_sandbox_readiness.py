@@ -37,10 +37,15 @@ def load_generator():
     return module
 
 
-def write_future_reviewed_b2_smoke(repo_root: Path) -> None:
+def write_future_reviewed_b2_smoke(
+    repo_root: Path,
+    *,
+    commit_sha: str = FUTURE_RUNTIME_SUBJECT,
+    directory_commit: str = FUTURE_RUNTIME_SUBJECT,
+) -> None:
     payload = json.loads(CURRENT_B2_EVIDENCE_PATH.read_text(encoding="utf-8"))
     payload["captured_at"] = "2026-06-20T00:01:02+08:00"
-    payload["commit_sha"] = FUTURE_RUNTIME_SUBJECT
+    payload["commit_sha"] = commit_sha
     payload["evidence_id"] = "2026-06-20-211-b2-sandbox-runtime-smoke-1234567"
     payload["runtime_subject_commit_sha"] = FUTURE_RUNTIME_SUBJECT
 
@@ -59,7 +64,7 @@ def write_future_reviewed_b2_smoke(repo_root: Path) -> None:
     evidence_path = (
         repo_root
         / "docs/release-evidence/b2-sandbox"
-        / FUTURE_RUNTIME_SUBJECT
+        / directory_commit
         / "2026-06-20-211-b2-sandbox-runtime-smoke-1234567.json"
     )
     evidence_path.parent.mkdir(parents=True)
@@ -172,6 +177,37 @@ def test_b2_sandbox_readiness_accepts_future_reviewed_smoke_run_ids(tmp_path):
     assert smoke_evidence["runtime_subject"] == FUTURE_RUNTIME_TAG
     assert smoke_evidence["status"] == "verified_211_runtime_acceptance"
     assert smoke_evidence["does_not_close_b2_gate"] is True
+
+
+def test_b2_sandbox_readiness_rejects_smoke_with_mismatched_commit_sha(tmp_path):
+    write_future_reviewed_b2_smoke(
+        tmp_path,
+        commit_sha="0000000000000000000000000000000000000000",
+    )
+
+    readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
+
+    assert readiness["status"] == "local_contract_ready_runtime_smoke_required"
+    assert readiness["runtime_acceptance"]["status"] == "missing_211_real_sandbox_smoke"
+    assert readiness["open_gaps"] == [
+        "b2_211_real_sandbox_smoke",
+        "b2_reviewed_release_evidence",
+        "b2_issue_review_and_closure_evidence",
+    ]
+    assert readiness["runtime_acceptance_evidence"] == {}
+
+
+def test_b2_sandbox_readiness_rejects_smoke_stored_under_wrong_runtime_subject(tmp_path):
+    write_future_reviewed_b2_smoke(
+        tmp_path,
+        directory_commit="0000000000000000000000000000000000000000",
+    )
+
+    readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
+
+    assert readiness["status"] == "local_contract_ready_runtime_smoke_required"
+    assert readiness["runtime_acceptance"]["status"] == "missing_211_real_sandbox_smoke"
+    assert readiness["runtime_acceptance_evidence"] == {}
 
 
 def test_b2_sandbox_readiness_records_reviewed_211_smoke_without_closing_b2_gate():
