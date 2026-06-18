@@ -340,7 +340,13 @@ def build_governance_readiness(
                     "runtime_acceptance_evidence": b1_memory_context_readiness[
                         "runtime_acceptance_evidence"
                     ],
+                    "gate_boundary_evidence": b1_memory_context_readiness[
+                        "gate_boundary_evidence"
+                    ],
                     "open_gaps": b1_memory_context_readiness["open_gaps"],
+                    "closed_gate_boundary_gaps": b1_memory_context_readiness[
+                        "closed_gate_boundary_gaps"
+                    ],
                     "non_expansion_invariants": b1_memory_context_readiness[
                         "non_expansion_invariants"
                     ],

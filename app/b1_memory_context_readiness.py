@@ -15,6 +15,7 @@ RUNTIME_ACCEPTANCE_GAP = "211_memory_enabled_document_workflow_smoke"
 RUNTIME_ACCEPTANCE_VERIFIER = "tools/verify_b1_memory_context_workflow.py"
 RUNTIME_ACCEPTANCE_VERIFIER_SCHEMA = "ai-platform.b1-memory-context-workflow-smoke.v1"
 RUNTIME_ACCEPTANCE_TARGET = "211_api_memory_context_workflow"
+MEMORY_ERASURE_READINESS_SCHEMA = "ai-platform.memory-erasure-readiness.v1"
 _RUNTIME_EVIDENCE_ROOT = "docs/release-evidence/b1-memory-context"
 
 _IMPLEMENTED_CONTROLS = [
@@ -63,11 +64,24 @@ _SMOKE_REQUIRED_BOUNDARIES = [
     "rollback boundary",
 ]
 
+_CURRENT_GATE_BOUNDARY_LABELS = {
+    "b1_issue_review_and_closure_evidence": "issue review and closure evidence",
+    "b1_runtime_evidence_review_against_merged_source": "runtime evidence review against merged source",
+    "b1_memory_export_boundary": "memory export boundary",
+    "b1_rollback_boundary": "rollback boundary",
+}
+
 B1_GATE_BOUNDARY_GAPS = [
     "b1_issue_review_and_closure_evidence",
     "b1_runtime_evidence_review_against_merged_source",
     "b1_memory_export_boundary",
     "b1_rollback_boundary",
+]
+
+_MEMORY_EXPORT_BOUNDARY_REQUIRED_CONTROLS = [
+    "ordinary_user_export_excludes_deleted_and_expired_records",
+    "ordinary_user_export_requires_session_scope_and_enabled_policy",
+    "admin_export_operator_projection_without_content_or_metadata",
 ]
 
 
@@ -264,6 +278,54 @@ def _office_context_summary(readiness: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _memory_export_boundary_recorded(memory_erasure: dict[str, Any]) -> bool:
+    implemented = set(memory_erasure.get("implemented_controls", []))
+    missing_markers = set(memory_erasure.get("missing_evidence_markers", []))
+    return (
+        set(_MEMORY_EXPORT_BOUNDARY_REQUIRED_CONTROLS).issubset(implemented)
+        and "ordinary_user_export_query" not in missing_markers
+        and "ordinary_user_export_route_policy" not in missing_markers
+        and "admin_export_operator_projection" not in missing_markers
+        and "repository_export_erasure_tests" not in missing_markers
+        and "route_export_erasure_tests" not in missing_markers
+    )
+
+
+def _gate_boundary_evidence(memory_erasure: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    export_recorded = _memory_export_boundary_recorded(memory_erasure)
+    return {
+        "b1_issue_review_and_closure_evidence": {
+            "status": "open_issue_remains_unclosed",
+            "required_next_step": "close #75 only after merged-source runtime review, export boundary, rollback boundary, and final closure evidence are all recorded",
+            "does_not_close_b1_gate": True,
+        },
+        "b1_runtime_evidence_review_against_merged_source": {
+            "status": "open_pending_merged_source_runtime_review",
+            "required_next_step": "review runtime evidence against the merged source subject and record whether squash/main evidence remains acceptable",
+            "does_not_close_b1_gate": True,
+        },
+        "b1_memory_export_boundary": {
+            "status": "recorded_local_contract" if export_recorded else "open_missing_local_contract",
+            "closed_gap": "b1_memory_export_boundary" if export_recorded else None,
+            "source_readiness": MEMORY_ERASURE_READINESS_SCHEMA,
+            "required_controls": list(_MEMORY_EXPORT_BOUNDARY_REQUIRED_CONTROLS),
+            "required_markers": [
+                "ordinary_user_export_query",
+                "ordinary_user_export_route_policy",
+                "admin_export_operator_projection",
+                "repository_export_erasure_tests",
+                "route_export_erasure_tests",
+            ],
+            "does_not_close_b1_gate": True,
+        },
+        "b1_rollback_boundary": {
+            "status": "open_pending_rollback_boundary",
+            "required_next_step": "record the B1 rollback procedure for disabling governed memory/context workflow exposure and reverting runtime/config state",
+            "does_not_close_b1_gate": True,
+        },
+    }
+
+
 def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str, Any]:
     """Build the B1 memory/context readiness rollup with reviewed 211 smoke evidence."""
     root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
@@ -278,6 +340,17 @@ def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str
         else local_status
     )
     status_label = "local partial"
+    gate_boundary_evidence = _gate_boundary_evidence(memory_erasure)
+    closed_gate_boundary_gaps = [
+        gap
+        for gap, evidence in gate_boundary_evidence.items()
+        if evidence.get("closed_gap") == gap
+    ]
+    open_gaps = [
+        gap
+        for gap in B1_GATE_BOUNDARY_GAPS
+        if gap not in closed_gate_boundary_gaps
+    ]
     runtime_acceptance = {
         "required": True,
         "status": (
@@ -301,11 +374,12 @@ def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str
         ],
         "status_label_before_smoke": "local partial",
         "does_not_close_b1_gate": True,
-        "remaining_gate_boundaries": list(_SMOKE_REQUIRED_BOUNDARIES),
+        "remaining_gate_boundaries": [
+            _CURRENT_GATE_BOUNDARY_LABELS[gap] for gap in open_gaps
+        ],
     }
     if status == "runtime_acceptance_recorded":
         runtime_acceptance["status_label_after_smoke"] = "211 verified"
-    open_gaps = list(B1_GATE_BOUNDARY_GAPS)
     if status != "runtime_acceptance_recorded":
         open_gaps.insert(0, RUNTIME_ACCEPTANCE_GAP)
     closed_runtime_gaps = list(memory_erasure.get("closed_runtime_gaps", []))
@@ -326,14 +400,18 @@ def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str
         },
         "runtime_acceptance": runtime_acceptance,
         "runtime_acceptance_evidence": runtime_acceptance_evidence,
+        "gate_boundary_evidence": gate_boundary_evidence,
         "open_gaps": open_gaps,
         "closed_runtime_gaps": closed_runtime_gaps,
+        "closed_gate_boundary_gaps": closed_gate_boundary_gaps,
         "non_expansion_invariants": dict(_NON_EXPANSION_INVARIANTS),
         "evidence_policy": (
             "B1 local controls plus reviewed 211 memory-enabled document workflow "
             "smoke evidence close only the `211_memory_enabled_document_workflow_smoke` "
-            "runtime gap. B1 gate closure still requires issue review, runtime "
-            "evidence review, memory export boundary, and rollback boundary."
+            "runtime gap. The memory export boundary is recorded as a local "
+            "contract when memory-erasure readiness has the required export "
+            "controls and tests. B1 gate closure still requires issue review, "
+            "merged-source runtime evidence review, and rollback boundary."
         ),
     }
 
@@ -341,6 +419,10 @@ def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str
 def render_b1_memory_context_readiness_markdown(readiness: dict[str, Any]) -> str:
     """Render B1 memory/context readiness as gap-first operator Markdown."""
     gaps = "\n".join(f"- {gap}" for gap in readiness["open_gaps"]) or "- none"
+    closed_gate_boundary_gaps = (
+        "\n".join(f"- {gap}" for gap in readiness.get("closed_gate_boundary_gaps", []))
+        or "- none"
+    )
     controls = "\n".join(f"- {control}" for control in readiness["implemented_controls"])
     runtime = readiness["runtime_acceptance"]
     runtime_evidence = "\n".join(f"- {item}" for item in runtime["required_evidence"])
@@ -354,6 +436,25 @@ def render_b1_memory_context_readiness_markdown(readiness: dict[str, Any]) -> st
             f"- Path: `{acceptance_summary.get('path')}`\n"
             f"- Runtime subject: `{acceptance_summary.get('runtime_subject')}`\n"
             f"- Memory record count: `{acceptance_summary.get('memory_record_count')}`"
+        )
+    gate_boundary_evidence = readiness.get("gate_boundary_evidence", {})
+    export_boundary = (
+        gate_boundary_evidence.get("b1_memory_export_boundary")
+        if isinstance(gate_boundary_evidence, dict)
+        else None
+    )
+    export_boundary_lines = "- none"
+    if isinstance(export_boundary, dict):
+        required_controls = export_boundary.get("required_controls")
+        if isinstance(required_controls, list):
+            controls_lines = "\n".join(f"- {item}" for item in required_controls)
+        else:
+            controls_lines = "- none"
+        export_boundary_lines = (
+            f"- status: `{export_boundary.get('status')}`\n"
+            f"- source readiness: `{export_boundary.get('source_readiness')}`\n"
+            "- required controls:\n"
+            f"{controls_lines}"
         )
     invariants = "\n".join(
         f"- `{key}`: `{str(value).lower()}`"
@@ -369,6 +470,11 @@ def render_b1_memory_context_readiness_markdown(readiness: dict[str, Any]) -> st
         f"Admin Runtime projection: `{readiness['admin_runtime_projection']}`\n\n"
         "## Open Gaps\n\n"
         f"{gaps}\n\n"
+        "## Closed Gate Boundary Gaps\n\n"
+        f"{closed_gate_boundary_gaps}\n\n"
+        "## Gate Boundary Evidence\n\n"
+        "### B1 Memory Export Boundary\n\n"
+        f"{export_boundary_lines}\n\n"
         "## Runtime Acceptance\n\n"
         f"Required: `{str(runtime['required']).lower()}`\n\n"
         f"Status: `{runtime['status']}`\n\n"
