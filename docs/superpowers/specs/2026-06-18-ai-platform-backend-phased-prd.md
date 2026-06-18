@@ -43,15 +43,20 @@ execution layer. ai-platform owns identity, tenancy, run lifecycle, queue,
 sandbox policy, memory, skills, tools, files, artifacts, events, audit, model
 gateway limits, cost, and release evidence.
 
+The project is past the POC proving phase. Productization means turning the
+accepted Foundation Alpha baseline into repeatable, supportable backend
+capabilities. Every capability must have a product owner-facing contract,
+operator evidence, rollback boundary, and issue/PR/review path before it is
+reported as more than `local partial`.
+
 The first backend productization wave focuses on four P0 capabilities:
 
-1. Memory/context is usable under tenant, session, retention, redaction, and
-   delete/export policy.
-2. Real sandbox execution is usable instead of treating `fake` as production.
-3. Worker capacity can be increased only with queue, model-gateway,
-   sandbox-pressure, and cost evidence.
-4. Skills management is usable for upload, versioning, release, rollback,
-   dependency review, permission scope, and pinned run snapshots.
+| Priority | Capability | Product boundary | Primary gates |
+| --- | --- | --- | --- |
+| P0-1 Memory/context usable | Memory/context is usable under tenant, session, retention, redaction, and delete/export policy. | Enable only selected governed workflows until deny paths, provenance, export, rollback, and long-term memory policy are evidenced. | G6, G9 |
+| P0-2 Real sandbox usable | Real sandbox execution is usable instead of treating `fake` as production. | Real provider evidence must include lease, callback, quota, egress, cleanup, cancel, artifact return, and projection redaction. | G7, G6, G9 |
+| P0-3 Worker/model-gateway capacity evidence | Worker capacity can be increased only with queue, model-gateway, sandbox-pressure, token/cost, and backpressure evidence. | Initial target is 10 concurrent sessions with peak 4 SDK subagents per session; defaults stay unchanged until the selected profile is proven. | G5, G8, G9 |
+| P0-4 Skills management and release governance | Skills management is usable for upload, versioning, release, rollback, dependency review, permission scope, and pinned run snapshots. | Mutable folders are not production authority; reviewed versions, dependencies, release state, and used-skill evidence are required. | G6, G9 |
 
 The supporting backend capabilities are model-gateway/cost controls,
 artifact/file governance, exact tool permission policy, and Admin Runtime
@@ -147,6 +152,22 @@ one happy-path smoke passed:
   real `.env` values.
 - Runtime-affecting source cannot be called current if 211 source, image labels,
   containers, health, smoke, and release evidence do not match the merged source.
+
+### 3.4 Stage Deliverables
+
+Use these deliverables to decide whether a stage has produced a reviewable PR
+chain. A deliverable is not automatically runtime evidence; it becomes
+`211 verified` only when the required runtime/smoke evidence exists.
+
+| Stage | Required deliverables |
+| --- | --- |
+| B0 | Latest-main readiness report; source/runtime relation evidence; 211 source and image-label smoke; reviewed release evidence caveats. |
+| B1 | Memory policy and context-pack contracts; memory workflow verifier; reviewed 211 smoke evidence; rollback/export notes. |
+| B2 | Real sandbox provider profile; lease/callback/egress/cleanup tests; 211 sandbox smoke evidence. |
+| B3 | Capacity profile definition; bounded-load harness; seven-gate 211 evidence; Admin Runtime backpressure projection. |
+| B4 | Skill upload/version/release/rollback contracts; dependency evidence contract; reviewed skill-run smoke. |
+| B5 | File/artifact namespace and ACL contracts; exact tool-permission replay tests; file-to-artifact 211 smoke. |
+| B6 | Admin Runtime operations package; trace/export and alert evidence; workflow owner signoff; rollback drill evidence. |
 
 ## 4. Gate And Acceptance Boundaries
 
@@ -417,6 +438,8 @@ External code projects are references, not product authority. Any imported code
 requires source pinning, license/provenance review, and an adaptation plan. Do
 not import a reference project's tenant, RBAC, memory, sandbox, or release
 authority wholesale. Backend authority remains ai-platform.
+No reference project is a dependency decision until an issue names the source,
+license, imported files, adaptation boundary, and verification plan.
 
 | Project | Reference area | Absorb | Do not absorb |
 | --- | --- | --- | --- |
@@ -440,6 +463,17 @@ authority wholesale. Backend authority remains ai-platform.
 | [Open WebUI](https://github.com/open-webui/open-webui) | User-facing tool/function/plugin UX | Chat command ergonomics, function/tool management, knowledge UI, and admin-facing model/tool UX ideas that can inform frontend/backend projections. | Open WebUI backend, auth, model/provider authority, tool execution policy, or memory authority. |
 | [LibreChat](https://github.com/danny-avila/LibreChat) | Chat shell, agents/tools UI, MCP-style UX | User interface patterns for Skills discovery, slash commands, run drawer, and tool configuration when the frontend companion PRD absorbs UI ideas. | Backend authority, model configuration truth, tenant/RBAC, or run lifecycle ownership. |
 | [AnythingLLM](https://github.com/Mintplex-Labs/anything-llm) | Workspace-oriented knowledge/task UX | Workspace, document knowledge, and task surface ideas for selected internal workflows. | Replacing ai-platform workspace/tenant isolation, memory policy, files, or artifacts. |
+
+### 6.1 Reference Priority By Backend Stage
+
+| Backend stage | Reference projects | What to study first |
+| --- | --- | --- |
+| B1 memory/context | LangGraph, Mem0, Zep | Memory/checkpoint model, memory UX, provenance, delete/update semantics. |
+| B2 sandbox | OpenHands, E2B, Daytona | Sandbox lifecycle, workspace isolation, command execution, artifact return, cancellation ergonomics. |
+| B3 capacity/model gateway | Temporal, Celery, LiteLLM, Portkey | Durable retry vocabulary, worker scaling, provider limits, budgets, spend tracking, fallback/backpressure. |
+| B4 Skills management | Backstage, Dify, Open WebUI, LibreChat, AnythingLLM | Catalog, release workflow, skill/app marketplace UX, slash/tool discovery patterns. |
+| B5 authorization/files/tools | OpenFGA, Open Policy Agent | Relationship-based ACLs, policy bundles, decision logs, deny-path test matrices. |
+| B6 observability/ops | Langfuse, Phoenix, OpenTelemetry Collector | Trace vocabulary, eval runs, token/cost views, metrics/traces/log export and redaction patterns. |
 
 Reference priority for implementation:
 
