@@ -63,6 +63,13 @@ _SMOKE_REQUIRED_BOUNDARIES = [
     "rollback boundary",
 ]
 
+B1_GATE_BOUNDARY_GAPS = [
+    "b1_issue_review_and_closure_evidence",
+    "b1_runtime_evidence_review_against_merged_source",
+    "b1_memory_export_boundary",
+    "b1_rollback_boundary",
+]
+
 
 def _path_for_output(path: Path, repo_root: Path) -> str:
     try:
@@ -270,7 +277,7 @@ def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str
         if local_status == "local_controls_ready_runtime_smoke_required" and b1_smoke_recorded
         else local_status
     )
-    status_label = "211 verified" if status == "runtime_acceptance_recorded" else "local partial"
+    status_label = "local partial"
     runtime_acceptance = {
         "required": True,
         "status": (
@@ -298,11 +305,9 @@ def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str
     }
     if status == "runtime_acceptance_recorded":
         runtime_acceptance["status_label_after_smoke"] = "211 verified"
-    open_gaps = (
-        []
-        if status == "runtime_acceptance_recorded"
-        else [RUNTIME_ACCEPTANCE_GAP]
-    )
+    open_gaps = list(B1_GATE_BOUNDARY_GAPS)
+    if status != "runtime_acceptance_recorded":
+        open_gaps.insert(0, RUNTIME_ACCEPTANCE_GAP)
     closed_runtime_gaps = list(memory_erasure.get("closed_runtime_gaps", []))
     if status == "runtime_acceptance_recorded":
         closed_runtime_gaps.append(RUNTIME_ACCEPTANCE_GAP)
@@ -367,6 +372,7 @@ def render_b1_memory_context_readiness_markdown(readiness: dict[str, Any]) -> st
         "## Runtime Acceptance\n\n"
         f"Required: `{str(runtime['required']).lower()}`\n\n"
         f"Status: `{runtime['status']}`\n\n"
+        f"Smoke status label: `{runtime.get('status_label_after_smoke', 'not recorded')}`\n\n"
         f"Acceptance gap: `{runtime['acceptance_gap']}`\n\n"
         f"Verifier: `{runtime['verifier_script']}` "
         f"(`{runtime['verifier_schema_version']}` targeting `{runtime['target']}`)\n\n"

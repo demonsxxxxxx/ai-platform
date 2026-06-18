@@ -6,6 +6,14 @@ import sys
 from app.governance_readiness import build_governance_readiness, render_governance_readiness_markdown
 
 
+B1_GATE_BOUNDARY_GAPS = [
+    "b1_issue_review_and_closure_evidence",
+    "b1_runtime_evidence_review_against_merged_source",
+    "b1_memory_export_boundary",
+    "b1_rollback_boundary",
+]
+
+
 class SecretBearingSettings:
     sandbox_container_provider = "docker://token@internal/path"
     sandbox_callback_token = "callback-secret"
@@ -227,10 +235,13 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "sandbox_cold_start_latency_split_211_acceptance" not in domains["memory_governance"]["gaps"]
     assert "211_memory_enabled_document_workflow_smoke" not in domains["memory_governance"]["gaps"]
     assert "211_memory_enabled_document_workflow_smoke" not in readiness["open_gaps"]
+    for gap in B1_GATE_BOUNDARY_GAPS:
+        assert gap in domains["memory_governance"]["gaps"]
+        assert gap in readiness["open_gaps"]
     b1_evidence = domains["memory_governance"]["evidence"]["b1_memory_context_readiness"]
     assert b1_evidence["schema_version"] == "ai-platform.b1-memory-context-readiness.v1"
     assert b1_evidence["status"] == "runtime_acceptance_recorded"
-    assert b1_evidence["status_label"] == "211 verified"
+    assert b1_evidence["status_label"] == "local partial"
     assert b1_evidence["runtime_acceptance"]["acceptance_gap"] == (
         "211_memory_enabled_document_workflow_smoke"
     )
@@ -238,7 +249,8 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
         "tools/verify_b1_memory_context_workflow.py"
     )
     assert b1_evidence["runtime_acceptance"]["does_not_close_b1_gate"] is True
-    assert b1_evidence["open_gaps"] == []
+    assert b1_evidence["open_gaps"] == B1_GATE_BOUNDARY_GAPS
+    assert "211_memory_enabled_document_workflow_smoke" not in b1_evidence["open_gaps"]
     assert b1_evidence["runtime_acceptance_evidence"]["211_memory_enabled_document_workflow_smoke"][
         "status"
     ] == "verified_211_runtime_acceptance"
