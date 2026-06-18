@@ -339,6 +339,43 @@ def test_capacity_load_test_plan_covers_each_gate_with_dry_run_commands_and_no_d
     assert "openai_api_key" not in serialized
 
 
+def test_capacity_load_test_plan_names_b3_10x4_sdk_subagent_target_profile_without_default_raise():
+    plan = build_capacity_load_test_plan(
+        SecretBearingSettings(),
+        base_url="https://ai-platform.internal",
+    )
+
+    assert plan["target_profile"] == {
+        "id": "b3_10x4_sdk_subagents",
+        "stage": "B3",
+        "concurrent_sessions": 10,
+        "peak_sdk_subagents_per_session": 4,
+        "measurement_first": True,
+        "automatic_default_raise": False,
+        "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+        "status_label_before_evidence": "local partial",
+    }
+    assert plan["parameters"]["tenants"] == 1
+    assert plan["parameters"]["users_per_tenant"] == 10
+    assert plan["parameters"]["runs_per_user"] == 1
+    assert plan["parameters"]["peak_sdk_subagents_per_session"] == 4
+    assert all(
+        scenario["target_profile_id"] == "b3_10x4_sdk_subagents"
+        for scenario in plan["scenarios"]
+    )
+    assert all(
+        scenario["parameters"]["peak_sdk_subagents_per_session"] == 4
+        for scenario in plan["scenarios"]
+    )
+    assert " --tenants 1" in plan["scenarios"][0]["command"]
+    assert " --users-per-tenant 10" in plan["scenarios"][0]["command"]
+    assert " --runs-per-user 1" in plan["scenarios"][0]["command"]
+    assert "--peak-sdk-subagents-per-session 4" in plan["scenarios"][0]["command"]
+    assert plan["execution_policy"]["production_defaults_policy"] == (
+        "do_not_raise_without_recorded_load_test_evidence"
+    )
+
+
 def test_capacity_recorded_gate_evidence_contract_is_machine_readable_and_fail_closed():
     contract = build_capacity_recorded_gate_evidence_contract("queue_depth_and_lease_latency")
 
@@ -482,6 +519,12 @@ def test_render_capacity_load_test_plan_markdown_is_repeatable_and_safe():
     assert "assemble_evidence_bundle_draft" in markdown
     assert "assemble_recorded_gate_snapshot" in markdown
     assert "record_cleanup_proof" in markdown
+    assert "## Target Profile" in markdown
+    assert "`b3_10x4_sdk_subagents`" in markdown
+    assert "Stage: `B3`" in markdown
+    assert "Concurrent sessions: `10`" in markdown
+    assert "Peak SDK subagents per session: `4`" in markdown
+    assert "Measurement first: `true`" in markdown
     assert "capacity_bounded_load_harness.py" in markdown
     assert "capacity_evidence_bundle.py" in markdown
     assert "capacity_recorded_gate_snapshot.py" in markdown
@@ -527,8 +570,11 @@ def test_capacity_load_plan_cli_outputs_json_without_secret_markers():
         "tenants": 2,
         "users_per_tenant": 3,
         "runs_per_user": 1,
+        "peak_sdk_subagents_per_session": 4,
         "duration_seconds": 300,
     }
+    assert payload["target_profile"]["id"] == "b3_10x4_sdk_subagents"
+    assert payload["target_profile"]["automatic_default_raise"] is False
     assert "database_url" not in result.stdout.lower()
     assert "openai_api_key" not in result.stdout.lower()
 
@@ -1187,6 +1233,7 @@ def test_capacity_profile_readiness_blocks_all_profiles_without_recorded_load_ev
     assert profile_readiness["status"] == "blocked_missing_load_test_evidence"
     assert profile_readiness["source_gate_readiness"]["status"] == "blocked_missing_load_test_evidence"
     assert [profile["id"] for profile in profile_readiness["profiles"]] == [
+        "b3_10x4_sdk_subagents",
         "conservative_internal",
         "medium_team",
         "high_capacity_1t",
@@ -1202,6 +1249,14 @@ def test_capacity_profile_readiness_blocks_all_profiles_without_recorded_load_ev
     assert all(profile["automatic_default_raise"] is False for profile in profile_readiness["profiles"])
     assert all(profile["safe_concurrency_claim"] == "not_claimed" for profile in profile_readiness["profiles"])
     assert all(profile["missing_load_test_gates"] == LOAD_TEST_GATES for profile in profile_readiness["profiles"])
+    target_profile = profile_readiness["profiles"][0]
+    assert target_profile["stage"] == "B3"
+    assert target_profile["target_profile"] == {
+        "concurrent_sessions": 10,
+        "peak_sdk_subagents_per_session": 4,
+    }
+    assert target_profile["measurement_first"] is True
+    assert target_profile["safe_concurrency_claim"] == "not_claimed"
 
 
 def test_capacity_profile_readiness_requires_operator_review_after_complete_gate_evidence():
@@ -1343,10 +1398,16 @@ def test_capacity_profile_readiness_cli_outputs_json_from_snapshot_file(tmp_path
     assert payload["schema_version"] == "ai-platform.capacity-profile-readiness.v1"
     assert payload["status"] == "blocked_missing_load_test_evidence"
     assert [profile["id"] for profile in payload["profiles"]] == [
+        "b3_10x4_sdk_subagents",
         "conservative_internal",
         "medium_team",
         "high_capacity_1t",
     ]
+    assert payload["profiles"][0]["target_profile"] == {
+        "concurrent_sessions": 10,
+        "peak_sdk_subagents_per_session": 4,
+    }
+    assert payload["profiles"][0]["automatic_default_raise"] is False
     assert "executor_private_payload" not in result.stdout
     assert "storage_key" not in result.stdout
 
