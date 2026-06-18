@@ -33,6 +33,8 @@ python tools/office_context_readiness.py --format markdown
 python tools/office_context_readiness.py --format json
 python tools/b1_memory_context_readiness.py --format markdown
 python tools/b1_memory_context_readiness.py --format json
+python tools/b2_sandbox_readiness.py --format markdown
+python tools/b2_sandbox_readiness.py --format json
 python tools/verify_governance_runtime_smoke.py --base-url http://127.0.0.1:8020 --commit-sha <source-tree-commit> --runtime-subject-commit-sha <runtime-subject-commit> --image <runtime-image>
 ```
 
@@ -483,6 +485,24 @@ include `non_expansion_invariants` with
 `ordinary_user_multi_agent_allowed=false`. Reviewed PR #44 evidence now records
 `sandbox_cold_start_latency_split_211_acceptance` for the controlled verifier
 run; this still does not close Docker sandbox production hardening, G6, or G9.
+`tools/b2_sandbox_readiness.py` now records the B2 backend real-sandbox rollup
+with schema `ai-platform.b2-sandbox-readiness.v1`. It reports
+`status=local_contract_ready_runtime_smoke_required`, keeps the stage status
+label `local partial`, records the required 211 Docker/equivalent smoke path,
+and keeps the open gaps `b2_211_real_sandbox_smoke`,
+`b2_reviewed_release_evidence`, and `b2_issue_review_and_closure_evidence`.
+This rollup is source-level operator evidence only. It does not close B2/G7,
+does not treat `SANDBOX_CONTAINER_PROVIDER=fake` as production proof, does not
+permit user payload provider selection, and does not allow unrestricted Docker
+socket exposure as a default trust boundary. A generated 211 smoke that has not
+been wrapped, redacted, reviewed, and attached as release evidence still stays
+`local partial`; `211 verified` begins only after the reviewed evidence gate is
+recorded. The B2 rollup reports the current verifier/generator contract for
+`admin_or_allowlist_only=true`, `hardening.evidence_class`, generated timings,
+hardening sections, callback/cancel evidence, and non-expansion invariants.
+Resource-limit policy evidence, egress-policy evidence, security-option
+evidence, and rollback-assumption evidence remain PRD B2/G7 requirements that
+are not yet verifier-checked and must not be treated as current verifier output.
 The
 hardening section must label lease/workspace/cleanup checks as
 `live_platform_probe` and timeout/failure/cached-lease checks as

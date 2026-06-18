@@ -44,6 +44,7 @@ editing this document:
 | --- | --- |
 | `python tools/foundation_alpha_readiness.py --format json` | `foundation_alpha_stage_complete=false`, `foundation_alpha_stage_status=runtime_rollout_required`, blocker `foundation_runtime_concurrency_evidence`, source tree `52ac62cfbbab47172a659dda11e41aa4b2a5d699`, runtime subject `569887369e0358f08a408c473395521b22c8e0a7`. |
 | `python tools/b1_memory_context_readiness.py --format json` | `status=runtime_acceptance_recorded`, `status_label=local partial`, runtime smoke status label can be `211 verified`, closed gate-boundary gaps include `b1_runtime_evidence_review_against_merged_source`, `b1_memory_export_boundary`, and `b1_rollback_boundary`; open gaps remain `b1_issue_review_and_closure_evidence` only. |
+| `python tools/b2_sandbox_readiness.py --format json` | `status=local_contract_ready_runtime_smoke_required`, `status_label=local partial`, runtime acceptance status `missing_211_real_sandbox_smoke`; a raw smoke without reviewed evidence stays `local partial`; open gaps remain `b2_211_real_sandbox_smoke`, `b2_reviewed_release_evidence`, and `b2_issue_review_and_closure_evidence`. |
 | `python tools/governance_readiness.py --format json` | `status=partial_blocked`, `sandbox_provider=fake`, G6 open gaps include skill dependency runtime acceptance, Admin Skill dashboard visual/211 acceptance, B1 closure evidence, and frontend projection gaps. |
 
 The snapshot is not a permanent source of truth. It prevents this document from
@@ -333,6 +334,18 @@ Not accepted:
 ### 5.3 B2 Real Sandbox Usable
 
 Goal: make sandbox execution operational for governed SDK skill tasks.
+
+B2 can now be tracked through `tools/b2_sandbox_readiness.py`, but that rollup
+is source-level only. The B2 source contract is `local partial` until 211
+Docker/equivalent evidence is generated, redacted, reviewed, and attached to
+the linked issue. The current B2 rollup is deliberately narrow: it records the
+provider profile, non-expansion invariants, required verifier scripts, and
+remaining evidence gaps without claiming `211 verified` or `gate closable`.
+The current 211 sandbox verifier currently enforces `admin_or_allowlist_only`
+and `hardening.evidence_class` through the existing generated evidence shape.
+B2/G7 still requires separate verifier/generator work before resource-limit,
+egress-policy, security-option, and rollback-assumption evidence can be treated
+as current verifier output or used in a `211 verified` claim.
 
 Backend requirements:
 

@@ -56,6 +56,15 @@ def test_backend_prd_records_stage_gate_and_acceptance_boundaries():
     assert "closed gate-boundary gaps include `b1_runtime_evidence_review_against_merged_source`" in compact_text
     assert "open gaps remain `b1_issue_review_and_closure_evidence` and `b1_runtime_evidence_review_against_merged_source`" not in compact_text
     assert "stale or open merged-source runtime review" in compact_text
+    assert "`python tools/b2_sandbox_readiness.py --format json`" in text
+    assert "`status=local_contract_ready_runtime_smoke_required`" in text
+    assert "`status_label=local partial`" in text
+    assert "`b2_211_real_sandbox_smoke`" in text
+    assert "`b2_reviewed_release_evidence`" in text
+    assert "`b2_issue_review_and_closure_evidence`" in text
+    assert "currently enforces `admin_or_allowlist_only` and `hardening.evidence_class`" in compact_text
+    assert "still requires separate verifier/generator work before resource-limit, egress-policy, security-option, and rollback-assumption evidence can be treated as current verifier output" in compact_text
+    assert "mirrors the existing 211 sandbox verifier boundary" not in text
 
     for checklist in (
         "| B0 | S2-0/latest-main source-authority issue links the target source",
@@ -85,6 +94,8 @@ def test_backend_prd_records_post_poc_productization_priorities_and_deliverables
         "The initial backend capacity target is deliberately small:",
         "Peak 4 Claude Agent SDK subagents per session for selected workflows.",
         "The backend becomes product-beta ready only when it supports a named internal workflow",
+        "B2 can now be tracked through `tools/b2_sandbox_readiness.py`, but that rollup is source-level only.",
+        "The B2 source contract is `local partial` until 211 Docker/equivalent evidence is generated",
     ):
         assert phrase in compact_text
 
