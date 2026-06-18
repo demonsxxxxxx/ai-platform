@@ -353,6 +353,65 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_worker_passes_locked_run_model_id_to_adapter(monkeypatch):
+    calls = []
+    locked_run = {
+        "id": "run-a",
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "agent_id": "qa-word-review",
+        "skill_id": "qa-file-reviewer",
+        "trace_id": "trace-run-a",
+        "input_json": {
+            "input": {"mode": "file"},
+            "file_ids": ["file-a"],
+            "executor_type": "capture",
+            "skill_version": "hash-qa-file-reviewer",
+            "release_decision": release_decision("hash-qa-file-reviewer"),
+            "model_id": "pro-tier",
+            "model_value": "deepseek-v4-pro",
+        },
+    }
+
+    class CaptureAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            calls.append(("model", payload.model_id, payload.model_value))
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="capture/1",
+                executor_type="capture",
+                executor_version="capture",
+                capabilities={"artifacts": False, "streaming": False, "tools": False},
+                result={"message": "done"},
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return locked_run
+
+    async def append_event(conn, **kwargs):
+        return None
+
+    async def complete_run(conn, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    outcome = await process_run_payload(
+        base_payload(executor_type="capture"),
+        AdapterRegistry({"capture": CaptureAdapter()}),
+    )
+
+    assert outcome.status == "succeeded"
+    assert calls == [("model", "pro-tier", "deepseek-v4-pro")]
+
+
+@pytest.mark.asyncio
 async def test_worker_records_runtime_sandbox_lease_around_successful_executor_run(monkeypatch):
     calls = []
     locked_run = {

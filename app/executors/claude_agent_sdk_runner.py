@@ -544,6 +544,7 @@ async def run_claude_agent_sdk(
     prompt: str,
     cwd: Path,
     skill_id: str,
+    model_id: str | None = None,
     skills: list[str] | None = None,
     query_fn: Callable[..., Any] | None = None,
     on_text: Callable[[str], Awaitable[None]] | None = None,
@@ -743,7 +744,7 @@ async def run_claude_agent_sdk(
 
     options = ClaudeAgentOptions(
         cwd=str(cwd),
-        model=settings.claude_agent_model or settings.anthropic_model or None,
+        model=model_id or settings.claude_agent_model or settings.anthropic_model or None,
         tools=_sdk_tools_for_mode(full_access=full_access),
         permission_mode=permission_mode,
         allowed_tools=allowed_tools,

@@ -920,6 +920,7 @@ class ClaudeAgentWorkerAdapter:
                 prompt=prompt,
                 cwd=workspace,
                 skill_id=payload.skill_id,
+                model_id=payload.model_value or payload.model_id or None,
                 skills=staged_skill_names,
                 on_text=on_text,
                 on_skill_use=on_skill_use,

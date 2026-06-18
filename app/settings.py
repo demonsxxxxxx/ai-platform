@@ -79,6 +79,8 @@ class Settings(BaseSettings):
     anthropic_auth_token: str = Field(default="")
     anthropic_model: str = Field(default="deepseek-v4-flash")
     claude_agent_model: str = Field(default="deepseek-v4-flash")
+    default_model_id: str = Field(default="")
+    model_catalog_json: str = Field(default="")
     claude_agent_sdk_enabled: bool = Field(default=False)
     claude_agent_sdk_timeout_seconds: float = Field(default=120.0)
     claude_agent_sdk_max_turns: int = Field(default=128)

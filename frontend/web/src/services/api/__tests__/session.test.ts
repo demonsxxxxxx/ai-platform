@@ -6,6 +6,7 @@ import {
   buildMessageForkUrl,
   buildSessionRunsUrl,
   buildSubmitChatBody,
+  isChatStreamNeedsConfirmation,
 } from "../session.ts";
 
 test("builds a session list url with favorites_only", () => {
@@ -69,6 +70,24 @@ test("includes persona preset fields in the submit chat body", () => {
       persona_preset_id: "preset-1",
       disabled_mcp_tools: undefined,
     },
+  );
+});
+
+test("detects chat stream confirmation responses without a run id", () => {
+  assert.equal(
+    isChatStreamNeedsConfirmation({
+      status: "needs_confirmation",
+      session_id: undefined,
+      run_id: null,
+      suggestions: [
+        {
+          capability_id: "document_review",
+          label: "文档审核",
+          reason: "审核这个 Word",
+        },
+      ],
+    }),
+    true,
   );
 });
 

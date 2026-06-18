@@ -29,8 +29,13 @@ export { authApi, buildOAuthLoginUrl } from "./api/auth";
 export { userApi } from "./api/user";
 export { roleApi } from "./api/role";
 export {
+  isChatStreamNeedsConfirmation,
   sessionApi,
   type BackendSession,
+  type ChatStreamResponse,
+  type ChatStreamNeedsConfirmationResponse,
+  type ChatStreamQueuedResponse,
+  type CapabilitySuggestion,
   type SessionListResponse,
 } from "./api/session";
 export { agentApi } from "./api/agent";

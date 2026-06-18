@@ -37,6 +37,43 @@ export interface SessionRunsQuery {
   trace_id?: string;
 }
 
+export interface CapabilitySuggestion {
+  capability_id: string;
+  label: string;
+  reason: string;
+}
+
+export interface ChatStreamQueuedResponse {
+  session_id: string;
+  run_id: string;
+  trace_id: string;
+  status: "queued";
+  queue_position?: number;
+  queue_insight?: unknown;
+}
+
+export interface ChatStreamNeedsConfirmationResponse {
+  session_id?: string | null;
+  run_id?: null;
+  status: "needs_confirmation";
+  suggestions: CapabilitySuggestion[];
+  intent_decision?: unknown;
+}
+
+export type ChatStreamResponse =
+  | ChatStreamQueuedResponse
+  | ChatStreamNeedsConfirmationResponse;
+
+export function isChatStreamNeedsConfirmation(
+  response: ChatStreamResponse | unknown,
+): response is ChatStreamNeedsConfirmationResponse {
+  return (
+    typeof response === "object" &&
+    response !== null &&
+    (response as { status?: unknown }).status === "needs_confirmation"
+  );
+}
+
 export function buildMessageForkUrl(
   sessionId: string,
   messageId: string,
@@ -296,12 +333,7 @@ export const sessionApi = {
     disabledMcpTools?: string[],
     personaPresetId?: string | null,
     enabledSkills?: string[],
-  ): Promise<{
-    session_id: string;
-    run_id: string;
-    trace_id: string;
-    status: string;
-  }> {
+  ): Promise<ChatStreamResponse> {
     const body = buildSubmitChatBody({
       message,
       sessionId,

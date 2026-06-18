@@ -14,7 +14,13 @@ import type {
   ConnectionStatus,
   MessageAttachment,
 } from "../types";
-import { sessionApi, type BackendSession } from "../services/api";
+import {
+  isChatStreamNeedsConfirmation,
+  sessionApi,
+  type BackendSession,
+  type CapabilitySuggestion,
+  type ChatStreamResponse,
+} from "../services/api";
 import { authenticatedRequest } from "../services/api/authenticatedRequest";
 import { feedbackApi } from "../services/api/feedback";
 import { useAuth } from "../hooks/useAuth";
@@ -49,6 +55,18 @@ import { resolvePersonaEnabledSkills } from "./useAgent/personaRequestConfig";
 import { translateBackendError } from "../utils/backendErrors";
 import { dispatchSessionTitleUpdated } from "../utils/sessionTitleEvents";
 import { resolveAvailableAgentId } from "./useAgent/agentSelection";
+
+function formatConfirmationMessage(suggestions: CapabilitySuggestion[]): string {
+  if (suggestions.length === 0) {
+    return "需要确认处理方式后再继续。";
+  }
+
+  const items = suggestions.map((item, index) => {
+    const reason = item.reason ? `：${item.reason}` : "";
+    return `${index + 1}. ${item.label}${reason}`;
+  });
+  return ["需要确认处理方式后再继续。", "", ...items].join("\n");
+}
 
 export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const { hasAnyPermission } = useAuth();
@@ -579,7 +597,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           ...agentOptions,
         };
 
-        const submitData = (await sessionApi.submitChat(
+        const submitData: ChatStreamResponse = await sessionApi.submitChat(
           currentAgent,
           content,
           sessionId ?? undefined,
@@ -590,13 +608,29 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           disabledMcpTools,
           personaPresetId,
           enabledSkills,
-        )) as {
-          session_id: string;
-          run_id: string;
-          trace_id: string;
-          status: string;
-          queue_position?: number;
-        };
+        );
+
+        if (isChatStreamNeedsConfirmation(submitData)) {
+          pendingProjectIdRef.current = null;
+          const confirmationMessage = formatConfirmationMessage(
+            submitData.suggestions,
+          );
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantMessageId
+                ? {
+                    ...m,
+                    content: confirmationMessage,
+                    isStreaming: false,
+                    parts: [{ type: "text", content: confirmationMessage }],
+                  }
+                : m,
+            ),
+          );
+          setConnectionStatus("disconnected");
+          setIsInitializingSandbox(false);
+          return;
+        }
 
         const newSessionId = submitData.session_id;
         const newRunId = submitData.run_id;

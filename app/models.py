@@ -391,6 +391,8 @@ class QueueRunPayload(BaseModel):
     skill_manifests: list[dict[str, Any]] = Field(default_factory=list)
     context_snapshot_id: str | None = None
     context_snapshot: dict[str, Any] = Field(default_factory=dict)
+    model_id: str | None = None
+    model_value: str | None = None
     schema_version: str = RUN_PAYLOAD_SCHEMA_VERSION
 
     @field_validator("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "agent_id", "skill_id", "executor_type")
@@ -402,6 +404,16 @@ class QueueRunPayload(BaseModel):
     @classmethod
     def validate_optional_context_snapshot_id(cls, value: str | None):
         return assert_safe_id(value, "context_snapshot_id") if value else value
+
+    @field_validator("model_id")
+    @classmethod
+    def validate_optional_model_id(cls, value: str | None):
+        return assert_safe_id(value, "model_id") if value else value
+
+    @field_validator("model_value")
+    @classmethod
+    def validate_optional_model_value(cls, value: str | None):
+        return assert_safe_id(value, "model_value") if value else value
 
     @field_validator("file_ids")
     @classmethod
