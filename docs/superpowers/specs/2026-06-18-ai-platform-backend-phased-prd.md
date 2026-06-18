@@ -42,8 +42,8 @@ editing this document:
 
 | Source | Observed result |
 | --- | --- |
-| `python tools/foundation_alpha_readiness.py --format json` | `foundation_alpha_stage_complete=false`, `foundation_alpha_stage_status=runtime_rollout_required`, blocker `foundation_runtime_concurrency_evidence`, source tree `52ac62cfbbab47172a659dda11e41aa4b2a5d699`, runtime subject `569887369e0358f08a408c473395521b22c8e0a7`. |
-| `python tools/b1_memory_context_readiness.py --format json` | `status=runtime_acceptance_recorded`, `status_label=local partial`, runtime smoke status label can be `211 verified`, closed gate-boundary gaps include `b1_runtime_evidence_review_against_merged_source`, `b1_memory_export_boundary`, and `b1_rollback_boundary`; open gaps remain `b1_issue_review_and_closure_evidence` only. |
+| `python tools/foundation_alpha_readiness.py --format json` | `foundation_alpha_stage_complete=false`, `foundation_alpha_stage_status=runtime_rollout_required`, blocker `foundation_runtime_concurrency_evidence`, source tree `f8a0f3c1168c34663850345d8f30358d435a0134`, runtime subject `569887369e0358f08a408c473395521b22c8e0a7`, runtime relation `source_synced_runtime_pending`, and runtime-affecting changes since runtime subject include `app/b2_sandbox_readiness.py`, `app/release_evidence_export_acceptance.py`, `app/release_evidence_readiness.py`, `app/routes/runs.py`, `tools/b1_memory_context_readiness.py`, `tools/b2_sandbox_readiness.py`, and `tools/verify_b1_memory_context_workflow.py`. |
+| `python tools/b1_memory_context_readiness.py --format json` | `status=runtime_acceptance_recorded`, `status_label=local partial`, runtime smoke status label can be `211 verified` only for the recorded smoke scope, closed gate-boundary gaps include `b1_memory_export_boundary` and `b1_rollback_boundary`; open gaps remain `b1_issue_review_and_closure_evidence` and `b1_runtime_evidence_review_against_merged_source` because the reviewed smoke is tied to runtime subject `52ac62cfbbab47172a659dda11e41aa4b2a5d699` while current source is `f8a0f3c1168c34663850345d8f30358d435a0134`. |
 | `python tools/b2_sandbox_readiness.py --format json` | `status=local_contract_ready_runtime_smoke_required`, `status_label=local partial`, runtime acceptance status `missing_211_real_sandbox_smoke`; a raw smoke without reviewed evidence stays `local partial`; open gaps remain `b2_211_real_sandbox_smoke`, `b2_reviewed_release_evidence`, and `b2_issue_review_and_closure_evidence`. |
 | `python tools/governance_readiness.py --format json` | `status=partial_blocked`, `sandbox_provider=fake`, G6 open gaps include skill dependency runtime acceptance, Admin Skill dashboard visual/211 acceptance, B1 closure evidence, and frontend projection gaps. |
 
@@ -158,7 +158,7 @@ progress from local-only evidence.
 | B0 entry | Latest `main` is identified; the current runtime subject, 211 source path, repo-local deploy composition, backend/worker containers, and readiness command are known; an issue exists for the refresh if runtime evidence is required. |
 | B0 exit | Readiness has no current-source stage blocker, current-subject Foundation Runtime concurrency evidence exists, runtime labels and source relation are redacted and reviewed, and remaining caveats are named as non-closing follow-ups. |
 | B1 entry | A concrete workflow is selected; the memory scope, policy, retention, opt-out, delete/redaction, export, and context-pack contract are named; long-term memory default remains fail-closed. |
-| B1 exit | Focused deny-path tests pass; one 211 memory-enabled workflow smoke proves context provenance and no private projection leakage; the enabled scope, retention, opt-out, export, and rollback boundaries are recorded. |
+| B1 exit | Focused deny-path tests pass; one reviewed 211 memory-enabled workflow smoke for the merged source proves context provenance and no private projection leakage; the enabled scope, retention, opt-out, export, and rollback boundaries are recorded. |
 | B2 entry | A real sandbox provider or equivalent isolation path is selected; lease, callback, quota, egress, cleanup, security-option, and artifact boundaries are designed before runtime exposure. |
 | B2 exit | 211 Docker/equivalent smoke proves launch, command execution, artifact return, cancel, cleanup, orphan scan, and projection redaction; `fake` remains local/test-only. |
 | B3 entry | Target capacity profile is named, starting with 10 concurrent sessions and peak 4 SDK subagents per session for selected workflows; current defaults stay unchanged. |
@@ -204,7 +204,7 @@ chain. A deliverable is not automatically runtime evidence; it becomes
 | Stage | Required deliverables |
 | --- | --- |
 | B0 | Latest-main readiness report; source/runtime relation evidence; 211 source and image-label smoke; reviewed release evidence caveats. |
-| B1 | Memory policy and context-pack contracts; memory workflow verifier; reviewed 211 smoke evidence; rollback/export notes. |
+| B1 | Memory policy and context-pack contracts; memory workflow verifier; reviewed current-source 211 smoke evidence; rollback/export notes. |
 | B2 | Real sandbox provider profile; lease/callback/egress/cleanup tests; 211 sandbox smoke evidence. |
 | B3 | Capacity profile definition; bounded-load harness; seven-gate 211 evidence; Admin Runtime backpressure projection. |
 | B4 | Skill upload/version/release/rollback contracts; dependency evidence contract; reviewed skill-run smoke. |
@@ -260,6 +260,8 @@ Status labels must remain precise:
 
 - `local partial`: local code/docs/tests only.
 - `PR ready`: scoped verification passed and review boundary is documented.
+- `reviewed`: independent review is recorded and any blocking feedback is
+  resolved or explicitly tracked.
 - `merged`: PR is merged to main.
 - `211 verified`: relevant 211 runtime/source/smoke evidence exists.
 - `gate closable`: all gate evidence, review, deployment, and issue closure
@@ -269,13 +271,15 @@ Gate closure rules:
 
 1. `local partial` becomes `PR ready` only after scoped tests and the review
    boundary are recorded in the PR.
-2. `PR ready` becomes `merged` only after the PR is merged to main.
-3. Runtime-affecting backend work becomes `211 verified` only after 211 source,
+2. `PR ready` becomes `reviewed` only after independent review is recorded and
+   blocking feedback is resolved or explicitly tracked.
+3. `reviewed` becomes `merged` only after the PR is merged to main.
+4. Runtime-affecting backend work becomes `211 verified` only after 211 source,
    image labels, containers, health, smoke, and redacted evidence match the
    merged source.
-4. A stage becomes `gate closable` only after the issue is closed with linked
+5. A stage becomes `gate closable` only after the issue is closed with linked
    PR, review, verification, and runtime evidence where required.
-5. Docs-only PRs may align the roadmap and acceptance wording, but they cannot
+6. Docs-only PRs may align the roadmap and acceptance wording, but they cannot
    close B0-B6 runtime gates.
 
 ## 5. Stage Requirements
@@ -546,6 +550,7 @@ Reference use must follow this intake gate:
 | [LangGraph](https://github.com/langchain-ai/langgraph) | Memory, checkpoints, durable agent state | Short-term checkpoint, long-running state, human-in-the-loop, and long-term store concepts; separation of run state and cross-run memory. | LangGraph as the platform runtime or memory policy authority. |
 | [Mem0](https://github.com/mem0ai/mem0) | Agent memory product ergonomics | Memory extraction, user-visible memory management, and update/delete UX ideas for B1. | External memory service authority, unscoped cross-session memory, or private prompt/file ingestion outside ai-platform policy. |
 | [Zep](https://github.com/getzep/zep) | Agent memory store and temporal knowledge | Session history, memory summarization, graph/temporal retrieval ideas, and memory provenance concepts. | Replacing ai-platform `memory_records`, context snapshots, tenant policy, retention, or deletion authority. |
+| [Graphiti](https://github.com/getzep/graphiti) | Temporal knowledge graph memory | Episodic/temporal relationship extraction, conflict-aware memory updates, and provenance ideas for later B1 long-term memory research. | Long-term memory default enablement, cross-tenant graph authority, or replacing ai-platform memory delete/redaction policy. |
 | [OpenHands](https://github.com/OpenHands/OpenHands) | Agent runtime and Docker sandbox patterns | Docker workspace/sandbox lifecycle ideas, event visibility, safety warnings around running without sandbox. | OpenHands agent server, filesystem trust model, or Docker socket exposure as ai-platform default. |
 | [E2B](https://github.com/e2b-dev/e2b) / [E2B Code Interpreter](https://github.com/e2b-dev/code-interpreter) | Sandbox/code interpreter API | Sandbox template, command/code execution API ergonomics, artifact return concepts. | External SaaS dependency, API-key-controlled sandbox authority, or replacement for platform lease/audit. |
 | [Daytona](https://github.com/daytonaio/daytona) | Elastic sandbox infrastructure | Fast sandbox lifecycle and OCI/Docker-compatible sandbox concepts. | Daytona as required infrastructure before ai-platform can run internally. |
@@ -555,10 +560,14 @@ Reference use must follow this intake gate:
 | [LiteLLM](https://docs.litellm.ai/docs/proxy/users) | Model gateway, budgets, rate limits, spend tracking | Per-user/team/key budget/rate-limit/spend-tracking concepts and provider abstraction ideas. | Outsourcing ai-platform provider secrets, cost authority, or tenant policy to an external proxy without controls. |
 | [Portkey](https://github.com/Portkey-AI/gateway) | AI gateway, routing, guardrails, observability | Gateway routing, rate-limit, fallback, request logging, and provider policy ideas for B3/G9. | Treating an external gateway as the source of tenant cost, model policy, or release evidence without ai-platform audit. |
 | [OpenFGA](https://github.com/openfga/openfga) | Fine-grained authorization and relationship-based ACLs | Relationship model ideas for tenant/workspace/user/run/file/artifact/skill permission graphs and deny-path test matrices. | Replacing ai-platform RBAC, tenant isolation, audit, or source authority without a migration gate. |
+| [SpiceDB](https://github.com/authzed/spicedb) | Zanzibar-style relationship authorization | Permission graph modeling, consistency vocabulary, and caveat/check patterns for B5 ACL design comparison. | External authorization authority for ai-platform tenant/run/file/artifact access without a migration gate. |
 | [Open Policy Agent](https://github.com/open-policy-agent/opa) | Policy-as-code and decision logging | Policy bundle and test patterns for sandbox, tool, egress, dependency, and release decisions. | A side policy engine that can override backend fail-closed checks or hide decisions from audit. |
+| [Keycloak](https://github.com/keycloak/keycloak) / [Authentik](https://github.com/goauthentik/authentik) / [Ory Kratos](https://github.com/ory/kratos) | Identity provider and company-login reference | OIDC/session, group/role mapping, admin login, and enterprise identity integration patterns for G0-G1 design checks. | Replacing ai-platform trusted principal projection, tenant mapping, or RBAC enforcement without an identity migration issue. |
 | [Langfuse](https://github.com/langfuse/langfuse) | LLM observability, traces, evals, token/cost tracking | Trace/span vocabulary, model usage/cost views, prompt/eval observability concepts. | Sending private prompts/files to an external observability store or replacing ai-platform release evidence. |
 | [Phoenix](https://github.com/Arize-ai/phoenix) | LLM tracing, evaluation, and debugging | Evaluation run, trace inspection, prompt/version analysis, and quality debugging ideas for B6. | Exporting private payloads or treating third-party eval output as gate closure without ai-platform redaction and review. |
 | [OpenTelemetry Collector](https://github.com/open-telemetry/opentelemetry-collector) | Telemetry pipeline | Metrics/traces/logs collection and export patterns for Admin Runtime and operations evidence. | Treating telemetry export as product acceptance without ai-platform redaction, RBAC, and release-evidence review. |
+| [promptfoo](https://github.com/promptfoo/promptfoo) / [Ragas](https://github.com/explodinggradients/ragas) / [Giskard](https://github.com/Giskard-AI/giskard) | LLM quality, regression, and golden-set evaluation | Eval-case format, regression matrix, red-team checks, RAG answer quality metrics, and evidence packaging ideas for B6. | Treating third-party eval scores as acceptance without workflow-owner thresholds, redaction, and ai-platform release evidence. |
+| [MCP Gateway](https://github.com/IBM/mcp-context-forge) / [supergateway](https://github.com/supercorp-ai/supergateway) | MCP gateway and tool catalog routing | Server/tool catalog, gateway routing, transport bridging, and policy-surface ideas for B5 tool governance. | Tool execution authority, permission decisions, or raw MCP payload visibility outside ai-platform audit and exact-decision controls. |
 | [Backstage](https://github.com/backstage/backstage) | Internal developer portal, catalog, templates | Catalog ownership, lifecycle metadata, approval workflow, and template/release UX ideas for Skills market/admin views. | Backstage as the user-facing AI platform shell or authority over Skill execution policy. |
 | [Dify](https://github.com/langgenius/dify) | Skill/workflow marketplace and governance inspiration | Workflow/agent app management, knowledge/workflow governance, model management, observability ideas. | Dify backend, workflow engine, tenant model, or no-code product model as ai-platform authority. |
 | [Open WebUI](https://github.com/open-webui/open-webui) | User-facing tool/function/plugin UX | Chat command ergonomics, function/tool management, knowledge UI, and admin-facing model/tool UX ideas that can inform frontend/backend projections. | Open WebUI backend, auth, model/provider authority, tool execution policy, or memory authority. |
@@ -569,28 +578,35 @@ Reference use must follow this intake gate:
 
 | Backend stage | Reference projects | What to study first |
 | --- | --- | --- |
-| B1 memory/context | LangGraph, Mem0, Zep | Memory/checkpoint model, memory UX, provenance, delete/update semantics. |
+| B0 source/auth baseline | Keycloak, Authentik, Ory Kratos | OIDC/session, group/role mapping, admin login, and enterprise identity integration patterns. |
+| B1 memory/context | LangGraph, Mem0, Zep, Graphiti | Memory/checkpoint model, memory UX, provenance, temporal memory, delete/update semantics. |
 | B2 sandbox | OpenHands, E2B, Daytona | Sandbox lifecycle, workspace isolation, command execution, artifact return, cancellation ergonomics. |
 | B3 capacity/model gateway | Temporal, Celery, Dramatiq, Taskiq, LiteLLM, Portkey | Durable retry vocabulary, worker scaling, provider limits, budgets, spend tracking, fallback/backpressure. |
 | B4 Skills management | Backstage, Dify, Open WebUI, LibreChat, AnythingLLM | Catalog, release workflow, skill/app marketplace UX, slash/tool discovery patterns. |
-| B5 authorization/files/tools | OpenFGA, Open Policy Agent | Relationship-based ACLs, policy bundles, decision logs, deny-path test matrices. |
-| B6 observability/ops | Langfuse, Phoenix, OpenTelemetry Collector | Trace vocabulary, eval runs, token/cost views, metrics/traces/log export and redaction patterns. |
+| B5 authorization/files/tools | OpenFGA, SpiceDB, Open Policy Agent, MCP Gateway, supergateway | Relationship-based ACLs, policy bundles, gateway/tool catalog routing, decision logs, deny-path test matrices. |
+| B6 observability/ops | Langfuse, Phoenix, OpenTelemetry Collector, promptfoo, Ragas, Giskard | Trace vocabulary, eval runs, token/cost views, metrics/traces/log export, quality regression, and redaction patterns. |
 
 Reference priority for implementation:
 
-1. For memory/context, study LangGraph persistence concepts first, then Mem0
-   and Zep for memory UX and provenance patterns.
-2. For sandbox, compare OpenHands, E2B, and Daytona, but implement ai-platform
+1. For source/auth baseline, study Keycloak, Authentik, and Ory Kratos only for
+   company-login/OIDC/session integration patterns; keep ai-platform tenant and
+   RBAC enforcement authoritative.
+2. For memory/context, study LangGraph persistence concepts first, then Mem0,
+   Zep, and Graphiti for memory UX, provenance, temporal memory, and
+   delete/update semantics.
+3. For sandbox, compare OpenHands, E2B, and Daytona, but implement ai-platform
    lease/audit policy first.
-3. For worker capacity, study Temporal/Celery patterns, but keep current
+4. For worker capacity, study Temporal/Celery patterns, but keep current
    ai-platform queue contracts unless a future migration issue proves otherwise.
-4. For model gateway/cost, study LiteLLM budgets/rate limits/spend tracking and
+5. For model gateway/cost, study LiteLLM budgets/rate limits/spend tracking and
    Portkey gateway routing/observability patterns.
-5. For authorization and policy, study OpenFGA and OPA, but keep ai-platform as
-   the enforcement and audit source of truth.
-6. For observability and quality, study Langfuse, Phoenix, and OpenTelemetry,
-   but keep release evidence, redaction, and admin projections platform-owned.
-7. For Skills management, study Dify, Backstage, Open WebUI, LibreChat, and
+6. For authorization and policy, study OpenFGA, SpiceDB, OPA, MCP Gateway, and
+   supergateway, but keep ai-platform as the enforcement and audit source of
+   truth.
+7. For observability and quality, study Langfuse, Phoenix, OpenTelemetry,
+   promptfoo, Ragas, and Giskard, but keep release evidence, redaction, admin
+   projections, and workflow-owner thresholds platform-owned.
+8. For Skills management, study Dify, Backstage, Open WebUI, LibreChat, and
    AnythingLLM-style UX only as workflow/release inspiration; backend authority
    remains ai-platform.
 
@@ -598,23 +614,28 @@ Reference priority for implementation:
 
 These are reading tasks, not implementation commitments:
 
-1. B1: read LangGraph persistence/checkpoint and Mem0/Zep memory update/delete
-   patterns; map them to ai-platform memory scopes, export, redaction, and
-   long-term fail-closed policy.
-2. B2: compare OpenHands, E2B, and Daytona sandbox lifecycle, command execution,
+1. B0: compare Keycloak, Authentik, and Ory Kratos OIDC/session/group mapping
+   patterns; map only the integration vocabulary to ai-platform trusted
+   principal, tenant, role, and audit projections.
+2. B1: read LangGraph persistence/checkpoint and Mem0/Zep/Graphiti memory
+   update/delete/temporal patterns; map them to ai-platform memory scopes,
+   export, redaction, and long-term fail-closed policy.
+3. B2: compare OpenHands, E2B, and Daytona sandbox lifecycle, command execution,
    artifact return, cancellation, and cleanup concepts; map them to
    ai-platform leases and 211 Docker evidence.
-3. B3: compare Temporal/Celery/Dramatiq/Taskiq worker semantics and
+4. B3: compare Temporal/Celery/Dramatiq/Taskiq worker semantics and
    LiteLLM/Portkey gateway controls; map them to queue/admission,
    model-gateway backpressure, token/cost, and the 10 x 4 SDK subagent target.
-4. B4: compare Backstage catalog/release metadata and Dify/Open WebUI/LibreChat
+5. B4: compare Backstage catalog/release metadata and Dify/Open WebUI/LibreChat
    app/tool catalog UX; map them to Skill upload, immutable versions, review,
    release, rollback, visibility, and pinned run snapshots.
-5. B5: compare OpenFGA relationship modeling and OPA policy tests; map them to
-   backend-owned ACL/tool/sandbox/Skill deny-path matrices.
-6. B6: compare Langfuse, Phoenix, and OpenTelemetry observability/eval patterns;
-   map them to Admin Runtime projections, trace/export, alert calibration,
-   golden-set eval, and redacted release evidence.
+6. B5: compare OpenFGA/SpiceDB relationship modeling, OPA policy tests, and MCP
+   Gateway/supergateway tool catalog routing; map them to backend-owned
+   ACL/tool/sandbox/Skill deny-path matrices.
+7. B6: compare Langfuse, Phoenix, OpenTelemetry, promptfoo, Ragas, and Giskard
+   observability/eval patterns; map them to Admin Runtime projections,
+   trace/export, alert calibration, golden-set eval, and redacted release
+   evidence.
 
 ## 7. Backend PRD Definition Of Done
 
