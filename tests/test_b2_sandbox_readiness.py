@@ -9,6 +9,15 @@ from app.b2_sandbox_readiness import (
     render_b2_sandbox_readiness_markdown,
 )
 
+CURRENT_B2_EVIDENCE_PATH = Path(
+    "docs/release-evidence/b2-sandbox/"
+    "f8a0f3c1168c34663850345d8f30358d435a0134/"
+    "2026-06-19-211-b2-sandbox-runtime-smoke-f8a0f3c.json"
+)
+FUTURE_RUNTIME_SUBJECT = "1234567890abcdef1234567890abcdef12345678"
+FUTURE_RUNTIME_TAG = "1234567-b2-runtime-evidence"
+FUTURE_RUN_ID = "b2-1234567-20260620000102"
+
 
 def load_verifier():
     path = Path("scripts/verify_sandbox_runtime_211.py")
@@ -28,8 +37,40 @@ def load_generator():
     return module
 
 
-def test_b2_sandbox_readiness_records_source_contract_without_gate_closure():
-    readiness = build_b2_sandbox_readiness()
+def write_future_reviewed_b2_smoke(repo_root: Path) -> None:
+    payload = json.loads(CURRENT_B2_EVIDENCE_PATH.read_text(encoding="utf-8"))
+    payload["captured_at"] = "2026-06-20T00:01:02+08:00"
+    payload["commit_sha"] = FUTURE_RUNTIME_SUBJECT
+    payload["evidence_id"] = "2026-06-20-211-b2-sandbox-runtime-smoke-1234567"
+    payload["runtime_subject_commit_sha"] = FUTURE_RUNTIME_SUBJECT
+
+    smoke = payload["evidence_ref"]["runtime_checks"]["b2_211_real_sandbox_smoke"]
+    smoke["run_id"] = FUTURE_RUN_ID
+
+    source_ref = payload["source_ref"]
+    source_ref["image"] = f"ai-platform:{FUTURE_RUNTIME_TAG}"
+    source_ref["runtime_source_marker"] = FUTURE_RUNTIME_SUBJECT
+    source_ref["image_labels"]["ai-platform.source_revision"] = FUTURE_RUNTIME_SUBJECT
+    source_ref["image_labels"]["ai-platform.source_tree_commit"] = FUTURE_RUNTIME_SUBJECT
+    source_ref["image_labels"]["org.opencontainers.image.revision"] = FUTURE_RUNTIME_SUBJECT
+    source_ref["source_snapshot"]["runtime_subject_commit_sha"] = FUTURE_RUNTIME_SUBJECT
+    source_ref["source_snapshot"]["source_tree_commit_sha"] = FUTURE_RUNTIME_SUBJECT
+
+    evidence_path = (
+        repo_root
+        / "docs/release-evidence/b2-sandbox"
+        / FUTURE_RUNTIME_SUBJECT
+        / "2026-06-20-211-b2-sandbox-runtime-smoke-1234567.json"
+    )
+    evidence_path.parent.mkdir(parents=True)
+    evidence_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_b2_sandbox_readiness_records_source_contract_without_gate_closure(tmp_path):
+    readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
 
     assert readiness["schema_version"] == "ai-platform.b2-sandbox-readiness.v1"
     assert readiness["backend_stage"] == "B2 real sandbox usable"
@@ -118,6 +159,74 @@ def test_b2_sandbox_readiness_records_source_contract_without_gate_closure():
     assert "callback-secret" not in serialized
 
 
+def test_b2_sandbox_readiness_accepts_future_reviewed_smoke_run_ids(tmp_path):
+    write_future_reviewed_b2_smoke(tmp_path)
+
+    readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
+
+    assert readiness["status"] == "runtime_acceptance_recorded"
+    assert readiness["open_gaps"] == ["b2_issue_review_and_closure_evidence"]
+    smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
+    assert smoke_evidence["run_id"] == FUTURE_RUN_ID
+    assert smoke_evidence["runtime_subject_commit_sha"] == FUTURE_RUNTIME_SUBJECT
+    assert smoke_evidence["runtime_subject"] == FUTURE_RUNTIME_TAG
+    assert smoke_evidence["status"] == "verified_211_runtime_acceptance"
+    assert smoke_evidence["does_not_close_b2_gate"] is True
+
+
+def test_b2_sandbox_readiness_records_reviewed_211_smoke_without_closing_b2_gate():
+    readiness = build_b2_sandbox_readiness()
+
+    assert readiness["status"] == "runtime_acceptance_recorded"
+    assert readiness["status_label"] == "local partial"
+    assert readiness["runtime_acceptance"]["status"] == "verified_211_runtime_acceptance"
+    assert readiness["runtime_acceptance"]["status_label_after_reviewed_evidence"] == "211 verified"
+    assert readiness["runtime_acceptance"]["does_not_close_b2_gate_by_itself"] is True
+    assert readiness["open_gaps"] == ["b2_issue_review_and_closure_evidence"]
+    assert readiness["closed_runtime_gaps"] == [
+        "b2_211_real_sandbox_smoke",
+        "b2_reviewed_release_evidence",
+    ]
+
+    smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
+    assert smoke_evidence["status"] == "verified_211_runtime_acceptance"
+    assert smoke_evidence["evidence_id"] == "2026-06-19-211-b2-sandbox-runtime-smoke-f8a0f3c"
+    assert smoke_evidence["artifact_kind"] == "211_sandbox_runtime_smoke"
+    assert smoke_evidence["verifier"] == "scripts/verify_sandbox_runtime_211.py"
+    assert smoke_evidence["run_id"] == "b2-f8a0f3c-20260618184106"
+    assert smoke_evidence["runtime_subject_commit_sha"] == (
+        "f8a0f3c1168c34663850345d8f30358d435a0134"
+    )
+    assert smoke_evidence["runtime_subject"] == "f8a0f3c-b2-readiness-runtime-only"
+    assert smoke_evidence["callbacks"] == ["running", "completed"]
+    assert smoke_evidence["timings"]["sandbox_total_latency_ms"] == 3774
+    assert smoke_evidence["checks"] == {
+        "check_docker_socket": True,
+        "check_workspace_write": True,
+        "check_executor_health": True,
+        "check_callback_stream": True,
+        "check_cancel_stops_container": True,
+        "check_platform_runtime_evidence": True,
+        "check_platform_hardening_evidence": True,
+        "check_no_secret_leakage": True,
+    }
+    assert smoke_evidence["does_not_close_b2_gate"] is True
+
+    assert readiness["runtime_acceptance"]["prd_b2_g7_requirements_not_yet_verified"] == [
+        "resource_limits_policy_evidence",
+        "egress_policy_evidence",
+        "security_options_evidence",
+        "rollback_assumptions_evidence",
+    ]
+
+    serialized = json.dumps(readiness, ensure_ascii=False).lower()
+    assert "211 verified" in serialized
+    assert "gate closable" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "callback-secret" not in serialized
+    assert "c:\\users" not in serialized
+
+
 def test_b2_sandbox_readiness_tracks_current_verifier_and_generator_contract():
     readiness = build_b2_sandbox_readiness()
     runtime = readiness["runtime_acceptance"]
@@ -183,9 +292,9 @@ def test_b2_sandbox_readiness_markdown_is_gap_first_and_operator_readable():
     assert "# B2 Real Sandbox Readiness" in markdown
     assert "Status label: `local partial`" in markdown
     assert "## Open Gaps" in markdown
-    assert "- b2_211_real_sandbox_smoke" in markdown
-    assert "- b2_reviewed_release_evidence" in markdown
     assert "- b2_issue_review_and_closure_evidence" in markdown
+    assert "- b2_211_real_sandbox_smoke" not in markdown
+    assert "- b2_reviewed_release_evidence" not in markdown
     assert "## Runtime Acceptance" in markdown
     assert "scripts/generate_sandbox_runtime_evidence_211.py" in markdown
     assert "scripts/verify_sandbox_runtime_211.py" in markdown
@@ -214,7 +323,8 @@ def test_b2_sandbox_readiness_cli_outputs_json_without_secret_markers():
     payload = json.loads(result.stdout)
     assert payload["schema_version"] == "ai-platform.b2-sandbox-readiness.v1"
     assert payload["status_label"] == "local partial"
-    assert payload["runtime_acceptance"]["status"] == "missing_211_real_sandbox_smoke"
+    assert payload["status"] == "runtime_acceptance_recorded"
+    assert payload["runtime_acceptance"]["status"] == "verified_211_runtime_acceptance"
     assert payload["runtime_acceptance"]["status_label_after_smoke_before_review"] == "local partial"
     assert payload["runtime_acceptance"]["reviewed_evidence_required_for_211_verified"] is True
     assert "callback-secret" not in result.stdout

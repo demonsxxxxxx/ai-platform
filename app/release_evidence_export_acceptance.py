@@ -68,6 +68,7 @@ _COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _RUNTIME_SUBJECT_ARTIFACT_KINDS = {
     "211_runtime_smoke",
     "211_memory_enabled_document_workflow_smoke",
+    "211_sandbox_runtime_smoke",
 }
 
 
