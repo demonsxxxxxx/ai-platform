@@ -64,6 +64,13 @@ _SMOKE_REQUIRED_BOUNDARIES = [
     "rollback boundary",
 ]
 
+_CURRENT_GATE_BOUNDARY_LABELS = {
+    "b1_issue_review_and_closure_evidence": "issue review and closure evidence",
+    "b1_runtime_evidence_review_against_merged_source": "runtime evidence review against merged source",
+    "b1_memory_export_boundary": "memory export boundary",
+    "b1_rollback_boundary": "rollback boundary",
+}
+
 B1_GATE_BOUNDARY_GAPS = [
     "b1_issue_review_and_closure_evidence",
     "b1_runtime_evidence_review_against_merged_source",
@@ -333,6 +340,17 @@ def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str
         else local_status
     )
     status_label = "local partial"
+    gate_boundary_evidence = _gate_boundary_evidence(memory_erasure)
+    closed_gate_boundary_gaps = [
+        gap
+        for gap, evidence in gate_boundary_evidence.items()
+        if evidence.get("closed_gap") == gap
+    ]
+    open_gaps = [
+        gap
+        for gap in B1_GATE_BOUNDARY_GAPS
+        if gap not in closed_gate_boundary_gaps
+    ]
     runtime_acceptance = {
         "required": True,
         "status": (
@@ -356,21 +374,12 @@ def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str
         ],
         "status_label_before_smoke": "local partial",
         "does_not_close_b1_gate": True,
-        "remaining_gate_boundaries": list(_SMOKE_REQUIRED_BOUNDARIES),
+        "remaining_gate_boundaries": [
+            _CURRENT_GATE_BOUNDARY_LABELS[gap] for gap in open_gaps
+        ],
     }
     if status == "runtime_acceptance_recorded":
         runtime_acceptance["status_label_after_smoke"] = "211 verified"
-    gate_boundary_evidence = _gate_boundary_evidence(memory_erasure)
-    closed_gate_boundary_gaps = [
-        gap
-        for gap, evidence in gate_boundary_evidence.items()
-        if evidence.get("closed_gap") == gap
-    ]
-    open_gaps = [
-        gap
-        for gap in B1_GATE_BOUNDARY_GAPS
-        if gap not in closed_gate_boundary_gaps
-    ]
     if status != "runtime_acceptance_recorded":
         open_gaps.insert(0, RUNTIME_ACCEPTANCE_GAP)
     closed_runtime_gaps = list(memory_erasure.get("closed_runtime_gaps", []))

@@ -879,6 +879,9 @@ def test_gate_status_snapshot_records_memory_context_readiness_fields():
 
 def test_governance_readiness_doc_records_b1_smoke_without_gate_closure():
     governance_text = read(GOVERNANCE_READINESS_DOC)
+    memory_row = next(
+        line for line in governance_text.splitlines() if line.startswith("| Memory governance |")
+    )
 
     assert "`runtime_acceptance_recorded`" in governance_text
     assert "keeps the B1 stage status label `local" in governance_text
@@ -898,6 +901,10 @@ def test_governance_readiness_doc_records_b1_smoke_without_gate_closure():
     assert "memory export boundary, and rollback" not in governance_text
     assert "`local_controls_ready_runtime_smoke_required`, and keeps status label" not in governance_text
     assert "carries `211_memory_enabled_document_workflow_smoke` in the G6 open gaps" not in governance_text
+    assert "reviewed B1 `211_memory_enabled_document_workflow_smoke` evidence" in memory_row
+    assert "| `211_memory_enabled_document_workflow_smoke`," not in memory_row
+    assert "B1 merged-source runtime evidence review" in memory_row
+    assert "B1 rollback boundary" in memory_row
 
 
 def test_capacity_docs_record_machine_readable_gate_evidence_contract():

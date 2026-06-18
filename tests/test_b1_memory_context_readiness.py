@@ -70,8 +70,8 @@ def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_
     assert readiness["runtime_acceptance"]["does_not_close_b1_gate"] is True
     assert "issue review and closure evidence" in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
     assert "runtime evidence review against merged source" in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
-    assert "memory export boundary" in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
     assert "rollback boundary" in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
+    assert "memory export boundary" not in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
     assert readiness["open_gaps"] == B1_GATE_BOUNDARY_GAPS
     assert "211_memory_enabled_document_workflow_smoke" not in readiness["open_gaps"]
     assert "b1_memory_export_boundary" not in readiness["open_gaps"]
