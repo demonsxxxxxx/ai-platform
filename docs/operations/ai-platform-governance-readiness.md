@@ -394,16 +394,21 @@ partial`. Governance readiness embeds this rollup under
 `211_memory_enabled_document_workflow_smoke` out of G6 open gaps after the
 reviewed 211 smoke is recorded, and carries the remaining B1 gate-boundary gaps:
 `b1_issue_review_and_closure_evidence`,
-`b1_runtime_evidence_review_against_merged_source`,
-`b1_memory_export_boundary`, and `b1_rollback_boundary`. The runtime smoke layer
+`b1_runtime_evidence_review_against_merged_source`, and
+`b1_rollback_boundary`. The memory export boundary
+`b1_memory_export_boundary` is recorded as a closed local contract through
+memory-erasure readiness controls, including
+`ordinary_user_export_excludes_deleted_and_expired_records`,
+`ordinary_user_export_requires_session_scope_and_enabled_policy`, and
+`admin_export_operator_projection_without_content_or_metadata`. The runtime smoke layer
 can report `211 verified` for the selected memory-enabled document workflow,
 but the B1 stage itself remains `local partial` and is not `gate closable`.
 `tools/verify_b1_memory_context_workflow.py` is the reusable verifier entrypoint
 for that smoke and emits schema
 `ai-platform.b1-memory-context-workflow-smoke.v1`; passing it records workflow
 runtime evidence only and does not by itself close B1 because issue review,
-merged-source runtime evidence review, memory export boundary, and rollback
-boundary still have to be recorded.
+merged-source runtime evidence review, and rollback boundary still have to be
+recorded.
 
 `tools/office_context_readiness.py` now records the source-level #22
 context-pack readiness contract for office-heavy workflows with schema

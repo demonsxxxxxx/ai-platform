@@ -9,7 +9,6 @@ from app.governance_readiness import build_governance_readiness, render_governan
 B1_GATE_BOUNDARY_GAPS = [
     "b1_issue_review_and_closure_evidence",
     "b1_runtime_evidence_review_against_merged_source",
-    "b1_memory_export_boundary",
     "b1_rollback_boundary",
 ]
 
@@ -235,6 +234,8 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "sandbox_cold_start_latency_split_211_acceptance" not in domains["memory_governance"]["gaps"]
     assert "211_memory_enabled_document_workflow_smoke" not in domains["memory_governance"]["gaps"]
     assert "211_memory_enabled_document_workflow_smoke" not in readiness["open_gaps"]
+    assert "b1_memory_export_boundary" not in domains["memory_governance"]["gaps"]
+    assert "b1_memory_export_boundary" not in readiness["open_gaps"]
     for gap in B1_GATE_BOUNDARY_GAPS:
         assert gap in domains["memory_governance"]["gaps"]
         assert gap in readiness["open_gaps"]
@@ -251,6 +252,11 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert b1_evidence["runtime_acceptance"]["does_not_close_b1_gate"] is True
     assert b1_evidence["open_gaps"] == B1_GATE_BOUNDARY_GAPS
     assert "211_memory_enabled_document_workflow_smoke" not in b1_evidence["open_gaps"]
+    assert "b1_memory_export_boundary" in b1_evidence["closed_gate_boundary_gaps"]
+    assert b1_evidence["gate_boundary_evidence"]["b1_memory_export_boundary"]["status"] == (
+        "recorded_local_contract"
+    )
+    assert b1_evidence["gate_boundary_evidence"]["b1_memory_export_boundary"]["does_not_close_b1_gate"] is True
     assert b1_evidence["runtime_acceptance_evidence"]["211_memory_enabled_document_workflow_smoke"][
         "status"
     ] == "verified_211_runtime_acceptance"

@@ -20,7 +20,6 @@ FORBIDDEN_PRIVATE_MARKERS = [
 B1_GATE_BOUNDARY_GAPS = [
     "b1_issue_review_and_closure_evidence",
     "b1_runtime_evidence_review_against_merged_source",
-    "b1_memory_export_boundary",
     "b1_rollback_boundary",
 ]
 
@@ -75,7 +74,28 @@ def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_
     assert "rollback boundary" in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
     assert readiness["open_gaps"] == B1_GATE_BOUNDARY_GAPS
     assert "211_memory_enabled_document_workflow_smoke" not in readiness["open_gaps"]
+    assert "b1_memory_export_boundary" not in readiness["open_gaps"]
+    boundary_evidence = readiness["gate_boundary_evidence"]
+    assert boundary_evidence["b1_memory_export_boundary"]["status"] == "recorded_local_contract"
+    assert boundary_evidence["b1_memory_export_boundary"]["closed_gap"] == "b1_memory_export_boundary"
+    assert boundary_evidence["b1_memory_export_boundary"]["does_not_close_b1_gate"] is True
+    assert boundary_evidence["b1_memory_export_boundary"]["source_readiness"] == (
+        "ai-platform.memory-erasure-readiness.v1"
+    )
+    assert boundary_evidence["b1_memory_export_boundary"]["required_controls"] == [
+        "ordinary_user_export_excludes_deleted_and_expired_records",
+        "ordinary_user_export_requires_session_scope_and_enabled_policy",
+        "admin_export_operator_projection_without_content_or_metadata",
+    ]
+    assert boundary_evidence["b1_runtime_evidence_review_against_merged_source"]["status"] == (
+        "open_pending_merged_source_runtime_review"
+    )
+    assert boundary_evidence["b1_rollback_boundary"]["status"] == "open_pending_rollback_boundary"
+    assert boundary_evidence["b1_issue_review_and_closure_evidence"]["status"] == (
+        "open_issue_remains_unclosed"
+    )
     assert "211_memory_enabled_document_workflow_smoke" in readiness["closed_runtime_gaps"]
+    assert "b1_memory_export_boundary" in readiness["closed_gate_boundary_gaps"]
     assert set(readiness["local_evidence"]["memory_erasure_readiness"]["closed_runtime_gaps"]).issubset(
         set(readiness["closed_runtime_gaps"])
     )
@@ -107,7 +127,7 @@ def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_
     assert "211 verified" in serialized
     assert "b1_issue_review_and_closure_evidence" in serialized
     assert "b1_runtime_evidence_review_against_merged_source" in serialized
-    assert "b1_memory_export_boundary" in serialized
+    assert "closed_gate_boundary_gaps" in serialized
     assert "b1_rollback_boundary" in serialized
     assert "gate closable" not in serialized
     for marker in FORBIDDEN_PRIVATE_MARKERS:
@@ -122,8 +142,11 @@ def test_b1_memory_context_readiness_markdown_is_gap_first_and_boundary_explicit
     assert "## Open Gaps" in markdown
     assert "- b1_issue_review_and_closure_evidence" in markdown
     assert "- b1_runtime_evidence_review_against_merged_source" in markdown
-    assert "- b1_memory_export_boundary" in markdown
     assert "- b1_rollback_boundary" in markdown
+    assert "- b1_memory_export_boundary" not in markdown.split("## Closed Gate Boundary Gaps", 1)[0]
+    assert "## Closed Gate Boundary Gaps" in markdown
+    assert "- b1_memory_export_boundary" in markdown.split("## Closed Gate Boundary Gaps", 1)[1]
+    assert "ordinary_user_export_excludes_deleted_and_expired_records" in markdown
     assert "- none" not in markdown.split("## Runtime Acceptance", 1)[0]
     assert "## Runtime Acceptance" in markdown
     assert "verified_211_runtime_acceptance" in markdown
@@ -154,7 +177,12 @@ def test_b1_memory_context_readiness_cli_outputs_json_without_private_markers():
     assert payload["runtime_acceptance"]["does_not_close_b1_gate"] is True
     assert payload["open_gaps"] == B1_GATE_BOUNDARY_GAPS
     assert "211_memory_enabled_document_workflow_smoke" not in payload["open_gaps"]
+    assert "b1_memory_export_boundary" not in payload["open_gaps"]
     assert "211_memory_enabled_document_workflow_smoke" in payload["closed_runtime_gaps"]
+    assert "b1_memory_export_boundary" in payload["closed_gate_boundary_gaps"]
+    assert payload["gate_boundary_evidence"]["b1_memory_export_boundary"]["status"] == (
+        "recorded_local_contract"
+    )
     for marker in FORBIDDEN_PRIVATE_MARKERS:
         assert marker not in result.stdout.lower()
 
