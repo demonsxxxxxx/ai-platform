@@ -3,6 +3,7 @@ import base64
 import hashlib
 
 import pytest
+from fastapi import HTTPException
 
 from app.auth import AuthPrincipal
 from app.models import ChatSessionRequest, ChatStreamRequest
@@ -416,6 +417,7 @@ async def test_chat_stream_creates_message_run_and_queue_payload(monkeypatch):
             agent_id="document-review",
             skill_id="qa-file-reviewer",
             message="review this document",
+            agent_options={"model_id": "deepseek-v4-pro"},
             attachments=[{"key": "file_1", "name": "review.docx"}],
         ),
         principal=principal(),
@@ -438,6 +440,8 @@ async def test_chat_stream_creates_message_run_and_queue_payload(monkeypatch):
     assert queue_payload["run_id"] == "run_3"
     assert queue_payload["file_ids"] == ["file_1"]
     assert queue_payload["user_id"] == "user-a"
+    assert queue_payload["model_id"] == "deepseek-v4-pro"
+    assert queue_payload["model_value"] == "deepseek-v4-pro"
     assert queue_payload["skill_manifests"][0]["skill_id"] == "qa-file-reviewer"
     assert queue_payload["skill_version"] == queue_payload["skill_manifests"][0]["content_hash"]
     assert queue_payload["release_decision"]["selected_version"] == queue_payload["skill_version"]
@@ -460,6 +464,99 @@ async def test_chat_stream_creates_message_run_and_queue_payload(monkeypatch):
             "queue_probe_source": "redis_metadata",
         },
     ) in calls
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_rejects_unavailable_model_id_before_creating_run(monkeypatch):
+    calls = []
+
+    async def fail_create_run(*args, **kwargs):
+        calls.append(("create_run", args, kwargs))
+        raise AssertionError("invalid model_id must be rejected before run creation")
+
+    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(message="hello", agent_options={"model_id": "not-allowed"}),
+            principal=principal(),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "model_id_not_available"
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_maps_catalog_model_id_to_runtime_model_value(monkeypatch):
+    calls = []
+    current_settings = type(
+        "S",
+        (),
+        {
+            "model_catalog_json": '[{"id":"pro-tier","value":"deepseek-v4-pro","label":"Pro tier"}]',
+            "default_model_id": "pro-tier",
+            "claude_agent_model": "",
+            "anthropic_model": "",
+            "openai_model": "",
+            "max_active_runs_per_user": 3,
+            "platform_skills_root": "",
+        },
+    )()
+
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": []}
+
+    async def fake_ensure_user(conn, **kwargs):
+        return None
+
+    async def fake_create_session(conn, **kwargs):
+        return "ses_model"
+
+    async def fake_create_run(conn, **kwargs):
+        calls.append(("create_run_input", kwargs["input_json"]))
+        return "run_model"
+
+    async def fake_append_message(conn, **kwargs):
+        return "msg_model"
+
+    async def fake_bind_files_to_run(conn, **kwargs):
+        return None
+
+    async def fake_append_event(conn, **kwargs):
+        return "evt_model"
+
+    async def fake_enqueue_run(payload):
+        calls.append(("queue_payload", payload))
+        return 1
+
+    async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
+        return [snapshot_manifest(skill_id)]
+
+    monkeypatch.setattr("app.routes.chat.get_settings", lambda: current_settings)
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
+    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
+    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
+    monkeypatch.setattr("app.routes.chat.repositories.append_message", fake_append_message)
+    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", fake_bind_files_to_run)
+    monkeypatch.setattr("app.routes.chat.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+
+    response = await chat_stream(
+        ChatStreamRequest(message="hello", agent_options={"model_id": "pro-tier"}),
+        principal=principal(),
+    )
+
+    create_run_input = next(item[1] for item in calls if item[0] == "create_run_input")
+    queue_payload = next(item[1] for item in calls if item[0] == "queue_payload")
+    assert response.run_id == "run_model"
+    assert create_run_input["model_id"] == "pro-tier"
+    assert create_run_input["model_value"] == "deepseek-v4-pro"
+    assert queue_payload["model_id"] == "pro-tier"
+    assert queue_payload["model_value"] == "deepseek-v4-pro"
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,7 @@ from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.context_builder import record_initial_context_snapshot
 from app.db import transaction
 from app.intent_router import FileSummary, route_intent
+from app.model_catalog import resolve_model_selection
 from app.models import (
     CapabilitySuggestionResponse,
     ChatMessageResponse,
@@ -136,6 +137,17 @@ def _file_ids_from_request(request: ChatStreamRequest) -> list[str]:
         if isinstance(value, str) and value.startswith("file_"):
             file_ids.append(value)
     return file_ids
+
+
+def _requested_model_selection(request: ChatStreamRequest) -> dict[str, str] | None:
+    agent_options = request.agent_options if isinstance(request.agent_options, dict) else {}
+    raw_model_id = agent_options.get("model_id")
+    if raw_model_id is None:
+        return None
+    try:
+        return resolve_model_selection(str(raw_model_id), get_settings())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="model_id_not_available") from exc
 
 
 def _file_ids_for_intent_lookup(request: ChatStreamRequest) -> list[str]:
@@ -436,6 +448,9 @@ async def chat_stream(
         requested_skill_id,
         allow_raw_skill_agent_id=is_ai_admin(principal),
     )
+    requested_model_selection = _requested_model_selection(request)
+    requested_model_id = requested_model_selection["id"] if requested_model_selection is not None else None
+    requested_model_value = requested_model_selection["value"] if requested_model_selection is not None else None
     explicit_payload = _explicit_intent_payload(requested_agent_id, requested_skill_id)
     resolved_file_ids = _file_ids_from_request(request)
     request_input = request.input if is_ai_admin(principal) else sanitize_user_control_input(request.input)
@@ -528,6 +543,8 @@ async def chat_stream(
                     "skill_version": skill_version,
                     "release_decision": release_decision_payload,
                     "intent": decision_payload,
+                    "model_id": requested_model_id,
+                    "model_value": requested_model_value,
                 },
             )
             message_id = await repositories.append_message(
@@ -636,6 +653,8 @@ async def chat_stream(
             "skill_manifests": skill_manifests,
             "context_snapshot_id": context_ref["context_snapshot_id"],
             "context_snapshot": context_ref,
+            "model_id": requested_model_id,
+            "model_value": requested_model_value,
         }
     )
     queue_admission = await _enqueue_chat_run(queue_payload)

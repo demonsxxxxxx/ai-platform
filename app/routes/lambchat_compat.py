@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from app.auth import AuthPrincipal, is_ai_admin, require_principal, sign_principal_session, verify_principal_session
 from app.db import transaction
+from app.model_catalog import build_model_catalog
 from app.models import LoginRequest
 from app import repositories
 from app.routes.auth import _login_principal
@@ -207,15 +208,6 @@ UI_PERMISSIONS = [
     "file:upload:document",
 ]
 
-DEFAULT_MODEL = {
-    "id": "deepseek-v4-flash",
-    "value": "deepseek-v4-flash",
-    "provider": "new-api",
-    "label": "deepseek-v4-flash",
-    "description": "211 new-api",
-    "profile": {"max_input_tokens": 128000},
-}
-
 CHAT_STREAM_REPLAY_SKIP_EVENT_TYPES = {"assistant_delta"}
 CHAT_STREAM_TERMINAL_EVENT_TYPES = {"run_succeeded", "run_failed", "run_cancelled", "run_canceled"}
 
@@ -265,18 +257,14 @@ async def update_profile_metadata(
 
 @router.get("/agent/models/available")
 async def available_models() -> dict[str, object]:
-    return {
-        "models": [DEFAULT_MODEL],
-        "count": 1,
-        "enabled_count": 1,
-        "default_model_id": DEFAULT_MODEL["id"],
-    }
+    return build_model_catalog(get_settings())
 
 
 @router.get("/agent/models/")
 async def model_configs() -> dict[str, object]:
-    model = {**DEFAULT_MODEL, "enabled": True, "order": 1}
-    return {"models": [model], "count": 1, "enabled_count": 1}
+    catalog = build_model_catalog(get_settings())
+    models = [{**model, "enabled": True, "order": index} for index, model in enumerate(catalog["models"], start=1)]
+    return {**catalog, "models": models}
 
 
 @router.get("/settings")

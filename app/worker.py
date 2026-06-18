@@ -736,6 +736,12 @@ def _payload_with_locked_run_input(payload: QueueRunPayload, locked_run: object)
     skill_version = input_json.get("skill_version")
     if isinstance(skill_version, str) and skill_version:
         updates["skill_version"] = skill_version
+    model_id = input_json.get("model_id")
+    if isinstance(model_id, str) and model_id:
+        updates["model_id"] = model_id
+    model_value = input_json.get("model_value")
+    if isinstance(model_value, str) and model_value:
+        updates["model_value"] = model_value
     release_decision = input_json.get("release_decision")
     if isinstance(release_decision, dict):
         updates["release_decision"] = release_decision
@@ -1420,6 +1426,8 @@ async def process_run_payload(
         skill_manifests=payload.skill_manifests,
         context_snapshot_id=str(context_ref["context_snapshot_id"]),
         context_snapshot=context_ref["context_snapshot"],
+        model_id=payload.model_id or "",
+        model_value=payload.model_value or "",
     )
 
     async def event_sink(

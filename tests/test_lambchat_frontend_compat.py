@@ -214,7 +214,7 @@ def test_lambchat_bootstrap_endpoints_match_frontend_contract():
         "/api/auth/oauth/providers": {"registration_enabled": False},
         "/api/auth/permissions": {"groups": list, "all_permissions": list},
         "/api/agent/models/available": {"default_model_id": "deepseek-v4-flash"},
-        "/api/agent/models/": {"enabled_count": 1},
+        "/api/agent/models/": {"enabled_count": 2},
         "/api/roles/?limit=200": {"roles": list, "total": 0, "skip": 0, "limit": 200},
         "/api/settings/": {"settings": {}},
         "/api/version": {"version": "ai-platform-poc"},
@@ -238,6 +238,36 @@ def test_lambchat_bootstrap_endpoints_match_frontend_contract():
                 assert isinstance(payload[key], dict), path
             else:
                 assert payload[key] == value, path
+
+
+def test_lambchat_model_catalog_comes_from_settings(monkeypatch):
+    current_settings = type(
+        "S",
+        (),
+        {
+            "openai_model": "deepseek-v4-flash",
+            "anthropic_model": "deepseek-v4-flash",
+            "claude_agent_model": "deepseek-v4-pro",
+            "default_model_id": "deepseek-v4-pro",
+            "model_catalog_json": (
+                '[{"id":"deepseek-v4-flash","label":"DeepSeek V4 Flash","provider":"new-api","max_input_tokens":128000},'
+                '{"id":"deepseek-v4-pro","label":"DeepSeek V4 Pro","provider":"new-api","max_input_tokens":128000}]'
+            ),
+        },
+    )()
+    monkeypatch.setattr("app.routes.lambchat_compat.get_settings", lambda: current_settings)
+    client = TestClient(create_app())
+
+    response = client.get("/api/agent/models/available")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["default_model_id"] == "deepseek-v4-pro"
+    assert payload["count"] == 2
+    assert payload["enabled_count"] == 2
+    assert [model["id"] for model in payload["models"]] == ["deepseek-v4-flash", "deepseek-v4-pro"]
+    assert payload["models"][1]["label"] == "DeepSeek V4 Pro"
+    assert payload["models"][1]["profile"]["max_input_tokens"] == 128000
 
 
 def test_lambchat_upload_file_endpoint_matches_frontend_contract(monkeypatch, tmp_path):

@@ -1028,7 +1028,7 @@ async def test_sdk_runtime_error_is_reported_without_delegate(monkeypatch, tmp_p
 
 @pytest.mark.asyncio
 async def test_general_chat_propagates_worker_cancel_from_sdk_stream(monkeypatch, tmp_path):
-    async def fake_run_claude_agent_sdk(*, prompt, cwd, skill_id, skills, on_text, on_skill_use=None):
+    async def fake_run_claude_agent_sdk(*, prompt, cwd, skill_id, skills, model_id=None, on_text, on_skill_use=None):
         await on_text("partial")
         return FakeQueryResult()
 
@@ -1542,6 +1542,71 @@ async def test_sdk_runner_passes_staged_skill_names(monkeypatch, tmp_path):
     assert captured["allowed_tools"] == ["Read", "Glob", "LS"]
     assert captured["disallowed_tools"] == ["Write", "Edit", "NotebookEdit"]
     assert callable(captured["can_use_tool"])
+
+
+@pytest.mark.asyncio
+async def test_sdk_runner_uses_run_model_override(monkeypatch, tmp_path):
+    captured = {}
+
+    class TextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class AssistantMessage:
+        def __init__(self, content):
+            self.content = content
+
+    class ResultMessage:
+        session_id = "sdk-session"
+        usage = {}
+        model_usage = {}
+        result = "ok"
+        is_error = False
+        errors = []
+        stop_reason = None
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            captured.update(kwargs)
+
+    async def query(prompt, options):
+        yield AssistantMessage([TextBlock("ok")])
+        yield ResultMessage()
+
+    current_settings = type(
+        "S",
+        (),
+        {
+            "claude_agent_sdk_enabled": True,
+            "anthropic_base_url": "",
+            "anthropic_auth_token": "",
+            "anthropic_model": "deepseek-v4-flash",
+            "openai_api_key": "",
+            "claude_agent_model": "deepseek-v4-flash",
+            "claude_agent_sdk_skills": "",
+            "claude_agent_sdk_timeout_seconds": 5,
+        },
+    )()
+    fake_sdk = types.SimpleNamespace(
+        AssistantMessage=AssistantMessage,
+        ClaudeAgentOptions=ClaudeAgentOptions,
+        ResultMessage=ResultMessage,
+        TextBlock=TextBlock,
+        query=query,
+    )
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="hello",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        model_id="deepseek-v4-pro",
+    )
+
+    assert result.message == "ok"
+    assert captured["model"] == "deepseek-v4-pro"
 
 
 @pytest.mark.asyncio
@@ -2134,6 +2199,7 @@ async def test_claude_worker_sdk_permission_hook_creates_request_event_and_audit
         cwd,
         skill_id,
         skills,
+        model_id=None,
         on_text,
         on_skill_use,
         on_tool_permission,
@@ -2260,6 +2326,46 @@ async def test_claude_worker_sdk_permission_hook_creates_request_event_and_audit
 
 
 @pytest.mark.asyncio
+async def test_claude_worker_uses_runtime_model_value_for_sdk(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    captured = {}
+
+    async def fake_run_claude_agent_sdk(
+        *,
+        prompt,
+        cwd,
+        skill_id,
+        skills,
+        model_id=None,
+        on_text,
+        on_skill_use,
+        on_tool_permission,
+    ):
+        captured["model_id"] = model_id
+        return FakeQueryResult()
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    workspace = tmp_path / "workspaces" / "default" / "run_1"
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+
+    result = await adapter._try_run_sdk(
+        payload(
+            trace_id="trace-sdk",
+            model_id="pro-tier",
+            model_value="deepseek-v4-pro",
+        ),
+        workspace=workspace,
+        file_names=[],
+        prompt="hello",
+        staged_skill_names=[],
+    )
+
+    assert result.error is None
+    assert captured["model_id"] == "deepseek-v4-pro"
+
+
+@pytest.mark.asyncio
 async def test_claude_worker_sdk_permission_hook_allows_existing_decision(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     calls = []
@@ -2270,6 +2376,7 @@ async def test_claude_worker_sdk_permission_hook_allows_existing_decision(monkey
         cwd,
         skill_id,
         skills,
+        model_id=None,
         on_text,
         on_skill_use,
         on_tool_permission,
@@ -2365,6 +2472,7 @@ async def test_claude_worker_sdk_permission_hook_uses_exact_decision_lookup(monk
         cwd,
         skill_id,
         skills,
+        model_id=None,
         on_text,
         on_skill_use,
         on_tool_permission,
@@ -2460,6 +2568,7 @@ async def test_claude_worker_sdk_permission_hook_consumes_allow_once_decision(mo
         cwd,
         skill_id,
         skills,
+        model_id=None,
         on_text,
         on_skill_use,
         on_tool_permission,
@@ -2576,6 +2685,7 @@ async def test_claude_worker_sdk_permission_hook_fails_closed_when_allow_once_co
         cwd,
         skill_id,
         skills,
+        model_id=None,
         on_text,
         on_skill_use,
         on_tool_permission,
@@ -2680,6 +2790,7 @@ async def test_claude_worker_sdk_permission_hook_allows_run_decision_for_same_ba
         cwd,
         skill_id,
         skills,
+        model_id=None,
         on_text,
         on_skill_use,
         on_tool_permission,
@@ -2775,6 +2886,7 @@ async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_decision_fo
         cwd,
         skill_id,
         skills,
+        model_id=None,
         on_text,
         on_skill_use,
         on_tool_permission,
@@ -2887,6 +2999,7 @@ async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_deny_for_ot
         cwd,
         skill_id,
         skills,
+        model_id=None,
         on_text,
         on_skill_use,
         on_tool_permission,
