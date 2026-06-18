@@ -25,24 +25,24 @@ RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_RUNTIME_RELATION_MANIFEST = (
     ROOT / "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json"
 )
-ACTIVE_RUNTIME_SUBJECT_SHA = "a15c74f0fe98914a893ab7ea784c6be941e0cd71"
-ACTIVE_SOURCE_TREE_SHA = "a15c74f0fe98914a893ab7ea784c6be941e0cd71"
+ACTIVE_RUNTIME_SUBJECT_SHA = "de12191b3b79b7c72e6bc2cd18f7f9ae2726f53b"
+ACTIVE_SOURCE_TREE_SHA = "98ca1065a18380556ad46f82b9591676338ad076"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_SUBJECT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
 ACTIVE_CLOSURE_SOURCE_TREE_SHA = "3c06c5351517028111c18a365ff9a24ed22ffa33"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE = "ai-platform:380de6b-merged-main-runtime"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE_ID = "sha256:e36e4dfad072cdd12b841019db3ccbcdef4b63ccf5262869c994757fef5663f9"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:a15c74f-s2-g6-tool-policy-v2"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:034743395992439d3c7370a465ccfe6013975b5243723727b678ef6aa89a2def"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-17-211-foundation-alpha-poc-a15c74f-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-17-211-foundation-alpha-poc-a15c74f-auth-rbac-smoke"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:de12191-s2-0-runtime-rebase"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:3c71ab8aea5d68459f1d536c273919e5cd5da6df55b477979cbccf5694293718"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-18-211-foundation-alpha-poc-de12191-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-18-211-foundation-alpha-poc-de12191-auth-rbac-smoke"
 ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID = (
-    "2026-06-17-211-foundation-alpha-poc-a15c74f-governance-runtime-smoke"
+    "2026-06-18-211-foundation-alpha-poc-de12191-governance-runtime-smoke"
 )
 ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-17-211-foundation-alpha-poc-a15c74f-release-evidence-runtime-acceptance"
+    "2026-06-18-211-foundation-alpha-poc-de12191-release-evidence-runtime-acceptance"
 )
 ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-17-211-foundation-alpha-poc-a15c74f-alert-trace-export-runtime-acceptance"
+    "2026-06-18-211-foundation-alpha-poc-de12191-alert-trace-export-runtime-acceptance"
 )
 CBBFAFF_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
 CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
