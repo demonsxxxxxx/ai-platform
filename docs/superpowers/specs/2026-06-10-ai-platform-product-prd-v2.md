@@ -48,6 +48,8 @@ Use these documents together:
 | Document | Responsibility |
 | --- | --- |
 | This PRD v2 | Product goal, architecture, reference boundaries, module contracts, gate roadmap, accepted first-stage baseline, and next-stage direction. |
+| [Backend productization PRD](./2026-06-18-ai-platform-backend-phased-prd.md) | Backend B0-B6 sequencing after S1, backend gate-to-stage mapping, acceptance boundaries, and backend reference-code absorption rules. |
+| [Frontend UI absorption PRD](./2026-06-18-librechat-frontend-ui-absorption-prd.md) | Frontend shell/UI absorption direction, acceptance boundaries, and UI reference boundaries. It must consume ai-platform public/admin projections and must not define backend authority. |
 | [Technical acceptance matrix](./2026-06-11-ai-platform-tech-acceptance.md) | Current module state, phased target state, open-source absorption boundaries, and S1 acceptance standards. |
 | [Foundation roadmap](../plans/2026-06-02-ai-platform-foundation-roadmap.md) | Execution sequencing, gate progress, current blockers, and next slices. It should not keep growing into a release-evidence ledger. |
 | [Gate status snapshot](../../operations/ai-platform-gate-status.md) | Current gate state, remaining evidence, and operational risk summary. |
@@ -101,6 +103,12 @@ Historical references not listed above are intentionally omitted from the active
 PRD route. Reopening any omitted project as an implementation reference requires
 a focused issue, gate, and source-authority review.
 
+Companion PRDs may list narrower implementation references for a bounded surface
+such as backend sandboxing, memory, capacity, Skills governance, observability,
+or frontend UI. Those references remain subordinate to this PRD's authority:
+they can inform implementation, but they cannot define ai-platform identity,
+tenancy, RBAC, audit, release evidence, runtime status, or gate closure.
+
 ### 4.1 Changes From The 2026-05-29 PRD
 
 This PRD changes the old reference posture in three ways:
@@ -148,6 +156,10 @@ Non-negotiable boundary:
   PRD scope treats them as execution-kernel behavior inside one governed
   platform run. Platform-visible multi-run orchestration requires a future gate
   and must not leak into the current core field set.
+- The product risk for SDK subagents is now capacity and governance, not basic
+  availability. If each ordinary session can invoke SDK Agent/subagent fanout,
+  the platform must prove worker, model-gateway, sandbox, artifact/event, and
+  cost backpressure before broad exposure.
 - Approval decisions must bind to exact `tool_call_id` or a stable request
   fingerprint. A broad "latest allow for this tool/action" lookup is not
   acceptable for replay or high-risk write operations.
@@ -224,6 +236,14 @@ sinks, artifact collection, and token/cost accounting. The platform should not
 create a separate multi-agent scheduler, parent/child run tree, or external
 execution harness as part of the current roadmap.
 
+The remaining product question is whether the target deployment can sustain SDK
+Agent/subagent fanout when many sessions use it at the same time. That must be
+answered through recorded capacity evidence covering queue depth, worker
+parallelism, model-gateway timeout/backpressure, sandbox pressure, artifact/event
+volume, token/cost accounting, and cleanup. Until that evidence exists, SDK
+subagent use stays governed and bounded even though the execution capability is
+available.
+
 Executors must not:
 
 - Create platform schema.
@@ -262,7 +282,7 @@ map, not a gate-closure claim.
 | Skill governance | SDK staging, pin mismatch checks, used-skill recording, release-readiness contracts, and source-route tests for Admin Skill release dashboard runtime controls. | SBOM/signed package, license/vulnerability review, reviewed evidence files, Admin Skill release visual acceptance, and Admin Skill release 211 acceptance. | Blocks production-grade skill release. |
 | Frontend web | `frontend/web`, projection audit, lint/type/build scripts, release traceability and CI direction. | Projection audit still has policy gaps; inactive legacy model/channel/env-var sources remain quarantined; packaged smoke incomplete. | Blocks G6/G9 rollout closure. |
 | Artifacts/playback/events | Artifact cards, run playback, SSE/event projections, redaction tests. | New event or artifact types can bypass projection discipline if tests are not added. | Requires continuous projection audit. |
-| Advanced SDK subagent / long-task patterns | Claude Agent SDK is the execution path; the platform governs one run with payload, permission, sandbox, events, artifacts, and cost ledgers. | Platform-owned parent/child run orchestration and dispatcher work is deferred and must not shape current ordinary-user contracts. | Parking-lot only until a later gate explicitly reopens platform-level orchestration. |
+| Advanced SDK subagent / long-task patterns | Claude Agent SDK is the execution path; the platform governs one run with payload, permission, sandbox, events, artifacts, and cost ledgers. | Platform-owned parent/child run orchestration and dispatcher work is deferred and must not shape current ordinary-user contracts; the active open risk is per-session SDK subagent fanout load. | Do not build a new harness. Broad exposure waits for capacity, model-gateway, sandbox, and observability evidence for SDK subagent fanout. |
 
 ### 6.1 Detailed Contract Appendix During Migration
 
@@ -304,7 +324,7 @@ can remain only as historical aliases in release notes or archived plans.
 | G5 Run Lifecycle / Worker Runtime V1 | Queue, lease, heartbeat, retry, dead-letter, cancel, resume, checkpoint, idempotency, admission, and backpressure are operational. | Tenant-aware tests, bounded metadata proof, recorded capacity-upgrade evidence, Foundation Runtime concurrency evidence, and 211 worker smoke. |
 | G6 Tool / Skill / Memory Governance | Tool, skill, and memory policies are enforceable, auditable, and fail-closed. | Policy tests, frontend projection audit, skill review evidence, memory retention/delete/redaction evidence, admin acceptance. |
 | G7 Sandbox / Resource Hardening | Docker provider, network/egress, quota, cleanup, and container security are proven. | Docker-capable host smoke, security-option evidence, orphan cleanup proof, no default overexposure. |
-| G8 Multi-Agent Controlled Beta | Deferred parking-lot for platform-level multi-run orchestration. Current execution-layer multi-agent/subagent capability stays inside Claude Agent SDK and is governed as a platform run. | Reopen only with a focused issue, tenant quota/backpressure design, event/artifact/cancel semantics, and no ordinary-user exposure before prior gates. |
+| G8 Multi-Agent Controlled Beta | Deferred parking-lot for platform-level multi-run orchestration. Current execution-layer multi-agent/subagent capability stays inside Claude Agent SDK and is governed as a platform run. | Do not reopen to build a separate harness. Reopen only for controlled SDK subagent load evidence or, later, a focused platform-orchestration issue with tenant quota/backpressure design, event/artifact/cancel semantics, and no ordinary-user exposure before prior gates. |
 | G9 Observability / Quality / Ops | Admin Runtime, cost/token/latency/error taxonomy, golden-set eval, trace/export, alerts, and release evidence are operational. | Dashboard acceptance, recorded load evidence, model-gateway evidence, alert calibration, trace/export smoke, release evidence export. |
 | G10 Internal Beta / Department Rollout | 1-2 real internal workflows run with owners, cost/quality/audit/rollback evidence, and support model. | Workflow owner signoff, 211 smoke, rollback proof, issue/PR/release evidence, documented limits. |
 
@@ -387,7 +407,7 @@ In one sentence:
 | Memory/context | Opt-out, retention, redaction, delete/export readiness, and context provenance are documented and tested for the current scope. |
 | Skill governance | Release/readiness manifests exist; production skill release is blocked without SBOM/signature/license/vulnerability evidence. |
 | Sandbox | Fake provider remains local/test; Docker provider hardening is a separate G7 evidence gate. |
-| Advanced SDK subagent / long-task patterns | Claude Agent SDK may use internal agent/subagent capability under one governed platform run. Platform-owned parent/child run orchestration stays out of the current deliverable set. |
+| Advanced SDK subagent / long-task patterns | Claude Agent SDK may use internal agent/subagent capability under one governed platform run. Platform-owned parent/child run orchestration stays out of the current deliverable set; the next evidence question is deployment capacity when many sessions invoke SDK subagents. |
 
 ## 10. Change And Review Workflow For This PRD
 
@@ -425,8 +445,9 @@ Recommended order after S1 acceptance:
    evidence, dependency/license/vulnerability review, policy dashboard
    acceptance, and exact permission enforcement for write/high-risk tools.
 5. **Capacity-upgrade evidence gate**: complete recorded load evidence for the
-   seven required gates; keep production defaults unchanged until evidence
-   passes.
+   seven required gates, including SDK Agent/subagent fanout pressure when
+   session workflows enable it; keep production defaults unchanged until
+   evidence passes.
 6. **G9 Admin Runtime acceptance**: dashboard/operator acceptance, alert
    delivery calibration, model-gateway backpressure evidence, trace/export, and
    release-evidence runtime export.
@@ -434,4 +455,5 @@ Recommended order after S1 acceptance:
    gates, choose 1-2 internal workflows with owners. Use Claude Agent SDK for
    execution-layer agent/subagent capability inside governed runs. Do not
    introduce platform-owned parent/child orchestration unless a focused future
-   gate reopens it.
+   gate reopens it. The first G8/G10 proof should be capacity and governance
+   evidence for SDK subagent fanout, not a new agent harness.
