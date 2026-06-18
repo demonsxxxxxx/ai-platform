@@ -52,9 +52,11 @@ def test_backend_prd_records_stage_gate_and_acceptance_boundaries():
     ):
         assert boundary in compact_text
 
-    assert "open gaps remain `b1_issue_review_and_closure_evidence` only" in compact_text
-    assert "closed gate-boundary gaps include `b1_runtime_evidence_review_against_merged_source`" in compact_text
-    assert "open gaps remain `b1_issue_review_and_closure_evidence` and `b1_runtime_evidence_review_against_merged_source`" not in compact_text
+    assert "source tree `f8a0f3c1168c34663850345d8f30358d435a0134`" in compact_text
+    assert "runtime relation `source_synced_runtime_pending`" in compact_text
+    assert "open gaps remain `b1_issue_review_and_closure_evidence` and `b1_runtime_evidence_review_against_merged_source`" in compact_text
+    assert "closed gate-boundary gaps include `b1_runtime_evidence_review_against_merged_source`" not in compact_text
+    assert "open gaps remain `b1_issue_review_and_closure_evidence` only" not in compact_text
     assert "stale or open merged-source runtime review" in compact_text
     assert "`python tools/b2_sandbox_readiness.py --format json`" in text
     assert "`status=local_contract_ready_runtime_smoke_required`" in text
@@ -100,7 +102,7 @@ def test_backend_prd_records_post_poc_productization_priorities_and_deliverables
         assert phrase in compact_text
 
     for deliverable in (
-        "| B1 | Memory policy and context-pack contracts; memory workflow verifier; reviewed 211 smoke evidence; rollback/export notes. |",
+        "| B1 | Memory policy and context-pack contracts; memory workflow verifier; reviewed current-source 211 smoke evidence; rollback/export notes. |",
         "| B2 | Real sandbox provider profile; lease/callback/egress/cleanup tests; 211 sandbox smoke evidence. |",
         "| B3 | Capacity profile definition; bounded-load harness; seven-gate 211 evidence; Admin Runtime backpressure projection. |",
         "| B4 | Skill upload/version/release/rollback contracts; dependency evidence contract; reviewed skill-run smoke. |",
@@ -116,6 +118,7 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
         "LangGraph",
         "Mem0",
         "Zep",
+        "Graphiti",
         "OpenHands",
         "E2B",
         "Daytona",
@@ -124,10 +127,19 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
         "LiteLLM",
         "Portkey",
         "OpenFGA",
+        "SpiceDB",
         "Open Policy Agent",
+        "Keycloak",
+        "Authentik",
+        "Ory Kratos",
         "Langfuse",
         "Phoenix",
         "OpenTelemetry Collector",
+        "promptfoo",
+        "Ragas",
+        "Giskard",
+        "MCP Gateway",
+        "supergateway",
         "Backstage",
         "Dify",
         "Open WebUI",
@@ -148,10 +160,13 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
         assert authority_boundary in compact_text
 
     for category in (
-        "| B1 memory/context | LangGraph, Mem0, Zep | Memory/checkpoint model, memory UX, provenance, delete/update semantics. |",
+        "| B0 source/auth baseline | Keycloak, Authentik, Ory Kratos | OIDC/session, group/role mapping, admin login, and enterprise identity integration patterns. |",
+        "| B1 memory/context | LangGraph, Mem0, Zep, Graphiti | Memory/checkpoint model, memory UX, provenance, temporal memory, delete/update semantics. |",
         "| B2 sandbox | OpenHands, E2B, Daytona | Sandbox lifecycle, workspace isolation, command execution, artifact return, cancellation ergonomics. |",
         "| B3 capacity/model gateway | Temporal, Celery, Dramatiq, Taskiq, LiteLLM, Portkey | Durable retry vocabulary, worker scaling, provider limits, budgets, spend tracking, fallback/backpressure. |",
         "| B4 Skills management | Backstage, Dify, Open WebUI, LibreChat, AnythingLLM | Catalog, release workflow, skill/app marketplace UX, slash/tool discovery patterns. |",
+        "| B5 authorization/files/tools | OpenFGA, SpiceDB, Open Policy Agent, MCP Gateway, supergateway | Relationship-based ACLs, policy bundles, gateway/tool catalog routing, decision logs, deny-path test matrices. |",
+        "| B6 observability/ops | Langfuse, Phoenix, OpenTelemetry Collector, promptfoo, Ragas, Giskard | Trace vocabulary, eval runs, token/cost views, metrics/traces/log export, quality regression, and redaction patterns. |",
     ):
         assert category in text
 
