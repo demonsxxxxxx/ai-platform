@@ -6,6 +6,10 @@
 > `docs/superpowers/specs/2026-06-10-ai-platform-product-prd-v2.md`.
 > It records current module state, phased target state, open-source reference
 > absorption, and first-stage acceptance standards.
+> Backend B0-B6 sequencing and backend gate boundaries are expanded in
+> `docs/superpowers/specs/2026-06-18-ai-platform-backend-phased-prd.md`.
+> Frontend UI absorption boundaries are expanded in
+> `docs/superpowers/specs/2026-06-18-librechat-frontend-ui-absorption-prd.md`.
 >
 > This document is not gate-closure evidence. Gate closure still requires the
 > issue -> PR -> review -> merge -> 211 deploy/smoke -> close issue workflow
@@ -72,6 +76,32 @@ evidence, or source authority.
 Historical references not listed above are intentionally omitted from the active
 absorption matrix. Reopening any omitted project as an implementation reference
 requires a focused issue, gate, and source-authority review.
+
+Backend-specific reference projects listed in the backend phased PRD may inform
+memory, sandbox, capacity, model gateway, authorization, policy, observability,
+and Skills management implementation. They are not added to this global matrix
+unless they become active cross-module sources. Any code absorption still
+requires source pinning, license/provenance review, targeted tests, and explicit
+gate wording.
+
+## 2.1 Backend Productization Acceptance Bundles
+
+The backend phased PRD decomposes S2/S3 backend work into B0-B6 bundles. These
+bundles do not replace G0-G10 gates; they provide implementation order and
+acceptance boundaries for backend work.
+
+| Backend bundle | Acceptance focus | Cannot claim without |
+| --- | --- | --- |
+| B0 latest-main backend readiness refresh | Current source, 211 source, deploy composition, runtime labels, backend/worker containers, and readiness output agree. | Fresh current-subject readiness and 211 source/runtime evidence. |
+| B1 memory/context usable | Memory scopes, opt-out, retention, delete/redaction, export, context packs, provenance, and deny paths. | Workflow-level 211 smoke and long-term memory policy closure for the enabled scope. |
+| B2 real sandbox usable | Docker/equivalent provider, lease lifecycle, quota, egress, callback validation, cleanup, orphan scan, and projection safety. | Docker-capable 211 smoke and hardening evidence; `fake` is never production proof. |
+| B3 worker/model-gateway capacity | Tenant-aware admission, queue bounds, worker heartbeat, model-gateway pressure, token/cost ledger, and SDK subagent fanout load. | Recorded seven-gate capacity evidence and operator approval before raising defaults. |
+| B4 Skills management/release governance | Upload, immutable versioning, release/rollback, dependency review, pinned run snapshots, visibility, and audit. | Reviewed SBOM/license/vulnerability/dependency evidence and a 211 governed Skill smoke. |
+| B5 files/artifacts/tool permission governance | File namespaces, artifact ACL, preview/download authorization, exact tool decisions, and replay denial. | Runtime smoke proving upload -> run -> artifact access and unauthorized denial. |
+| B6 Operations beta readiness | Admin Runtime, trace/export, alerts, golden-set eval, release evidence export, workflow owners, and rollback drills. | Named workflow owners, capacity profile, quality/cost/audit evidence, and 211 acceptance. |
+
+Status labels must stay separate: `local partial`, `PR ready`, `merged`,
+`211 verified`, and `gate closable` are not interchangeable.
 
 ## 3. Module Acceptance Matrix
 
@@ -154,7 +184,7 @@ image matches the exact current source tree.
 | --- | --- |
 | Current state | Claude Agent SDK runner and worker adapter are the active execution route; permission handling, pinned skill staging, artifact/event reporting, and SDK tool allowlisting exist and must remain platform-governed; Codex CLI is a reference, not yet an active platform adapter. |
 | S1 target | The active executor consumes platform payloads, workspace, skill snapshots, tool policy, and event sink; it cannot bypass tenant, queue, or audit contracts. |
-| S2 target | Codex-style execution events, command/test/diff summaries, approval requests, tool results, SDK Agent/subagent tool events, artifact collection, and token/cost usage are normalized into platform ledgers. |
+| S2 target | Codex-style execution events, command/test/diff summaries, approval requests, tool results, SDK Agent/subagent tool events, artifact collection, and token/cost usage are normalized into platform ledgers; capacity evidence covers the case where many sessions invoke SDK subagents concurrently. |
 | S3/S4 target | Optional Codex adapter or SDK runtime variants can be introduced only through the same platform contract and evidence gates. |
 | Reference sources | Codex CLI for workspace/approval/event/skills mechanics; Poco Claw for Claude Agent SDK platformization and runtime UX. |
 | S1 acceptance | Executor runs use platform-issued workspace, `run_tool_permission_requests` for approval, `run_events` for replay/audit, and `run_skill_snapshots` for skill staging; executor-private logs are not source of truth. |
@@ -251,13 +281,13 @@ image matches the exact current source tree.
 
 | Field | Standard |
 | --- | --- |
-| Current state | Claude Agent SDK runner and worker adapter are the execution path. Historical platform dispatcher/parent-child work exists behind controls but is not the current product route. |
+| Current state | Claude Agent SDK runner and worker adapter are the execution path. SDK Agent/subagent capability is treated as available execution-layer capability inside one governed platform run. Historical platform dispatcher/parent-child work exists behind controls but is not the current product route. |
 | S1 target | SDK-internal agent/subagent behavior is governed as one platform run; no ordinary-user platform-level multi-run orchestration. |
-| S2 target | Claude Agent SDK agent/subagent execution is governed through platform payloads, tool allowlists, permission policy, artifact/event/token ledgers, sandbox policy, and cost accounting. |
-| S3 target | One or two owner-approved long-task workflows can use controlled SDK task patterns without introducing platform-owned parent/child orchestration unless a later gate reopens it. |
+| S2 target | Claude Agent SDK agent/subagent execution is governed through platform payloads, tool allowlists, permission policy, artifact/event/token ledgers, sandbox policy, and cost accounting; recorded load evidence proves the target runtime can sustain expected per-session SDK subagent fanout before broad exposure. |
+| S3 target | One or two owner-approved long-task workflows can use controlled SDK task patterns without introducing platform-owned parent/child orchestration unless a later gate reopens it; each workflow declares expected subagent fanout, timeout, model-gateway pressure, cost budget, and rollback path. |
 | S4 target | Department rollout uses capacity profiles, quality gates, audit, cost, and rollback evidence. |
 | Reference sources | Claude Agent SDK Agent/subagent capability for execution; Codex CLI internal subagents as concept only; Poco collaboration UX. |
-| S1 acceptance | SDK-private subagents are not automatically platform multi-agent runs; platform-visible parent/child orchestration is deferred and must not appear in ordinary-user contracts. |
+| S1 acceptance | SDK-private subagents are not automatically platform multi-agent runs; platform-visible parent/child orchestration is deferred and must not appear in ordinary-user contracts. This acceptance does not prove that every user session can safely invoke SDK subagents at production concurrency. |
 
 ## 4. First-Stage Acceptance Checklist
 

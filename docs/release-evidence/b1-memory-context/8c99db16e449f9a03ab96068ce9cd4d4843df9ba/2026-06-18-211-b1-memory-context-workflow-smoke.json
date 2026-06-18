@@ -1,0 +1,127 @@
+{
+  "artifact_kind": "211_memory_enabled_document_workflow_smoke",
+  "captured_at": "2026-06-18T19:37:24+08:00",
+  "commit_sha": "8c99db16e449f9a03ab96068ce9cd4d4843df9ba",
+  "evidence_id": "2026-06-18-211-b1-memory-context-workflow-smoke",
+  "evidence_ref": {
+    "command": "python3 tools/verify_b1_memory_context_workflow.py --base-url http://127.0.0.1:8020 --commit-sha 8c99db16e449f9a03ab96068ce9cd4d4843df9ba --runtime-subject-commit-sha 8c99db16e449f9a03ab96068ce9cd4d4843df9ba --image ai-platform:8c99db1-b1-playback-runtime-rebase",
+    "result": "ok:true",
+    "runtime_checks": {
+      "211_memory_enabled_document_workflow_smoke": {
+        "acceptance_gap": "211_memory_enabled_document_workflow_smoke",
+        "checks": {
+          "context_snapshot_public_provenance": true,
+          "create_governed_run": true,
+          "cross_user_context_denied": true,
+          "deleted_memory_absent_from_future_context": true,
+          "long_term_memory_fail_closed": true,
+          "memory_policy_disabled_blocks_create": true,
+          "memory_policy_disabled_blocks_list": true,
+          "memory_policy_enabled_for_governed_scope": true,
+          "memory_record_create_and_list": true,
+          "no_private_projection_leakage": true,
+          "playback_public_projection": true
+        },
+        "does_not_close_b1_gate": true,
+        "memory_record_count": 1,
+        "non_expansion_invariants": {
+          "frontend_state_is_canonical_context": false,
+          "gate_closure_claimed": false,
+          "long_term_cross_session_memory_enabled": false,
+          "stores_private_executor_material_as_memory": false
+        },
+        "ok": true,
+        "redaction_scan_status": "passed",
+        "remaining_gate_boundaries": [
+          "issue review and closure evidence",
+          "runtime evidence review against merged source",
+          "memory export boundary",
+          "rollback boundary"
+        ],
+        "schema_version": "ai-platform.b1-memory-context-workflow-smoke.v1",
+        "source": {
+          "commit_sha": "8c99db16e449f9a03ab96068ce9cd4d4843df9ba",
+          "image": "ai-platform:8c99db1-b1-playback-runtime-rebase",
+          "runtime_subject_commit_sha": "8c99db16e449f9a03ab96068ce9cd4d4843df9ba"
+        },
+        "target": "211_api_memory_context_workflow",
+        "workflow": {
+          "agent_id": "general-agent",
+          "memory_record_created": true,
+          "run_id_present": true,
+          "session_id_present": true,
+          "workspace_id": "default"
+        }
+      },
+      "verifier_checks": [
+        {
+          "name": "check_b1_memory_context_workflow_smoke",
+          "passed": true
+        },
+        {
+          "name": "check_no_private_projection_leakage",
+          "passed": true
+        }
+      ]
+    },
+    "verifier": "tools/verify_b1_memory_context_workflow.py"
+  },
+  "gate": "B1 memory/context usable",
+  "issue_refs": [
+    "#75"
+  ],
+  "open_followups": [
+    "This evidence closes only the named 211_memory_enabled_document_workflow_smoke runtime gap for #75.",
+    "B1 gate closure remains open until issue review, runtime evidence review, memory export boundary, and rollback boundary are separately recorded.",
+    "This evidence does not claim G0 source-authority closure, production readiness, Docker sandbox hardening, ordinary-user multi-agent exposure, long-term cross-session memory by default, or production concurrency default increases."
+  ],
+  "pr_refs": [
+    "#76",
+    "#78"
+  ],
+  "redaction_scan_status": "passed",
+  "review_notes": [
+    "211 verifier result was ok=true for schema ai-platform.b1-memory-context-workflow-smoke.v1 against target 211_api_memory_context_workflow.",
+    "The smoke covered governed run creation, governed-scope memory enablement, disabled-policy read/write blocking, memory create/list, context snapshot provenance, playback public projection with memory_record_count=1, cross-user denial, delete followed by future-context absence, long-term memory fail-closed, and private projection leakage scan.",
+    "The 211 runtime still carries source-authority caveats: staging compose source and stale inherited label evidence must not be used as G0 source-authority closure."
+  ],
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "8c99db16e449f9a03ab96068ce9cd4d4843df9ba",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "branch": "main",
+    "compose_config_source": "staging_compose_for_b1_runtime_smoke",
+    "compose_env_source": "external_211_runtime_env_file_supplied_through_compose_values_not_copied",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "image": "ai-platform:8c99db1-b1-playback-runtime-rebase",
+    "image_id": "sha256:f083b36beffe65ca192e191bce32a57ccf7946e965676c65f44cb122b9bb6de9",
+    "image_labels": {
+      "ai-platform.runtime-subject": "8c99db16e449f9a03ab96068ce9cd4d4843df9ba",
+      "ai-platform.runtime_subject": "8c99db16e449f9a03ab96068ce9cd4d4843df9ba",
+      "ai-platform.source-revision": "8c99db16e449f9a03ab96068ce9cd4d4843df9ba",
+      "ai-platform.source.note": "stale_inherited_label_present_not_g0_closure",
+      "ai-platform.source_revision": "8c99db16e449f9a03ab96068ce9cd4d4843df9ba",
+      "ai-platform.source_tree_commit": "8c99db16e449f9a03ab96068ce9cd4d4843df9ba",
+      "org.opencontainers.image.revision": "8c99db16e449f9a03ab96068ce9cd4d4843df9ba"
+    },
+    "repo_local_env_present": false,
+    "runtime_boundary": {
+      "api_container": "ai-platform-api",
+      "worker_container": "ai-platform-worker"
+    },
+    "runtime_source_marker": "8c99db16e449f9a03ab96068ce9cd4d4843df9ba",
+    "source_authority_caveat": "staging compose source and stale inherited label remain follow-ups; this record is not G0 source-authority closure",
+    "source_snapshot": {
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "runtime_subject_commit_sha": "8c99db16e449f9a03ab96068ce9cd4d4843df9ba",
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "source_tree_commit_sha": "8c99db16e449f9a03ab96068ce9cd4d4843df9ba",
+      "source_tree_dirty": false
+    },
+    "source_tree_dirty": false
+  }
+}

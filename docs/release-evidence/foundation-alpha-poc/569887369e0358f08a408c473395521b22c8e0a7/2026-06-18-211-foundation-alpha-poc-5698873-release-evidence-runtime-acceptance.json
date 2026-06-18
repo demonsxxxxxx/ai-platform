@@ -1,0 +1,111 @@
+{
+  "artifact_kind": "211_runtime_smoke",
+  "captured_at": "2026-06-18T16:21:02+08:00",
+  "commit_sha": "569887369e0358f08a408c473395521b22c8e0a7",
+  "evidence_id": "2026-06-18-211-foundation-alpha-poc-5698873-release-evidence-runtime-acceptance",
+  "evidence_ref": {
+    "command": "python3 tools/verify_release_evidence_runtime_acceptance.py --format json --commit-sha 569887369e0358f08a408c473395521b22c8e0a7 --runtime-subject-commit-sha 569887369e0358f08a408c473395521b22c8e0a7 --image ai-platform:5698873-b0-runtime-rebase",
+    "result": "ok:true",
+    "runtime_checks": {
+      "release_evidence_runtime_acceptance": {
+        "checks": {
+          "retention_runtime_acceptance": {
+            "default_retention_days": 180,
+            "delete_only_reviewed_redacted_entries": true,
+            "forbidden_delete_targets_present": true,
+            "minimum_retention_days": 30,
+            "policy_status": "contract_only_not_runtime_enforced",
+            "requires_review_before_delete": true,
+            "schema_version": "ai-platform.release-evidence-retention-policy.v1",
+            "status": "accepted_review_first_policy"
+          },
+          "runtime_export_acceptance": {
+            "blocked_entry_count": 0,
+            "does_not_export_raw_runtime_payloads": true,
+            "excluded_entry_count": 47,
+            "export_policy": "safe_reviewed_index_only_not_runtime_export",
+            "safe_entry_count": 95,
+            "safe_entry_fields_only": true,
+            "status": "ready_for_operator_review"
+          }
+        },
+        "does_not_close_g9": true,
+        "does_not_export_raw_runtime_payloads": true,
+        "ok": true,
+        "open_gaps": [],
+        "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
+        "source": {
+          "commit_sha": "569887369e0358f08a408c473395521b22c8e0a7",
+          "evidence_root": "docs/release-evidence",
+          "image": "ai-platform:5698873-b0-runtime-rebase",
+          "runtime_subject_commit_sha": "569887369e0358f08a408c473395521b22c8e0a7"
+        },
+        "status": "accepted_for_operator_review"
+      }
+    },
+    "runtime_source": {
+      "commit_sha": "569887369e0358f08a408c473395521b22c8e0a7",
+      "evidence_root": "docs/release-evidence",
+      "image": "ai-platform:5698873-b0-runtime-rebase",
+      "runtime_subject_commit_sha": "569887369e0358f08a408c473395521b22c8e0a7"
+    },
+    "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
+    "verifier": "tools/verify_release_evidence_runtime_acceptance.py"
+  },
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#72"
+  ],
+  "open_followups": [
+    "g7_docker_sandbox_hardening",
+    "g8_ordinary_user_multi_agent_exposure",
+    "packaged_frontend_image_release_acceptance",
+    "capacity_upgrade_evidence_gate"
+  ],
+  "pr_refs": [],
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "569887369e0358f08a408c473395521b22c8e0a7",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "api_health": {
+      "status": "ok"
+    },
+    "branch": "main",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_layout_status": "external_env_file_label_present",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "gateway_secret_supplied": false,
+    "image": "ai-platform:5698873-b0-runtime-rebase",
+    "image_id": "sha256:0892ce8f3ec2b233b60c8f4e1f2d6b7e45570338eb16bfcec8d2d62dcd58dddd",
+    "image_labels": {
+      "ai-platform.runtime-rollout": "b0-latest-main-runtime-only-rebase",
+      "ai-platform.runtime-subject": "569887369e0358f08a408c473395521b22c8e0a7",
+      "ai-platform.runtime_subject": "569887369e0358f08a408c473395521b22c8e0a7",
+      "ai-platform.source-branch": "main",
+      "ai-platform.source-note": "b0-latest-main-runtime-only-rebase",
+      "ai-platform.source-revision": "569887369e0358f08a408c473395521b22c8e0a7",
+      "ai-platform.source.note": "origin-main-a15c74f-runtime-only-rebase-v2-label-aliases",
+      "ai-platform.source_revision": "569887369e0358f08a408c473395521b22c8e0a7",
+      "ai-platform.source_tree_commit": "569887369e0358f08a408c473395521b22c8e0a7",
+      "org.opencontainers.image.revision": "569887369e0358f08a408c473395521b22c8e0a7"
+    },
+    "repo_local_env_present": false,
+    "runtime_commit": "569887369e0358f08a408c473395521b22c8e0a7",
+    "runtime_source_marker": "569887369e0358f08a408c473395521b22c8e0a7",
+    "runtime_subject_label_status": "runtime_subject_label_current",
+    "source_revision_alias_label_status": "source_revision_alias_label_current",
+    "source_snapshot": {
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "runtime_subject_commit_sha": "569887369e0358f08a408c473395521b22c8e0a7",
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "source_tree_commit_sha": "569887369e0358f08a408c473395521b22c8e0a7",
+      "source_tree_dirty": false
+    }
+  }
+}

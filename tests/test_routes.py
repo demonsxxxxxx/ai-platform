@@ -620,11 +620,15 @@ async def test_get_run_playback_includes_safe_context_provenance(monkeypatch):
     async def fake_list_run_steps(conn, *, tenant_id, run_id):
         return []
 
+    async def fake_list_context_snapshots(conn, *, tenant_id, user_id, run_id):
+        return []
+
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.routes.runs.repositories.list_context_snapshots", fake_list_context_snapshots)
 
     response = await get_run_playback("run-a", principal=principal())
 
@@ -665,6 +669,108 @@ async def test_get_run_playback_includes_safe_context_provenance(monkeypatch):
         "tenants/private",
     ]:
         assert private_fragment not in serialized
+
+
+@pytest.mark.asyncio
+async def test_get_run_playback_prefers_latest_context_snapshot_projection(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "session-a",
+            **RUN_SCHEMA_FIELDS,
+            "agent_id": "general-chat",
+            "skill_id": "general-chat",
+            "status": "queued",
+            "input_json": {
+                "context_snapshot": {
+                    "referenced_materials": {
+                        "message_count": 0,
+                        "file_count": 0,
+                        "artifact_count": 0,
+                        "memory_record_count": 0,
+                    },
+                    "used_context_summary": {
+                        "source": "runs_api",
+                        "input_keys": ["task"],
+                        "memory_policy_source": "default",
+                        "long_term_memory_read": False,
+                    },
+                    "execution_tier": "sdk_only_writing",
+                    "context_pack_version": "v1",
+                    "context_pack_generated_at": "2026-06-18T00:00:00Z",
+                }
+            },
+            "result_json": {},
+            "error_code": None,
+            "error_message": None,
+        }
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id, after_sequence=None, limit=200):
+        return []
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return []
+
+    async def fake_list_context_snapshots(conn, *, tenant_id, user_id, run_id):
+        return [
+            {
+                "id": "ctx-latest",
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "tenant_id": tenant_id,
+                "workspace_id": "default",
+                "user_id": user_id,
+                "session_id": "session-a",
+                "run_id": run_id,
+                "trace_id": "trace-run-a",
+                "context_kind": "executor",
+                "included_message_ids": [],
+                "included_file_ids": [],
+                "included_artifact_ids": [],
+                "included_memory_record_ids": ["mem-a"],
+                "redaction_summary_json": {"mode": "strict"},
+                "payload_json": {
+                    "task": "b1-memory-context-smoke",
+                    "memory": "public bounded summary only",
+                    "referenced_materials": {
+                        "message_count": 0,
+                        "file_count": 0,
+                        "artifact_count": 0,
+                        "memory_record_count": 1,
+                    },
+                    "used_context_summary": {
+                        "source": "manual_context_snapshot",
+                        "input_keys": ["memory", "task"],
+                        "memory_policy_source": "not_recorded",
+                        "long_term_memory_read": False,
+                    },
+                    "execution_tier": "sdk_only_writing",
+                    "context_pack_version": "v1",
+                    "context_pack_generated_at": "2026-06-18T01:00:00Z",
+                    "memory_record_ids": ["mem-private"],
+                    "storage_key": "tenants/private/context.json",
+                },
+                "created_at": "2026-06-18T01:00:00Z",
+            }
+        ]
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.routes.runs.repositories.list_context_snapshots", fake_list_context_snapshots)
+
+    response = await get_run_playback("run-a", principal=principal())
+
+    assert response["context_ref"]["referenced_materials"]["memory_record_count"] == 1
+    assert response["context_ref"]["used_context_summary"]["source"] == "manual_context_snapshot"
+    serialized = json.dumps(response["context_ref"], ensure_ascii=False)
+    assert "ctx-latest" not in serialized
+    assert "mem-private" not in serialized
+    assert "storage_key" not in serialized
 
 
 def test_run_event_response_sanitizes_runtime_envelope_for_ordinary_user():
