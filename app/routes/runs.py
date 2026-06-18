@@ -1746,18 +1746,23 @@ def run_playback_timeline(
     return timeline
 
 
-def run_context_ref(run: dict[str, object]) -> dict[str, object] | None:
-    source_input = run.get("input_json") if isinstance(run.get("input_json"), dict) else {}
-    context_snapshot = source_input.get("context_snapshot")
+def _run_context_ref_from_payload(
+    context_snapshot: dict[str, object],
+    *,
+    message_count: int,
+    file_count: int,
+    artifact_count: int,
+    memory_record_count: int,
+) -> dict[str, object] | None:
     if not isinstance(context_snapshot, dict):
         return None
     context_ref = ensure_public_context_provenance(
         context_snapshot,
         source="stored_context_snapshot",
-        message_count=_context_material_count(context_snapshot, "message_count"),
-        file_count=_context_material_count(context_snapshot, "file_count"),
-        artifact_count=_context_material_count(context_snapshot, "artifact_count"),
-        memory_record_count=_context_material_count(context_snapshot, "memory_record_count"),
+        message_count=message_count,
+        file_count=file_count,
+        artifact_count=artifact_count,
+        memory_record_count=memory_record_count,
         preserve_stored_input_keys=True,
     )
     used_context_summary = context_ref.get("used_context_summary")
@@ -1783,6 +1788,31 @@ def run_context_ref(run: dict[str, object]) -> dict[str, object] | None:
         "context_pack_version": context_ref.get("context_pack_version"),
         "context_pack_generated_at": context_ref.get("context_pack_generated_at"),
     }
+
+
+def run_context_ref(run: dict[str, object]) -> dict[str, object] | None:
+    source_input = run.get("input_json") if isinstance(run.get("input_json"), dict) else {}
+    context_snapshot = source_input.get("context_snapshot")
+    if not isinstance(context_snapshot, dict):
+        return None
+    return _run_context_ref_from_payload(
+        context_snapshot,
+        message_count=_context_material_count(context_snapshot, "message_count"),
+        file_count=_context_material_count(context_snapshot, "file_count"),
+        artifact_count=_context_material_count(context_snapshot, "artifact_count"),
+        memory_record_count=_context_material_count(context_snapshot, "memory_record_count"),
+    )
+
+
+def run_context_ref_from_snapshot_row(row: dict[str, object]) -> dict[str, object] | None:
+    context_snapshot = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
+    return _run_context_ref_from_payload(
+        context_snapshot,
+        message_count=len(row.get("included_message_ids") or []),
+        file_count=len(row.get("included_file_ids") or []),
+        artifact_count=len(row.get("included_artifact_ids") or []),
+        memory_record_count=len(row.get("included_memory_record_ids") or []),
+    )
 
 
 def _context_material_count(context_snapshot: dict[str, object], key: str) -> int:
@@ -2908,6 +2938,12 @@ async def get_run_playback(
         )
         artifacts = await repositories.list_run_artifacts(conn, tenant_id=tenant_id, run_id=run_id)
         steps = await repositories.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
+        context_snapshots = await repositories.list_context_snapshots(
+            conn,
+            tenant_id=tenant_id,
+            user_id=principal.user_id,
+            run_id=run_id,
+        )
 
     projected_events = [
         run_event_response(run_id, row, principal=principal)
@@ -2917,6 +2953,11 @@ async def get_run_playback(
     artifact_cards = [artifact_card(row, principal=principal) for row in artifacts]
     step_cards = [run_step_response(row, principal=principal) for row in steps]
     next_after_sequence = next_sequence_from_rows(events, fallback=after_sequence)
+    latest_context_ref = (
+        run_context_ref_from_snapshot_row(context_snapshots[0])
+        if context_snapshots
+        else run_context_ref(run)
+    )
     return {
         "contract_version": RUN_PLAYBACK_CONTRACT_VERSION,
         "run_id": run_id,
@@ -2928,7 +2969,7 @@ async def get_run_playback(
         "artifacts": artifact_cards,
         "steps": step_cards,
         "multi_agent": multi_agent_snapshot_from_steps(run_id, steps, principal=principal),
-        "context_ref": run_context_ref(run),
+        "context_ref": latest_context_ref,
     }
 
 
