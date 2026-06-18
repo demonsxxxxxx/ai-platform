@@ -8,7 +8,6 @@ from app.governance_readiness import build_governance_readiness, render_governan
 
 B1_GATE_BOUNDARY_GAPS = [
     "b1_issue_review_and_closure_evidence",
-    "b1_runtime_evidence_review_against_merged_source",
 ]
 
 
