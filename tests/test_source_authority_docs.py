@@ -877,6 +877,25 @@ def test_gate_status_snapshot_records_memory_context_readiness_fields():
     assert "ordinary-user expansion remains blocked" in gate_status_text
 
 
+def test_governance_readiness_doc_records_b1_smoke_without_gate_closure():
+    governance_text = read(GOVERNANCE_READINESS_DOC)
+
+    assert "`runtime_acceptance_recorded`" in governance_text
+    assert "keeps the B1 stage status label `local" in governance_text
+    assert "partial`" in governance_text
+    assert "`211_memory_enabled_document_workflow_smoke` out of G6 open gaps" in governance_text
+    assert "`b1_issue_review_and_closure_evidence`" in governance_text
+    assert "`b1_runtime_evidence_review_against_merged_source`" in governance_text
+    assert "`b1_memory_export_boundary`" in governance_text
+    assert "`b1_rollback_boundary`" in governance_text
+    assert "runtime smoke layer" in governance_text
+    assert "`211 verified`" in governance_text
+    assert "B1 stage itself remains `local partial`" in governance_text
+    assert "not `gate closable`" in governance_text
+    assert "`local_controls_ready_runtime_smoke_required`, and keeps status label" not in governance_text
+    assert "carries `211_memory_enabled_document_workflow_smoke` in the G6 open gaps" not in governance_text
+
+
 def test_capacity_docs_record_machine_readable_gate_evidence_contract():
     capacity_text = read(CAPACITY_BASELINE_DOC)
     roadmap_text = read(ROADMAP)
