@@ -339,39 +339,6 @@ def build_b1_memory_context_workflow_smoke(
     run_id = str(_as_dict(create_run_payload).get("run_id") or "")
     session_id = str(_as_dict(create_run_payload).get("session_id") or "")
 
-    disable_policy_status, disable_policy_payload = _json_request(
-        "PUT",
-        f"{safe_base_url}/api/ai/memory/policy",
-        headers=owner_headers,
-        payload={
-            "workspace_id": workspace_id,
-            "agent_id": agent_id,
-            "memory_enabled": False,
-            "long_term_memory_enabled": False,
-            "retention_days": 30,
-            "redaction_mode": "strict",
-            "reason": "b1 smoke disable probe",
-        },
-        timeout_seconds=timeout_seconds,
-    )
-    statuses["disable_policy"] = disable_policy_status
-    disabled_create_status, disabled_create_payload = _json_request(
-        "POST",
-        f"{safe_base_url}/api/ai/memory/records",
-        headers=owner_headers,
-        payload={
-            "workspace_id": workspace_id,
-            "agent_id": agent_id,
-            "session_id": session_id,
-            "record_type": "task_note",
-            "content": "must not be stored while memory is disabled",
-            "metadata": {"source": "b1_smoke_disabled_probe"},
-        },
-        timeout_seconds=timeout_seconds,
-    )
-    statuses["disabled_create"] = disabled_create_status
-    payloads["disabled_create"] = disabled_create_payload
-
     enable_policy_status, enable_policy_payload = _json_request(
         "PUT",
         f"{safe_base_url}/api/ai/memory/policy",
@@ -420,6 +387,69 @@ def build_b1_memory_context_workflow_smoke(
     )
     statuses["list_memory"] = list_memory_status
     listed_records = _as_list(_as_dict(list_memory_payload).get("memory_records"))
+
+    disable_policy_status, disable_policy_payload = _json_request(
+        "PUT",
+        f"{safe_base_url}/api/ai/memory/policy",
+        headers=owner_headers,
+        payload={
+            "workspace_id": workspace_id,
+            "agent_id": agent_id,
+            "memory_enabled": False,
+            "long_term_memory_enabled": False,
+            "retention_days": 30,
+            "redaction_mode": "strict",
+            "reason": "b1 smoke disable probe",
+        },
+        timeout_seconds=timeout_seconds,
+    )
+    statuses["disable_policy"] = disable_policy_status
+    disabled_create_status, disabled_create_payload = _json_request(
+        "POST",
+        f"{safe_base_url}/api/ai/memory/records",
+        headers=owner_headers,
+        payload={
+            "workspace_id": workspace_id,
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "record_type": "task_note",
+            "content": "must not be stored while memory is disabled",
+            "metadata": {"source": "b1_smoke_disabled_probe"},
+        },
+        timeout_seconds=timeout_seconds,
+    )
+    statuses["disabled_create"] = disabled_create_status
+    payloads["disabled_create"] = disabled_create_payload
+    disabled_list_url = (
+        f"{safe_base_url}/api/ai/memory/records?"
+        f"{parse.urlencode({'workspace_id': workspace_id, 'agent_id': agent_id, 'session_id': session_id})}"
+    )
+    disabled_list_status, disabled_list_payload = _json_request(
+        "GET",
+        disabled_list_url,
+        headers=owner_headers,
+        timeout_seconds=timeout_seconds,
+    )
+    statuses["disabled_list"] = disabled_list_status
+    disabled_list_records = _as_list(_as_dict(disabled_list_payload).get("memory_records"))
+
+    reenable_policy_status, reenable_policy_payload = _json_request(
+        "PUT",
+        f"{safe_base_url}/api/ai/memory/policy",
+        headers=owner_headers,
+        payload={
+            "workspace_id": workspace_id,
+            "agent_id": agent_id,
+            "memory_enabled": True,
+            "long_term_memory_enabled": False,
+            "retention_days": 30,
+            "redaction_mode": "strict",
+            "reason": "b1 smoke enable governed scope",
+        },
+        timeout_seconds=timeout_seconds,
+    )
+    statuses["reenable_policy"] = reenable_policy_status
+    reenabled_policy = _as_dict(_as_dict(reenable_policy_payload).get("memory_policy"))
 
     snapshot_with_memory_status, snapshot_with_memory_payload = _json_request(
         "POST",
@@ -514,7 +544,9 @@ def build_b1_memory_context_workflow_smoke(
     long_term_memory_fail_closed = policy.get("long_term_memory_enabled") is False
     memory_policy_enabled = (
         enable_policy_status == 200
+        and reenable_policy_status == 200
         and policy.get("memory_enabled") is True
+        and reenabled_policy.get("memory_enabled") is True
         and policy.get("long_term_memory_enabled") is False
         and policy.get("workspace_id") == workspace_id
     )
@@ -523,6 +555,7 @@ def build_b1_memory_context_workflow_smoke(
         and disabled_create_status == 403
         and _safe_detail(disabled_create_payload) == "memory_policy_disabled"
     )
+    disabled_blocks_list = disabled_list_status == 200 and not disabled_list_records
     memory_create_and_list = (
         create_memory_status == 200
         and bool(memory_record_id)
@@ -575,11 +608,17 @@ def build_b1_memory_context_workflow_smoke(
             disabled_blocks_create,
             {"policy_status": disable_policy_status, "create_status": disabled_create_status},
         ),
+        "memory_policy_disabled_blocks_list": _check(
+            "memory_policy_disabled_blocks_list",
+            disabled_blocks_list,
+            {"list_status": disabled_list_status, "listed_record_count": len(disabled_list_records)},
+        ),
         "memory_policy_enabled_for_governed_scope": _check(
             "memory_policy_enabled_for_governed_scope",
             memory_policy_enabled,
             {
                 "status": enable_policy_status,
+                "reenable_status": reenable_policy_status,
                 "workspace_id": policy.get("workspace_id"),
                 "agent_id_present": bool(policy.get("agent_id")),
                 "memory_enabled": policy.get("memory_enabled"),

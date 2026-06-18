@@ -56,6 +56,7 @@ class B1MemoryContextWorkflowHandler(BaseHTTPRequestHandler):
     session_id = "ses-b1-smoke"
     expected_secret = "test-secret"
     allow_create_when_disabled = False
+    allow_list_when_disabled = False
     leak_private_context = False
     leak_deleted_memory_in_future_context = False
 
@@ -142,6 +143,9 @@ class B1MemoryContextWorkflowHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/ai/memory/policy":
             payload = self._read_json()
+            if bool(payload.get("long_term_memory_enabled", False)):
+                self._send_json(409, {"detail": "long_term_memory_not_available"})
+                return
             policy = {
                 "tenant_id": self._tenant_id(),
                 "workspace_id": payload.get("workspace_id") or "default",
@@ -183,6 +187,9 @@ class B1MemoryContextWorkflowHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             if self._user_id() != "b1-memory-smoke-user" or query.get("session_id", [""])[0] != self.session_id:
                 self._send_json(404, {"detail": "session_not_found"})
+                return
+            if not self._current_policy().get("memory_enabled", True) and not self.allow_list_when_disabled:
+                self._send_json(200, {"memory_records": []})
                 return
             records = [
                 record
@@ -272,6 +279,10 @@ class PolicyDisabledNotEnforcedHandler(B1MemoryContextWorkflowHandler):
     allow_create_when_disabled = True
 
 
+class PolicyDisabledReadNotEnforcedHandler(B1MemoryContextWorkflowHandler):
+    allow_list_when_disabled = True
+
+
 class LeakyProjectionHandler(B1MemoryContextWorkflowHandler):
     leak_private_context = True
 
@@ -308,6 +319,7 @@ def test_b1_memory_context_workflow_smoke_verifies_policy_context_delete_and_pro
     assert payload["source"]["commit_sha"] == "3e86786"
     assert payload["source"]["runtime_subject_commit_sha"] == "fadbb83"
     assert payload["checks"]["memory_policy_disabled_blocks_create"]["passed"] is True
+    assert payload["checks"]["memory_policy_disabled_blocks_list"]["passed"] is True
     assert payload["checks"]["memory_policy_enabled_for_governed_scope"]["passed"] is True
     assert payload["checks"]["memory_record_create_and_list"]["passed"] is True
     assert payload["checks"]["context_snapshot_public_provenance"]["passed"] is True
@@ -335,6 +347,15 @@ def test_b1_memory_context_workflow_smoke_fails_when_policy_disablement_does_not
     assert payload["ok"] is False
     assert payload["checks"]["memory_policy_disabled_blocks_create"]["passed"] is False
     assert payload["checks"]["no_private_projection_leakage"]["passed"] is True
+
+
+def test_b1_memory_context_workflow_smoke_fails_when_policy_disablement_does_not_block_reads():
+    payload = run_b1_smoke(PolicyDisabledReadNotEnforcedHandler)
+
+    assert payload["ok"] is False
+    assert payload["checks"]["memory_policy_disabled_blocks_create"]["passed"] is True
+    assert payload["checks"]["memory_policy_disabled_blocks_list"]["passed"] is False
+    assert payload["checks"]["memory_record_create_and_list"]["passed"] is True
 
 
 def test_b1_memory_context_workflow_smoke_fails_closed_on_private_projection_leak():
