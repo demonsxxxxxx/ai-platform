@@ -31,6 +31,8 @@ python tools/memory_erasure_readiness.py --format markdown
 python tools/memory_erasure_readiness.py --format json
 python tools/office_context_readiness.py --format markdown
 python tools/office_context_readiness.py --format json
+python tools/b1_memory_context_readiness.py --format markdown
+python tools/b1_memory_context_readiness.py --format json
 python tools/verify_governance_runtime_smoke.py --base-url http://127.0.0.1:8020 --commit-sha <source-tree-commit> --runtime-subject-commit-sha <runtime-subject-commit> --image <runtime-image>
 ```
 
@@ -74,7 +76,7 @@ or secret-like runtime configuration.
 | --- | --- | --- |
 | Tool permission | Admin tool policy inventory, tenant-scoped policy update audit, bounded admin change-history projection through `GET /api/ai/admin/tool-policies/history`, user request/decision flow, exact `tool_call_id` / stable request-fingerprint decision lookup source tests, fail-closed risk/write policy evaluation, public permission-card projection, audit-visible legacy route policy mapping, secret-safe allow/ask/deny taxonomy evidence through `tools/tool_policy_readiness.py`, platform-registered-MCP-only policy evidence with ordinary-user custom MCP disabled, and contract-only Admin bulk-review dashboard readiness through `tools/tool_policy_bulk_review_readiness.py` / `admin_policy_bulk_review_dashboard_contract` | Policy enforcement or ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel surfaces, plus `admin_policy_bulk_review_runtime_acceptance`, `admin_policy_bulk_review_visual_acceptance`, and `admin_policy_bulk_review_211_acceptance` |
 | Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock, secret-safe skill release readiness snapshot, pending review-manifest template entrypoint, source-level `ai-platform.skill-dependency-review-policy.v1` contract, source-level `ai-platform.skill-signed-package-evidence-contract.v1` / `skill_signed_package_evidence_contract`, source-level validation for signed-package evidence JSON, and contract-only Admin Skill release dashboard readiness through `tools/skill_release_dashboard_readiness.py` / `admin_skill_release_dashboard_contract` | SBOM or signed-package release evidence plus reviewed manifests, dependency vulnerability/license evidence, `skill_dependency_review_policy_runtime_acceptance`, plus `admin_skill_release_dashboard_runtime_acceptance`, `admin_skill_release_dashboard_visual_acceptance`, and `admin_skill_release_dashboard_211_acceptance` |
-| Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py`, source-level office context-pack contract/readiness through `tools/office_context_readiness.py`, source-level context-pack persistence/versioning through `source_level_context_pack_persistence_and_versioning`, context snapshot public provenance projection with `context_pack_version` and `context_pack_generated_at`, user-visible context provenance API projection source tests, frontend run-playback context provenance projection source tests, source-level office execution-tier router tests, executor context-pack prompt injection source tests, document-centric follow-up state source tests, reviewed `8e0389e` 211 executor context-pack evidence, the source-level sandbox cold-start latency split observability contract, and reviewed PR #44 211 sandbox cold-start latency split evidence. | Full G6/G9 dashboard/visual acceptance, long-term cross-session memory policy closure, production Docker sandbox hardening, packaged frontend acceptance, and ordinary-user rollout acceptance |
+| Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py`, source-level office context-pack contract/readiness through `tools/office_context_readiness.py`, B1 memory/context readiness rollup through `tools/b1_memory_context_readiness.py`, source-level context-pack persistence/versioning through `source_level_context_pack_persistence_and_versioning`, context snapshot public provenance projection with `context_pack_version` and `context_pack_generated_at`, user-visible context provenance API projection source tests, frontend run-playback context provenance projection source tests, source-level office execution-tier router tests, executor context-pack prompt injection source tests, document-centric follow-up state source tests, reviewed `8e0389e` 211 executor context-pack evidence, the source-level sandbox cold-start latency split observability contract, and reviewed PR #44 211 sandbox cold-start latency split evidence. | `211_memory_enabled_document_workflow_smoke`, full G6/G9 dashboard/visual acceptance, long-term cross-session memory policy closure, production Docker sandbox hardening, packaged frontend acceptance, and ordinary-user rollout acceptance |
 | Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest with build-provenance same-commit gate, packaged frontend image definition traceability, non-push CI packaged-image build/provenance contract, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Profile env-var surface removed from the active browser entry graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Quarantined inactive legacy model/channel/envvar sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image smoke and release acceptance on 211 or another Docker-capable host |
 
 The frontend projection evidence now records three current structured blockers:
@@ -381,6 +383,25 @@ PR #44 211 sandbox cold-start latency split evidence. The old PR #44 executor
 context-pack 211 evidence is retained as superseded history because the
 historical live run had no source artifact count and predates the public
 input-key leakage guard.
+
+`tools/b1_memory_context_readiness.py` now records the B1 backend
+memory/context rollup with schema `ai-platform.b1-memory-context-readiness.v1`.
+It aggregates the current memory-erasure readiness and office context-pack
+readiness into the backend stage `B1 memory/context usable`, reports status
+`local_controls_ready_runtime_smoke_required`, and keeps status label
+`local partial`. Governance readiness embeds this rollup under
+`domains.memory_governance.evidence.b1_memory_context_readiness` and carries
+`211_memory_enabled_document_workflow_smoke` in the G6 open gaps. This does not
+claim `211 verified`: B1 still requires one selected memory-enabled document
+workflow smoke on 211 with memory policy enabled only for the governed scope,
+context provenance recorded, deleted/redacted memory absent from context, and no
+executor-private payload, raw storage key, or sandbox workdir leakage.
+`tools/verify_b1_memory_context_workflow.py` is the reusable verifier entrypoint
+for that smoke and emits schema
+`ai-platform.b1-memory-context-workflow-smoke.v1`; passing it records workflow
+runtime evidence only and does not by itself close B1 because issue review,
+merged-source runtime evidence review, memory export boundary, and rollback
+boundary still have to be recorded.
 
 `tools/office_context_readiness.py` now records the source-level #22
 context-pack readiness contract for office-heavy workflows with schema
