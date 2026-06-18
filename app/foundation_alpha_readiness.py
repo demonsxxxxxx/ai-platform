@@ -35,6 +35,7 @@ _RUNTIME_NEUTRAL_PATH_PREFIXES = (
 _RUNTIME_NEUTRAL_EXACT_PATHS = {
     ".gitignore",
     "AGENTS.md",
+    "app/b1_memory_context_readiness.py",
     "app/capacity_bounded_load_harness.py",
     "app/foundation_alpha_readiness.py",
     "app/governance_readiness.py",

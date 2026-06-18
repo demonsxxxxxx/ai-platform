@@ -52,6 +52,11 @@ def test_backend_prd_records_stage_gate_and_acceptance_boundaries():
     ):
         assert boundary in compact_text
 
+    assert "open gaps remain `b1_issue_review_and_closure_evidence` only" in compact_text
+    assert "closed gate-boundary gaps include `b1_runtime_evidence_review_against_merged_source`" in compact_text
+    assert "open gaps remain `b1_issue_review_and_closure_evidence` and `b1_runtime_evidence_review_against_merged_source`" not in compact_text
+    assert "stale or open merged-source runtime review" in compact_text
+
     for checklist in (
         "| B0 | S2-0/latest-main source-authority issue links the target source",
         "| B1 | Memory/context issue names the selected workflow",

@@ -1522,6 +1522,7 @@ def test_foundation_alpha_readiness_keeps_governance_runtime_blocker_without_val
 def test_foundation_alpha_readiness_classifies_source_metadata_paths_as_runtime_neutral():
     assert foundation_alpha_readiness._is_runtime_affecting_path(".gitignore") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("AGENTS.md") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("app/b1_memory_context_readiness.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("app/foundation_alpha_readiness.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("app/governance_readiness.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("app/memory_erasure_readiness.py") is False

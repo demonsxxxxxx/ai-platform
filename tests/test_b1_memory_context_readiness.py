@@ -1,8 +1,11 @@
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 from app.b1_memory_context_readiness import (
+    _runtime_acceptance_evidence_rank,
+    _runtime_acceptance_evidence,
     _status_for_local_controls,
     build_b1_memory_context_readiness,
     render_b1_memory_context_readiness_markdown,
@@ -19,7 +22,6 @@ FORBIDDEN_PRIVATE_MARKERS = [
 
 B1_GATE_BOUNDARY_GAPS = [
     "b1_issue_review_and_closure_evidence",
-    "b1_runtime_evidence_review_against_merged_source",
 ]
 
 
@@ -68,12 +70,13 @@ def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_
     assert readiness["runtime_acceptance"]["status_label_after_smoke"] == "211 verified"
     assert readiness["runtime_acceptance"]["does_not_close_b1_gate"] is True
     assert "issue review and closure evidence" in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
-    assert "runtime evidence review against merged source" in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
+    assert "runtime evidence review against merged source" not in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
     assert "rollback boundary" not in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
     assert "memory export boundary" not in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
     assert readiness["open_gaps"] == B1_GATE_BOUNDARY_GAPS
     assert "211_memory_enabled_document_workflow_smoke" not in readiness["open_gaps"]
     assert "b1_memory_export_boundary" not in readiness["open_gaps"]
+    assert "b1_runtime_evidence_review_against_merged_source" not in readiness["open_gaps"]
     boundary_evidence = readiness["gate_boundary_evidence"]
     assert boundary_evidence["b1_memory_export_boundary"]["status"] == "recorded_local_contract"
     assert boundary_evidence["b1_memory_export_boundary"]["closed_gap"] == "b1_memory_export_boundary"
@@ -86,23 +89,17 @@ def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_
         "ordinary_user_export_requires_session_scope_and_enabled_policy",
         "admin_export_operator_projection_without_content_or_metadata",
     ]
-    assert boundary_evidence["b1_runtime_evidence_review_against_merged_source"]["status"] == (
-        "runtime_affecting_delta_requires_fresh_211_smoke"
-    )
     runtime_review = boundary_evidence["b1_runtime_evidence_review_against_merged_source"]
+    assert runtime_review["status"] == "recorded_local_contract"
     assert runtime_review["runtime_subject_commit_sha"] == (
-        "8c99db16e449f9a03ab96068ce9cd4d4843df9ba"
+        "52ac62cfbbab47172a659dda11e41aa4b2a5d699"
     )
     assert runtime_review["current_source_commit_sha"]
-    assert runtime_review["runtime_affecting_changes_since_runtime_subject"] == [
-        "app/b1_memory_context_readiness.py",
-        "app/release_evidence_export_acceptance.py",
-        "app/release_evidence_readiness.py",
-    ]
+    assert runtime_review["runtime_affecting_changes_since_runtime_subject"] == []
     assert runtime_review["required_next_step"] == (
-        "deploy current main to 211 and rerun tools/verify_b1_memory_context_workflow.py before closing this gap"
+        "record issue closure evidence after final issue review"
     )
-    assert runtime_review["closed_gap"] is None
+    assert runtime_review["closed_gap"] == "b1_runtime_evidence_review_against_merged_source"
     rollback_boundary = boundary_evidence["b1_rollback_boundary"]
     assert rollback_boundary["status"] == "recorded_local_contract"
     assert rollback_boundary["closed_gap"] == "b1_rollback_boundary"
@@ -128,6 +125,7 @@ def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_
     assert "211_memory_enabled_document_workflow_smoke" in readiness["closed_runtime_gaps"]
     assert "b1_memory_export_boundary" in readiness["closed_gate_boundary_gaps"]
     assert "b1_rollback_boundary" in readiness["closed_gate_boundary_gaps"]
+    assert "b1_runtime_evidence_review_against_merged_source" in readiness["closed_gate_boundary_gaps"]
     assert set(readiness["local_evidence"]["memory_erasure_readiness"]["closed_runtime_gaps"]).issubset(
         set(readiness["closed_runtime_gaps"])
     )
@@ -135,7 +133,11 @@ def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_
     assert smoke_evidence["status"] == "verified_211_runtime_acceptance"
     assert smoke_evidence["artifact_kind"] == "211_memory_enabled_document_workflow_smoke"
     assert smoke_evidence["verifier"] == "tools/verify_b1_memory_context_workflow.py"
-    assert smoke_evidence["runtime_subject"] == "8c99db1-b1-playback-runtime-rebase"
+    assert smoke_evidence["evidence_id"] == "2026-06-19-211-b1-memory-context-workflow-smoke-52ac62c"
+    assert smoke_evidence["runtime_subject"] == "52ac62c-b1-runtime-evidence-review"
+    assert smoke_evidence["runtime_subject_commit_sha"] == (
+        "52ac62cfbbab47172a659dda11e41aa4b2a5d699"
+    )
     assert smoke_evidence["memory_record_count"] == 1
     assert smoke_evidence["checks"]["playback_public_projection"] is True
     assert smoke_evidence["checks"]["memory_policy_disabled_blocks_list"] is True
@@ -143,8 +145,8 @@ def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_
     assert smoke_evidence["does_not_close_b1_gate"] is True
     assert smoke_evidence["path"].endswith(
         "docs/release-evidence/b1-memory-context/"
-        "8c99db16e449f9a03ab96068ce9cd4d4843df9ba/"
-        "2026-06-18-211-b1-memory-context-workflow-smoke.json"
+        "52ac62cfbbab47172a659dda11e41aa4b2a5d699/"
+        "2026-06-19-211-b1-memory-context-workflow-smoke-52ac62c.json"
     )
 
     assert readiness["non_expansion_invariants"] == {
@@ -159,7 +161,8 @@ def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_
     assert "211 verified" in serialized
     assert "b1_issue_review_and_closure_evidence" in serialized
     assert "b1_runtime_evidence_review_against_merged_source" in serialized
-    assert "runtime_affecting_delta_requires_fresh_211_smoke" in serialized
+    assert "recorded_local_contract" in serialized
+    assert "runtime_affecting_delta_requires_fresh_211_smoke" not in serialized
     assert "closed_gate_boundary_gaps" in serialized
     assert "b1_rollback_boundary" in serialized
     assert "gate closable" not in serialized
@@ -174,7 +177,7 @@ def test_b1_memory_context_readiness_markdown_is_gap_first_and_boundary_explicit
     assert "Status label: `local partial`" in markdown
     assert "## Open Gaps" in markdown
     assert "- b1_issue_review_and_closure_evidence" in markdown
-    assert "- b1_runtime_evidence_review_against_merged_source" in markdown
+    assert "- b1_runtime_evidence_review_against_merged_source" not in markdown.split("## Closed Gate Boundary Gaps", 1)[0]
     assert "- b1_rollback_boundary" not in markdown.split("## Closed Gate Boundary Gaps", 1)[0]
     assert "- b1_memory_export_boundary" not in markdown.split("## Closed Gate Boundary Gaps", 1)[0]
     assert "## Closed Gate Boundary Gaps" in markdown
@@ -182,12 +185,13 @@ def test_b1_memory_context_readiness_markdown_is_gap_first_and_boundary_explicit
     assert "- b1_rollback_boundary" in markdown.split("## Closed Gate Boundary Gaps", 1)[1]
     assert "ordinary_user_export_excludes_deleted_and_expired_records" in markdown
     assert "disable_memory_policy_for_governed_workflow" in markdown
-    assert "- none" not in markdown.split("## Runtime Acceptance", 1)[0]
+    assert "- none" not in markdown.split("## Closed Gate Boundary Gaps", 1)[0]
     assert "## Runtime Acceptance" in markdown
     assert "### B1 Runtime Evidence Review Against Merged Source" in markdown
-    assert "runtime_affecting_delta_requires_fresh_211_smoke" in markdown
-    assert "app/b1_memory_context_readiness.py" in markdown
-    assert "deploy current main to 211 and rerun tools/verify_b1_memory_context_workflow.py" in markdown
+    assert "recorded_local_contract" in markdown
+    assert "52ac62cfbbab47172a659dda11e41aa4b2a5d699" in markdown
+    assert "runtime_affecting_delta_requires_fresh_211_smoke" not in markdown
+    assert "deploy current main to 211 and rerun tools/verify_b1_memory_context_workflow.py" not in markdown
     assert "verified_211_runtime_acceptance" in markdown
     assert "tools/verify_b1_memory_context_workflow.py" in markdown
     assert "Does not close B1 gate: `true`" in markdown
@@ -220,6 +224,7 @@ def test_b1_memory_context_readiness_cli_outputs_json_without_private_markers():
     assert "211_memory_enabled_document_workflow_smoke" in payload["closed_runtime_gaps"]
     assert "b1_memory_export_boundary" in payload["closed_gate_boundary_gaps"]
     assert "b1_rollback_boundary" in payload["closed_gate_boundary_gaps"]
+    assert "b1_runtime_evidence_review_against_merged_source" in payload["closed_gate_boundary_gaps"]
     assert payload["gate_boundary_evidence"]["b1_memory_export_boundary"]["status"] == (
         "recorded_local_contract"
     )
@@ -227,17 +232,48 @@ def test_b1_memory_context_readiness_cli_outputs_json_without_private_markers():
         "recorded_local_contract"
     )
     assert payload["gate_boundary_evidence"]["b1_runtime_evidence_review_against_merged_source"]["status"] == (
-        "runtime_affecting_delta_requires_fresh_211_smoke"
+        "recorded_local_contract"
     )
     assert payload["gate_boundary_evidence"]["b1_runtime_evidence_review_against_merged_source"][
         "runtime_affecting_changes_since_runtime_subject"
-    ] == [
-        "app/b1_memory_context_readiness.py",
-        "app/release_evidence_export_acceptance.py",
-        "app/release_evidence_readiness.py",
-    ]
+    ] == []
     for marker in FORBIDDEN_PRIVATE_MARKERS:
         assert marker not in result.stdout.lower()
+
+
+def test_b1_runtime_acceptance_evidence_prefers_current_subject_when_history_exists():
+    selected = _runtime_acceptance_evidence(Path.cwd())["211_memory_enabled_document_workflow_smoke"]
+
+    assert selected["evidence_id"] == "2026-06-19-211-b1-memory-context-workflow-smoke-52ac62c"
+    assert selected["runtime_subject_commit_sha"] == "52ac62cfbbab47172a659dda11e41aa4b2a5d699"
+    assert selected["path"].endswith(
+        "docs/release-evidence/b1-memory-context/"
+        "52ac62cfbbab47172a659dda11e41aa4b2a5d699/"
+        "2026-06-19-211-b1-memory-context-workflow-smoke-52ac62c.json"
+    )
+
+
+def test_b1_runtime_acceptance_rank_prefers_newer_review_for_same_subject():
+    old_review = {
+        "captured_at": "2026-06-18T19:37:24+08:00",
+        "path": "docs/release-evidence/b1-memory-context/subject/2026-06-18-old.json",
+        "runtime_subject_commit_sha": "52ac62cfbbab47172a659dda11e41aa4b2a5d699",
+    }
+    new_review = {
+        "captured_at": "2026-06-19T00:13:25+08:00",
+        "path": "docs/release-evidence/b1-memory-context/subject/2026-06-19-new.json",
+        "runtime_subject_commit_sha": "52ac62cfbbab47172a659dda11e41aa4b2a5d699",
+    }
+
+    selected = min(
+        [old_review, new_review],
+        key=lambda summary: _runtime_acceptance_evidence_rank(
+            summary,
+            "52ac62cfbbab47172a659dda11e41aa4b2a5d699",
+        ),
+    )
+
+    assert selected is new_review
 
 
 def test_b1_memory_context_readiness_status_degrades_for_missing_local_evidence():

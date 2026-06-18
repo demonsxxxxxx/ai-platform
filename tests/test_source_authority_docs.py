@@ -199,6 +199,7 @@ def test_prd_roadmap_guardrails_share_current_gate_sequence():
 def test_gate_status_snapshot_records_blockers_without_closure_claim():
     gate_status_text = read(GATE_STATUS_DOC)
     release_evidence_text = read(RELEASE_EVIDENCE_INDEX)
+    compact_release_evidence_text = " ".join(release_evidence_text.split())
 
     assert "not automatic" in gate_status_text
     assert "gate-closure evidence" in gate_status_text
@@ -218,6 +219,9 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "relation manifest" in gate_status_text
     assert "runtime_source_relation" in release_evidence_text
     assert "source-runtime-relation-manifest.json" in release_evidence_text
+    assert "When several reviewed entries exist for the same gate and artifact kind" in release_evidence_text
+    assert "the newest `captured_at` entry wins" in release_evidence_text
+    assert "Older reviewed entries remain historical evidence" in compact_release_evidence_text
     assert "current_source_verified_by_running_runtime" in release_evidence_text
     assert "runtime_relevant_source_verified_by_running_runtime" in release_evidence_text
     assert "verified_runtime_subject" in release_evidence_text
@@ -325,6 +329,8 @@ def test_s2_sandbox_runtime_smoke_contract_records_pr44_evidence_without_closing
     assert "does not close `executor_context_pack_211_acceptance`" in release_evidence_text
     assert "closes only the #22 `executor_context_pack_211_acceptance` runtime gap" in release_evidence_text
     assert "G6/G9 closure" in release_evidence_text
+    assert "2026-06-19-211-b1-memory-context-workflow-smoke-52ac62c.json" in release_evidence_text
+    assert "after the 2026-06-19 `52ac62c` refresh it is retained as historical evidence" in release_evidence_text
 
 
 def test_foundation_alpha_closure_records_stage_complete_baseline_and_boundaries():
@@ -901,22 +907,25 @@ def test_governance_readiness_doc_records_b1_smoke_without_gate_closure():
     assert "`211 verified`" in governance_text
     assert "B1 stage itself remains `local partial`" in governance_text
     assert "not `gate closable`" in governance_text
-    assert "`runtime_affecting_delta_requires_fresh_211_smoke`" in governance_text
-    assert "`8c99db16e449f9a03ab96068ce9cd4d4843df9ba`" in governance_text
+    assert "`recorded_local_contract`" in governance_text
+    assert "`runtime_affecting_delta_requires_fresh_211_smoke`" not in governance_text
+    assert "`52ac62cfbbab47172a659dda11e41aa4b2a5d699`" in governance_text
     assert "current source commit is reported dynamically" in governance_text
     assert "`9687a7720528e2f3068bfcbdccbee45f80458ec0`" not in governance_text
-    assert "`app/b1_memory_context_readiness.py`" in governance_text
-    assert "`app/release_evidence_export_acceptance.py`" in governance_text
-    assert "`app/release_evidence_readiness.py`" in governance_text
-    assert "deploying current main to 211" in governance_text
+    assert "`app/b1_memory_context_readiness.py`" not in governance_text
+    assert "`app/release_evidence_export_acceptance.py`" not in governance_text
+    assert "`app/release_evidence_readiness.py`" not in governance_text
+    assert "deploying current main to 211" not in governance_text
+    assert "final #75 review and issue-closure evidence" in governance_text
     assert "`tools/verify_b1_memory_context_workflow.py`" in governance_text
     assert "memory export boundary, and rollback" not in governance_text
     assert "`local_controls_ready_runtime_smoke_required`, and keeps status label" not in governance_text
     assert "carries `211_memory_enabled_document_workflow_smoke` in the G6 open gaps" not in governance_text
     assert "reviewed B1 `211_memory_enabled_document_workflow_smoke` evidence" in memory_implemented
+    assert "B1 merged-source runtime evidence review for `52ac62c`" in memory_implemented
     assert "B1 rollback boundary local operator contract" in memory_implemented
     assert "`211_memory_enabled_document_workflow_smoke`" not in memory_remaining
-    assert "B1 merged-source runtime evidence review" in memory_remaining
+    assert "B1 merged-source runtime evidence review" not in memory_remaining
     assert "B1 rollback boundary" not in memory_remaining
 
 

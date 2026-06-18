@@ -1,0 +1,128 @@
+{
+  "artifact_kind": "211_memory_enabled_document_workflow_smoke",
+  "captured_at": "2026-06-19T00:13:25+08:00",
+  "commit_sha": "52ac62cfbbab47172a659dda11e41aa4b2a5d699",
+  "evidence_id": "2026-06-19-211-b1-memory-context-workflow-smoke-52ac62c",
+  "evidence_ref": {
+    "command": "python3 tools/verify_b1_memory_context_workflow.py --base-url http://127.0.0.1:8020 --commit-sha 52ac62cfbbab47172a659dda11e41aa4b2a5d699 --runtime-subject-commit-sha 52ac62cfbbab47172a659dda11e41aa4b2a5d699 --image ai-platform:52ac62c-b1-runtime-evidence-review --timeout-seconds 20",
+    "raw_evidence_path": "runtime-evidence/b1-memory-context/52ac62cfbbab47172a659dda11e41aa4b2a5d699/2026-06-19-211-b1-memory-context-workflow-smoke-52ac62c.raw.json",
+    "result": "ok:true",
+    "runtime_checks": {
+      "211_memory_enabled_document_workflow_smoke": {
+        "acceptance_gap": "211_memory_enabled_document_workflow_smoke",
+        "checks": {
+          "context_snapshot_public_provenance": true,
+          "create_governed_run": true,
+          "cross_user_context_denied": true,
+          "deleted_memory_absent_from_future_context": true,
+          "long_term_memory_fail_closed": true,
+          "memory_policy_disabled_blocks_create": true,
+          "memory_policy_disabled_blocks_list": true,
+          "memory_policy_enabled_for_governed_scope": true,
+          "memory_record_create_and_list": true,
+          "no_private_projection_leakage": true,
+          "playback_public_projection": true
+        },
+        "does_not_close_b1_gate": true,
+        "memory_record_count": 1,
+        "non_expansion_invariants": {
+          "frontend_state_is_canonical_context": false,
+          "gate_closure_claimed": false,
+          "long_term_cross_session_memory_enabled": false,
+          "stores_private_executor_material_as_memory": false
+        },
+        "ok": true,
+        "redaction_scan_status": "passed",
+        "remaining_gate_boundaries": [
+          "issue review and closure evidence",
+          "runtime evidence review against merged source",
+          "memory export boundary",
+          "rollback boundary"
+        ],
+        "schema_version": "ai-platform.b1-memory-context-workflow-smoke.v1",
+        "source": {
+          "commit_sha": "52ac62cfbbab47172a659dda11e41aa4b2a5d699",
+          "image": "ai-platform:52ac62c-b1-runtime-evidence-review",
+          "runtime_subject_commit_sha": "52ac62cfbbab47172a659dda11e41aa4b2a5d699"
+        },
+        "target": "211_api_memory_context_workflow",
+        "workflow": {
+          "agent_id": "general-agent",
+          "memory_record_created": true,
+          "run_id_present": true,
+          "session_id_present": true,
+          "workspace_id": "default"
+        }
+      },
+      "verifier_checks": [
+        {
+          "name": "check_b1_memory_context_workflow_smoke",
+          "passed": true
+        },
+        {
+          "name": "check_no_private_projection_leakage",
+          "passed": true
+        }
+      ]
+    },
+    "verifier": "tools/verify_b1_memory_context_workflow.py"
+  },
+  "gate": "B1 memory/context usable",
+  "issue_refs": [
+    "#75"
+  ],
+  "open_followups": [
+    "This evidence closes the merged-source B1 runtime evidence review gap for the 52ac62c runtime subject when later source deltas are runtime-neutral.",
+    "B1 gate closure remains open until issue #75 review and closure evidence are recorded.",
+    "This evidence does not claim G0 source-authority closure, production readiness, Docker sandbox hardening, ordinary-user multi-agent exposure, long-term cross-session memory by default, or production concurrency default increases."
+  ],
+  "pr_refs": [
+    "#86"
+  ],
+  "redaction_scan_status": "passed",
+  "review_notes": [
+    "211 verifier result was ok=true for schema ai-platform.b1-memory-context-workflow-smoke.v1 against target 211_api_memory_context_workflow.",
+    "The smoke covered governed run creation, governed-scope memory enablement, disabled-policy read/write blocking, memory create/list, context snapshot provenance, playback public projection with memory_record_count=1, cross-user denial, delete followed by future-context absence, long-term memory fail-closed, and private projection leakage scan.",
+    "The 211 runtime was built from a clean staging archive of origin/main at 52ac62c because the service repo on 211 was dirty and behind; this is valid B1 workflow smoke evidence but not G0 source-authority closure.",
+    "The compose file came from the clean staging source tree, while the runtime env file remained the external 211 deployment env file; real env values were not copied or quoted."
+  ],
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "52ac62cfbbab47172a659dda11e41aa4b2a5d699",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "branch": "main",
+    "compose_config_source": "staging_compose_for_b1_runtime_smoke",
+    "compose_env_source": "external_211_runtime_env_file_supplied_through_compose_values_not_copied",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "image": "ai-platform:52ac62c-b1-runtime-evidence-review",
+    "image_id": "sha256:8e21ca383e808d84644f7e967a0cc172e874d4962d821f465c761e04f22c68eb",
+    "image_labels": {
+      "ai-platform.runtime-subject": "52ac62cfbbab47172a659dda11e41aa4b2a5d699",
+      "ai-platform.runtime_subject": "52ac62cfbbab47172a659dda11e41aa4b2a5d699",
+      "ai-platform.source-revision": "52ac62cfbbab47172a659dda11e41aa4b2a5d699",
+      "ai-platform.source.note": "staging_compose_external_env_not_g0_closure",
+      "ai-platform.source_revision": "52ac62cfbbab47172a659dda11e41aa4b2a5d699",
+      "ai-platform.source_tree_commit": "52ac62cfbbab47172a659dda11e41aa4b2a5d699",
+      "org.opencontainers.image.revision": "52ac62cfbbab47172a659dda11e41aa4b2a5d699"
+    },
+    "repo_local_env_present": false,
+    "runtime_boundary": {
+      "api_container": "ai-platform-api",
+      "worker_container": "ai-platform-worker"
+    },
+    "runtime_source_marker": "52ac62cfbbab47172a659dda11e41aa4b2a5d699",
+    "source_authority_caveat": "staging compose source and external env file remain follow-ups; this record is not G0 source-authority closure",
+    "source_snapshot": {
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "runtime_subject_commit_sha": "52ac62cfbbab47172a659dda11e41aa4b2a5d699",
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "source_tree_commit_sha": "52ac62cfbbab47172a659dda11e41aa4b2a5d699",
+      "source_tree_dirty": false
+    },
+    "source_tree_dirty": false
+  }
+}

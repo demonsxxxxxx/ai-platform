@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -245,6 +246,7 @@ def _b1_smoke_evidence_summary(
     return {
         "status": "verified_211_runtime_acceptance",
         "artifact_kind": RUNTIME_ACCEPTANCE_GAP,
+        "captured_at": payload.get("captured_at"),
         "evidence_id": payload.get("evidence_id"),
         "path": _path_for_output(path, repo_root),
         "verifier": RUNTIME_ACCEPTANCE_VERIFIER,
@@ -263,15 +265,57 @@ def _runtime_acceptance_evidence(repo_root: Path) -> dict[str, dict[str, Any]]:
     evidence_root = repo_root / _RUNTIME_EVIDENCE_ROOT
     if not evidence_root.exists():
         return {}
-    summaries: dict[str, dict[str, Any]] = {}
+    candidates: list[dict[str, Any]] = []
     for path in sorted(evidence_root.rglob("*.json")):
         payload = _load_json(path)
         if payload is None:
             continue
         summary = _b1_smoke_evidence_summary(payload, path=path, repo_root=repo_root)
         if summary is not None:
-            summaries[RUNTIME_ACCEPTANCE_GAP] = summary
-    return summaries
+            candidates.append(summary)
+    if not candidates:
+        return {}
+    current_source = _resolve_source_tree_revision(repo_root)
+    candidates.sort(
+        key=lambda summary: _runtime_acceptance_evidence_rank(summary, current_source)
+    )
+    return {RUNTIME_ACCEPTANCE_GAP: candidates[0]}
+
+
+def _runtime_acceptance_evidence_rank(
+    summary: dict[str, Any],
+    current_source: str,
+) -> tuple[int, int, float, str, str]:
+    runtime_subject = summary.get("runtime_subject_commit_sha")
+    if not isinstance(runtime_subject, str) or not runtime_subject:
+        return (3, 0, 0, "", str(summary.get("path") or ""))
+    captured_at_rank = _captured_at_descending_rank(summary.get("captured_at"))
+    if runtime_subject == current_source:
+        return (0, 0, captured_at_rank, runtime_subject, str(summary.get("path") or ""))
+    runtime_affecting_changes = _resolve_runtime_affecting_changes_between(
+        runtime_subject,
+        current_source,
+    )
+    if runtime_affecting_changes == []:
+        return (1, 0, captured_at_rank, runtime_subject, str(summary.get("path") or ""))
+    if runtime_affecting_changes is None:
+        return (2, 0, captured_at_rank, runtime_subject, str(summary.get("path") or ""))
+    return (
+        3,
+        len(runtime_affecting_changes),
+        captured_at_rank,
+        runtime_subject,
+        str(summary.get("path") or ""),
+    )
+
+
+def _captured_at_descending_rank(value: Any) -> float:
+    if not isinstance(value, str) or not value:
+        return 0
+    try:
+        return -datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0
 
 
 def _runtime_subject_commit_from_evidence(
@@ -517,8 +561,9 @@ def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str
             "contract when memory-erasure readiness has the required export "
             "controls and tests. The rollback boundary is a local operator "
             "contract for disabling governed memory/context workflow exposure "
-            "and reverting runtime/config state. B1 gate closure still requires "
-            "issue review and merged-source runtime evidence review."
+            "and reverting runtime/config state. Reviewed merged-source runtime "
+            "evidence can close only the runtime evidence review boundary. B1 "
+            "gate closure still requires issue review and closure evidence."
         ),
     }
 
