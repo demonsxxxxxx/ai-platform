@@ -46,6 +46,30 @@ def test_backend_prd_records_stage_gate_and_acceptance_boundaries():
         assert boundary in text
 
 
+def test_backend_prd_records_post_poc_productization_priorities_and_deliverables():
+    text = read_backend_prd()
+    compact_text = " ".join(text.split())
+
+    for phrase in (
+        "The project is past the POC proving phase.",
+        "Productization means turning the accepted Foundation Alpha baseline into repeatable, supportable backend capabilities.",
+        "P0-1 Memory/context usable",
+        "P0-2 Real sandbox usable",
+        "P0-3 Worker/model-gateway capacity evidence",
+        "P0-4 Skills management and release governance",
+        "### 3.4 Stage Deliverables",
+    ):
+        assert phrase in compact_text
+
+    for deliverable in (
+        "| B1 | Memory policy and context-pack contracts; memory workflow verifier; reviewed 211 smoke evidence; rollback/export notes. |",
+        "| B2 | Real sandbox provider profile; lease/callback/egress/cleanup tests; 211 sandbox smoke evidence. |",
+        "| B3 | Capacity profile definition; bounded-load harness; seven-gate 211 evidence; Admin Runtime backpressure projection. |",
+        "| B4 | Skill upload/version/release/rollback contracts; dependency evidence contract; reviewed skill-run smoke. |",
+    ):
+        assert deliverable in text
+
+
 def test_backend_prd_records_reference_projects_without_delegating_authority():
     text = read_backend_prd()
     compact_text = " ".join(text.split())
@@ -77,8 +101,17 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
         "Any imported code requires source pinning, license/provenance review, and an adaptation plan.",
         "Do not import a reference project's tenant, RBAC, memory, sandbox, or release authority wholesale.",
         "Backend authority remains ai-platform.",
+        "No reference project is a dependency decision until an issue names the source, license, imported files, adaptation boundary, and verification plan.",
     ):
         assert authority_boundary in compact_text
+
+    for category in (
+        "| B1 memory/context | LangGraph, Mem0, Zep | Memory/checkpoint model, memory UX, provenance, delete/update semantics. |",
+        "| B2 sandbox | OpenHands, E2B, Daytona | Sandbox lifecycle, workspace isolation, command execution, artifact return, cancellation ergonomics. |",
+        "| B3 capacity/model gateway | Temporal, Celery, LiteLLM, Portkey | Durable retry vocabulary, worker scaling, provider limits, budgets, spend tracking, fallback/backpressure. |",
+        "| B4 Skills management | Backstage, Dify, Open WebUI, LibreChat, AnythingLLM | Catalog, release workflow, skill/app marketplace UX, slash/tool discovery patterns. |",
+    ):
+        assert category in text
 
     assert "DeerFlow" not in text
     assert "AgentScope" not in text
