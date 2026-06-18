@@ -53,7 +53,16 @@ def test_b1_memory_context_readiness_aggregates_local_controls_and_keeps_211_gap
     assert readiness["runtime_acceptance"]["required"] is True
     assert readiness["runtime_acceptance"]["status"] == "missing_211_memory_enabled_document_workflow_smoke"
     assert readiness["runtime_acceptance"]["acceptance_gap"] == "211_memory_enabled_document_workflow_smoke"
+    assert readiness["runtime_acceptance"]["verifier_script"] == "tools/verify_b1_memory_context_workflow.py"
+    assert (
+        readiness["runtime_acceptance"]["verifier_schema_version"]
+        == "ai-platform.b1-memory-context-workflow-smoke.v1"
+    )
+    assert readiness["runtime_acceptance"]["target"] == "211_api_memory_context_workflow"
     assert readiness["runtime_acceptance"]["status_label_before_smoke"] == "local partial"
+    assert readiness["runtime_acceptance"]["does_not_close_b1_gate"] is True
+    assert "memory export boundary" in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
+    assert "rollback boundary" in readiness["runtime_acceptance"]["remaining_gate_boundaries"]
     assert "status_label_after_smoke" not in readiness["runtime_acceptance"]
     assert readiness["open_gaps"] == ["211_memory_enabled_document_workflow_smoke"]
     assert readiness["closed_runtime_gaps"] == readiness["local_evidence"]["memory_erasure_readiness"]["closed_runtime_gaps"]
@@ -81,6 +90,8 @@ def test_b1_memory_context_readiness_markdown_is_gap_first_and_boundary_explicit
     assert "- 211_memory_enabled_document_workflow_smoke" in markdown
     assert "## Runtime Acceptance" in markdown
     assert "missing_211_memory_enabled_document_workflow_smoke" in markdown
+    assert "tools/verify_b1_memory_context_workflow.py" in markdown
+    assert "Does not close B1 gate: `true`" in markdown
     assert "211 verified" not in markdown.lower()
     assert "does not enable long-term cross-session memory by default" in markdown
     assert "does not store executor-private payloads as memory" in markdown
@@ -100,6 +111,8 @@ def test_b1_memory_context_readiness_cli_outputs_json_without_private_markers():
     assert payload["schema_version"] == "ai-platform.b1-memory-context-readiness.v1"
     assert payload["status"] == "local_controls_ready_runtime_smoke_required"
     assert payload["runtime_acceptance"]["acceptance_gap"] == "211_memory_enabled_document_workflow_smoke"
+    assert payload["runtime_acceptance"]["verifier_script"] == "tools/verify_b1_memory_context_workflow.py"
+    assert payload["runtime_acceptance"]["does_not_close_b1_gate"] is True
     for marker in FORBIDDEN_PRIVATE_MARKERS:
         assert marker not in result.stdout.lower()
 

@@ -11,6 +11,9 @@ SCHEMA_VERSION = "ai-platform.b1-memory-context-readiness.v1"
 BACKEND_STAGE = "B1 memory/context usable"
 ISSUE = "#75"
 RUNTIME_ACCEPTANCE_GAP = "211_memory_enabled_document_workflow_smoke"
+RUNTIME_ACCEPTANCE_VERIFIER = "tools/verify_b1_memory_context_workflow.py"
+RUNTIME_ACCEPTANCE_VERIFIER_SCHEMA = "ai-platform.b1-memory-context-workflow-smoke.v1"
+RUNTIME_ACCEPTANCE_TARGET = "211_api_memory_context_workflow"
 
 _IMPLEMENTED_CONTROLS = [
     "tenant_workspace_user_session_scoped_memory_policy",
@@ -85,6 +88,9 @@ def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str
         "required": True,
         "status": "missing_211_memory_enabled_document_workflow_smoke",
         "acceptance_gap": RUNTIME_ACCEPTANCE_GAP,
+        "verifier_script": RUNTIME_ACCEPTANCE_VERIFIER,
+        "verifier_schema_version": RUNTIME_ACCEPTANCE_VERIFIER_SCHEMA,
+        "target": RUNTIME_ACCEPTANCE_TARGET,
         "required_workflow": "selected_memory_enabled_document_workflow",
         "required_evidence": [
             "211 upload or select document workflow input",
@@ -96,6 +102,13 @@ def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str
             "no executor-private payload, raw storage key, or sandbox workdir leaks",
         ],
         "status_label_before_smoke": "local partial",
+        "does_not_close_b1_gate": True,
+        "remaining_gate_boundaries": [
+            "issue review and closure evidence",
+            "runtime evidence review against merged source",
+            "memory export boundary",
+            "rollback boundary",
+        ],
     }
     return {
         "schema_version": SCHEMA_VERSION,
@@ -146,6 +159,9 @@ def render_b1_memory_context_readiness_markdown(readiness: dict[str, Any]) -> st
         f"Required: `{str(runtime['required']).lower()}`\n\n"
         f"Status: `{runtime['status']}`\n\n"
         f"Acceptance gap: `{runtime['acceptance_gap']}`\n\n"
+        f"Verifier: `{runtime['verifier_script']}` "
+        f"(`{runtime['verifier_schema_version']}` targeting `{runtime['target']}`)\n\n"
+        f"Does not close B1 gate: `{str(runtime['does_not_close_b1_gate']).lower()}`\n\n"
         "Required evidence:\n\n"
         f"{runtime_evidence}\n\n"
         "## Implemented Controls\n\n"

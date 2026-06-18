@@ -234,6 +234,10 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert b1_evidence["runtime_acceptance"]["acceptance_gap"] == (
         "211_memory_enabled_document_workflow_smoke"
     )
+    assert b1_evidence["runtime_acceptance"]["verifier_script"] == (
+        "tools/verify_b1_memory_context_workflow.py"
+    )
+    assert b1_evidence["runtime_acceptance"]["does_not_close_b1_gate"] is True
     assert b1_evidence["open_gaps"] == ["211_memory_enabled_document_workflow_smoke"]
     assert b1_evidence["non_expansion_invariants"] == {
         "long_term_cross_session_memory_enabled": False,

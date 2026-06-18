@@ -396,6 +396,12 @@ claim `211 verified`: B1 still requires one selected memory-enabled document
 workflow smoke on 211 with memory policy enabled only for the governed scope,
 context provenance recorded, deleted/redacted memory absent from context, and no
 executor-private payload, raw storage key, or sandbox workdir leakage.
+`tools/verify_b1_memory_context_workflow.py` is the reusable verifier entrypoint
+for that smoke and emits schema
+`ai-platform.b1-memory-context-workflow-smoke.v1`; passing it records workflow
+runtime evidence only and does not by itself close B1 because issue review,
+merged-source runtime evidence review, memory export boundary, and rollback
+boundary still have to be recorded.
 
 `tools/office_context_readiness.py` now records the source-level #22
 context-pack readiness contract for office-heavy workflows with schema
