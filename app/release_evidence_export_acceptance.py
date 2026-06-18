@@ -65,6 +65,10 @@ _ALLOWED_REDACTED_MARKERS = (
     "[redacted-secret]",
 )
 _COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_RUNTIME_SUBJECT_ARTIFACT_KINDS = {
+    "211_runtime_smoke",
+    "211_memory_enabled_document_workflow_smoke",
+}
 
 
 def _path_for_output(path: Path, root: Path) -> str:
@@ -136,11 +140,21 @@ def _entry_blockers(entry: dict[str, Any]) -> list[str]:
         blockers.append("redaction_scan_not_passed")
     if entry.get("review_status") not in {"reviewed", "accepted"}:
         blockers.append("review_status_not_accepted")
-    if entry.get("artifact_kind") == "211_runtime_smoke" and "runtime_subject_commit_sha" not in entry:
+    if entry.get("artifact_kind") in _RUNTIME_SUBJECT_ARTIFACT_KINDS and "runtime_subject_commit_sha" not in entry:
         blockers.append("missing_runtime_subject_commit_sha")
     if _contains_forbidden_marker(entry):
         blockers.append("forbidden_marker_detected")
     return sorted(set(blockers))
+
+
+def _entry_can_be_excluded_as_legacy(
+    entry: dict[str, Any],
+    entry_blockers: list[str],
+) -> bool:
+    return (
+        entry.get("artifact_kind") == "211_runtime_smoke"
+        and set(entry_blockers).issubset(_LEGACY_EXCLUSION_REASONS)
+    )
 
 
 def _safe_entry(entry: dict[str, Any], *, path: Path, root: Path) -> dict[str, Any]:
@@ -191,7 +205,7 @@ def build_release_evidence_export_acceptance(
             continue
         entry_blockers = _entry_blockers(payload)
         if entry_blockers:
-            if set(entry_blockers).issubset(_LEGACY_EXCLUSION_REASONS):
+            if _entry_can_be_excluded_as_legacy(payload, entry_blockers):
                 excluded_entries.append(
                     {
                         "path": _path_for_output(path, root),

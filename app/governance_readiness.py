@@ -337,6 +337,9 @@ def build_governance_readiness(
                     "runtime_acceptance": b1_memory_context_readiness[
                         "runtime_acceptance"
                     ],
+                    "runtime_acceptance_evidence": b1_memory_context_readiness[
+                        "runtime_acceptance_evidence"
+                    ],
                     "open_gaps": b1_memory_context_readiness["open_gaps"],
                     "non_expansion_invariants": b1_memory_context_readiness[
                         "non_expansion_invariants"
