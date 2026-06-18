@@ -14,7 +14,7 @@ def test_backend_prd_records_stage_gate_and_acceptance_boundaries():
     compact_text = " ".join(text.split())
 
     for required_section in (
-        "### 0.1 Current Evidence Snapshot",
+        "### 0.1 Live Status Contract And Last Calibration",
         "### 0.2 Status Transition Contract",
         "## 3. Backend Stage Model",
         "### 3.1 Stage Evidence Matrix",
@@ -22,8 +22,11 @@ def test_backend_prd_records_stage_gate_and_acceptance_boundaries():
         "### 3.3 Universal Blocking Conditions",
         "### 3.5 Gate Closure Checklist",
         "### 3.6 Negative Acceptance Matrix",
+        "### 3.7 Productization Gate Map",
         "## 4. Gate And Acceptance Boundaries",
+        "### 5.0 Stage Requirement Format",
         "## 6. Reference Code Projects",
+        "### 6.1 Reference Intake Levels",
     ):
         assert required_section in text
 
@@ -55,9 +58,11 @@ def test_backend_prd_records_stage_gate_and_acceptance_boundaries():
     ):
         assert boundary in compact_text
 
-    assert "source tree `f8a0f3c1168c34663850345d8f30358d435a0134`" in compact_text
-    assert "runtime relation `source_synced_runtime_pending`" in compact_text
-    assert "open gaps remain `b1_issue_review_and_closure_evidence` and `b1_runtime_evidence_review_against_merged_source`" in compact_text
+    assert "Live readiness output, gate status, release evidence records, and GitHub issue state are the current-state sources." in compact_text
+    assert "Last calibration rows are informational and must not be used as gate closure evidence after source/runtime state changes." in compact_text
+    assert "Current status must be refreshed before reporting `211 verified` or `gate closable`." in compact_text
+    assert "Do not hard-code a single source commit as the permanent PRD truth." in compact_text
+    assert "open gaps currently include `b1_issue_review_and_closure_evidence` and may include `b1_runtime_evidence_review_against_merged_source` whenever runtime-affecting source changes land after the reviewed smoke subject." in compact_text
     assert "closed gate-boundary gaps include `b1_runtime_evidence_review_against_merged_source`" not in compact_text
     assert "open gaps remain `b1_issue_review_and_closure_evidence` only" not in compact_text
     assert "stale or open merged-source runtime review" in compact_text
@@ -101,6 +106,9 @@ def test_backend_prd_records_post_poc_productization_priorities_and_deliverables
         "The backend becomes product-beta ready only when it supports a named internal workflow",
         "B2 can now be tracked through `tools/b2_sandbox_readiness.py`, but that rollup is source-level only.",
         "The B2 source contract is `local partial` until 211 Docker/equivalent evidence is generated",
+        "B3 is a measurement stage before it is a configuration stage.",
+        "B4 is accepted only when a Skill run can be explained from release decision to immutable run snapshot to used-skill evidence.",
+        "B6 is an operations beta gate, not a dashboard-only gate.",
     ):
         assert phrase in compact_text
 
@@ -111,6 +119,15 @@ def test_backend_prd_records_post_poc_productization_priorities_and_deliverables
         "| B4 | Skill upload/version/release/rollback contracts; dependency evidence contract; reviewed skill-run smoke. |",
     ):
         assert deliverable in text
+
+    for gate_map in (
+        "| Productization lane | Backend stage | Primary blocking question | First accepted proof |",
+        "| Memory usable | B1 | Can a selected workflow use memory/context without private leakage or uncontrolled long-term recall? | Reviewed 211 memory-enabled document workflow smoke for merged source plus export/delete/redaction boundaries. |",
+        "| Real sandbox usable | B2 | Can governed SDK skill execution run in a real isolated provider instead of `fake`? | Reviewed 211 Docker/equivalent smoke with lease, callback, artifact, cancel, cleanup, orphan, and redaction evidence. |",
+        "| Capacity usable | B3 | Can 10 sessions x peak 4 SDK subagents run without queue/model/sandbox/cost collapse? | Operator-reviewed bounded-load evidence before any default increase. |",
+        "| Skills usable | B4 | Can Skills be uploaded, versioned, reviewed, released, pinned, run, audited, and rolled back? | Reviewed Skill lifecycle evidence and 211 run with used-skill artifacts. |",
+    ):
+        assert gate_map in text
 
 
 def test_backend_prd_records_reference_projects_without_delegating_authority():
@@ -148,6 +165,7 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
         "Open WebUI",
         "Dramatiq",
         "Taskiq",
+        "Casbin",
     ):
         assert project in text
 
@@ -159,6 +177,10 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
         "No reference project is a dependency decision until an issue names the source, license, imported files, adaptation boundary, and verification plan.",
         "Reference use must follow this intake gate:",
         "Do not add a runtime dependency, side service, or hosted SaaS call without a separate architecture issue, security review, deployment plan, and rollback boundary.",
+        "Concept-only reference",
+        "Code adaptation candidate",
+        "Runtime dependency proposal",
+        "References can explain implementation choices, but they cannot close ai-platform gates.",
     ):
         assert authority_boundary in compact_text
 
@@ -168,10 +190,18 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
         "| B2 sandbox | OpenHands, E2B, Daytona | Sandbox lifecycle, workspace isolation, command execution, artifact return, cancellation ergonomics. |",
         "| B3 capacity/model gateway | Temporal, Celery, Dramatiq, Taskiq, LiteLLM, Portkey | Durable retry vocabulary, worker scaling, provider limits, budgets, spend tracking, fallback/backpressure. |",
         "| B4 Skills management | Backstage, Dify, Open WebUI, LibreChat, AnythingLLM | Catalog, release workflow, skill/app marketplace UX, slash/tool discovery patterns. |",
-        "| B5 authorization/files/tools | OpenFGA, SpiceDB, Open Policy Agent, MCP Gateway, supergateway | Relationship-based ACLs, policy bundles, gateway/tool catalog routing, decision logs, deny-path test matrices. |",
+        "| B5 authorization/files/tools | OpenFGA, SpiceDB, Casbin, Open Policy Agent, MCP Gateway, supergateway | Relationship-based ACLs, role/policy enforcement, policy bundles, gateway/tool catalog routing, decision logs, deny-path test matrices. |",
         "| B6 observability/ops | Langfuse, Phoenix, OpenTelemetry Collector, promptfoo, Ragas, Giskard | Trace vocabulary, eval runs, token/cost views, metrics/traces/log export, quality regression, and redaction patterns. |",
     ):
         assert category in text
+
+    for shortlist in (
+        "| Priority | Stage | Reference code to inspect first | Why it is relevant now |",
+        "| 1 | B2 | OpenHands sandbox runtime, E2B Code Interpreter execution API, Daytona workspace lifecycle | Current open backend issue is real sandbox evidence; these references map to lifecycle and artifact/callback behavior. |",
+        "| 2 | B3 | LiteLLM proxy budgets/rate limits, Temporal/Celery worker semantics | Capacity target depends on model-gateway backpressure and durable worker behavior. |",
+        "| 3 | B4 | Backstage catalog metadata, Dify/Open WebUI tool or app management, LibreChat tool UI contracts | Skills management needs release metadata, catalog UX, and run-time selection boundaries. |",
+    ):
+        assert shortlist in text
 
     assert "DeerFlow" not in text
     assert "AgentScope" not in text
