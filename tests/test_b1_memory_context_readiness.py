@@ -87,8 +87,22 @@ def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_
         "admin_export_operator_projection_without_content_or_metadata",
     ]
     assert boundary_evidence["b1_runtime_evidence_review_against_merged_source"]["status"] == (
-        "open_pending_merged_source_runtime_review"
+        "runtime_affecting_delta_requires_fresh_211_smoke"
     )
+    runtime_review = boundary_evidence["b1_runtime_evidence_review_against_merged_source"]
+    assert runtime_review["runtime_subject_commit_sha"] == (
+        "8c99db16e449f9a03ab96068ce9cd4d4843df9ba"
+    )
+    assert runtime_review["current_source_commit_sha"]
+    assert runtime_review["runtime_affecting_changes_since_runtime_subject"] == [
+        "app/b1_memory_context_readiness.py",
+        "app/release_evidence_export_acceptance.py",
+        "app/release_evidence_readiness.py",
+    ]
+    assert runtime_review["required_next_step"] == (
+        "deploy current main to 211 and rerun tools/verify_b1_memory_context_workflow.py before closing this gap"
+    )
+    assert runtime_review["closed_gap"] is None
     rollback_boundary = boundary_evidence["b1_rollback_boundary"]
     assert rollback_boundary["status"] == "recorded_local_contract"
     assert rollback_boundary["closed_gap"] == "b1_rollback_boundary"
@@ -145,6 +159,7 @@ def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_
     assert "211 verified" in serialized
     assert "b1_issue_review_and_closure_evidence" in serialized
     assert "b1_runtime_evidence_review_against_merged_source" in serialized
+    assert "runtime_affecting_delta_requires_fresh_211_smoke" in serialized
     assert "closed_gate_boundary_gaps" in serialized
     assert "b1_rollback_boundary" in serialized
     assert "gate closable" not in serialized
@@ -169,6 +184,10 @@ def test_b1_memory_context_readiness_markdown_is_gap_first_and_boundary_explicit
     assert "disable_memory_policy_for_governed_workflow" in markdown
     assert "- none" not in markdown.split("## Runtime Acceptance", 1)[0]
     assert "## Runtime Acceptance" in markdown
+    assert "### B1 Runtime Evidence Review Against Merged Source" in markdown
+    assert "runtime_affecting_delta_requires_fresh_211_smoke" in markdown
+    assert "app/b1_memory_context_readiness.py" in markdown
+    assert "deploy current main to 211 and rerun tools/verify_b1_memory_context_workflow.py" in markdown
     assert "verified_211_runtime_acceptance" in markdown
     assert "tools/verify_b1_memory_context_workflow.py" in markdown
     assert "Does not close B1 gate: `true`" in markdown
@@ -207,6 +226,16 @@ def test_b1_memory_context_readiness_cli_outputs_json_without_private_markers():
     assert payload["gate_boundary_evidence"]["b1_rollback_boundary"]["status"] == (
         "recorded_local_contract"
     )
+    assert payload["gate_boundary_evidence"]["b1_runtime_evidence_review_against_merged_source"]["status"] == (
+        "runtime_affecting_delta_requires_fresh_211_smoke"
+    )
+    assert payload["gate_boundary_evidence"]["b1_runtime_evidence_review_against_merged_source"][
+        "runtime_affecting_changes_since_runtime_subject"
+    ] == [
+        "app/b1_memory_context_readiness.py",
+        "app/release_evidence_export_acceptance.py",
+        "app/release_evidence_readiness.py",
+    ]
     for marker in FORBIDDEN_PRIVATE_MARKERS:
         assert marker not in result.stdout.lower()
 

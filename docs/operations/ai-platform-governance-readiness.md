@@ -407,6 +407,15 @@ recording the source/runtime subject plus residual caveats before restoring
 runtime/config state. The runtime smoke layer
 can report `211 verified` for the selected memory-enabled document workflow,
 but the B1 stage itself remains `local partial` and is not `gate closable`.
+The merged-source runtime evidence review currently reports
+`runtime_affecting_delta_requires_fresh_211_smoke`: the reviewed 211 B1 smoke is
+bound to runtime subject `8c99db16e449f9a03ab96068ce9cd4d4843df9ba`, while the
+current merged source is `9687a7720528e2f3068bfcbdccbee45f80458ec0`, with
+runtime-affecting changes in `app/b1_memory_context_readiness.py`,
+`app/release_evidence_export_acceptance.py`, and
+`app/release_evidence_readiness.py`. Therefore B1 issue closure requires
+deploying current main to 211 and rerunning
+`tools/verify_b1_memory_context_workflow.py`.
 `tools/verify_b1_memory_context_workflow.py` is the reusable verifier entrypoint
 for that smoke and emits schema
 `ai-platform.b1-memory-context-workflow-smoke.v1`; passing it records workflow

@@ -901,6 +901,14 @@ def test_governance_readiness_doc_records_b1_smoke_without_gate_closure():
     assert "`211 verified`" in governance_text
     assert "B1 stage itself remains `local partial`" in governance_text
     assert "not `gate closable`" in governance_text
+    assert "`runtime_affecting_delta_requires_fresh_211_smoke`" in governance_text
+    assert "`8c99db16e449f9a03ab96068ce9cd4d4843df9ba`" in governance_text
+    assert "`9687a7720528e2f3068bfcbdccbee45f80458ec0`" in governance_text
+    assert "`app/b1_memory_context_readiness.py`" in governance_text
+    assert "`app/release_evidence_export_acceptance.py`" in governance_text
+    assert "`app/release_evidence_readiness.py`" in governance_text
+    assert "deploying current main to 211" in governance_text
+    assert "`tools/verify_b1_memory_context_workflow.py`" in governance_text
     assert "memory export boundary, and rollback" not in governance_text
     assert "`local_controls_ready_runtime_smoke_required`, and keeps status label" not in governance_text
     assert "carries `211_memory_enabled_document_workflow_smoke` in the G6 open gaps" not in governance_text

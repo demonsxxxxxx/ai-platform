@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
+from app.foundation_alpha_readiness import _resolve_runtime_affecting_changes_between
 from app.memory_erasure_readiness import build_memory_erasure_readiness
 from app.office_context_readiness import build_office_context_readiness
 
@@ -100,6 +102,20 @@ _ROLLBACK_BOUNDARY_OPERATOR_STEPS = [
     "run B1 verifier or reduced deny-path smoke to confirm no new memory reads or writes",
     "record issue comment with source/runtime subject, verification result, and residual caveats",
 ]
+
+
+def _resolve_source_tree_revision(repo_root: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return result.stdout.strip() or "unknown"
 
 
 def _path_for_output(path: Path, repo_root: Path) -> str:
@@ -258,6 +274,67 @@ def _runtime_acceptance_evidence(repo_root: Path) -> dict[str, dict[str, Any]]:
     return summaries
 
 
+def _runtime_subject_commit_from_evidence(
+    runtime_acceptance_evidence: dict[str, dict[str, Any]],
+) -> str:
+    evidence = runtime_acceptance_evidence.get(RUNTIME_ACCEPTANCE_GAP)
+    if not isinstance(evidence, dict):
+        return ""
+    value = evidence.get("runtime_subject_commit_sha")
+    return value if isinstance(value, str) else ""
+
+
+def _merged_source_runtime_review(
+    repo_root: Path,
+    runtime_acceptance_evidence: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    current_source = _resolve_source_tree_revision(repo_root)
+    runtime_subject = _runtime_subject_commit_from_evidence(runtime_acceptance_evidence)
+    if not runtime_subject:
+        return {
+            "status": "open_missing_runtime_subject_evidence",
+            "runtime_subject_commit_sha": "",
+            "current_source_commit_sha": current_source,
+            "runtime_affecting_changes_since_runtime_subject": None,
+            "required_next_step": "record reviewed 211 B1 smoke evidence before reviewing merged-source drift",
+            "closed_gap": None,
+            "does_not_close_b1_gate": True,
+        }
+    runtime_affecting_changes = _resolve_runtime_affecting_changes_between(
+        runtime_subject,
+        current_source,
+    )
+    if runtime_affecting_changes is None:
+        return {
+            "status": "open_unable_to_classify_runtime_delta",
+            "runtime_subject_commit_sha": runtime_subject,
+            "current_source_commit_sha": current_source,
+            "runtime_affecting_changes_since_runtime_subject": None,
+            "required_next_step": "classify runtime-affecting source delta before accepting or rerunning B1 211 smoke evidence",
+            "closed_gap": None,
+            "does_not_close_b1_gate": True,
+        }
+    if runtime_affecting_changes:
+        return {
+            "status": "runtime_affecting_delta_requires_fresh_211_smoke",
+            "runtime_subject_commit_sha": runtime_subject,
+            "current_source_commit_sha": current_source,
+            "runtime_affecting_changes_since_runtime_subject": runtime_affecting_changes,
+            "required_next_step": "deploy current main to 211 and rerun tools/verify_b1_memory_context_workflow.py before closing this gap",
+            "closed_gap": None,
+            "does_not_close_b1_gate": True,
+        }
+    return {
+        "status": "recorded_local_contract",
+        "closed_gap": "b1_runtime_evidence_review_against_merged_source",
+        "runtime_subject_commit_sha": runtime_subject,
+        "current_source_commit_sha": current_source,
+        "runtime_affecting_changes_since_runtime_subject": [],
+        "required_next_step": "record issue closure evidence after final issue review",
+        "does_not_close_b1_gate": True,
+    }
+
+
 def _status_for_local_controls(
     memory_erasure: dict[str, Any],
     office_context: dict[str, Any],
@@ -308,7 +385,12 @@ def _memory_export_boundary_recorded(memory_erasure: dict[str, Any]) -> bool:
     )
 
 
-def _gate_boundary_evidence(memory_erasure: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _gate_boundary_evidence(
+    memory_erasure: dict[str, Any],
+    *,
+    repo_root: Path,
+    runtime_acceptance_evidence: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
     export_recorded = _memory_export_boundary_recorded(memory_erasure)
     return {
         "b1_issue_review_and_closure_evidence": {
@@ -316,11 +398,10 @@ def _gate_boundary_evidence(memory_erasure: dict[str, Any]) -> dict[str, dict[st
             "required_next_step": "close #75 only after merged-source runtime review and final closure evidence are recorded",
             "does_not_close_b1_gate": True,
         },
-        "b1_runtime_evidence_review_against_merged_source": {
-            "status": "open_pending_merged_source_runtime_review",
-            "required_next_step": "review runtime evidence against the merged source subject and record whether squash/main evidence remains acceptable",
-            "does_not_close_b1_gate": True,
-        },
+        "b1_runtime_evidence_review_against_merged_source": _merged_source_runtime_review(
+            repo_root,
+            runtime_acceptance_evidence,
+        ),
         "b1_memory_export_boundary": {
             "status": "recorded_local_contract" if export_recorded else "open_missing_local_contract",
             "closed_gap": "b1_memory_export_boundary" if export_recorded else None,
@@ -360,7 +441,11 @@ def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str
         else local_status
     )
     status_label = "local partial"
-    gate_boundary_evidence = _gate_boundary_evidence(memory_erasure)
+    gate_boundary_evidence = _gate_boundary_evidence(
+        memory_erasure,
+        repo_root=root,
+        runtime_acceptance_evidence=runtime_acceptance_evidence,
+    )
     closed_gate_boundary_gaps = [
         gap
         for gap, evidence in gate_boundary_evidence.items()
@@ -470,6 +555,11 @@ def render_b1_memory_context_readiness_markdown(readiness: dict[str, Any]) -> st
         if isinstance(gate_boundary_evidence, dict)
         else None
     )
+    runtime_review = (
+        gate_boundary_evidence.get("b1_runtime_evidence_review_against_merged_source")
+        if isinstance(gate_boundary_evidence, dict)
+        else None
+    )
     export_boundary_lines = "- none"
     if isinstance(export_boundary, dict):
         required_controls = export_boundary.get("required_controls")
@@ -503,6 +593,22 @@ def render_b1_memory_context_readiness_markdown(readiness: dict[str, Any]) -> st
             "- operator steps:\n"
             f"{operator_step_lines}"
         )
+    runtime_review_lines = "- none"
+    if isinstance(runtime_review, dict):
+        runtime_delta = runtime_review.get("runtime_affecting_changes_since_runtime_subject")
+        if isinstance(runtime_delta, list):
+            runtime_delta_lines = "\n".join(f"- {item}" for item in runtime_delta) or "- none"
+        else:
+            runtime_delta_lines = "- unknown"
+        runtime_review_lines = (
+            f"- status: `{runtime_review.get('status')}`\n"
+            f"- runtime subject commit: `{runtime_review.get('runtime_subject_commit_sha')}`\n"
+            f"- current source commit: `{runtime_review.get('current_source_commit_sha')}`\n"
+            "- runtime-affecting changes since runtime subject:\n"
+            f"{runtime_delta_lines}\n"
+            f"- required next step: `{runtime_review.get('required_next_step')}`\n"
+            f"- does not close B1 gate: `{str(runtime_review.get('does_not_close_b1_gate')).lower()}`"
+        )
     invariants = "\n".join(
         f"- `{key}`: `{str(value).lower()}`"
         for key, value in readiness["non_expansion_invariants"].items()
@@ -524,6 +630,8 @@ def render_b1_memory_context_readiness_markdown(readiness: dict[str, Any]) -> st
         f"{export_boundary_lines}\n\n"
         "### B1 Rollback Boundary\n\n"
         f"{rollback_boundary_lines}\n\n"
+        "### B1 Runtime Evidence Review Against Merged Source\n\n"
+        f"{runtime_review_lines}\n\n"
         "## Runtime Acceptance\n\n"
         f"Required: `{str(runtime['required']).lower()}`\n\n"
         f"Status: `{runtime['status']}`\n\n"
