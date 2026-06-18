@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,9 @@ REVIEWED_EVIDENCE_GAP = "b2_reviewed_release_evidence"
 ISSUE_CLOSURE_GAP = "b2_issue_review_and_closure_evidence"
 GENERATOR_SCRIPT = "scripts/generate_sandbox_runtime_evidence_211.py"
 VERIFIER_SCRIPT = "scripts/verify_sandbox_runtime_211.py"
+RUNTIME_ACCEPTANCE_ARTIFACT_KIND = "211_sandbox_runtime_smoke"
+RUNTIME_ACCEPTANCE_VERIFIER_SCHEMA = "ai-platform.sandbox-runtime-211.v1"
+_RUNTIME_EVIDENCE_ROOT = "docs/release-evidence/b2-sandbox"
 
 _CLOSED_SOURCE_CONTROLS = [
     "sandbox_provider_fail_closed_for_unknown_provider",
@@ -140,19 +144,227 @@ _B2_NON_EXPANSION_INVARIANTS = {
 }
 
 
+def _path_for_output(path: Path, repo_root: Path) -> str:
+    try:
+        return str(path.relative_to(repo_root)).replace("\\", "/")
+    except ValueError:
+        return path.as_posix()
+
+
+def _load_json(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _runtime_subject(payload: dict[str, Any]) -> str:
+    source_ref = payload.get("source_ref")
+    if not isinstance(source_ref, dict):
+        return ""
+    image = str(source_ref.get("image") or "")
+    marker = str(source_ref.get("runtime_source_marker") or "")
+    if image.startswith("ai-platform:"):
+        return image.removeprefix("ai-platform:")
+    return marker
+
+
+def _entry_has_runtime_subject_binding(payload: dict[str, Any], *, path: Path) -> bool:
+    runtime_subject = payload.get("runtime_subject_commit_sha")
+    if not isinstance(runtime_subject, str) or not runtime_subject:
+        return False
+    if payload.get("commit_sha") != runtime_subject:
+        return False
+    if path.parent.name != runtime_subject:
+        return False
+    source_ref = payload.get("source_ref")
+    if not isinstance(source_ref, dict):
+        return False
+    if source_ref.get("branch") != "main":
+        return False
+    if source_ref.get("runtime_source_marker") != runtime_subject:
+        return False
+    if source_ref.get("source_tree_dirty") is not False:
+        return False
+    image = source_ref.get("image")
+    if not isinstance(image, str) or not image.startswith("ai-platform:"):
+        return False
+    image_labels = source_ref.get("image_labels")
+    if not isinstance(image_labels, dict):
+        return False
+    if image_labels.get("ai-platform.source_revision") != runtime_subject:
+        return False
+    if image_labels.get("org.opencontainers.image.revision") != runtime_subject:
+        return False
+    if image_labels.get("ai-platform.source_tree_commit") != runtime_subject:
+        return False
+    source_snapshot = source_ref.get("source_snapshot")
+    if not isinstance(source_snapshot, dict):
+        return False
+    if source_snapshot.get("runtime_subject_commit_sha") != runtime_subject:
+        return False
+    if source_snapshot.get("source_tree_commit_sha") != runtime_subject:
+        return False
+    if source_snapshot.get("source_tree_dirty") is not False:
+        return False
+    if source_snapshot.get("runtime_affecting_changes_since_runtime_subject") != []:
+        return False
+    if source_snapshot.get("runtime_affecting_dirty_paths") != []:
+        return False
+    return True
+
+
+def _entry_is_reviewed_b2_smoke(payload: dict[str, Any], *, path: Path) -> bool:
+    evidence_ref = payload.get("evidence_ref")
+    return (
+        payload.get("schema_version") == "ai-platform.release-evidence-entry.v1"
+        and payload.get("gate") == BACKEND_STAGE
+        and payload.get("artifact_kind") == RUNTIME_ACCEPTANCE_ARTIFACT_KIND
+        and payload.get("redaction_scan_status") == "passed"
+        and payload.get("review_status") == "reviewed"
+        and _entry_has_runtime_subject_binding(payload, path=path)
+        and isinstance(evidence_ref, dict)
+        and evidence_ref.get("verifier") == VERIFIER_SCRIPT
+        and evidence_ref.get("result") == "ok:true"
+        and _runtime_subject(payload) != ""
+    )
+
+
+def _runtime_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    evidence_ref = payload.get("evidence_ref")
+    runtime_checks = evidence_ref.get("runtime_checks") if isinstance(evidence_ref, dict) else {}
+    runtime_payload = (
+        runtime_checks.get(RUNTIME_ACCEPTANCE_GAP)
+        if isinstance(runtime_checks, dict)
+        else None
+    )
+    return runtime_payload if isinstance(runtime_payload, dict) else None
+
+
+def _b2_smoke_evidence_summary(
+    payload: dict[str, Any],
+    *,
+    path: Path,
+    repo_root: Path,
+) -> dict[str, Any] | None:
+    if not _entry_is_reviewed_b2_smoke(payload, path=path):
+        return None
+    evidence = _runtime_payload(payload)
+    if evidence is None:
+        return None
+    checks = evidence.get("checks")
+    if not isinstance(checks, dict):
+        return None
+    if not all(checks.get(check) is True for check in _VERIFIER_REQUIRED_CHECKS):
+        return None
+    callbacks = evidence.get("callbacks")
+    if callbacks != ["running", "completed"]:
+        return None
+    timings = evidence.get("timings")
+    hardening = evidence.get("hardening")
+    run_id = evidence.get("run_id")
+    if not isinstance(timings, dict) or not isinstance(hardening, dict):
+        return None
+    if not isinstance(run_id, str) or not run_id.strip():
+        return None
+    if not all(field in timings for field in _VERIFIER_TIMING_FIELDS):
+        return None
+    if not all(section in hardening for section in _VERIFIER_HARDENING_SECTIONS):
+        return None
+    if (
+        evidence.get("schema_version") != RUNTIME_ACCEPTANCE_VERIFIER_SCHEMA
+        or evidence.get("runtime_mode") != "platform"
+        or evidence.get("sandbox_provider") != "docker"
+        or evidence.get("executed_task") is not True
+        or evidence.get("callback_auth") != "token"
+        or evidence.get("cancel_stops_container") is not True
+        or evidence.get("does_not_close_b2_gate") is not True
+        or evidence.get("redaction_scan_status") != "passed"
+    ):
+        return None
+    non_expansion_invariants = evidence.get("non_expansion_invariants")
+    if not isinstance(non_expansion_invariants, dict):
+        return None
+    for key, expected in _NON_EXPANSION_INVARIANTS.items():
+        if non_expansion_invariants.get(key) is not expected:
+            return None
+    return {
+        "status": "verified_211_runtime_acceptance",
+        "artifact_kind": RUNTIME_ACCEPTANCE_ARTIFACT_KIND,
+        "captured_at": payload.get("captured_at"),
+        "evidence_id": payload.get("evidence_id"),
+        "path": _path_for_output(path, repo_root),
+        "verifier": VERIFIER_SCRIPT,
+        "runtime_subject": _runtime_subject(payload),
+        "runtime_subject_commit_sha": payload.get("runtime_subject_commit_sha"),
+        "run_id": run_id,
+        "runtime_mode": evidence.get("runtime_mode"),
+        "sandbox_provider": evidence.get("sandbox_provider"),
+        "callbacks": list(callbacks),
+        "timings": dict(timings),
+        "checks": {check: True for check in _VERIFIER_REQUIRED_CHECKS},
+        "redaction_scan_status": evidence.get("redaction_scan_status"),
+        "does_not_close_b2_gate": True,
+    }
+
+
+def _runtime_acceptance_evidence(repo_root: Path) -> dict[str, dict[str, Any]]:
+    evidence_root = repo_root / _RUNTIME_EVIDENCE_ROOT
+    if not evidence_root.exists():
+        return {}
+    candidates: list[dict[str, Any]] = []
+    for path in sorted(evidence_root.rglob("*.json")):
+        payload = _load_json(path)
+        if payload is None:
+            continue
+        summary = _b2_smoke_evidence_summary(payload, path=path, repo_root=repo_root)
+        if summary is not None:
+            candidates.append(summary)
+    if not candidates:
+        return {}
+    candidates.sort(
+        key=lambda summary: (
+            str(summary.get("captured_at") or ""),
+            str(summary.get("path") or ""),
+        ),
+        reverse=True,
+    )
+    return {RUNTIME_ACCEPTANCE_GAP: candidates[0]}
+
+
 def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
     """Build the B2 real-sandbox readiness contract without claiming runtime closure."""
-    _ = repo_root
+    root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
+    runtime_acceptance_evidence = _runtime_acceptance_evidence(root)
+    b2_smoke_recorded = RUNTIME_ACCEPTANCE_GAP in runtime_acceptance_evidence
     open_gaps = [
         RUNTIME_ACCEPTANCE_GAP,
         REVIEWED_EVIDENCE_GAP,
         ISSUE_CLOSURE_GAP,
     ]
+    if b2_smoke_recorded:
+        open_gaps = [ISSUE_CLOSURE_GAP]
+    status = (
+        "runtime_acceptance_recorded"
+        if b2_smoke_recorded
+        else "local_contract_ready_runtime_smoke_required"
+    )
+    runtime_status = (
+        "verified_211_runtime_acceptance"
+        if b2_smoke_recorded
+        else "missing_211_real_sandbox_smoke"
+    )
+    closed_runtime_gaps = (
+        [RUNTIME_ACCEPTANCE_GAP, REVIEWED_EVIDENCE_GAP]
+        if b2_smoke_recorded
+        else []
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "backend_stage": BACKEND_STAGE,
         "issue": ISSUE,
-        "status": "local_contract_ready_runtime_smoke_required",
+        "status": status,
         "status_label": "local partial",
         "provider_profile": {
             "provider": "docker",
@@ -165,7 +377,7 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
         },
         "runtime_acceptance": {
             "required": True,
-            "status": "missing_211_real_sandbox_smoke",
+            "status": runtime_status,
             "acceptance_gap": RUNTIME_ACCEPTANCE_GAP,
             "required_operator_target": "211_docker_capable_host",
             "generator_script": GENERATOR_SCRIPT,
@@ -205,6 +417,8 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
         "closed_source_controls": list(_CLOSED_SOURCE_CONTROLS),
         "source_tests": list(_SOURCE_TESTS),
         "open_gaps": open_gaps,
+        "closed_runtime_gaps": closed_runtime_gaps,
+        "runtime_acceptance_evidence": runtime_acceptance_evidence,
         "non_expansion_invariants": dict(_B2_NON_EXPANSION_INVARIANTS),
         "evidence_policy": (
             "B2 can become `211 verified` only after reviewed, redacted 211 Docker/equivalent "

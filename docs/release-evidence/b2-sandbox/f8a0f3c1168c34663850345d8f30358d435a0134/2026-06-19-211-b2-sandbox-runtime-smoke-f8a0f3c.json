@@ -1,0 +1,180 @@
+{
+  "artifact_kind": "211_sandbox_runtime_smoke",
+  "captured_at": "2026-06-19T02:41:06+08:00",
+  "commit_sha": "f8a0f3c1168c34663850345d8f30358d435a0134",
+  "evidence_id": "2026-06-19-211-b2-sandbox-runtime-smoke-f8a0f3c",
+  "evidence_ref": {
+    "command": "python3 scripts/generate_sandbox_runtime_evidence_211.py --runtime-mode platform --sandbox-provider docker --run-id b2-f8a0f3c-20260618184106 && python3 scripts/verify_sandbox_runtime_211.py --json --docker-cmd \"sudo -n docker\"",
+    "raw_evidence_path": "runtime-evidence/b2-sandbox/f8a0f3c1168c34663850345d8f30358d435a0134/b2-f8a0f3c-20260618184106.raw.json",
+    "result": "ok:true",
+    "runtime_checks": {
+      "b2_211_real_sandbox_smoke": {
+        "callback_auth": "token",
+        "callbacks": [
+          "running",
+          "completed"
+        ],
+        "cancel_stops_container": true,
+        "checks": {
+          "check_callback_stream": true,
+          "check_cancel_stops_container": true,
+          "check_docker_socket": true,
+          "check_executor_health": true,
+          "check_no_secret_leakage": true,
+          "check_platform_hardening_evidence": true,
+          "check_platform_runtime_evidence": true,
+          "check_workspace_write": true
+        },
+        "does_not_close_b2_gate": true,
+        "executed_task": true,
+        "hardening": {
+          "cached_lease_revalidation": {
+            "evidence_class": "source_regression_guard",
+            "status": "passed"
+          },
+          "cleanup": {
+            "evidence_class": "live_platform_probe",
+            "orphan_scan_status": "passed",
+            "status": "passed"
+          },
+          "failure_fallback": {
+            "evidence_class": "source_regression_guard",
+            "status": "passed"
+          },
+          "lease_isolation": {
+            "evidence_class": "live_platform_probe",
+            "status": "passed"
+          },
+          "resource_timeout": {
+            "evidence_class": "source_regression_guard",
+            "status": "passed"
+          },
+          "workspace_isolation": {
+            "evidence_class": "live_platform_probe",
+            "status": "passed"
+          }
+        },
+        "non_expansion_invariants": {
+          "admin_or_allowlist_only": true,
+          "docker_sandbox_production_hardening_claimed": false,
+          "ordinary_user_high_risk_sandbox_allowed": false,
+          "ordinary_user_multi_agent_allowed": false,
+          "production_concurrency_defaults_raised": false
+        },
+        "redaction_scan_status": "passed",
+        "remaining_gate_boundaries": [
+          "issue review and closure evidence",
+          "resource limits policy evidence",
+          "egress policy evidence",
+          "security options evidence",
+          "rollback assumptions evidence"
+        ],
+        "run_id": "b2-f8a0f3c-20260618184106",
+        "runtime_mode": "platform",
+        "sandbox_provider": "docker",
+        "schema_version": "ai-platform.sandbox-runtime-211.v1",
+        "timings": {
+          "document_processing_latency_ms": 0,
+          "executor_model_latency_ms": 0,
+          "sandbox_cleanup_latency_ms": 1269,
+          "sandbox_container_cold_start_latency_ms": 1573,
+          "sandbox_executor_dispatch_latency_ms": 85,
+          "sandbox_healthcheck_latency_ms": 847,
+          "sandbox_lease_acquire_latency_ms": 0,
+          "sandbox_total_latency_ms": 3774
+        }
+      },
+      "verifier_checks": [
+        {
+          "name": "check_docker_socket",
+          "passed": true
+        },
+        {
+          "name": "check_workspace_write",
+          "passed": true
+        },
+        {
+          "name": "check_executor_health",
+          "passed": true
+        },
+        {
+          "name": "check_callback_stream",
+          "passed": true
+        },
+        {
+          "name": "check_cancel_stops_container",
+          "passed": true
+        },
+        {
+          "name": "check_platform_runtime_evidence",
+          "passed": true
+        },
+        {
+          "name": "check_platform_hardening_evidence",
+          "passed": true
+        },
+        {
+          "name": "check_no_secret_leakage",
+          "passed": true
+        }
+      ]
+    },
+    "verifier": "scripts/verify_sandbox_runtime_211.py"
+  },
+  "gate": "B2 real sandbox usable",
+  "issue_refs": [
+    "#89"
+  ],
+  "open_followups": [
+    "This evidence closes only the B2 211 real sandbox smoke and reviewed release-evidence gaps for the f8a0f3c runtime subject.",
+    "B2 gate closure remains open until issue #89 review and closure evidence are recorded.",
+    "This evidence does not claim production Docker sandbox hardening, resource-limit policy closure, egress policy closure, security-option closure, rollback closure, production readiness, ordinary-user high-risk sandbox exposure, ordinary-user multi-agent exposure, or production concurrency default increases.",
+    "Legacy runtime-subject labels from earlier runtime images were observed during the rollout context and remain a source-authority caveat outside this B2 smoke scope."
+  ],
+  "pr_refs": [
+    "#90"
+  ],
+  "redaction_scan_status": "passed",
+  "review_notes": [
+    "211 verifier result was ok=true for schema ai-platform.sandbox-runtime-211.v1 against runtime_mode=platform and sandbox_provider=docker.",
+    "The smoke covered Docker socket access through the verifier path, workspace write, executor health, callback stream, cancel-stops-container behavior, platform runtime evidence, platform hardening evidence, and no-secret-leakage checks.",
+    "The smoke used a runtime-only image for the merged PR #90 source subject f8a0f3c; this is valid B2 runtime smoke evidence but not a production release-path or G0 source-authority closure.",
+    "The reviewed record intentionally omits raw callback tokens, Docker socket paths, host workdirs, real environment values, and raw runtime payloads."
+  ],
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "f8a0f3c1168c34663850345d8f30358d435a0134",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "branch": "main",
+    "compose_config_source": "staging_compose_for_b2_sandbox_runtime_smoke",
+    "compose_env_source": "external_211_runtime_env_file_supplied_through_compose_values_not_copied",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "image": "ai-platform:f8a0f3c-b2-readiness-runtime-only",
+    "image_id": "sha256:fddc60893a978b023e08438e9376f54c6d132512837882badd41daa6b2c3c6fd",
+    "image_labels": {
+      "ai-platform.source.note": "runtime_only_rebase_external_env_not_g0_closure",
+      "ai-platform.source_revision": "f8a0f3c1168c34663850345d8f30358d435a0134",
+      "ai-platform.source_tree_commit": "f8a0f3c1168c34663850345d8f30358d435a0134",
+      "org.opencontainers.image.revision": "f8a0f3c1168c34663850345d8f30358d435a0134"
+    },
+    "repo_local_env_present": false,
+    "runtime_boundary": {
+      "api_container": "ai-platform-api",
+      "worker_container": "ai-platform-worker"
+    },
+    "runtime_source_marker": "f8a0f3c1168c34663850345d8f30358d435a0134",
+    "source_authority_caveat": "runtime-only rebase image and external env file remain follow-ups; this record is not G0 source-authority closure",
+    "source_snapshot": {
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "runtime_subject_commit_sha": "f8a0f3c1168c34663850345d8f30358d435a0134",
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "source_tree_commit_sha": "f8a0f3c1168c34663850345d8f30358d435a0134",
+      "source_tree_dirty": false
+    },
+    "source_tree_dirty": false
+  }
+}

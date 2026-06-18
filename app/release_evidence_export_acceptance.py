@@ -54,7 +54,10 @@ _FORBIDDEN_VALUE_PATTERNS = (
     re.compile(r"\bbearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
     re.compile(r"\bsk-[A-Za-z0-9_-]+", re.IGNORECASE),
     re.compile(r"\b(?:postgres|postgresql|mysql|redis)://[^\s\"']+", re.IGNORECASE),
-    re.compile(r"c:\\\\users", re.IGNORECASE),
+    re.compile(r"\bc:\\users\\", re.IGNORECASE),
+    re.compile(r"/home/[^\s\"']+", re.IGNORECASE),
+    re.compile(r"/users/[^\s\"']+", re.IGNORECASE),
+    re.compile(r"/var/run/docker\.sock", re.IGNORECASE),
 )
 _LEGACY_EXCLUSION_REASONS = {
     "missing_runtime_subject_commit_sha",
@@ -68,6 +71,7 @@ _COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _RUNTIME_SUBJECT_ARTIFACT_KINDS = {
     "211_runtime_smoke",
     "211_memory_enabled_document_workflow_smoke",
+    "211_sandbox_runtime_smoke",
 }
 
 

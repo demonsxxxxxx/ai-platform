@@ -33,8 +33,8 @@
       "ai-platform-api",
       "ai-platform-worker"
     ],
-    "compose_working_dir": "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform",
-    "compose_config_file": "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/docker-compose.yml",
+    "compose_working_dir": "<redacted-path>",
+    "compose_config_file": "<redacted-path>",
     "compose_env_source": "existing 211 runtime env path, not copied or printed",
     "repo_local_env_present": false,
     "gateway_secret_supplied": false

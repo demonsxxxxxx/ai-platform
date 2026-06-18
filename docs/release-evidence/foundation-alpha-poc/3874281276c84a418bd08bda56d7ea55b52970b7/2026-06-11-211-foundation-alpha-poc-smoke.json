@@ -24,13 +24,13 @@
       "ai-platform.source_note": "foundation-alpha-poc-preview-route",
       "org.opencontainers.image.revision": "3874281276c84a418bd08bda56d7ea55b52970b7"
     },
-    "compose_working_dir": "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform",
-    "compose_config_file": "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/docker-compose.yml",
+    "compose_working_dir": "<redacted-path>",
+    "compose_config_file": "<redacted-path>",
     "compose_env_source": "existing 211 runtime env path, not copied or printed"
   },
   "evidence_ref": {
     "verifier": "tools/verify_poc_gate.py",
-    "command": "python3 tools/verify_poc_gate.py --frontend-url http://127.0.0.1:18001 --api-url http://127.0.0.1:8020 --frontend-dist /home/xinlin.jiang/lambchat-poc/frontend-dist-ai-platform --env-path /home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/.env --api-container ai-platform-api --postgres-container ai-platform-postgres --postgres-user ai_platform --postgres-db ai_platform --allow-missing-auth-audit",
+    "command": "python3 tools/verify_poc_gate.py --frontend-url http://127.0.0.1:18001 --api-url http://127.0.0.1:8020 --frontend-dist <redacted-path> --env-path <existing-211-runtime-env-path> --api-container ai-platform-api --postgres-container ai-platform-postgres --postgres-user ai_platform --postgres-db ai_platform --allow-missing-auth-audit",
     "result": "ok:true",
     "runtime_checks": {
       "frontend_http_status": 200,
