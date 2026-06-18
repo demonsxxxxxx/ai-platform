@@ -3,8 +3,6 @@ import {
   Search,
   Clock,
   MoreHorizontal,
-  FolderOpen,
-  UserRound,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { APP_NAME } from "../../../constants";
@@ -20,9 +18,6 @@ interface SidebarRailProps {
   onNewSession: () => void;
   onOpenSearch: () => void;
   onOpenRecentChats: () => void;
-  onOpenFileLibrary: () => void;
-  onOpenPersonaPlaza: () => void;
-  onOpenSkills: () => void;
   hasMoreMenuItems: boolean;
   onToggleMoreMenu: () => void;
   moreMenuBtnRef: React.RefObject<HTMLButtonElement | null>;
@@ -38,8 +33,6 @@ export function SidebarRail({
   onNewSession,
   onOpenSearch,
   onOpenRecentChats,
-  onOpenFileLibrary,
-  onOpenPersonaPlaza,
   hasMoreMenuItems,
   onToggleMoreMenu,
   moreMenuBtnRef,
@@ -107,24 +100,6 @@ export function SidebarRail({
           aria-label={t("sidebar.searchSessions")}
         >
           <Search size={20} />
-        </button>
-        <button
-          type="button"
-          onClick={onOpenPersonaPlaza}
-          className={railBtn}
-          title={t("personaPresets.title", "角色广场")}
-          aria-label={t("personaPresets.title", "角色广场")}
-        >
-          <UserRound size={20} />
-        </button>
-        <button
-          type="button"
-          onClick={onOpenFileLibrary}
-          className={railBtn}
-          title={t("fileLibrary.title")}
-          aria-label={t("fileLibrary.title")}
-        >
-          <FolderOpen size={20} />
         </button>
         <button
           type="button"

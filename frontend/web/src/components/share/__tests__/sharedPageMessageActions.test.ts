@@ -6,7 +6,7 @@ import { dirname, resolve } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-test("shared page hides feedback and share actions on chat messages", () => {
+test("shared page cannot re-enable feedback and share actions on chat messages", () => {
   const sharedPageSource = readFileSync(
     resolve(__dirname, "../SharedPage.tsx"),
     "utf8",
@@ -16,10 +16,9 @@ test("shared page hides feedback and share actions on chat messages", () => {
     "utf8",
   );
 
-  assert.match(sharedPageSource, /showFeedbackAndShareActions=\{false\}/);
-  assert.match(chatMessageSource, /showFeedbackAndShareActions\?: boolean/);
-  assert.match(
-    chatMessageSource,
-    /showFeedbackAndShareActions &&\s*\(\s*<>\s*\{\/\* Feedback buttons \*\//,
-  );
+  assert.doesNotMatch(sharedPageSource, /showFeedbackAndShareActions/);
+  assert.doesNotMatch(chatMessageSource, /showFeedbackAndShareActions/);
+  assert.doesNotMatch(chatMessageSource, /FeedbackButtons/);
+  assert.doesNotMatch(chatMessageSource, /ShareButton/);
+  assert.doesNotMatch(chatMessageSource, /ShareDialog/);
 });

@@ -39,13 +39,8 @@ export function NotificationBanner() {
     notificationApi.getActive().then(setNotifications);
   }, []);
 
-  const handleDismiss = useCallback(async (id: string) => {
+  const handleDismiss = useCallback((id: string) => {
     setDismissedIds((prev) => new Set(prev).add(id));
-    try {
-      await notificationApi.dismiss(id);
-    } catch {
-      // silently fail
-    }
   }, []);
 
   const visible = notifications.filter((n) => !dismissedIds.has(n.id));

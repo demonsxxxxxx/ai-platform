@@ -4,16 +4,20 @@ import { Loader2, Pencil, Check } from "lucide-react";
 import { toast } from "react-hot-toast";
 import { Mail, ExternalLink } from "lucide-react";
 import { useAuth } from "../../../hooks/useAuth";
-import { useSettings } from "../../../hooks/useSettings";
 import { Permission } from "../../../types";
 import { authApi, uploadApi } from "../../../services/api";
 
 export function ProfileInfoTab() {
   const { t } = useTranslation();
   const { user, refreshUser, hasPermission } = useAuth();
-  const { getSettingValue } = useSettings();
-  const adminEmail = getSettingValue("ADMIN_CONTACT_EMAIL") as string | null;
-  const adminUrl = getSettingValue("ADMIN_CONTACT_URL") as string | null;
+  const adminEmail =
+    typeof user?.metadata?.adminContactEmail === "string"
+      ? user.metadata.adminContactEmail
+      : null;
+  const adminUrl =
+    typeof user?.metadata?.adminContactUrl === "string"
+      ? user.metadata.adminContactUrl
+      : null;
 
   // Username change state
   const [isEditingUsername, setIsEditingUsername] = useState(false);

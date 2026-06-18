@@ -1,48 +1,10 @@
 import { Suspense, lazy } from "react";
 import type { TabType } from "./types";
+import { getSurfacePolicy } from "./phase1SurfacePolicy";
 
-const SkillsHubPanel = lazy(() =>
-  import("../../panels/SkillsHubPanel").then((m) => ({
-    default: m.SkillsHubPanel,
-  })),
-);
-const UsersPanel = lazy(() =>
-  import("../../panels/UsersPanel").then((m) => ({ default: m.UsersPanel })),
-);
-const RolesPanel = lazy(() =>
-  import("../../panels/RolesPanel").then((m) => ({ default: m.RolesPanel })),
-);
-const SettingsPanel = lazy(() =>
-  import("../../panels/SettingsPanel").then((m) => ({
-    default: m.SettingsPanel,
-  })),
-);
-const AgentConfigPanel = lazy(() =>
-  import("../../panels/AgentPanel").then((m) => ({
-    default: m.AgentConfigPanel,
-  })),
-);
-const MCPPanel = lazy(() =>
-  import("../../panels/MCPPanel").then((m) => ({ default: m.MCPPanel })),
-);
-const FeedbackPanel = lazy(() =>
-  import("../../panels/FeedbackPanel").then((m) => ({
-    default: m.FeedbackPanel,
-  })),
-);
-const QuarantinedLegacyPanel = lazy(() =>
-  import("./QuarantinedLegacyPanel").then((m) => ({
-    default: m.QuarantinedLegacyPanel,
-  })),
-);
-const RevealedFilesPage = lazy(() =>
-  import("../../fileLibrary/RevealedFilesPanel").then((m) => ({
-    default: m.RevealedFilesPanel,
-  })),
-);
-const NotificationPanel = lazy(() =>
-  import("../../panels/NotificationPanel").then((m) => ({
-    default: m.NotificationPanel,
+const AdminRuntimePanel = lazy(() =>
+  import("../../panels/AdminRuntimePanel").then((m) => ({
+    default: m.AdminRuntimePanel,
   })),
 );
 const MemoryPanel = lazy(() =>
@@ -50,9 +12,34 @@ const MemoryPanel = lazy(() =>
     default: m.MemoryPanel,
   })),
 );
-const PersonaPlazaPanel = lazy(() =>
-  import("../../persona/PersonaPlazaPanel").then((m) => ({
-    default: m.PersonaPlazaPanel,
+const Phase2UnavailablePanel = lazy(() =>
+  import("./Phase2UnavailablePanel").then((m) => ({
+    default: m.Phase2UnavailablePanel,
+  })),
+);
+const Phase1SkillsGovernancePanel = lazy(() =>
+  import("../../panels/phase1ProjectionPanels").then((m) => ({
+    default: m.Phase1SkillsGovernancePanel,
+  })),
+);
+const Phase1ToolPolicyPanel = lazy(() =>
+  import("../../panels/phase1ProjectionPanels").then((m) => ({
+    default: m.Phase1ToolPolicyPanel,
+  })),
+);
+const Phase1AgentAppsPanel = lazy(() =>
+  import("../../panels/phase1ProjectionPanels").then((m) => ({
+    default: m.Phase1AgentAppsPanel,
+  })),
+);
+const Phase1ModelCatalogPanel = lazy(() =>
+  import("../../panels/phase1ProjectionPanels").then((m) => ({
+    default: m.Phase1ModelCatalogPanel,
+  })),
+);
+const Phase1NotificationsPanel = lazy(() =>
+  import("../../panels/phase1ProjectionPanels").then((m) => ({
+    default: m.Phase1NotificationsPanel,
   })),
 );
 
@@ -60,19 +47,12 @@ const panelMap: Record<
   string,
   React.LazyExoticComponent<React.ComponentType>
 > = {
-  skills: SkillsHubPanel,
-  marketplace: SkillsHubPanel,
-  users: UsersPanel,
-  roles: RolesPanel,
-  settings: SettingsPanel,
-  mcp: MCPPanel,
-  feedback: FeedbackPanel,
-  channels: QuarantinedLegacyPanel,
-  agents: AgentConfigPanel,
-  models: QuarantinedLegacyPanel,
-  files: RevealedFilesPage,
-  persona: PersonaPlazaPanel,
-  notifications: NotificationPanel,
+  skills: Phase1SkillsGovernancePanel,
+  mcp: Phase1ToolPolicyPanel,
+  agents: Phase1AgentAppsPanel,
+  models: Phase1ModelCatalogPanel,
+  notifications: Phase1NotificationsPanel,
+  settings: AdminRuntimePanel,
   memory: MemoryPanel,
 };
 
@@ -90,14 +70,18 @@ function PanelLoader() {
 export function TabContent({ activeTab }: { activeTab: TabType }) {
   if (activeTab === "chat") return null;
 
+  const policy = getSurfacePolicy(activeTab);
   const Panel = panelMap[activeTab];
-  if (!Panel) return null;
 
   return (
     <main className="flex-1 overflow-hidden">
       <div className="mx-auto max-w-4xl sm:max-w-5xl lg:max-w-6xl w-full h-full flex flex-col">
         <Suspense fallback={<PanelLoader />}>
-          <Panel />
+          {policy.render === "phase2-unavailable" ? (
+            <Phase2UnavailablePanel tab={activeTab} />
+          ) : Panel ? (
+            <Panel />
+          ) : null}
         </Suspense>
       </div>
     </main>

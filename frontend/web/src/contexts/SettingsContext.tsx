@@ -7,10 +7,9 @@ import {
   useEffect,
   useCallback,
 } from "react";
-import { useSettings } from "../hooks/useSettings";
 import { useAuth } from "../hooks/useAuth";
 import { modelPublicApi } from "../services/api/modelPublic";
-import type { SettingsResponse } from "../types";
+import type { SettingCategory, SettingsResponse } from "../types";
 
 export interface AvailableModel {
   id: string;
@@ -48,22 +47,47 @@ const SettingsContext = createContext<SettingsContextValue | undefined>(
   undefined,
 );
 
-export function SettingsProvider({ children }: { children: ReactNode }) {
-  const {
-    settings,
-    isLoading,
-    error,
-    savingKeys,
-    getBooleanSetting,
-    updateSetting,
-    resetSetting,
-    resetAllSettings,
-    clearError,
-    exportSettings,
-    importSettings,
-  } = useSettings();
+const SETTING_CATEGORIES = [
+  "frontend",
+  "agent",
+  "llm",
+  "session",
+  "skills",
+  "mongodb",
+  "redis",
+  "checkpoint",
+  "long_term_storage",
+  "security",
+  "email",
+  "captcha",
+  "s3",
+  "file_upload",
+  "sandbox",
+  "tools",
+  "tracing",
+  "user",
+  "oauth",
+  "memory",
+  "memory_embedding",
+  "memory_search",
+  "memory_storage",
+  "audio_transcription",
+] as const satisfies readonly SettingCategory[];
 
+const EMPTY_SETTINGS: SettingsResponse = {
+  settings: SETTING_CATEGORIES.reduce((settings, category) => {
+    settings[category] = [];
+    return settings;
+  }, {} as SettingsResponse["settings"]),
+};
+const PHASE1_SETTINGS_ERROR =
+  "Settings management requires a Phase 2 backend projection.";
+
+export function SettingsProvider({ children }: { children: ReactNode }) {
   const { isAuthenticated } = useAuth();
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const savingKeys = useMemo(() => new Set<string>(), []);
 
   // 从 DB 的 model_configs 读取可用模型
   const [dbModels, setDbModels] = useState<AvailableModel[] | null>(null);
@@ -73,9 +97,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const [pinnedModelIds, setPinnedModelIds] = useState<string[]>([]);
 
   const fetchModels = useCallback(() => {
+    setIsLoading(true);
     modelPublicApi
       .listAvailable()
       .then((data) => {
+        setError(null);
         setAdminDefaultModelId(data.default_model_id || "");
         if (data.models && data.models.length > 0) {
           setDbModels(
@@ -94,6 +120,10 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       .catch(() => {
         setAdminDefaultModelId("");
         setDbModels(null);
+        setError("Failed to load model catalog");
+      })
+      .finally(() => {
+        setIsLoading(false);
       });
   }, []);
 
@@ -119,6 +149,41 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       modelPublicApi.updatePinnedModelIds(next).catch(() => {});
       return next;
     });
+  }, []);
+
+  const updateSetting = useCallback(
+    async (_key: string, _value: string | number | boolean | object) => {
+      setError(PHASE1_SETTINGS_ERROR);
+      return false;
+    },
+    [],
+  );
+
+  const resetSetting = useCallback(async (_key: string) => {
+    setError(PHASE1_SETTINGS_ERROR);
+    return false;
+  }, []);
+
+  const resetAllSettings = useCallback(async () => {
+    setError(PHASE1_SETTINGS_ERROR);
+    return false;
+  }, []);
+
+  const clearError = useCallback(() => {
+    setError(null);
+  }, []);
+
+  const exportSettings = useCallback(() => {
+    setError(PHASE1_SETTINGS_ERROR);
+  }, []);
+
+  const importSettings = useCallback(async (_file: File) => {
+    setError(PHASE1_SETTINGS_ERROR);
+    return {
+      success: false,
+      updatedCount: 0,
+      errors: [PHASE1_SETTINGS_ERROR],
+    };
   }, []);
 
   // Auto-clean orphaned pinned IDs (models that were deleted)
@@ -151,9 +216,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   }, [adminDefaultModelId, availableModels]);
 
   const value: SettingsContextValue = {
-    settings,
-    enableSkills: getBooleanSetting("ENABLE_SKILLS"),
-    enableMemory: getBooleanSetting("ENABLE_MEMORY"),
+    settings: EMPTY_SETTINGS,
+    enableSkills: true,
+    enableMemory: true,
     availableModels,
     defaultModel,
     pinnedModelIds: cleanedPinnedIds,

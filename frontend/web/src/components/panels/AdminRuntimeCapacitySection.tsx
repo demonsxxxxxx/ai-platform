@@ -151,13 +151,16 @@ function modelGatewaySummary(overview: AdminRuntimeOverview | null): string {
 
 export function AdminRuntimeCapacitySection() {
   const { t } = useTranslation();
-  const { hasPermission } = useAuth();
+  const { hasAnyPermission } = useAuth();
   const [overview, setOverview] = useState<AdminRuntimeOverview | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
 
-  const canView = hasPermission(Permission.SETTINGS_MANAGE);
+  const canView = hasAnyPermission([
+    Permission.ADMIN_STATUS,
+    Permission.SETTINGS_MANAGE,
+  ]);
 
   const fetchOverview = useCallback(async () => {
     setIsLoading(true);

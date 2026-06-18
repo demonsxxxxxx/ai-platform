@@ -22,9 +22,6 @@ import {
   type ChatStreamResponse,
 } from "../services/api";
 import { authenticatedRequest } from "../services/api/authenticatedRequest";
-import { feedbackApi } from "../services/api/feedback";
-import { useAuth } from "../hooks/useAuth";
-import { Permission } from "../types/auth";
 import {
   API_BASE,
   type UseAgentOptions,
@@ -51,7 +48,6 @@ import {
   type SSEConnectionContext,
 } from "./useAgent/sseConnection";
 import { createOptimisticMessagesForSend } from "./useAgent/optimisticMessages";
-import { resolvePersonaEnabledSkills } from "./useAgent/personaRequestConfig";
 import { translateBackendError } from "../utils/backendErrors";
 import { dispatchSessionTitleUpdated } from "../utils/sessionTitleEvents";
 import { resolveAvailableAgentId } from "./useAgent/agentSelection";
@@ -69,12 +65,6 @@ function formatConfirmationMessage(suggestions: CapabilitySuggestion[]): string 
 }
 
 export function useAgent(options?: UseAgentOptions): UseAgentReturn {
-  const { hasAnyPermission } = useAuth();
-  const canReadFeedback = hasAnyPermission([
-    Permission.FEEDBACK_READ,
-    Permission.FEEDBACK_WRITE,
-  ]);
-
   // State
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -380,7 +370,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
               undefined,
           };
 
-          // 并行发起 events、status 和 feedback 请求，减少串行等待时间
+          // 并行发起 events 和 status 请求，减少串行等待时间
           const eventsPromise = sessionApi.getEvents(targetSessionId);
           const statusPromise = statusRunId
             ? sessionApi.getStatus(targetSessionId, statusRunId).catch((e) => {
@@ -388,19 +378,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                 return null;
               })
             : Promise.resolve(null);
-          const feedbackPromise = canReadFeedback
-            ? feedbackApi
-                .list(0, 100, undefined, undefined, targetSessionId)
-                .catch((e) => {
-                  console.warn("[loadHistory] Failed to load feedback:", e);
-                  return null;
-                })
-            : Promise.resolve(null);
 
-          const [eventsData, statusData, feedbackList] = await Promise.all([
+          const [eventsData, statusData] = await Promise.all([
             eventsPromise,
             statusPromise,
-            feedbackPromise,
           ]);
           if (!isCurrentHistoryLoadRequest()) {
             return null;
@@ -427,29 +408,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
               processedEventIdsRef.current,
               { options, activeSubagentStack: activeSubagentStackRef.current },
             );
-
-            // Apply feedback (already loaded in parallel)
-            if (feedbackList && feedbackList.items.length > 0) {
-              const feedbackMap = new Map(
-                feedbackList.items.map((f) => [
-                  f.run_id,
-                  { feedback: f.rating, feedbackId: f.id },
-                ]),
-              );
-              reconstructedMessages = reconstructedMessages.map((msg) => {
-                if (msg.runId) {
-                  const feedbackInfo = feedbackMap.get(msg.runId);
-                  if (feedbackInfo) {
-                    return {
-                      ...msg,
-                      feedback: feedbackInfo.feedback,
-                      feedbackId: feedbackInfo.feedbackId,
-                    };
-                  }
-                }
-                return msg;
-              });
-            }
 
             const lastTimestamp = getLastEventTimestamp(
               eventsData.events as HistoryEvent[],
@@ -534,7 +492,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
       return null;
     },
-    [options, createSSEContext, canReadFeedback],
+    [options, createSSEContext],
   );
 
   // Send message
@@ -583,12 +541,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         }
 
         // 获取当前禁用的 skills 和 mcp_tools
-        const personaPresetId = options?.getPersonaPresetId?.() || null;
         const disabledSkills = options?.getDisabledSkills?.() || [];
-        const enabledSkills = resolvePersonaEnabledSkills(
-          personaPresetId,
-          options?.getEnabledSkills?.(),
-        );
         const disabledMcpTools = options?.getDisabledMcpTools?.() || [];
 
         // Merge session-level agent options (e.g. model) with ChatInput values
@@ -606,8 +559,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           pendingProjectIdRef.current ?? undefined,
           disabledSkills,
           disabledMcpTools,
-          personaPresetId,
-          enabledSkills,
+          undefined,
+          undefined,
         );
 
         if (isChatStreamNeedsConfirmation(submitData)) {
@@ -657,8 +610,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             agent_id: currentAgent,
             agent_options: fullAgentOptions,
             disabled_skills: disabledSkills,
-            enabled_skills: enabledSkills,
-            persona_preset_id: personaPresetId,
             disabled_mcp_tools: disabledMcpTools,
           };
           if (projectId) {
@@ -705,8 +656,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             agent_id: currentAgent,
             agent_options: fullAgentOptions,
             disabled_skills: disabledSkills,
-            enabled_skills: enabledSkills,
-            persona_preset_id: personaPresetId,
             disabled_mcp_tools: disabledMcpTools,
           };
 

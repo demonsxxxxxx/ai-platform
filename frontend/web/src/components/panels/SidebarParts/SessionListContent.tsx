@@ -2,52 +2,23 @@ import {
   ChevronDown,
   ChevronsUpDown,
   Search,
-  FolderPlus,
-  FolderOpen,
   MessageSquarePlus,
   MoreHorizontal,
-  UserRound,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useNavigate } from "react-router-dom";
 import { LoadingSpinner } from "../../common/LoadingSpinner";
 import type { BackendSession } from "../../../services/api";
-import type { ProjectItemHandle } from "../../sidebar/ProjectItem";
 import {
   formatUnreadCount,
   getUnreadCountForUncategorized,
   type UnreadBySession,
 } from "../../sidebar/unreadCounts";
 import { groupSessionsByTime } from "../sessionHelpers";
-import { ProjectItem } from "../../sidebar/ProjectItem";
 import { SessionItem } from "../../sidebar/SessionItem";
-import { APP_NAME, GITHUB_URL } from "../../../constants";
-import { isSessionFavorite } from "../../sidebar/sessionFavorites";
-import type { Project } from "../../../types";
-import { isSidebarProject } from "./projectFilters";
+import { APP_NAME } from "../../../constants";
 
 export interface SessionActions {
-  onDeleteSession: (id: string) => void;
-  onMoveSession: (id: string, projectId: string | null) => void;
-  onToggleFavorite: (id: string) => void;
-  onShareSession: (id: string) => void;
   onSelectSession: (id: string) => void;
-  onDragStartTouch: (
-    sessionId: string,
-    clientX: number,
-    clientY: number,
-  ) => void;
-  draggingSessionId: string | null;
-  touchDropTarget: string | null;
-}
-
-export interface ProjectActions {
-  onRenameProject: (id: string, name: string) => void;
-  onDeleteProject: (id: string) => void;
-  onUpdateIcon: (id: string, icon: string) => void;
-  onOpenNewProjectModal: () => void;
-  onNewSessionInProject: (projectId: string) => void;
-  onSetProjectRef: (id: string, handle: ProjectItemHandle | null) => void;
 }
 
 interface SessionListContentProps {
@@ -61,7 +32,6 @@ interface SessionListContentProps {
   hasMoreMenuItems: boolean;
   onToggleMoreMenu: () => void;
   expandedMoreMenuBtnRef: React.RefObject<HTMLButtonElement | null>;
-  scrollEl: HTMLDivElement | null;
   onSetScrollEl: (el: HTMLDivElement | null) => void;
   uncategorizedSessions: BackendSession[];
   isUncategorizedLoading: boolean;
@@ -69,19 +39,11 @@ interface SessionListContentProps {
   isLoadingMoreUncategorized: boolean;
   loadMoreRef: React.RefCallback<HTMLElement>;
   onSoftRefreshUncategorized: () => void;
-  onUpdateUncategorizedSession: (s: BackendSession) => void;
-  projects: Project[];
-  favoritesProject: Project | undefined;
   currentSessionId: string | null;
   unreadBySession: UnreadBySession;
   sessionActions: SessionActions;
-  projectActions: ProjectActions;
-  isProjectsCollapsed: boolean;
-  onToggleProjectsCollapsed: () => void;
   isChatsCollapsed: boolean;
   onToggleChatsCollapsed: () => void;
-  autoExpandProjectId: string | null | undefined;
-  onConsumeAutoExpandProjectId: (id: string) => void;
 }
 
 export function SessionListContent({
@@ -95,29 +57,19 @@ export function SessionListContent({
   hasMoreMenuItems,
   onToggleMoreMenu,
   expandedMoreMenuBtnRef,
-  scrollEl,
   onSetScrollEl,
   uncategorizedSessions,
   isUncategorizedLoading,
   hasMoreUncategorized,
   isLoadingMoreUncategorized,
   loadMoreRef,
-  onUpdateUncategorizedSession,
-  projects,
-  favoritesProject,
   currentSessionId,
   unreadBySession,
   sessionActions,
-  projectActions,
-  isProjectsCollapsed,
-  onToggleProjectsCollapsed,
   isChatsCollapsed,
   onToggleChatsCollapsed,
-  autoExpandProjectId,
-  onConsumeAutoExpandProjectId,
 }: SessionListContentProps) {
   const { t } = useTranslation();
-  const navigate = useNavigate();
 
   const chatsUnreadCount = getUnreadCountForUncategorized({
     loadedSessions: uncategorizedSessions,
@@ -135,14 +87,11 @@ export function SessionListContent({
             alt={APP_NAME}
             className="size-6 rounded-full object-cover"
           />
-          <a
-            href={GITHUB_URL}
-            target="_blank"
-            rel="noopener noreferrer"
+          <div
             className="text-lg font-bold leading-none text-stone-800 dark:text-stone-100 hover:text-stone-900 dark:hover:text-stone-50 transition-colors font-serif"
           >
             {APP_NAME}
-          </a>
+          </div>
         </div>
         <button
           onClick={onCollapse}
@@ -194,22 +143,6 @@ export function SessionListContent({
           </kbd>
         </button>
 
-        <button
-          onClick={() => navigate("/persona")}
-          className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
-        >
-          <UserRound size={20} />
-          <span>{t("personaPresets.title", "角色广场")}</span>
-        </button>
-
-        <button
-          onClick={() => navigate("/files")}
-          className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
-        >
-          <FolderOpen size={20} />
-          <span>{t("fileLibrary.title")}</span>
-        </button>
-
         {hasMoreMenuItems && (
           <div className="relative">
             <button
@@ -231,101 +164,7 @@ export function SessionListContent({
         className="flex-1 overflow-y-auto px-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         <div className="flex flex-col gap-px">
-          {/* Project section header */}
-          <div
-            onClick={onToggleProjectsCollapsed}
-            className="flex items-center justify-between px-[9px] h-9 cursor-pointer select-none group/section"
-          >
-            <span className="text-[13px] font-medium text-stone-400 dark:text-stone-500 group-hover/section:text-stone-500 dark:group-hover/section:text-stone-400 transition-colors">
-              {t("sidebar.projects")}
-            </span>
-            <ChevronDown
-              size={14}
-              className={`text-stone-300 dark:text-stone-600 transition-transform duration-200 ${
-                isProjectsCollapsed ? "-rotate-90" : ""
-              }`}
-            />
-          </div>
-
-          {!isProjectsCollapsed && (
-            <button
-              onClick={projectActions.onOpenNewProjectModal}
-              className="w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm text-stone-500 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800/60 transition-colors cursor-pointer"
-            >
-              <FolderPlus size={20} />
-              <span>{t("sidebar.newProject")}</span>
-            </button>
-          )}
-
-          {/* Favorites project */}
-          {!isProjectsCollapsed &&
-            favoritesProject &&
-            (() => {
-              const fp = favoritesProject;
-              return (
-                <ProjectItem
-                  ref={(el) => projectActions.onSetProjectRef(fp.id, el)}
-                  project={fp}
-                  currentSessionId={currentSessionId}
-                  allProjects={projects}
-                  onSelectSession={sessionActions.onSelectSession}
-                  onDeleteSession={sessionActions.onDeleteSession}
-                  onMoveSession={sessionActions.onMoveSession}
-                  onToggleFavorite={sessionActions.onToggleFavorite}
-                  onShareSession={sessionActions.onShareSession}
-                  onRenameProject={projectActions.onRenameProject}
-                  onDeleteProject={projectActions.onDeleteProject}
-                  onUpdateIcon={projectActions.onUpdateIcon}
-                  scrollRoot={scrollEl}
-                  draggingSessionId={
-                    sessionActions.touchDropTarget === fp.id
-                      ? sessionActions.draggingSessionId
-                      : null
-                  }
-                  unreadBySession={unreadBySession}
-                  favoritesOnly
-                />
-              );
-            })()}
-
-          {/* Custom projects */}
-          {!isProjectsCollapsed &&
-            projects
-              .filter(isSidebarProject)
-              .sort((a, b) => a.sort_order - b.sort_order)
-              .map((project) => (
-                <ProjectItem
-                  key={project.id}
-                  ref={(el) => projectActions.onSetProjectRef(project.id, el)}
-                  project={project}
-                  currentSessionId={currentSessionId}
-                  allProjects={projects}
-                  onSelectSession={sessionActions.onSelectSession}
-                  onDeleteSession={sessionActions.onDeleteSession}
-                  onMoveSession={sessionActions.onMoveSession}
-                  onToggleFavorite={sessionActions.onToggleFavorite}
-                  onShareSession={sessionActions.onShareSession}
-                  onRenameProject={projectActions.onRenameProject}
-                  onDeleteProject={projectActions.onDeleteProject}
-                  onUpdateIcon={projectActions.onUpdateIcon}
-                  scrollRoot={scrollEl}
-                  draggingSessionId={
-                    sessionActions.touchDropTarget === project.id
-                      ? sessionActions.draggingSessionId
-                      : null
-                  }
-                  onNewSessionInProject={projectActions.onNewSessionInProject}
-                  forceExpandProjectId={autoExpandProjectId}
-                  onConsumeAutoExpand={onConsumeAutoExpandProjectId}
-                  unreadBySession={unreadBySession}
-                />
-              ))}
-
-          {!isProjectsCollapsed && (
-            <div className="h-px bg-stone-200/60 dark:bg-stone-700/40 mx-2 my-1" />
-          )}
-
-          {/* Uncategorized sessions (by time) */}
+          {/* Sessions by time. Project/favorite organization is Phase 2 until backend filters exist. */}
           {groupedUncategorized.length > 0 || isUncategorizedLoading ? (
             <>
               <div
@@ -389,34 +228,8 @@ export function SessionListContent({
                                 key={session.id}
                                 session={session}
                                 isActive={currentSessionId === session.id}
-                                projects={projects}
                                 onSelect={() =>
                                   sessionActions.onSelectSession(session.id)
-                                }
-                                onDelete={() =>
-                                  sessionActions.onDeleteSession(session.id)
-                                }
-                                onMoveToProject={(projectId) =>
-                                  sessionActions.onMoveSession(
-                                    session.id,
-                                    projectId,
-                                  )
-                                }
-                                currentProjectId={null}
-                                onShare={() =>
-                                  sessionActions.onShareSession(session.id)
-                                }
-                                onToggleFavorite={() =>
-                                  sessionActions.onToggleFavorite(session.id)
-                                }
-                                onSessionUpdate={onUpdateUncategorizedSession}
-                                isFavorite={isSessionFavorite(session)}
-                                onDragStartTouch={
-                                  sessionActions.onDragStartTouch
-                                }
-                                isDraggingTouch={
-                                  sessionActions.draggingSessionId ===
-                                  session.id
                                 }
                               />
                             ))}

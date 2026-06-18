@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { CircleHelp, ExternalLink, Keyboard } from "lucide-react";
+import { CircleHelp, Keyboard } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ShortcutDialog } from "./ChatInputShortcuts";
 
@@ -53,33 +53,6 @@ export function ChatInputHelpMenu() {
             border: "1px solid var(--theme-border)",
           }}
         >
-          <a
-            href="https://yanyutin753.github.io/LambChat/"
-            target="_blank"
-            rel="noopener noreferrer"
-            role="menuitem"
-            onClick={() => setHelpMenuOpen(false)}
-            className="flex gap-2.5 items-center w-full px-3 py-2 text-[13px] rounded-lg cursor-pointer transition-colors no-underline"
-            style={{ color: "var(--theme-text)" }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor =
-                "var(--theme-bg-hover, rgba(128,128,128,0.08))";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = "transparent";
-            }}
-          >
-            <CircleHelp
-              size={16}
-              className="shrink-0"
-              style={{ color: "var(--theme-text-secondary)" }}
-            />
-            <span className="flex-1">{t("chat.helpDocs", "帮助文档")}</span>
-            <ExternalLink
-              size={12}
-              style={{ color: "var(--theme-text-secondary)", opacity: 0.5 }}
-            />
-          </a>
           <button
             type="button"
             role="menuitem"

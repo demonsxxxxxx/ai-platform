@@ -8,7 +8,6 @@ import {
   CheckCircle,
   AlertTriangle,
   Wrench,
-  Check,
 } from "lucide-react";
 import { notificationApi } from "../../services/api/notification";
 import type { Notification, NotificationType } from "../../types/notification";
@@ -49,11 +48,9 @@ interface NotificationDialogProps {
 export function NotificationDialog({
   isOpen,
   onClose,
-  onDismissed,
 }: NotificationDialogProps) {
   const { t, i18n } = useTranslation();
   const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [dismissingId, setDismissingId] = useState<string | null>(null);
 
   const fetchNotifications = useCallback(() => {
     notificationApi.getActive().then(setNotifications);
@@ -72,18 +69,6 @@ export function NotificationDialog({
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [isOpen, onClose]);
-
-  const handleDismiss = async (id: string) => {
-    setDismissingId(id);
-    setNotifications((prev) => prev.filter((n) => n.id !== id));
-    try {
-      await notificationApi.dismiss(id);
-    } catch {
-      // keep local state removal even if API fails
-    }
-    setDismissingId(null);
-    onDismissed();
-  };
 
   if (!isOpen) return null;
 
@@ -193,7 +178,7 @@ export function NotificationDialog({
                   }}
                 >
                   {/* Top row */}
-                  <div className="flex items-start sm:items-center justify-between gap-2 mb-2 flex-wrap">
+                  <div className="mb-2 flex flex-wrap items-start gap-2 sm:items-center">
                     <div className="flex items-center gap-2 min-w-0">
                       <span
                         className={`shrink-0 h-2 w-2 rounded-full ${config.dotClass}`}
@@ -205,25 +190,6 @@ export function NotificationDialog({
                         {t(config.labelKey)}
                       </span>
                     </div>
-                    <button
-                      onClick={() => handleDismiss(n.id)}
-                      disabled={dismissingId === n.id}
-                      className="flex items-center gap-1 shrink-0 rounded-lg px-2 py-1 text-xs transition-all disabled:opacity-50"
-                      style={{ color: "var(--theme-text-secondary)" }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor =
-                          "var(--theme-bg-hover, rgba(0,0,0,0.05))";
-                        e.currentTarget.style.color = "var(--theme-text)";
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = "transparent";
-                        e.currentTarget.style.color =
-                          "var(--theme-text-secondary)";
-                      }}
-                    >
-                      <Check size={12} />
-                      {t("notification.dismiss")}
-                    </button>
                   </div>
                   {/* Title */}
                   <p

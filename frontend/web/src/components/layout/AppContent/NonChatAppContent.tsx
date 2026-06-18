@@ -53,8 +53,6 @@ export function NonChatAppContent({
       onCloseProfileModal={onCloseProfileModal}
       versionInfo={versionInfo}
       setMobileSidebarOpen={setMobileSidebarOpen}
-      currentProjectId={null}
-      projectManager={{ projects: [] }}
       onNewSession={handleNewSession}
       onShowProfile={onShowProfile}
       sidebar={

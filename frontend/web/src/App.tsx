@@ -2,25 +2,28 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Routes, Route, useParams, useNavigate } from "react-router-dom";
 import { Toaster } from "react-hot-toast";
 import { useTranslation } from "react-i18next";
+import { ArrowLeft, ShieldAlert } from "lucide-react";
 import { ProtectedRoute } from "./components/auth/ProtectedRoute";
 import { ChatPageSkeleton, FilesPageSkeleton } from "./components/skeletons";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { ErrorBoundary } from "./components/common/ErrorBoundary";
 import { SelectionActionPopover } from "./components/common/SelectionActionPopover";
 import { useSEO } from "./hooks/usePageTitle";
-import { Permission } from "./types";
 import { sessionApi } from "./services/api";
 import {
   getCachedSessionTitle,
   listenSessionTitleUpdated,
 } from "./utils/sessionTitleEvents";
 import { APP_TOASTER_CLASS_NAME } from "./components/layout/AppContent/appToastLayout";
+import {
+  getRoutePermissions,
+  type Phase1SurfacePolicy,
+} from "./components/layout/AppContent/phase1SurfacePolicy";
 
-const SharedPage = lazy(() =>
-  import("./components/share/SharedPage").then((m) => ({
-    default: m.SharedPage,
-  })),
-);
+function routePermissions(tab: Phase1SurfacePolicy["tab"]) {
+  return getRoutePermissions(tab);
+}
+
 const OAuthCallback = lazy(() =>
   import("./components/auth/OAuthCallback").then((m) => ({
     default: m.OAuthCallback,
@@ -299,6 +302,58 @@ function AuthPageWrapper({
   );
 }
 
+function PublicShareUnavailablePage() {
+  const navigate = useNavigate();
+  const { shareId } = useParams<{ shareId?: string }>();
+
+  useSEO({
+    title: "Shared conversation unavailable",
+    description: "Public shared conversations require an ai-platform share projection before this route can be enabled.",
+    path: shareId ? `/shared/${shareId}` : "/shared",
+    noindex: true,
+  });
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-white p-4 dark:bg-stone-950 sm:p-6">
+      <section
+        aria-labelledby="public-share-unavailable-title"
+        className="w-full max-w-xl rounded-lg border border-amber-200/70 bg-white p-5 shadow-sm dark:border-amber-900/50 dark:bg-stone-900"
+      >
+        <div className="flex items-start gap-3">
+          <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+            <ShieldAlert size={20} strokeWidth={1.8} />
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs font-semibold uppercase text-amber-700 dark:text-amber-300">
+              phase-2-backend
+            </p>
+            <h1
+              id="public-share-unavailable-title"
+              className="mt-1 text-base font-semibold text-stone-900 dark:text-stone-50"
+            >
+              Public sharing is scheduled for Phase 2
+            </h1>
+            <p className="mt-2 text-sm leading-6 text-stone-600 dark:text-stone-300">
+              This route is kept public, but it is fail-closed until
+              ai-platform owns the share projection and access policy.
+            </p>
+          </div>
+        </div>
+        <div className="mt-5">
+          <button
+            type="button"
+            onClick={() => navigate("/chat")}
+            className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-stone-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-stone-700 focus:outline-none focus:ring-2 focus:ring-stone-400 focus:ring-offset-2 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-white"
+          >
+            <ArrowLeft size={16} strokeWidth={1.8} />
+            Back to chat
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 // Main App Component
 function App() {
   const { t } = useTranslation();
@@ -356,10 +411,7 @@ function App() {
               path="/skills"
               element={
                 <ProtectedRoute
-                  permissions={[
-                    Permission.SKILL_READ,
-                    Permission.MARKETPLACE_READ,
-                  ]}
+                  permissions={routePermissions("skills")}
                   redirectTo="/chat"
                   showToast
                   toastMessage={t("errors.noPermission")}
@@ -372,10 +424,7 @@ function App() {
               path="/marketplace"
               element={
                 <ProtectedRoute
-                  permissions={[
-                    Permission.SKILL_READ,
-                    Permission.MARKETPLACE_READ,
-                  ]}
+                  permissions={routePermissions("marketplace")}
                   redirectTo="/chat"
                   showToast
                   toastMessage={t("errors.noPermission")}
@@ -388,7 +437,7 @@ function App() {
               path="/mcp"
               element={
                 <ProtectedRoute
-                  permissions={[Permission.MCP_READ]}
+                  permissions={routePermissions("mcp")}
                   redirectTo="/chat"
                   showToast
                   toastMessage={t("errors.noPermission")}
@@ -401,7 +450,7 @@ function App() {
               path="/users"
               element={
                 <ProtectedRoute
-                  permissions={[Permission.USER_READ]}
+                  permissions={routePermissions("users")}
                   redirectTo="/chat"
                   showToast
                   toastMessage={t("errors.noPermission")}
@@ -414,7 +463,7 @@ function App() {
               path="/roles"
               element={
                 <ProtectedRoute
-                  permissions={[Permission.ROLE_MANAGE]}
+                  permissions={routePermissions("roles")}
                   redirectTo="/chat"
                   showToast
                   toastMessage={t("errors.noPermission")}
@@ -427,7 +476,7 @@ function App() {
               path="/settings"
               element={
                 <ProtectedRoute
-                  permissions={[Permission.SETTINGS_MANAGE]}
+                  permissions={routePermissions("settings")}
                   redirectTo="/chat"
                   showToast
                   toastMessage={t("errors.noPermission")}
@@ -440,7 +489,7 @@ function App() {
               path="/feedback"
               element={
                 <ProtectedRoute
-                  permissions={[Permission.FEEDBACK_READ]}
+                  permissions={routePermissions("feedback")}
                   redirectTo="/chat"
                   showToast
                   toastMessage={t("errors.noPermission")}
@@ -453,7 +502,7 @@ function App() {
               path="/channels/:channelType?/:instanceId?"
               element={
                 <ProtectedRoute
-                  permissions={[Permission.CHANNEL_READ]}
+                  permissions={routePermissions("channels")}
                   redirectTo="/chat"
                   showToast
                   toastMessage={t("errors.noPermission")}
@@ -466,7 +515,7 @@ function App() {
               path="/agents"
               element={
                 <ProtectedRoute
-                  permissions={[Permission.AGENT_ADMIN]}
+                  permissions={routePermissions("agents")}
                   redirectTo="/chat"
                   showToast
                   toastMessage={t("errors.noPermission")}
@@ -478,7 +527,12 @@ function App() {
             <Route
               path="/models"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute
+                  permissions={routePermissions("models")}
+                  redirectTo="/chat"
+                  showToast
+                  toastMessage={t("errors.noPermission")}
+                >
                   <ModelsPage />
                 </ProtectedRoute>
               }
@@ -487,11 +541,7 @@ function App() {
               path="/persona"
               element={
                 <ProtectedRoute
-                  permissions={[
-                    Permission.PERSONA_PRESET_READ,
-                    Permission.PERSONA_PRESET_WRITE,
-                    Permission.PERSONA_PRESET_ADMIN,
-                  ]}
+                  permissions={routePermissions("persona")}
                   redirectTo="/chat"
                   showToast
                   toastMessage={t("errors.noPermission")}
@@ -503,7 +553,13 @@ function App() {
             <Route
               path="/files"
               element={
-                <ProtectedRoute loadingComponent={<FilesPageSkeleton />}>
+                <ProtectedRoute
+                  permissions={routePermissions("files")}
+                  loadingComponent={<FilesPageSkeleton />}
+                  redirectTo="/chat"
+                  showToast
+                  toastMessage={t("errors.noPermission")}
+                >
                   <FilesPage />
                 </ProtectedRoute>
               }
@@ -512,7 +568,7 @@ function App() {
               path="/notifications"
               element={
                 <ProtectedRoute
-                  permissions={[Permission.NOTIFICATION_MANAGE]}
+                  permissions={routePermissions("notifications")}
                   redirectTo="/chat"
                   showToast
                   toastMessage={t("errors.noPermission")}
@@ -525,10 +581,7 @@ function App() {
               path="/memory"
               element={
                 <ProtectedRoute
-                  permissions={[
-                    Permission.CHAT_READ,
-                    Permission.SESSION_READ,
-                  ]}
+                  permissions={routePermissions("memory")}
                   redirectTo="/chat"
                   showToast
                   toastMessage={t("errors.noPermission")}
@@ -549,11 +602,7 @@ function App() {
             {/* Public shared session page - no auth required */}
             <Route
               path="/shared/:shareId"
-              element={
-                <Suspense fallback={null}>
-                  <SharedPage />
-                </Suspense>
-              }
+              element={<PublicShareUnavailablePage />}
             />
             <Route path="*" element={<NotFoundPage />} />
           </Routes>

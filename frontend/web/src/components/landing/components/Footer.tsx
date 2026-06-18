@@ -1,8 +1,7 @@
 import { useTranslation } from "react-i18next";
-import { APP_NAME, GITHUB_URL } from "../../../constants";
+import { APP_NAME } from "../../../constants";
 import { TECH_STACK } from "../data";
 import { NAV_ITEMS } from "../constants";
-import { GitHubIcon } from "./Icons";
 
 interface FooterProps {
   onScrollToSection: (id: string) => void;
@@ -33,15 +32,9 @@ export function Footer({ onScrollToSection }: FooterProps) {
             <p className="text-sm text-stone-400 dark:text-stone-500 leading-[1.75] mb-7 max-w-xs">
               {t("landing.footerTagline")}
             </p>
-            <a
-              href={GITHUB_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="blog-btn-ghost inline-flex items-center gap-2 rounded-full border border-stone-200/80 dark:border-stone-700/50 px-4 py-2 text-xs font-medium text-stone-500 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-50 transition-all duration-200"
-            >
-              <GitHubIcon className="h-3.5 w-3.5" />
-              GitHub
-            </a>
+            <span className="blog-btn-ghost inline-flex items-center gap-2 rounded-full border border-stone-200/80 dark:border-stone-700/50 px-4 py-2 text-xs font-medium text-stone-500 dark:text-stone-400">
+              Enterprise agent platform
+            </span>
           </div>
 
           {/* Link columns */}
@@ -77,24 +70,20 @@ export function Footer({ onScrollToSection }: FooterProps) {
               </h4>
               <ul className="space-y-3">
                 <li>
-                  <a
-                    href={GITHUB_URL}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[13px] text-stone-400 dark:text-stone-500 hover:text-stone-900 dark:hover:text-stone-50 transition-colors duration-200 inline-flex items-center gap-1.5"
-                  >
-                    <GitHubIcon className="h-3.5 w-3.5" /> GitHub
-                  </a>
-                </li>
-                <li>
-                  <a
-                    href={GITHUB_URL}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    onClick={() => onScrollToSection("architecture")}
                     className="text-[13px] text-stone-400 dark:text-stone-500 hover:text-stone-900 dark:hover:text-stone-50 transition-colors duration-200"
                   >
-                    MIT License
-                  </a>
+                    Architecture
+                  </button>
+                </li>
+                <li>
+                  <button
+                    onClick={() => onScrollToSection("dashboard")}
+                    className="text-[13px] text-stone-400 dark:text-stone-500 hover:text-stone-900 dark:hover:text-stone-50 transition-colors duration-200"
+                  >
+                    Admin Runtime
+                  </button>
                 </li>
               </ul>
             </div>

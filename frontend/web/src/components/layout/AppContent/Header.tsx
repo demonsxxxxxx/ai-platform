@@ -3,7 +3,6 @@ import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
 import {
-  Share2,
   MoreHorizontal,
   MessageSquarePlus,
   Bell,
@@ -17,23 +16,16 @@ import {
 } from "lucide-react";
 import { ModelSelector } from "../../agent/ModelSelector";
 import { UserMenu } from "../UserMenu";
-import { ShareDialog } from "../../share/ShareDialog";
-import { useAuth } from "../../../hooks/useAuth";
 import { useTheme } from "../../../contexts/ThemeContext";
 import { useSettingsContext } from "../../../contexts/SettingsContext";
 import { authApi } from "../../../services/api";
 import { notificationApi } from "../../../services/api/notification";
-import { useSessionTitle } from "../../../hooks/useSessionTitle";
 import { NotificationDialog } from "../../notification/NotificationDialog";
-import { Permission } from "../../../types";
 import type { TabType } from "./types";
-import type { Project } from "../../../types";
 
 interface HeaderProps {
   activeTab: TabType;
   setMobileSidebarOpen: (open: boolean) => void;
-  currentProjectId: string | null;
-  projectManager: { projects: Project[] };
   onNewSession: () => void;
   onShowProfile: () => void;
   availableModels?:
@@ -57,14 +49,11 @@ interface HeaderProps {
 export function Header({
   activeTab,
   setMobileSidebarOpen,
-  currentProjectId,
-  projectManager,
   onNewSession,
   onShowProfile,
   availableModels,
   currentModelId,
   onSelectModel,
-  sessionId,
   currentRunId,
   onOpenRunPlayback,
   onToggleOutline,
@@ -72,10 +61,8 @@ export function Header({
 }: HeaderProps) {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
-  const { user } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const { pinnedModelIds, togglePinnedModel } = useSettingsContext();
-  const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [langMenuOpen, setLangMenuOpen] = useState(false);
   const [notifDialogOpen, setNotifDialogOpen] = useState(false);
@@ -122,13 +109,6 @@ export function Header({
     };
   }, [mobileMenuOpen]);
 
-  const hasSharePermission = user?.permissions?.includes(
-    Permission.SESSION_SHARE,
-  );
-  const showShareButton = !!sessionId && hasSharePermission;
-  const sessionTitle = useSessionTitle(sessionId, {
-    enabled: showShareButton,
-  });
   const showRunPlaybackButton =
     activeTab === "chat" && !!currentRunId && !!onOpenRunPlayback;
 
@@ -174,28 +154,6 @@ export function Header({
                   />
                 )}
 
-              {currentProjectId &&
-                (() => {
-                  const project = projectManager.projects.find(
-                    (p) => p.id === currentProjectId,
-                  );
-                  if (!project) return null;
-                  return (
-                    <div className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-stone-100 dark:bg-stone-700/50 border border-stone-200 dark:border-stone-600/40">
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 24 24"
-                        fill="currentColor"
-                        className="size-3 text-stone-400 dark:text-stone-500"
-                      >
-                        <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V5h14v14z" />
-                      </svg>
-                      <span className="text-xs text-stone-500 dark:text-stone-400 truncate max-w-[120px]">
-                        {project.name}
-                      </span>
-                    </div>
-                  );
-                })()}
             </>
           ) : (
             <div className="flex items-center gap-1.5">
@@ -286,20 +244,6 @@ export function Header({
                           <MessageSquarePlus size={16} />
                         </span>
                         <span className="truncate">{t("sidebar.newChat")}</span>
-                      </button>
-                    )}
-                    {showShareButton && (
-                      <button
-                        onClick={() => {
-                          setShareDialogOpen(true);
-                          setMobileMenuOpen(false);
-                        }}
-                        className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm transition-colors text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-primary-light)]"
-                      >
-                        <span className="flex items-center justify-center w-5 shrink-0">
-                          <Share2 size={16} strokeWidth={1.8} />
-                        </span>
-                        <span className="truncate">{t("share.title")}</span>
                       </button>
                     )}
                     <button
@@ -426,15 +370,6 @@ export function Header({
           <UserMenu onShowProfile={onShowProfile} />
         </div>
       </header>
-
-      {sessionId && (
-        <ShareDialog
-          isOpen={shareDialogOpen}
-          onClose={() => setShareDialogOpen(false)}
-          sessionId={sessionId}
-          sessionName={sessionTitle || t("sidebar.newChat")}
-        />
-      )}
 
       <NotificationDialog
         isOpen={notifDialogOpen}

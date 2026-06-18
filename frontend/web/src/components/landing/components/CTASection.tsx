@@ -1,6 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { GITHUB_URL } from "../../../constants";
-import { ArrowIcon, GitHubIcon } from "./Icons";
+import { ArrowIcon } from "./Icons";
 
 interface CTASectionProps {
   onLogin: () => void;
@@ -54,15 +53,12 @@ export function CTASection({ onLogin }: CTASectionProps) {
               <ArrowIcon />
             </span>
           </button>
-          <a
-            href={GITHUB_URL}
-            target="_blank"
-            rel="noopener noreferrer"
+          <button
+            onClick={onLogin}
             className="blog-btn-ghost w-full sm:w-auto group inline-flex items-center justify-center gap-2.5 rounded-full border border-stone-200/80 dark:border-stone-700/50 bg-white/50 dark:bg-stone-800/30 px-8 py-4 sm:px-9 sm:py-4 text-sm font-medium text-stone-600 dark:text-stone-300 transition-all duration-300 hover:-translate-y-0.5 hover:border-stone-300 dark:hover:border-stone-600 hover:shadow-lg hover:shadow-stone-200/30 dark:hover:shadow-stone-900/30 active:translate-y-0"
           >
-            <GitHubIcon />
-            {t("landing.viewOnGitHub")}
-          </a>
+            {t("landing.startUsing")}
+          </button>
         </div>
       </div>
     </section>
