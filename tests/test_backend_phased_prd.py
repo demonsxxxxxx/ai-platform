@@ -11,12 +11,17 @@ def read_backend_prd() -> str:
 
 def test_backend_prd_records_stage_gate_and_acceptance_boundaries():
     text = read_backend_prd()
+    compact_text = " ".join(text.split())
 
     for required_section in (
+        "### 0.1 Current Evidence Snapshot",
+        "### 0.2 Status Transition Contract",
         "## 3. Backend Stage Model",
         "### 3.1 Stage Evidence Matrix",
         "### 3.2 Stage Entry And Exit Gates",
         "### 3.3 Universal Blocking Conditions",
+        "### 3.5 Gate Closure Checklist",
+        "### 3.6 Negative Acceptance Matrix",
         "## 4. Gate And Acceptance Boundaries",
         "## 6. Reference Code Projects",
     ):
@@ -42,8 +47,21 @@ def test_backend_prd_records_stage_gate_and_acceptance_boundaries():
         "No stage can exit while its linked issue remains open without an evidence comment",
         "No capacity or SDK subagent fanout default can increase from configuration alone",
         "No sandbox claim can use `fake` provider evidence for production acceptance",
+        "A happy path cannot close a stage unless the matching denial paths are also represented",
+        "Any single passing smoke, any docs-only PR, or historical S1 baseline evidence.",
     ):
-        assert boundary in text
+        assert boundary in compact_text
+
+    for checklist in (
+        "| B0 | S2-0/latest-main source-authority issue links the target source",
+        "| B1 | Memory/context issue names the selected workflow",
+        "| B2 | Sandbox issue names provider, limits, egress, callback, cleanup, and rollback assumptions.",
+        "| B3 | Capacity issue names the profile, starting with 10 sessions x peak 4 SDK subagents",
+        "| B4 | Skill lifecycle issue names upload/version/release/rollback/dependency evidence",
+        "| B5 | File/artifact/tool issue names workflow family, namespace, exact permission binding",
+        "| B6 | Operations-beta issue names owner, workflow, SLO, cost budget, quality gate",
+    ):
+        assert checklist in text
 
 
 def test_backend_prd_records_post_poc_productization_priorities_and_deliverables():
@@ -58,6 +76,10 @@ def test_backend_prd_records_post_poc_productization_priorities_and_deliverables
         "P0-3 Worker/model-gateway capacity evidence",
         "P0-4 Skills management and release governance",
         "### 3.4 Stage Deliverables",
+        "The next backend issue chain should stay narrow and evidence-first:",
+        "The initial backend capacity target is deliberately small:",
+        "Peak 4 Claude Agent SDK subagents per session for selected workflows.",
+        "The backend becomes product-beta ready only when it supports a named internal workflow",
     ):
         assert phrase in compact_text
 
@@ -93,6 +115,8 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
         "Backstage",
         "Dify",
         "Open WebUI",
+        "Dramatiq",
+        "Taskiq",
     ):
         assert project in text
 
@@ -102,13 +126,15 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
         "Do not import a reference project's tenant, RBAC, memory, sandbox, or release authority wholesale.",
         "Backend authority remains ai-platform.",
         "No reference project is a dependency decision until an issue names the source, license, imported files, adaptation boundary, and verification plan.",
+        "Reference use must follow this intake gate:",
+        "Do not add a runtime dependency, side service, or hosted SaaS call without a separate architecture issue, security review, deployment plan, and rollback boundary.",
     ):
         assert authority_boundary in compact_text
 
     for category in (
         "| B1 memory/context | LangGraph, Mem0, Zep | Memory/checkpoint model, memory UX, provenance, delete/update semantics. |",
         "| B2 sandbox | OpenHands, E2B, Daytona | Sandbox lifecycle, workspace isolation, command execution, artifact return, cancellation ergonomics. |",
-        "| B3 capacity/model gateway | Temporal, Celery, LiteLLM, Portkey | Durable retry vocabulary, worker scaling, provider limits, budgets, spend tracking, fallback/backpressure. |",
+        "| B3 capacity/model gateway | Temporal, Celery, Dramatiq, Taskiq, LiteLLM, Portkey | Durable retry vocabulary, worker scaling, provider limits, budgets, spend tracking, fallback/backpressure. |",
         "| B4 Skills management | Backstage, Dify, Open WebUI, LibreChat, AnythingLLM | Catalog, release workflow, skill/app marketplace UX, slash/tool discovery patterns. |",
     ):
         assert category in text
