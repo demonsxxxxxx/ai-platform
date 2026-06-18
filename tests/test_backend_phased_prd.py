@@ -35,6 +35,7 @@ def test_backend_prd_records_stage_gate_and_acceptance_boundaries():
     for status_label in (
         "`local partial`",
         "`PR ready`",
+        "`reviewed`",
         "`merged`",
         "`211 verified`",
         "`gate closable`",
@@ -44,6 +45,8 @@ def test_backend_prd_records_stage_gate_and_acceptance_boundaries():
     for boundary in (
         "Docs-only PRs may align the roadmap and acceptance wording, but they cannot",
         "Runtime-affecting backend work becomes `211 verified` only after 211 source",
+        "`PR ready` becomes `reviewed` only after independent review is recorded",
+        "`reviewed` becomes `merged` only after the PR is merged to main",
         "No stage can exit while its linked issue remains open without an evidence comment",
         "No capacity or SDK subagent fanout default can increase from configuration alone",
         "No sandbox claim can use `fake` provider evidence for production acceptance",

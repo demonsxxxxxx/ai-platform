@@ -260,6 +260,8 @@ Status labels must remain precise:
 
 - `local partial`: local code/docs/tests only.
 - `PR ready`: scoped verification passed and review boundary is documented.
+- `reviewed`: independent review is recorded and any blocking feedback is
+  resolved or explicitly tracked.
 - `merged`: PR is merged to main.
 - `211 verified`: relevant 211 runtime/source/smoke evidence exists.
 - `gate closable`: all gate evidence, review, deployment, and issue closure
@@ -269,13 +271,15 @@ Gate closure rules:
 
 1. `local partial` becomes `PR ready` only after scoped tests and the review
    boundary are recorded in the PR.
-2. `PR ready` becomes `merged` only after the PR is merged to main.
-3. Runtime-affecting backend work becomes `211 verified` only after 211 source,
+2. `PR ready` becomes `reviewed` only after independent review is recorded and
+   blocking feedback is resolved or explicitly tracked.
+3. `reviewed` becomes `merged` only after the PR is merged to main.
+4. Runtime-affecting backend work becomes `211 verified` only after 211 source,
    image labels, containers, health, smoke, and redacted evidence match the
    merged source.
-4. A stage becomes `gate closable` only after the issue is closed with linked
+5. A stage becomes `gate closable` only after the issue is closed with linked
    PR, review, verification, and runtime evidence where required.
-5. Docs-only PRs may align the roadmap and acceptance wording, but they cannot
+6. Docs-only PRs may align the roadmap and acceptance wording, but they cannot
    close B0-B6 runtime gates.
 
 ## 5. Stage Requirements
