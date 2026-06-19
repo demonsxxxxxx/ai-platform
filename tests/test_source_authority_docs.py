@@ -25,24 +25,24 @@ RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_RUNTIME_RELATION_MANIFEST = (
     ROOT / "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json"
 )
-ACTIVE_RUNTIME_SUBJECT_SHA = "14808bc8335b5f70e770a55db713b8faf4bfa664"
-ACTIVE_SOURCE_TREE_SHA = "14808bc8335b5f70e770a55db713b8faf4bfa664"
+ACTIVE_RUNTIME_SUBJECT_SHA = "dde1749c256eaa7e0819c98e0debe6084e73cba2"
+ACTIVE_SOURCE_TREE_SHA = "dde1749c256eaa7e0819c98e0debe6084e73cba2"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_SUBJECT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
 ACTIVE_CLOSURE_SOURCE_TREE_SHA = "3c06c5351517028111c18a365ff9a24ed22ffa33"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE = "ai-platform:380de6b-merged-main-runtime"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE_ID = "sha256:e36e4dfad072cdd12b841019db3ccbcdef4b63ccf5262869c994757fef5663f9"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:14808bc-issue98-runtime-only-v1"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:f9acc854357a195e132286fdff8ad601b95c554f92230bdb3d1aa2a55bf22c24"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-19-211-foundation-alpha-poc-14808bc-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-19-211-foundation-alpha-poc-14808bc-auth-rbac-smoke"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:dde1749-issue104-runtime-only-v1"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:95366a442aad0c34597e1eaaf034abe97f99ecf3116a126ff86eee33c332b926"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-19-211-foundation-alpha-poc-dde1749-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-19-211-foundation-alpha-poc-dde1749-auth-rbac-smoke"
 ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID = (
-    "2026-06-19-211-foundation-alpha-poc-14808bc-governance-runtime-smoke"
+    "2026-06-19-211-foundation-alpha-poc-dde1749-governance-runtime-smoke"
 )
 ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-19-211-foundation-alpha-poc-14808bc-release-evidence-runtime-acceptance"
+    "2026-06-19-211-foundation-alpha-poc-dde1749-release-evidence-runtime-acceptance"
 )
 ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-19-211-foundation-alpha-poc-14808bc-alert-trace-export-runtime-acceptance"
+    "2026-06-19-211-foundation-alpha-poc-dde1749-alert-trace-export-runtime-acceptance"
 )
 CBBFAFF_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
 CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
@@ -696,15 +696,16 @@ def test_gate_status_snapshot_records_company_login_audit_readiness_fields():
 def test_foundation_alpha_runtime_evidence_subject_commit_parity_without_self_referential_record_commit():
     import json
 
-    for path in (
-        FOUNDATION_ALPHA_POC_ACTIVE_SMOKE_EVIDENCE,
-        FOUNDATION_ALPHA_POC_ACTIVE_AUTH_RBAC_EVIDENCE,
-    ):
+    expected_artifact_kinds = {
+        FOUNDATION_ALPHA_POC_ACTIVE_SMOKE_EVIDENCE: "211_runtime_smoke",
+        FOUNDATION_ALPHA_POC_ACTIVE_AUTH_RBAC_EVIDENCE: "auth_rbac_smoke",
+    }
+    for path, expected_artifact_kind in expected_artifact_kinds.items():
         payload = json.loads(read(path))
         source_ref = payload["source_ref"]
         labels = source_ref["image_labels"]
 
-        assert payload["artifact_kind"] == "211_runtime_smoke"
+        assert payload["artifact_kind"] == expected_artifact_kind
         assert "record_commit_sha" not in payload
         assert payload["commit_sha"] == payload["runtime_subject_commit_sha"]
         assert source_ref["runtime_source_marker"] == payload["runtime_subject_commit_sha"]

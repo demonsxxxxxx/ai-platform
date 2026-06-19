@@ -136,6 +136,8 @@ the current runtime subject.
 
 | Date | Gate | Commit | Evidence | Status |
 | --- | --- | --- | --- | --- |
+| 2026-06-19 | Foundation Alpha POC | `dde1749c256eaa7e0819c98e0debe6084e73cba2` | [`2026-06-19-211-foundation-alpha-poc-dde1749-runtime-poc-smoke.json`](foundation-alpha-poc/dde1749c256eaa7e0819c98e0debe6084e73cba2/2026-06-19-211-foundation-alpha-poc-dde1749-runtime-poc-smoke.json), [`2026-06-19-211-foundation-alpha-poc-dde1749-auth-rbac-smoke.json`](foundation-alpha-poc/dde1749c256eaa7e0819c98e0debe6084e73cba2/2026-06-19-211-foundation-alpha-poc-dde1749-auth-rbac-smoke.json), [`2026-06-19-211-foundation-alpha-poc-dde1749-governance-runtime-smoke.json`](foundation-alpha-poc/dde1749c256eaa7e0819c98e0debe6084e73cba2/2026-06-19-211-foundation-alpha-poc-dde1749-governance-runtime-smoke.json), [`2026-06-19-211-foundation-alpha-poc-dde1749-release-evidence-runtime-acceptance.json`](foundation-alpha-poc/dde1749c256eaa7e0819c98e0debe6084e73cba2/2026-06-19-211-foundation-alpha-poc-dde1749-release-evidence-runtime-acceptance.json), [`2026-06-19-211-foundation-alpha-poc-dde1749-alert-trace-export-runtime-acceptance.json`](foundation-alpha-poc/dde1749c256eaa7e0819c98e0debe6084e73cba2/2026-06-19-211-foundation-alpha-poc-dde1749-alert-trace-export-runtime-acceptance.json) | Reviewed #104 B0 runtime-relevant 211 smoke refresh passed against `ai-platform:dde1749-issue104-runtime-only-v1` with image ID `sha256:95366a442aad0c34597e1eaaf034abe97f99ecf3116a126ff86eee33c332b926`. It verifies runtime POC smoke, Auth/RBAC, Admin Runtime governance, release-evidence runtime acceptance, and alert/trace export runtime acceptance for the `dde1749` runtime subject. The refresh used the approved runtime-only rebase workaround and keeps the legacy deploy-env-file/source-authority caveat open; it does not close production readiness, Docker sandbox hardening, platform-level multi-run orchestration, packaged frontend image acceptance, ordinary-user multi-agent exposure, department rollout, or production concurrency default increases. |
+| 2026-06-19 | Foundation Runtime Concurrency | `dde1749c256eaa7e0819c98e0debe6084e73cba2` | [`2026-06-19-211-foundation-alpha-poc-dde1749-foundation-runtime-concurrency.json`](foundation-runtime-concurrency/dde1749c256eaa7e0819c98e0debe6084e73cba2-frc-b0-20260619/2026-06-19-211-foundation-alpha-poc-dde1749-foundation-runtime-concurrency.json), [`2026-06-19-211-foundation-alpha-poc-dde1749-foundation-runtime-concurrency-readiness.json`](foundation-runtime-concurrency/dde1749c256eaa7e0819c98e0debe6084e73cba2-frc-b0-20260619/2026-06-19-211-foundation-alpha-poc-dde1749-foundation-runtime-concurrency-readiness.json) | Foundation Runtime concurrency evidence passed with verifier status `verified_foundation_runtime_concurrency` against the `dde1749` runtime subject with 12 concurrent cases/sessions/runs across 2 tenants and 4 users, run creation/execution/cancel/retry coverage, queue/admission, sandbox workspace, memory/context, artifact ACL, tool permission, skill snapshots, playback, and cleanup checks. This clears the #104 current-subject Foundation Runtime evidence gap for B0 runtime-relevant readiness; it does not raise production concurrency defaults, close the seven-gate B3 capacity evidence gate, open platform-level multi-run orchestration, claim Docker sandbox hardening, enable long-term memory by default, permit department rollout, or claim production readiness. |
 | 2026-06-19 | Foundation Alpha POC | `14808bc8335b5f70e770a55db713b8faf4bfa664` | [`2026-06-19-211-foundation-alpha-poc-14808bc-runtime-poc-smoke.json`](foundation-alpha-poc/14808bc8335b5f70e770a55db713b8faf4bfa664/2026-06-19-211-foundation-alpha-poc-14808bc-runtime-poc-smoke.json), [`2026-06-19-211-foundation-alpha-poc-14808bc-auth-rbac-smoke.json`](foundation-alpha-poc/14808bc8335b5f70e770a55db713b8faf4bfa664/2026-06-19-211-foundation-alpha-poc-14808bc-auth-rbac-smoke.json), [`2026-06-19-211-foundation-alpha-poc-14808bc-governance-runtime-smoke.json`](foundation-alpha-poc/14808bc8335b5f70e770a55db713b8faf4bfa664/2026-06-19-211-foundation-alpha-poc-14808bc-governance-runtime-smoke.json), [`2026-06-19-211-foundation-alpha-poc-14808bc-release-evidence-runtime-acceptance.json`](foundation-alpha-poc/14808bc8335b5f70e770a55db713b8faf4bfa664/2026-06-19-211-foundation-alpha-poc-14808bc-release-evidence-runtime-acceptance.json), [`2026-06-19-211-foundation-alpha-poc-14808bc-alert-trace-export-runtime-acceptance.json`](foundation-alpha-poc/14808bc8335b5f70e770a55db713b8faf4bfa664/2026-06-19-211-foundation-alpha-poc-14808bc-alert-trace-export-runtime-acceptance.json) | Reviewed #98 B0 current-main 211 smoke refresh passed against `ai-platform:14808bc-issue98-runtime-only-v1` with image ID `sha256:f9acc854357a195e132286fdff8ad601b95c554f92230bdb3d1aa2a55bf22c24`. It verifies runtime POC smoke, Auth/RBAC, Admin Runtime governance, release-evidence runtime acceptance, and alert/trace export runtime acceptance for the `14808bc` runtime subject. The refresh used the approved runtime-only image path and keeps the legacy deploy-env-file/source-authority caveat open; it does not close production readiness, Docker sandbox hardening, platform-level multi-run orchestration, packaged frontend image acceptance, ordinary-user multi-agent exposure, or production concurrency default increases. |
 | 2026-06-19 | Foundation Runtime Concurrency | `14808bc8335b5f70e770a55db713b8faf4bfa664` | [`2026-06-19-211-foundation-alpha-poc-14808bc-foundation-runtime-concurrency.json`](foundation-runtime-concurrency/14808bc8335b5f70e770a55db713b8faf4bfa664-frc-b0-20260619/2026-06-19-211-foundation-alpha-poc-14808bc-foundation-runtime-concurrency.json), [`2026-06-19-211-foundation-alpha-poc-14808bc-foundation-runtime-concurrency-readiness.json`](foundation-runtime-concurrency/14808bc8335b5f70e770a55db713b8faf4bfa664-frc-b0-20260619/2026-06-19-211-foundation-alpha-poc-14808bc-foundation-runtime-concurrency-readiness.json), [`2026-06-19-211-foundation-alpha-poc-14808bc-foundation-runtime-concurrency-blocked-240s.json`](foundation-runtime-concurrency/14808bc8335b5f70e770a55db713b8faf4bfa664-frc-b0-20260619/2026-06-19-211-foundation-alpha-poc-14808bc-foundation-runtime-concurrency-blocked-240s.json) | Foundation Runtime concurrency evidence passed with verifier status `verified_foundation_runtime_concurrency` after rerunning with a 600s per-run timeout, against the `14808bc` runtime subject with 12 concurrent cases/sessions/runs across 2 tenants and 4 users, run creation/execution/cancel/retry coverage, queue/admission, sandbox workspace, memory/context, artifact ACL, tool permission, skill snapshots, and playback checks. The retained 240s diagnostic records `workers_busy` / `active_run_limit_saturated` timeout behavior before the successful rerun and should feed B3 capacity planning. This clears the #98 current-subject Foundation Runtime evidence gap for B0 readiness; it does not raise production concurrency defaults, close the seven-gate B3 capacity evidence gate, open platform-level multi-run orchestration, claim Docker sandbox hardening, enable long-term memory by default, permit department rollout, or claim production readiness. |
 | 2026-06-19 | B1 memory/context usable | `52ac62cfbbab47172a659dda11e41aa4b2a5d699` | [`2026-06-19-211-b1-memory-context-workflow-smoke-52ac62c.json`](b1-memory-context/52ac62cfbbab47172a659dda11e41aa4b2a5d699/2026-06-19-211-b1-memory-context-workflow-smoke-52ac62c.json) | Reviewed #75 B1 memory/context 211 smoke passed against `ai-platform:52ac62c-b1-runtime-evidence-review` with image ID `sha256:8e21ca383e808d84644f7e967a0cc172e874d4962d821f465c761e04f22c68eb`. It verifies governed run creation, governed-scope memory enablement, disabled-policy read/write blocking, memory create/list, context snapshot public provenance, playback public projection with `memory_record_count=1`, cross-user denial, delete followed by future-context absence, long-term memory fail-closed, and no private projection leakage. It records the B1 merged-source runtime evidence review for the `52ac62c` runtime subject; it does not close #75, B1 gate closure, G0 source-authority, production readiness, Docker sandbox hardening, ordinary-user multi-agent exposure, long-term cross-session memory by default, or production concurrency default increases. |
@@ -264,11 +266,15 @@ Conditional fields:
 Accepted artifact kinds currently include:
 
 - `211_runtime_smoke`
+- `auth_rbac_smoke`
 - `capacity_gate_readiness`
 - `frontend_packaged_runtime_smoke`
 - `frontend_release_traceability`
+- `foundation_runtime_concurrency`
+- `governance_runtime_smoke`
 - `governance_readiness`
 - `observability_readiness`
+- `release_evidence_runtime_acceptance`
 - `alert_trace_export_runtime_acceptance`
 - `211_memory_enabled_document_workflow_smoke`
 - `211_sandbox_runtime_smoke`
@@ -335,17 +341,18 @@ runtime blocker.
 - `packaged_frontend_image_release_acceptance`
 - seven-gate capacity-upgrade/load evidence for the latest runtime subject
 
-The 2026-06-19 `14808bc` #98 B0 211 evidence records reviewed runtime export,
+The 2026-06-19 `dde1749` #104 B0 211 evidence records reviewed runtime export,
 retention, alert/trace export runtime acceptance, cross-tenant artifact
 isolation, Auth/RBAC smoke, governance smoke, and Foundation Runtime concurrency
 correctness for the current B0 runtime-relevant subject. The readiness tool may
-treat `14808bc` as the current source/runtime subject when the checkout is at
+treat `dde1749` as the current source/runtime subject when the checkout is at
 that source, or as runtime-relevant source evidence for later
-documentation-only evidence commits. The `14808bc` records keep the previously closed
+documentation-only evidence commits. The `dde1749` records keep the previously closed
 `g9_runtime_export_and_retention_acceptance` and
 `alert_delivery_and_trace_export_211_acceptance` blockers closed for the
-runtime-smoke scope and clear the #98 current-subject Foundation Runtime
-evidence gap. The 2026-06-18 `5698873` #72 B0 211 evidence, the 2026-06-18
+runtime-smoke scope and clear the #104 current-subject Foundation Runtime
+evidence gap. The 2026-06-19 `14808bc` #98 B0 211 evidence, the 2026-06-18
+`5698873` #72 B0 211 evidence, the 2026-06-18
 `de12191` #65 smoke refresh and Foundation Runtime
 concurrency rerun, the 2026-06-17 `a15c74f` smoke refresh and Foundation Runtime
 concurrency rerun, the 2026-06-16 `8e0389e` smoke refresh, and the 2026-06-17
@@ -354,8 +361,8 @@ concurrency rerun, the 2026-06-16 `8e0389e` smoke refresh, and the 2026-06-17
 baseline with accepted Foundation Runtime concurrency correctness for that
 runtime subject. The earlier `79495bf` broad refresh, `dff48fb` broad refresh,
 and `5d3d7e2` focused PR #40 refresh are retained as superseded reviewed
-evidence after the merged-main refresh. The 14808bc, 5698873, de12191, a15c74f,
-8e0389e, and 380de6b evidence preserves the boundary that this does not close production
+evidence after the merged-main refresh. The dde1749, 14808bc, 5698873, de12191,
+a15c74f, 8e0389e, and 380de6b evidence preserves the boundary that this does not close production
 readiness, signed Skill package/SBOM, packaged frontend image release
 acceptance, ordinary-user multi-agent exposure, production concurrency default
 increases, seven-gate capacity-upgrade evidence, G0 source-authority

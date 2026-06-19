@@ -1,7 +1,7 @@
 {
   "schema_version": "ai-platform.source-runtime-relation-manifest.v1",
-  "source_tree_commit_sha": "14808bc8335b5f70e770a55db713b8faf4bfa664",
-  "runtime_subject_commit_sha": "14808bc8335b5f70e770a55db713b8faf4bfa664",
+  "source_tree_commit_sha": "dde1749c256eaa7e0819c98e0debe6084e73cba2",
+  "runtime_subject_commit_sha": "dde1749c256eaa7e0819c98e0debe6084e73cba2",
   "runtime_affecting_changes_since_runtime_subject": [],
-  "note": "Committed fallback for normal clean checkouts after the #98 B0 current-main runtime refresh. Source tree and runtime subject both point to the reviewed 14808bc 211 runtime subject; later commits that only add docs/release-evidence records remain runtime-neutral unless readiness detects runtime-affecting paths."
+  "note": "Committed fallback for clean checkouts after the #104 B0 runtime refresh. Source tree and runtime subject both point to the reviewed dde1749 211 runtime subject; later commits that only add docs/release-evidence records remain runtime-neutral unless readiness detects runtime-affecting paths."
 }

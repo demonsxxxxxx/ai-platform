@@ -1,0 +1,120 @@
+{
+  "artifact_kind": "release_evidence_runtime_acceptance",
+  "captured_at": "2026-06-19T08:12:30+08:00",
+  "commit_sha": "dde1749c256eaa7e0819c98e0debe6084e73cba2",
+  "evidence_id": "2026-06-19-211-foundation-alpha-poc-dde1749-release-evidence-runtime-acceptance",
+  "evidence_ref": {
+    "command": "python3 tools/verify_release_evidence_runtime_acceptance.py --format json --commit-sha dde1749c256eaa7e0819c98e0debe6084e73cba2 --runtime-subject-commit-sha dde1749c256eaa7e0819c98e0debe6084e73cba2 --image ai-platform:dde1749-issue104-runtime-only-v1",
+    "result": "ok:true",
+    "runtime_checks": {
+      "release_evidence_runtime_acceptance": {
+        "checks": {
+          "retention_runtime_acceptance": {
+            "default_retention_days": 180,
+            "delete_only_reviewed_redacted_entries": true,
+            "forbidden_delete_targets_present": true,
+            "minimum_retention_days": 30,
+            "policy_status": "contract_only_not_runtime_enforced",
+            "requires_review_before_delete": true,
+            "schema_version": "ai-platform.release-evidence-retention-policy.v1",
+            "status": "accepted_review_first_policy"
+          },
+          "runtime_export_acceptance": {
+            "blocked_entry_count": 0,
+            "does_not_export_raw_runtime_payloads": true,
+            "excluded_entry_count": 52,
+            "export_policy": "safe_reviewed_index_only_not_runtime_export",
+            "safe_entry_count": 108,
+            "safe_entry_fields_only": true,
+            "status": "ready_for_operator_review"
+          }
+        },
+        "does_not_close_g9": true,
+        "does_not_export_raw_runtime_payloads": true,
+        "ok": true,
+        "open_gaps": [],
+        "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
+        "source": {
+          "commit_sha": "dde1749c256eaa7e0819c98e0debe6084e73cba2",
+          "evidence_root": "docs/release-evidence",
+          "image": "ai-platform:dde1749-issue104-runtime-only-v1",
+          "runtime_subject_commit_sha": "dde1749c256eaa7e0819c98e0debe6084e73cba2"
+        },
+        "status": "accepted_for_operator_review"
+      }
+    },
+    "runtime_source": {
+      "commit_sha": "dde1749c256eaa7e0819c98e0debe6084e73cba2",
+      "evidence_root": "docs/release-evidence",
+      "image": "ai-platform:dde1749-issue104-runtime-only-v1",
+      "runtime_subject_commit_sha": "dde1749c256eaa7e0819c98e0debe6084e73cba2"
+    },
+    "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
+    "verifier": "tools/verify_release_evidence_runtime_acceptance.py"
+  },
+  "gate": "G9 Observability / Release Evidence",
+  "issue_refs": [
+    "#104"
+  ],
+  "open_followups": [],
+  "pr_refs": [],
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "dde1749c256eaa7e0819c98e0debe6084e73cba2",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "api_health": {
+      "status": "ok"
+    },
+    "branch": "main",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_layout_status": "external_env_file_label_present",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "gateway_secret_supplied": false,
+    "image": "ai-platform:dde1749-issue104-runtime-only-v1",
+    "image_id": "sha256:95366a442aad0c34597e1eaaf034abe97f99ecf3116a126ff86eee33c332b926",
+    "image_labels": {
+      "ai-platform.runtime-rollout": "issue104-b0-runtime-only-rebase-v1",
+      "ai-platform.runtime-subject": "dde1749c256eaa7e0819c98e0debe6084e73cba2",
+      "ai-platform.runtime_subject": "dde1749c256eaa7e0819c98e0debe6084e73cba2",
+      "ai-platform.source-branch": "main",
+      "ai-platform.source-note": "issue104-b0-runtime-only-rebase-v1",
+      "ai-platform.source-revision": "dde1749c256eaa7e0819c98e0debe6084e73cba2",
+      "ai-platform.source.note": "issue104-b0-runtime-only-rebase-v1",
+      "ai-platform.source.revision": "dde1749c256eaa7e0819c98e0debe6084e73cba2",
+      "ai-platform.source_revision": "dde1749c256eaa7e0819c98e0debe6084e73cba2",
+      "ai-platform.source_tree_commit": "dde1749c256eaa7e0819c98e0debe6084e73cba2",
+      "com.docker.compose.config-hash": "298adaec62477fc7379c09be0117c49ec0b3d248bcbf47bcc8b64b6309a94523",
+      "com.docker.compose.container-number": "1",
+      "com.docker.compose.depends_on": "minio:service_healthy:false,postgres:service_healthy:false,redis:service_healthy:false",
+      "com.docker.compose.image": "sha256:95366a442aad0c34597e1eaaf034abe97f99ecf3116a126ff86eee33c332b926",
+      "com.docker.compose.oneoff": "False",
+      "com.docker.compose.project": "ai-platform-phaseb",
+      "com.docker.compose.project.config_files": "<redacted-path>",
+      "com.docker.compose.project.environment_file": "<redacted-path>",
+      "com.docker.compose.project.working_dir": "<redacted-path>",
+      "com.docker.compose.replace": "be768bb118b451c10c8b15f421c295726d10af3e7ec1065f2699815ff47075bd",
+      "com.docker.compose.service": "api",
+      "com.docker.compose.version": "2.27.0",
+      "org.opencontainers.image.revision": "dde1749c256eaa7e0819c98e0debe6084e73cba2"
+    },
+    "repo_local_env_present": false,
+    "runtime_commit": "dde1749c256eaa7e0819c98e0debe6084e73cba2",
+    "runtime_source_marker": "dde1749c256eaa7e0819c98e0debe6084e73cba2",
+    "runtime_subject_label_status": "runtime_subject_label_current",
+    "source_revision_alias_label_status": "source_revision_alias_label_current",
+    "source_snapshot": {
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "runtime_subject_commit_sha": "dde1749c256eaa7e0819c98e0debe6084e73cba2",
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "source_tree_commit_sha": "dde1749c256eaa7e0819c98e0debe6084e73cba2",
+      "source_tree_dirty": false,
+      "sync_method": "git_archive_runtime_only_rebase"
+    }
+  }
+}

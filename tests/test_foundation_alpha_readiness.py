@@ -11,7 +11,7 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
-ACTIVE_RUNTIME_SUBJECT_SHA = "14808bc8335b5f70e770a55db713b8faf4bfa664"
+ACTIVE_RUNTIME_SUBJECT_SHA = "dde1749c256eaa7e0819c98e0debe6084e73cba2"
 HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
@@ -193,8 +193,8 @@ def _minimal_auth_payload(commit_sha: str, *, image: str, captured_at: str = "20
         "evidence_id": f"{commit_sha[:7]}-auth-rbac-smoke",
         "commit_sha": commit_sha,
         "runtime_subject_commit_sha": commit_sha,
-        "gate": "Foundation Alpha POC",
-        "artifact_kind": "211_runtime_smoke",
+        "gate": "G0-G1 Source Authority / Security Baseline",
+        "artifact_kind": "auth_rbac_smoke",
         "captured_at": captured_at,
         "source_ref": {
             "branch": "main",
@@ -353,8 +353,8 @@ def _minimal_governance_payload(
         "evidence_id": f"{commit_sha[:7]}-governance-runtime-smoke",
         "commit_sha": commit_sha,
         "runtime_subject_commit_sha": commit_sha,
-        "gate": "Foundation Alpha POC",
-        "artifact_kind": "211_runtime_smoke",
+        "gate": "G6 Tool / Skill / Memory Governance",
+        "artifact_kind": "governance_runtime_smoke",
         "captured_at": captured_at,
         "source_ref": {
             "branch": "main",
@@ -461,8 +461,8 @@ def _minimal_release_evidence_runtime_acceptance_payload(
         "evidence_id": f"{commit_sha[:7]}-release-evidence-runtime-acceptance",
         "commit_sha": commit_sha,
         "runtime_subject_commit_sha": commit_sha,
-        "gate": "Foundation Alpha POC",
-        "artifact_kind": "211_runtime_smoke",
+        "gate": "G9 Observability / Release Evidence",
+        "artifact_kind": "release_evidence_runtime_acceptance",
         "captured_at": captured_at,
         "source_ref": {
             "branch": "main",
@@ -550,7 +550,7 @@ def _minimal_alert_trace_export_runtime_acceptance_payload(
         "evidence_id": f"{commit_sha[:7]}-alert-trace-export-runtime-acceptance",
         "commit_sha": commit_sha,
         "runtime_subject_commit_sha": commit_sha,
-        "gate": "Foundation Alpha POC",
+        "gate": "G9 Observability / Trace Export",
         "artifact_kind": "alert_trace_export_runtime_acceptance",
         "captured_at": captured_at,
         "source_ref": {
@@ -881,6 +881,236 @@ def test_foundation_alpha_readiness_keeps_g9_runtime_blocker_without_valid_relea
     )
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
     assert "raw_storage_key" not in serialized
+
+
+def test_foundation_alpha_readiness_rejects_auth_rbac_smoke_with_wrong_artifact_kind(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "fa"
+    runtime_commit = "ded1749"
+    image = "ai-platform:dde1749-issue104-runtime-only-v1"
+    _smoke_path, auth_path = _write_release_evidence_pair(
+        evidence_root,
+        runtime_commit,
+        image=image,
+    )
+    auth_payload = json.loads(auth_path.read_text(encoding="utf-8"))
+    auth_payload["gate"] = "G0-G1 Source Authority / Security Baseline"
+    auth_payload["artifact_kind"] = "211_runtime_smoke"
+    auth_path.write_text(json.dumps(auth_payload), encoding="utf-8")
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+
+    assert foundation_alpha_readiness._discover_release_evidence_pair(runtime_commit) is None
+
+
+def test_foundation_alpha_readiness_rejects_governance_runtime_smoke_with_wrong_gate(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    runtime_commit = CURRENT_SOURCE_SHA
+    image = "ai-platform:a3f1d73-foundation-alpha-poc"
+    smoke_path, auth_path = _write_release_evidence_pair(evidence_root, runtime_commit, image=image)
+    auth_payload = json.loads(auth_path.read_text(encoding="utf-8"))
+    auth_payload["gate"] = "G0-G1 Source Authority / Security Baseline"
+    auth_payload["artifact_kind"] = "auth_rbac_smoke"
+    auth_path.write_text(json.dumps(auth_payload), encoding="utf-8")
+    governance_path = _write_governance_evidence(evidence_root, runtime_commit, image=image)
+    governance_payload = json.loads(governance_path.read_text(encoding="utf-8"))
+    governance_payload["gate"] = "Foundation Alpha POC"
+    governance_payload["artifact_kind"] = "governance_runtime_smoke"
+    governance_path.write_text(json.dumps(governance_payload), encoding="utf-8")
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: runtime_commit,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert "governance_runtime_smoke" not in readiness["evidence_entries"]
+    assert (
+        readiness["domains"]["g6_poc_governance"]["evidence"]["governance_runtime_smoke"]["status"]
+        == "missing_governance_runtime_smoke"
+    )
+
+
+@pytest.mark.parametrize(
+    ("override_field", "override_value"),
+    [
+        ("artifact_kind", "211_runtime_smoke"),
+        ("gate", "Foundation Alpha POC"),
+    ],
+)
+def test_foundation_alpha_readiness_rejects_release_evidence_runtime_acceptance_with_wrong_binding(
+    monkeypatch,
+    tmp_path,
+    override_field,
+    override_value,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    runtime_commit = CURRENT_SOURCE_SHA
+    image = "ai-platform:a3f1d73-foundation-alpha-poc"
+    smoke_path, auth_path = _write_release_evidence_pair(evidence_root, runtime_commit, image=image)
+    auth_payload = json.loads(auth_path.read_text(encoding="utf-8"))
+    auth_payload["gate"] = "G0-G1 Source Authority / Security Baseline"
+    auth_payload["artifact_kind"] = "auth_rbac_smoke"
+    auth_path.write_text(json.dumps(auth_payload), encoding="utf-8")
+    release_path = _write_release_evidence_runtime_acceptance(evidence_root, runtime_commit, image=image)
+    release_payload = json.loads(release_path.read_text(encoding="utf-8"))
+    release_payload["gate"] = "G9 Observability / Release Evidence"
+    release_payload["artifact_kind"] = "release_evidence_runtime_acceptance"
+    release_payload[override_field] = override_value
+    release_path.write_text(json.dumps(release_payload), encoding="utf-8")
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: runtime_commit,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert "release_evidence_runtime_acceptance" not in readiness["evidence_entries"]
+    assert (
+        readiness["domains"]["g9_admin_runtime_observability"]["evidence"][
+            "release_evidence_runtime_acceptance"
+        ]["status"]
+        == "missing_release_evidence_runtime_acceptance"
+    )
+
+
+def test_foundation_alpha_readiness_rejects_alert_trace_export_runtime_acceptance_with_wrong_gate(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    runtime_commit = CURRENT_SOURCE_SHA
+    image = "ai-platform:a3f1d73-foundation-alpha-poc"
+    smoke_path, auth_path = _write_release_evidence_pair(evidence_root, runtime_commit, image=image)
+    auth_payload = json.loads(auth_path.read_text(encoding="utf-8"))
+    auth_payload["gate"] = "G0-G1 Source Authority / Security Baseline"
+    auth_payload["artifact_kind"] = "auth_rbac_smoke"
+    auth_path.write_text(json.dumps(auth_payload), encoding="utf-8")
+    alert_path = _write_alert_trace_export_runtime_acceptance(evidence_root, runtime_commit, image=image)
+    alert_payload = json.loads(alert_path.read_text(encoding="utf-8"))
+    alert_payload["gate"] = "Foundation Alpha POC"
+    alert_payload["artifact_kind"] = "alert_trace_export_runtime_acceptance"
+    alert_path.write_text(json.dumps(alert_payload), encoding="utf-8")
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: runtime_commit,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert "alert_trace_export_runtime_acceptance" not in readiness["evidence_entries"]
+    assert (
+        readiness["domains"]["g9_admin_runtime_observability"]["evidence"][
+            "alert_trace_export_runtime_acceptance"
+        ]["status"]
+        == "missing_alert_trace_export_runtime_acceptance"
+    )
+
+
+def test_foundation_alpha_readiness_discovers_dedicated_runtime_evidence_artifact_kinds(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "fa"
+    runtime_commit = "ded1749"
+    image = "ai-platform:dde1749-issue104-runtime-only-v1"
+    smoke_path, auth_path = _write_release_evidence_pair(
+        evidence_root,
+        runtime_commit,
+        image=image,
+    )
+    auth_payload = json.loads(auth_path.read_text(encoding="utf-8"))
+    auth_payload["gate"] = "G0-G1 Source Authority / Security Baseline"
+    auth_payload["artifact_kind"] = "auth_rbac_smoke"
+    auth_path.write_text(json.dumps(auth_payload), encoding="utf-8")
+
+    governance_path = _write_governance_evidence(
+        evidence_root,
+        runtime_commit,
+        image=image,
+    )
+    governance_payload = json.loads(governance_path.read_text(encoding="utf-8"))
+    governance_payload["gate"] = "G6 Tool / Skill / Memory Governance"
+    governance_payload["artifact_kind"] = "governance_runtime_smoke"
+    governance_path.write_text(json.dumps(governance_payload), encoding="utf-8")
+
+    (evidence_root / runtime_commit).mkdir(parents=True, exist_ok=True)
+    release_path = _write_release_evidence_runtime_acceptance(
+        evidence_root,
+        runtime_commit,
+        image=image,
+    )
+    release_payload = json.loads(release_path.read_text(encoding="utf-8"))
+    release_payload["gate"] = "G9 Observability / Release Evidence"
+    release_payload["artifact_kind"] = "release_evidence_runtime_acceptance"
+    release_path.write_text(json.dumps(release_payload), encoding="utf-8")
+
+    alert_path = _write_alert_trace_export_runtime_acceptance(
+        evidence_root,
+        runtime_commit,
+        image=image,
+    )
+    alert_payload = json.loads(alert_path.read_text(encoding="utf-8"))
+    alert_payload["gate"] = "G9 Observability / Trace Export"
+    alert_path.write_text(json.dumps(alert_payload), encoding="utf-8")
+
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: runtime_commit,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        lambda: {
+            "status": "verified_packaged_release_followup_open",
+            "open_gap_count": 0,
+            "blockers": [],
+        },
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert readiness["runtime_source_relation"]["status"] == "runtime_current_for_source_tree"
+    assert readiness["evidence_entries"]["poc_smoke"] == foundation_alpha_readiness._path_for_output(smoke_path)
+    assert readiness["evidence_entries"]["auth_rbac_smoke"] == foundation_alpha_readiness._path_for_output(auth_path)
+    assert readiness["evidence_entries"]["governance_runtime_smoke"] == (
+        foundation_alpha_readiness._path_for_output(governance_path)
+    )
+    assert readiness["evidence_entries"]["release_evidence_runtime_acceptance"] == (
+        foundation_alpha_readiness._path_for_output(release_path)
+    )
+    assert readiness["evidence_entries"]["alert_trace_export_runtime_acceptance"] == (
+        foundation_alpha_readiness._path_for_output(alert_path)
+    )
 
 
 def test_foundation_alpha_readiness_accepts_alert_trace_export_runtime_acceptance_for_same_runtime_subject(
@@ -3881,91 +4111,40 @@ def test_foundation_alpha_readiness_fails_closed_when_optional_readiness_depende
     g6_evidence = readiness["domains"]["g6_poc_governance"]["evidence"]
     assert g6_evidence["mcp_tool_permission_runtime_controls"]["policy_source"] == "app.tool_policy_readiness"
     assert g6_evidence["mcp_tool_permission_runtime_controls"]["status"] != "211_verified"
+    assert g6_evidence["governance_readiness_status"] == "dependency_unavailable"
+    assert g6_evidence["ordinary_user_policy"] == "fail_closed_until_projection_mapping_and_acceptance_pass"
+    assert g6_evidence["open_gap_count"] == 1
+    assert g6_evidence["dependency_error_class"] == "ModuleNotFoundError"
+    assert g6_evidence["tool_permission_decision_audit_required"] is True
+    assert g6_evidence["memory_long_term_default_fail_closed"] is True
+    assert g6_evidence["skill_snapshot_run_seen"] is True
+    assert g6_evidence["governed_skill_runs"]["verified"] is True
+    assert g6_evidence["context_snapshot_public_projection"]["status"] == "verified_public_context_projection"
+    assert g6_evidence["governance_runtime_smoke"]["status"] == "verified_admin_runtime_governance_projection"
+    assert g6_evidence["governance_runtime_smoke"]["verified"] is True
+
+    g9_evidence = readiness["domains"]["g9_admin_runtime_observability"]["evidence"]
     assert {
         key: value
-        for key, value in g6_evidence.items()
-        if key != "mcp_tool_permission_runtime_controls"
+        for key, value in g9_evidence.items()
+        if key not in {
+            "release_evidence_runtime_acceptance",
+            "alert_trace_export_runtime_acceptance",
+        }
     } == {
-        "governance_readiness_status": "dependency_unavailable",
-        "ordinary_user_policy": "fail_closed_until_projection_mapping_and_acceptance_pass",
-        "open_gap_count": 1,
-        "dependency_error_class": "ModuleNotFoundError",
-        "skill_snapshot_run_seen": False,
-        "governed_skill_runs": {
-            "verified": False,
-            "real_task_statuses": {},
-            "run_skill_snapshots": {
-                "row_count": None,
-                "used_count": None,
-                "used_skill_ids": [],
-                "used_skills_source": None,
-                "pinned_snapshot_count": None,
-                "pinned_snapshot_source": None,
-                "missing_pinned_snapshots": [],
-                "mismatched_pinned_snapshots": [],
-            },
-        },
-        "tool_permission_decision_audit_required": True,
-        "memory_long_term_default_fail_closed": True,
-        "context_snapshot_public_projection": {
-            "status": "missing_context_snapshot_public_projection",
-            "referenced_material_counts": {},
-            "raw_material_id_fields_present": None,
-            "forbidden_projection_leak_count": None,
-            "summary_source": None,
-            "input_keys": [],
-            "memory_policy_source": None,
-            "long_term_memory_read": None,
-            "execution_tier": None,
-            "context_pack_version": None,
-            "context_pack_generated_at_present": False,
-            "missing_public_summary_fields": [
-                "context_pack_version",
-                "context_pack_generated_at",
-                "execution_tier",
-                "input_keys",
-                "long_term_memory_read",
-                "memory_policy_source",
-                "summary_source",
-            ],
-        },
-        "governance_runtime_smoke": {
-            "status": "missing_governance_runtime_smoke",
-            "schema_version": None,
-            "ordinary_admin_runtime_status": None,
-            "admin_runtime_governance_status": None,
-            "governance_schema_version": None,
-            "required_domains_present": None,
-            "forbidden_projection_terms_present": None,
-            "verified": False,
-        },
-    }
-    assert readiness["domains"]["g9_admin_runtime_observability"]["evidence"] == {
         "observability_readiness_status": "dependency_unavailable",
         "admin_runtime_projection": "/api/ai/admin/runtime/overview",
         "open_gap_count": 1,
         "dependency_error_class": "ModuleNotFoundError",
         "release_evidence_result": "ok:true",
-        "release_evidence_runtime_acceptance": {
-            "status": "missing_release_evidence_runtime_acceptance",
-            "schema_version": None,
-            "runtime_export_status": None,
-            "retention_status": None,
-            "safe_entry_count": None,
-            "blocked_entry_count": None,
-            "verified": False,
-        },
-        "alert_trace_export_runtime_acceptance": {
-            "status": "missing_alert_trace_export_runtime_acceptance",
-            "schema_version": None,
-            "redaction_scan_status": None,
-            "ordinary_admin_runtime_status": None,
-            "admin_runtime_status": None,
-            "alert_delivery_not_enabled": None,
-            "trace_export_sources_public_only": None,
-            "verified": False,
-        },
     }
+    assert g9_evidence["release_evidence_runtime_acceptance"]["status"] == "verified_release_evidence_runtime_acceptance"
+    assert g9_evidence["release_evidence_runtime_acceptance"]["verified"] is True
+    assert (
+        g9_evidence["alert_trace_export_runtime_acceptance"]["status"]
+        == "verified_alert_trace_export_runtime_acceptance"
+    )
+    assert g9_evidence["alert_trace_export_runtime_acceptance"]["verified"] is True
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
     assert "pydantic" not in serialized
