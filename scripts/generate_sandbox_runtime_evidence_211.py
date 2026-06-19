@@ -56,6 +56,42 @@ RUNTIME_PROBE_RESULTS_ALLOWED_KEYS = {
 RUNTIME_PROBE_RESULTS_SECTION_KEYS = ("resource_limits", "egress_policy", "security_options")
 
 
+def _runtime_probe_section_error(section_name: str, section: dict[str, Any], *, run_id: str) -> str | None:
+    if section_name == "resource_limits":
+        if section.get("over_limit_cleanup_verified") is not True:
+            return "runtime probe results missing: resource_limits.over_limit_cleanup_verified"
+        if safe_bounded_error_projection(section.get("bounded_error_projection"), run_id=run_id) is None:
+            return "runtime probe results missing: resource_limits.bounded_error_projection"
+        return None
+    if section_name == "egress_policy":
+        for field in (
+            "default_deny_outbound",
+            "platform_allowlist_enforced",
+            "callback_exception_scoped_to_run_token",
+            "denied_egress_redacted",
+        ):
+            if section.get(field) is not True:
+                return f"runtime probe results missing: egress_policy.{field}"
+        if section.get("policy_source") != "platform_policy":
+            return "runtime probe results missing: egress_policy.policy_source"
+        return None
+    if section_name == "security_options":
+        if section.get("privileged") is not False:
+            return "runtime probe results missing: security_options.privileged"
+        if section.get("docker_socket_mounted") is not False:
+            return "runtime probe results missing: security_options.docker_socket_mounted"
+        for field in (
+            "no_new_privileges",
+            "capabilities_dropped",
+            "root_filesystem_read_only_or_minimal",
+        ):
+            if section.get(field) is not True:
+                return f"runtime probe results missing: security_options.{field}"
+        if section.get("workspace_mount_mode") not in {"rw", "ro"}:
+            return "runtime probe results missing: security_options.workspace_mount_mode"
+    return None
+
+
 def _safe_run_id(value: str) -> str:
     cleaned = SAFE_NAME_PATTERN.sub("-", value).strip("-")
     return cleaned[:80] or f"run-{uuid.uuid4().hex[:12]}"
@@ -119,6 +155,10 @@ def load_runtime_probe_results(path: str | Path, *, run_id: str) -> dict[str, An
         if not isinstance(section, dict):
             raise RuntimeError(f"runtime probe results section must be an object: {key}")
         results[key] = dict(section)
+    for key, section in results.items():
+        section_error = _runtime_probe_section_error(key, section, run_id=run_id)
+        if section_error:
+            raise RuntimeError(section_error)
     return results
 
 

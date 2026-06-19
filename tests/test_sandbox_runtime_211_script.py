@@ -1406,6 +1406,59 @@ def test_runtime_probe_results_file_rejects_wrong_run_and_sensitive_content(tmp_
         raise AssertionError("incomplete runtime probe results should fail closed")
 
 
+def test_runtime_probe_results_file_rejects_under_specified_hardening_sections(tmp_path):
+    generator = load_generator()
+    runtime_probe_results_file = tmp_path / "runtime-probe-results.json"
+    base_payload = {
+        "schema_version": "ai-platform.sandbox-runtime-probe-results.v1",
+        "run_id": "run-a",
+        "source": "platform_runtime_probe",
+        "resource_limits": {
+            "over_limit_cleanup_verified": True,
+            "bounded_error_projection": {
+                "source": "admin_runtime_projection",
+                "run_id": "run-a",
+                "status": "failed",
+                "error_code": "executor_health_timeout",
+                "host_paths_redacted": True,
+                "raw_docker_payload_absent": True,
+                "callback_token_absent": True,
+            },
+        },
+        "egress_policy": {
+            "default_deny_outbound": True,
+            "platform_allowlist_enforced": True,
+            "callback_exception_scoped_to_run_token": True,
+            "denied_egress_redacted": True,
+            "policy_source": "platform_policy",
+        },
+        "security_options": {
+            "privileged": False,
+            "no_new_privileges": True,
+            "capabilities_dropped": True,
+            "docker_socket_mounted": False,
+            "workspace_mount_mode": "rw",
+            "root_filesystem_read_only_or_minimal": True,
+        },
+    }
+
+    for section_name, expected_message in (
+        ("resource_limits", "resource_limits.over_limit_cleanup_verified"),
+        ("egress_policy", "egress_policy.default_deny_outbound"),
+        ("security_options", "security_options.privileged"),
+    ):
+        payload = dict(base_payload)
+        payload[section_name] = {}
+        runtime_probe_results_file.write_text(json.dumps(payload), encoding="utf-8")
+
+        try:
+            generator.load_runtime_probe_results(runtime_probe_results_file, run_id="run-a")
+        except RuntimeError as exc:
+            assert expected_message in str(exc)
+        else:
+            raise AssertionError(f"under-specified {section_name} should fail closed")
+
+
 def test_run_platform_runtime_probe_captures_executor_container_inspect(monkeypatch, tmp_path):
     generator = load_generator()
     calls = []

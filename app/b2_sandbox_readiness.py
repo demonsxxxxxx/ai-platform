@@ -153,6 +153,27 @@ _RUNTIME_PROBE_RESULTS_REQUIRED_FIELDS = [
     "egress_policy",
     "security_options",
 ]
+_RUNTIME_PROBE_RESULTS_REQUIRED_SECTION_FIELDS = {
+    "resource_limits": [
+        "over_limit_cleanup_verified=true",
+        "bounded_error_projection.safe_admin_runtime_projection",
+    ],
+    "egress_policy": [
+        "default_deny_outbound=true",
+        "platform_allowlist_enforced=true",
+        "callback_exception_scoped_to_run_token=true",
+        "denied_egress_redacted=true",
+        "policy_source=platform_policy",
+    ],
+    "security_options": [
+        "privileged=false",
+        "docker_socket_mounted=false",
+        "no_new_privileges=true",
+        "capabilities_dropped=true",
+        "root_filesystem_read_only_or_minimal=true",
+        "workspace_mount_mode=rw|ro",
+    ],
+}
 
 _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED = [
     "resource_limits_policy_evidence",
@@ -687,6 +708,10 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
             "runtime_probe_results_cli_flag": "--runtime-probe-results-file",
             "runtime_probe_results_environment_variable": "AI_PLATFORM_SANDBOX_RUNTIME_PROBE_RESULTS",
             "runtime_probe_results_required_fields": list(_RUNTIME_PROBE_RESULTS_REQUIRED_FIELDS),
+            "runtime_probe_results_required_section_fields": {
+                section: list(fields)
+                for section, fields in _RUNTIME_PROBE_RESULTS_REQUIRED_SECTION_FIELDS.items()
+            },
             "status_label_before_smoke": "local partial",
             "status_label_after_smoke_before_review": "local partial",
             "smoke_without_reviewed_evidence_status": "runtime_smoke_recorded_review_required",

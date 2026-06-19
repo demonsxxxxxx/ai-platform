@@ -752,6 +752,27 @@ def test_b2_sandbox_readiness_tracks_current_verifier_and_generator_contract():
         "egress_policy",
         "security_options",
     ]
+    assert runtime["runtime_probe_results_required_section_fields"] == {
+        "resource_limits": [
+            "over_limit_cleanup_verified=true",
+            "bounded_error_projection.safe_admin_runtime_projection",
+        ],
+        "egress_policy": [
+            "default_deny_outbound=true",
+            "platform_allowlist_enforced=true",
+            "callback_exception_scoped_to_run_token=true",
+            "denied_egress_redacted=true",
+            "policy_source=platform_policy",
+        ],
+        "security_options": [
+            "privileged=false",
+            "docker_socket_mounted=false",
+            "no_new_privileges=true",
+            "capabilities_dropped=true",
+            "root_filesystem_read_only_or_minimal=true",
+            "workspace_mount_mode=rw|ro",
+        ],
+    }
     for section_name in ("resource_limits", "egress_policy", "security_options"):
         assert section_name in verifier.REQUIRED_HARDENING_FLAGS
         assert section_name in runtime["verifier_hardening_sections"]
