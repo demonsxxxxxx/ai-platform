@@ -202,6 +202,13 @@ def test_backend_prd_records_b3_operator_snapshot_and_reference_boundaries():
     compact_backend_prd_text = " ".join(backend_prd_text.split())
 
     for expected in (
+        "Current Backend Productization State",
+        "#124/#125",
+        "279bf1b6b7a7822d88cca64ec3311517d255caa8",
+        "Reopen only when readiness reports runtime rollout or current-source evidence drift.",
+        "Near-term backend execution order is therefore B1/B2/B3/B4",
+        "B0 freshness watch",
+        "Re-run B0 only when readiness reports runtime rollout, source/runtime drift, or a runtime-affecting merge.",
         "B3 Worker And Model-Gateway Capacity",
         "10 concurrent user sessions",
         "peak 4 Claude Agent SDK subagents per session",
@@ -220,14 +227,28 @@ def test_backend_prd_records_b3_operator_snapshot_and_reference_boundaries():
         "Reference Code Projects",
         "Code adaptation candidate",
         "Runtime dependency proposal",
+        "https://github.com/keycloak/keycloak",
+        "https://github.com/goauthentik/authentik",
+        "https://github.com/ory/kratos",
         "https://github.com/langchain-ai/langgraph",
         "https://github.com/mem0ai/mem0",
         "https://github.com/e2b-dev/E2B",
         "https://github.com/temporalio/sdk-python",
         "https://github.com/BerriAI/litellm",
+        "https://github.com/Portkey-AI/gateway",
         "https://github.com/backstage/backstage",
         "https://github.com/open-webui/open-webui",
         "https://github.com/danny-avila/LibreChat",
+        "https://github.com/openfga/openfga",
+        "https://github.com/authzed/spicedb",
+        "https://github.com/apache/casbin",
+        "https://github.com/open-policy-agent/opa",
+        "https://github.com/IBM/mcp-context-forge",
+        "https://github.com/langfuse/langfuse",
+        "https://github.com/open-telemetry/opentelemetry-collector",
+        "https://github.com/promptfoo/promptfoo",
+        "https://github.com/vibrantlabsai/ragas",
+        "https://github.com/Giskard-AI/giskard-oss",
     ):
         assert expected in backend_prd_text
 
@@ -235,6 +256,8 @@ def test_backend_prd_records_b3_operator_snapshot_and_reference_boundaries():
         "External projects are references only. ai-platform owns identity, tenancy, RBAC, audit, source authority, release evidence, and gate closure.",
         "Reading a project does not authorize copying code, adding dependencies, or changing runtime architecture.",
         "Repositories with GitHub license posture `Other`, AGPL/LGPL/copyleft terms, or unknown license posture are concept-only references by default.",
+        "It does not close full G0 source authority because the deployment-layout/env-file caveat, production auth rollout, and future runtime-affecting source changes remain separate closure conditions.",
+        "Code adaptation still requires a focused issue with repository, commit/tag, license, tests, and runtime evidence where applicable.",
     ):
         assert boundary in compact_backend_prd_text
 
