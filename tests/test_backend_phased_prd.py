@@ -44,6 +44,12 @@ def test_backend_prd_records_authority_status_and_stage_boundaries():
         assert f"| {stage} |" in text
         assert f"### 4." in text
 
+    assert "| B3 | `source_contract`" not in text
+    assert (
+        "| B3 | `local partial`; source contract only for `b3_10x4_sdk_subagents`"
+        in text
+    )
+
     for stage_heading in (
         "### 4.1 B0 Latest-Main Backend Readiness Refresh",
         "### 4.2 B1 Memory And Context Usable",
@@ -111,6 +117,67 @@ def test_backend_prd_records_claim_ladder_and_stage_evidence_fields():
         assert invariant in text
 
 
+def test_backend_prd_records_explicit_gate_register():
+    text = read_backend_prd()
+
+    assert "### 3.1 Gate Register" in text
+    assert "Every backend issue must name the smallest gate it is moving." in text
+
+    for gate in (
+        "B0-G1",
+        "B0-G2",
+        "B0-G3",
+        "B0-G4",
+        "B0-G5",
+        "B1-G1",
+        "B1-G2",
+        "B1-G3",
+        "B1-G4",
+        "B1-G5",
+        "B2-G1",
+        "B2-G2",
+        "B2-G3",
+        "B2-G4",
+        "B2-G5",
+        "B2-G6",
+        "B3-G1",
+        "B3-G2",
+        "B3-G3",
+        "B3-G4",
+        "B3-G5",
+        "B4-G1",
+        "B4-G2",
+        "B4-G3",
+        "B4-G4",
+        "B4-G5",
+        "B4-G6",
+        "B5-G1",
+        "B5-G2",
+        "B5-G3",
+        "B5-G4",
+        "B5-G5",
+        "B6-G1",
+        "B6-G2",
+        "B6-G3",
+        "B6-G4",
+        "B6-G5",
+    ):
+        assert gate in text
+
+    for gate_boundary in (
+        "Smallest gate",
+        "Required closure evidence",
+        "Hardening policy",
+        "Bounded failure projection",
+        "Runtime load evidence",
+        "No default raise by implication",
+        "Pinned run snapshot",
+        "Exact tool permission",
+        "Owner signoff and rollback drill",
+    ):
+        assert gate_boundary in text
+
+
 def test_backend_prd_preserves_productization_priorities_and_negative_claims():
     text = read_backend_prd()
     compact_text = compact(text)
@@ -132,8 +199,9 @@ def test_backend_prd_preserves_productization_priorities_and_negative_claims():
         "Copying a Skill directory into an image is not Skills management.",
         'Broad "latest allow" decisions do not satisfy exact tool approval.',
         "A generated final document is workflow success, not operations beta.",
+        "A verifier-owned Docker-only probe does not prove platform-issued sandbox cleanup or over-limit behavior.",
     ):
-        assert claim_boundary in text
+        assert claim_boundary in compact_text
 
     for blocker in (
         "Stale source/runtime labels.",
@@ -142,8 +210,9 @@ def test_backend_prd_preserves_productization_priorities_and_negative_claims():
         "Capacity default increases without B3 evidence.",
         "SDK subagent fanout outside queue/admission/cost/event/artifact governance.",
         "Long-term memory enabled by default without B1 full acceptance.",
+        "Reference code copied without repository, commit/tag, license, provenance, tests, review, and runtime evidence where applicable.",
     ):
-        assert blocker in text
+        assert blocker in compact_text
 
     assert "10 concurrent sessions" in compact_text
     assert "Peak 4 Claude Agent SDK subagents per session" in compact_text
@@ -163,6 +232,9 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
         "OpenHands",
         "E2B",
         "Daytona",
+        "gVisor",
+        "Kata Containers",
+        "Firecracker",
         "Temporal Python SDK",
         "Celery",
         "Dramatiq",
@@ -200,6 +272,9 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
         "OpenHands/OpenHands",
         "e2b-dev/E2B",
         "daytonaio/daytona",
+        "google/gvisor",
+        "kata-containers/kata-containers",
+        "firecracker-microvm/firecracker",
         "temporalio/sdk-python",
         "celery/celery",
         "Bogdanp/dramatiq",
@@ -210,6 +285,17 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
         "open-webui/open-webui",
         "danny-avila/LibreChat",
         "Mintplex-Labs/anything-llm",
+        "openfga/openfga",
+        "authzed/spicedb",
+        "apache/casbin",
+        "open-policy-agent/opa",
+        "IBM/mcp-context-forge",
+        "langfuse/langfuse",
+        "Arize-ai/phoenix",
+        "open-telemetry/opentelemetry-collector",
+        "promptfoo/promptfoo",
+        "vibrantlabsai/ragas",
+        "Giskard-AI/giskard-oss",
     ):
         assert repo in text
 
@@ -231,17 +317,24 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
     ):
         assert intake_level in text
 
+    assert "### 6.3 Repository Reference Inventory" in text
+    assert "### 6.3 Confirmed Repository References" not in text
+
     for provenance_boundary in (
         "license posture reported by GitHub",
         "Repositories with GitHub license posture `Other`, AGPL/LGPL/copyleft terms, or unknown license posture are concept-only references by default.",
         "not code copying, vendoring, dependency addition, or runtime service introduction without a separate issue",
+        "Reference projects that handle credentials, model keys, runtime execution, container launch, filesystem access, network egress, or package installation require elevated supply-chain intake.",
+        "Pin a reviewed commit or release tag before copying code, adding a dependency, or deploying an image.",
+        "LiteLLM is a useful model-gateway reference, but it is security-sensitive because LiteLLM's [2026-03-24 security update](https://docs.litellm.ai/blog/security-update-march-2026) identified compromised PyPI versions `1.82.7` and `1.82.8`.",
+        "this inventory is not a `Confirmed repository reference` intake decision for every row.",
     ):
         assert provenance_boundary in compact_text
 
     for stage_reference in (
         "| B0 source/auth baseline | Keycloak, Authentik, Ory Kratos |",
         "| B1 memory/context | LangGraph, Mem0, Zep, Graphiti |",
-        "| B2 sandbox | OpenHands, E2B, Daytona, Anthropic Sandbox Runtime/SRT concept notes |",
+        "| B2 sandbox | OpenHands, E2B, Daytona, gVisor, Kata Containers, Firecracker, Anthropic Sandbox Runtime/SRT concept notes |",
         "| B3 worker/model gateway | Temporal Python SDK, Celery, Dramatiq, Taskiq, LiteLLM, Portkey |",
         "| B4 Skills management | Backstage, Dify, Open WebUI, LibreChat, AnythingLLM |",
         "| B5 files/tools/authz | OpenFGA, SpiceDB, Casbin, Open Policy Agent, ContextForge MCP Gateway, supergateway |",
