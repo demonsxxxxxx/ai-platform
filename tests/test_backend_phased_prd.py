@@ -67,6 +67,50 @@ def test_backend_prd_records_authority_status_and_stage_boundaries():
         assert boundary_phrase in compact_text
 
 
+def test_backend_prd_records_claim_ladder_and_stage_evidence_fields():
+    text = read_backend_prd()
+    compact_text = compact(text)
+
+    assert "### 1.1 Claim Ladder" in text
+    for claim_rule in (
+        "planning source",
+        "local contract",
+        "runtime evidence",
+        "stage closure",
+        "beta readiness",
+    ):
+        assert claim_rule in text
+
+    for phrase in (
+        "A stage can advance only one claim level at a time.",
+        "A `211 verified` runtime smoke does not by itself create `gate closable`.",
+        "A `gate closable` backend bundle does not by itself create product beta.",
+    ):
+        assert phrase in compact_text
+
+    assert "### 4.0 Required Evidence Shape" in text
+    for field in (
+        "`issue_or_decision`",
+        "`source_subject`",
+        "`local_verification`",
+        "`runtime_verification`",
+        "`review_disposition`",
+        "`residual_caveats`",
+        "`non_expansion_invariants`",
+        "`rollback_or_disable_path`",
+    ):
+        assert field in text
+
+    for invariant in (
+        "production_concurrency_defaults_raised=false",
+        "ordinary_user_platform_multi_run_orchestration_enabled=false",
+        "docker_sandbox_hardening_claimed=false",
+        "long_term_cross_session_memory_default_enabled=false",
+        "department_rollout_allowed=false",
+    ):
+        assert invariant in text
+
+
 def test_backend_prd_preserves_productization_priorities_and_negative_claims():
     text = read_backend_prd()
     compact_text = compact(text)
@@ -115,7 +159,6 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
         "Mem0",
         "Zep",
         "Graphiti",
-        "Anthropic Sandbox Runtime",
         "OpenHands",
         "E2B",
         "Daytona",
@@ -148,11 +191,33 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
     ):
         assert project in text
 
+    for repo in (
+        "langchain-ai/langgraph",
+        "mem0ai/mem0",
+        "getzep/zep",
+        "getzep/graphiti",
+        "OpenHands/OpenHands",
+        "e2b-dev/E2B",
+        "daytonaio/daytona",
+        "temporalio/sdk-python",
+        "celery/celery",
+        "Bogdanp/dramatiq",
+        "taskiq-python/taskiq",
+        "BerriAI/litellm",
+        "backstage/backstage",
+        "langgenius/dify",
+        "open-webui/open-webui",
+        "danny-avila/LibreChat",
+        "Mintplex-Labs/anything-llm",
+    ):
+        assert repo in text
+
     for authority_boundary in (
         "Reference projects can shape implementation choices, tests, and UI vocabulary.",
         "They do not define ai-platform authority.",
         "Reading a project does not authorize copying code, adding dependencies, or changing runtime architecture.",
         "Any code adaptation or runtime dependency must go through issue, license/provenance review, tests, PR review, and runtime evidence",
+        "Unconfirmed project names stay concept-only until a repository, commit or tag, license, and intake level are recorded.",
     ):
         assert authority_boundary in compact_text
 
@@ -160,13 +225,15 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
         "Concept-only reference",
         "Code adaptation candidate",
         "Runtime dependency proposal",
+        "Confirmed repository reference",
+        "Unconfirmed concept reference",
     ):
         assert intake_level in text
 
     for stage_reference in (
         "| B0 source/auth baseline | Keycloak, Authentik, Ory Kratos |",
         "| B1 memory/context | LangGraph, Mem0, Zep, Graphiti |",
-        "| B2 sandbox | Anthropic Sandbox Runtime, OpenHands, E2B, Daytona |",
+        "| B2 sandbox | OpenHands, E2B, Daytona, Anthropic Sandbox Runtime/SRT concept notes |",
         "| B3 worker/model gateway | Temporal Python SDK, Celery, Dramatiq, Taskiq, LiteLLM, Portkey |",
         "| B4 Skills management | Backstage, Dify, Open WebUI, LibreChat, AnythingLLM |",
         "| B5 files/tools/authz | OpenFGA, SpiceDB, Casbin, Open Policy Agent, ContextForge MCP Gateway, supergateway |",
