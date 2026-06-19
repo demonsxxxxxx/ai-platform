@@ -78,7 +78,7 @@ or secret-like runtime configuration.
 | --- | --- | --- |
 | Tool permission | Admin tool policy inventory, tenant-scoped policy update audit, bounded admin change-history projection through `GET /api/ai/admin/tool-policies/history`, user request/decision flow, exact `tool_call_id` / stable request-fingerprint decision lookup source tests, fail-closed risk/write policy evaluation, public permission-card projection, audit-visible legacy route policy mapping, secret-safe allow/ask/deny taxonomy evidence through `tools/tool_policy_readiness.py`, platform-registered-MCP-only policy evidence with ordinary-user custom MCP disabled, and contract-only Admin bulk-review dashboard readiness through `tools/tool_policy_bulk_review_readiness.py` / `admin_policy_bulk_review_dashboard_contract` | Policy enforcement or ai-platform projection remap for legacy frontend admin/MCP/model/envvar/channel surfaces, plus `admin_policy_bulk_review_runtime_acceptance`, `admin_policy_bulk_review_visual_acceptance`, and `admin_policy_bulk_review_211_acceptance` |
 | Skill governance | Version registry, promote/rollback release policy, dependency policy materialization, skill snapshot and release-decision lock, secret-safe skill release readiness snapshot, pending review-manifest template entrypoint, source-level `ai-platform.skill-dependency-review-policy.v1` contract, source-level `ai-platform.skill-signed-package-evidence-contract.v1` / `skill_signed_package_evidence_contract`, source-level validation for signed-package evidence JSON, and contract-only Admin Skill release dashboard readiness through `tools/skill_release_dashboard_readiness.py` / `admin_skill_release_dashboard_contract` | SBOM or signed-package release evidence plus reviewed manifests, dependency vulnerability/license evidence, `skill_dependency_review_policy_runtime_acceptance`, plus `admin_skill_release_dashboard_runtime_acceptance`, `admin_skill_release_dashboard_visual_acceptance`, and `admin_skill_release_dashboard_211_acceptance` |
-| Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py`, source-level office context-pack contract/readiness through `tools/office_context_readiness.py`, B1 memory/context readiness rollup through `tools/b1_memory_context_readiness.py`, source-level context-pack persistence/versioning through `source_level_context_pack_persistence_and_versioning`, context snapshot public provenance projection with `context_pack_version` and `context_pack_generated_at`, user-visible context provenance API projection source tests, frontend run-playback context provenance projection source tests, source-level office execution-tier router tests, executor context-pack prompt injection source tests, document-centric follow-up state source tests, reviewed B1 `211_memory_enabled_document_workflow_smoke` evidence, B1 merged-source runtime evidence review for `52ac62c`, B1 rollback boundary local operator contract, reviewed `8e0389e` 211 executor context-pack evidence, the source-level sandbox cold-start latency split observability contract, and reviewed PR #44 211 sandbox cold-start latency split evidence. | B1 issue-review closure evidence, full G6/G9 dashboard/visual acceptance, long-term cross-session memory policy closure, production Docker sandbox hardening, packaged frontend acceptance, and ordinary-user rollout acceptance |
+| Memory governance | Session-bound records, ordinary-user opt-out, Admin policy inventory, retention cleanup, redaction, Admin redaction preview/audit route, long-term memory fail-closed, delete/retention/export/redaction-preview erasure evidence snapshot through `tools/memory_erasure_readiness.py`, source-level office context-pack contract/readiness through `tools/office_context_readiness.py`, B1 memory/context readiness rollup through `tools/b1_memory_context_readiness.py`, source-level context-pack persistence/versioning through `source_level_context_pack_persistence_and_versioning`, context snapshot public provenance projection with `context_pack_version` and `context_pack_generated_at`, user-visible context provenance API projection source tests, frontend run-playback context provenance projection source tests, source-level office execution-tier router tests, executor context-pack prompt injection source tests, document-centric follow-up state source tests, reviewed B1 `211_memory_enabled_document_workflow_smoke` evidence, B1 merged-source runtime evidence review for `75ab69b`, B1 rollback boundary local operator contract, reviewed `8e0389e` 211 executor context-pack evidence, the source-level sandbox cold-start latency split observability contract, and reviewed PR #44 211 sandbox cold-start latency split evidence. | Full G6/G9 dashboard/visual acceptance, long-term cross-session memory policy closure, production Docker sandbox hardening, packaged frontend acceptance, and ordinary-user rollout acceptance |
 | Frontend projection | Source migrated into `frontend/web`, `ci:verify`, GitHub Actions frontend workflow, release traceability CLI, static `dist` manifest with build-provenance same-commit gate, packaged frontend image definition traceability, non-push CI packaged-image build/provenance contract, `tools/frontend_projection_audit.py`, projection audit wired as the first frontend `ci:verify` step, public/admin projection audit baseline, machine-readable legacy route policies, active-browser legacy route policy audit, active browser entry graph clear of forbidden private/secret-like projection terms, inactive legacy secret-like sources quarantined, Profile env-var surface removed from the active browser entry graph, Settings includes an admin-only capacity/backpressure/governance section fed only by `GET /api/ai/admin/runtime/overview`, 211 frontend acceptance for the Admin Runtime section at commit `f579155f3ec0ac7e37dd7b525f8eab27f7fd2e35` | Quarantined inactive legacy model/channel/envvar sources need ai-platform projection remap, ordinary-user G9 acceptance for legacy admin/MCP/model/envvar/channel routes, packaged frontend image smoke and release acceptance on 211 or another Docker-capable host |
 
 The frontend projection evidence now records three current structured blockers:
@@ -398,11 +398,15 @@ reviewed 211 smoke is recorded, and consumes repo-local #75 closure evidence fro
 `docs/release-evidence/backend-stage-closures/b1-memory-context/2026-06-18-issue75-b1-closure.json`
 to close only `b1_issue_review_and_closure_evidence`. The current merged-source
 runtime evidence review boundary is computed dynamically by
-`tools/b1_memory_context_readiness.py`; if later runtime-affecting source changes
-land after the recorded `52ac62c` B1 smoke
-(`52ac62cfbbab47172a659dda11e41aa4b2a5d699`), the readiness output must keep
-`b1_runtime_evidence_review_against_merged_source` open until fresh B1 runtime
-evidence is recorded. The memory export boundary
+`tools/b1_memory_context_readiness.py`; the 2026-06-19 #114 refresh records
+reviewed B1 smoke evidence for runtime subject
+`75ab69b939d0bf13987ac044ce0dc498f5eab999`, and the readiness classifier
+reports no runtime-affecting delta from that subject to current source
+`3874fdfbd5331a2974d411450323f98f2e228bfc`. That closes only
+`b1_runtime_evidence_review_against_merged_source` for the current
+runtime-relevant source. If later runtime-affecting source changes land after
+the recorded `75ab69b` B1 smoke, the readiness output must reopen that boundary
+until fresh B1 runtime evidence is recorded. The memory export boundary
 `b1_memory_export_boundary` is recorded as a closed local contract through
 memory-erasure readiness controls, including
 `ordinary_user_export_excludes_deleted_and_expired_records`,
@@ -416,10 +420,13 @@ runtime/config state. The runtime smoke layer
 can report `211 verified` for the selected memory-enabled document workflow,
 but the B1 stage itself remains `local partial` and is not `gate closable`.
 The repo-local #75 closure evidence records issue-level closure for the selected
-governed document workflow slice only; it does not close G0 source authority,
-production readiness, Docker sandbox hardening, ordinary-user multi-agent
-exposure, long-term cross-session memory by default, or production concurrency
-default increases.
+governed document workflow slice only. The #114 smoke reused the running
+`ai-platform:75ab69b-issue112-runtime-only-v1` runtime and records the caveat
+that the 211 service checkout remains dirty/behind and the container internal
+source marker still reports older `dde1749` metadata; therefore the B1 evidence
+does not close G0 source authority, production readiness, Docker sandbox
+hardening, ordinary-user multi-agent exposure, long-term cross-session memory by
+default, department rollout, or production concurrency default increases.
 `tools/verify_b1_memory_context_workflow.py` is the reusable verifier entrypoint
 for that smoke and emits schema
 `ai-platform.b1-memory-context-workflow-smoke.v1`; passing it records workflow

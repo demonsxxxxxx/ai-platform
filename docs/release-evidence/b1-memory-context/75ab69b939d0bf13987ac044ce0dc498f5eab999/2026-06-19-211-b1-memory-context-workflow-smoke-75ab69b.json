@@ -1,0 +1,149 @@
+{
+  "artifact_kind": "211_memory_enabled_document_workflow_smoke",
+  "captured_at": "2026-06-19T15:27:13+08:00",
+  "commit_sha": "75ab69b939d0bf13987ac044ce0dc498f5eab999",
+  "evidence_id": "2026-06-19-211-b1-memory-context-workflow-smoke-75ab69b",
+  "evidence_ref": {
+    "command": "python3 tools/verify_b1_memory_context_workflow.py --base-url http://127.0.0.1:8020 --commit-sha 75ab69b939d0bf13987ac044ce0dc498f5eab999 --runtime-subject-commit-sha 75ab69b939d0bf13987ac044ce0dc498f5eab999 --image ai-platform:75ab69b-issue112-runtime-only-v1 --timeout-seconds 20",
+    "result": "ok:true",
+    "runtime_checks": {
+      "211_memory_enabled_document_workflow_smoke": {
+        "acceptance_gap": "211_memory_enabled_document_workflow_smoke",
+        "checks": {
+          "context_snapshot_public_provenance": true,
+          "create_governed_run": true,
+          "cross_user_context_denied": true,
+          "deleted_memory_absent_from_future_context": true,
+          "long_term_memory_fail_closed": true,
+          "memory_policy_disabled_blocks_create": true,
+          "memory_policy_disabled_blocks_list": true,
+          "memory_policy_enabled_for_governed_scope": true,
+          "memory_record_create_and_list": true,
+          "no_private_projection_leakage": true,
+          "playback_public_projection": true
+        },
+        "does_not_close_b1_gate": true,
+        "memory_record_count": 1,
+        "non_expansion_invariants": {
+          "frontend_state_is_canonical_context": false,
+          "gate_closure_claimed": false,
+          "long_term_cross_session_memory_enabled": false,
+          "stores_private_executor_material_as_memory": false
+        },
+        "ok": true,
+        "redaction_scan_status": "passed",
+        "remaining_gate_boundaries": [
+          "issue review and closure evidence",
+          "runtime evidence review against merged source",
+          "memory export boundary",
+          "rollback boundary"
+        ],
+        "schema_version": "ai-platform.b1-memory-context-workflow-smoke.v1",
+        "source": {
+          "commit_sha": "75ab69b939d0bf13987ac044ce0dc498f5eab999",
+          "image": "ai-platform:75ab69b-issue112-runtime-only-v1",
+          "runtime_subject_commit_sha": "75ab69b939d0bf13987ac044ce0dc498f5eab999"
+        },
+        "target": "211_api_memory_context_workflow",
+        "workflow": {
+          "agent_id": "general-agent",
+          "memory_record_created": true,
+          "run_id_present": true,
+          "session_id_present": true,
+          "workspace_id": "default"
+        }
+      },
+      "verifier_checks": [
+        {
+          "name": "check_b1_memory_context_workflow_smoke",
+          "passed": true
+        },
+        {
+          "name": "check_no_private_projection_leakage",
+          "passed": true
+        }
+      ]
+    },
+    "verifier": "tools/verify_b1_memory_context_workflow.py"
+  },
+  "gate": "B1 memory/context usable",
+  "issue_refs": [
+    "#114"
+  ],
+  "open_followups": [
+    "This evidence closes only the B1 merged-source runtime evidence review gap for the 75ab69b runtime subject because 75ab69b -> 3874fdf has no runtime-affecting delta in the current readiness classifier.",
+    "B1 stage remains local partial and not product beta; this record does not enable long-term cross-session memory by default.",
+    "The 211 service source checkout remains dirty/behind and the container internal source marker still reports an older dde1749 snapshot; Docker image labels and running image identify 75ab69b, so this is B1 workflow evidence rather than G0 source-authority closure.",
+    "This evidence does not claim production readiness, Docker sandbox hardening, ordinary-user multi-agent exposure, department rollout, or production concurrency default increases."
+  ],
+  "pr_refs": [],
+  "redaction_scan_status": "passed",
+  "review_notes": [
+    "211 verifier returned ok=true for schema ai-platform.b1-memory-context-workflow-smoke.v1 against target 211_api_memory_context_workflow.",
+    "The smoke covered governed run creation, governed-scope memory enablement, disabled-policy read/write blocking, memory create/list, context snapshot public provenance, playback public projection with memory_record_count=1, cross-user denial, delete followed by future-context absence, long-term memory fail-closed, and private projection leakage scan.",
+    "The running API and worker containers used image ai-platform:75ab69b-issue112-runtime-only-v1 with OCI/source labels bound to 75ab69b."
+  ],
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "75ab69b939d0bf13987ac044ce0dc498f5eab999",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "api_health": {
+      "status": "ok"
+    },
+    "branch": "main",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_layout_status": "external_env_file_label_present",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "image": "ai-platform:75ab69b-issue112-runtime-only-v1",
+    "image_id": "sha256:a16d5112c6e8fd912dc87b6c65d2e42db8c48e8c9ba1939802915ef3611d27dc",
+    "image_labels": {
+      "ai-platform.runtime-rollout": "issue112-b0-runtime-only-rebase-v1",
+      "ai-platform.runtime-subject": "75ab69b939d0bf13987ac044ce0dc498f5eab999",
+      "ai-platform.runtime_subject": "75ab69b939d0bf13987ac044ce0dc498f5eab999",
+      "ai-platform.source-branch": "main",
+      "ai-platform.source-note": "issue112-b0-runtime-only-rebase-v1",
+      "ai-platform.source-revision": "75ab69b939d0bf13987ac044ce0dc498f5eab999",
+      "ai-platform.source.note": "issue112-b0-runtime-only-rebase-v1",
+      "ai-platform.source.revision": "75ab69b939d0bf13987ac044ce0dc498f5eab999",
+      "ai-platform.source_revision": "75ab69b939d0bf13987ac044ce0dc498f5eab999",
+      "ai-platform.source_tree_commit": "75ab69b939d0bf13987ac044ce0dc498f5eab999",
+      "com.docker.compose.config-hash": "750fb79c7bb8cf28334cc3710028daddfab066029db212a177d76e668a359e45",
+      "com.docker.compose.container-number": "1",
+      "com.docker.compose.depends_on": "postgres:service_healthy:false,redis:service_healthy:false,minio:service_healthy:false",
+      "com.docker.compose.image": "sha256:a16d5112c6e8fd912dc87b6c65d2e42db8c48e8c9ba1939802915ef3611d27dc",
+      "com.docker.compose.oneoff": "False",
+      "com.docker.compose.project": "ai-platform-phaseb",
+      "com.docker.compose.project.config_files": "<redacted-repo-local-compose-path>",
+      "com.docker.compose.project.environment_file": "<redacted-external-runtime-env-path>",
+      "com.docker.compose.project.working_dir": "<redacted-repo-local-compose-workdir>",
+      "com.docker.compose.replace": "14e7c1144d9b1c8d6b7980f1b46f5f8f09be304840936d4003a1036a22428e57",
+      "com.docker.compose.service": "api",
+      "com.docker.compose.version": "2.27.0",
+      "org.opencontainers.image.revision": "75ab69b939d0bf13987ac044ce0dc498f5eab999"
+    },
+    "repo_local_env_present": false,
+    "runtime_boundary": {
+      "api_container": "ai-platform-api",
+      "worker_container": "ai-platform-worker"
+    },
+    "container_internal_source_marker": "dde1749c256eaa7e0819c98e0debe6084e73cba2",
+    "runtime_source_marker": "75ab69b939d0bf13987ac044ce0dc498f5eab999",
+    "service_checkout_commit_sha": "a15c74f0fe98914a893ab7ea784c6be941e0cd71",
+    "service_checkout_dirty": true,
+    "source_authority_caveat": "211 service checkout remains dirty/behind and container internal .ai-platform-source-revision still reports dde1749; do not use this B1 evidence as G0 source-authority closure",
+    "source_snapshot": {
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "runtime_subject_commit_sha": "75ab69b939d0bf13987ac044ce0dc498f5eab999",
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "source_tree_commit_sha": "75ab69b939d0bf13987ac044ce0dc498f5eab999",
+      "source_tree_dirty": false,
+      "sync_method": "issue112_runtime_only_rebase_reused_for_issue114_b1_smoke"
+    },
+    "source_tree_dirty": false
+  }
+}
