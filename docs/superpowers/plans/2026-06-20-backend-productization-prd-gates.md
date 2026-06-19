@@ -23,7 +23,7 @@
 ## File Structure
 
 - Modify: `docs/superpowers/specs/2026-06-18-ai-platform-backend-phased-prd.md`
-  - Owns B0-B6 backend productization status, gate register, acceptance boundaries, reference-code intake rules, and beta definition of done.
+  - Owns B0-B6 backend productization status, `## 4. Gate Register`, `## 5. Acceptance Boundaries By Stage`, reference-code intake rules, and beta definition of done.
 - Modify: `tests/test_backend_phased_prd.py`
   - Enforces that the PRD keeps required sections, status labels, gate names, negative claims, reference repositories, and this implementation-plan link.
 - Modify when B0 source/runtime status changes: `docs/operations/ai-platform-gate-status.md`
@@ -105,7 +105,7 @@ Expected: all selected tests pass.
 
 **Interfaces:**
 - Consumes: B0-B6 stage names and the status labels defined in the PRD.
-- Produces: A stage-by-stage gate register and four-boundary acceptance model that document-contract tests can verify.
+- Produces: `## 4. Gate Register` and a four-boundary acceptance model in `## 5. Acceptance Boundaries By Stage` that document-contract tests can verify.
 
 - [ ] **Step 1: Write the gate-register assertion**
 
@@ -166,7 +166,7 @@ Expected before the PRD update: failure naming the first missing gate.
 
 - [ ] **Step 3: Update the PRD gate register**
 
-Update `### 3.1 Gate Register` with gate rows for:
+Update `## 4. Gate Register` with gate rows for:
 
 ```text
 B0-G1..B0-G5
@@ -182,7 +182,7 @@ Keep each row scoped to required closure evidence, not implementation preference
 
 - [ ] **Step 4: Update stage acceptance boundaries**
 
-For each `### 4.x` stage, keep these four subsections:
+For each `### 5.x` stage, keep these four subsections:
 
 ```markdown
 **Entry gate**
@@ -230,6 +230,7 @@ for repo in (
     "google/gvisor",
     "kata-containers/kata-containers",
     "firecracker-microvm/firecracker",
+    "anthropic-experimental/sandbox-runtime",
     "temporalio/sdk-python",
     "celery/celery",
     "Bogdanp/dramatiq",
@@ -246,6 +247,9 @@ for repo in (
     "apache/casbin",
     "open-policy-agent/opa",
     "IBM/mcp-context-forge",
+    "agentic-community/mcp-gateway-registry",
+    "dockersamples/labspace-mcp-gateway",
+    "goodatlas/mcp-supergateway",
     "langfuse/langfuse",
     "Arize-ai/phoenix",
     "open-telemetry/opentelemetry-collector",
@@ -268,7 +272,7 @@ Expected before the PRD update: failure naming the missing repository or authori
 
 - [ ] **Step 3: Update the PRD reference section**
 
-Update `## 6. Reference Code Projects` so each reference is bounded by:
+Update `## 7. Reference Code Projects` so each reference is bounded by:
 
 ```markdown
 They do not define ai-platform authority.

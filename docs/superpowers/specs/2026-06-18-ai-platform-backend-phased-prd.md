@@ -40,7 +40,7 @@ Supporting capabilities are not optional: model-gateway/cost controls,
 file/artifact governance, exact tool-permission binding, and Admin Runtime
 observability are required for the P0 capabilities to be safely exposed.
 
-## 1. Authority And Status Language
+## 1. Source Authority And Status Language
 
 This PRD narrows backend execution of the active product PRD:
 `docs/superpowers/specs/2026-06-10-ai-platform-product-prd-v2.md`.
@@ -58,18 +58,19 @@ Use these sources together:
 | Release evidence records | Reviewed runtime evidence, smoke output, source/runtime relation, image labels, redacted proof artifacts. |
 | Guardrails and GitHub workflow | Implementation rules, issue/PR/review/merge/211 closure loop. |
 
-If the documents disagree, stop feature work and repair source authority first.
+If these documents disagree, stop feature work and repair source authority
+before making product claims.
 
 All reports must use the narrowest true status:
 
 | Status | Meaning | Minimum evidence |
 | --- | --- | --- |
-| `local partial` | Local docs, code, tests, or static evidence exist; no merge/runtime claim. | Targeted local verification or readiness output for the changed scope. |
+| `local partial` | Local docs, code, tests, static verifier, or source-contract evidence exists; no merge/runtime claim. | Targeted local verification or readiness output for the changed scope. |
 | `PR ready` | A scoped PR is ready for review. | Issue link, branch, PR, changed-scope verification, and explicit boundary statement. |
 | `reviewed` | Independent review was recorded and findings were resolved or tracked. | Review comment, approval, or evidence-backed review disposition. |
 | `merged` | The PR landed on `main`. | GitHub merged state or merge commit. |
 | `211 verified` | Runtime evidence exists for the named source/runtime subject. | Source/runtime relation, image labels, container health, smoke output, redaction scan, and reviewed evidence. |
-| `gate closable` | The stage/gate issue can close. | Issue, PR, review, verification, docs, runtime evidence where required, and residual caveats. |
+| `gate closable` | The stage/gate issue can close. | Issue, PR, review, verification, docs, runtime evidence where required, rollback/disable path, and residual caveats. |
 
 No docs-only PR may create `211 verified` or `gate closable` status.
 
@@ -139,32 +140,44 @@ following after the capability substrate is credible:
 | 5 | Can files/artifacts and high-risk tools be governed without replay or ACL bypass? | B5a file/artifact authority and B5b exact tool decisions close independently. |
 | 6 | Can one or two real internal workflows be accepted by owners and operators? | B6 owner signoff, SLO/cost/quality/support/rollback, linked B1-B5 evidence. |
 
-## 2. Non-Goals
+## 2. Product Non-Goals
 
 | Non-goal | Boundary |
 | --- | --- |
-| Replacing ai-platform with Dify, Open WebUI, LibreChat, LangGraph, Temporal, or any other backend | External projects are references only. ai-platform owns identity, tenancy, RBAC, audit, source authority, release evidence, and gate closure. |
+| Replacing ai-platform with Dify, Open WebUI, LibreChat, LangGraph, Temporal, or another backend | External projects are references only. ai-platform owns identity, tenancy, RBAC, audit, source authority, release evidence, and gate closure. |
 | Building a separate platform-level multi-run agent harness now | SDK Agent/subagent behavior remains execution-kernel fanout inside one governed platform run. Platform-level parent/child run orchestration is deferred. |
 | Raising worker/model defaults by configuration only | B3 must prove the selected profile with load, backpressure, token/cost, sandbox pressure, cleanup, and rollback evidence. |
 | Treating `fake` sandbox as production evidence | `fake` is only local/test proof. B2/G7 requires Docker/equivalent evidence on a Docker-capable host. |
 | Enabling long-term memory by default | Long-term memory remains fail-closed until policy, retention, export, delete/redaction, opt-out, and tenant deny paths are proven. |
 | Treating mutable Skill folders as production authority | Production Skill execution requires immutable versions, release state, dependency evidence, pinned snapshots, and used-skill audit. |
+| Letting frontend UI shape backend authority | LibreChat/Open WebUI-style UX can influence the shell, Skills discovery, and slash-command surfaces, but backend authority stays in ai-platform contracts and routes. |
 
 ## 3. Backend Stage Model
 
-B0-B6 are planning and acceptance bundles. They do not replace G0-G10 gates.
+B0-B6 are backend planning and acceptance bundles. They do not replace G0-G10
+product gates.
+
+Sequencing rule:
+
+- B0 runs first whenever source/runtime evidence is stale or ambiguous.
+- After B0, the product order is B1 memory/context, B2 real sandbox, B3
+  worker/model-gateway capacity, then B4 Skills management.
+- B5 and B6 are supporting product gates that must be advanced alongside the
+  workflow they protect; they are not optional cleanup after beta.
+- A runtime blocker can pause the sequence, but it must be recorded as a named
+  issue instead of silently reordering the roadmap.
 
 | Stage | Name | Product target | Gate mapping | Default status before evidence |
 | --- | --- | --- | --- | --- |
 | B0 | Latest-main backend readiness refresh | Current source, 211 source, deploy composition, runtime labels, backend/worker containers, and readiness tools agree. | G0-G1, S2-0 | `local partial` |
-| B1 | Memory/context usable | Selected workflows can use governed memory/context with provenance, policy, and deny paths. | G6, G9 | `local partial` |
+| B1 | Memory/context usable | Selected workflows can use governed memory/context with provenance, policy, retention, delete/redaction, export, and deny paths. | G6, G9 | `local partial` |
 | B2 | Real sandbox usable | Docker/equivalent sandbox runs governed SDK Skill tasks with leases, quotas, egress policy, callback validation, cleanup, and artifact return. | G7, G6, G9 | `local partial` |
 | B3 | Worker/model-gateway capacity | Target profile is measured before defaults increase: initial profile is 10 sessions x peak 4 SDK subagents/session. | G5, G8, G9 | `local partial` |
 | B4 | Skills management and release governance | Skills can be uploaded/imported, versioned, reviewed, released, rolled back, pinned, dependency-reviewed, and audited. | G6, G9 | `local partial` |
 | B5 | Files/artifacts/tool permission governance | File upload, artifact ACL, preview/download, exact tool approvals, MCP/shell/filesystem policy, and replay denial are proven. | G6, G7, G9 | `local partial` |
 | B6 | Operations beta and workflow readiness | Admin Runtime, trace/export, alerting, golden-set eval, workflow owner signoff, rollback, and support model exist. | G9, G10 | `local partial` |
 
-### 3.1 Gate Register
+## 4. Gate Register
 
 Every backend issue must name the smallest gate it is moving. A PR may touch
 multiple gates only when the acceptance evidence is shared and the PR body
@@ -218,21 +231,21 @@ frontend UI absorption PRD. A backend PR must still expose enough safe
 projection for the frontend to build against; it does not have to close visual
 acceptance unless the issue explicitly includes that scope.
 
-## 4. Stage Gates And Acceptance Boundaries
+## 5. Acceptance Boundaries By Stage
 
 Each stage has four boundaries:
 
 - Entry gate: when the team is allowed to start implementation.
 - Local acceptance: what a PR must prove before review.
 - Runtime acceptance: what 211 or another named Docker-capable target must
-  prove when the stage touches runtime behavior.
+  prove when runtime behavior is claimed.
 - Exit gate: what must be true before the stage is `gate closable`.
 
-### 4.0 Required Evidence Shape
+### 5.1 Required Evidence Shape
 
-Every backend stage issue or closure comment should use a consistent evidence
-shape. The goal is to make the claim level auditable without reading chat
-history.
+Every backend stage issue, PR body, runtime evidence, or closure comment should
+use this evidence shape. The goal is to make the claim level auditable without
+reading chat history.
 
 | Field | Required content |
 | --- | --- |
@@ -243,7 +256,7 @@ history.
 | `review_disposition` | Independent review status, unresolved findings, rejected findings with evidence, and follow-up issues. |
 | `residual_caveats` | Non-closing caveats such as deployment-layout/env-file drift, runtime-only rebase workaround, or partial visual acceptance. |
 | `non_expansion_invariants` | Explicit booleans that prevent a narrow smoke from being read as broader production approval. |
-| `rollback_or_disable_path` | Operator action that restores the prior runtime/configuration or disables the capability. |
+| `rollback_or_disable_path` | Operator action that restores prior runtime/configuration or disables the capability. |
 
 Use these evidence levels consistently in issues, PR bodies, readiness output,
 release evidence, and closure comments:
@@ -271,14 +284,14 @@ changes and proves them:
 - `long_term_cross_session_memory_default_enabled=false`
 - `department_rollout_allowed=false`
 
-### 4.1 B0 Latest-Main Backend Readiness Refresh
+### 5.2 B0 Latest-Main Backend Readiness Refresh
 
 **Entry gate**
 
 - Latest `main` and current runtime subject are identified.
 - 211 backend source path, repo-local deploy composition path, API/worker
   container names, image tag, and readiness command are known.
-- An issue exists when runtime evidence is required.
+- A GitHub issue exists when runtime evidence is required.
 
 **Local acceptance**
 
@@ -309,7 +322,7 @@ changes and proves them:
 - A historical S1 baseline does not prove latest-main readiness.
 - A local readiness pass without matching runtime evidence is not `211 verified`.
 
-### 4.2 B1 Memory And Context Usable
+### 5.3 B1 Memory And Context Usable
 
 Minimum product slice: one named document workflow can use a governed
 session/workspace-scoped context pack with provenance. Long-term cross-session
@@ -367,7 +380,7 @@ long-term memory policy matrix.
 - Runtime evidence for one document workflow does not close broader G6/G9,
   department rollout, or every future memory scope.
 
-### 4.3 B2 Real Sandbox Usable
+### 5.4 B2 Real Sandbox Usable
 
 Minimum product slice: a real provider executes a governed SDK Skill path under
 platform lease, policy, callback, artifact, cleanup, and projection controls.
@@ -424,7 +437,7 @@ product proof.
   egress policy, security-option hardening, ordinary-user high-risk tool
   exposure, or broader G7 production sandbox hardening.
 
-### 4.4 B3 Worker And Model-Gateway Capacity
+### 5.5 B3 Worker And Model-Gateway Capacity
 
 Minimum product slice: prove the selected profile before changing defaults.
 The initial profile is 10 concurrent user sessions with peak 4 Claude Agent SDK
@@ -501,7 +514,7 @@ not Foundation Runtime concurrency correctness evidence.
 - A bounded probe or draft evidence bundle is not recorded gate evidence until
   an operator-reviewed snapshot accepts it.
 
-### 4.5 B4 Skills Management And Release Governance
+### 5.6 B4 Skills Management And Release Governance
 
 Minimum product slice: a run uses an immutable, reviewed platform Skill version
 and records a pinned run snapshot. A governed Skill run proves execution
@@ -553,7 +566,7 @@ review evidence.
 - Pinned Skill execution does not prove SBOM, license, vulnerability, signed
   package, Admin visual acceptance, or 211 Skill release dashboard acceptance.
 
-### 4.6 B5 Files, Artifacts, And Tool Permission Governance
+### 5.7 B5 Files, Artifacts, And Tool Permission Governance
 
 Minimum product slice: file/artifact authority and exact tool decisions are two
 sub-contracts under one stage. Evidence for one sub-contract cannot close the
@@ -601,7 +614,7 @@ other.
 - File upload/download denial evidence does not prove shell, MCP, network, or
   filesystem permission safety.
 
-### 4.7 B6 Operations Beta And Department Workflow Readiness
+### 5.8 B6 Operations Beta And Department Workflow Readiness
 
 Minimum product slice: one or two named internal workflows have owners and
 evidence packages. Abstract platform readiness is not Operations Beta.
@@ -648,7 +661,7 @@ evidence packages. Abstract platform readiness is not Operations Beta.
 - B6 cannot be `gate closable` without a named workflow owner and linked B1-B5
   evidence package.
 
-## 5. Universal Gate Closure Checklist
+## 6. Universal Gate Closure Checklist
 
 Before any backend stage is called `gate closable`, all items must be true:
 
@@ -662,6 +675,7 @@ Before any backend stage is called `gate closable`, all items must be true:
 - Docs or roadmap updates name the exact status change and caveats.
 - Deployment workarounds, such as runtime-only image rebase, are labeled as
   workarounds.
+- Rollback or disable path is recorded.
 - The issue can close without relying on chat-only evidence.
 
 Universal blockers:
@@ -681,13 +695,13 @@ Universal blockers:
 - Reference code copied without repository, commit/tag, license, provenance,
   tests, review, and runtime evidence where applicable.
 
-## 6. Reference Code Projects
+## 7. Reference Code Projects
 
 Reference projects can shape implementation choices, tests, and UI vocabulary.
 They do not define ai-platform authority. Every use of reference code must be
 classified before implementation.
 
-### 6.1 Intake Levels
+### 7.1 Intake Levels
 
 | Level | Meaning | Required evidence |
 | --- | --- | --- |
@@ -702,19 +716,19 @@ license, and intake level are recorded. Even confirmed repositories remain
 references unless a separate architecture issue proposes code adaptation or a
 runtime dependency.
 
-### 6.2 Reference Matrix By Backend Stage
+### 7.2 Reference Matrix By Backend Stage
 
 | Stage | Reference projects | Useful for | Not allowed to define |
 | --- | --- | --- | --- |
 | B0 source/auth baseline | Keycloak, Authentik, Ory Kratos | OIDC/session, group/role mapping, admin login, enterprise identity integration vocabulary. | ai-platform tenant mapping, RBAC enforcement, audit, source authority. |
 | B1 memory/context | LangGraph, Mem0, Zep, Graphiti | Checkpointing, short-term vs long-term memory, memory update/delete UX, temporal/provenance concepts. | `memory_records`, context snapshots, tenant policy, retention, delete/redaction authority. |
-| B2 sandbox | OpenHands, E2B, Daytona, gVisor, Kata Containers, Firecracker, Anthropic Sandbox Runtime/SRT concept notes | Workspace isolation, sandbox lifecycle, command execution, artifact return, cancel, cleanup, callback/egress patterns, resource boundaries, and isolation model comparison. | Docker socket trust, external SaaS authority, bypassing ai-platform lease/audit/sandbox policy. |
+| B2 sandbox | OpenHands, E2B, Daytona, gVisor, Kata Containers, Firecracker, Anthropic Sandbox Runtime | Workspace isolation, sandbox lifecycle, command execution, artifact return, cancel, cleanup, callback/egress patterns, resource boundaries, and isolation model comparison. | Docker socket trust, external SaaS authority, bypassing ai-platform lease/audit/sandbox policy. |
 | B3 worker/model gateway | Temporal Python SDK, Celery, Dramatiq, Taskiq, LiteLLM, Portkey | Durable retry vocabulary, worker scaling, gateway routing, rate limits, budgets, provider fallback, token/cost concepts. | Replacing current queue/worker/model policy without a migration gate; external cost authority. |
 | B4 Skills management | Backstage, Dify, Open WebUI, LibreChat, AnythingLLM | Catalog metadata, release workflow, app/agent marketplace UX, slash/tool discovery patterns. | Skill execution policy, tenant visibility, release authority, backend runtime lifecycle. |
-| B5 files/tools/authz | OpenFGA, SpiceDB, Casbin, Open Policy Agent, ContextForge MCP Gateway, supergateway | Relationship-based ACLs, RBAC/ABAC policy tests, policy bundles, MCP/tool catalog routing, decision logs. | Backend ACL enforcement, exact tool decisions, audit, tenant/run/file/artifact authority. |
+| B5 files/tools/authz | OpenFGA, SpiceDB, Casbin, Open Policy Agent, ContextForge MCP Gateway, MCP Gateway Registry, labspace MCP Gateway, mcp-supergateway | Relationship-based ACLs, RBAC/ABAC policy tests, policy bundles, MCP/tool catalog routing, decision logs. | Backend ACL enforcement, exact tool decisions, audit, tenant/run/file/artifact authority. |
 | B6 observability/quality | Langfuse, Phoenix, OpenTelemetry Collector, promptfoo, Ragas, Giskard | Trace/span vocabulary, token/cost dashboards, eval runs, golden-set regression, telemetry export, redaction review. | Release evidence authority, private payload storage, workflow-owner acceptance thresholds. |
 
-### 6.3 Repository Reference Inventory
+### 7.3 Repository Reference Inventory
 
 The following repository names were checked for this PRD update and are allowed
 as a repository inventory for planning and comparison. They are not approved
@@ -739,6 +753,7 @@ projects.
 | B2 sandbox | [`google/gvisor`](https://github.com/google/gvisor) | `master` | Apache-2.0 | 2026-06-19T00:31:22Z | Container isolation and syscall boundary concepts; not a runtime switch without architecture and 211 evidence. |
 | B2 sandbox | [`kata-containers/kata-containers`](https://github.com/kata-containers/kata-containers) | `main` | Apache-2.0 | 2026-06-19T10:49:21Z | VM-backed container isolation concepts; not a provider requirement. |
 | B2 sandbox | [`firecracker-microvm/firecracker`](https://github.com/firecracker-microvm/firecracker) | `main` | Apache-2.0 | 2026-06-19T10:28:59Z | MicroVM isolation and resource-boundary vocabulary; not direct ai-platform runtime authority. |
+| B2 sandbox | [`anthropic-experimental/sandbox-runtime`](https://github.com/anthropic-experimental/sandbox-runtime) | `main` | Apache-2.0 | 2026-06-19T10:35:52Z | OS-level filesystem and network restriction vocabulary; not an execution-provider switch without architecture and runtime evidence. |
 | B3 worker/model gateway | [`temporalio/sdk-python`](https://github.com/temporalio/sdk-python) | `main` | MIT | 2026-06-19T00:18:36Z | Durable workflow/retry vocabulary and test patterns; not a migration requirement. |
 | B3 worker/model gateway | [`celery/celery`](https://github.com/celery/celery) | `main` | GitHub reports `Other` | 2026-06-18T22:12:40Z | Worker pool, task retry, and queue monitoring vocabulary only unless license/provenance review approves intake. |
 | B3 worker/model gateway | [`Bogdanp/dramatiq`](https://github.com/Bogdanp/dramatiq) | `master` | LGPL-3.0 | 2026-06-17T11:17:38Z | Actor/queue concepts only unless license/provenance review approves adaptation. |
@@ -755,6 +770,9 @@ projects.
 | B5 files/tools/authz | [`apache/casbin`](https://github.com/apache/casbin) | `master` | Apache-2.0 | 2026-06-16T13:54:37Z | RBAC/ABAC policy vocabulary and table-driven tests. |
 | B5 files/tools/authz | [`open-policy-agent/opa`](https://github.com/open-policy-agent/opa) | `main` | Apache-2.0 | 2026-06-18T17:49:38Z | Policy bundle and decision-log concepts. |
 | B5 files/tools/authz | [`IBM/mcp-context-forge`](https://github.com/IBM/mcp-context-forge) | `main` | Apache-2.0 | 2026-06-19T11:34:34Z | MCP gateway/catalog routing and policy vocabulary; not exact tool-decision authority. |
+| B5 files/tools/authz | [`agentic-community/mcp-gateway-registry`](https://github.com/agentic-community/mcp-gateway-registry) | `main` | Apache-2.0 | 2026-06-19T05:47:42Z | Governed MCP registry, OAuth, tool discovery, and audit vocabulary; not ai-platform tool authority. |
+| B5 files/tools/authz | [`dockersamples/labspace-mcp-gateway`](https://github.com/dockersamples/labspace-mcp-gateway) | `main` | Apache-2.0 | 2026-05-02T02:43:49Z | MCP gateway packaging and Docker-oriented examples; not a runtime dependency. |
+| B5 files/tools/authz | [`goodatlas/mcp-supergateway`](https://github.com/goodatlas/mcp-supergateway) | `main` | MIT | 2026-02-27T06:44:06Z | stdio/SSE gateway vocabulary and protocol bridging ideas; not exact permission authority. |
 | B6 observability/quality | [`langfuse/langfuse`](https://github.com/langfuse/langfuse) | `main` | GitHub reports `Other` | 2026-06-19T11:39:55Z | Trace/token/cost dashboard vocabulary only unless license/provenance review approves intake. |
 | B6 observability/quality | [`Arize-ai/phoenix`](https://github.com/Arize-ai/phoenix) | `main` | GitHub reports `Other` | 2026-06-19T01:45:37Z | LLM observability and evaluation workflow concepts only unless license/provenance review approves intake. |
 | B6 observability/quality | [`open-telemetry/opentelemetry-collector`](https://github.com/open-telemetry/opentelemetry-collector) | `main` | Apache-2.0 | 2026-06-18T18:02:01Z | Telemetry collector/export vocabulary; not release-evidence authority. |
@@ -762,24 +780,25 @@ projects.
 | B6 observability/quality | [`vibrantlabsai/ragas`](https://github.com/vibrantlabsai/ragas) | `main` | Apache-2.0 | 2026-02-24T07:47:19Z | RAG/evaluation metrics concepts; GitHub currently resolves the former `explodinggradients/ragas` reference here. |
 | B6 observability/quality | [`Giskard-AI/giskard-oss`](https://github.com/Giskard-AI/giskard-oss) | `main` | Apache-2.0 | 2026-06-19T10:47:55Z | Model quality, evaluation, and testing workflow concepts. |
 
-Additional matrix targets such as supergateway remain unpinned reference
-candidates until a future issue records repository, commit/tag, license
-posture, and intake level. Code adaptation still requires a focused issue with
-repository, commit/tag, license, tests, and runtime evidence where applicable.
+Additional unpinned project names remain concept-only until a future issue
+records repository, commit/tag, license posture, and intake level. Code
+adaptation still requires a focused issue with repository, commit/tag, license,
+tests, and runtime evidence where applicable.
 
-### 6.4 Reference Reading Order
+### 7.4 Reference Reading Order
 
 Near-term reference reading should follow the backend risk order:
 
 1. B2 sandbox: OpenHands, E2B, Daytona, gVisor, Kata Containers, Firecracker,
-   and Anthropic Sandbox Runtime/SRT concept notes.
+   and Anthropic Sandbox Runtime.
 2. B3 capacity/model gateway: LiteLLM, Portkey, Temporal, Celery, Dramatiq, and
    Taskiq.
 3. B4 Skills management: Backstage, Dify, Open WebUI, LibreChat, and AnythingLLM.
 4. B1 memory/context: LangGraph, Mem0, Zep, and Graphiti.
 5. B5/B6 policy and observability: OpenFGA, SpiceDB, Casbin, OPA,
-   ContextForge MCP Gateway, Langfuse, Phoenix, OpenTelemetry, promptfoo,
-   Ragas, and Giskard.
+   ContextForge MCP Gateway, MCP Gateway Registry, labspace MCP Gateway,
+   mcp-supergateway, Langfuse, Phoenix, OpenTelemetry, promptfoo, Ragas, and
+   Giskard.
 
 Reading a project does not authorize copying code, adding dependencies, or
 changing runtime architecture. Any code adaptation or runtime dependency must go
@@ -793,7 +812,7 @@ copying, vendoring, dependency addition, or runtime service introduction without
 a separate issue that records commit/tag, files, license review, security review,
 rollback, tests, and runtime evidence where applicable.
 
-### 6.5 Supply-Chain Rule For References
+### 7.5 Supply-Chain Rule For References
 
 Reference projects that handle credentials, model keys, runtime execution,
 container launch, filesystem access, network egress, or package installation
@@ -818,7 +837,7 @@ identified compromised PyPI versions `1.82.7` and `1.82.8`. Any future LiteLLM
 dependency proposal must pin a reviewed safe version or official image, record
 provenance, run dependency/security review, and pass the elevated intake above.
 
-## 7. Immediate Issue Chain
+## 8. Immediate Issue Chain
 
 The next backend work should stay evidence-first. B0 is now a freshness watch
 item after #124/#125; do not spend the next active implementation slice on B0
@@ -834,7 +853,7 @@ unless readiness reports runtime rollout or current-source evidence drift.
 | 5 | B5 file/artifact plus exact-tool deny paths | Prove B5a file/artifact ACL and B5b exact shell/MCP/filesystem permission replay denial separately. | File-heavy workflows are high-value and high-leakage-risk; file ACL does not prove tool safety. |
 | 6 | B6 named operations beta package | Bind Admin Runtime, trace/export, alert, golden-set, rollback, B1-B5 evidence, and owner signoff to one named workflow. | Product beta needs supportability evidence, not just successful generated files. |
 
-## 8. Backend Product Beta Definition Of Done
+## 9. Backend Product Beta Definition Of Done
 
 The backend is product-beta ready only when one or two named internal workflows
 have all of the following:
