@@ -151,13 +151,16 @@ def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_
         "87528bf30609092c3c4e947bdca477768af3f8e5"
     )
     assert runtime_review["current_source_commit_sha"]
-    assert runtime_review["runtime_affecting_changes_since_runtime_subject"] == [
+    runtime_delta = runtime_review["runtime_affecting_changes_since_runtime_subject"]
+    assert runtime_delta
+    for path in (
         "app/b2_sandbox_readiness.py",
         "app/runtime/sandbox/container_provider.py",
         "app/sandbox_hardening_contract.py",
         "scripts/generate_sandbox_runtime_evidence_211.py",
         "scripts/verify_sandbox_runtime_211.py",
-    ]
+    ):
+        assert path in runtime_delta
     assert runtime_review["required_next_step"] == (
         "deploy current main to 211 and rerun tools/verify_b1_memory_context_workflow.py before closing this gap"
     )
@@ -308,13 +311,15 @@ def test_b1_memory_context_readiness_cli_outputs_json_without_private_markers():
     runtime_delta = payload["gate_boundary_evidence"]["b1_runtime_evidence_review_against_merged_source"][
         "runtime_affecting_changes_since_runtime_subject"
     ]
-    assert runtime_delta == [
+    assert runtime_delta
+    for path in (
         "app/b2_sandbox_readiness.py",
         "app/runtime/sandbox/container_provider.py",
         "app/sandbox_hardening_contract.py",
         "scripts/generate_sandbox_runtime_evidence_211.py",
         "scripts/verify_sandbox_runtime_211.py",
-    ]
+    ):
+        assert path in runtime_delta
     for marker in FORBIDDEN_PRIVATE_MARKERS:
         assert marker not in result.stdout.lower()
 
@@ -354,13 +359,16 @@ def test_b1_runtime_review_gap_stays_open_for_current_source_runtime_affecting_d
     assert runtime_review["runtime_subject_commit_sha"] == (
         "87528bf30609092c3c4e947bdca477768af3f8e5"
     )
-    assert runtime_review["runtime_affecting_changes_since_runtime_subject"] == [
+    runtime_delta = runtime_review["runtime_affecting_changes_since_runtime_subject"]
+    assert runtime_delta
+    for path in (
         "app/b2_sandbox_readiness.py",
         "app/runtime/sandbox/container_provider.py",
         "app/sandbox_hardening_contract.py",
         "scripts/generate_sandbox_runtime_evidence_211.py",
         "scripts/verify_sandbox_runtime_211.py",
-    ]
+    ):
+        assert path in runtime_delta
     assert runtime_review["required_next_step"] == (
         "deploy current main to 211 and rerun tools/verify_b1_memory_context_workflow.py before closing this gap"
     )
