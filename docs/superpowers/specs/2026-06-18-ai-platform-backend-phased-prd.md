@@ -107,7 +107,7 @@ runtime, image, health, concurrency, redaction, and review evidence is recorded.
 | B0 | `211 verified` for #124/#125 latest-main evidence refresh only; not full G0 `gate closable`. | Reopen only when readiness reports runtime rollout or current-source evidence drift. |
 | B1 | `local partial`; source contracts and named runtime evidence exist, but the stage is not `gate closable`. | Choose one governed document workflow and prove memory/context through `live_worker_run_payload` plus rollback and deny paths. |
 | B2 | `local partial`; fake provider remains local/test-only and controlled probes do not prove governed SDK Skill execution. | Prove Docker/equivalent sandbox through a governed Skill run with lease, callback, resource, egress, artifact, cancel, cleanup, and redaction evidence. |
-| B3 | `source_contract` only for `b3_10x4_sdk_subagents`; production defaults stay unchanged. | Record an operator-reviewed capacity snapshot for 10 sessions x peak 4 SDK subagents/session, including model-gateway, sandbox, token/cost, event/artifact, and cleanup pressure. |
+| B3 | `local partial`; source contract only for `b3_10x4_sdk_subagents`; production defaults stay unchanged. | Record an operator-reviewed capacity snapshot for 10 sessions x peak 4 SDK subagents/session, including model-gateway, sandbox, token/cost, event/artifact, and cleanup pressure. |
 | B4 | `local partial`; mutable folders and image-copied Skills are not production authority. | Build upload/import, immutable versioning, release review, rollback, dependency evidence, pinned run snapshots, and authorized visibility. |
 | B5 | `local partial`; file/artifact ACL and exact tool decisions must close separately. | Prove file/artifact authority and shell/MCP/filesystem decision replay denial as separate sub-contracts. |
 | B6 | `local partial`; no product beta claim. | Package one or two named internal workflows with owners, SLO/cost/quality, support, rollback, and linked B1-B5 evidence. |
@@ -148,6 +148,53 @@ B0-B6 are planning and acceptance bundles. They do not replace G0-G10 gates.
 | B4 | Skills management and release governance | Skills can be uploaded/imported, versioned, reviewed, released, rolled back, pinned, dependency-reviewed, and audited. | G6, G9 | `local partial` |
 | B5 | Files/artifacts/tool permission governance | File upload, artifact ACL, preview/download, exact tool approvals, MCP/shell/filesystem policy, and replay denial are proven. | G6, G7, G9 | `local partial` |
 | B6 | Operations beta and workflow readiness | Admin Runtime, trace/export, alerting, golden-set eval, workflow owner signoff, rollback, and support model exist. | G9, G10 | `local partial` |
+
+### 3.1 Gate Register
+
+Every backend issue must name the smallest gate it is moving. A PR may touch
+multiple gates only when the acceptance evidence is shared and the PR body
+states the boundary explicitly. The gate name is not a status claim; it is a
+scope label for review, verification, runtime smoke, and issue closure.
+
+| Stage | Smallest gate | Gate name | Required closure evidence |
+| --- | --- | --- | --- |
+| B0 | B0-G1 | Source/runtime identity | Current `main`, 211 source path, repo-local deploy composition, image labels, API/worker image IDs, and `/api/ai/health` agree on the named subject. |
+| B0 | B0-G2 | Readiness contract | `tools/foundation_alpha_readiness.py --format json` and source-authority tests report current-source blockers without mixing S1 historical evidence into latest-main status. |
+| B0 | B0-G3 | Runtime concurrency evidence | Foundation Runtime concurrency evidence is bound to the current runtime subject when readiness requires it. |
+| B0 | B0-G4 | Evidence hygiene | Evidence is redacted, reviewed, and free of real `.env`, secrets, private executor payloads, and personal workstation paths. |
+| B0 | B0-G5 | Caveat classification | Legacy env-label, runtime-only rebase, dirty source, deployment workaround, or stale source caveats are classified as blocking or non-closing follow-ups. |
+| B1 | B1-G1 | Memory policy | Session/project/workspace/long-term scope, retention, opt-out, export, delete/redaction, and rollback policy are explicit and tested. |
+| B1 | B1-G2 | Context provenance | Context snapshots and packs record source documents, run, user, tenant/workspace, selection reason, context-pack version, and redaction state. |
+| B1 | B1-G3 | Deny paths | Cross-user, cross-tenant, wrong-run, deleted/redacted memory, disabled-policy reads, and stale context-pack reads fail closed. |
+| B1 | B1-G4 | Projection safety | Public/admin projections do not leak raw memory content, executor private payloads, raw storage keys, backend paths, or sandbox paths. |
+| B1 | B1-G5 | Workflow smoke | One selected workflow proves governed memory/context use on 211 with provenance, redaction, artifact/event relation, export/delete posture, and rollback/cleanup path. |
+| B2 | B2-G1 | Real provider selection | Docker/equivalent provider is selected for runtime claims and `fake` is explicitly local/test-only. |
+| B2 | B2-G2 | Lease and ownership | Lease create/refresh/release, tenant/user/run ownership, callback token, token mismatch denial, quota denial, and cleanup failure handling are tested. |
+| B2 | B2-G3 | Hardening policy | Resource limits, security options, egress/network posture, filesystem/workdir isolation, and secret/env handling are recorded and reviewed. |
+| B2 | B2-G4 | Runtime lifecycle | 211 smoke proves launch, command execution, artifact return, cancel, cleanup, and orphan scan for the named source/runtime subject. |
+| B2 | B2-G5 | Bounded failure projection | Admin Runtime or release evidence shows sandbox state/failures without private payloads, raw container paths, callback secrets, or executor internals. |
+| B2 | B2-G6 | Rollback/disable path | Operators can disable real sandbox or revert provider/profile without deleting audit or run evidence. |
+| B3 | B3-G1 | Target profile | The measured profile is named: initial target is 10 concurrent sessions and peak 4 SDK subagents per session for selected workflows only. |
+| B3 | B3-G2 | Admission and fairness | Tenant-aware and user-aware quota/backpressure, bounded queue metadata, admission denial, retry/cancel/dead-letter behavior, and worker heartbeat are tested. |
+| B3 | B3-G3 | Model gateway policy | Provider/model selection, timeout, retry/backoff, provider-limit handling, cost budget, token accounting, and fail-closed provider policy are tested. |
+| B3 | B3-G4 | Runtime load evidence | 211/named-target load evidence records API burst, run creation burst, queue depth, lease latency, worker start/terminal behavior, model pressure, sandbox pressure if used, cleanup, events/artifacts, token/cost, and rollback. |
+| B3 | B3-G5 | No default raise by implication | Higher env values, more workers, or a fast single run do not raise production defaults; a separate explicit change is required after reviewed evidence. |
+| B4 | B4-G1 | Skill package contract | Upload/import validates manifest, files, size, dependency metadata, entrypoint, allowed tools, owner, tenant/workspace visibility, and checksum. |
+| B4 | B4-G2 | Immutable versioning | Skill versions are immutable, addressable by stable version ID/digest, and cannot be silently overwritten by mutable folders. |
+| B4 | B4-G3 | Release workflow | Draft/reviewed/released/disabled/deprecated states, release approval, rollback, and ordinary-user denial for unreviewed or disabled Skills are tested. |
+| B4 | B4-G4 | Dependency evidence | SBOM/license/vulnerability/dependency review is stored or a gate-limited exception is recorded before release. |
+| B4 | B4-G5 | Pinned run snapshot | Runs record exact Skill version, manifest digest, dependency evidence reference, selected files, and used-skill snapshot. |
+| B4 | B4-G6 | Reviewed runtime Skill run | One released Skill run on 211 goes through queue/worker/sandbox where applicable and records artifacts, release decision, dependency summary, and redaction result. |
+| B5 | B5-G1 | File namespace and retention | Upload namespace binds tenant/workspace/user/run/file, retention, scan/redaction state, size/type policy, and cleanup. |
+| B5 | B5-G2 | Artifact ACL | Artifact preview/download enforces owner/tenant ACL and denies cross-user, cross-tenant, wrong-run, deleted, and expired artifacts. |
+| B5 | B5-G3 | Exact tool permission | Shell/network/MCP/filesystem/write-capable approvals bind to `tool_call_id` or stable request fingerprint, input hash, run, user, tenant, expiry, and replay denial. |
+| B5 | B5-G4 | Projection redaction | Public/admin views do not expose raw storage keys, local paths, private executor payloads, secrets, or unredacted document text. |
+| B5 | B5-G5 | Runtime workflow proof | 211 smoke proves file upload -> governed run -> artifact preview/download -> unauthorized denial for a selected document workflow. |
+| B6 | B6-G1 | Admin Runtime coverage | Operators can inspect queue, worker, sandbox, model gateway, token/cost, latency, errors, dead letters, events/artifacts, and release evidence without reading chat transcripts. |
+| B6 | B6-G2 | Trace/export | Traces and release-evidence exports are redacted, source/runtime-bound, reviewer-friendly, and reproducible from stored evidence. |
+| B6 | B6-G3 | Alerting and support | Alerts, support owner, escalation path, SLO/SLA, and runbook exist for selected workflows. |
+| B6 | B6-G4 | Quality gate | Golden-set eval, acceptance threshold, failure triage, and regression baseline exist for the selected workflow. |
+| B6 | B6-G5 | Owner signoff and rollback drill | Workflow owner accepts capacity, quality, cost, audit, support, and rollback evidence; rollback drill is recorded. |
 
 Backend-only closure for B4-B6 requires public/admin projection contracts,
 route behavior, evidence records, and deny paths. Browser visual acceptance,
@@ -356,6 +403,8 @@ product proof.
 - A standalone Docker verifier does not prove the governed SDK Skill path unless
   it is bound to a platform run, Skill snapshot, sandbox lease, callback policy,
   artifacts, events, and cleanup evidence.
+- A verifier-owned Docker-only probe does not prove platform-issued sandbox
+  cleanup or over-limit behavior.
 - Bounded latency or smoke evidence does not close resource-limit policy,
   egress policy, security-option hardening, ordinary-user high-risk tool
   exposure, or broader G7 production sandbox hardening.
@@ -614,6 +663,8 @@ Universal blockers:
   `controlled_live_probe` as broader runtime hardening or beta evidence.
 - B6 or product-beta claims without a named workflow owner, support owner,
   rollback drill, and linked B1-B5 evidence package.
+- Reference code copied without repository, commit/tag, license, provenance,
+  tests, review, and runtime evidence where applicable.
 
 ## 6. Reference Code Projects
 
@@ -642,19 +693,21 @@ runtime dependency.
 | --- | --- | --- | --- |
 | B0 source/auth baseline | Keycloak, Authentik, Ory Kratos | OIDC/session, group/role mapping, admin login, enterprise identity integration vocabulary. | ai-platform tenant mapping, RBAC enforcement, audit, source authority. |
 | B1 memory/context | LangGraph, Mem0, Zep, Graphiti | Checkpointing, short-term vs long-term memory, memory update/delete UX, temporal/provenance concepts. | `memory_records`, context snapshots, tenant policy, retention, delete/redaction authority. |
-| B2 sandbox | OpenHands, E2B, Daytona, Anthropic Sandbox Runtime/SRT concept notes | Workspace isolation, sandbox lifecycle, command execution, artifact return, cancel, cleanup, callback/egress patterns. | Docker socket trust, external SaaS authority, bypassing ai-platform lease/audit/sandbox policy. |
+| B2 sandbox | OpenHands, E2B, Daytona, gVisor, Kata Containers, Firecracker, Anthropic Sandbox Runtime/SRT concept notes | Workspace isolation, sandbox lifecycle, command execution, artifact return, cancel, cleanup, callback/egress patterns, resource boundaries, and isolation model comparison. | Docker socket trust, external SaaS authority, bypassing ai-platform lease/audit/sandbox policy. |
 | B3 worker/model gateway | Temporal Python SDK, Celery, Dramatiq, Taskiq, LiteLLM, Portkey | Durable retry vocabulary, worker scaling, gateway routing, rate limits, budgets, provider fallback, token/cost concepts. | Replacing current queue/worker/model policy without a migration gate; external cost authority. |
 | B4 Skills management | Backstage, Dify, Open WebUI, LibreChat, AnythingLLM | Catalog metadata, release workflow, app/agent marketplace UX, slash/tool discovery patterns. | Skill execution policy, tenant visibility, release authority, backend runtime lifecycle. |
 | B5 files/tools/authz | OpenFGA, SpiceDB, Casbin, Open Policy Agent, ContextForge MCP Gateway, supergateway | Relationship-based ACLs, RBAC/ABAC policy tests, policy bundles, MCP/tool catalog routing, decision logs. | Backend ACL enforcement, exact tool decisions, audit, tenant/run/file/artifact authority. |
 | B6 observability/quality | Langfuse, Phoenix, OpenTelemetry Collector, promptfoo, Ragas, Giskard | Trace/span vocabulary, token/cost dashboards, eval runs, golden-set regression, telemetry export, redaction review. | Release evidence authority, private payload storage, workflow-owner acceptance thresholds. |
 
-### 6.3 Confirmed Repository References
+### 6.3 Repository Reference Inventory
 
 The following repository names were checked for this PRD update and are allowed
-as confirmed repository references for planning and comparison. They are not
-approved dependencies. The check recorded the public GitHub repository, default
-branch, license posture reported by GitHub, and latest observed activity on
-2026-06-19. Re-check before deep code review because these are live projects.
+as a repository inventory for planning and comparison. They are not approved
+dependencies, and this inventory is not a `Confirmed repository reference`
+intake decision for every row. The check recorded the public GitHub repository,
+default branch, license posture reported by GitHub, and latest observed
+activity on 2026-06-19. Re-check before deep code review because these are live
+projects.
 
 | Area | Repository reference | Default branch | License posture | Observed activity | Use only for |
 | --- | --- | --- | --- | --- | --- |
@@ -668,6 +721,9 @@ branch, license posture reported by GitHub, and latest observed activity on
 | B2 sandbox | [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) | `main` | GitHub reports `Other` | 2026-06-19T11:20:37Z | AI development workspace and command/artifact UX concepts only unless license/provenance review approves code intake. |
 | B2 sandbox | [`e2b-dev/E2B`](https://github.com/e2b-dev/E2B) | `main` | Apache-2.0 | 2026-06-18T22:24:34Z | Secure sandbox lifecycle, templates, command execution, and artifact-return patterns. |
 | B2 sandbox | [`daytonaio/daytona`](https://github.com/daytonaio/daytona) | `main` | AGPL-3.0 | 2026-06-19T11:37:40Z | Elastic sandbox and workspace isolation concepts only unless a focused legal/provenance issue approves adaptation. |
+| B2 sandbox | [`google/gvisor`](https://github.com/google/gvisor) | `master` | Apache-2.0 | 2026-06-19T00:31:22Z | Container isolation and syscall boundary concepts; not a runtime switch without architecture and 211 evidence. |
+| B2 sandbox | [`kata-containers/kata-containers`](https://github.com/kata-containers/kata-containers) | `main` | Apache-2.0 | 2026-06-19T10:49:21Z | VM-backed container isolation concepts; not a provider requirement. |
+| B2 sandbox | [`firecracker-microvm/firecracker`](https://github.com/firecracker-microvm/firecracker) | `main` | Apache-2.0 | 2026-06-19T10:28:59Z | MicroVM isolation and resource-boundary vocabulary; not direct ai-platform runtime authority. |
 | B3 worker/model gateway | [`temporalio/sdk-python`](https://github.com/temporalio/sdk-python) | `main` | MIT | 2026-06-19T00:18:36Z | Durable workflow/retry vocabulary and test patterns; not a migration requirement. |
 | B3 worker/model gateway | [`celery/celery`](https://github.com/celery/celery) | `main` | GitHub reports `Other` | 2026-06-18T22:12:40Z | Worker pool, task retry, and queue monitoring vocabulary only unless license/provenance review approves intake. |
 | B3 worker/model gateway | [`Bogdanp/dramatiq`](https://github.com/Bogdanp/dramatiq) | `master` | LGPL-3.0 | 2026-06-17T11:17:38Z | Actor/queue concepts only unless license/provenance review approves adaptation. |
@@ -700,8 +756,8 @@ repository, commit/tag, license, tests, and runtime evidence where applicable.
 
 Near-term reference reading should follow the backend risk order:
 
-1. B2 sandbox: OpenHands, E2B, Daytona, and Anthropic Sandbox Runtime/SRT
-   concept notes.
+1. B2 sandbox: OpenHands, E2B, Daytona, gVisor, Kata Containers, Firecracker,
+   and Anthropic Sandbox Runtime/SRT concept notes.
 2. B3 capacity/model gateway: LiteLLM, Portkey, Temporal, Celery, Dramatiq, and
    Taskiq.
 3. B4 Skills management: Backstage, Dify, Open WebUI, LibreChat, and AnythingLLM.
@@ -721,6 +777,31 @@ terminology, workflow shape, test-matrix ideas, and UX comparison, but not code
 copying, vendoring, dependency addition, or runtime service introduction without
 a separate issue that records commit/tag, files, license review, security review,
 rollback, tests, and runtime evidence where applicable.
+
+### 6.5 Supply-Chain Rule For References
+
+Reference projects that handle credentials, model keys, runtime execution,
+container launch, filesystem access, network egress, or package installation
+require elevated supply-chain intake.
+
+- Pin a reviewed commit or release tag before copying code, adding a dependency,
+  or deploying an image.
+- Record repository owner/name, URL, license posture, provenance, files copied or
+  adapted, and the exact concept borrowed.
+- Generate or review SBOM/dependency metadata when a runtime dependency,
+  package, image, or sidecar is proposed.
+- Check current security advisories, compromised package versions, and upstream
+  maintainer guidance before adding any dependency to the worker, sandbox, model
+  gateway, or release pipeline.
+- Keep runtime dependency proposals out of implementation PRs until the
+  architecture issue, rollback path, and 211 smoke plan are approved.
+
+LiteLLM is a useful model-gateway reference, but it is security-sensitive
+because LiteLLM's
+[2026-03-24 security update](https://docs.litellm.ai/blog/security-update-march-2026)
+identified compromised PyPI versions `1.82.7` and `1.82.8`. Any future LiteLLM
+dependency proposal must pin a reviewed safe version or official image, record
+provenance, run dependency/security review, and pass the elevated intake above.
 
 ## 7. Immediate Issue Chain
 
