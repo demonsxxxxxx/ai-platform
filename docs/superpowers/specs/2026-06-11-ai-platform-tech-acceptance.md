@@ -81,8 +81,8 @@ Backend-specific reference projects listed in the backend phased PRD may inform
 memory, sandbox, capacity, model gateway, authorization, policy, observability,
 and Skills management implementation. They are not added to this global matrix
 unless they become active cross-module sources. Any code absorption still
-requires source pinning, license/provenance review, targeted tests, and explicit
-gate wording.
+requires source pinning, license/provenance review, targeted tests, explicit
+gate wording, and runtime evidence when applicable.
 
 ## 2.1 Backend Productization Acceptance Bundles
 
@@ -94,6 +94,21 @@ source for B0-B6 evidence-level vocabulary such as `source_contract`,
 `live_worker_run_payload`, `live_platform_probe`, and
 `operator_reviewed_recorded_snapshot`; this matrix summarizes those contracts
 but does not replace them.
+
+Backend P0 productization capabilities are the first execution focus inside the
+B0-B6 model:
+
+| Capability | Acceptance summary |
+| --- | --- |
+| P0-1 memory/context usable | Selected workflows use governed session/workspace context with provenance, retention, opt-out, delete/redaction, export boundaries, and deny paths. |
+| P0-2 real sandbox usable | A Docker/equivalent provider runs governed SDK Skill tasks through platform lease, callback, quota, egress, artifact, cleanup, and projection controls; `fake` stays local/test-only. |
+| P0-3 worker/model-gateway capacity | The 10-session x peak-4-SDK-subagent profile is measured through recorded queue, worker, model-gateway, sandbox, token/cost, event/artifact, cleanup, and rollback evidence before defaults rise. |
+| P0-4 Skills management | Skills are uploaded/imported, immutable-versioned, reviewed, released, rolled back, dependency-reviewed, pinned into run snapshots, and audited before broad exposure. |
+
+P0 capability summaries are planning labels, not gate-closure evidence. Code
+absorption from backend reference projects still requires source pinning,
+license/provenance review, targeted tests, explicit gate wording, and runtime
+evidence when applicable.
 
 | Backend bundle | Acceptance focus | Cannot claim without |
 | --- | --- | --- |

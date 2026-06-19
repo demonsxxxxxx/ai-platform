@@ -162,6 +162,37 @@ def test_active_prd_v2_records_appendix_and_closure_workflow_authority():
     assert OLD_PRD.exists()
 
 
+def test_technical_acceptance_summarizes_backend_p0_productization_bundles():
+    tech_text = read(TECH_ACCEPTANCE)
+    compact_tech_text = " ".join(tech_text.split())
+
+    assert "Backend P0 productization capabilities" in tech_text
+    for capability in (
+        "P0-1 memory/context usable",
+        "P0-2 real sandbox usable",
+        "P0-3 worker/model-gateway capacity",
+        "P0-4 Skills management",
+    ):
+        assert capability in tech_text
+
+    for evidence_level in (
+        "`source_contract`",
+        "`source_probe_on_target_runtime`",
+        "`controlled_live_probe`",
+        "`live_worker_run_payload`",
+        "`live_platform_probe`",
+        "`operator_reviewed_recorded_snapshot`",
+    ):
+        assert evidence_level in tech_text
+
+    for boundary in (
+        "P0 capability summaries are planning labels, not gate-closure evidence.",
+        "Code absorption from backend reference projects still requires source pinning, license/provenance review, targeted tests, explicit gate wording, and runtime evidence when applicable.",
+        "Status labels must stay separate: `local partial`, `PR ready`, `merged`, `211 verified`, and `gate closable` are not interchangeable.",
+    ):
+        assert boundary in compact_tech_text
+
+
 def test_prd_roadmap_guardrails_share_current_gate_sequence():
     prd_text = read(PRD)
     roadmap_text = read(ROADMAP)
