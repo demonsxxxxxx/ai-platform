@@ -49,7 +49,7 @@ Gate summary:
 Current 211 frontend runtime:
 
 ```text
-python3 tools/serve_lambchat_thin_shell.py --host 0.0.0.0 --port 18001 --root /home/xinlin.jiang/lambchat-poc/frontend-dist-ai-platform --api-base http://127.0.0.1:8020
+python3 tools/serve_ai_platform_frontend.py --host 0.0.0.0 --port 18001 --root /home/xinlin.jiang/ai-platform-phaseb/frontend-dist-ai-platform --api-base http://127.0.0.1:8020
 ```
 
 211 health evidence gathered during this migration:
@@ -58,10 +58,11 @@ python3 tools/serve_lambchat_thin_shell.py --host 0.0.0.0 --port 18001 --root /h
 - `http://127.0.0.1:18001/api/ai/health` returned `{"status":"ok"}` through
   the frontend proxy.
 
-The 211 LambChat frontend source worktree is dirty and contains ai-platform
-customizations plus safety tests. The local import source key files matched the
-211 source for `package.json`, `pnpm-lock.yaml`, `vite.config.ts`, and
-`src/App.tsx` by SHA-256 before migration.
+The original 211 LambChat frontend source worktree was dirty and contained
+ai-platform customizations plus safety tests. The local import source key files
+matched that source for `package.json`, `pnpm-lock.yaml`, `vite.config.ts`, and
+`src/App.tsx` by SHA-256 before migration; the current repository-owned runtime
+entry is the AI Platform frontend static-proxy helper above.
 
 ## Repository Shape
 
@@ -86,9 +87,9 @@ The import excludes:
 
 The frontend must keep browser calls on same-origin `/api/*`. In local Vite
 development, `/api/*` is proxied to `VITE_AI_PLATFORM_API_TARGET`, defaulting
-to `http://127.0.0.1:8020`; in 211, the thin shell proxies to ai-platform. The
-browser-facing API base remains same-origin; split frontend/backend browser API
-origins are not part of the current contract.
+to `http://127.0.0.1:8020`; in 211, the AI Platform frontend static-proxy entry
+proxies to ai-platform. The browser-facing API base remains same-origin; split
+frontend/backend browser API origins are not part of the current contract.
 
 Required public/user contracts:
 
@@ -194,8 +195,8 @@ Remaining audit risks:
 Current state:
 
 - API and worker still use the existing Python source/image path.
-- The 211 frontend remains a thin-shell static dist served by
-  `tools/serve_lambchat_thin_shell.py`.
+- The 211 frontend remains an AI Platform static-proxy frontend served by
+  `tools/serve_ai_platform_frontend.py`.
 - `frontend/web/Dockerfile`, `frontend/web/nginx.conf.template`, and
   `deploy/ai-platform/docker-compose.frontend.yml` define the optional
   packaged frontend image boundary.
@@ -431,7 +432,7 @@ packaged frontend image trace.
 Backend/source-authority focused verification:
 
 ```powershell
-python -m pytest tests/test_source_authority_docs.py tests/test_serve_lambchat_thin_shell.py tests/test_lambchat_frontend_compat.py tests/test_lambchat_projection_contract.py -q --basetemp .pytest-tmp\frontend-migration
+python -m pytest tests/test_source_authority_docs.py tests/test_serve_ai_platform_frontend.py tests/test_lambchat_frontend_compat.py tests/test_lambchat_projection_contract.py -q --basetemp .pytest-tmp\frontend-migration
 python tools/frontend_release_traceability.py --format json
 python tools/frontend_projection_audit.py --format json
 python tools/governance_readiness.py --format json
@@ -446,7 +447,7 @@ pnpm lint
 pnpm build
 ```
 
-211 smoke evidence should remain limited to current thin-shell health and
-same-origin `/api/*` behavior until a packaged frontend image is explicitly
-promoted for runtime validation. Image build/smoke evidence must be recorded as
-a separate Docker-capable-host release gate.
+211 smoke evidence should remain limited to current AI Platform frontend
+static-proxy health and same-origin `/api/*` behavior until a packaged frontend
+image is explicitly promoted for runtime validation. Image build/smoke evidence
+must be recorded as a separate Docker-capable-host release gate.

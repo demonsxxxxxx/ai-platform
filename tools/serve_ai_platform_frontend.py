@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Serve a built LambChat SPA with /api/* proxied to ai-platform.
+"""Serve the built AI Platform frontend SPA with /api/* proxied to ai-platform.
 
-This is a deployment helper for the transition where LambChat is the frontend
-shell and ai-platform is the backend source of truth.
+This helper supports controlled static-proxy validation for the repository-owned
+frontend bundle. The packaged nginx frontend remains the release path for
+Docker-capable hosts.
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ def build_handler(root: Path, api_base: str, upstream_timeout: int):
     root = root.resolve()
     api_base = api_base.rstrip("/")
 
-    class LambChatThinShellHandler(SimpleHTTPRequestHandler):
+    class AIPlatformFrontendHandler(SimpleHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         extensions_map = {
             **SimpleHTTPRequestHandler.extensions_map,
@@ -222,14 +223,14 @@ def build_handler(root: Path, api_base: str, upstream_timeout: int):
                 self.send_header("Cache-Control", "no-store")
             super().end_headers()
 
-    return LambChatThinShellHandler
+    return AIPlatformFrontendHandler
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", default=os.environ.get("LAMBCHAT_THIN_HOST", "0.0.0.0"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("LAMBCHAT_THIN_PORT", "18002")))
-    parser.add_argument("--root", required=True, help="Built LambChat frontend directory.")
+    parser.add_argument("--host", default=os.environ.get("AI_PLATFORM_FRONTEND_HOST", "0.0.0.0"))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("AI_PLATFORM_FRONTEND_PORT", "18001")))
+    parser.add_argument("--root", required=True, help="Built AI Platform frontend directory.")
     parser.add_argument(
         "--api-base",
         default=os.environ.get("AI_PLATFORM_API_PROXY_BASE", "http://127.0.0.1:8020"),
@@ -251,7 +252,7 @@ def main() -> None:
     handler = build_handler(root, args.api_base, args.upstream_timeout)
     server = ThreadingHTTPServer((args.host, args.port), handler)
     print(
-        f"Serving LambChat thin shell from {root} on http://{args.host}:{args.port}; "
+        f"Serving AI Platform frontend from {root} on http://{args.host}:{args.port}; "
         f"proxying /api/* to {args.api_base.rstrip('/')}",
         flush=True,
     )

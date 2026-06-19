@@ -1,12 +1,11 @@
 import socket
 import threading
 import time
-from urllib.error import HTTPError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import urlopen
 
-from tools.serve_lambchat_thin_shell import build_handler
+from tools.serve_ai_platform_frontend import build_handler, parse_args
 
 
 def start_server(handler):
@@ -20,7 +19,7 @@ class UpstreamHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_GET(self):
-        if self.path == "/api/auth/me":
+        if self.path == "/api/ai/auth/me":
             content = b'{"detail":"missing_authenticated_principal"}'
             self.send_response(401)
             self.send_header("Content-Type", "application/json")
@@ -46,49 +45,49 @@ class UpstreamHandler(BaseHTTPRequestHandler):
         return
 
 
-def test_spa_fallback_serves_index(tmp_path):
+def test_spa_fallback_serves_ai_platform_index(tmp_path):
     root = tmp_path / "dist"
     root.mkdir()
-    (root / "index.html").write_text("<html>LambChat</html>", encoding="utf-8")
+    (root / "index.html").write_text("<html>AI Platform</html>", encoding="utf-8")
     server = start_server(build_handler(root, "http://127.0.0.1:1", 2))
     try:
         port = server.server_address[1]
         response = urlopen(f"http://127.0.0.1:{port}/chat/ses_a", timeout=2)
         assert response.status == 200
-        assert response.read() == b"<html>LambChat</html>"
+        assert response.read() == b"<html>AI Platform</html>"
     finally:
         server.shutdown()
 
 
-def test_api_proxy_forwards_to_ai_platform(tmp_path):
+def test_api_proxy_forwards_to_ai_platform_principal_route(tmp_path):
     root = tmp_path / "dist"
     root.mkdir()
-    (root / "index.html").write_text("<html>LambChat</html>", encoding="utf-8")
+    (root / "index.html").write_text("<html>AI Platform</html>", encoding="utf-8")
     upstream = start_server(UpstreamHandler)
     api_base = f"http://127.0.0.1:{upstream.server_address[1]}"
-    thin_shell = start_server(build_handler(root, api_base, 2))
+    frontend = start_server(build_handler(root, api_base, 2))
     try:
-        port = thin_shell.server_address[1]
-        response = urlopen(f"http://127.0.0.1:{port}/api/auth/me", timeout=2)
+        port = frontend.server_address[1]
+        response = urlopen(f"http://127.0.0.1:{port}/api/ai/auth/me", timeout=2)
         assert response.status == 401
     except Exception as exc:
         assert getattr(exc, "code", None) == 401
         assert exc.read() == b'{"detail":"missing_authenticated_principal"}'
     finally:
-        thin_shell.shutdown()
+        frontend.shutdown()
         upstream.shutdown()
 
 
 def test_sse_proxy_flushes_first_event_without_waiting_for_completion(tmp_path):
     root = tmp_path / "dist"
     root.mkdir()
-    (root / "index.html").write_text("<html>LambChat</html>", encoding="utf-8")
+    (root / "index.html").write_text("<html>AI Platform</html>", encoding="utf-8")
     upstream = start_server(UpstreamHandler)
     api_base = f"http://127.0.0.1:{upstream.server_address[1]}"
-    thin_shell = start_server(build_handler(root, api_base, 2))
+    frontend = start_server(build_handler(root, api_base, 2))
     started = time.monotonic()
     try:
-        port = thin_shell.server_address[1]
+        port = frontend.server_address[1]
         with socket.create_connection(("127.0.0.1", port), timeout=2) as client:
             client.sendall(
                 b"GET /api/chat/sessions/ses_a/stream?run_id=run_a HTTP/1.1\r\n"
@@ -102,14 +101,14 @@ def test_sse_proxy_flushes_first_event_without_waiting_for_completion(tmp_path):
         assert b"data: first" in received
         assert time.monotonic() - started < 0.35
     finally:
-        thin_shell.shutdown()
+        frontend.shutdown()
         upstream.shutdown()
 
 
 def test_plain_ws_path_does_not_fallback_to_spa(tmp_path):
     root = tmp_path / "dist"
     root.mkdir()
-    (root / "index.html").write_text("<html>LambChat</html>", encoding="utf-8")
+    (root / "index.html").write_text("<html>AI Platform</html>", encoding="utf-8")
     server = start_server(build_handler(root, "http://127.0.0.1:1", 2))
     try:
         port = server.server_address[1]
@@ -126,7 +125,7 @@ def test_plain_ws_path_does_not_fallback_to_spa(tmp_path):
 def test_ws_path_accepts_browser_websocket_handshake(tmp_path):
     root = tmp_path / "dist"
     root.mkdir()
-    (root / "index.html").write_text("<html>LambChat</html>", encoding="utf-8")
+    (root / "index.html").write_text("<html>AI Platform</html>", encoding="utf-8")
     server = start_server(build_handler(root, "http://127.0.0.1:1", 2))
     try:
         port = server.server_address[1]
@@ -144,3 +143,17 @@ def test_ws_path_accepts_browser_websocket_handshake(tmp_path):
         assert b"Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" in response
     finally:
         server.shutdown()
+
+
+def test_cli_defaults_use_ai_platform_frontend_namespace(monkeypatch, tmp_path):
+    root = tmp_path / "dist"
+    root.mkdir()
+    monkeypatch.setenv("AI_PLATFORM_FRONTEND_HOST", "127.0.0.1")
+    monkeypatch.setenv("AI_PLATFORM_FRONTEND_PORT", "18001")
+    monkeypatch.setattr("sys.argv", ["serve_ai_platform_frontend.py", "--root", str(root)])
+
+    args = parse_args()
+
+    assert args.host == "127.0.0.1"
+    assert args.port == 18001
+    assert args.root == str(root)

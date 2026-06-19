@@ -847,13 +847,19 @@ def test_frontend_source_import_is_documented_without_replacing_current_runtime(
     assert "VITE_API_BASE" not in api_config
 
     combined_text = read(FRONTEND_README) + "\n" + read(FRONTEND_MIGRATION_DOC)
+    compact_combined_text = " ".join(combined_text.split())
     assert "same-origin `/api/*`" in combined_text
     assert "public/admin projections" in combined_text
     assert "executor private payload" in combined_text
     assert "Backend scheduling, sandbox, auth/session, DB schema" in combined_text
     assert "deploy/ai-platform/docker-compose.yml` is not changed" in combined_text
     assert "ai-platform-frontend" in combined_text
-    assert "current 211 thin-shell deployment remains the active runtime entry" in combined_text
+    assert (
+        "current 211 AI Platform frontend static-proxy deployment remains the active runtime entry"
+        in compact_combined_text
+    )
+    assert "tools/serve_ai_platform_frontend.py" in combined_text
+    assert "tools/serve_lambchat_thin_shell.py" not in combined_text
     assert "G8/G10 Long Task and Multi-Agent work are not implemented" in combined_text
     assert "Docker compose one-command startup is not a current" in combined_text
     assert "tools/office_context_readiness.py" in combined_text

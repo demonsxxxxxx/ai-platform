@@ -2,10 +2,10 @@
 
 Status: source ownership migration for GitHub issue #17.
 
-This directory contains the React/Vite frontend source used as the current
-LambChat thin-shell basis for ai-platform. The 211 entry remains
+This directory contains the React/Vite frontend source used as the current AI
+Platform frontend basis. The 211 entry remains
 `http://10.56.0.211:18001/`, served through
-`tools/serve_lambchat_thin_shell.py` with same-origin `/api/*` proxying to the
+`tools/serve_ai_platform_frontend.py` with same-origin `/api/*` proxying to the
 ai-platform API. Importing this source into the repository does not create a new
 public frontend entry and does not close the full Agent Frontend V1 rollout
 gate by itself.
@@ -60,9 +60,9 @@ still requires image smoke on 211 or another Docker-capable host.
 
 For local development, Vite proxies `/api/*` to `VITE_AI_PLATFORM_API_TARGET`,
 defaulting to `http://127.0.0.1:8020`. For the intranet deployment, keep the
-browser using same-origin `/api/*`; the deployed thin shell proxies those calls
-to ai-platform. Split frontend/backend browser API origins are not part of the
-current ai-platform contract.
+browser using same-origin `/api/*`; the deployed AI Platform frontend
+static-proxy entry proxies those calls to ai-platform. Split frontend/backend
+browser API origins are not part of the current ai-platform contract.
 
 ## API Boundary
 
@@ -93,8 +93,9 @@ This import is intentionally source-first:
 
 - Backend scheduling, sandbox, auth/session, DB schema, and compose behavior
   are unchanged by the frontend import.
-- The current 211 thin-shell deployment remains the active runtime entry until
-  a frontend image is explicitly added and verified.
+- The current 211 AI Platform frontend static-proxy deployment remains the
+  active runtime entry until the packaged frontend image is explicitly promoted
+  by Docker-capable runtime smoke evidence.
 - Legacy LambChat admin/model/MCP/persona/sandbox panels remain imported source
   and require ai-platform projection and policy audit before ordinary-user
   rollout.

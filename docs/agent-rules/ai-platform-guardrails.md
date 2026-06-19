@@ -26,7 +26,9 @@ source-authority repair first.
 - 211 deploy composition target is `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform` so the committed compose build context stays repo-local.
 - If live container labels still point to `/home/xinlin.jiang/ai-platform-phaseb/deploy/ai-platform`, treat that as stale runtime evidence to reconcile before claiming source-authority closure.
 - 211 frontend entry is `http://10.56.0.211:18001/`.
-- 211 frontend is the LambChat thin shell served by `tools/serve_lambchat_thin_shell.py`.
+- 211 frontend is the AI Platform frontend static-proxy entry served by
+  `tools/serve_ai_platform_frontend.py` until the packaged frontend image is
+  promoted by Docker-capable runtime smoke evidence.
 - 211 backend API is `ai-platform-api:8020`.
 - Active platform containers are `ai-platform-api`, `ai-platform-worker`,
   `ai-platform-postgres`, `ai-platform-redis`, and `ai-platform-minio`.
