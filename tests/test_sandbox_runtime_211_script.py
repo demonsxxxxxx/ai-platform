@@ -1385,6 +1385,26 @@ def test_runtime_probe_results_file_rejects_wrong_run_and_sensitive_content(tmp_
     else:
         raise AssertionError("sensitive runtime probe results should fail closed")
 
+    runtime_probe_results_file.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.sandbox-runtime-probe-results.v1",
+                "run_id": "run-a",
+                "source": "platform_runtime_probe",
+                "resource_limits": {},
+                "egress_policy": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        generator.load_runtime_probe_results(runtime_probe_results_file, run_id="run-a")
+    except RuntimeError as exc:
+        assert "security_options" in str(exc)
+    else:
+        raise AssertionError("incomplete runtime probe results should fail closed")
+
 
 def test_run_platform_runtime_probe_captures_executor_container_inspect(monkeypatch, tmp_path):
     generator = load_generator()

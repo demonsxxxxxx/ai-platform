@@ -115,7 +115,7 @@ def load_runtime_probe_results(path: str | Path, *, run_id: str) -> dict[str, An
     for key in RUNTIME_PROBE_RESULTS_SECTION_KEYS:
         section = payload.get(key)
         if section is None:
-            continue
+            raise RuntimeError(f"runtime probe results section is required: {key}")
         if not isinstance(section, dict):
             raise RuntimeError(f"runtime probe results section must be an object: {key}")
         results[key] = dict(section)
