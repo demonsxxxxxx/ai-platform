@@ -14,14 +14,14 @@ SCHEMA_VERSION = "ai-platform.foundation-alpha-poc-readiness.v1"
 SOURCE_SNAPSHOT_SCHEMA_VERSION = "ai-platform.source-snapshot.v1"
 SOURCE_RUNTIME_RELATION_MANIFEST_SCHEMA_VERSION = "ai-platform.source-runtime-relation-manifest.v1"
 STAGE_NAME = "Foundation Alpha POC"
-RUNTIME_SUBJECT_COMMIT_SHA = "14808bc8335b5f70e770a55db713b8faf4bfa664"
+RUNTIME_SUBJECT_COMMIT_SHA = "dde1749c256eaa7e0819c98e0debe6084e73cba2"
 _ROOT = Path(__file__).resolve().parents[1]
 _EVIDENCE_BASE_ROOT = _ROOT / "docs/release-evidence/foundation-alpha-poc"
 _FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT = _ROOT / "docs/release-evidence/foundation-runtime-concurrency"
 _SOURCE_RUNTIME_RELATION_MANIFEST = _EVIDENCE_BASE_ROOT / "source-runtime-relation-manifest.json"
 _EVIDENCE_ROOT = _EVIDENCE_BASE_ROOT / RUNTIME_SUBJECT_COMMIT_SHA
-_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-19-211-foundation-alpha-poc-14808bc-runtime-poc-smoke.json"
-_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-19-211-foundation-alpha-poc-14808bc-auth-rbac-smoke.json"
+_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-19-211-foundation-alpha-poc-dde1749-runtime-poc-smoke.json"
+_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-19-211-foundation-alpha-poc-dde1749-auth-rbac-smoke.json"
 _SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
 _SOURCE_SNAPSHOT_MARKER = _ROOT / ".ai-platform-source-snapshot.json"
 _RUNTIME_NEUTRAL_PATH_PREFIXES = (
@@ -328,7 +328,6 @@ def _release_evidence_entry_base_is_valid(payload: dict[str, Any], commit_sha: s
     labels = source_ref.get("image_labels")
     return (
         payload.get("schema_version") == "ai-platform.release-evidence-entry.v1"
-        and payload.get("gate") == STAGE_NAME
         and payload.get("commit_sha") == commit_sha
         and payload.get("runtime_subject_commit_sha") == commit_sha
         and payload.get("redaction_scan_status") == "passed"
@@ -345,6 +344,7 @@ def _release_evidence_entry_base_is_valid(payload: dict[str, Any], commit_sha: s
 def _release_evidence_entry_is_valid(payload: dict[str, Any], commit_sha: str) -> bool:
     return (
         _release_evidence_entry_base_is_valid(payload, commit_sha)
+        and payload.get("gate") == STAGE_NAME
         and payload.get("artifact_kind") == "211_runtime_smoke"
     )
 
@@ -497,11 +497,11 @@ def _discover_release_evidence_pair(commit_sha: str) -> tuple[Path, Path] | None
             payload = _load_json(path)
         except (OSError, json.JSONDecodeError):
             continue
-        if not _release_evidence_entry_is_valid(payload, commit_sha):
+        if not _release_evidence_entry_base_is_valid(payload, commit_sha):
             continue
         if _is_auth_rbac_evidence(payload):
             auth_entries.append((path, payload))
-        elif _is_poc_smoke_evidence(payload):
+        elif _release_evidence_entry_is_valid(payload, commit_sha) and _is_poc_smoke_evidence(payload):
             smoke_entries.append((path, payload))
 
     if not smoke_entries or not auth_entries:
@@ -556,7 +556,7 @@ def _discover_governance_runtime_evidence(commit_sha: str) -> Path | None:
             payload = _load_json(path)
         except (OSError, json.JSONDecodeError):
             continue
-        if not _release_evidence_entry_is_valid(payload, commit_sha):
+        if not _release_evidence_entry_base_is_valid(payload, commit_sha):
             continue
         if _is_governance_runtime_evidence(payload):
             entries.append((path, payload))
@@ -578,7 +578,7 @@ def _discover_release_evidence_runtime_acceptance_evidence(commit_sha: str) -> P
             payload = _load_json(path)
         except (OSError, json.JSONDecodeError):
             continue
-        if not _release_evidence_entry_is_valid(payload, commit_sha):
+        if not _release_evidence_entry_base_is_valid(payload, commit_sha):
             continue
         if _is_release_evidence_runtime_acceptance_evidence(payload):
             entries.append((path, payload))
