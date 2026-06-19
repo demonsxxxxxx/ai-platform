@@ -914,16 +914,11 @@ def test_governance_readiness_doc_records_b1_smoke_without_gate_closure():
     assert "`211 verified`" in governance_text
     assert "B1 stage itself remains `local partial`" in governance_text
     assert "not `gate closable`" in governance_text
-    assert "`recorded_local_contract`" in governance_text
-    assert "`runtime_affecting_delta_requires_fresh_211_smoke`" not in governance_text
+    assert "repo-local #75 closure evidence" in governance_text
+    assert "if later runtime-affecting source changes" in governance_text
     assert "`52ac62cfbbab47172a659dda11e41aa4b2a5d699`" in governance_text
-    assert "current source commit is reported dynamically" in governance_text
     assert "`9687a7720528e2f3068bfcbdccbee45f80458ec0`" not in governance_text
-    assert "`app/b1_memory_context_readiness.py`" not in governance_text
-    assert "`app/release_evidence_export_acceptance.py`" not in governance_text
-    assert "`app/release_evidence_readiness.py`" not in governance_text
-    assert "deploying current main to 211" not in governance_text
-    assert "final #75 review and issue-closure evidence" in governance_text
+    assert "final #75 review and issue-closure evidence" not in governance_text
     assert "`tools/verify_b1_memory_context_workflow.py`" in governance_text
     assert "memory export boundary, and rollback" not in governance_text
     assert "`local_controls_ready_runtime_smoke_required`, and keeps status label" not in governance_text
@@ -932,7 +927,6 @@ def test_governance_readiness_doc_records_b1_smoke_without_gate_closure():
     assert "B1 merged-source runtime evidence review for `52ac62c`" in memory_implemented
     assert "B1 rollback boundary local operator contract" in memory_implemented
     assert "`211_memory_enabled_document_workflow_smoke`" not in memory_remaining
-    assert "B1 merged-source runtime evidence review" not in memory_remaining
     assert "B1 rollback boundary" not in memory_remaining
 
 

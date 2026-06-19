@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app.backend_stage_closure_evidence import find_stage_issue_closure_evidence
+
 
 SCHEMA_VERSION = "ai-platform.b2-sandbox-readiness.v1"
 BACKEND_STAGE = "B2 real sandbox usable"
@@ -333,18 +335,62 @@ def _runtime_acceptance_evidence(repo_root: Path) -> dict[str, dict[str, Any]]:
     return {RUNTIME_ACCEPTANCE_GAP: candidates[0]}
 
 
+def _issue_closure_boundary_evidence(repo_root: Path) -> dict[str, Any]:
+    evidence = find_stage_issue_closure_evidence(
+        repo_root,
+        issue=ISSUE,
+        backend_stage=BACKEND_STAGE,
+        closed_gap=ISSUE_CLOSURE_GAP,
+    )
+    if evidence is None:
+        return {
+            "status": "open_missing_issue_closure_evidence",
+            "closed_gap": None,
+            "issue": ISSUE,
+            "required_next_step": "record reviewed local issue-closure evidence for #89 before closing this boundary",
+            "does_not_close_broader_b2_g7_gate": True,
+        }
+    return {
+        "status": "recorded_issue_closure_evidence",
+        "closed_gap": ISSUE_CLOSURE_GAP,
+        "issue": evidence["issue"],
+        "issue_state": evidence["issue_state"],
+        "closed_at": evidence.get("closed_at"),
+        "path": evidence["path"],
+        "linked_prs": evidence["linked_prs"],
+        "closure_comments": evidence["closure_comments"],
+        "evidence_refs": evidence["evidence_refs"],
+        "residual_caveats": evidence["residual_caveats"],
+        "non_expansion_invariants": evidence["non_expansion_invariants"],
+        "does_not_close_broader_b2_g7_gate": True,
+    }
+
+
 def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
     """Build the B2 real-sandbox readiness contract without claiming runtime closure."""
     root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
     runtime_acceptance_evidence = _runtime_acceptance_evidence(root)
     b2_smoke_recorded = RUNTIME_ACCEPTANCE_GAP in runtime_acceptance_evidence
+    gate_boundary_evidence = {
+        ISSUE_CLOSURE_GAP: _issue_closure_boundary_evidence(root),
+    }
+    closed_gate_boundary_gaps = [
+        gap
+        for gap, evidence in gate_boundary_evidence.items()
+        if evidence.get("closed_gap") == gap
+    ]
     open_gaps = [
         RUNTIME_ACCEPTANCE_GAP,
         REVIEWED_EVIDENCE_GAP,
         ISSUE_CLOSURE_GAP,
     ]
     if b2_smoke_recorded:
-        open_gaps = [ISSUE_CLOSURE_GAP]
+        open_gaps = [
+            gap
+            for gap in [ISSUE_CLOSURE_GAP]
+            if gap not in closed_gate_boundary_gaps
+        ]
+        open_gaps.extend(_PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED)
     status = (
         "runtime_acceptance_recorded"
         if b2_smoke_recorded
@@ -418,6 +464,9 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
         "source_tests": list(_SOURCE_TESTS),
         "open_gaps": open_gaps,
         "closed_runtime_gaps": closed_runtime_gaps,
+        "closed_gate_boundary_gaps": closed_gate_boundary_gaps,
+        "gate_boundary_evidence": gate_boundary_evidence,
+        "broader_b2_g7_open_requirements": list(_PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED),
         "runtime_acceptance_evidence": runtime_acceptance_evidence,
         "non_expansion_invariants": dict(_B2_NON_EXPANSION_INVARIANTS),
         "evidence_policy": (
@@ -432,6 +481,43 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
 def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
     """Render B2 sandbox readiness as gap-first operator Markdown."""
     gaps = "\n".join(f"- {gap}" for gap in readiness["open_gaps"]) or "- none"
+    closed_gate_boundary_gaps = (
+        "\n".join(f"- {gap}" for gap in readiness.get("closed_gate_boundary_gaps", []))
+        or "- none"
+    )
+    issue_closure = readiness.get("gate_boundary_evidence", {}).get(ISSUE_CLOSURE_GAP)
+    issue_closure_lines = "- none"
+    if isinstance(issue_closure, dict):
+        evidence_refs = issue_closure.get("evidence_refs")
+        residual_caveats = issue_closure.get("residual_caveats")
+        linked_prs = issue_closure.get("linked_prs")
+        evidence_ref_lines = (
+            "\n".join(f"- `{item}`" for item in evidence_refs)
+            if isinstance(evidence_refs, list)
+            else "- none"
+        )
+        residual_caveat_lines = (
+            "\n".join(f"- `{item}`" for item in residual_caveats)
+            if isinstance(residual_caveats, list)
+            else "- none"
+        )
+        linked_pr_lines = (
+            "\n".join(f"- `{item.get('url')}`" for item in linked_prs if isinstance(item, dict))
+            if isinstance(linked_prs, list)
+            else "- none"
+        )
+        issue_closure_lines = (
+            f"- status: `{issue_closure.get('status')}`\n"
+            f"- path: `{issue_closure.get('path')}`\n"
+            f"- closed at: `{issue_closure.get('closed_at')}`\n"
+            "- linked PRs:\n"
+            f"{linked_pr_lines}\n"
+            "- evidence refs:\n"
+            f"{evidence_ref_lines}\n"
+            "- residual caveats:\n"
+            f"{residual_caveat_lines}\n"
+            f"- does not close broader B2/G7 gate: `{str(issue_closure.get('does_not_close_broader_b2_g7_gate')).lower()}`"
+        )
     controls = "\n".join(f"- {control}" for control in readiness["closed_source_controls"])
     tests = "\n".join(f"- `{test}`" for test in readiness["source_tests"])
     runtime = readiness["runtime_acceptance"]
@@ -443,7 +529,7 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"- `{section}`" for section in runtime["verifier_required_evidence_sections"]
     )
     pending_prd_requirements = "\n".join(
-        f"- `{item}`" for item in runtime["prd_b2_g7_requirements_not_yet_verified"]
+        f"- `{item}`" for item in readiness["broader_b2_g7_open_requirements"]
     )
     invariants = "\n".join(
         f"- `{key}={str(value).lower()}`"
@@ -458,6 +544,11 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"Status label: `{readiness['status_label']}`\n\n"
         "## Open Gaps\n\n"
         f"{gaps}\n\n"
+        "## Closed Gate Boundary Gaps\n\n"
+        f"{closed_gate_boundary_gaps}\n\n"
+        "## Gate Boundary Evidence\n\n"
+        "### B2 Issue Closure Evidence\n\n"
+        f"{issue_closure_lines}\n\n"
         "## Runtime Acceptance\n\n"
         f"- generator: `{runtime['generator_script']}`\n"
         f"- verifier: `{runtime['verifier_script']}`\n"
