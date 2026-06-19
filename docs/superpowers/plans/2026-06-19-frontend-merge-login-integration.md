@@ -35,6 +35,8 @@ Local verification evidence refreshed on 2026-06-19:
 - `corepack pnpm run projection:audit` exited 0 with status `pass_with_policy_gaps`; the remaining gaps are Phase 2 backend contract gaps rather than active-browser private projection violations.
 - `corepack pnpm run lint` exited 0 with one existing `react-refresh/only-export-components` warning in `frontend/web/src/components/chat/ChatMessage/sessionImageGallery.tsx`.
 - `corepack pnpm run build` exited 0 with existing Vite large-chunk warnings.
+- `python -m pytest tests/test_frontend_static_proxy_smoke.py -q --basetemp .pytest-tmp\frontend-static-proxy-green3` reported `4 passed`.
+- `python -m compileall -q tools tests` exited 0 after adding `tools/frontend_static_proxy_smoke.py`.
 - `git diff --check` exited 0.
 
 211 preview evidence refreshed on 2026-06-19:
@@ -46,6 +48,7 @@ Local verification evidence refreshed on 2026-06-19:
 - 18003 SPA fallback routes `/auth/login`, `/chat`, `/settings`, `/mcp`, and `/notifications` returned HTTP 200.
 - 18003 proxied `GET /api/ai/health` returned `{"status":"ok"}`.
 - 18003 unauthenticated `GET /api/ai/auth/me` returned HTTP 401 with `missing_authenticated_principal`.
+- 18003 static-proxy smoke via `tools/frontend_static_proxy_smoke.py --base-url http://127.0.0.1:18003 --expected-commit 5e3a747e031e7f1a1ce7c525d19a0ca2d64519ed --timeout 8`, executed on 211 with the tool uploaded temporarily to `/tmp`, returned schema `ai-platform.frontend-static-proxy-smoke.v1`, status `pass`, zero failed checks, 2 static assets, SPA route status 200 for `/auth/login`, `/chat`, `/settings`, `/mcp`, and `/notifications`, and explicitly `does_not_verify_real_company_login=true`.
 - 18003 API-level RBAC smoke using a redacted trusted-principal secret verified:
   - Admin principal `GET /api/ai/auth/me` returned HTTP 200 with `is_admin: true`.
   - Ordinary principal `GET /api/ai/admin/runtime/overview?include_maintenance_cleanup=false` returned HTTP 403 with `not_ai_admin`.
