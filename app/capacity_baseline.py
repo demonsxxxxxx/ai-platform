@@ -141,6 +141,16 @@ _PROFILE_EVIDENCE_REQUIRED_FIELDS = (
     "observed_peak_sdk_subagents_per_session",
     "sdk_subagent_fanout_measurement_ref",
 )
+_B3_OPERATOR_REVIEW_REQUIRED_EVIDENCE = [
+    "runtime_source_identity_and_image_labels",
+    "tenant_user_skill_mix",
+    "token_cost_ledger",
+    "event_artifact_volume",
+    "sandbox_pressure_and_cleanup",
+    "latency_p50_p95_p99",
+    "error_budget_and_dead_letters",
+    "rollback_plan_and_stop_conditions",
+]
 
 
 def _default_settings() -> object:
@@ -1180,6 +1190,57 @@ def _b3_profile_evidence_status(profile_evidence: dict[str, Any]) -> dict[str, A
     }
 
 
+def _operator_reviewed_recorded_snapshot_contract(profile: dict[str, Any]) -> dict[str, Any]:
+    profile_id = str(profile.get("id") or "")
+    is_b3_target = profile_id == _B3_TARGET_PROFILE_ID
+    target_profile = (
+        dict(_B3_TARGET_PROFILE)
+        if is_b3_target
+        else {
+            "concurrent_sessions": _coerce_int(
+                _dict(profile.get("target_profile")).get("concurrent_sessions")
+            ),
+            "peak_sdk_subagents_per_session": _coerce_int(
+                _dict(profile.get("target_profile")).get("peak_sdk_subagents_per_session")
+            ),
+        }
+    )
+    if is_b3_target:
+        target_profile = {
+            "concurrent_sessions": _coerce_int(_B3_TARGET_PROFILE["concurrent_sessions"]),
+            "peak_sdk_subagents_per_session": _coerce_int(
+                _B3_TARGET_PROFILE["peak_sdk_subagents_per_session"]
+            ),
+        }
+    return {
+        "schema_version": "ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1",
+        "profile_id": profile_id,
+        "stage": str(profile.get("stage") or "B3"),
+        "evidence_level": "source_contract",
+        "target_profile": target_profile,
+        "required_status_before_operator_review": "operator_review_required",
+        "required_profile_evidence": list(_PROFILE_EVIDENCE_REQUIRED_FIELDS)
+        if is_b3_target
+        else [],
+        "required_load_test_gates": list(profile.get("required_load_test_gates") or LOAD_TEST_GATES),
+        "required_admin_runtime_sections": list(_LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS),
+        "required_operator_review_evidence": list(_B3_OPERATOR_REVIEW_REQUIRED_EVIDENCE),
+        "acceptance_rule": (
+            "all seven load-test gates recorded, b3_10x4 profile evidence accepted, "
+            "operator review attached, and production defaults unchanged"
+        )
+        if is_b3_target
+        else (
+            "all required load-test gates recorded, operator review attached, "
+            "and production defaults unchanged"
+        ),
+        "does_not_raise_defaults": True,
+        "does_not_claim_safe_concurrency": True,
+        "does_not_enable_ordinary_user_multi_agent": True,
+        "does_not_close_b3_gate": True,
+    }
+
+
 def _load_gate_evidence_summary(
     load_test_evidence: dict[str, Any],
     required_gates: list[str],
@@ -2095,6 +2156,9 @@ def build_capacity_profile_readiness(payload: dict[str, Any]) -> dict[str, Any]:
                 "automatic_default_raise": False,
                 "production_default_decision": item_production_default_decision,
                 "does_not_raise_defaults": True,
+                "operator_reviewed_recorded_snapshot_contract": (
+                    _operator_reviewed_recorded_snapshot_contract(profile)
+                ),
             }
         )
 
@@ -2399,8 +2463,11 @@ def render_capacity_profile_readiness_markdown(readiness: dict[str, Any]) -> str
     ) or "- none"
     missing_profile_evidence_items: list[str] = []
     rows = []
+    b3_contract = {}
     for profile in readiness.get("profiles", []):
         item = _dict(profile)
+        if item.get("id") == _B3_TARGET_PROFILE_ID:
+            b3_contract = _dict(item.get("operator_reviewed_recorded_snapshot_contract"))
         profile_missing_gates = item.get("missing_load_test_gates")
         missing_count = len(profile_missing_gates) if isinstance(profile_missing_gates, list) else 0
         missing_profile_evidence = item.get("missing_profile_evidence")
@@ -2422,6 +2489,12 @@ def render_capacity_profile_readiness_markdown(readiness: dict[str, Any]) -> str
         if missing_profile_evidence_items
         else "- none"
     )
+    contract_operator_evidence = "\n".join(
+        f"- `{item}`" for item in b3_contract.get("required_operator_review_evidence", [])
+    ) or "- none"
+    contract_load_gates = "\n".join(
+        f"- `{gate}`" for gate in b3_contract.get("required_load_test_gates", [])
+    ) or "- none"
     return (
         "# ai-platform Capacity Profile Readiness\n\n"
         f"Schema: `{readiness['schema_version']}`\n\n"
@@ -2433,6 +2506,20 @@ def render_capacity_profile_readiness_markdown(readiness: dict[str, Any]) -> str
         f"{missing_gates}\n\n"
         "## Missing profile evidence\n\n"
         f"{missing_profile_evidence}\n\n"
+        "## Operator-reviewed recorded snapshot contract\n\n"
+        f"Schema: `{b3_contract.get('schema_version', 'missing')}`\n\n"
+        f"Profile: `{b3_contract.get('profile_id', 'missing')}`\n\n"
+        f"Evidence level: `{b3_contract.get('evidence_level', 'missing')}`\n\n"
+        f"Required status before operator review: `{b3_contract.get('required_status_before_operator_review', 'missing')}`\n\n"
+        "Required load-test gates:\n\n"
+        f"{contract_load_gates}\n\n"
+        "Required operator review evidence:\n\n"
+        f"{contract_operator_evidence}\n\n"
+        f"Acceptance rule: {b3_contract.get('acceptance_rule', 'missing')}\n\n"
+        f"- does not raise defaults: `{str(b3_contract.get('does_not_raise_defaults')).lower()}`\n"
+        f"- does not claim safe concurrency: `{str(b3_contract.get('does_not_claim_safe_concurrency')).lower()}`\n"
+        f"- does not enable ordinary-user multi-agent: `{str(b3_contract.get('does_not_enable_ordinary_user_multi_agent')).lower()}`\n"
+        f"- does not close B3 gate: `{str(b3_contract.get('does_not_close_b3_gate')).lower()}`\n\n"
         "## Profiles\n\n"
         "| Profile | Status | Production default decision | Missing gates |\n"
         "| --- | --- | --- | --- |\n"

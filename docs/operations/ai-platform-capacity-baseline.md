@@ -165,9 +165,34 @@ python tools/capacity_profile_readiness.py --readiness-json .\capacity-gate-read
 The profile output uses schema
 `ai-platform.capacity-profile-readiness.v1` and covers:
 
+- `b3_10x4_sdk_subagents`
 - `conservative_internal`
 - `medium_team`
 - `high_capacity_1t`
+
+B3 operator-reviewed recorded snapshot source contract:
+`tools/capacity_profile_readiness.py` emits
+`ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1` for
+`b3_10x4_sdk_subagents`. This source contract only defines what an
+operator-reviewed recorded snapshot must contain for the
+10 sessions x peak 4 SDK subagents/session profile; it is not load evidence by
+itself. Required review evidence:
+
+- `runtime_source_identity_and_image_labels`
+- `tenant_user_skill_mix`
+- `token_cost_ledger`
+- `event_artifact_volume`
+- `sandbox_pressure_and_cleanup`
+- `latency_p50_p95_p99`
+- `error_budget_and_dead_letters`
+- `rollback_plan_and_stop_conditions`
+
+Contract flags stay fail-closed: `does_not_raise_defaults = true`,
+`does_not_claim_safe_concurrency = true`,
+`does_not_enable_ordinary_user_multi_agent = true`, and
+`does_not_close_b3_gate = true`. This is source contract only; it does not raise production defaults,
+does not close B3, and must not be used as
+ordinary-user multi-agent exposure evidence.
 
 This is a fail-closed operator catalog. When load-test evidence is missing or
 incomplete, every profile keeps

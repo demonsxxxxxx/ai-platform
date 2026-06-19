@@ -5,6 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PRD = ROOT / "docs/superpowers/specs/2026-06-10-ai-platform-product-prd-v2.md"
 OLD_PRD = ROOT / "docs/superpowers/specs/2026-05-29-ai-platform-final-product-prd.md"
 TECH_ACCEPTANCE = ROOT / "docs/superpowers/specs/2026-06-11-ai-platform-tech-acceptance.md"
+BACKEND_PRD = ROOT / "docs/superpowers/specs/2026-06-18-ai-platform-backend-phased-prd.md"
 ROADMAP = ROOT / "docs/superpowers/plans/2026-06-02-ai-platform-foundation-roadmap.md"
 GUARDRAILS = ROOT / "docs/agent-rules/ai-platform-guardrails.md"
 GITHUB_WORKFLOW = ROOT / "docs/agent-rules/github-issue-pr-workflow.md"
@@ -189,8 +190,55 @@ def test_technical_acceptance_summarizes_backend_p0_productization_bundles():
         "P0 capability summaries are planning labels, not gate-closure evidence.",
         "Code absorption from backend reference projects still requires source pinning, license/provenance review, targeted tests, explicit gate wording, and runtime evidence when applicable.",
         "Status labels must stay separate: `local partial`, `PR ready`, `merged`, `211 verified`, and `gate closable` are not interchangeable.",
+        "B3 operator-reviewed recorded snapshot source contract",
+        "ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1",
+        "does not raise production defaults or claim safe concurrency",
     ):
         assert boundary in compact_tech_text
+
+
+def test_backend_prd_records_b3_operator_snapshot_and_reference_boundaries():
+    backend_prd_text = read(BACKEND_PRD)
+    compact_backend_prd_text = " ".join(backend_prd_text.split())
+
+    for expected in (
+        "B3 Worker And Model-Gateway Capacity",
+        "10 concurrent user sessions",
+        "peak 4 Claude Agent SDK subagents per session",
+        "`operator_reviewed_recorded_snapshot`",
+        "runtime_source_identity_and_image_labels",
+        "tenant_user_skill_mix",
+        "token_cost_ledger",
+        "event_artifact_volume",
+        "sandbox_pressure_and_cleanup",
+        "latency_p50_p95_p99",
+        "error_budget_and_dead_letters",
+        "rollback_plan_and_stop_conditions",
+        "does not raise production defaults or claim safe concurrency",
+        "does not enable ordinary-user multi-agent exposure",
+        "does not close B3 or G8/G9",
+        "Reference Code Projects",
+        "Code adaptation candidate",
+        "Runtime dependency proposal",
+        "https://github.com/langchain-ai/langgraph",
+        "https://github.com/mem0ai/mem0",
+        "https://github.com/e2b-dev/E2B",
+        "https://github.com/temporalio/sdk-python",
+        "https://github.com/BerriAI/litellm",
+        "https://github.com/backstage/backstage",
+        "https://github.com/open-webui/open-webui",
+        "https://github.com/danny-avila/LibreChat",
+    ):
+        assert expected in backend_prd_text
+
+    for boundary in (
+        "External projects are references only. ai-platform owns identity, tenancy, RBAC, audit, source authority, release evidence, and gate closure.",
+        "Reading a project does not authorize copying code, adding dependencies, or changing runtime architecture.",
+        "Repositories with GitHub license posture `Other`, AGPL/LGPL/copyleft terms, or unknown license posture are concept-only references by default.",
+    ):
+        assert boundary in compact_backend_prd_text
+
+    assert "C:\\Users" not in backend_prd_text
 
 
 def test_prd_roadmap_guardrails_share_current_gate_sequence():
@@ -1066,6 +1114,7 @@ def test_gate_status_records_foundation_runtime_concurrency_context_pack_blocker
 
 def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
     capacity_text = read(CAPACITY_BASELINE_DOC)
+    gate_status_text = read(GATE_STATUS_DOC)
 
     assert "GitHub issue #21 is currently closed" in capacity_text
     assert "capacity-upgrade evidence gate" in capacity_text
@@ -1083,6 +1132,29 @@ def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
     assert "recorded capacity-evidence gate" in capacity_text
     assert "must not be used to raise production defaults" in capacity_text
     assert "C:\\Users" not in capacity_text
+
+    for text in (capacity_text, gate_status_text):
+        assert "B3 operator-reviewed recorded snapshot source contract" in text
+        assert "ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1" in text
+        assert "b3_10x4_sdk_subagents" in text
+        assert "10 sessions x peak 4 SDK subagents/session" in text
+        assert "runtime_source_identity_and_image_labels" in text
+        assert "tenant_user_skill_mix" in text
+        assert "token_cost_ledger" in text
+        assert "event_artifact_volume" in text
+        assert "sandbox_pressure_and_cleanup" in text
+        assert "latency_p50_p95_p99" in text
+        assert "error_budget_and_dead_letters" in text
+        assert "rollback_plan_and_stop_conditions" in text
+        assert "does_not_raise_defaults = true" in text
+        assert "does_not_claim_safe_concurrency = true" in text
+        assert "does_not_enable_ordinary_user_multi_agent = true" in text
+        assert "does_not_close_b3_gate = true" in text
+        assert "source contract only" in text
+        assert "does not raise production defaults" in text
+        assert "does not close B3" in text
+        assert "ordinary-user multi-agent exposure" in text
+        assert "C:\\Users" not in text
 
 
 def test_observability_docs_record_quality_golden_set_contract_without_closing_g9():
