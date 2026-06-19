@@ -25,16 +25,13 @@ export function ShareButton({
   isLastMessage,
 }: ShareButtonProps) {
   const { t } = useTranslation();
-  const { user } = useAuth();
+  const { hasPermission } = useAuth();
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const sessionTitle = useSessionTitle(sessionId, {
     enabled: shareDialogOpen,
   });
 
-  // Check if user has share permission
-  const hasSharePermission = user?.permissions?.includes(
-    Permission.SESSION_SHARE,
-  );
+  const hasSharePermission = hasPermission(Permission.SESSION_SHARE);
 
   if (!hasSharePermission) {
     return null;

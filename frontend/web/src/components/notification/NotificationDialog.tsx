@@ -10,6 +10,8 @@ import {
   Wrench,
 } from "lucide-react";
 import { notificationApi } from "../../services/api/notification";
+import { useAuth } from "../../hooks/useAuth";
+import { getRoutePermissions } from "../layout/AppContent/phase1SurfacePolicy";
 import type { Notification, NotificationType } from "../../types/notification";
 import { formatDateTimeShort } from "../../utils/datetime";
 
@@ -50,11 +52,19 @@ export function NotificationDialog({
   onClose,
 }: NotificationDialogProps) {
   const { t, i18n } = useTranslation();
+  const { hasAnyPermission } = useAuth();
+  const canReadNotifications = hasAnyPermission(
+    getRoutePermissions("notifications"),
+  );
   const [notifications, setNotifications] = useState<Notification[]>([]);
 
   const fetchNotifications = useCallback(() => {
+    if (!canReadNotifications) {
+      setNotifications([]);
+      return;
+    }
     notificationApi.getActive().then(setNotifications);
-  }, []);
+  }, [canReadNotifications]);
 
   useEffect(() => {
     if (!isOpen) return;

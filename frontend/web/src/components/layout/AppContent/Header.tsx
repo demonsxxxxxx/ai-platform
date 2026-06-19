@@ -19,7 +19,9 @@ import { UserMenu } from "../UserMenu";
 import { useTheme } from "../../../contexts/ThemeContext";
 import { useSettingsContext } from "../../../contexts/SettingsContext";
 import { notificationApi } from "../../../services/api/notification";
+import { useAuth } from "../../../hooks/useAuth";
 import { NotificationDialog } from "../../notification/NotificationDialog";
+import { getRoutePermissions } from "./phase1SurfacePolicy";
 import type { TabType } from "./types";
 
 interface HeaderProps {
@@ -62,6 +64,10 @@ export function Header({
   const navigate = useNavigate();
   const { theme, toggleTheme } = useTheme();
   const { pinnedModelIds, togglePinnedModel } = useSettingsContext();
+  const { hasAnyPermission } = useAuth();
+  const canReadNotifications = hasAnyPermission(
+    getRoutePermissions("notifications"),
+  );
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [langMenuOpen, setLangMenuOpen] = useState(false);
   const [notifDialogOpen, setNotifDialogOpen] = useState(false);
@@ -74,10 +80,14 @@ export function Header({
   }, []);
 
   const refreshNotifCount = useCallback(() => {
+    if (!canReadNotifications) {
+      setActiveNotifCount(0);
+      return;
+    }
     notificationApi
       .getActive()
       .then((items) => setActiveNotifCount(items.length));
-  }, []);
+  }, [canReadNotifications]);
 
   useEffect(() => {
     refreshNotifCount();
@@ -245,23 +255,29 @@ export function Header({
                         <span className="truncate">{t("sidebar.newChat")}</span>
                       </button>
                     )}
-                    <button
-                      onClick={() => {
-                        setNotifDialogOpen(true);
-                        setMobileMenuOpen(false);
-                      }}
-                      className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm transition-colors text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-primary-light)]"
-                    >
-                      <span className="flex items-center justify-center w-5 shrink-0">
-                        <Bell size={16} />
-                      </span>
-                      <span className="truncate">{t("nav.notifications")}</span>
-                      {activeNotifCount > 0 && (
-                        <span className="ml-auto flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-red-500 px-1 text-[9px] font-bold text-white leading-none">
-                          {activeNotifCount > 99 ? "99+" : activeNotifCount}
+                    {canReadNotifications && (
+                      <button
+                        onClick={() => {
+                          setNotifDialogOpen(true);
+                          setMobileMenuOpen(false);
+                        }}
+                        className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm transition-colors text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-primary-light)]"
+                      >
+                        <span className="flex items-center justify-center w-5 shrink-0">
+                          <Bell size={16} />
                         </span>
-                      )}
-                    </button>
+                        <span className="truncate">
+                          {t("nav.notifications")}
+                        </span>
+                        {activeNotifCount > 0 && (
+                          <span className="ml-auto flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-red-500 px-1 text-[9px] font-bold text-white leading-none">
+                            {activeNotifCount > 99
+                              ? "99+"
+                              : activeNotifCount}
+                          </span>
+                        )}
+                      </button>
+                    )}
                     <button
                       onClick={() => {
                         toggleTheme();

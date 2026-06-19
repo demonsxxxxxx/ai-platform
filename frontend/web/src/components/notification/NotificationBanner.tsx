@@ -2,6 +2,8 @@ import { useEffect, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { Info, CheckCircle, AlertTriangle, Wrench, X } from "lucide-react";
 import { notificationApi } from "../../services/api/notification";
+import { useAuth } from "../../hooks/useAuth";
+import { getRoutePermissions } from "../layout/AppContent/phase1SurfacePolicy";
 import type { Notification, NotificationType } from "../../types/notification";
 
 const TYPE_CONFIG: Record<
@@ -32,12 +34,20 @@ const TYPE_CONFIG: Record<
 
 export function NotificationBanner() {
   const { t, i18n } = useTranslation();
+  const { hasAnyPermission } = useAuth();
+  const canReadNotifications = hasAnyPermission(
+    getRoutePermissions("notifications"),
+  );
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
+    if (!canReadNotifications) {
+      setNotifications([]);
+      return;
+    }
     notificationApi.getActive().then(setNotifications);
-  }, []);
+  }, [canReadNotifications]);
 
   const handleDismiss = useCallback((id: string) => {
     setDismissedIds((prev) => new Set(prev).add(id));

@@ -135,6 +135,39 @@ test("active notification surfaces are read-only in Phase 1", () => {
   assert.match(bannerSource, /notificationApi[\s\S]*?\.getActive/);
 });
 
+test("active notification surfaces gate reads through Phase 1 permissions", () => {
+  const headerSource = readSource(
+    "../components/layout/AppContent/Header.tsx",
+  );
+  const dialogSource = readSource(
+    "../components/notification/NotificationDialog.tsx",
+  );
+  const bannerSource = readSource(
+    "../components/notification/NotificationBanner.tsx",
+  );
+
+  for (const source of [headerSource, dialogSource, bannerSource]) {
+    assert.match(source, /useAuth\(/);
+    assert.match(source, /getRoutePermissions\("notifications"\)/);
+    assert.match(
+      source,
+      /hasAnyPermission\(\s*getRoutePermissions\("notifications"\),?\s*\)/,
+    );
+    assert.doesNotMatch(source, /user\?\.permissions/);
+  }
+});
+
+test("chat share button uses normalized effective permissions", () => {
+  const shareButtonSource = readSource(
+    "../components/chat/ChatMessage/ShareButton.tsx",
+  );
+
+  assert.match(shareButtonSource, /const \{ hasPermission \} = useAuth\(\)/);
+  assert.match(shareButtonSource, /hasPermission\(Permission\.SESSION_SHARE\)/);
+  assert.doesNotMatch(shareButtonSource, /const \{ user \} = useAuth\(\)/);
+  assert.doesNotMatch(shareButtonSource, /user\?\.permissions/);
+});
+
 test("Phase 1 tab content does not activate backend-missing management panels", () => {
   const tabContentSource = readSource(
     "../components/layout/AppContent/TabContent.tsx",
