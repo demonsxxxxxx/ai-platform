@@ -2,6 +2,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 from app.b1_memory_context_readiness import (
     _runtime_acceptance_evidence_rank,
@@ -30,8 +31,8 @@ FORBIDDEN_PRIVATE_MARKERS = [
 
 CURRENT_B1_EVIDENCE_PATH = Path(
     "docs/release-evidence/b1-memory-context/"
-    "75ab69b939d0bf13987ac044ce0dc498f5eab999/"
-    "2026-06-19-211-b1-memory-context-workflow-smoke-75ab69b.json"
+    "87528bf30609092c3c4e947bdca477768af3f8e5/"
+    "2026-06-19-211-b1-memory-context-workflow-smoke-87528bf.json"
 )
 
 B1_GATE_BOUNDARY_GAPS: list[str] = []
@@ -47,9 +48,10 @@ def test_current_b1_release_evidence_excludes_raw_paths_and_private_markers():
     assert payload["redaction_scan_status"] == "passed"
     source_ref = payload["source_ref"]
     assert source_ref["runtime_source_marker"] == payload["runtime_subject_commit_sha"]
-    assert source_ref["container_internal_source_marker"] == (
-        "dde1749c256eaa7e0819c98e0debe6084e73cba2"
-    )
+    assert source_ref["runtime_commit"] == payload["runtime_subject_commit_sha"]
+    assert source_ref["source_snapshot"]["source_tree_commit_sha"] == payload["runtime_subject_commit_sha"]
+    assert source_ref["source_snapshot"]["runtime_affecting_changes_since_runtime_subject"] == []
+    assert source_ref["source_snapshot"]["runtime_affecting_dirty_paths"] == []
     assert source_ref["service_checkout_commit_sha"] == (
         "a15c74f0fe98914a893ab7ea784c6be941e0cd71"
     )
@@ -146,7 +148,7 @@ def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_
     runtime_review = boundary_evidence["b1_runtime_evidence_review_against_merged_source"]
     assert runtime_review["status"] == "recorded_local_contract"
     assert runtime_review["runtime_subject_commit_sha"] == (
-        "75ab69b939d0bf13987ac044ce0dc498f5eab999"
+        "87528bf30609092c3c4e947bdca477768af3f8e5"
     )
     assert runtime_review["current_source_commit_sha"]
     assert runtime_review["runtime_affecting_changes_since_runtime_subject"] == []
@@ -185,10 +187,10 @@ def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_
     assert smoke_evidence["status"] == "verified_211_runtime_acceptance"
     assert smoke_evidence["artifact_kind"] == "211_memory_enabled_document_workflow_smoke"
     assert smoke_evidence["verifier"] == "tools/verify_b1_memory_context_workflow.py"
-    assert smoke_evidence["evidence_id"] == "2026-06-19-211-b1-memory-context-workflow-smoke-75ab69b"
-    assert smoke_evidence["runtime_subject"] == "75ab69b-issue112-runtime-only-v1"
+    assert smoke_evidence["evidence_id"] == "2026-06-19-211-b1-memory-context-workflow-smoke-87528bf"
+    assert smoke_evidence["runtime_subject"] == "87528bf-issue124-runtime-only-v2"
     assert smoke_evidence["runtime_subject_commit_sha"] == (
-        "75ab69b939d0bf13987ac044ce0dc498f5eab999"
+        "87528bf30609092c3c4e947bdca477768af3f8e5"
     )
     assert smoke_evidence["memory_record_count"] == 1
     assert smoke_evidence["checks"]["playback_public_projection"] is True
@@ -197,8 +199,8 @@ def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_
     assert smoke_evidence["does_not_close_b1_gate"] is True
     assert smoke_evidence["path"].endswith(
         "docs/release-evidence/b1-memory-context/"
-        "75ab69b939d0bf13987ac044ce0dc498f5eab999/"
-        "2026-06-19-211-b1-memory-context-workflow-smoke-75ab69b.json"
+        "87528bf30609092c3c4e947bdca477768af3f8e5/"
+        "2026-06-19-211-b1-memory-context-workflow-smoke-87528bf.json"
     )
 
     assert readiness["non_expansion_invariants"] == {
@@ -245,10 +247,10 @@ def test_b1_memory_context_readiness_markdown_is_gap_first_and_boundary_explicit
     assert "### B1 Runtime Evidence Review Against Merged Source" in markdown
     assert "### B1 Issue Closure Evidence" in markdown
     assert "docs/release-evidence/backend-stage-closures/b1-memory-context" in markdown
-    assert "2026-06-19-211-b1-memory-context-workflow-smoke-75ab69b.json" in markdown
+    assert "2026-06-19-211-b1-memory-context-workflow-smoke-87528bf.json" in markdown
     assert "does_not_claim_production_readiness" in markdown
     assert "runtime_affecting_delta_requires_fresh_211_smoke" not in markdown
-    assert "75ab69b939d0bf13987ac044ce0dc498f5eab999" in markdown
+    assert "87528bf30609092c3c4e947bdca477768af3f8e5" in markdown
     assert "record issue closure evidence after final issue review" in markdown
     assert "verified_211_runtime_acceptance" in markdown
     assert "tools/verify_b1_memory_context_workflow.py" in markdown
@@ -320,12 +322,12 @@ def test_b1_issue_closure_gap_stays_open_without_valid_local_closure_evidence(tm
 def test_b1_runtime_acceptance_evidence_prefers_current_subject_when_history_exists():
     selected = _runtime_acceptance_evidence(Path.cwd())["211_memory_enabled_document_workflow_smoke"]
 
-    assert selected["evidence_id"] == "2026-06-19-211-b1-memory-context-workflow-smoke-75ab69b"
-    assert selected["runtime_subject_commit_sha"] == "75ab69b939d0bf13987ac044ce0dc498f5eab999"
+    assert selected["evidence_id"] == "2026-06-19-211-b1-memory-context-workflow-smoke-87528bf"
+    assert selected["runtime_subject_commit_sha"] == "87528bf30609092c3c4e947bdca477768af3f8e5"
     assert selected["path"].endswith(
         "docs/release-evidence/b1-memory-context/"
-        "75ab69b939d0bf13987ac044ce0dc498f5eab999/"
-        "2026-06-19-211-b1-memory-context-workflow-smoke-75ab69b.json"
+        "87528bf30609092c3c4e947bdca477768af3f8e5/"
+        "2026-06-19-211-b1-memory-context-workflow-smoke-87528bf.json"
     )
 
 
@@ -338,7 +340,7 @@ def test_b1_runtime_review_gap_closes_for_runtime_relevant_current_source():
     assert runtime_review["status"] == "recorded_local_contract"
     assert runtime_review["closed_gap"] == "b1_runtime_evidence_review_against_merged_source"
     assert runtime_review["runtime_subject_commit_sha"] == (
-        "75ab69b939d0bf13987ac044ce0dc498f5eab999"
+        "87528bf30609092c3c4e947bdca477768af3f8e5"
     )
     assert runtime_review["runtime_affecting_changes_since_runtime_subject"] == []
     assert "b1_runtime_evidence_review_against_merged_source" not in readiness["open_gaps"]
@@ -369,6 +371,67 @@ def test_b1_runtime_acceptance_rank_prefers_newer_review_for_same_subject():
     )
 
     assert selected is new_review
+
+
+def test_b1_runtime_acceptance_rank_orders_runtime_source_relation_classes():
+    current_review = {
+        "captured_at": "2026-06-18T00:00:00+08:00",
+        "path": "docs/release-evidence/b1-memory-context/current.json",
+        "runtime_subject_commit_sha": "current-source",
+    }
+    runtime_neutral_review = {
+        "captured_at": "2026-06-19T00:00:00+08:00",
+        "path": "docs/release-evidence/b1-memory-context/runtime-neutral.json",
+        "runtime_subject_commit_sha": "runtime-neutral",
+    }
+    unknown_delta_review = {
+        "captured_at": "2026-06-20T00:00:00+08:00",
+        "path": "docs/release-evidence/b1-memory-context/unknown-delta.json",
+        "runtime_subject_commit_sha": "unknown-delta",
+    }
+    runtime_affecting_review = {
+        "captured_at": "2026-06-21T00:00:00+08:00",
+        "path": "docs/release-evidence/b1-memory-context/runtime-affecting.json",
+        "runtime_subject_commit_sha": "runtime-affecting",
+    }
+    missing_subject_review = {
+        "captured_at": "2026-06-22T00:00:00+08:00",
+        "path": "docs/release-evidence/b1-memory-context/missing-subject.json",
+    }
+
+    def runtime_delta(runtime_subject: str, current_source: str):
+        assert current_source == "current-source"
+        return {
+            "runtime-neutral": [],
+            "unknown-delta": None,
+            "runtime-affecting": ["app/runtime.py"],
+        }[runtime_subject]
+
+    with patch(
+        "app.b1_memory_context_readiness._resolve_runtime_affecting_changes_between",
+        side_effect=runtime_delta,
+    ):
+        selected = sorted(
+            [
+                missing_subject_review,
+                runtime_affecting_review,
+                unknown_delta_review,
+                runtime_neutral_review,
+                current_review,
+            ],
+            key=lambda summary: _runtime_acceptance_evidence_rank(
+                summary,
+                "current-source",
+            ),
+        )
+
+    assert selected == [
+        current_review,
+        runtime_neutral_review,
+        unknown_delta_review,
+        runtime_affecting_review,
+        missing_subject_review,
+    ]
 
 
 def test_b1_memory_context_readiness_status_degrades_for_missing_local_evidence():

@@ -289,7 +289,7 @@ def _runtime_acceptance_evidence_rank(
 ) -> tuple[int, int, float, str, str]:
     runtime_subject = summary.get("runtime_subject_commit_sha")
     if not isinstance(runtime_subject, str) or not runtime_subject:
-        return (3, 0, 0, "", str(summary.get("path") or ""))
+        return (4, 0, 0, "", str(summary.get("path") or ""))
     captured_at_rank = _captured_at_descending_rank(summary.get("captured_at"))
     if runtime_subject == current_source:
         return (0, 0, captured_at_rank, runtime_subject, str(summary.get("path") or ""))
