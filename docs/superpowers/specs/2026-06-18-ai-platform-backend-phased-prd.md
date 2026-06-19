@@ -27,18 +27,18 @@ The backend route is:
    observability, cost, and release evidence.
 5. Raise capacity only after recorded load/backpressure evidence.
 
-The first four backend productization priorities are:
+The four P0 backend capabilities are:
 
 | Priority | Capability | Product target |
 | --- | --- | --- |
-| 1 | Memory/context usable | Selected workflows can use governed memory/context with provenance, opt-out, retention, delete/redaction, export, and deny-path evidence. |
-| 2 | Real sandbox usable | A Docker/equivalent provider can run governed SDK Skill tasks; `fake` is local/test-only. |
-| 3 | Worker/model-gateway capacity | The initial target profile, 10 concurrent sessions with peak 4 SDK subagents per session, is measured before any default increase. |
-| 4 | Skills management | Skills move from mutable folders to upload/import, immutable versioning, release review, rollback, dependency evidence, pinned run snapshots, and audit. |
+| P0-1 | Memory/context usable | Selected workflows can use governed memory/context with provenance, opt-out, retention, delete/redaction, export, and deny-path evidence. |
+| P0-2 | Real sandbox usable | A Docker/equivalent provider can run governed SDK Skill tasks; `fake` is local/test-only. |
+| P0-3 | Worker/model-gateway capacity | The initial target profile, 10 concurrent sessions with peak 4 SDK subagents per session, is measured before any default increase. |
+| P0-4 | Skills management | Skills move from mutable folders to upload/import, immutable versioning, release review, rollback, dependency evidence, pinned run snapshots, and audit. |
 
 Supporting capabilities are not optional: model-gateway/cost controls,
 file/artifact governance, exact tool-permission binding, and Admin Runtime
-observability are required for these priorities to be safely exposed.
+observability are required for the P0 capabilities to be safely exposed.
 
 ## 1. Authority And Status Language
 

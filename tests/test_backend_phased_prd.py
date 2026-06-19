@@ -115,12 +115,12 @@ def test_backend_prd_preserves_productization_priorities_and_negative_claims():
     text = read_backend_prd()
     compact_text = compact(text)
 
-    assert "The first four backend productization priorities are:" in text
+    assert "The four P0 backend capabilities are:" in text
     for priority in (
-        "| 1 | Memory/context usable",
-        "| 2 | Real sandbox usable",
-        "| 3 | Worker/model-gateway capacity",
-        "| 4 | Skills management",
+        "| P0-1 | Memory/context usable",
+        "| P0-2 | Real sandbox usable",
+        "| P0-3 | Worker/model-gateway capacity",
+        "| P0-4 | Skills management",
     ):
         assert priority in text
 
@@ -230,6 +230,13 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
         "Unconfirmed concept reference",
     ):
         assert intake_level in text
+
+    for provenance_boundary in (
+        "license posture reported by GitHub",
+        "Repositories with GitHub license posture `Other`, AGPL/LGPL/copyleft terms, or unknown license posture are concept-only references by default.",
+        "not code copying, vendoring, dependency addition, or runtime service introduction without a separate issue",
+    ):
+        assert provenance_boundary in compact_text
 
     for stage_reference in (
         "| B0 source/auth baseline | Keycloak, Authentik, Ory Kratos |",
