@@ -423,6 +423,8 @@ def test_skill_release_readiness_markdown_is_gap_first_and_operator_readable(tmp
     assert "source_validation_enabled_not_evidence_satisfied" in markdown
     assert "enabled_for_repository_signed_package_evidence_json" in markdown
     assert "general-chat" in markdown
+    assert "missing evidence `sbom_or_signed_package, license_policy, vulnerability_scan`" in markdown
+    assert "missing review flags `sbom_reviewed, license_policy_reviewed, vulnerability_reviewed`" in markdown
     assert str(tmp_path) not in markdown
     assert "token=secret" not in markdown
 
@@ -1330,6 +1332,79 @@ def test_skill_release_evidence_scaffold_records_external_evidence_without_clear
     serialized = json.dumps(readiness, ensure_ascii=False)
     assert str(tmp_path) not in serialized
     assert "token=secret" not in serialized
+
+
+def test_skill_release_readiness_exposes_safe_operator_evidence_plan_for_blocked_skill(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(skills_root, "general-chat", "Default chat capability.")
+
+    readiness = build_skill_release_readiness(skills_root=skills_root)
+
+    skill = readiness["skills"][0]
+    plan = skill["operator_evidence_plan"]
+    assert plan == {
+        "schema_version": "ai-platform.skill-release-operator-evidence-plan.v1",
+        "status": "evidence_required",
+        "skill_id": "general-chat",
+        "missing_evidence_categories": [
+            "sbom_or_signed_package",
+            "license_policy",
+            "vulnerability_scan",
+        ],
+        "missing_review_flags": [
+            "sbom_reviewed",
+            "license_policy_reviewed",
+            "vulnerability_reviewed",
+        ],
+        "recommended_commands": [
+            (
+                "python tools/skill_release_readiness.py --skill-id general-chat "
+                "--write-evidence-scaffold --format json"
+            ),
+            (
+                "python tools/skill_release_readiness.py --skill-id general-chat "
+                "--review-template --format json"
+            ),
+        ],
+        "evidence_root": "docs/release-evidence/skill-release",
+        "does_not_close_g6": True,
+        "does_not_close_gate_by_itself": True,
+    }
+    serialized = json.dumps(plan, ensure_ascii=False)
+    assert str(tmp_path) not in serialized
+    assert "storage_key" not in serialized
+    assert "token=secret" not in serialized
+
+
+def test_skill_release_readiness_operator_plan_tracks_pending_review_flags(tmp_path):
+    skills_root = tmp_path / "skills"
+    _write_skill(skills_root, "general-chat", "Default chat capability.")
+    evidence_root = tmp_path / "release-evidence" / "skill-release"
+
+    write_skill_release_evidence_scaffold(
+        skills_root=skills_root,
+        evidence_root=evidence_root,
+        skill_id="general-chat",
+        generated_at="2026-06-12T10:00:00Z",
+    )
+
+    readiness = build_skill_release_readiness(
+        skills_root=skills_root,
+        skill_release_evidence_root=evidence_root,
+    )
+
+    skill = readiness["skills"][0]
+    plan = skill["operator_evidence_plan"]
+    assert plan["missing_evidence_categories"] == []
+    assert plan["missing_review_flags"] == [
+        "sbom_reviewed",
+        "license_policy_reviewed",
+        "vulnerability_reviewed",
+    ]
+    assert plan["status"] == "review_required"
+    assert plan["does_not_close_g6"] is True
+    assert "signed_package_or_sbom_evidence_missing" not in skill["blockers"]
+    assert "signed_package_or_sbom_review_not_verified" in skill["blockers"]
 
 
 def test_skill_release_review_manifest_rejects_pending_scaffold_evidence_even_with_review_flags(tmp_path):

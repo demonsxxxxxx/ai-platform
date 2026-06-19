@@ -190,6 +190,20 @@ _DEPENDENCY_REVIEW_RUNTIME_ACCEPTANCE_CONTRACT = {
     "acceptance_gap": DEPENDENCY_REVIEW_POLICY_RUNTIME_GAP,
     "does_not_close_g6": True,
 }
+OPERATOR_EVIDENCE_PLAN_SCHEMA_VERSION = "ai-platform.skill-release-operator-evidence-plan.v1"
+_BLOCKER_TO_EVIDENCE_CATEGORY = {
+    "signed_package_or_sbom_evidence_missing": "sbom_or_signed_package",
+    "dependency_license_policy_evidence_missing": "license_policy",
+    "dependency_vulnerability_evidence_missing": "vulnerability_scan",
+}
+_BLOCKER_TO_REVIEW_FLAG = {
+    "signed_package_or_sbom_evidence_missing": "sbom_reviewed",
+    "signed_package_or_sbom_review_not_verified": "sbom_reviewed",
+    "dependency_license_policy_evidence_missing": "license_policy_reviewed",
+    "dependency_license_policy_review_not_verified": "license_policy_reviewed",
+    "dependency_vulnerability_evidence_missing": "vulnerability_reviewed",
+    "dependency_vulnerability_review_not_verified": "vulnerability_reviewed",
+}
 _SKILL_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _PLACEHOLDER_PATTERN = re.compile(
     r"(<[^>]+>|\$\{[^}]+\}|\b(todo|tbd|placeholder|fill-me|fill_me|replace-me|replace_me)\b)",
@@ -767,6 +781,45 @@ def _skill_blockers(
     return blockers
 
 
+def _operator_evidence_plan(skill_id: str, blockers: list[str]) -> dict[str, Any]:
+    missing_evidence_categories = [
+        category
+        for blocker, category in _BLOCKER_TO_EVIDENCE_CATEGORY.items()
+        if blocker in blockers
+    ]
+    missing_review_flags = [
+        flag
+        for blocker, flag in _BLOCKER_TO_REVIEW_FLAG.items()
+        if blocker in blockers
+    ]
+    if not missing_evidence_categories and missing_review_flags:
+        status = "review_required"
+    elif missing_evidence_categories or missing_review_flags:
+        status = "evidence_required"
+    else:
+        status = "ready_for_verification"
+    return {
+        "schema_version": OPERATOR_EVIDENCE_PLAN_SCHEMA_VERSION,
+        "status": status,
+        "skill_id": skill_id,
+        "missing_evidence_categories": missing_evidence_categories,
+        "missing_review_flags": list(dict.fromkeys(missing_review_flags)),
+        "recommended_commands": [
+            (
+                f"python tools/skill_release_readiness.py --skill-id {skill_id} "
+                "--write-evidence-scaffold --format json"
+            ),
+            (
+                f"python tools/skill_release_readiness.py --skill-id {skill_id} "
+                "--review-template --format json"
+            ),
+        ],
+        "evidence_root": "docs/release-evidence/skill-release",
+        "does_not_close_g6": True,
+        "does_not_close_gate_by_itself": True,
+    }
+
+
 def _load_runtime_json(path: Path) -> dict[str, Any] | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -988,6 +1041,7 @@ def build_skill_release_readiness(
                 "dependency_policy": dependency_policy,
                 "package_evidence": evidence,
                 "release_review": release_review,
+                "operator_evidence_plan": _operator_evidence_plan(skill.name, blockers),
                 "status": _skill_status(blockers),
                 "blockers": blockers,
             }
@@ -1297,8 +1351,13 @@ def render_skill_release_readiness_markdown(readiness: dict[str, Any]) -> str:
     for item in readiness["skills"]:
         blockers = ", ".join(item["blockers"]) if item["blockers"] else "none"
         dependencies = ", ".join(item["dependency_policy"]["dependency_ids"]) or "none"
+        plan = item.get("operator_evidence_plan", {})
+        missing_categories = ", ".join(plan.get("missing_evidence_categories", [])) or "none"
+        missing_flags = ", ".join(plan.get("missing_review_flags", [])) or "none"
         skill_lines.append(
-            f"- `{item['skill_id']}`: status `{item['status']}`, dependencies `{dependencies}`, blockers `{blockers}`"
+            f"- `{item['skill_id']}`: status `{item['status']}`, dependencies `{dependencies}`, "
+            f"blockers `{blockers}`, missing evidence `{missing_categories}`, "
+            f"missing review flags `{missing_flags}`"
         )
     skills_markdown = "\n".join(skill_lines) or "- none"
     return (
