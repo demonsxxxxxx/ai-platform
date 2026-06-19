@@ -213,6 +213,16 @@ def _docker_resource_kwargs(resource_limits: dict[str, Any]) -> dict[str, Any]:
     return kwargs
 
 
+def _docker_security_kwargs() -> dict[str, Any]:
+    return {
+        "privileged": False,
+        "security_opt": ["no-new-privileges:true"],
+        "cap_drop": ["ALL"],
+        "read_only": True,
+        "tmpfs": {"/tmp": "rw,noexec,nosuid,size=64m"},
+    }
+
+
 def _is_permission_denied(message: str) -> bool:
     return "permission denied" in message.lower()
 
@@ -419,6 +429,7 @@ class DockerContainerProvider:
                     "AI_PLATFORM_CALLBACK_BASE_URL": settings.sandbox_callback_base_url,
                 },
                 ports={"18000/tcp": None},
+                **_docker_security_kwargs(),
                 **_docker_resource_kwargs(request.resource_limits),
             )
             if hasattr(container, "start"):

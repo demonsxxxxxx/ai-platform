@@ -192,6 +192,7 @@ def test_b2_sandbox_readiness_records_source_contract_without_gate_closure(tmp_p
         "platform_policy_selects_provider_not_user_payload",
         "docker_provider_labels_tenant_workspace_user_session_run",
         "docker_provider_resource_limits_mapped",
+        "docker_provider_security_options_mapped",
         "docker_provider_health_timeout_removes_container",
         "docker_provider_cached_lease_scope_revalidation",
         "runtime_dispatch_failure_cleanup",
