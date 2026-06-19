@@ -394,11 +394,15 @@ readiness into the backend stage `B1 memory/context usable`, reports status
 partial`. Governance readiness embeds this rollup under
 `domains.memory_governance.evidence.b1_memory_context_readiness`, keeps
 `211_memory_enabled_document_workflow_smoke` out of G6 open gaps after the
-reviewed 211 smoke is recorded, and carries the remaining B1 gate-boundary gaps:
-`b1_issue_review_and_closure_evidence`. The merged-source runtime evidence review
-boundary `b1_runtime_evidence_review_against_merged_source` is recorded as a
-closed local contract for runtime subject
-`52ac62cfbbab47172a659dda11e41aa4b2a5d699`. The memory export boundary
+reviewed 211 smoke is recorded, and consumes repo-local #75 closure evidence from
+`docs/release-evidence/backend-stage-closures/b1-memory-context/2026-06-18-issue75-b1-closure.json`
+to close only `b1_issue_review_and_closure_evidence`. The current merged-source
+runtime evidence review boundary is computed dynamically by
+`tools/b1_memory_context_readiness.py`; if later runtime-affecting source changes
+land after the recorded `52ac62c` B1 smoke
+(`52ac62cfbbab47172a659dda11e41aa4b2a5d699`), the readiness output must keep
+`b1_runtime_evidence_review_against_merged_source` open until fresh B1 runtime
+evidence is recorded. The memory export boundary
 `b1_memory_export_boundary` is recorded as a closed local contract through
 memory-erasure readiness controls, including
 `ordinary_user_export_excludes_deleted_and_expired_records`,
@@ -411,12 +415,11 @@ recording the source/runtime subject plus residual caveats before restoring
 runtime/config state. The runtime smoke layer
 can report `211 verified` for the selected memory-enabled document workflow,
 but the B1 stage itself remains `local partial` and is not `gate closable`.
-The merged-source runtime evidence review currently reports
-`recorded_local_contract`: the reviewed 211 B1 smoke is bound to runtime subject
-`52ac62cfbbab47172a659dda11e41aa4b2a5d699`, the current source commit is reported dynamically by `tools/b1_memory_context_readiness.py`, and the
-runtime-affecting delta from the runtime subject is empty. Therefore B1 issue
-closure now requires final #75 review and issue-closure evidence rather than
-another fresh B1 smoke for the same runtime subject.
+The repo-local #75 closure evidence records issue-level closure for the selected
+governed document workflow slice only; it does not close G0 source authority,
+production readiness, Docker sandbox hardening, ordinary-user multi-agent
+exposure, long-term cross-session memory by default, or production concurrency
+default increases.
 `tools/verify_b1_memory_context_workflow.py` is the reusable verifier entrypoint
 for that smoke and emits schema
 `ai-platform.b1-memory-context-workflow-smoke.v1`; passing it records workflow
@@ -487,16 +490,18 @@ include `non_expansion_invariants` with
 run; this still does not close Docker sandbox production hardening, G6, or G9.
 `tools/b2_sandbox_readiness.py` now records the B2 backend real-sandbox rollup
 with schema `ai-platform.b2-sandbox-readiness.v1`. It reports
-`status=local_contract_ready_runtime_smoke_required`, keeps the stage status
-label `local partial`, records the required 211 Docker/equivalent smoke path,
-and keeps the open gaps `b2_211_real_sandbox_smoke`,
-`b2_reviewed_release_evidence`, and `b2_issue_review_and_closure_evidence`.
-This rollup is source-level operator evidence only. It does not close B2/G7,
-does not treat `SANDBOX_CONTAINER_PROVIDER=fake` as production proof, does not
-permit user payload provider selection, and does not allow unrestricted Docker
-socket exposure as a default trust boundary. A generated 211 smoke that has not
-been wrapped, redacted, reviewed, and attached as release evidence still stays
-`local partial`; `211 verified` begins only after the reviewed evidence gate is
+`status=runtime_acceptance_recorded`, keeps the stage status label `local
+partial`, records the reviewed 211 Docker/equivalent smoke evidence, and
+consumes repo-local #89 closure evidence from
+`docs/release-evidence/backend-stage-closures/b2-sandbox/2026-06-18-issue89-b2-closure.json`
+to close only `b2_issue_review_and_closure_evidence`. This rollup proves the
+issue-scoped governed SDK skill execution sandbox-smoke loop; it does not close
+the broader B2/G7 production hardening gate, does not treat
+`SANDBOX_CONTAINER_PROVIDER=fake` as production proof, does not permit user
+payload provider selection, and does not allow unrestricted Docker socket
+exposure as a default trust boundary. A generated 211 smoke that has not been
+wrapped, redacted, reviewed, and attached as release evidence still stays `local
+partial`; `211 verified` begins only after the reviewed evidence gate is
 recorded. The B2 rollup reports the current verifier/generator contract for
 `admin_or_allowlist_only=true`, `hardening.evidence_class`, generated timings,
 hardening sections, callback/cancel evidence, and non-expansion invariants.

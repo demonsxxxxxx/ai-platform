@@ -1,0 +1,70 @@
+{
+  "schema_version": "ai-platform.backend-stage-closure-evidence.v1",
+  "backend_stage": "B1 memory/context usable",
+  "issue": "#75",
+  "issue_url": "https://github.com/demonsxxxxxx/ai-platform/issues/75",
+  "issue_state": "closed",
+  "closed_at": "2026-06-18T17:28:07Z",
+  "closed_gap": "b1_issue_review_and_closure_evidence",
+  "review_status": "reviewed",
+  "redaction_scan_status": "passed",
+  "linked_prs": [
+    {
+      "number": 76,
+      "url": "https://github.com/demonsxxxxxx/ai-platform/pull/76",
+      "merge_commit": "4fdacf13d4ee8feb1cd80981875ae7f16794926b"
+    },
+    {
+      "number": 78,
+      "url": "https://github.com/demonsxxxxxx/ai-platform/pull/78",
+      "merge_commit": "8c99db16e449f9a03ab96068ce9cd4d4843df9ba"
+    },
+    {
+      "number": 80,
+      "url": "https://github.com/demonsxxxxxx/ai-platform/pull/80",
+      "merge_commit": "2014158995d903e372364cd4eff3c148de27c539"
+    },
+    {
+      "number": 84,
+      "url": "https://github.com/demonsxxxxxx/ai-platform/pull/84",
+      "merge_commit": "b197f5077042f2c97d9f497bed721bfdef0a6e9b"
+    },
+    {
+      "number": 85,
+      "url": "https://github.com/demonsxxxxxx/ai-platform/pull/85",
+      "merge_commit": "9687a7720528e2f3068bfcbdccbee45f80458ec0"
+    },
+    {
+      "number": 88,
+      "url": "https://github.com/demonsxxxxxx/ai-platform/pull/88",
+      "merge_commit": "b5bf7339d3995625dd161ba8b8e5933a2eadf6bb"
+    }
+  ],
+  "closure_comments": [
+    {
+      "url": "https://github.com/demonsxxxxxx/ai-platform/issues/75#issuecomment-4744514220",
+      "summary": "Final #75 closure evidence records the selected governed document workflow B1 slice and keeps wider gates out of scope."
+    }
+  ],
+  "evidence_refs": [
+    "docs/release-evidence/b1-memory-context/52ac62cfbbab47172a659dda11e41aa4b2a5d699/2026-06-19-211-b1-memory-context-workflow-smoke-52ac62c.json"
+  ],
+  "residual_caveats": [
+    "does_not_close_g0_source_authority",
+    "does_not_claim_production_readiness",
+    "does_not_claim_docker_sandbox_hardening",
+    "does_not_enable_ordinary_user_multi_agent_exposure",
+    "does_not_enable_long_term_cross_session_memory_by_default",
+    "does_not_raise_production_concurrency_defaults",
+    "latest_main_runtime_affecting_delta_may_require_fresh_b1_smoke_before_current_source_gate_closure"
+  ],
+  "non_expansion_invariants": {
+    "production_claim_allowed": false,
+    "docker_sandbox_hardening_claimed": false,
+    "ordinary_user_multi_agent_allowed": false,
+    "long_term_cross_session_memory_default_enabled": false,
+    "production_concurrency_defaults_raised": false,
+    "department_rollout_allowed": false
+  },
+  "does_not_close_broader_gate": true
+}

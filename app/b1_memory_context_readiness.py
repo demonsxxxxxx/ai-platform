@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from app.backend_stage_closure_evidence import find_stage_issue_closure_evidence
 from app.foundation_alpha_readiness import _resolve_runtime_affecting_changes_between
 from app.memory_erasure_readiness import build_memory_erasure_readiness
 from app.office_context_readiness import build_office_context_readiness
@@ -436,12 +437,9 @@ def _gate_boundary_evidence(
     runtime_acceptance_evidence: dict[str, dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     export_recorded = _memory_export_boundary_recorded(memory_erasure)
+    issue_closure_evidence = _issue_closure_boundary_evidence(repo_root)
     return {
-        "b1_issue_review_and_closure_evidence": {
-            "status": "open_issue_remains_unclosed",
-            "required_next_step": "close #75 only after merged-source runtime review and final closure evidence are recorded",
-            "does_not_close_b1_gate": True,
-        },
+        "b1_issue_review_and_closure_evidence": issue_closure_evidence,
         "b1_runtime_evidence_review_against_merged_source": _merged_source_runtime_review(
             repo_root,
             runtime_acceptance_evidence,
@@ -468,6 +466,37 @@ def _gate_boundary_evidence(
             "does_not_run_211_smoke": True,
             "does_not_close_b1_gate": True,
         },
+    }
+
+
+def _issue_closure_boundary_evidence(repo_root: Path) -> dict[str, Any]:
+    evidence = find_stage_issue_closure_evidence(
+        repo_root,
+        issue=ISSUE,
+        backend_stage=BACKEND_STAGE,
+        closed_gap="b1_issue_review_and_closure_evidence",
+    )
+    if evidence is None:
+        return {
+            "status": "open_missing_issue_closure_evidence",
+            "closed_gap": None,
+            "issue": ISSUE,
+            "required_next_step": "record reviewed local issue-closure evidence for #75 before closing this boundary",
+            "does_not_close_b1_gate": True,
+        }
+    return {
+        "status": "recorded_issue_closure_evidence",
+        "closed_gap": "b1_issue_review_and_closure_evidence",
+        "issue": evidence["issue"],
+        "issue_state": evidence["issue_state"],
+        "closed_at": evidence.get("closed_at"),
+        "path": evidence["path"],
+        "linked_prs": evidence["linked_prs"],
+        "closure_comments": evidence["closure_comments"],
+        "evidence_refs": evidence["evidence_refs"],
+        "residual_caveats": evidence["residual_caveats"],
+        "non_expansion_invariants": evidence["non_expansion_invariants"],
+        "does_not_close_b1_gate": True,
     }
 
 
@@ -561,9 +590,9 @@ def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str
             "contract when memory-erasure readiness has the required export "
             "controls and tests. The rollback boundary is a local operator "
             "contract for disabling governed memory/context workflow exposure "
-            "and reverting runtime/config state. Reviewed merged-source runtime "
-            "evidence can close only the runtime evidence review boundary. B1 "
-            "gate closure still requires issue review and closure evidence."
+            "and reverting runtime/config state. Repo-local #75 closure evidence "
+            "can close only the issue-review boundary. Reviewed merged-source "
+            "runtime evidence can close only the runtime evidence review boundary."
         ),
     }
 
@@ -602,6 +631,11 @@ def render_b1_memory_context_readiness_markdown(readiness: dict[str, Any]) -> st
     )
     runtime_review = (
         gate_boundary_evidence.get("b1_runtime_evidence_review_against_merged_source")
+        if isinstance(gate_boundary_evidence, dict)
+        else None
+    )
+    issue_closure = (
+        gate_boundary_evidence.get("b1_issue_review_and_closure_evidence")
         if isinstance(gate_boundary_evidence, dict)
         else None
     )
@@ -654,6 +688,38 @@ def render_b1_memory_context_readiness_markdown(readiness: dict[str, Any]) -> st
             f"- required next step: `{runtime_review.get('required_next_step')}`\n"
             f"- does not close B1 gate: `{str(runtime_review.get('does_not_close_b1_gate')).lower()}`"
         )
+    issue_closure_lines = "- none"
+    if isinstance(issue_closure, dict):
+        evidence_refs = issue_closure.get("evidence_refs")
+        residual_caveats = issue_closure.get("residual_caveats")
+        linked_prs = issue_closure.get("linked_prs")
+        evidence_ref_lines = (
+            "\n".join(f"- `{item}`" for item in evidence_refs)
+            if isinstance(evidence_refs, list)
+            else "- none"
+        )
+        residual_caveat_lines = (
+            "\n".join(f"- `{item}`" for item in residual_caveats)
+            if isinstance(residual_caveats, list)
+            else "- none"
+        )
+        linked_pr_lines = (
+            "\n".join(f"- `{item.get('url')}`" for item in linked_prs if isinstance(item, dict))
+            if isinstance(linked_prs, list)
+            else "- none"
+        )
+        issue_closure_lines = (
+            f"- status: `{issue_closure.get('status')}`\n"
+            f"- path: `{issue_closure.get('path')}`\n"
+            f"- closed at: `{issue_closure.get('closed_at')}`\n"
+            "- linked PRs:\n"
+            f"{linked_pr_lines}\n"
+            "- evidence refs:\n"
+            f"{evidence_ref_lines}\n"
+            "- residual caveats:\n"
+            f"{residual_caveat_lines}\n"
+            f"- does not close B1 gate: `{str(issue_closure.get('does_not_close_b1_gate')).lower()}`"
+        )
     invariants = "\n".join(
         f"- `{key}`: `{str(value).lower()}`"
         for key, value in readiness["non_expansion_invariants"].items()
@@ -677,6 +743,8 @@ def render_b1_memory_context_readiness_markdown(readiness: dict[str, Any]) -> st
         f"{rollback_boundary_lines}\n\n"
         "### B1 Runtime Evidence Review Against Merged Source\n\n"
         f"{runtime_review_lines}\n\n"
+        "### B1 Issue Closure Evidence\n\n"
+        f"{issue_closure_lines}\n\n"
         "## Runtime Acceptance\n\n"
         f"Required: `{str(runtime['required']).lower()}`\n\n"
         f"Status: `{runtime['status']}`\n\n"

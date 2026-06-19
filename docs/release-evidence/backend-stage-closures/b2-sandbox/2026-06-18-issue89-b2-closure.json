@@ -1,0 +1,51 @@
+{
+  "schema_version": "ai-platform.backend-stage-closure-evidence.v1",
+  "backend_stage": "B2 real sandbox usable",
+  "issue": "#89",
+  "issue_url": "https://github.com/demonsxxxxxx/ai-platform/issues/89",
+  "issue_state": "closed",
+  "closed_at": "2026-06-18T20:16:00Z",
+  "closed_gap": "b2_issue_review_and_closure_evidence",
+  "review_status": "reviewed",
+  "redaction_scan_status": "passed",
+  "linked_prs": [
+    {
+      "number": 90,
+      "url": "https://github.com/demonsxxxxxx/ai-platform/pull/90",
+      "merge_commit": "f8a0f3c1168c34663850345d8f30358d435a0134"
+    },
+    {
+      "number": 92,
+      "url": "https://github.com/demonsxxxxxx/ai-platform/pull/92",
+      "merge_commit": "8918142f3d2951680900deed1092a68328ab24a8"
+    }
+  ],
+  "closure_comments": [
+    {
+      "url": "https://github.com/demonsxxxxxx/ai-platform/issues/89#issuecomment-4745786980",
+      "summary": "Final #89 closure evidence records the governed SDK skill execution sandbox-smoke evidence loop and keeps broader B2/G7 production hardening out of scope."
+    }
+  ],
+  "evidence_refs": [
+    "docs/release-evidence/b2-sandbox/f8a0f3c1168c34663850345d8f30358d435a0134/2026-06-19-211-b2-sandbox-runtime-smoke-f8a0f3c.json"
+  ],
+  "residual_caveats": [
+    "does_not_close_broader_b2_g7_production_hardening_gate",
+    "resource_limits_policy_evidence_not_verified",
+    "egress_policy_evidence_not_verified",
+    "security_options_evidence_not_verified",
+    "rollback_assumptions_evidence_not_verified",
+    "does_not_enable_ordinary_user_high_risk_sandbox",
+    "does_not_enable_ordinary_user_multi_agent_exposure",
+    "does_not_raise_production_concurrency_defaults"
+  ],
+  "non_expansion_invariants": {
+    "ordinary_user_high_risk_sandbox_allowed": false,
+    "ordinary_user_multi_agent_allowed": false,
+    "production_concurrency_defaults_raised": false,
+    "docker_sandbox_production_hardening_claimed": false,
+    "production_claim_allowed": false,
+    "department_rollout_allowed": false
+  },
+  "does_not_close_broader_gate": true
+}

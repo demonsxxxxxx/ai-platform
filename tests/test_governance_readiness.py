@@ -7,7 +7,6 @@ from app.governance_readiness import build_governance_readiness, render_governan
 
 
 B1_GATE_BOUNDARY_GAPS = [
-    "b1_issue_review_and_closure_evidence",
     "b1_runtime_evidence_review_against_merged_source",
 ]
 
@@ -237,6 +236,8 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "b1_memory_export_boundary" not in readiness["open_gaps"]
     assert "b1_rollback_boundary" not in domains["memory_governance"]["gaps"]
     assert "b1_rollback_boundary" not in readiness["open_gaps"]
+    assert "b1_issue_review_and_closure_evidence" not in domains["memory_governance"]["gaps"]
+    assert "b1_issue_review_and_closure_evidence" not in readiness["open_gaps"]
     for gap in B1_GATE_BOUNDARY_GAPS:
         assert gap in domains["memory_governance"]["gaps"]
         assert gap in readiness["open_gaps"]
@@ -253,6 +254,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert b1_evidence["runtime_acceptance"]["does_not_close_b1_gate"] is True
     assert b1_evidence["open_gaps"] == B1_GATE_BOUNDARY_GAPS
     assert "211_memory_enabled_document_workflow_smoke" not in b1_evidence["open_gaps"]
+    assert "b1_issue_review_and_closure_evidence" in b1_evidence["closed_gate_boundary_gaps"]
     assert "b1_memory_export_boundary" in b1_evidence["closed_gate_boundary_gaps"]
     assert "b1_rollback_boundary" in b1_evidence["closed_gate_boundary_gaps"]
     assert "b1_runtime_evidence_review_against_merged_source" not in b1_evidence[
@@ -266,6 +268,10 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
         "recorded_local_contract"
     )
     assert b1_evidence["gate_boundary_evidence"]["b1_rollback_boundary"]["does_not_close_b1_gate"] is True
+    issue_closure = b1_evidence["gate_boundary_evidence"]["b1_issue_review_and_closure_evidence"]
+    assert issue_closure["status"] == "recorded_issue_closure_evidence"
+    assert issue_closure["closed_gap"] == "b1_issue_review_and_closure_evidence"
+    assert issue_closure["issue_state"] == "closed"
     runtime_review = b1_evidence["gate_boundary_evidence"]["b1_runtime_evidence_review_against_merged_source"]
     assert runtime_review["status"] == "runtime_affecting_delta_requires_fresh_211_smoke"
     assert "app/b2_sandbox_readiness.py" in runtime_review[
