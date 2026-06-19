@@ -87,6 +87,43 @@ A stage can advance only one claim level at a time. A `211 verified` runtime
 smoke does not by itself create `gate closable`. A `gate closable` backend
 bundle does not by itself create product beta.
 
+### 1.2 Current Backend Productization State
+
+This section is a planning pointer for the 2026-06-19 backend route. The live
+status source remains `docs/operations/ai-platform-gate-status.md`, release
+evidence, and the current readiness CLI output.
+
+The B0 latest-main evidence refresh has `211 verified` status for the narrow
+#124/#125 scope only: runtime subject
+`87528bf30609092c3c4e947bdca477768af3f8e5`, PR #125, and merge commit
+`279bf1b6b7a7822d88cca64ec3311517d255caa8`. It does not close full G0 source
+authority because the deployment-layout/env-file caveat, production auth
+rollout, and future runtime-affecting source changes remain separate closure
+conditions. Any new runtime-affecting merge reopens B0 until fresh source,
+runtime, image, health, concurrency, redaction, and review evidence is recorded.
+
+| Stage | Current planning status | Active next boundary |
+| --- | --- | --- |
+| B0 | `211 verified` for #124/#125 latest-main evidence refresh only; not full G0 `gate closable`. | Reopen only when readiness reports runtime rollout or current-source evidence drift. |
+| B1 | `local partial`; source contracts and named runtime evidence exist, but the stage is not `gate closable`. | Choose one governed document workflow and prove memory/context through `live_worker_run_payload` plus rollback and deny paths. |
+| B2 | `local partial`; fake provider remains local/test-only and controlled probes do not prove governed SDK Skill execution. | Prove Docker/equivalent sandbox through a governed Skill run with lease, callback, resource, egress, artifact, cancel, cleanup, and redaction evidence. |
+| B3 | `source_contract` only for `b3_10x4_sdk_subagents`; production defaults stay unchanged. | Record an operator-reviewed capacity snapshot for 10 sessions x peak 4 SDK subagents/session, including model-gateway, sandbox, token/cost, event/artifact, and cleanup pressure. |
+| B4 | `local partial`; mutable folders and image-copied Skills are not production authority. | Build upload/import, immutable versioning, release review, rollback, dependency evidence, pinned run snapshots, and authorized visibility. |
+| B5 | `local partial`; file/artifact ACL and exact tool decisions must close separately. | Prove file/artifact authority and shell/MCP/filesystem decision replay denial as separate sub-contracts. |
+| B6 | `local partial`; no product beta claim. | Package one or two named internal workflows with owners, SLO/cost/quality, support, rollback, and linked B1-B5 evidence. |
+
+Near-term backend execution order is therefore B1/B2/B3/B4, with B5 and B6
+following after the capability substrate is credible:
+
+| Execution order | Backend question | Gate boundary |
+| --- | --- | --- |
+| 1 | Can one selected document workflow use governed memory/context safely? | B1 live worker payload, provenance, redaction, delete/export, rollback, deny paths. |
+| 2 | Can a real sandbox provider run a governed SDK Skill path safely? | B2 Docker/equivalent lease, callback, egress/resource policy, artifact return, cancel, cleanup, projection safety. |
+| 3 | Can 10 sessions x peak 4 SDK subagents/session run without breaking queue, worker, model gateway, sandbox, cost, events, artifacts, or cleanup? | B3 operator-reviewed recorded snapshot; no default increase until reviewed. |
+| 4 | Can Skills become a managed product surface instead of mutable folders? | B4 immutable version, release review, dependency evidence, pinned snapshots, rollback, visibility. |
+| 5 | Can files/artifacts and high-risk tools be governed without replay or ACL bypass? | B5a file/artifact authority and B5b exact tool decisions close independently. |
+| 6 | Can one or two real internal workflows be accepted by owners and operators? | B6 owner signoff, SLO/cost/quality/support/rollback, linked B1-B5 evidence. |
+
 ## 2. Non-Goals
 
 | Non-goal | Boundary |
@@ -619,32 +656,45 @@ approved dependencies. The check recorded the public GitHub repository, default
 branch, license posture reported by GitHub, and latest observed activity on
 2026-06-19. Re-check before deep code review because these are live projects.
 
-| Area | Repository reference | License posture | Use only for |
-| --- | --- | --- | --- |
-| B1 memory/context | [`langchain-ai/langgraph`](https://github.com/langchain-ai/langgraph) | MIT | Checkpointing and state-graph vocabulary; not ai-platform memory policy. |
-| B1 memory/context | [`mem0ai/mem0`](https://github.com/mem0ai/mem0) | Apache-2.0 | Memory update/delete UX and evaluation ideas; not tenant retention authority. |
-| B1 memory/context | [`getzep/zep`](https://github.com/getzep/zep) | Apache-2.0 | Conversation memory and temporal context patterns; not ai-platform storage schema. |
-| B1 memory/context | [`getzep/graphiti`](https://github.com/getzep/graphiti) | Apache-2.0 | Temporal knowledge graph concepts; not default long-term memory enablement. |
-| B2 sandbox | [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) | GitHub reports `Other` | AI development workspace and command/artifact UX concepts only unless license/provenance review approves code intake. |
-| B2 sandbox | [`e2b-dev/E2B`](https://github.com/e2b-dev/E2B) | Apache-2.0 | Secure sandbox lifecycle, templates, command execution, and artifact-return patterns. |
-| B2 sandbox | [`daytonaio/daytona`](https://github.com/daytonaio/daytona) | AGPL-3.0 | Elastic sandbox and workspace isolation concepts only unless a focused legal/provenance issue approves adaptation. |
-| B3 worker/model gateway | [`temporalio/sdk-python`](https://github.com/temporalio/sdk-python) | MIT | Durable workflow/retry vocabulary and test patterns; not a migration requirement. |
-| B3 worker/model gateway | [`celery/celery`](https://github.com/celery/celery) | GitHub reports `Other` | Worker pool, task retry, and queue monitoring vocabulary only unless license/provenance review approves intake. |
-| B3 worker/model gateway | [`Bogdanp/dramatiq`](https://github.com/Bogdanp/dramatiq) | LGPL-3.0 | Actor/queue concepts only unless license/provenance review approves adaptation. |
-| B3 worker/model gateway | [`taskiq-python/taskiq`](https://github.com/taskiq-python/taskiq) | MIT | Async task broker vocabulary and test ideas. |
-| B3 worker/model gateway | [`BerriAI/litellm`](https://github.com/BerriAI/litellm) | GitHub reports `Other` | Model gateway routing, rate limit, budget, fallback, token/cost concepts only unless license/provenance review approves intake. |
-| B4 Skills management | [`backstage/backstage`](https://github.com/backstage/backstage) | Apache-2.0 | Catalog metadata and ownership vocabulary. |
-| B4 Skills management | [`langgenius/dify`](https://github.com/langgenius/dify) | GitHub reports `Other` | App/agent workflow and marketplace UX concepts only. |
-| B4 Skills management | [`open-webui/open-webui`](https://github.com/open-webui/open-webui) | GitHub reports `Other` | Tool/function discovery and admin UX concepts only. |
-| B4 Skills management | [`danny-avila/LibreChat`](https://github.com/danny-avila/LibreChat) | MIT | Agents, tools, slash-command, chat UI vocabulary, and frontend UX reference. |
-| B4 Skills management | [`Mintplex-Labs/anything-llm`](https://github.com/Mintplex-Labs/anything-llm) | MIT | Workspace/agent marketplace concepts and local-first agent UX vocabulary. |
+| Area | Repository reference | Default branch | License posture | Observed activity | Use only for |
+| --- | --- | --- | --- | --- | --- |
+| B0 source/auth baseline | [`keycloak/keycloak`](https://github.com/keycloak/keycloak) | `main` | Apache-2.0 | 2026-06-19T11:14:21Z | OIDC, group/role mapping, and admin-login vocabulary; not ai-platform tenant/RBAC authority. |
+| B0 source/auth baseline | [`goauthentik/authentik`](https://github.com/goauthentik/authentik) | `main` | GitHub reports `Other` | 2026-06-19T11:42:19Z | Identity-provider UX and policy concepts only unless license/provenance review approves intake. |
+| B0 source/auth baseline | [`ory/kratos`](https://github.com/ory/kratos) | `master` | Apache-2.0 | 2026-06-19T09:46:37Z | Identity/session self-service concepts; not ai-platform auth/session authority. |
+| B1 memory/context | [`langchain-ai/langgraph`](https://github.com/langchain-ai/langgraph) | `main` | MIT | 2026-06-19T10:05:20Z | Checkpointing and state-graph vocabulary; not ai-platform memory policy. |
+| B1 memory/context | [`mem0ai/mem0`](https://github.com/mem0ai/mem0) | `main` | Apache-2.0 | 2026-06-19T10:51:26Z | Memory update/delete UX and evaluation ideas; not tenant retention authority. |
+| B1 memory/context | [`getzep/zep`](https://github.com/getzep/zep) | `main` | Apache-2.0 | 2026-06-19T00:24:23Z | Conversation memory and temporal context patterns; not ai-platform storage schema. |
+| B1 memory/context | [`getzep/graphiti`](https://github.com/getzep/graphiti) | `main` | Apache-2.0 | 2026-06-19T00:37:03Z | Temporal knowledge graph concepts; not default long-term memory enablement. |
+| B2 sandbox | [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) | `main` | GitHub reports `Other` | 2026-06-19T11:20:37Z | AI development workspace and command/artifact UX concepts only unless license/provenance review approves code intake. |
+| B2 sandbox | [`e2b-dev/E2B`](https://github.com/e2b-dev/E2B) | `main` | Apache-2.0 | 2026-06-18T22:24:34Z | Secure sandbox lifecycle, templates, command execution, and artifact-return patterns. |
+| B2 sandbox | [`daytonaio/daytona`](https://github.com/daytonaio/daytona) | `main` | AGPL-3.0 | 2026-06-19T11:37:40Z | Elastic sandbox and workspace isolation concepts only unless a focused legal/provenance issue approves adaptation. |
+| B3 worker/model gateway | [`temporalio/sdk-python`](https://github.com/temporalio/sdk-python) | `main` | MIT | 2026-06-19T00:18:36Z | Durable workflow/retry vocabulary and test patterns; not a migration requirement. |
+| B3 worker/model gateway | [`celery/celery`](https://github.com/celery/celery) | `main` | GitHub reports `Other` | 2026-06-18T22:12:40Z | Worker pool, task retry, and queue monitoring vocabulary only unless license/provenance review approves intake. |
+| B3 worker/model gateway | [`Bogdanp/dramatiq`](https://github.com/Bogdanp/dramatiq) | `master` | LGPL-3.0 | 2026-06-17T11:17:38Z | Actor/queue concepts only unless license/provenance review approves adaptation. |
+| B3 worker/model gateway | [`taskiq-python/taskiq`](https://github.com/taskiq-python/taskiq) | `master` | MIT | 2026-06-07T09:13:08Z | Async task broker vocabulary and test ideas. |
+| B3 worker/model gateway | [`BerriAI/litellm`](https://github.com/BerriAI/litellm) | `litellm_internal_staging` | GitHub reports `Other` | 2026-06-19T06:29:19Z | Model gateway routing, rate limit, budget, fallback, token/cost concepts only unless license/provenance review approves intake. |
+| B3 worker/model gateway | [`Portkey-AI/gateway`](https://github.com/Portkey-AI/gateway) | `main` | MIT | 2026-05-25T13:54:51Z | Gateway routing, retries, budgets, and provider policy vocabulary; not external cost authority. |
+| B4 Skills management | [`backstage/backstage`](https://github.com/backstage/backstage) | `master` | Apache-2.0 | 2026-06-19T11:26:36Z | Catalog metadata and ownership vocabulary. |
+| B4 Skills management | [`langgenius/dify`](https://github.com/langgenius/dify) | `main` | GitHub reports `Other` | 2026-06-19T10:18:23Z | App/agent workflow and marketplace UX concepts only. |
+| B4 Skills management | [`open-webui/open-webui`](https://github.com/open-webui/open-webui) | `main` | GitHub reports `Other` | 2026-06-18T22:16:09Z | Tool/function discovery and admin UX concepts only. |
+| B4 Skills management | [`danny-avila/LibreChat`](https://github.com/danny-avila/LibreChat) | `main` | MIT | 2026-06-19T02:54:44Z | Agents, tools, slash-command, chat UI vocabulary, and frontend UX reference. |
+| B4 Skills management | [`Mintplex-Labs/anything-llm`](https://github.com/Mintplex-Labs/anything-llm) | `master` | MIT | 2026-06-19T01:13:32Z | Workspace/agent marketplace concepts and local-first agent UX vocabulary. |
+| B5 files/tools/authz | [`openfga/openfga`](https://github.com/openfga/openfga) | `main` | Apache-2.0 | 2026-06-18T20:49:29Z | Relationship-based authorization vocabulary and deny-path matrix ideas. |
+| B5 files/tools/authz | [`authzed/spicedb`](https://github.com/authzed/spicedb) | `main` | Apache-2.0 | 2026-06-18T23:34:14Z | Relationship graph authorization patterns; not ai-platform ACL authority. |
+| B5 files/tools/authz | [`apache/casbin`](https://github.com/apache/casbin) | `master` | Apache-2.0 | 2026-06-16T13:54:37Z | RBAC/ABAC policy vocabulary and table-driven tests. |
+| B5 files/tools/authz | [`open-policy-agent/opa`](https://github.com/open-policy-agent/opa) | `main` | Apache-2.0 | 2026-06-18T17:49:38Z | Policy bundle and decision-log concepts. |
+| B5 files/tools/authz | [`IBM/mcp-context-forge`](https://github.com/IBM/mcp-context-forge) | `main` | Apache-2.0 | 2026-06-19T11:34:34Z | MCP gateway/catalog routing and policy vocabulary; not exact tool-decision authority. |
+| B6 observability/quality | [`langfuse/langfuse`](https://github.com/langfuse/langfuse) | `main` | GitHub reports `Other` | 2026-06-19T11:39:55Z | Trace/token/cost dashboard vocabulary only unless license/provenance review approves intake. |
+| B6 observability/quality | [`Arize-ai/phoenix`](https://github.com/Arize-ai/phoenix) | `main` | GitHub reports `Other` | 2026-06-19T01:45:37Z | LLM observability and evaluation workflow concepts only unless license/provenance review approves intake. |
+| B6 observability/quality | [`open-telemetry/opentelemetry-collector`](https://github.com/open-telemetry/opentelemetry-collector) | `main` | Apache-2.0 | 2026-06-18T18:02:01Z | Telemetry collector/export vocabulary; not release-evidence authority. |
+| B6 observability/quality | [`promptfoo/promptfoo`](https://github.com/promptfoo/promptfoo) | `main` | MIT | 2026-06-19T03:48:04Z | Golden-set and prompt regression workflow concepts. |
+| B6 observability/quality | [`vibrantlabsai/ragas`](https://github.com/vibrantlabsai/ragas) | `main` | Apache-2.0 | 2026-02-24T07:47:19Z | RAG/evaluation metrics concepts; GitHub currently resolves the former `explodinggradients/ragas` reference here. |
+| B6 observability/quality | [`Giskard-AI/giskard-oss`](https://github.com/Giskard-AI/giskard-oss) | `main` | Apache-2.0 | 2026-06-19T10:47:55Z | Model quality, evaluation, and testing workflow concepts. |
 
-Portkey, Keycloak, Authentik, Ory Kratos, OpenFGA, SpiceDB, Casbin, Open Policy
-Agent, ContextForge MCP Gateway, supergateway, Langfuse, Phoenix,
-OpenTelemetry Collector, promptfoo, Ragas, and Giskard remain valid reference
-targets in the matrix above, but code adaptation still requires a focused issue
-with repository, commit/tag, license, tests, and runtime evidence where
-applicable.
+Additional matrix targets such as supergateway remain unpinned reference
+candidates until a future issue records repository, commit/tag, license
+posture, and intake level. Code adaptation still requires a focused issue with
+repository, commit/tag, license, tests, and runtime evidence where applicable.
 
 ### 6.4 Reference Reading Order
 
@@ -674,17 +724,19 @@ rollback, tests, and runtime evidence where applicable.
 
 ## 7. Immediate Issue Chain
 
-The next backend work should stay evidence-first:
+The next backend work should stay evidence-first. B0 is now a freshness watch
+item after #124/#125; do not spend the next active implementation slice on B0
+unless readiness reports runtime rollout or current-source evidence drift.
 
 | Order | Issue theme | First PR goal | Why first |
 | --- | --- | --- | --- |
-| 1 | B0 latest-main evidence refresh | Close only the current-source readiness gap that the evidence actually proves. | Prevents historical S1 evidence from being mistaken for latest-main readiness. |
-| 2 | B1 governed document context-pack workflow | Select one document workflow and prove session/workspace context-pack policy, provenance, redaction, export/delete boundary, and rollback with `live_worker_run_payload` evidence. | Memory becomes useful only when tied to a workflow and deny paths; long-term memory remains fail-closed. |
-| 3 | B2 real sandbox smoke through SDK Skill path | Turn sandbox contracts into Docker/equivalent `controlled_live_probe` and then `live_worker_run_payload` evidence for a governed Skill path. | `fake` and standalone verifier success remain the most visible blockers to real tool/Skill execution credibility. |
-| 4 | B3 capacity profile | Produce an `operator_reviewed_recorded_snapshot` for 10 sessions x peak 4 SDK subagents/session without raising defaults. | SDK subagent capability exists; load, gateway, sandbox, event/artifact, and cost pressure remain unproven. |
-| 5 | B4 Skill lifecycle slice | Make upload/version/release/rollback and dependency review operational enough for reviewed immutable Skill runs. | Skills are the user-facing product surface; mutable folders are not product governance. |
-| 6 | B5 file/artifact plus exact-tool deny paths | Prove B5a file/artifact ACL and B5b exact shell/MCP/filesystem permission replay denial separately. | File-heavy workflows are high-value and high-leakage-risk; file ACL does not prove tool safety. |
-| 7 | B6 named operations beta package | Bind Admin Runtime, trace/export, alert, golden-set, rollback, B1-B5 evidence, and owner signoff to one named workflow. | Product beta needs supportability evidence, not just successful generated files. |
+| 0 | B0 freshness watch | Re-run B0 only when readiness reports runtime rollout, source/runtime drift, or a runtime-affecting merge. | Keeps #124/#125 latest-main evidence from being reused after it becomes stale. |
+| 1 | B1 governed document context-pack workflow | Select one document workflow and prove session/workspace context-pack policy, provenance, redaction, export/delete boundary, and rollback with `live_worker_run_payload` evidence. | Memory becomes useful only when tied to a workflow and deny paths; long-term memory remains fail-closed. |
+| 2 | B2 real sandbox smoke through SDK Skill path | Turn sandbox contracts into Docker/equivalent `controlled_live_probe` and then `live_worker_run_payload` evidence for a governed Skill path. | `fake` and standalone verifier success remain the most visible blockers to real tool/Skill execution credibility. |
+| 3 | B3 capacity profile | Produce an `operator_reviewed_recorded_snapshot` for 10 sessions x peak 4 SDK subagents/session without raising defaults. | SDK subagent capability exists; load, gateway, sandbox, event/artifact, and cost pressure remain unproven. |
+| 4 | B4 Skill lifecycle slice | Make upload/version/release/rollback and dependency review operational enough for reviewed immutable Skill runs. | Skills are the user-facing product surface; mutable folders are not product governance. |
+| 5 | B5 file/artifact plus exact-tool deny paths | Prove B5a file/artifact ACL and B5b exact shell/MCP/filesystem permission replay denial separately. | File-heavy workflows are high-value and high-leakage-risk; file ACL does not prove tool safety. |
+| 6 | B6 named operations beta package | Bind Admin Runtime, trace/export, alert, golden-set, rollback, B1-B5 evidence, and owner signoff to one named workflow. | Product beta needs supportability evidence, not just successful generated files. |
 
 ## 8. Backend Product Beta Definition Of Done
 
