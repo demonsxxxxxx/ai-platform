@@ -17,10 +17,10 @@ Phase 1 must make the merged frontend usable against current backend contracts:
 - Auth/session/RBAC: use ai-platform principal, roles, permissions, tenant, and admin state.
 - Chat/session/run: use existing chat, session, run, event stream, playback, and artifact routes.
 - Skills/agents: use existing agent-app and admin skill governance projections; composer skill selection must not invent department marketplace semantics.
-- Admin/governance: keep Admin Runtime, memory, tool policy, and skill governance backed by existing routes.
+- Admin/governance: keep Admin Runtime, memory, tool policy inventory, skill governance, read-only model catalog/providers, and active-notification reads backed by existing routes.
 - Unsupported surfaces: show a Phase 2 unavailable state or hide the entry; do not call LibreChat/LambChat product-authority endpoints as if they are complete backend features.
 
-Phase 2 owns backend-backed department skill marketplace, MCP management, company users/roles/departments, profile-preference persistence, model administration, settings, and notification dismiss/admin workflows.
+Phase 2 owns backend-backed department skill marketplace, MCP lifecycle/server management, company users/roles/departments, profile-preference persistence, model administration writes, settings writes/legacy settings CRUD, and notification dismiss/admin workflows.
 
 ## 2026-06-19 Execution Evidence
 
