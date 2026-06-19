@@ -522,6 +522,18 @@ keeping resource-limit, egress, and security-option hardening open. Rollback
 assumptions are not Docker sandbox production hardening, not ordinary-user
 high-risk sandbox exposure, and not B2/G7 gate closure; the contract closes only
 `rollback_assumptions_evidence`.
+The #120 source policy contract names the required controls and runtime evidence
+for resource limits, egress policy, and security options. It records source
+contracts only: `resource_limits_policy_evidence`, `egress_policy_evidence`, and
+`security_options_evidence` stay broader B2/G7 hardening inputs until reviewed
+runtime evidence closes `resource_limits_runtime_hardening_evidence`,
+`egress_runtime_hardening_evidence`, and
+`security_options_runtime_hardening_evidence` (plain names:
+resource_limits_runtime_hardening_evidence, egress_runtime_hardening_evidence,
+and security_options_runtime_hardening_evidence). This does not claim Docker
+sandbox production hardening, does not expose high-risk sandbox behavior to
+ordinary users, does not enable ordinary-user multi-agent exposure, and does not
+raise production concurrency defaults.
 
 The
 hardening section must label lease/workspace/cleanup checks as

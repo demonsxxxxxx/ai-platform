@@ -217,6 +217,74 @@ def test_b2_sandbox_readiness_records_source_contract_without_gate_closure(tmp_p
         "egress_policy_evidence",
         "security_options_evidence",
     ]
+    policy_contracts = readiness["hardening_policy_contracts"]
+    assert list(policy_contracts) == [
+        "resource_limits_policy_evidence",
+        "egress_policy_evidence",
+        "security_options_evidence",
+    ]
+    assert policy_contracts["resource_limits_policy_evidence"] == {
+        "status": "recorded_source_policy_contract",
+        "evidence_level": "source_contract",
+        "does_not_close_broader_b2_g7_gate": True,
+        "does_not_claim_docker_sandbox_production_hardening": True,
+        "required_controls": [
+            "container_memory_limit_defined",
+            "container_cpu_limit_defined",
+            "process_timeout_defined",
+            "workspace_size_or_artifact_limit_defined",
+            "over_limit_cleanup_and_error_projection_defined",
+        ],
+        "runtime_evidence_required": [
+            "211 Docker/equivalent smoke records configured memory and CPU limits for the sandbox container",
+            "over-limit or timeout probe proves the container is stopped and the lease is released",
+            "Admin Runtime projection reports bounded error metadata without host paths or raw Docker payloads",
+        ],
+        "remaining_runtime_gap": "resource_limits_runtime_hardening_evidence",
+    }
+    assert policy_contracts["egress_policy_evidence"] == {
+        "status": "recorded_source_policy_contract",
+        "evidence_level": "source_contract",
+        "does_not_close_broader_b2_g7_gate": True,
+        "does_not_claim_docker_sandbox_production_hardening": True,
+        "required_controls": [
+            "default_deny_outbound_network_policy_defined",
+            "allowlist_owned_by_platform_policy_not_user_payload",
+            "callback_endpoint_exception_scoped_to_run_token",
+            "egress_denial_logged_without_secret_or_url_leakage",
+        ],
+        "runtime_evidence_required": [
+            "211 Docker/equivalent smoke proves an unapproved outbound request is denied",
+            "callback path still works through the scoped run token",
+            "release evidence redaction scan excludes callback tokens, host paths, and denied target secrets",
+        ],
+        "remaining_runtime_gap": "egress_runtime_hardening_evidence",
+    }
+    assert policy_contracts["security_options_evidence"] == {
+        "status": "recorded_source_policy_contract",
+        "evidence_level": "source_contract",
+        "does_not_close_broader_b2_g7_gate": True,
+        "does_not_claim_docker_sandbox_production_hardening": True,
+        "required_controls": [
+            "privileged_container_disabled",
+            "capability_drop_or_minimal_capabilities_defined",
+            "no_new_privileges_enabled",
+            "readonly_root_or_workspace_mount_boundary_defined",
+            "docker_socket_mount_forbidden_by_default",
+        ],
+        "runtime_evidence_required": [
+            "211 Docker/equivalent smoke captures security options from the launched sandbox container",
+            "privileged and Docker-socket access probes fail closed",
+            "cleanup proves no elevated container or mount remains after cancel or failure",
+        ],
+        "remaining_runtime_gap": "security_options_runtime_hardening_evidence",
+    }
+    for contract in policy_contracts.values():
+        assert contract["status"] == "recorded_source_policy_contract"
+        assert contract["evidence_level"] == "source_contract"
+        assert contract["does_not_close_broader_b2_g7_gate"] is True
+        assert contract["does_not_claim_docker_sandbox_production_hardening"] is True
+        assert contract["remaining_runtime_gap"].endswith("_runtime_hardening_evidence")
     for future_requirement in (
         "resource_limits",
         "egress_policy",
@@ -410,6 +478,15 @@ def test_b2_sandbox_readiness_records_reviewed_211_smoke_without_closing_b2_gate
         "B2 readiness still reports resource limits, egress, and security options as open",
         "operator issue comment records source/runtime subject, command result, and residual caveats",
     ]
+    assert readiness["hardening_policy_contracts"]["resource_limits_policy_evidence"]["status"] == (
+        "recorded_source_policy_contract"
+    )
+    assert readiness["hardening_policy_contracts"]["egress_policy_evidence"]["remaining_runtime_gap"] == (
+        "egress_runtime_hardening_evidence"
+    )
+    assert readiness["hardening_policy_contracts"]["security_options_evidence"][
+        "does_not_claim_docker_sandbox_production_hardening"
+    ] is True
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
     assert "211 verified" in serialized
@@ -510,6 +587,15 @@ def test_b2_sandbox_readiness_markdown_is_gap_first_and_operator_readable():
     assert "admin_or_allowlist_only" in markdown
     assert "PRD B2/G7 requirements not yet verifier-checked" in markdown
     assert "resource_limits_policy_evidence" in markdown
+    assert "## Hardening Policy Contracts" in markdown
+    assert "resource_limits_runtime_hardening_evidence" in markdown
+    assert "egress_runtime_hardening_evidence" in markdown
+    assert "security_options_runtime_hardening_evidence" in markdown
+    assert "recorded_source_policy_contract" in markdown
+    assert "container_memory_limit_defined" in markdown
+    assert "default_deny_outbound_network_policy_defined" in markdown
+    assert "privileged_container_disabled" in markdown
+    assert "does not claim Docker sandbox production hardening: `true`" in markdown
     assert "## Rollback Assumptions" in markdown
     assert "recorded_source_operator_contract" in markdown
     assert "Admin Runtime sandbox overview shows zero verifier-owned active containers" in markdown
@@ -545,6 +631,15 @@ def test_b2_sandbox_readiness_cli_outputs_json_without_secret_markers():
         "egress_policy_evidence",
         "security_options_evidence",
     ]
+    assert payload["hardening_policy_contracts"]["resource_limits_policy_evidence"]["evidence_level"] == (
+        "source_contract"
+    )
+    assert payload["hardening_policy_contracts"]["egress_policy_evidence"]["remaining_runtime_gap"] == (
+        "egress_runtime_hardening_evidence"
+    )
+    assert payload["hardening_policy_contracts"]["security_options_evidence"][
+        "does_not_close_broader_b2_g7_gate"
+    ] is True
     assert payload["rollback_assumptions"]["closed_gap"] == "rollback_assumptions_evidence"
     assert payload["gate_boundary_evidence"]["b2_issue_review_and_closure_evidence"]["status"] == (
         "recorded_issue_closure_evidence"
