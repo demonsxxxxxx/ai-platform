@@ -115,11 +115,12 @@ def test_backend_prd_preserves_productization_priorities_and_negative_claims():
     text = read_backend_prd()
     compact_text = compact(text)
 
+    assert "The first four backend productization priorities are:" in text
     for priority in (
-        "P0-1 | Memory/context usable",
-        "P0-2 | Real sandbox usable",
-        "P0-3 | Worker/model-gateway capacity",
-        "P0-4 | Skills management",
+        "| 1 | Memory/context usable",
+        "| 2 | Real sandbox usable",
+        "| 3 | Worker/model-gateway capacity",
+        "| 4 | Skills management",
     ):
         assert priority in text
 
