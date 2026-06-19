@@ -14,6 +14,10 @@ SCHEMA_VERSION = "ai-platform.foundation-alpha-poc-readiness.v1"
 SOURCE_SNAPSHOT_SCHEMA_VERSION = "ai-platform.source-snapshot.v1"
 SOURCE_RUNTIME_RELATION_MANIFEST_SCHEMA_VERSION = "ai-platform.source-runtime-relation-manifest.v1"
 STAGE_NAME = "Foundation Alpha POC"
+AUTH_RBAC_GATE_NAME = "G0-G1 Source Authority / Security Baseline"
+GOVERNANCE_RUNTIME_GATE_NAME = "G6 Tool / Skill / Memory Governance"
+RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_GATE_NAME = "G9 Observability / Release Evidence"
+ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_GATE_NAME = "G9 Observability / Trace Export"
 RUNTIME_SUBJECT_COMMIT_SHA = "dde1749c256eaa7e0819c98e0debe6084e73cba2"
 _ROOT = Path(__file__).resolve().parents[1]
 _EVIDENCE_BASE_ROOT = _ROOT / "docs/release-evidence/foundation-alpha-poc"
@@ -349,6 +353,15 @@ def _release_evidence_entry_is_valid(payload: dict[str, Any], commit_sha: str) -
     )
 
 
+def _auth_rbac_entry_is_valid(payload: dict[str, Any], commit_sha: str) -> bool:
+    return (
+        _release_evidence_entry_base_is_valid(payload, commit_sha)
+        and payload.get("gate") == AUTH_RBAC_GATE_NAME
+        and payload.get("artifact_kind") == "auth_rbac_smoke"
+        and _is_auth_rbac_evidence(payload)
+    )
+
+
 def _is_auth_rbac_evidence(payload: dict[str, Any]) -> bool:
     evidence_ref = payload.get("evidence_ref") if isinstance(payload, dict) else {}
     runtime_checks = evidence_ref.get("runtime_checks") if isinstance(evidence_ref, dict) else {}
@@ -414,6 +427,15 @@ def _is_governance_runtime_evidence(payload: dict[str, Any]) -> bool:
     )
 
 
+def _governance_runtime_entry_is_valid(payload: dict[str, Any], commit_sha: str) -> bool:
+    return (
+        _release_evidence_entry_base_is_valid(payload, commit_sha)
+        and payload.get("gate") == GOVERNANCE_RUNTIME_GATE_NAME
+        and payload.get("artifact_kind") == "governance_runtime_smoke"
+        and _is_governance_runtime_evidence(payload)
+    )
+
+
 def _release_evidence_runtime_acceptance_from_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     evidence_ref = payload.get("evidence_ref") if isinstance(payload, dict) else {}
     runtime_checks = evidence_ref.get("runtime_checks") if isinstance(evidence_ref, dict) else {}
@@ -440,6 +462,15 @@ def _release_evidence_runtime_acceptance_from_payload(payload: dict[str, Any]) -
 
 def _is_release_evidence_runtime_acceptance_evidence(payload: dict[str, Any]) -> bool:
     return _release_evidence_runtime_acceptance_from_payload(payload) is not None
+
+
+def _release_evidence_runtime_acceptance_entry_is_valid(payload: dict[str, Any], commit_sha: str) -> bool:
+    return (
+        _release_evidence_entry_base_is_valid(payload, commit_sha)
+        and payload.get("gate") == RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_GATE_NAME
+        and payload.get("artifact_kind") == "release_evidence_runtime_acceptance"
+        and _is_release_evidence_runtime_acceptance_evidence(payload)
+    )
 
 
 def _alert_trace_export_runtime_acceptance_from_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -471,6 +502,15 @@ def _is_alert_trace_export_runtime_acceptance_evidence(payload: dict[str, Any]) 
     return _alert_trace_export_runtime_acceptance_from_payload(payload) is not None
 
 
+def _alert_trace_export_runtime_acceptance_entry_is_valid(payload: dict[str, Any], commit_sha: str) -> bool:
+    return (
+        _release_evidence_entry_base_is_valid(payload, commit_sha)
+        and payload.get("gate") == ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_GATE_NAME
+        and payload.get("artifact_kind") == "alert_trace_export_runtime_acceptance"
+        and _is_alert_trace_export_runtime_acceptance_evidence(payload)
+    )
+
+
 def _release_evidence_sort_key(path: Path, payload: dict[str, Any]) -> tuple[str, str]:
     return (str(payload.get("captured_at", "")), path.name)
 
@@ -497,9 +537,7 @@ def _discover_release_evidence_pair(commit_sha: str) -> tuple[Path, Path] | None
             payload = _load_json(path)
         except (OSError, json.JSONDecodeError):
             continue
-        if not _release_evidence_entry_base_is_valid(payload, commit_sha):
-            continue
-        if _is_auth_rbac_evidence(payload):
+        if _auth_rbac_entry_is_valid(payload, commit_sha):
             auth_entries.append((path, payload))
         elif _release_evidence_entry_is_valid(payload, commit_sha) and _is_poc_smoke_evidence(payload):
             smoke_entries.append((path, payload))
@@ -556,9 +594,7 @@ def _discover_governance_runtime_evidence(commit_sha: str) -> Path | None:
             payload = _load_json(path)
         except (OSError, json.JSONDecodeError):
             continue
-        if not _release_evidence_entry_base_is_valid(payload, commit_sha):
-            continue
-        if _is_governance_runtime_evidence(payload):
+        if _governance_runtime_entry_is_valid(payload, commit_sha):
             entries.append((path, payload))
 
     if entries:
@@ -578,9 +614,7 @@ def _discover_release_evidence_runtime_acceptance_evidence(commit_sha: str) -> P
             payload = _load_json(path)
         except (OSError, json.JSONDecodeError):
             continue
-        if not _release_evidence_entry_base_is_valid(payload, commit_sha):
-            continue
-        if _is_release_evidence_runtime_acceptance_evidence(payload):
+        if _release_evidence_runtime_acceptance_entry_is_valid(payload, commit_sha):
             entries.append((path, payload))
 
     if entries:
@@ -600,12 +634,7 @@ def _discover_alert_trace_export_runtime_acceptance_evidence(commit_sha: str) ->
             payload = _load_json(path)
         except (OSError, json.JSONDecodeError):
             continue
-        if not _release_evidence_entry_base_is_valid(payload, commit_sha):
-            continue
-        if (
-            payload.get("artifact_kind") == "alert_trace_export_runtime_acceptance"
-            and _is_alert_trace_export_runtime_acceptance_evidence(payload)
-        ):
+        if _alert_trace_export_runtime_acceptance_entry_is_valid(payload, commit_sha):
             entries.append((path, payload))
 
     if entries:
