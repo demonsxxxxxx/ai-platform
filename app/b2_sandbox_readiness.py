@@ -18,6 +18,7 @@ GENERATOR_SCRIPT = "scripts/generate_sandbox_runtime_evidence_211.py"
 VERIFIER_SCRIPT = "scripts/verify_sandbox_runtime_211.py"
 RUNTIME_ACCEPTANCE_ARTIFACT_KIND = "211_sandbox_runtime_smoke"
 RUNTIME_ACCEPTANCE_VERIFIER_SCHEMA = "ai-platform.sandbox-runtime-211.v1"
+RUNTIME_PROBE_RESULTS_SCHEMA_VERSION = "ai-platform.sandbox-runtime-probe-results.v1"
 _RUNTIME_EVIDENCE_ROOT = "docs/release-evidence/b2-sandbox"
 
 _CLOSED_SOURCE_CONTROLS = [
@@ -143,6 +144,13 @@ _VERIFIER_REQUIRED_EVIDENCE_SECTIONS = [
     "hardening.security_options",
     "hardening.evidence_class",
     "non_expansion_invariants",
+]
+_RUNTIME_PROBE_RESULTS_REQUIRED_FIELDS = [
+    "schema_version",
+    "run_id",
+    "source=platform_runtime_probe",
+    "resource_limits",
+    "egress_policy",
 ]
 
 _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED = [
@@ -674,6 +682,10 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
             "verifier_schema_version": "ai-platform.sandbox-runtime-211.v1",
             "docker_cmd": "sudo -n docker",
             "cancel_probe_image": "ai-platform:local",
+            "runtime_probe_results_schema_version": RUNTIME_PROBE_RESULTS_SCHEMA_VERSION,
+            "runtime_probe_results_cli_flag": "--runtime-probe-results-file",
+            "runtime_probe_results_environment_variable": "AI_PLATFORM_SANDBOX_RUNTIME_PROBE_RESULTS",
+            "runtime_probe_results_required_fields": list(_RUNTIME_PROBE_RESULTS_REQUIRED_FIELDS),
             "status_label_before_smoke": "local partial",
             "status_label_after_smoke_before_review": "local partial",
             "smoke_without_reviewed_evidence_status": "runtime_smoke_recorded_review_required",
@@ -778,6 +790,9 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
     required_sections = "\n".join(
         f"- `{section}`" for section in runtime["verifier_required_evidence_sections"]
     )
+    probe_result_fields = "\n".join(
+        f"- `{field}`" for field in runtime.get("runtime_probe_results_required_fields", [])
+    ) or "- none"
     pending_prd_requirements = "\n".join(
         f"- `{item}`" for item in readiness["broader_b2_g7_open_requirements"]
     )
@@ -843,6 +858,11 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"- target status after reviewed evidence: `{runtime['status_label_after_reviewed_evidence']}`\n"
         f"- reviewed evidence required for 211 verified: `{str(runtime['reviewed_evidence_required_for_211_verified']).lower()}`\n"
         f"- does not close B2 gate by itself: `{str(runtime['does_not_close_b2_gate_by_itself']).lower()}`\n\n"
+        f"- runtime probe results schema: `{runtime.get('runtime_probe_results_schema_version')}`\n"
+        f"- runtime probe results flag: `{runtime.get('runtime_probe_results_cli_flag')}`\n"
+        f"- runtime probe results env: `{runtime.get('runtime_probe_results_environment_variable')}`\n\n"
+        "Runtime probe results required fields:\n\n"
+        f"{probe_result_fields}\n\n"
         "Verifier-required checks:\n\n"
         f"{required_checks}\n\n"
         "Verifier-required evidence sections:\n\n"
