@@ -121,7 +121,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(currentUser);
     applyUserMetadata(currentUser.metadata);
     setDynamicPermissions(
-      normalizePrincipalPermissions(currentUser.permissions),
+      normalizePrincipalPermissions(
+        currentUser.permissions,
+        currentUser.roles,
+        currentUser.metadata?.is_admin === true,
+      ),
     );
   }, []);
 

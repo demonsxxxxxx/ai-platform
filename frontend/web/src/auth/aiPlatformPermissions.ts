@@ -14,8 +14,24 @@ const DERIVED_PERMISSIONS: Partial<Record<Permission, Permission[]>> = {
   ],
 };
 
+const ADMIN_ROLE_ALIASES = new Set([
+  "admin",
+  "developer",
+  "platform_admin",
+  "break_glass_admin",
+]);
+
+const ADMIN_SURFACE_PERMISSIONS = [
+  Permission.ADMIN_STATUS,
+  Permission.AGENT_ADMIN,
+  Permission.MODEL_ADMIN,
+  Permission.SETTINGS_MANAGE,
+];
+
 export function normalizePrincipalPermissions(
   rawPermissions: readonly string[] | null | undefined,
+  roles: readonly string[] | null | undefined = [],
+  isAdmin = false,
 ): Permission[] {
   const normalized: Permission[] = [];
   const seen = new Set<Permission>();
@@ -30,6 +46,15 @@ export function normalizePrincipalPermissions(
     const permission = rawPermission.trim();
     if (!KNOWN_PERMISSIONS.has(permission)) continue;
     addPermission(permission as Permission);
+  }
+
+  const hasAdminRole = (roles ?? []).some((role) =>
+    ADMIN_ROLE_ALIASES.has(role.trim().toLowerCase()),
+  );
+  if (isAdmin || hasAdminRole) {
+    for (const permission of ADMIN_SURFACE_PERMISSIONS) {
+      addPermission(permission);
+    }
   }
 
   for (const permission of [...normalized]) {

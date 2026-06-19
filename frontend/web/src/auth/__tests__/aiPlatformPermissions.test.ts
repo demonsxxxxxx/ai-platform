@@ -36,6 +36,38 @@ test("admin status unlocks runtime viewing without legacy settings management", 
   assert.ok(!hasEffectivePermission(permissions, Permission.SETTINGS_MANAGE));
 });
 
+test("principal admin state grants phase 1 admin surface permissions", () => {
+  const permissions = normalizePrincipalPermissions([], [], true);
+
+  assert.ok(hasEffectivePermission(permissions, Permission.ADMIN_STATUS));
+  assert.ok(hasEffectivePermission(permissions, Permission.AGENT_ADMIN));
+  assert.ok(hasEffectivePermission(permissions, Permission.MODEL_ADMIN));
+  assert.ok(hasEffectivePermission(permissions, Permission.SETTINGS_MANAGE));
+});
+
+test("backend admin role aliases grant phase 1 admin surface permissions", () => {
+  const permissions = normalizePrincipalPermissions([], ["developer"], false);
+
+  assert.ok(hasEffectivePermission(permissions, Permission.ADMIN_STATUS));
+  assert.ok(hasEffectivePermission(permissions, Permission.AGENT_ADMIN));
+  assert.ok(hasEffectivePermission(permissions, Permission.MODEL_ADMIN));
+  assert.ok(hasEffectivePermission(permissions, Permission.SETTINGS_MANAGE));
+});
+
+test("non-admin platform roles do not grant phase 1 admin surface permissions", () => {
+  const permissions = normalizePrincipalPermissions(
+    ["agent:use"],
+    ["tenant_admin", "skill_developer"],
+    false,
+  );
+
+  assert.ok(hasEffectivePermission(permissions, Permission.AGENT_USE));
+  assert.ok(!hasEffectivePermission(permissions, Permission.ADMIN_STATUS));
+  assert.ok(!hasEffectivePermission(permissions, Permission.AGENT_ADMIN));
+  assert.ok(!hasEffectivePermission(permissions, Permission.MODEL_ADMIN));
+  assert.ok(!hasEffectivePermission(permissions, Permission.SETTINGS_MANAGE));
+});
+
 test("unknown permissions are ignored but known legacy permissions are retained", () => {
   const permissions = normalizePrincipalPermissions([
     "skill:read",
