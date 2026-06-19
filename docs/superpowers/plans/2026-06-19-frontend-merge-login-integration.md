@@ -51,6 +51,10 @@ Local verification evidence refreshed on 2026-06-19:
   - Ordinary principal `GET /api/ai/admin/runtime/overview?include_maintenance_cleanup=false` returned HTTP 403 with `not_ai_admin`.
   - Admin principal `GET /api/ai/admin/runtime/overview?include_maintenance_cleanup=false` returned HTTP 200.
   - Ordinary principal `GET /api/agents` returned HTTP 200 with an agent projection envelope.
+- 18003 cookie-session smoke generated a redacted signed principal session inside the running API container and verified:
+  - Direct 8020 `GET /api/ai/auth/me` with the session cookie returned HTTP 200.
+  - 18003 proxied `GET /api/ai/auth/me` with the same session cookie returned HTTP 200.
+  - 18003 proxied Admin Runtime and `/api/agents` calls with the same session cookie returned HTTP 200.
 
 Remaining Phase 1 integration gaps before `211 verified`:
 
