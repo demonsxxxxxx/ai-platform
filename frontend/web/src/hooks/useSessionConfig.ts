@@ -18,7 +18,8 @@ import type { SessionConfig } from "./useAgent/types";
 import type { PersonaPresetSnapshot } from "../types";
 import { normalizeAgentOptionValues } from "../components/layout/AppContent/useAgentOptions";
 
-const STORAGE_KEY = "lambchat_session_config";
+const STORAGE_KEY = "ai_platform_session_config";
+const LEGACY_STORAGE_KEY = "lambchat_session_config";
 
 export interface SessionConfigState {
   // 当前对话禁用的 skills（名称列表）
@@ -31,6 +32,11 @@ export interface SessionConfigState {
   personaSnapshot: PersonaPresetSnapshot | null;
 }
 
+type PersistedSessionConfig = Pick<
+  SessionConfigState,
+  "disabledSkills" | "disabledMcpTools" | "personaPresetId" | "personaSnapshot"
+>;
+
 export interface UseSessionConfigOptions {
   // 从全局配置获取默认禁用列表
   getDefaultDisabledSkills?: () => string[];
@@ -38,14 +44,10 @@ export interface UseSessionConfigOptions {
   getDefaultAgentOptions: () => Record<string, boolean | string | number>;
 }
 
-/** Read persisted config from localStorage, returns null if not found or invalid */
-function loadPersistedConfig(): Pick<
-  SessionConfigState,
-  "disabledSkills" | "disabledMcpTools" | "personaPresetId" | "personaSnapshot"
-> | null {
+function parsePersistedSessionConfig(raw: string | null): PersistedSessionConfig | null {
+  if (!raw) return null;
+
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (
       Array.isArray(parsed.disabledSkills) &&
@@ -64,16 +66,28 @@ function loadPersistedConfig(): Pick<
   return null;
 }
 
+/** Read persisted config from localStorage, returns null if not found or invalid */
+export function loadPersistedSessionConfig(): PersistedSessionConfig | null {
+  const persisted = parsePersistedSessionConfig(
+    localStorage.getItem(STORAGE_KEY),
+  );
+  if (persisted) return persisted;
+
+  const legacyPersisted = parsePersistedSessionConfig(
+    localStorage.getItem(LEGACY_STORAGE_KEY),
+  );
+  if (!legacyPersisted) {
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+    return null;
+  }
+
+  persistSessionConfig(legacyPersisted);
+  localStorage.removeItem(LEGACY_STORAGE_KEY);
+  return legacyPersisted;
+}
+
 /** Persist config to localStorage */
-function persistConfig(
-  state: Pick<
-    SessionConfigState,
-    | "disabledSkills"
-    | "disabledMcpTools"
-    | "personaPresetId"
-    | "personaSnapshot"
-  >,
-) {
+export function persistSessionConfig(state: PersistedSessionConfig) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch {
@@ -123,7 +137,7 @@ export function useSessionConfig(
   // 对话级别的配置状态
   // 优先从 localStorage 恢复（跨路由持久化），否则用默认值
   const [config, setConfig] = useState<SessionConfigState>(() => {
-    const persisted = loadPersistedConfig();
+    const persisted = loadPersistedSessionConfig();
     return {
       disabledSkills:
         persisted?.disabledSkills ?? options.getDefaultDisabledSkills?.() ?? [],
@@ -155,7 +169,7 @@ export function useSessionConfig(
 
   // Persist to localStorage whenever config changes
   useEffect(() => {
-    persistConfig({
+    persistSessionConfig({
       disabledSkills: config.disabledSkills,
       disabledMcpTools: config.disabledMcpTools,
       personaPresetId: config.personaPresetId,
@@ -270,7 +284,7 @@ export function useSessionConfig(
       personaSnapshot: null,
     };
     setConfig(defaults);
-    persistConfig(defaults);
+    persistSessionConfig(defaults);
   }, [options]);
 
   // Restore config from session metadata
@@ -289,7 +303,7 @@ export function useSessionConfig(
       personaSnapshot: sessionConfig.persona_snapshot || null,
     };
     setConfig(restored);
-    persistConfig(restored);
+    persistSessionConfig(restored);
   }, []);
 
   // Check if skill is enabled (not in disabled list)

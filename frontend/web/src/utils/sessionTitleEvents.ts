@@ -1,4 +1,5 @@
-export const SESSION_TITLE_UPDATED_EVENT = "lambchat:session-title-updated";
+export const SESSION_TITLE_UPDATED_EVENT =
+  "ai-platform:session-title-updated";
 
 export interface SessionTitleUpdatedDetail {
   sessionId: string;

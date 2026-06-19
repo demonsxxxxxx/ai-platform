@@ -297,6 +297,44 @@ test("packaged frontend metadata uses ai-platform branding", () => {
   }
 });
 
+test("active runtime events and local browser keys use ai-platform namespace", () => {
+  const activeRuntimeSources = [
+    "../main.tsx",
+    "../pwa.ts",
+    "../pwaGuards.ts",
+    "../sw.ts",
+    "../hooks/useBrowserNotification.ts",
+    "../utils/sessionTitleEvents.ts",
+    "../components/common/selectionActionPrompt.ts",
+  ].map(readSource);
+  const combinedSource = activeRuntimeSources.join("\n");
+  const sessionConfigSource = readSource("../hooks/useSessionConfig.ts");
+
+  for (const source of activeRuntimeSources) {
+    assert.doesNotMatch(source, /LambChat/);
+    assert.doesNotMatch(source, /lambchat/);
+  }
+
+  assert.match(combinedSource, /registerAiPlatformPwa/);
+  assert.match(combinedSource, /ai-platform:pwa-update-available/);
+  assert.match(combinedSource, /ai-platform:session-title-updated/);
+  assert.match(combinedSource, /ai-platform:selection-action/);
+  assert.match(
+    sessionConfigSource,
+    /const STORAGE_KEY = "ai_platform_session_config"/,
+  );
+  assert.match(
+    sessionConfigSource,
+    /const LEGACY_STORAGE_KEY = "lambchat_session_config"/,
+  );
+  assert.match(
+    sessionConfigSource,
+    /localStorage\.removeItem\(LEGACY_STORAGE_KEY\)/,
+  );
+  assert.match(sessionConfigSource, /ai_platform_session_config/);
+  assert.match(combinedSource, /ai-platform-notification/);
+});
+
 test("Phase 1 remap panels consume ai-platform projections instead of legacy management APIs", () => {
   const phase1ProjectionApi = readSource(
     "../services/api/phase1Projection.ts",

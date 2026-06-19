@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   PWA_SKIP_WAITING_MESSAGE,
+  PWA_UPDATE_AVAILABLE_EVENT,
   isPwaSkipWaitingMessage,
   isPwaUpdateReady,
   shouldRegisterPwa,
@@ -47,6 +48,13 @@ test("recognizes the skip waiting message without accepting arbitrary payloads",
   );
   assert.equal(isPwaSkipWaitingMessage({ type: "OTHER_MESSAGE" }), false);
   assert.equal(isPwaSkipWaitingMessage(null), false);
+});
+
+test("uses the ai-platform namespace for PWA update events", () => {
+  assert.equal(
+    PWA_UPDATE_AVAILABLE_EVENT,
+    "ai-platform:pwa-update-available",
+  );
 });
 
 function readManifest() {
