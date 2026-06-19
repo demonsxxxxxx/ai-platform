@@ -96,6 +96,18 @@ _VERIFIER_HARDENING_SECTIONS = [
     "resource_timeout",
     "failure_fallback",
     "cached_lease_revalidation",
+    "resource_limits",
+    "egress_policy",
+    "security_options",
+]
+
+_VERIFIER_BASE_SMOKE_HARDENING_SECTIONS = [
+    "lease_isolation",
+    "workspace_isolation",
+    "cleanup",
+    "resource_timeout",
+    "failure_fallback",
+    "cached_lease_revalidation",
 ]
 
 _HARDENING_EVIDENCE_CLASS = {
@@ -105,6 +117,9 @@ _HARDENING_EVIDENCE_CLASS = {
     "resource_timeout": "source_regression_guard",
     "failure_fallback": "source_regression_guard",
     "cached_lease_revalidation": "source_regression_guard",
+    "resource_limits": "live_platform_probe",
+    "egress_policy": "live_platform_probe",
+    "security_options": "live_platform_probe",
 }
 
 _VERIFIER_REQUIRED_EVIDENCE_SECTIONS = [
@@ -121,6 +136,9 @@ _VERIFIER_REQUIRED_EVIDENCE_SECTIONS = [
     "hardening.resource_timeout",
     "hardening.failure_fallback",
     "hardening.cached_lease_revalidation",
+    "hardening.resource_limits",
+    "hardening.egress_policy",
+    "hardening.security_options",
     "hardening.evidence_class",
     "non_expansion_invariants",
 ]
@@ -321,6 +339,92 @@ def _runtime_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     return runtime_payload if isinstance(runtime_payload, dict) else None
 
 
+def _positive_number(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if not isinstance(value, int | float):
+        return False
+    return value > 0
+
+
+def _resource_limits_runtime_verified(hardening: dict[str, Any]) -> bool:
+    section = hardening.get("resource_limits")
+    if not isinstance(section, dict):
+        return False
+    if section.get("evidence_class") != "live_platform_probe":
+        return False
+    if section.get("limit_source") != "platform_request":
+        return False
+    for field in (
+        "memory_limit_mb",
+        "cpu_limit_count",
+        "pids_limit",
+        "process_timeout_seconds",
+    ):
+        if not _positive_number(section.get(field)):
+            return False
+    return (
+        section.get("docker_inspection_verified") is True
+        and section.get("over_limit_cleanup_verified") is True
+        and section.get("bounded_error_projection_verified") is True
+    )
+
+
+def _egress_policy_runtime_verified(hardening: dict[str, Any]) -> bool:
+    section = hardening.get("egress_policy")
+    if not isinstance(section, dict):
+        return False
+    if section.get("evidence_class") != "live_platform_probe":
+        return False
+    if section.get("policy_source") != "platform_policy":
+        return False
+    return all(
+        section.get(field) is True
+        for field in (
+            "default_deny_outbound",
+            "platform_allowlist_enforced",
+            "callback_exception_scoped_to_run_token",
+            "denied_egress_redacted",
+        )
+    )
+
+
+def _security_options_runtime_verified(hardening: dict[str, Any]) -> bool:
+    section = hardening.get("security_options")
+    if not isinstance(section, dict):
+        return False
+    if section.get("evidence_class") != "live_platform_probe":
+        return False
+    if section.get("privileged") is not False:
+        return False
+    if section.get("docker_socket_mounted") is not False:
+        return False
+    if section.get("workspace_mount_mode") not in {"rw", "ro"}:
+        return False
+    return all(
+        section.get(field) is True
+        for field in (
+            "no_new_privileges",
+            "capabilities_dropped",
+            "root_filesystem_read_only_or_minimal",
+        )
+    )
+
+
+def _hardening_runtime_evidence_status(hardening: dict[str, Any]) -> dict[str, str]:
+    if not (
+        _resource_limits_runtime_verified(hardening)
+        and _egress_policy_runtime_verified(hardening)
+        and _security_options_runtime_verified(hardening)
+    ):
+        return {}
+    return {
+        "resource_limits_policy_evidence": "verified_211_runtime_acceptance",
+        "egress_policy_evidence": "verified_211_runtime_acceptance",
+        "security_options_evidence": "verified_211_runtime_acceptance",
+    }
+
+
 def _b2_smoke_evidence_summary(
     payload: dict[str, Any],
     *,
@@ -349,7 +453,7 @@ def _b2_smoke_evidence_summary(
         return None
     if not all(field in timings for field in _VERIFIER_TIMING_FIELDS):
         return None
-    if not all(section in hardening for section in _VERIFIER_HARDENING_SECTIONS):
+    if not all(section in hardening for section in _VERIFIER_BASE_SMOKE_HARDENING_SECTIONS):
         return None
     if (
         evidence.get("schema_version") != RUNTIME_ACCEPTANCE_VERIFIER_SCHEMA
@@ -368,7 +472,7 @@ def _b2_smoke_evidence_summary(
     for key, expected in _NON_EXPANSION_INVARIANTS.items():
         if non_expansion_invariants.get(key) is not expected:
             return None
-    return {
+    summary = {
         "status": "verified_211_runtime_acceptance",
         "artifact_kind": RUNTIME_ACCEPTANCE_ARTIFACT_KIND,
         "captured_at": payload.get("captured_at"),
@@ -386,6 +490,10 @@ def _b2_smoke_evidence_summary(
         "redaction_scan_status": evidence.get("redaction_scan_status"),
         "does_not_close_b2_gate": True,
     }
+    hardening_runtime_evidence = _hardening_runtime_evidence_status(hardening)
+    if hardening_runtime_evidence:
+        summary["hardening_runtime_evidence"] = hardening_runtime_evidence
+    return summary
 
 
 def _runtime_acceptance_evidence(repo_root: Path) -> dict[str, dict[str, Any]]:
@@ -482,6 +590,19 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
     root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
     runtime_acceptance_evidence = _runtime_acceptance_evidence(root)
     b2_smoke_recorded = RUNTIME_ACCEPTANCE_GAP in runtime_acceptance_evidence
+    hardening_runtime_evidence = {}
+    if b2_smoke_recorded:
+        hardening_runtime_evidence = runtime_acceptance_evidence[RUNTIME_ACCEPTANCE_GAP].get(
+            "hardening_runtime_evidence",
+            {},
+        )
+        if not isinstance(hardening_runtime_evidence, dict):
+            hardening_runtime_evidence = {}
+    closed_hardening_runtime_gaps = [
+        gap
+        for gap in _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED
+        if hardening_runtime_evidence.get(gap) == "verified_211_runtime_acceptance"
+    ]
     gate_boundary_evidence = {
         ISSUE_CLOSURE_GAP: _issue_closure_boundary_evidence(root),
     }
@@ -501,12 +622,19 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
             for gap in [ISSUE_CLOSURE_GAP]
             if gap not in closed_gate_boundary_gaps
         ]
-        open_gaps.extend(_PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED)
-    status = (
-        "runtime_acceptance_recorded"
-        if b2_smoke_recorded
-        else "local_contract_ready_runtime_smoke_required"
-    )
+        open_gaps.extend(
+            gap
+            for gap in _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED
+            if gap not in closed_hardening_runtime_gaps
+        )
+    if b2_smoke_recorded and len(closed_hardening_runtime_gaps) == len(
+        _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED
+    ):
+        status = "runtime_hardening_acceptance_recorded"
+    elif b2_smoke_recorded:
+        status = "runtime_acceptance_recorded"
+    else:
+        status = "local_contract_ready_runtime_smoke_required"
     runtime_status = (
         "verified_211_runtime_acceptance"
         if b2_smoke_recorded
@@ -517,6 +645,7 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
         if b2_smoke_recorded
         else []
     )
+    closed_runtime_gaps.extend(closed_hardening_runtime_gaps)
     return {
         "schema_version": SCHEMA_VERSION,
         "backend_stage": BACKEND_STAGE,
@@ -568,6 +697,9 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
                 "cleanup releases active lease and removes ephemeral container",
                 "orphan scan or cleanup proof for stopped same-scope containers",
                 "artifact/event return is public/admin projection safe",
+                "resource limits and timeout policy are captured from platform-issued runtime evidence",
+                "egress policy proves default deny, platform allowlist, scoped callback exception, and redacted denial",
+                "security options prove non-privileged container posture, no Docker socket mount, no-new-privileges or equivalent, dropped/minimal capabilities, and root/workspace boundary",
                 "redaction scan excludes socket, host paths, callback tokens, and secret markers",
             ],
         },

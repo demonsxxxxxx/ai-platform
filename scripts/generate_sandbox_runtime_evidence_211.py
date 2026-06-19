@@ -237,7 +237,9 @@ def _platform_hardening_evidence(
     recorded_lease_id: str,
     released_lease_id: str,
     release_reason: str,
+    resource_limits: dict[str, Any] | None = None,
 ) -> dict[str, object]:
+    limits = resource_limits if isinstance(resource_limits, dict) else {}
     return {
         "lease_isolation": {
             "evidence_class": "live_platform_probe",
@@ -294,6 +296,34 @@ def _platform_hardening_evidence(
                 "tests/test_sandbox_container_provider.py::test_docker_provider_cached_lease_revalidates_container_scope_labels",
             ],
         },
+        "resource_limits": {
+            "evidence_class": "live_platform_probe",
+            "memory_limit_mb": int(limits.get("memory_mb") or 0),
+            "cpu_limit_count": float(limits.get("cpu_count") or 0),
+            "pids_limit": int(limits.get("pids_limit") or 0),
+            "process_timeout_seconds": int(limits.get("max_seconds") or 0),
+            "limit_source": "platform_request",
+            "docker_inspection_verified": False,
+            "over_limit_cleanup_verified": False,
+            "bounded_error_projection_verified": False,
+        },
+        "egress_policy": {
+            "evidence_class": "live_platform_probe",
+            "default_deny_outbound": False,
+            "platform_allowlist_enforced": False,
+            "callback_exception_scoped_to_run_token": True,
+            "denied_egress_redacted": False,
+            "policy_source": "not_runtime_verified",
+        },
+        "security_options": {
+            "evidence_class": "live_platform_probe",
+            "privileged": False,
+            "no_new_privileges": False,
+            "capabilities_dropped": False,
+            "docker_socket_mounted": False,
+            "workspace_mount_mode": "rw",
+            "root_filesystem_read_only_or_minimal": False,
+        },
         "source": {
             "runtime_submit": "app.runtime.sandbox.runtime.SandboxRuntime.submit",
             "workspace_root": "[redacted-path]" if str(workspace_root) else "",
@@ -325,6 +355,7 @@ def record_platform_runtime_probe(
         recorded_lease_id=lease_id,
         released_lease_id=released_lease_id or lease_id,
         release_reason=release_reason,
+        resource_limits={"max_seconds": 60, "memory_mb": 512, "pids_limit": 128},
     )
     return {
         "status": str(getattr(result, "status", "")),
@@ -384,6 +415,7 @@ def run_platform_runtime_probe(
                 record_lease=record_lease,
                 release_lease=release_lease,
             )
+            resource_limits = {"max_seconds": 60, "memory_mb": 512, "cpu_count": 0.5, "pids_limit": 128}
             request = SandboxRuntimeRequest(
                 tenant_id="tenant-a",
                 workspace_id="workspace-a",
@@ -398,7 +430,7 @@ def run_platform_runtime_probe(
                 sandbox_mode="ephemeral",
                 browser_enabled=False,
                 model="smoke",
-                resource_limits={"max_seconds": 60, "memory_mb": 512, "pids_limit": 128},
+                resource_limits=resource_limits,
                 callback_url=callback_url,
                 callback_token_id=f"callback-{_safe_run_id(recorder.run_id)}",
             )
@@ -422,6 +454,7 @@ def run_platform_runtime_probe(
         recorded_lease_id=recorded_lease_id,
         released_lease_id=released_lease_id,
         release_reason=captured.get("release_reason") or "",
+        resource_limits={"max_seconds": 60, "memory_mb": 512, "cpu_count": 0.5, "pids_limit": 128},
     )
     return {
         "status": str(getattr(result, "status", "")),

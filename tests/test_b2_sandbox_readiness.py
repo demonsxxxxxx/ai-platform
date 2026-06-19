@@ -207,6 +207,12 @@ def test_b2_sandbox_readiness_records_source_contract_without_gate_closure(tmp_p
         "fake_provider_used_as_production_evidence": False,
     }
     assert "hardening.evidence_class" in readiness["runtime_acceptance"]["verifier_required_evidence_sections"]
+    for runtime_section in (
+        "hardening.resource_limits",
+        "hardening.egress_policy",
+        "hardening.security_options",
+    ):
+        assert runtime_section in readiness["runtime_acceptance"]["verifier_required_evidence_sections"]
     assert readiness["runtime_acceptance"]["prd_b2_g7_requirements_not_yet_verified"] == [
         "resource_limits_policy_evidence",
         "egress_policy_evidence",
@@ -286,9 +292,6 @@ def test_b2_sandbox_readiness_records_source_contract_without_gate_closure(tmp_p
         assert contract["does_not_claim_docker_sandbox_production_hardening"] is True
         assert contract["remaining_runtime_gap"].endswith("_runtime_hardening_evidence")
     for future_requirement in (
-        "resource_limits",
-        "egress_policy",
-        "security_options",
         "rollback_assumptions",
     ):
         assert future_requirement not in readiness["runtime_acceptance"]["verifier_required_evidence_sections"]
@@ -296,9 +299,9 @@ def test_b2_sandbox_readiness_records_source_contract_without_gate_closure(tmp_p
         readiness["runtime_acceptance"]["verifier_required_runtime_evidence"],
         ensure_ascii=False,
     )
-    assert "resource limits and timeout policy" not in serialized_runtime_evidence
-    assert "egress policy" not in serialized_runtime_evidence
-    assert "security options" not in serialized_runtime_evidence
+    assert "resource limits and timeout policy" in serialized_runtime_evidence
+    assert "egress policy" in serialized_runtime_evidence
+    assert "security options" in serialized_runtime_evidence
     assert "rollback assumptions" not in serialized_runtime_evidence
     assert readiness["evidence_policy"] == (
         "B2 can become `211 verified` only after reviewed, redacted 211 Docker/equivalent "
@@ -331,6 +334,114 @@ def test_b2_sandbox_readiness_accepts_future_reviewed_smoke_run_ids(tmp_path):
     assert smoke_evidence["runtime_subject"] == FUTURE_RUNTIME_TAG
     assert smoke_evidence["status"] == "verified_211_runtime_acceptance"
     assert smoke_evidence["does_not_close_b2_gate"] is True
+    assert "runtime_hardening" not in readiness["closed_runtime_gaps"]
+
+
+def test_b2_sandbox_readiness_accepts_reviewed_runtime_hardening_without_gate_closure(tmp_path):
+    write_future_reviewed_b2_smoke(tmp_path)
+    evidence_path = (
+        tmp_path
+        / "docs/release-evidence/b2-sandbox"
+        / FUTURE_RUNTIME_SUBJECT
+        / "2026-06-20-211-b2-sandbox-runtime-smoke-1234567.json"
+    )
+    payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+    smoke = payload["evidence_ref"]["runtime_checks"]["b2_211_real_sandbox_smoke"]
+    smoke["hardening"] = {
+        **smoke["hardening"],
+        "resource_limits": {
+            "evidence_class": "live_platform_probe",
+            "memory_limit_mb": 512,
+            "cpu_limit_count": 0.5,
+            "pids_limit": 128,
+            "process_timeout_seconds": 60,
+            "limit_source": "platform_request",
+            "docker_inspection_verified": True,
+            "over_limit_cleanup_verified": True,
+            "bounded_error_projection_verified": True,
+        },
+        "egress_policy": {
+            "evidence_class": "live_platform_probe",
+            "default_deny_outbound": True,
+            "platform_allowlist_enforced": True,
+            "callback_exception_scoped_to_run_token": True,
+            "denied_egress_redacted": True,
+            "policy_source": "platform_policy",
+        },
+        "security_options": {
+            "evidence_class": "live_platform_probe",
+            "privileged": False,
+            "no_new_privileges": True,
+            "capabilities_dropped": True,
+            "docker_socket_mounted": False,
+            "workspace_mount_mode": "rw",
+            "root_filesystem_read_only_or_minimal": True,
+        },
+    }
+    evidence_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
+
+    assert readiness["status"] == "runtime_hardening_acceptance_recorded"
+    assert readiness["status_label"] == "local partial"
+    assert readiness["open_gaps"] == ["b2_issue_review_and_closure_evidence"]
+    assert readiness["closed_runtime_gaps"] == [
+        "b2_211_real_sandbox_smoke",
+        "b2_reviewed_release_evidence",
+        "resource_limits_policy_evidence",
+        "egress_policy_evidence",
+        "security_options_evidence",
+    ]
+    smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
+    assert smoke_evidence["hardening_runtime_evidence"] == {
+        "resource_limits_policy_evidence": "verified_211_runtime_acceptance",
+        "egress_policy_evidence": "verified_211_runtime_acceptance",
+        "security_options_evidence": "verified_211_runtime_acceptance",
+    }
+    assert "gate closable" not in json.dumps(readiness, ensure_ascii=False).lower()
+
+
+def test_b2_sandbox_readiness_rejects_partial_runtime_hardening_closure(tmp_path):
+    write_future_reviewed_b2_smoke(tmp_path)
+    evidence_path = (
+        tmp_path
+        / "docs/release-evidence/b2-sandbox"
+        / FUTURE_RUNTIME_SUBJECT
+        / "2026-06-20-211-b2-sandbox-runtime-smoke-1234567.json"
+    )
+    payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+    smoke = payload["evidence_ref"]["runtime_checks"]["b2_211_real_sandbox_smoke"]
+    smoke["hardening"] = {
+        **smoke["hardening"],
+        "resource_limits": {
+            "evidence_class": "live_platform_probe",
+            "memory_limit_mb": 512,
+            "cpu_limit_count": 0.5,
+            "pids_limit": 128,
+            "process_timeout_seconds": 60,
+            "limit_source": "platform_request",
+            "docker_inspection_verified": True,
+            "over_limit_cleanup_verified": True,
+            "bounded_error_projection_verified": True,
+        },
+    }
+    evidence_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
+
+    assert readiness["status"] == "runtime_acceptance_recorded"
+    assert readiness["open_gaps"] == [
+        "b2_issue_review_and_closure_evidence",
+        "resource_limits_policy_evidence",
+        "egress_policy_evidence",
+        "security_options_evidence",
+    ]
+    assert readiness["closed_runtime_gaps"] == [
+        "b2_211_real_sandbox_smoke",
+        "b2_reviewed_release_evidence",
+    ]
+    smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
+    assert smoke_evidence.get("hardening_runtime_evidence") is None
 
 
 def test_b2_sandbox_readiness_rejects_smoke_with_mismatched_commit_sha(tmp_path):
@@ -553,6 +664,9 @@ def test_b2_sandbox_readiness_tracks_current_verifier_and_generator_contract():
     assert runtime["hardening_evidence_class"] == verifier.HARDENING_EVIDENCE_CLASS
     assert runtime["required_non_expansion_invariants"] == verifier.REQUIRED_NON_EXPANSION_INVARIANTS
     assert runtime["required_non_expansion_invariants"] == generator.NON_EXPANSION_INVARIANTS
+    for section_name in ("resource_limits", "egress_policy", "security_options"):
+        assert section_name in verifier.REQUIRED_HARDENING_FLAGS
+        assert section_name in runtime["verifier_hardening_sections"]
 
 
 def test_b2_sandbox_readiness_markdown_is_gap_first_and_operator_readable():
@@ -586,6 +700,9 @@ def test_b2_sandbox_readiness_markdown_is_gap_first_and_operator_readable():
     assert "hardening.evidence_class" in markdown
     assert "admin_or_allowlist_only" in markdown
     assert "PRD B2/G7 requirements not yet verifier-checked" in markdown
+    assert "hardening.resource_limits" in markdown
+    assert "hardening.egress_policy" in markdown
+    assert "hardening.security_options" in markdown
     assert "resource_limits_policy_evidence" in markdown
     assert "## Hardening Policy Contracts" in markdown
     assert "resource_limits_runtime_hardening_evidence" in markdown
