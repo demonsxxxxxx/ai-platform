@@ -176,7 +176,18 @@ B3 operator-reviewed recorded snapshot source contract:
 `b3_10x4_sdk_subagents`. This source contract only defines what an
 operator-reviewed recorded snapshot must contain for the
 10 sessions x peak 4 SDK subagents/session profile; it is not load evidence by
-itself. Required review evidence:
+itself. The profile-evidence section must bind the snapshot to
+`target_profile_id = b3_10x4_sdk_subagents`, use an allowlisted platform
+runtime source such as `evidence_source = platform_runtime_profile`, record
+`observed_concurrent_sessions >= 10`, record
+`observed_peak_sdk_subagents_per_session >= 4`, and include a safe
+`sdk_subagent_fanout_measurement_ref` artifact reference. It must also keep
+the non-expansion flags
+`production_concurrency_defaults_raised = false`,
+`safe_concurrency_claimed = false`, and
+`ordinary_user_multi_agent_enabled = false`; otherwise
+`tools/capacity_profile_readiness.py` keeps the B3 profile at
+`blocked_missing_profile_evidence`. Required review evidence:
 
 - `runtime_source_identity_and_image_labels`
 - `tenant_user_skill_mix`

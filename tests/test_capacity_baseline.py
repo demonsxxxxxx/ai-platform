@@ -1297,9 +1297,14 @@ def test_capacity_profile_readiness_blocks_b3_target_without_sdk_subagent_profil
     assert target_profile["id"] == "b3_10x4_sdk_subagents"
     assert target_profile["status"] == "blocked_missing_profile_evidence"
     assert target_profile["missing_profile_evidence"] == [
+        "target_profile_id",
+        "evidence_source",
         "observed_concurrent_sessions",
         "observed_peak_sdk_subagents_per_session",
         "sdk_subagent_fanout_measurement_ref",
+        "production_concurrency_defaults_raised",
+        "safe_concurrency_claimed",
+        "ordinary_user_multi_agent_enabled",
     ]
     assert target_profile["production_default_decision"] == (
         "do_not_raise_without_recorded_load_test_evidence"
@@ -1317,10 +1322,25 @@ def test_capacity_profile_readiness_blocks_b3_target_without_sdk_subagent_profil
     }
     assert contract["required_status_before_operator_review"] == "operator_review_required"
     assert contract["required_profile_evidence"] == [
+        "target_profile_id",
+        "evidence_source",
         "observed_concurrent_sessions",
         "observed_peak_sdk_subagents_per_session",
         "sdk_subagent_fanout_measurement_ref",
+        "production_concurrency_defaults_raised",
+        "safe_concurrency_claimed",
+        "ordinary_user_multi_agent_enabled",
     ]
+    assert contract["allowed_profile_evidence_sources"] == [
+        "live_worker_run_payload",
+        "operator_reviewed_recorded_snapshot",
+        "platform_runtime_profile",
+    ]
+    assert contract["required_non_expansion_flags"] == {
+        "production_concurrency_defaults_raised": False,
+        "safe_concurrency_claimed": False,
+        "ordinary_user_multi_agent_enabled": False,
+    }
     assert contract["required_load_test_gates"] == LOAD_TEST_GATES
     assert contract["required_admin_runtime_sections"] == [
         "capacity",
@@ -1355,9 +1375,14 @@ def test_capacity_profile_readiness_allows_b3_operator_review_with_sdk_subagent_
     snapshot = _snapshot_with_complete_recorded_gates()
     snapshot["load_test_evidence"]["profile_evidence"] = {
         "b3_10x4_sdk_subagents": {
+            "target_profile_id": "b3_10x4_sdk_subagents",
+            "evidence_source": "platform_runtime_profile",
             "observed_concurrent_sessions": 10,
             "observed_peak_sdk_subagents_per_session": 4,
             "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
+            "production_concurrency_defaults_raised": False,
+            "safe_concurrency_claimed": False,
+            "ordinary_user_multi_agent_enabled": False,
         }
     }
     readiness = build_capacity_gate_readiness(snapshot)
@@ -1370,9 +1395,14 @@ def test_capacity_profile_readiness_allows_b3_operator_review_with_sdk_subagent_
     assert target_profile["profile_evidence_status"] == "accepted"
     assert target_profile["missing_profile_evidence"] == []
     assert target_profile["observed_profile_evidence"] == {
+        "target_profile_id": "b3_10x4_sdk_subagents",
+        "evidence_source": "platform_runtime_profile",
         "observed_concurrent_sessions": 10,
         "observed_peak_sdk_subagents_per_session": 4,
         "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
+        "production_concurrency_defaults_raised": False,
+        "safe_concurrency_claimed": False,
+        "ordinary_user_multi_agent_enabled": False,
     }
     assert target_profile["safe_concurrency_claim"] == "not_claimed"
     assert target_profile["operator_reviewed_recorded_snapshot_contract"]["evidence_level"] == (
@@ -1387,9 +1417,14 @@ def test_capacity_profile_readiness_rejects_under_target_sdk_subagent_profile_ev
     snapshot = _snapshot_with_complete_recorded_gates()
     snapshot["load_test_evidence"]["profile_evidence"] = {
         "b3_10x4_sdk_subagents": {
+            "target_profile_id": "b3_10x4_sdk_subagents",
+            "evidence_source": "platform_runtime_profile",
             "observed_concurrent_sessions": 9,
             "observed_peak_sdk_subagents_per_session": 3,
             "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
+            "production_concurrency_defaults_raised": False,
+            "safe_concurrency_claimed": False,
+            "ordinary_user_multi_agent_enabled": False,
         }
     }
     readiness = build_capacity_gate_readiness(snapshot)
@@ -1404,6 +1439,69 @@ def test_capacity_profile_readiness_rejects_under_target_sdk_subagent_profile_ev
         "observed_peak_sdk_subagents_per_session",
     ]
     assert target_profile["observed_profile_evidence"] == {}
+
+
+def test_capacity_profile_readiness_rejects_weak_or_expanding_sdk_subagent_profile_evidence():
+    snapshot = _snapshot_with_complete_recorded_gates()
+    snapshot["load_test_evidence"]["profile_evidence"] = {
+        "b3_10x4_sdk_subagents": {
+            "target_profile_id": "wrong-profile",
+            "evidence_source": "manual_note",
+            "observed_concurrent_sessions": 10,
+            "observed_peak_sdk_subagents_per_session": 4,
+            "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
+            "production_concurrency_defaults_raised": True,
+            "safe_concurrency_claimed": True,
+            "ordinary_user_multi_agent_enabled": True,
+        }
+    }
+    readiness = build_capacity_gate_readiness(snapshot)
+
+    profile_readiness = build_capacity_profile_readiness(readiness)
+    target_profile = profile_readiness["profiles"][0]
+
+    assert profile_readiness["status"] == "blocked_missing_profile_evidence"
+    assert target_profile["profile_evidence_status"] == "missing"
+    assert target_profile["missing_profile_evidence"] == [
+        "target_profile_id",
+        "evidence_source",
+        "production_concurrency_defaults_raised",
+        "safe_concurrency_claimed",
+        "ordinary_user_multi_agent_enabled",
+    ]
+    assert target_profile["observed_profile_evidence"] == {}
+
+
+def test_capacity_profile_readiness_redacts_unsafe_sdk_subagent_profile_evidence_ref():
+    snapshot = _snapshot_with_complete_recorded_gates()
+    snapshot["load_test_evidence"]["profile_evidence"] = {
+        "b3_10x4_sdk_subagents": {
+            "target_profile_id": "b3_10x4_sdk_subagents",
+            "evidence_source": "platform_runtime_profile",
+            "observed_concurrent_sessions": 10,
+            "observed_peak_sdk_subagents_per_session": 4,
+            "sdk_subagent_fanout_measurement_ref": "Z:/unsafe/secret-sk-profile.json",
+            "production_concurrency_defaults_raised": False,
+            "safe_concurrency_claimed": False,
+            "ordinary_user_multi_agent_enabled": False,
+        }
+    }
+    readiness = build_capacity_gate_readiness(snapshot)
+
+    profile_readiness = build_capacity_profile_readiness(readiness)
+    target_profile = profile_readiness["profiles"][0]
+    markdown = render_capacity_profile_readiness_markdown(profile_readiness)
+    serialized = json.dumps(profile_readiness, ensure_ascii=False).lower() + markdown.lower()
+
+    assert profile_readiness["status"] == "blocked_missing_profile_evidence"
+    assert target_profile["profile_evidence_status"] == "missing"
+    assert target_profile["missing_profile_evidence"] == [
+        "sdk_subagent_fanout_measurement_ref",
+    ]
+    assert target_profile["observed_profile_evidence"] == {}
+    assert "z:/unsafe" not in serialized
+    assert "secret-sk-profile" not in serialized
+    assert "sdk_subagent_fanout_measurement_ref" in markdown
 
 
 def test_capacity_profile_readiness_recomputes_inconsistent_gate_readiness_fail_closed():
