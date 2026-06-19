@@ -71,6 +71,22 @@ All reports must use the narrowest true status:
 
 No docs-only PR may create `211 verified` or `gate closable` status.
 
+### 1.1 Claim Ladder
+
+Backend productization reports must climb the claim ladder one step at a time:
+
+| Claim level | Meaning | Examples |
+| --- | --- | --- |
+| planning source | A PRD, acceptance matrix, or roadmap names a target and boundary. | B0-B6 sequencing, reference-project intake rules, non-goals. |
+| local contract | Code, tests, or docs define the local behavior and fail-closed conditions. | Route tests, repository tests, verifier contracts, document-contract tests. |
+| runtime evidence | A named deployed runtime subject proves the behavior on 211 or another named target. | Source/runtime relation, image labels, container health, smoke output, redaction scan. |
+| stage closure | The issue/PR/review/merge/evidence loop is complete for the named backend bundle. | Issue closure evidence with residual caveats and rollback path. |
+| beta readiness | One or two selected workflows have owner signoff, capacity, quality, cost, audit, support, and rollback evidence. | Operations Beta or department workflow acceptance package. |
+
+A stage can advance only one claim level at a time. A `211 verified` runtime
+smoke does not by itself create `gate closable`. A `gate closable` backend
+bundle does not by itself create product beta.
+
 ## 2. Non-Goals
 
 | Non-goal | Boundary |
@@ -105,6 +121,32 @@ Each stage has four boundaries:
 - Runtime acceptance: what 211 or another named Docker-capable target must
   prove when the stage touches runtime behavior.
 - Exit gate: what must be true before the stage is `gate closable`.
+
+### 4.0 Required Evidence Shape
+
+Every backend stage issue or closure comment should use a consistent evidence
+shape. The goal is to make the claim level auditable without reading chat
+history.
+
+| Field | Required content |
+| --- | --- |
+| `issue_or_decision` | GitHub issue, no-code decision, or direct-main exception that authorizes the slice. |
+| `source_subject` | Commit, branch, source tree, runtime subject, and whether the claim is exact-current-source or runtime-relevant-source only. |
+| `local_verification` | Targeted commands, tests, static verifiers, and known local blockers. |
+| `runtime_verification` | 211 or named-target smoke, image/container identity, source/runtime relation, redaction result, and captured artifacts. |
+| `review_disposition` | Independent review status, unresolved findings, rejected findings with evidence, and follow-up issues. |
+| `residual_caveats` | Non-closing caveats such as deployment-layout/env-file drift, runtime-only rebase workaround, or partial visual acceptance. |
+| `non_expansion_invariants` | Explicit booleans that prevent a narrow smoke from being read as broader production approval. |
+| `rollback_or_disable_path` | Operator action that restores the prior runtime/configuration or disables the capability. |
+
+Use these default `non_expansion_invariants` unless a later issue explicitly
+changes and proves them:
+
+- `production_concurrency_defaults_raised=false`
+- `ordinary_user_platform_multi_run_orchestration_enabled=false`
+- `docker_sandbox_hardening_claimed=false`
+- `long_term_cross_session_memory_default_enabled=false`
+- `department_rollout_allowed=false`
 
 ### 4.1 B0 Latest-Main Backend Readiness Refresh
 
@@ -397,8 +439,15 @@ classified before implementation.
 | Level | Meaning | Required evidence |
 | --- | --- | --- |
 | Concept-only reference | Borrow vocabulary, workflow shape, UX pattern, or test-matrix idea. | PR body names the source and explains the borrowed concept. |
+| Confirmed repository reference | Use a public repository as a bounded source for product vocabulary, architecture comparisons, or test ideas. | Issue or PR records repository owner/name, URL, reviewed commit or tag when used deeply, license posture, and the exact concept borrowed. |
+| Unconfirmed concept reference | Mention a project, product, pattern, or ecosystem artifact before a verified repository/source is selected. | Keep it out of implementation requirements until a repository, commit or tag, license, and intake level are recorded. |
 | Code adaptation candidate | Adapt a small bounded implementation or test pattern. | Issue records project, commit/tag, license, copied/adapted files, and ai-platform tests. |
 | Runtime dependency proposal | Add a library, sidecar, service, hosted API, or gateway to the running stack. | Separate architecture issue, security review, deployment plan, rollback, 211 smoke, and release evidence. |
+
+Unconfirmed project names stay concept-only until a repository, commit or tag,
+license, and intake level are recorded. Even confirmed repositories remain
+references unless a separate architecture issue proposes code adaptation or a
+runtime dependency.
 
 ### 6.2 Reference Matrix By Backend Stage
 
@@ -406,17 +455,38 @@ classified before implementation.
 | --- | --- | --- | --- |
 | B0 source/auth baseline | Keycloak, Authentik, Ory Kratos | OIDC/session, group/role mapping, admin login, enterprise identity integration vocabulary. | ai-platform tenant mapping, RBAC enforcement, audit, source authority. |
 | B1 memory/context | LangGraph, Mem0, Zep, Graphiti | Checkpointing, short-term vs long-term memory, memory update/delete UX, temporal/provenance concepts. | `memory_records`, context snapshots, tenant policy, retention, delete/redaction authority. |
-| B2 sandbox | Anthropic Sandbox Runtime, OpenHands, E2B, Daytona | Workspace isolation, sandbox lifecycle, command execution, artifact return, cancel, cleanup, callback/egress patterns. | Docker socket trust, external SaaS authority, bypassing ai-platform lease/audit/sandbox policy. |
+| B2 sandbox | OpenHands, E2B, Daytona, Anthropic Sandbox Runtime/SRT concept notes | Workspace isolation, sandbox lifecycle, command execution, artifact return, cancel, cleanup, callback/egress patterns. | Docker socket trust, external SaaS authority, bypassing ai-platform lease/audit/sandbox policy. |
 | B3 worker/model gateway | Temporal Python SDK, Celery, Dramatiq, Taskiq, LiteLLM, Portkey | Durable retry vocabulary, worker scaling, gateway routing, rate limits, budgets, provider fallback, token/cost concepts. | Replacing current queue/worker/model policy without a migration gate; external cost authority. |
 | B4 Skills management | Backstage, Dify, Open WebUI, LibreChat, AnythingLLM | Catalog metadata, release workflow, app/agent marketplace UX, slash/tool discovery patterns. | Skill execution policy, tenant visibility, release authority, backend runtime lifecycle. |
 | B5 files/tools/authz | OpenFGA, SpiceDB, Casbin, Open Policy Agent, ContextForge MCP Gateway, supergateway | Relationship-based ACLs, RBAC/ABAC policy tests, policy bundles, MCP/tool catalog routing, decision logs. | Backend ACL enforcement, exact tool decisions, audit, tenant/run/file/artifact authority. |
 | B6 observability/quality | Langfuse, Phoenix, OpenTelemetry Collector, promptfoo, Ragas, Giskard | Trace/span vocabulary, token/cost dashboards, eval runs, golden-set regression, telemetry export, redaction review. | Release evidence authority, private payload storage, workflow-owner acceptance thresholds. |
 
-### 6.3 Reference Reading Order
+### 6.3 Confirmed Repository References
+
+The following repository names were checked for this PRD update and are allowed
+as confirmed repository references for planning and comparison. They are not
+approved dependencies.
+
+| Area | Repository reference | Use only for |
+| --- | --- | --- |
+| B1 memory/context | `langchain-ai/langgraph`, `mem0ai/mem0`, `getzep/zep`, `getzep/graphiti` | Memory/checkpointing vocabulary, provenance ideas, retention/delete UX, and test-matrix patterns. |
+| B2 sandbox | `OpenHands/OpenHands`, `e2b-dev/E2B`, `daytonaio/daytona` | Sandbox lifecycle, workspace isolation, command execution, artifact return, cancel, cleanup, and cloud/local sandbox comparison. |
+| B3 worker/model gateway | `temporalio/sdk-python`, `celery/celery`, `Bogdanp/dramatiq`, `taskiq-python/taskiq`, `BerriAI/litellm` | Durable task vocabulary, queue/worker retry patterns, model gateway routing, rate limits, budgets, fallback, and token/cost concepts. |
+| B4 Skills management | `backstage/backstage`, `langgenius/dify`, `open-webui/open-webui`, `danny-avila/LibreChat`, `Mintplex-Labs/anything-llm` | Catalog metadata, marketplace UX, agent/app discovery, Skill release workflow vocabulary, slash-command/tool discovery patterns. |
+
+Portkey, Keycloak, Authentik, Ory Kratos, OpenFGA, SpiceDB, Casbin, Open Policy
+Agent, ContextForge MCP Gateway, supergateway, Langfuse, Phoenix,
+OpenTelemetry Collector, promptfoo, Ragas, and Giskard remain valid reference
+targets in the matrix above, but code adaptation still requires a focused issue
+with repository, commit/tag, license, tests, and runtime evidence where
+applicable.
+
+### 6.4 Reference Reading Order
 
 Near-term reference reading should follow the backend risk order:
 
-1. B2 sandbox: Anthropic Sandbox Runtime, OpenHands, E2B, and Daytona.
+1. B2 sandbox: OpenHands, E2B, Daytona, and Anthropic Sandbox Runtime/SRT
+   concept notes.
 2. B3 capacity/model gateway: LiteLLM, Portkey, Temporal, Celery, Dramatiq, and
    Taskiq.
 3. B4 Skills management: Backstage, Dify, Open WebUI, LibreChat, and AnythingLLM.
