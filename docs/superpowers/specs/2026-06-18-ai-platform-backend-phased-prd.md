@@ -353,6 +353,15 @@ not Foundation Runtime concurrency correctness evidence.
   budget, retry/cancel/dead-letter behavior, cleanup completion, token/cost
   ledger completeness, event/artifact volume, and model-gateway timeout or
   provider-limit responses.
+- The B3 operator-reviewed recorded snapshot source contract is emitted by the
+  capacity profile readiness path with schema
+  `ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1`.
+  The target profile is `b3_10x4_sdk_subagents`: 10 sessions x peak 4 SDK
+  subagents/session, equivalent to 10 concurrent user sessions with
+  peak 4 Claude Agent SDK subagents per session. This local contract records
+  expected fields and fail-closed flags only; it does not raise production defaults or claim safe concurrency,
+  does not enable ordinary-user multi-agent exposure,
+  and does not close B3 or G8/G9.
 
 **Runtime acceptance**
 
@@ -370,6 +379,11 @@ not Foundation Runtime concurrency correctness evidence.
   worker heartbeat gaps, model-gateway errors/backpressure, sandbox pressure,
   token/cost totals, cleanup proof, stop-condition status, and residual
   caveats.
+- The B3 operator-reviewed recorded snapshot must also record these source-bound
+  review evidence fields: `runtime_source_identity_and_image_labels`,
+  `tenant_user_skill_mix`, `token_cost_ledger`, `event_artifact_volume`,
+  `sandbox_pressure_and_cleanup`, `latency_p50_p95_p99`,
+  `error_budget_and_dead_letters`, and `rollback_plan_and_stop_conditions`.
 
 **Exit gate**
 

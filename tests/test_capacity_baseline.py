@@ -1304,6 +1304,51 @@ def test_capacity_profile_readiness_blocks_b3_target_without_sdk_subagent_profil
     assert target_profile["production_default_decision"] == (
         "do_not_raise_without_recorded_load_test_evidence"
     )
+    contract = target_profile["operator_reviewed_recorded_snapshot_contract"]
+    assert contract["schema_version"] == (
+        "ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1"
+    )
+    assert contract["profile_id"] == "b3_10x4_sdk_subagents"
+    assert contract["stage"] == "B3"
+    assert contract["evidence_level"] == "source_contract"
+    assert contract["target_profile"] == {
+        "concurrent_sessions": 10,
+        "peak_sdk_subagents_per_session": 4,
+    }
+    assert contract["required_status_before_operator_review"] == "operator_review_required"
+    assert contract["required_profile_evidence"] == [
+        "observed_concurrent_sessions",
+        "observed_peak_sdk_subagents_per_session",
+        "sdk_subagent_fanout_measurement_ref",
+    ]
+    assert contract["required_load_test_gates"] == LOAD_TEST_GATES
+    assert contract["required_admin_runtime_sections"] == [
+        "capacity",
+        "database_pool",
+        "queue",
+        "admission",
+        "backpressure",
+        "sandbox",
+        "observability",
+    ]
+    assert contract["required_operator_review_evidence"] == [
+        "runtime_source_identity_and_image_labels",
+        "tenant_user_skill_mix",
+        "token_cost_ledger",
+        "event_artifact_volume",
+        "sandbox_pressure_and_cleanup",
+        "latency_p50_p95_p99",
+        "error_budget_and_dead_letters",
+        "rollback_plan_and_stop_conditions",
+    ]
+    assert contract["acceptance_rule"] == (
+        "all seven load-test gates recorded, b3_10x4 profile evidence accepted, "
+        "operator review attached, and production defaults unchanged"
+    )
+    assert contract["does_not_raise_defaults"] is True
+    assert contract["does_not_claim_safe_concurrency"] is True
+    assert contract["does_not_enable_ordinary_user_multi_agent"] is True
+    assert contract["does_not_close_b3_gate"] is True
 
 
 def test_capacity_profile_readiness_allows_b3_operator_review_with_sdk_subagent_profile_evidence():
@@ -1330,6 +1375,12 @@ def test_capacity_profile_readiness_allows_b3_operator_review_with_sdk_subagent_
         "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
     }
     assert target_profile["safe_concurrency_claim"] == "not_claimed"
+    assert target_profile["operator_reviewed_recorded_snapshot_contract"]["evidence_level"] == (
+        "source_contract"
+    )
+    assert target_profile["operator_reviewed_recorded_snapshot_contract"][
+        "does_not_claim_safe_concurrency"
+    ] is True
 
 
 def test_capacity_profile_readiness_rejects_under_target_sdk_subagent_profile_evidence():
@@ -1433,6 +1484,12 @@ def test_capacity_profile_readiness_is_secret_safe_and_markdown_gap_first():
     markdown = render_capacity_profile_readiness_markdown(profile_readiness)
 
     assert "Status: `blocked_missing_load_test_evidence`" in markdown
+    assert "## Operator-reviewed recorded snapshot contract" in markdown
+    assert "ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1" in markdown
+    assert "token_cost_ledger" in markdown
+    assert "sandbox_pressure_and_cleanup" in markdown
+    assert "does not raise defaults: `true`" in markdown
+    assert "does not claim safe concurrency: `true`" in markdown
     assert "conservative_internal" in markdown
     assert "Missing profile evidence" in markdown
     assert "observed_concurrent_sessions" in markdown

@@ -123,6 +123,14 @@ evidence when applicable.
 Status labels must stay separate: `local partial`, `PR ready`, `merged`,
 `211 verified`, and `gate closable` are not interchangeable.
 
+B3 operator-reviewed recorded snapshot source contract:
+`ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1` records
+the `b3_10x4_sdk_subagents` profile, the required seven load-test gates, the
+required profile evidence, and the operator review evidence keys before runtime
+load testing. It is source contract only; it does not raise production defaults
+or claim safe concurrency, does not enable ordinary-user multi-agent exposure,
+and does not close B3, G8, or G9.
+
 ## 3. Module Acceptance Matrix
 
 Each module entry lists current status, staged target state, reference sources,
@@ -193,7 +201,7 @@ image matches the exact current source tree.
 | --- | --- |
 | Current state | Tenant-aware queue lease, worker maintenance, active-run admission, bounded metadata, Admin Runtime capacity/backpressure projections, and accepted `380de6b` Foundation Runtime concurrency evidence exist. GitHub #21 is closed, but the capacity-upgrade evidence gate still lacks recorded seven-gate load evidence. |
 | S1 target | Normal controlled internal workloads run under existing defaults; capacity state is visible to admins; defaults are not raised. |
-| S2 target | Seven-gate recorded load evidence exists for API burst, run creation burst, queue depth/lease latency, worker start, model gateway timeout/backpressure, sandbox/container pressure, and cleanup. |
+| S2 target | Seven-gate recorded load evidence exists for API burst, run creation burst, queue depth/lease latency, worker start, model gateway timeout/backpressure, sandbox/container pressure, and cleanup; the B3 `b3_10x4_sdk_subagents` profile has operator-reviewed evidence for 10 sessions x peak 4 SDK subagents/session. |
 | S3/S4 target | Capacity profiles can be operator-reviewed and selected without weakening tenant fairness or fail-closed policy. |
 | Reference sources | Codex event signals for command/test/approval traces; ai-platform-owned model-gateway backpressure requirements; ai-platform owns quota/admission. |
 | S1 acceptance | Queue/worker/capacity focused tests and Admin Runtime smoke or captured projection show queue/admission/backpressure/capacity status; the capacity-upgrade evidence gate remains blocked until recorded evidence exists; no production default increases are committed without load proof. |
