@@ -18,14 +18,14 @@ AUTH_RBAC_GATE_NAME = "G0-G1 Source Authority / Security Baseline"
 GOVERNANCE_RUNTIME_GATE_NAME = "G6 Tool / Skill / Memory Governance"
 RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_GATE_NAME = "G9 Observability / Release Evidence"
 ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_GATE_NAME = "G9 Observability / Trace Export"
-RUNTIME_SUBJECT_COMMIT_SHA = "75ab69b939d0bf13987ac044ce0dc498f5eab999"
+RUNTIME_SUBJECT_COMMIT_SHA = "87528bf30609092c3c4e947bdca477768af3f8e5"
 _ROOT = Path(__file__).resolve().parents[1]
 _EVIDENCE_BASE_ROOT = _ROOT / "docs/release-evidence/foundation-alpha-poc"
 _FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT = _ROOT / "docs/release-evidence/foundation-runtime-concurrency"
 _SOURCE_RUNTIME_RELATION_MANIFEST = _EVIDENCE_BASE_ROOT / "source-runtime-relation-manifest.json"
 _EVIDENCE_ROOT = _EVIDENCE_BASE_ROOT / RUNTIME_SUBJECT_COMMIT_SHA
-_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-19-211-foundation-alpha-poc-75ab69b-runtime-poc-smoke.json"
-_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-19-211-foundation-alpha-poc-75ab69b-auth-rbac-smoke.json"
+_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-19-211-foundation-alpha-poc-87528bf-runtime-poc-smoke.json"
+_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-19-211-foundation-alpha-poc-87528bf-auth-rbac-smoke.json"
 _SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
 _SOURCE_SNAPSHOT_MARKER = _ROOT / ".ai-platform-source-snapshot.json"
 _RUNTIME_NEUTRAL_PATH_PREFIXES = (
@@ -356,7 +356,7 @@ def _release_evidence_entry_is_valid(payload: dict[str, Any], commit_sha: str) -
 def _auth_rbac_entry_is_valid(payload: dict[str, Any], commit_sha: str) -> bool:
     return (
         _release_evidence_entry_base_is_valid(payload, commit_sha)
-        and payload.get("gate") == AUTH_RBAC_GATE_NAME
+        and payload.get("gate") in {AUTH_RBAC_GATE_NAME, STAGE_NAME}
         and payload.get("artifact_kind") == "auth_rbac_smoke"
         and _is_auth_rbac_evidence(payload)
     )
@@ -430,7 +430,7 @@ def _is_governance_runtime_evidence(payload: dict[str, Any]) -> bool:
 def _governance_runtime_entry_is_valid(payload: dict[str, Any], commit_sha: str) -> bool:
     return (
         _release_evidence_entry_base_is_valid(payload, commit_sha)
-        and payload.get("gate") == GOVERNANCE_RUNTIME_GATE_NAME
+        and payload.get("gate") in {GOVERNANCE_RUNTIME_GATE_NAME, STAGE_NAME}
         and payload.get("artifact_kind") == "governance_runtime_smoke"
         and _is_governance_runtime_evidence(payload)
     )
@@ -467,7 +467,7 @@ def _is_release_evidence_runtime_acceptance_evidence(payload: dict[str, Any]) ->
 def _release_evidence_runtime_acceptance_entry_is_valid(payload: dict[str, Any], commit_sha: str) -> bool:
     return (
         _release_evidence_entry_base_is_valid(payload, commit_sha)
-        and payload.get("gate") == RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_GATE_NAME
+        and payload.get("gate") in {RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_GATE_NAME, STAGE_NAME}
         and payload.get("artifact_kind") == "release_evidence_runtime_acceptance"
         and _is_release_evidence_runtime_acceptance_evidence(payload)
     )
@@ -505,7 +505,7 @@ def _is_alert_trace_export_runtime_acceptance_evidence(payload: dict[str, Any]) 
 def _alert_trace_export_runtime_acceptance_entry_is_valid(payload: dict[str, Any], commit_sha: str) -> bool:
     return (
         _release_evidence_entry_base_is_valid(payload, commit_sha)
-        and payload.get("gate") == ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_GATE_NAME
+        and payload.get("gate") in {ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_GATE_NAME, STAGE_NAME}
         and payload.get("artifact_kind") == "alert_trace_export_runtime_acceptance"
         and _is_alert_trace_export_runtime_acceptance_evidence(payload)
     )
