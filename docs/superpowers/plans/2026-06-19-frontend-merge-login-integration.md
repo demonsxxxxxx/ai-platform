@@ -55,6 +55,11 @@ Local verification evidence refreshed on 2026-06-19:
   - Direct 8020 `GET /api/ai/auth/me` with the session cookie returned HTTP 200.
   - 18003 proxied `GET /api/ai/auth/me` with the same session cookie returned HTTP 200.
   - 18003 proxied Admin Runtime and `/api/agents` calls with the same session cookie returned HTTP 200.
+- Browser-level preview smoke used a local SSH tunnel from `127.0.0.1:18083` to 211 port 18003 because direct workstation access to `10.56.0.211:18003` was not stable.
+  - `/auth/login` rendered the AI Platform login page, Chinese labels, disabled registration copy, and no page console errors.
+  - Unauthenticated `/chat` redirected to `/auth/login` with no page console errors.
+  - A local browser-only POC admin-header proxy verified `/settings` renders Admin Runtime, `/mcp` renders Tool Policies, `/skills` renders Skills Governance, and `/agents` renders Agent Apps plus public capabilities with no page console errors.
+  - A local browser-only POC ordinary-user header proxy verified `/chat` renders for `agent:use`, while `/settings` and `/mcp` redirect/deny back to chat and do not render Admin Runtime or Tool Policies.
 
 Remaining Phase 1 integration gaps before `211 verified`:
 
