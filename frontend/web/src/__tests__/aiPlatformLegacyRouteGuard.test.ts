@@ -91,7 +91,26 @@ test("profile preferences do not activate legacy agent config endpoints", () => 
   assert.doesNotMatch(preferencesSource, /getUserPreference/);
   assert.doesNotMatch(preferencesSource, /setUserPreference/);
   assert.match(preferencesSource, /agentApi\.list/);
-  assert.match(preferencesSource, /authApi\.updateMetadata/);
+  assert.doesNotMatch(preferencesSource, /authApi\.updateMetadata/);
+});
+
+test("Phase 1 profile preferences stay local until backend projection exists", () => {
+  const activePreferenceSources = [
+    "../contexts/ThemeContext.tsx",
+    "../components/common/LanguageToggle.tsx",
+    "../components/profile/tabs/ProfilePreferencesTab.tsx",
+    "../contexts/SettingsContext.tsx",
+    "../components/layout/AppContent/index.tsx",
+    "../components/layout/AppContent/Header.tsx",
+  ].map(readSource);
+
+  for (const source of activePreferenceSources) {
+    assert.doesNotMatch(source, /authApi\.updateMetadata/);
+  }
+
+  const modelPublicSource = readSource("../services/api/modelPublic.ts");
+  assert.match(modelPublicSource, /PINNED_MODEL_IDS_STORAGE_KEY/);
+  assert.doesNotMatch(modelPublicSource, /\/api\/auth\/profile/);
 });
 
 test("active notification surfaces are read-only in Phase 1", () => {
@@ -254,6 +273,27 @@ test("active branded shell does not expose upstream LambChat authority links", (
   for (const source of [profileModalSource, helpMenuSource]) {
     assert.doesNotMatch(source, /github\.com\/clivia\/LambChat/);
     assert.doesNotMatch(source, /yanyutin753\.github\.io\/LambChat/);
+  }
+});
+
+test("packaged frontend metadata uses ai-platform branding", () => {
+  const publicSources = [
+    "../../index.html",
+    "../../public/manifest.json",
+    "../../public/offline.html",
+    "../../public/robots.txt",
+    "../../public/sitemap.xml",
+    "../i18n/locales/en.json",
+    "../i18n/locales/zh.json",
+    "../i18n/locales/ja.json",
+    "../i18n/locales/ko.json",
+    "../i18n/locales/ru.json",
+  ].map(readSource);
+
+  for (const source of publicSources) {
+    assert.doesNotMatch(source, /LambChat/);
+    assert.doesNotMatch(source, /lambchat\.com/);
+    assert.doesNotMatch(source, /@lambchat/);
   }
 });
 
@@ -432,4 +472,79 @@ test("Memory panel admin projection uses effective permissions instead of role n
   assert.doesNotMatch(memoryPanelSource, /user\?\.roles/);
   assert.match(memoryPanelSource, /Permission\.ADMIN_STATUS/);
   assert.match(memoryPanelSource, /Permission\.SETTINGS_MANAGE/);
+});
+
+test("Phase 1 auth routes fail closed for backend-missing self-service flows", () => {
+  const appSource = readSource("../App.tsx");
+
+  for (const legacyAuthComponent of [
+    "OAuthCallback",
+    "ForgotPassword",
+    "ResetPassword",
+    "VerifyEmail",
+    "RegistrationPending",
+  ]) {
+    assert.doesNotMatch(
+      appSource,
+      new RegExp(`const ${legacyAuthComponent} = lazy`),
+    );
+    assert.doesNotMatch(appSource, new RegExp(`<${legacyAuthComponent}\\b`));
+  }
+
+  assert.match(appSource, /Phase2AuthUnavailablePage/);
+  assert.match(appSource, /path="\/auth\/register"/);
+  assert.match(appSource, /path="\/auth\/callback"/);
+  assert.match(appSource, /path="\/auth\/reset-request"/);
+  assert.match(appSource, /path="\/auth\/reset-password"/);
+  assert.match(appSource, /path="\/auth\/verify-email"/);
+  assert.match(appSource, /path="\/auth\/pending"/);
+});
+
+test("Phase 1 login page does not call registration or OAuth authority", () => {
+  const authPageSource = readSource("../components/auth/AuthPage.tsx");
+
+  assert.doesNotMatch(authPageSource, /const \{[^}]*register/);
+  assert.doesNotMatch(authPageSource, /loginWithOAuth/);
+  assert.doesNotMatch(authPageSource, /authApi\.getOAuthProviders/);
+  assert.doesNotMatch(authPageSource, /authApi\.register/);
+  assert.doesNotMatch(authPageSource, /\/auth\/reset-request/);
+  assert.doesNotMatch(authPageSource, /mode === "register"/);
+  assert.match(authPageSource, /registrationEnabled\s*=\s*false/);
+});
+
+test("Phase 1 profile info is read-only against principal authority", () => {
+  const profileInfoSource = readSource(
+    "../components/profile/tabs/ProfileInfoTab.tsx",
+  );
+  const profileModalSource = readSource(
+    "../components/profile/ProfileModal.tsx",
+  );
+
+  assert.doesNotMatch(profileInfoSource, /uploadApi/);
+  assert.doesNotMatch(profileInfoSource, /authApi\.updateUsername/);
+  assert.doesNotMatch(profileInfoSource, /uploadAvatar/);
+  assert.doesNotMatch(profileInfoSource, /deleteAvatar/);
+  assert.doesNotMatch(profileInfoSource, /isEditingUsername/);
+  assert.doesNotMatch(profileInfoSource, /Permission\.AVATAR_UPLOAD/);
+  assert.doesNotMatch(profileModalSource, /ProfilePasswordTab/);
+});
+
+test("OAuth callback compatibility code must not store fragment tokens in Phase 1", () => {
+  const authApiSource = readSource("../services/api/auth.ts");
+  const callbackSource = readSource("../components/auth/OAuthCallback.tsx");
+
+  assert.doesNotMatch(callbackSource, /setTokens/);
+  assert.doesNotMatch(callbackSource, /access_token/);
+  assert.doesNotMatch(callbackSource, /refresh_token/);
+  assert.doesNotMatch(authApiSource, /setTokens\(response\.access_token/);
+});
+
+test("Phase 1 auth context fails closed for dormant self-service methods", () => {
+  const useAuthSource = readSource("../hooks/useAuth.tsx");
+
+  assert.doesNotMatch(useAuthSource, /authApi\.register/);
+  assert.doesNotMatch(useAuthSource, /buildOAuthLoginUrl/);
+  assert.doesNotMatch(useAuthSource, /authApi\.handleOAuthCallback/);
+  assert.match(useAuthSource, /Self-service registration is scheduled for Phase 2/);
+  assert.match(useAuthSource, /OAuth login is scheduled for Phase 2/);
 });

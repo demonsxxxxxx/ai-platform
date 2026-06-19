@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { Languages, Check } from "lucide-react";
-import { authApi } from "../../services/api";
 
 const LANGUAGES = [
   { code: "en", name: "English", nativeName: "English" },
@@ -25,7 +24,6 @@ export function LanguageToggle({ className }: LanguageToggleProps) {
       i18n.changeLanguage(code);
       localStorage.setItem("language", code);
       setIsOpen(false);
-      authApi.updateMetadata({ language: code }).catch(() => {});
     },
     [i18n],
   );

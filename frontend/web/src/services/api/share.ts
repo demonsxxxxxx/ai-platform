@@ -11,7 +11,6 @@ import type {
 } from "../../types";
 import { API_BASE } from "./config";
 import { authFetch } from "./fetch";
-import { getValidAccessToken } from "./tokenManager";
 
 export const shareApi = {
   /**
@@ -53,18 +52,12 @@ export const shareApi = {
 
   /**
    * 获取分享内容（公开访问）
-   * 使用 skipAuth 以支持未认证访问，但如果已登录会带上 token
+   * 使用 skipAuth 以支持未认证访问；同源登录态通过 cookie 自动携带。
    */
   async getSharedContent(shareId: string): Promise<SharedContentResponse> {
-    // 手动带上 token（如果已登录），同时 skipAuth 避免未登录时 401 跳转登录页
-    const token = await getValidAccessToken();
-    const headers: Record<string, string> = {};
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
     return authFetch<SharedContentResponse>(
       `${API_BASE}/api/share/public/${shareId}`,
-      { skipAuth: true, headers },
+      { skipAuth: true, credentials: "include" },
     );
   },
 };

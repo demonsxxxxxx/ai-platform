@@ -187,6 +187,17 @@ export interface TokenResponse {
   expires_in?: number;
 }
 
+export interface PrincipalResponse {
+  user_id: string;
+  user_name?: string;
+  display_name: string;
+  tenant_id: string;
+  roles: string[];
+  permissions: string[];
+  is_admin: boolean;
+  source: string;
+}
+
 // Token 载荷（解码后的内容）
 export interface TokenPayload {
   sub: string; // user_id

@@ -45,17 +45,39 @@ test("unknown permissions are ignored but known legacy permissions are retained"
   assert.deepEqual(permissions, [Permission.SKILL_READ]);
 });
 
-test("auth state reset clears effective permissions with token and user", () => {
+test("auth state reset clears effective permissions with user principal", () => {
   const useAuthSource = readFileSync(
     new URL("../../hooks/useAuth.tsx", import.meta.url),
     "utf8",
   );
-  const resetBlocks =
-    useAuthSource.match(/setToken\(null\);\s+setUser\(null\);[\s\S]{0,80}/g) ??
-    [];
+  const logoutEventBlock = useAuthSource.match(
+    /const handleLogout = \(\) => \{[\s\S]*?\};/,
+  )?.[0];
+  const explicitLogoutBlock = useAuthSource.match(
+    /const logout = useCallback\(async \(\) => \{[\s\S]*?\}, \[\]\);/,
+  )?.[0];
 
-  assert.ok(resetBlocks.length >= 4);
-  for (const block of resetBlocks) {
-    assert.match(block, /setDynamicPermissions\(\[\]\)/);
-  }
+  assert.ok(logoutEventBlock);
+  assert.match(logoutEventBlock, /setUser\(null\)/);
+  assert.match(logoutEventBlock, /setDynamicPermissions\(\[\]\)/);
+
+  assert.ok(explicitLogoutBlock);
+  assert.match(explicitLogoutBlock, /await authApi\.logout\(\)/);
+  assert.match(explicitLogoutBlock, /setUser\(null\)/);
+  assert.match(explicitLogoutBlock, /setDynamicPermissions\(\[\]\)/);
+});
+
+test("useAuth initializes and authenticates from cookie-backed principal", () => {
+  const useAuthSource = readFileSync(
+    new URL("../../hooks/useAuth.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(useAuthSource, /authApi\.getCurrentUser\(\)/);
+  assert.doesNotMatch(
+    useAuthSource,
+    /if\s*\(\s*!accessToken\s*\)\s*\{[\s\S]{0,120}return;/,
+  );
+  assert.match(useAuthSource, /isAuthenticated:\s*!!user/);
+  assert.doesNotMatch(useAuthSource, /isAuthenticated:\s*!!token\s*&&\s*!!user/);
 });

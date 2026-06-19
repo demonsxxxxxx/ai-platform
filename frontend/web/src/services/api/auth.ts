@@ -6,6 +6,7 @@ import type {
   User,
   UserCreate,
   LoginRequest,
+  PrincipalResponse,
   TokenResponse,
   PermissionsResponse,
   RegisterResponse,
@@ -13,11 +14,31 @@ import type {
 import { API_BASE } from "./config";
 import { clearAuthScopedCaches } from "./authCacheInvalidation";
 import { authFetch } from "./fetch";
-import { setTokens } from "./token";
 import { clearAuthState, refreshTokens } from "./tokenManager";
 
 export function buildOAuthLoginUrl(provider: string): string {
   return `${API_BASE}/api/auth/oauth/${provider}`;
+}
+
+function principalToUser(principal: PrincipalResponse): User {
+  const username = principal.user_name || principal.user_id;
+  return {
+    id: principal.user_id,
+    username,
+    email: "",
+    avatar_url: undefined,
+    roles: principal.roles,
+    permissions: principal.permissions,
+    is_active: true,
+    metadata: {
+      display_name: principal.display_name,
+      tenant_id: principal.tenant_id,
+      is_admin: principal.is_admin,
+      source: principal.source,
+    },
+    created_at: "",
+    updated_at: "",
+  };
 }
 
 export const authApi = {
@@ -27,7 +48,7 @@ export const authApi = {
   async login(
     credentials: LoginRequest,
     turnstileToken?: string,
-  ): Promise<TokenResponse> {
+  ): Promise<PrincipalResponse> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
@@ -35,18 +56,18 @@ export const authApi = {
       headers["X-Turnstile-Token"] = turnstileToken;
     }
 
-    const response = await authFetch<TokenResponse>(
-      `${API_BASE}/api/auth/login`,
+    const response = await authFetch<PrincipalResponse>(
+      `${API_BASE}/api/ai/auth/login`,
       {
         method: "POST",
         skipAuth: true,
+        credentials: "include",
         body: JSON.stringify(credentials),
         headers,
       },
     );
 
     clearAuthScopedCaches();
-    setTokens(response.access_token, response.refresh_token);
     window.dispatchEvent(new CustomEvent("auth:login"));
 
     return response;
@@ -90,14 +111,26 @@ export const authApi = {
    * 获取当前用户信息
    */
   async getCurrentUser(): Promise<User> {
-    return authFetch<User>(`${API_BASE}/api/auth/me`);
+    const principal = await authFetch<PrincipalResponse>(
+      `${API_BASE}/api/ai/auth/me`,
+      { credentials: "include" },
+    );
+    return principalToUser(principal);
   },
 
   /**
    * 登出
    */
-  logout(): void {
-    clearAuthState();
+  async logout(): Promise<void> {
+    try {
+      await authFetch<{ status: string }>(`${API_BASE}/api/ai/auth/logout`, {
+        method: "POST",
+        credentials: "include",
+        skipAuth: true,
+      });
+    } finally {
+      clearAuthState();
+    }
   },
 
   /**
@@ -177,24 +210,11 @@ export const authApi = {
    * 处理 OAuth 回调
    */
   async handleOAuthCallback(
-    provider: string,
-    code: string,
-    state: string,
+    _provider: string,
+    _code: string,
+    _state: string,
   ): Promise<TokenResponse> {
-    const response = await authFetch<TokenResponse>(
-      `${API_BASE}/api/auth/oauth/${provider}/callback`,
-      {
-        method: "POST",
-        skipAuth: true,
-        body: JSON.stringify({ code, state }),
-      },
-    );
-
-    clearAuthScopedCaches();
-    setTokens(response.access_token, response.refresh_token);
-    window.dispatchEvent(new CustomEvent("auth:login"));
-
-    return response;
+    throw new Error("OAuth login is scheduled for Phase 2");
   },
 
   /**

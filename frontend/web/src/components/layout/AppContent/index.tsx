@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useVersion } from "../../../hooks/useVersion";
 import { SIDEBAR_COLLAPSED_STORAGE_KEY } from "../../../hooks/useAuth";
-import { authApi } from "../../../services/api";
 import { ChatAppContent } from "./ChatAppContent";
 import { NonChatAppContent } from "./NonChatAppContent";
 import {
@@ -29,9 +28,6 @@ export function AppContent({ activeTab }: AppContentProps) {
         const next =
           typeof collapsed === "function" ? collapsed(prev) : collapsed;
         localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(next));
-        authApi
-          .updateMetadata({ sidebarCollapsed: String(next) })
-          .catch(() => {});
         return next;
       });
     },

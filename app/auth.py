@@ -164,12 +164,12 @@ def verify_principal_session(token: str) -> AuthPrincipal:
 async def require_principal(request: Request) -> AuthPrincipal:
     principal = principal_from_trusted_headers(request.headers)
     if principal is None:
-        authorization = request.headers.get("authorization", "")
-        if authorization.lower().startswith("bearer "):
-            return verify_principal_session(authorization[7:].strip())
         session_token = request.cookies.get(get_settings().ai_session_cookie_name, "")
         if session_token:
             return verify_principal_session(session_token)
+        authorization = request.headers.get("authorization", "")
+        if authorization.lower().startswith("bearer "):
+            return verify_principal_session(authorization[7:].strip())
     if principal is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "LambChat - AI Agent Platform",
-  "short_name": "LambChat",
-  "description": "A pluggable, multi-tenant AI conversation system. Skills + MCP dual-engine driven, modular by design. SSE streaming, multi-modal document processing, JWT/RBAC auth, and GitHub-synced Skills.",
+  "name": "AI Platform - Agent Workspace",
+  "short_name": "AI Platform",
+  "description": "A company agent workspace for governed chat, skills, tools, artifacts, memory, and runtime operations.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
@@ -62,14 +62,14 @@
     {
       "name": "Skills",
       "short_name": "Skills",
-      "description": "Open the LambChat skills workspace",
+      "description": "Open the AI Platform skills workspace",
       "url": "/skills",
       "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
     },
     {
       "name": "Marketplace",
       "short_name": "Market",
-      "description": "Browse LambChat marketplace skills",
+      "description": "Browse AI Platform marketplace skills",
       "url": "/marketplace",
       "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
     }
@@ -80,14 +80,14 @@
       "sizes": "1280x640",
       "type": "image/png",
       "form_factor": "wide",
-      "label": "LambChat AI agent workspace"
+      "label": "AI Platform agent workspace"
     },
     {
       "src": "/images/best-practice/mobile-view.webp",
       "sizes": "750x1624",
       "type": "image/webp",
       "form_factor": "narrow",
-      "label": "LambChat mobile chat workspace"
+      "label": "AI Platform mobile chat workspace"
     }
   ],
   "launch_handler": {

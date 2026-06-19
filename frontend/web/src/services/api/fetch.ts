@@ -3,13 +3,7 @@
  */
 
 import i18n from "i18next";
-import { getRefreshToken } from "./token";
-import {
-  getValidAccessToken,
-  redirectToLogin,
-  refreshAccessToken,
-  clearAuthState,
-} from "./tokenManager";
+import { redirectToLogin, clearAuthState } from "./tokenManager";
 import { translateBackendError } from "../../utils/backendErrors";
 
 // ============================================
@@ -18,12 +12,11 @@ import { translateBackendError } from "../../utils/backendErrors";
 
 interface FetchOptions extends RequestInit {
   skipAuth?: boolean;
-  _retry?: boolean;
 }
 
 /**
  * 带认证的 fetch 封装
- * 自动添加 Authorization header（使用 getValidAccessToken 主动刷新过期 token）
+ * Sends same-origin cookies for ai-platform session auth.
  * 处理 401 响应
  */
 export async function authFetch<T>(
@@ -33,7 +26,6 @@ export async function authFetch<T>(
   const {
     skipAuth = false,
     headers = {},
-    _retry = false,
     ...restOptions
   } = options;
 
@@ -45,19 +37,10 @@ export async function authFetch<T>(
     ...headers,
   };
 
-  // Use getValidAccessToken to proactively refresh expired tokens,
-  // avoiding unnecessary 401 round-trips.
-  if (!skipAuth) {
-    const token = await getValidAccessToken();
-    if (token) {
-      (finalHeaders as Record<string, string>)["Authorization"] =
-        `Bearer ${token}`;
-    }
-  }
-
   const response = await fetch(url, {
     ...restOptions,
     headers: finalHeaders,
+    credentials: restOptions.credentials ?? "include",
   });
 
   // 检查当前用户是否被修改（需要重新登录）
@@ -68,18 +51,6 @@ export async function authFetch<T>(
 
   // 处理 401 未授权响应
   if (response.status === 401 && !skipAuth) {
-    const refreshToken = getRefreshToken();
-
-    if (refreshToken && !_retry) {
-      try {
-        await refreshAccessToken();
-      } catch (error) {
-        redirectToLogin();
-        throw error;
-      }
-      return authFetch<T>(url, { ...options, skipAuth: false, _retry: true });
-    }
-
     redirectToLogin();
     throw new Error("Unauthorized");
   }

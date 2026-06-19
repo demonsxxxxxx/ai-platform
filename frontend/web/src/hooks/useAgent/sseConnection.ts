@@ -6,11 +6,6 @@
 import { fetchEventSource } from "@microsoft/fetch-event-source";
 import { uuid } from "../../utils/uuid";
 import { sessionApi } from "../../services/api";
-import {
-  getValidAccessToken,
-  refreshAccessToken,
-} from "../../services/api/tokenManager";
-import { getRefreshToken } from "../../services/api/token";
 import type { EventType, StreamEvent } from "./types";
 import { handleStreamEvent, type EventHandlerContext } from "./eventHandlers";
 import { clearAllLoadingStates } from "./messageParts";
@@ -98,7 +93,6 @@ export async function connectToSSE(
   targetRunId: string,
   messageId: string,
   ctx: SSEConnectionContext,
-  hasRetried = false,
 ): Promise<void> {
   const {
     abortControllerRef,
@@ -120,12 +114,6 @@ export async function connectToSSE(
   }
   abortControllerRef.current = new AbortController();
 
-  const token = await getValidAccessToken();
-  const headers: Record<string, string> = {};
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
-
   console.log(
     `[SSE] Connecting: session=${targetSessionId}, run_id=${targetRunId}`,
   );
@@ -139,34 +127,13 @@ export async function connectToSSE(
     await fetchEventSource(
       `/api/chat/sessions/${targetSessionId}/stream?run_id=${targetRunId}`,
       {
-        headers,
+        headers: {},
+        credentials: "include",
         signal: abortControllerRef.current.signal,
         openWhenHidden: true,
         onopen: async (response) => {
           if (response.status === 401) {
-            if (hasRetried) {
-              // refreshAccessToken() in the first attempt already handled redirect
-              // if needed, so just abort and throw
-              throw new Error("SSE unauthorized after token refresh");
-            }
-            if (!getRefreshToken()) {
-              throw new Error("SSE unauthorized: no refresh token");
-            }
-            try {
-              await refreshAccessToken();
-            } catch {
-              throw new Error("SSE unauthorized: token refresh failed");
-            }
-            abortControllerRef.current?.abort();
-            isConnectingRef.current = false;
-            await connectToSSE(
-              targetSessionId,
-              targetRunId,
-              messageId,
-              ctx,
-              true,
-            );
-            return;
+            throw new Error("SSE unauthorized");
           }
           if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);

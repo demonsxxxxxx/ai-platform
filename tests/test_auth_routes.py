@@ -79,6 +79,26 @@ def test_require_principal_accepts_signed_session_cookie(monkeypatch):
     assert response.json() == {"user_id": "W001", "source": "company-login"}
 
 
+def test_require_principal_prefers_cookie_over_legacy_bearer(monkeypatch):
+    monkeypatch.setattr("app.auth.get_settings", lambda: auth_settings())
+    cookie_token = sign_principal_session(AuthPrincipal("cookie-user", "Cookie User", "default", source="company-login"))
+    legacy_bearer = sign_principal_session(AuthPrincipal("legacy-user", "Legacy User", "default", source="compat-token"))
+    app = FastAPI()
+
+    @app.get("/probe")
+    async def probe(principal: AuthPrincipal = Depends(require_principal)):
+        return {"user_id": principal.user_id, "source": principal.source}
+
+    response = TestClient(app).get(
+        "/probe",
+        cookies={"ai_platform_session": cookie_token},
+        headers={"Authorization": f"Bearer {legacy_bearer}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"user_id": "cookie-user", "source": "company-login"}
+
+
 def test_login_sets_cookie_and_returns_ai_role(monkeypatch):
     async def fake_login(username, password):
         assert username == "dev001"

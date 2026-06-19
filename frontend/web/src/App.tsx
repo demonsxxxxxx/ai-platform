@@ -1,5 +1,11 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { Routes, Route, useParams, useNavigate } from "react-router-dom";
+import {
+  Routes,
+  Route,
+  useParams,
+  useNavigate,
+  useLocation,
+} from "react-router-dom";
 import { Toaster } from "react-hot-toast";
 import { useTranslation } from "react-i18next";
 import { ArrowLeft, ShieldAlert } from "lucide-react";
@@ -24,31 +30,6 @@ function routePermissions(tab: Phase1SurfacePolicy["tab"]) {
   return getRoutePermissions(tab);
 }
 
-const OAuthCallback = lazy(() =>
-  import("./components/auth/OAuthCallback").then((m) => ({
-    default: m.OAuthCallback,
-  })),
-);
-const ForgotPassword = lazy(() =>
-  import("./components/auth/ForgotPassword").then((m) => ({
-    default: m.ForgotPassword,
-  })),
-);
-const ResetPassword = lazy(() =>
-  import("./components/auth/ResetPassword").then((m) => ({
-    default: m.ResetPassword,
-  })),
-);
-const VerifyEmail = lazy(() =>
-  import("./components/auth/VerifyEmail").then((m) => ({
-    default: m.VerifyEmail,
-  })),
-);
-const RegistrationPending = lazy(() =>
-  import("./components/auth/RegistrationPending").then((m) => ({
-    default: m.RegistrationPending,
-  })),
-);
 const LandingPage = lazy(() =>
   import("./components/landing/LandingPage").then((m) => ({
     default: m.LandingPage,
@@ -280,25 +261,78 @@ function MemoryPage() {
   return <AppContent key="memory" activeTab="memory" />;
 }
 
-// Auth page wrapper - redirects to /chat after successful login/register
-function AuthPageWrapper({
-  initialMode,
-}: {
-  initialMode?: "login" | "register";
-}) {
+// Auth page wrapper - redirects to /chat after successful login
+function AuthPageWrapper() {
   const navigate = useNavigate();
   useSEO({
-    title: initialMode === "register" ? "auth.register" : "auth.login",
-    path: initialMode === "register" ? "/auth/register" : "/auth/login",
+    title: "auth.login",
+    path: "/auth/login",
     noindex: true,
   });
   return (
     <AuthPage
-      initialMode={initialMode}
       onSuccess={(redirectPath) =>
         navigate(redirectPath ?? "/chat", { replace: true })
       }
     />
+  );
+}
+
+function Phase2AuthUnavailablePage({
+  title,
+}: {
+  title: string;
+}) {
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  useSEO({
+    title,
+    description:
+      "This authentication self-service route is disabled until ai-platform owns the backend contract.",
+    path: location.pathname,
+    noindex: true,
+  });
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-white p-4 dark:bg-stone-950 sm:p-6">
+      <section
+        aria-labelledby="phase2-auth-unavailable-title"
+        className="w-full max-w-xl rounded-lg border border-amber-200/70 bg-white p-5 shadow-sm dark:border-amber-900/50 dark:bg-stone-900"
+      >
+        <div className="flex items-start gap-3">
+          <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+            <ShieldAlert size={20} strokeWidth={1.8} />
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs font-semibold uppercase text-amber-700 dark:text-amber-300">
+              phase-2-backend
+            </p>
+            <h1
+              id="phase2-auth-unavailable-title"
+              className="mt-1 text-base font-semibold text-stone-900 dark:text-stone-50"
+            >
+              {title}
+            </h1>
+            <p className="mt-2 text-sm leading-6 text-stone-600 dark:text-stone-300">
+              Company login is the Phase 1 authority. This self-service flow
+              stays closed until the backend owns the matching tenant and RBAC
+              contract.
+            </p>
+          </div>
+        </div>
+        <div className="mt-5">
+          <button
+            type="button"
+            onClick={() => navigate("/auth/login", { replace: true })}
+            className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-stone-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-stone-700 focus:outline-none focus:ring-2 focus:ring-stone-400 focus:ring-offset-2 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-white"
+          >
+            <ArrowLeft size={16} strokeWidth={1.8} />
+            Back to login
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -397,7 +431,9 @@ function App() {
             <Route path="/auth/login" element={<AuthPageWrapper />} />
             <Route
               path="/auth/register"
-              element={<AuthPageWrapper initialMode="register" />}
+              element={
+                <Phase2AuthUnavailablePage title="Self-service registration is scheduled for Phase 2" />
+              }
             />
             <Route
               path="/chat/:sessionId?"
@@ -590,15 +626,36 @@ function App() {
                 </ProtectedRoute>
               }
             />
-            {/* OAuth callback page - handles OAuth redirect from backend */}
-            <Route path="/auth/callback" element={<OAuthCallback />} />
-            {/* Password reset pages - no auth required */}
-            <Route path="/auth/reset-request" element={<ForgotPassword />} />
-            <Route path="/auth/reset-password" element={<ResetPassword />} />
-            {/* Email verification page - no auth required */}
-            <Route path="/auth/verify-email" element={<VerifyEmail />} />
-            {/* Registration pending verification page - no auth required */}
-            <Route path="/auth/pending" element={<RegistrationPending />} />
+            <Route
+              path="/auth/callback"
+              element={
+                <Phase2AuthUnavailablePage title="OAuth callback is scheduled for Phase 2" />
+              }
+            />
+            <Route
+              path="/auth/reset-request"
+              element={
+                <Phase2AuthUnavailablePage title="Password recovery is scheduled for Phase 2" />
+              }
+            />
+            <Route
+              path="/auth/reset-password"
+              element={
+                <Phase2AuthUnavailablePage title="Password reset is scheduled for Phase 2" />
+              }
+            />
+            <Route
+              path="/auth/verify-email"
+              element={
+                <Phase2AuthUnavailablePage title="Email verification is scheduled for Phase 2" />
+              }
+            />
+            <Route
+              path="/auth/pending"
+              element={
+                <Phase2AuthUnavailablePage title="Registration verification is scheduled for Phase 2" />
+              }
+            />
             {/* Public shared session page - no auth required */}
             <Route
               path="/shared/:shareId"

@@ -18,7 +18,6 @@ import { ModelSelector } from "../../agent/ModelSelector";
 import { UserMenu } from "../UserMenu";
 import { useTheme } from "../../../contexts/ThemeContext";
 import { useSettingsContext } from "../../../contexts/SettingsContext";
-import { authApi } from "../../../services/api";
 import { notificationApi } from "../../../services/api/notification";
 import { NotificationDialog } from "../../notification/NotificationDialog";
 import type { TabType } from "./types";
@@ -343,9 +342,6 @@ export function Header({
                         onClick={() => {
                           i18n.changeLanguage(lang.code);
                           localStorage.setItem("language", lang.code);
-                          authApi
-                            .updateMetadata({ language: lang.code })
-                            .catch(() => {});
                           setLangMenuOpen(false);
                           setMobileMenuOpen(false);
                         }}

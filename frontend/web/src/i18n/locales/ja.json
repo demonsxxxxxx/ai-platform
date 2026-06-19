@@ -9,7 +9,7 @@
     "currentVersion": "現在のバージョン",
     "gitTag": "Git タグ",
     "latestVersion": "最新バージョン",
-    "title": "LambChat について",
+    "title": "AI Platform について",
     "upToDate": "最新バージョンをお使いです！",
     "updateAvailable": "新しいバージョンが利用可能です！",
     "viewOnGitHub": "GitHub で見る",
@@ -192,7 +192,7 @@
       "name": "Search Agent"
     }
   },
-  "appName": "LambChat",
+  "appName": "AI Platform",
   "runPlayback": {
     "artifacts": "成果物",
     "download": "ダウンロード",
@@ -470,7 +470,7 @@
     "deleteError": "設定の削除に失敗しました",
     "deleteSuccess": "設定を削除しました",
     "deleteTitle": "チャンネルインスタンスを削除",
-    "description": "お気に入りのチャットプラットフォームをLambChatに接続",
+    "description": "承認済みのチャットプラットフォームを AI Platform に接続",
     "disconnected": "未接続",
     "enabled": "チャンネルを有効化",
     "enabledDesc": "このチャンネルを有効化または無効化",
@@ -1686,8 +1686,8 @@
       "title": "ファイルライブラリ"
     },
     "landing": {
-      "description": "LambChatはSkills + MCPデュアルエンジン駆動のプラガブルなマルチテナントAI対話プラットフォーム。Claude、GPT、Geminiなど複数モデルに対応し、リアルタイムSSEストリーミング、マルチエージェントオーケストレーション、モジュラースキルシステムを提供。",
-      "title": "LambChat - AIエージェントプラットフォーム"
+      "description": "AI Platform は、管理されたチャット、スキル、ツール、成果物、メモリ、ランタイム運用のための社内エージェントワークスペースです。",
+      "title": "AI Platform - エージェントワークスペース"
     },
     "marketplace": {
       "description": "コミュニティ構築のAIスキルを発見・インストール。評価・デプロイでAIエージェントの機能を拡張。",
@@ -1734,7 +1734,7 @@
     "ACCESS_TOKEN_EXPIRE_HOURS": "アクセストークン有効期限（時間）",
     "ADMIN_CONTACT_EMAIL": "Aboutダイアログに表示される管理者の連絡先メール",
     "ADMIN_CONTACT_URL": "管理者の連絡先/サポートURL（ヘルプデスク、フィードバックフォーム等）、Aboutダイアログに表示",
-    "APP_BASE_URL": "ファイルダウンロード/アップロードの公開ベースURL（例：https://lambchat.com）。リバースプロキシ環境でrequest.base_urlが不正確な場合に必要。",
+    "APP_BASE_URL": "ファイルダウンロード/アップロードの公開ベースURL。リバースプロキシ環境でrequest.base_urlが不正確な場合に必要。",
     "AUDIO_TRANSCRIPTION_API_KEY": "音声文字起こしプロバイダーの API キー。OpenAI や SiliconFlow などの OpenAI 互換エンドポイントに対応します。",
     "AUDIO_TRANSCRIPTION_BASE_URL": "音声文字起こしプロバイダーの Base URL（例: https://api.openai.com/v1 または https://api.siliconflow.cn/v1）。空欄の場合は既定の OpenAI エンドポイントを使います。",
     "AUDIO_TRANSCRIPTION_MODEL": "audio_transcribe ツールで使う既定の文字起こしモデル名。例: gpt-4o-mini-transcribe や FunAudioLLM/SenseVoiceSmall。",

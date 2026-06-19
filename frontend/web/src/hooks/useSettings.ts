@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
-import { settingsApi, getAccessToken } from "../services/api";
+import { settingsApi } from "../services/api";
 import type { SettingsResponse } from "../types";
 
 export function useSettings() {
@@ -9,10 +9,6 @@ export function useSettings() {
   const [savingKeys, setSavingKeys] = useState<Set<string>>(new Set());
 
   const fetchSettings = useCallback(async () => {
-    // 没有 token 时不请求 settings
-    if (!getAccessToken()) {
-      return;
-    }
     setIsLoading(true);
     setError(null);
     try {

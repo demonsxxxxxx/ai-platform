@@ -6,12 +6,6 @@ import type { FileCheckResult, UploadConfig, UploadResult } from "../../types";
 import { API_BASE } from "./config";
 import { authFetch } from "./fetch";
 import { authenticatedRequest } from "./authenticatedRequest";
-import {
-  getValidAccessToken,
-  redirectToLogin,
-  refreshAccessToken,
-} from "./tokenManager";
-import { getRefreshToken } from "./token";
 
 interface SignedUrlItem {
   key: string;
@@ -54,11 +48,10 @@ export const uploadApi = {
     let aborted = false;
 
     const promise = new Promise<UploadResult>((resolve, reject) => {
-      const uploadOnce = async (retried: boolean) => {
+      const uploadOnce = async () => {
         const formData = new FormData();
         formData.append("file", file);
 
-        const token = await getValidAccessToken();
         if (aborted) {
           reject(new Error("Upload was aborted"));
           return;
@@ -94,16 +87,6 @@ export const uploadApi = {
             return;
           }
 
-          if (xhr.status === 401 && !retried && getRefreshToken()) {
-            try {
-              await refreshAccessToken();
-              await uploadOnce(true);
-              return;
-            } catch {
-              redirectToLogin();
-            }
-          }
-
           try {
             const errorData = JSON.parse(xhr.responseText);
             reject(
@@ -129,14 +112,10 @@ export const uploadApi = {
         xhr.open("POST", url);
         xhr.withCredentials = true;
 
-        if (token) {
-          xhr.setRequestHeader("Authorization", `Bearer ${token}`);
-        }
-
         xhr.send(formData);
       };
 
-      void uploadOnce(false);
+      void uploadOnce();
     });
 
     return {

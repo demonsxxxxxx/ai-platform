@@ -134,6 +134,7 @@ export {
   type RoleUpdate,
   type RoleLimits,
   type LoginRequest,
+  type PrincipalResponse,
   type TokenResponse,
   type TokenPayload,
   type AuthState,

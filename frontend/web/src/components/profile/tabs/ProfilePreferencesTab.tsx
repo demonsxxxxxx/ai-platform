@@ -5,7 +5,7 @@ import { Settings, ChevronRight, Check } from "lucide-react";
 import { toast } from "react-hot-toast";
 import { useTheme } from "../../../contexts/ThemeContext";
 import { useSettingsContext } from "../../../contexts/SettingsContext";
-import { authApi, agentApi } from "../../../services/api";
+import { agentApi } from "../../../services/api";
 import { DEFAULT_THINKING_LEVEL_STORAGE_KEY } from "../../layout/AppContent/useAgentOptions";
 import { SkeletonLine } from "../../skeletons";
 import type { AgentInfo } from "../../../types";
@@ -211,20 +211,17 @@ export function ProfilePreferencesTab() {
   const handleLanguageChange = (code: string) => {
     i18n.changeLanguage(code);
     localStorage.setItem("language", code);
-    authApi.updateMetadata({ language: code }).catch(() => {});
     setOpenDropdown(null);
   };
 
   const handleThemeChange = (newTheme: "light" | "dark") => {
     setTheme(newTheme);
-    authApi.updateMetadata({ theme: newTheme }).catch(() => {});
     setOpenDropdown(null);
   };
 
   const handleNewlineChange = (modifier: NewlineModifier) => {
     setNewlineModifier(modifier);
     localStorage.setItem(NEWLINE_MODIFIER_KEY, modifier);
-    authApi.updateMetadata({ newlineModifier: modifier }).catch(() => {});
     setOpenDropdown(null);
   };
 
@@ -235,9 +232,6 @@ export function ProfilePreferencesTab() {
     setSelectedModelValue(modelValue);
     localStorage.setItem("defaultModelId", modelId);
     localStorage.setItem("defaultModel", modelValue);
-    authApi
-      .updateMetadata({ defaultModel: modelValue, defaultModelId: modelId })
-      .catch(() => {});
     window.dispatchEvent(
       new CustomEvent("model-preference-updated", {
         detail: { modelId, modelValue },
@@ -252,7 +246,6 @@ export function ProfilePreferencesTab() {
     setAgentsSaving(true);
     try {
       localStorage.setItem(DEFAULT_AGENT_ID_STORAGE_KEY, agentId);
-      await authApi.updateMetadata({ defaultAgentId: agentId });
       toast.success(t("agentConfig.preferenceSaved"));
       window.dispatchEvent(new CustomEvent("agent-preference-updated"));
     } catch (err) {
@@ -266,7 +259,6 @@ export function ProfilePreferencesTab() {
   const handleThinkingLevelChange = (level: ThinkingLevel) => {
     setDefaultThinkingLevel(level);
     localStorage.setItem(DEFAULT_THINKING_LEVEL_STORAGE_KEY, level);
-    authApi.updateMetadata({ defaultThinkingLevel: level }).catch(() => {});
     window.dispatchEvent(
       new CustomEvent("thinking-preference-updated", {
         detail: level,
