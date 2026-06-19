@@ -22,6 +22,42 @@ Phase 1 must make the merged frontend usable against current backend contracts:
 
 Phase 2 owns backend-backed department skill marketplace, MCP management, company users/roles/departments, profile-preference persistence, model administration, settings, and notification dismiss/admin workflows.
 
+## 2026-06-19 Execution Evidence
+
+Current status: `PR ready` and `reviewed` for the Phase 1 frontend merge/login/RBAC slice, with a partial 211 preview smoke on port 18003. This is not `211 verified` and not `gate closable` because the official 211 frontend entry on port 18001 still serves the previous thin-shell frontend and no real company-account browser login has been completed on the official entry.
+
+Local verification evidence refreshed on 2026-06-19:
+
+- `python -m compileall -q app tools scripts` exited 0.
+- `python -m pytest tests/test_source_authority_docs.py tests/test_auth_routes.py tests/test_backend_stage_closure_evidence.py -q --basetemp .pytest-tmp\run-refresh-20260619` reported `67 passed, 3 warnings`.
+- `corepack pnpm exec tsx --test src/services/api/__tests__/auth.test.ts src/auth/__tests__/aiPlatformPermissions.test.ts src/components/layout/AppContent/__tests__/phase1SurfacePolicy.test.ts src/services/api/__tests__/phase1Projection.test.ts src/services/api/__tests__/notificationActive.test.ts src/__tests__/aiPlatformLegacyRouteGuard.test.ts` reported `55 passed`.
+- `corepack pnpm exec tsc -b --pretty false` exited 0.
+- `corepack pnpm run projection:audit` exited 0 with status `pass_with_policy_gaps`; the remaining gaps are Phase 2 backend contract gaps rather than active-browser private projection violations.
+- `corepack pnpm run lint` exited 0 with one existing `react-refresh/only-export-components` warning in `frontend/web/src/components/chat/ChatMessage/sessionImageGallery.tsx`.
+- `corepack pnpm run build` exited 0 with existing Vite large-chunk warnings.
+- `git diff --check` exited 0.
+
+211 preview evidence refreshed on 2026-06-19:
+
+- Preview server: `http://10.56.0.211:18003/`, served from `/home/xinlin.jiang/frontend-pr111-smoke/dist` with provenance commit `5e3a747e031e7f1a1ce7c525d19a0ca2d64519ed` and dirty flag `false`.
+- Official entry remains unchanged: `http://10.56.0.211:18001/` still runs `tools/serve_lambchat_thin_shell.py` against `/home/xinlin.jiang/lambchat-poc/frontend-dist-ai-platform`; do not claim official 18001 deployment from the preview evidence.
+- 18003 index returned HTTP 200, `Content-Length: 10343`, and `Last-Modified: Fri, 19 Jun 2026 05:58:25 GMT`.
+- 18003 static assets referenced by `index.html` returned HTTP 200 for the main JS/CSS/vendor bundles.
+- 18003 SPA fallback routes `/auth/login`, `/chat`, `/settings`, `/mcp`, and `/notifications` returned HTTP 200.
+- 18003 proxied `GET /api/ai/health` returned `{"status":"ok"}`.
+- 18003 unauthenticated `GET /api/ai/auth/me` returned HTTP 401 with `missing_authenticated_principal`.
+- 18003 API-level RBAC smoke using a redacted trusted-principal secret verified:
+  - Admin principal `GET /api/ai/auth/me` returned HTTP 200 with `is_admin: true`.
+  - Ordinary principal `GET /api/ai/admin/runtime/overview?include_maintenance_cleanup=false` returned HTTP 403 with `not_ai_admin`.
+  - Admin principal `GET /api/ai/admin/runtime/overview?include_maintenance_cleanup=false` returned HTTP 200.
+  - Ordinary principal `GET /api/agents` returned HTTP 200 with an agent projection envelope.
+
+Remaining Phase 1 integration gaps before `211 verified`:
+
+- Switch or deploy the Phase 1 frontend on the official 211 entry `http://10.56.0.211:18001/` with source/provenance evidence, or explicitly approve 18003 as the review-only preview endpoint.
+- Complete real browser login with a valid company account through `/api/ai/auth/login`, then verify `/api/ai/auth/me`, chat/session loading, ordinary/admin route gates, and current admin projections from the browser session.
+- Avoid direct `git pull`, checkout, reset, or overwrite in `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform` while that 211 repo remains dirty and behind origin.
+
 ## File Structure
 
 - Modify: `frontend/web/src/types/auth.ts`
