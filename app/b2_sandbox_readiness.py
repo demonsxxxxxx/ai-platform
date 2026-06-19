@@ -131,6 +131,53 @@ _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED = [
     "security_options_evidence",
 ]
 
+_HARDENING_POLICY_CONTRACTS = {
+    "resource_limits_policy_evidence": {
+        "required_controls": [
+            "container_memory_limit_defined",
+            "container_cpu_limit_defined",
+            "process_timeout_defined",
+            "workspace_size_or_artifact_limit_defined",
+            "over_limit_cleanup_and_error_projection_defined",
+        ],
+        "runtime_evidence_required": [
+            "211 Docker/equivalent smoke records configured memory and CPU limits for the sandbox container",
+            "over-limit or timeout probe proves the container is stopped and the lease is released",
+            "Admin Runtime projection reports bounded error metadata without host paths or raw Docker payloads",
+        ],
+        "remaining_runtime_gap": "resource_limits_runtime_hardening_evidence",
+    },
+    "egress_policy_evidence": {
+        "required_controls": [
+            "default_deny_outbound_network_policy_defined",
+            "allowlist_owned_by_platform_policy_not_user_payload",
+            "callback_endpoint_exception_scoped_to_run_token",
+            "egress_denial_logged_without_secret_or_url_leakage",
+        ],
+        "runtime_evidence_required": [
+            "211 Docker/equivalent smoke proves an unapproved outbound request is denied",
+            "callback path still works through the scoped run token",
+            "release evidence redaction scan excludes callback tokens, host paths, and denied target secrets",
+        ],
+        "remaining_runtime_gap": "egress_runtime_hardening_evidence",
+    },
+    "security_options_evidence": {
+        "required_controls": [
+            "privileged_container_disabled",
+            "capability_drop_or_minimal_capabilities_defined",
+            "no_new_privileges_enabled",
+            "readonly_root_or_workspace_mount_boundary_defined",
+            "docker_socket_mount_forbidden_by_default",
+        ],
+        "runtime_evidence_required": [
+            "211 Docker/equivalent smoke captures security options from the launched sandbox container",
+            "privileged and Docker-socket access probes fail closed",
+            "cleanup proves no elevated container or mount remains after cancel or failure",
+        ],
+        "remaining_runtime_gap": "security_options_runtime_hardening_evidence",
+    },
+}
+
 _ROLLBACK_ASSUMPTIONS_OPERATOR_STEPS = [
     "record current source/runtime subject, sandbox provider, image, and active lease/container counts",
     "disable governed Docker sandbox exposure for the selected workflow or restore the previous fake/test-only provider posture",
@@ -415,6 +462,21 @@ def _rollback_assumptions_contract() -> dict[str, Any]:
     }
 
 
+def _hardening_policy_contracts() -> dict[str, dict[str, Any]]:
+    return {
+        gap: {
+            "status": "recorded_source_policy_contract",
+            "evidence_level": "source_contract",
+            "does_not_close_broader_b2_g7_gate": True,
+            "does_not_claim_docker_sandbox_production_hardening": True,
+            "required_controls": list(contract["required_controls"]),
+            "runtime_evidence_required": list(contract["runtime_evidence_required"]),
+            "remaining_runtime_gap": contract["remaining_runtime_gap"],
+        }
+        for gap, contract in _HARDENING_POLICY_CONTRACTS.items()
+    }
+
+
 def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
     """Build the B2 real-sandbox readiness contract without claiming runtime closure."""
     root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
@@ -516,6 +578,7 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
         "closed_gate_boundary_gaps": closed_gate_boundary_gaps,
         "gate_boundary_evidence": gate_boundary_evidence,
         "broader_b2_g7_open_requirements": list(_PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED),
+        "hardening_policy_contracts": _hardening_policy_contracts(),
         "rollback_assumptions": _rollback_assumptions_contract(),
         "runtime_acceptance_evidence": runtime_acceptance_evidence,
         "non_expansion_invariants": dict(_B2_NON_EXPANSION_INVARIANTS),
@@ -568,7 +631,9 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
             f"{residual_caveat_lines}\n"
             f"- does not close broader B2/G7 gate: `{str(issue_closure.get('does_not_close_broader_b2_g7_gate')).lower()}`"
         )
-    controls = "\n".join(f"- {control}" for control in readiness["closed_source_controls"])
+    closed_source_controls = "\n".join(
+        f"- {control}" for control in readiness["closed_source_controls"]
+    )
     tests = "\n".join(f"- `{test}`" for test in readiness["source_tests"])
     runtime = readiness["runtime_acceptance"]
     runtime_evidence = "\n".join(
@@ -581,6 +646,27 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
     pending_prd_requirements = "\n".join(
         f"- `{item}`" for item in readiness["broader_b2_g7_open_requirements"]
     )
+    hardening_policy_contracts = []
+    for gap, contract in readiness.get("hardening_policy_contracts", {}).items():
+        required_controls = "\n".join(
+            f"  - `{item}`" for item in contract.get("required_controls", [])
+        ) or "  - none"
+        runtime_evidence_items = "\n".join(
+            f"  - {item}" for item in contract.get("runtime_evidence_required", [])
+        ) or "  - none"
+        hardening_policy_contracts.append(
+            f"### {gap}\n\n"
+            f"- status: `{contract.get('status')}`\n"
+            f"- evidence level: `{contract.get('evidence_level')}`\n"
+            f"- remaining runtime gap: `{contract.get('remaining_runtime_gap')}`\n"
+            f"- does not close broader B2/G7 gate: `{str(contract.get('does_not_close_broader_b2_g7_gate')).lower()}`\n"
+            f"- does not claim Docker sandbox production hardening: `{str(contract.get('does_not_claim_docker_sandbox_production_hardening')).lower()}`\n\n"
+            "Required controls:\n\n"
+            f"{required_controls}\n\n"
+            "Runtime evidence still required:\n\n"
+            f"{runtime_evidence_items}"
+        )
+    hardening_policy_contract_lines = "\n\n".join(hardening_policy_contracts) or "- none"
     rollback = readiness.get("rollback_assumptions", {})
     rollback_operator_steps = "\n".join(
         f"- {item}" for item in rollback.get("operator_steps", [])
@@ -630,6 +716,8 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"{runtime_evidence}\n\n"
         "PRD B2/G7 requirements not yet verifier-checked:\n\n"
         f"{pending_prd_requirements}\n\n"
+        "## Hardening Policy Contracts\n\n"
+        f"{hardening_policy_contract_lines}\n\n"
         "## Rollback Assumptions\n\n"
         f"- status: `{rollback.get('status')}`\n"
         f"- closed gap: `{rollback.get('closed_gap')}`\n"
@@ -647,7 +735,7 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
         "Non-expansion invariants:\n\n"
         f"{invariants}\n\n"
         "## Closed Source Controls\n\n"
-        f"{controls}\n\n"
+        f"{closed_source_controls}\n\n"
         "## Source Tests\n\n"
         f"{tests}\n\n"
         "## Evidence Policy\n\n"
