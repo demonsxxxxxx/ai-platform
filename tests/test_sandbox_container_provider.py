@@ -500,6 +500,35 @@ async def test_docker_provider_maps_resource_limits_to_docker_create_kwargs_with
 
 
 @pytest.mark.asyncio
+async def test_docker_provider_sets_default_security_options_without_docker_socket_mount():
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+    leased_workspace = workspace()
+
+    await provider.create_or_reuse(request(), leased_workspace)
+
+    created = fake.created[0]
+    assert created["privileged"] is False
+    assert created["security_opt"] == ["no-new-privileges:true"]
+    assert created["cap_drop"] == ["ALL"]
+    assert created["read_only"] is True
+    assert created["tmpfs"] == {"/tmp": "rw,noexec,nosuid,size=64m"}
+    assert created["volumes"] == {
+        leased_workspace.workspace_host_path: {
+            "bind": "/workspace",
+            "mode": "rw",
+        }
+    }
+    serialized = str(created).lower()
+    assert "/var/run/docker.sock" not in serialized
+
+
+@pytest.mark.asyncio
 async def test_docker_provider_stop_calls_container_stop_and_removes_lease():
     from app.runtime.sandbox.container_provider import DockerContainerProvider
 
