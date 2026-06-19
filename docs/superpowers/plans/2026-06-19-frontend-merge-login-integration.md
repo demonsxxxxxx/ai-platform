@@ -67,6 +67,17 @@ Remaining Phase 1 integration gaps before `211 verified`:
 - Complete real browser login with a valid company account through `/api/ai/auth/login`, then verify `/api/ai/auth/me`, chat/session loading, ordinary/admin route gates, and current admin projections from the browser session.
 - Avoid direct `git pull`, checkout, reset, or overwrite in `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform` while that 211 repo remains dirty and behind origin.
 
+Official 18001 switch readiness, observed 2026-06-19:
+
+- Current official process is PID `25816`: `python3 /home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/tools/serve_lambchat_thin_shell.py --host 0.0.0.0 --port 18001 --root /home/xinlin.jiang/lambchat-poc/frontend-dist-ai-platform --api-base http://127.0.0.1:8020`.
+- Current preview process is PID `29264`: `python3 /home/xinlin.jiang/frontend-pr111-smoke/tools/serve_ai_platform_frontend.py --host 0.0.0.0 --port 18003 --root /home/xinlin.jiang/frontend-pr111-smoke/dist --api-base http://127.0.0.1:8020`.
+- Current official 18001 index returned HTTP 200, `Content-Length: 11432`, `Last-Modified: Wed, 17 Jun 2026 01:44:08 GMT`.
+- Current preview 18003 index returned HTTP 200, `Content-Length: 10343`, `Last-Modified: Fri, 19 Jun 2026 05:58:25 GMT`.
+- Preview dist provenance remains frontend commit `5e3a747e031e7f1a1ce7c525d19a0ca2d64519ed`, dirty `false`; later PR commits are documentation-only evidence updates.
+- Proposed switch command, only after explicit operator approval: stop PID `25816`, then start `python3 /home/xinlin.jiang/frontend-pr111-smoke/tools/serve_ai_platform_frontend.py --host 0.0.0.0 --port 18001 --root /home/xinlin.jiang/frontend-pr111-smoke/dist --api-base http://127.0.0.1:8020`, logging to an agreed 211 path.
+- Rollback command if the official smoke fails: stop the new 18001 process and restart the recorded old command above against `/home/xinlin.jiang/lambchat-poc/frontend-dist-ai-platform`.
+- Required post-switch smoke: official 18001 index and static assets, `/api/ai/health`, unauthenticated `/api/ai/auth/me`, login page render, unauthenticated `/chat` redirect, ordinary/admin RBAC route checks, and real company-account browser login when test credentials are available.
+
 ## File Structure
 
 - Modify: `frontend/web/src/types/auth.ts`
