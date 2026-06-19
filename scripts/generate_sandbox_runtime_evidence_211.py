@@ -230,6 +230,109 @@ def _timings_from_result(result: object) -> dict[str, object]:
     return timings
 
 
+def _positive_number(value: object) -> bool:
+    if isinstance(value, bool):
+        return False
+    return isinstance(value, int | float) and value > 0
+
+
+def _runtime_probe_section(
+    runtime_probe_results: dict[str, Any] | None,
+    section_name: str,
+) -> dict[str, Any]:
+    if not isinstance(runtime_probe_results, dict):
+        return {}
+    section = runtime_probe_results.get(section_name)
+    return dict(section) if isinstance(section, dict) else {}
+
+
+def _docker_host_config(docker_inspect: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(docker_inspect, dict):
+        return {}
+    host_config = docker_inspect.get("HostConfig")
+    return dict(host_config) if isinstance(host_config, dict) else {}
+
+
+def _docker_mounts(docker_inspect: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(docker_inspect, dict):
+        return []
+    mounts = docker_inspect.get("Mounts")
+    if not isinstance(mounts, list):
+        return []
+    return [dict(item) for item in mounts if isinstance(item, dict)]
+
+
+def _docker_resource_limits_verified(
+    *,
+    resource_limits: dict[str, Any],
+    docker_inspect: dict[str, Any] | None,
+) -> bool:
+    host_config = _docker_host_config(docker_inspect)
+    if not host_config:
+        return False
+    memory_bytes = host_config.get("Memory")
+    nano_cpus = host_config.get("NanoCpus")
+    pids_limit = host_config.get("PidsLimit")
+    return (
+        _positive_number(memory_bytes)
+        and int(memory_bytes) == int(resource_limits.get("memory_mb") or 0) * 1024 * 1024
+        and _positive_number(nano_cpus)
+        and int(nano_cpus) == int(float(resource_limits.get("cpu_count") or 0) * 1_000_000_000)
+        and _positive_number(pids_limit)
+        and int(pids_limit) == int(resource_limits.get("pids_limit") or 0)
+    )
+
+
+def _docker_socket_mounted(docker_inspect: dict[str, Any] | None) -> bool:
+    for mount in _docker_mounts(docker_inspect):
+        values = [mount.get("Source"), mount.get("Destination"), mount.get("Name")]
+        if any("/var/run/docker.sock" in str(value) for value in values if value is not None):
+            return True
+    host_config = _docker_host_config(docker_inspect)
+    binds = host_config.get("Binds")
+    if isinstance(binds, list):
+        return any("/var/run/docker.sock" in str(bind) for bind in binds)
+    return False
+
+
+def _workspace_mount_mode(docker_inspect: dict[str, Any] | None) -> str:
+    for mount in _docker_mounts(docker_inspect):
+        if mount.get("Destination") == "/workspace":
+            return "rw" if mount.get("RW") is not False else "ro"
+    host_config = _docker_host_config(docker_inspect)
+    binds = host_config.get("Binds")
+    if isinstance(binds, list):
+        for bind in binds:
+            parts = str(bind).split(":")
+            if len(parts) >= 2 and parts[1] == "/workspace":
+                return "ro" if len(parts) >= 3 and "ro" in parts[2].split(",") else "rw"
+    return ""
+
+
+def _docker_security_options(docker_inspect: dict[str, Any] | None) -> dict[str, object]:
+    host_config = _docker_host_config(docker_inspect)
+    if not host_config:
+        return {
+            "privileged": False,
+            "no_new_privileges": False,
+            "capabilities_dropped": False,
+            "docker_socket_mounted": False,
+            "workspace_mount_mode": "rw",
+            "root_filesystem_read_only_or_minimal": False,
+        }
+    security_opt = [str(item).lower() for item in host_config.get("SecurityOpt") or []]
+    cap_drop = [str(item).upper() for item in host_config.get("CapDrop") or []]
+    read_only = bool(host_config.get("ReadonlyRootfs"))
+    return {
+        "privileged": bool(host_config.get("Privileged")),
+        "no_new_privileges": "no-new-privileges:true" in security_opt,
+        "capabilities_dropped": "ALL" in cap_drop,
+        "docker_socket_mounted": _docker_socket_mounted(docker_inspect),
+        "workspace_mount_mode": _workspace_mount_mode(docker_inspect),
+        "root_filesystem_read_only_or_minimal": read_only,
+    }
+
+
 def _platform_hardening_evidence(
     *,
     run_id: str,
@@ -238,8 +341,13 @@ def _platform_hardening_evidence(
     released_lease_id: str,
     release_reason: str,
     resource_limits: dict[str, Any] | None = None,
+    docker_inspect: dict[str, Any] | None = None,
+    runtime_probe_results: dict[str, Any] | None = None,
 ) -> dict[str, object]:
     limits = resource_limits if isinstance(resource_limits, dict) else {}
+    resource_probe = _runtime_probe_section(runtime_probe_results, "resource_limits")
+    egress_probe = _runtime_probe_section(runtime_probe_results, "egress_policy")
+    security_options = _docker_security_options(docker_inspect)
     return {
         "lease_isolation": {
             "evidence_class": "live_platform_probe",
@@ -303,26 +411,30 @@ def _platform_hardening_evidence(
             "pids_limit": int(limits.get("pids_limit") or 0),
             "process_timeout_seconds": int(limits.get("max_seconds") or 0),
             "limit_source": "platform_request",
-            "docker_inspection_verified": False,
-            "over_limit_cleanup_verified": False,
-            "bounded_error_projection_verified": False,
+            "docker_inspection_verified": _docker_resource_limits_verified(
+                resource_limits=limits,
+                docker_inspect=docker_inspect,
+            ),
+            "over_limit_cleanup_verified": resource_probe.get("over_limit_cleanup_verified") is True,
+            "bounded_error_projection_verified": resource_probe.get("bounded_error_projection_verified") is True,
         },
         "egress_policy": {
             "evidence_class": "live_platform_probe",
-            "default_deny_outbound": False,
-            "platform_allowlist_enforced": False,
-            "callback_exception_scoped_to_run_token": True,
-            "denied_egress_redacted": False,
-            "policy_source": "not_runtime_verified",
+            "default_deny_outbound": egress_probe.get("default_deny_outbound") is True,
+            "platform_allowlist_enforced": egress_probe.get("platform_allowlist_enforced") is True,
+            "callback_exception_scoped_to_run_token": egress_probe.get(
+                "callback_exception_scoped_to_run_token",
+                True,
+            )
+            is True,
+            "denied_egress_redacted": egress_probe.get("denied_egress_redacted") is True,
+            "policy_source": (
+                "platform_policy" if egress_probe.get("policy_source") == "platform_policy" else "not_runtime_verified"
+            ),
         },
         "security_options": {
             "evidence_class": "live_platform_probe",
-            "privileged": False,
-            "no_new_privileges": False,
-            "capabilities_dropped": False,
-            "docker_socket_mounted": False,
-            "workspace_mount_mode": "rw",
-            "root_filesystem_read_only_or_minimal": False,
+            **security_options,
         },
         "source": {
             "runtime_submit": "app.runtime.sandbox.runtime.SandboxRuntime.submit",
@@ -370,11 +482,15 @@ def run_platform_runtime_probe(
     sandbox_executor_image: str,
     workspace_root: str,
     callback_url: str,
+    docker_cmd: tuple[str, ...] = ("docker",),
+    run: Callable[..., Any] = subprocess.run,
 ) -> dict[str, object]:
-    captured: dict[str, str] = {
+    captured: dict[str, Any] = {
         "recorded_lease_id": "",
         "released_lease_id": "",
         "release_reason": "",
+        "container_name": "",
+        "docker_inspect": None,
     }
 
     async def probe() -> object:
@@ -401,7 +517,13 @@ def run_platform_runtime_probe(
                 captured["recorded_user_id"] = lease.user_id
                 captured["recorded_session_id"] = lease.session_id
                 captured["recorded_run_id"] = lease.run_id
+                captured["container_name"] = lease.container_name
                 captured["workspace_container_path"] = workspace.workspace_container_path
+                captured["docker_inspect"] = _inspect_docker_container(
+                    lease.container_name,
+                    docker_cmd=docker_cmd,
+                    run=run,
+                )
                 return lease_id
 
             async def release_lease(lease, reason, lease_record_id=None):
@@ -455,6 +577,7 @@ def run_platform_runtime_probe(
         released_lease_id=released_lease_id,
         release_reason=captured.get("release_reason") or "",
         resource_limits={"max_seconds": 60, "memory_mb": 512, "cpu_count": 0.5, "pids_limit": 128},
+        docker_inspect=captured.get("docker_inspect") if isinstance(captured.get("docker_inspect"), dict) else None,
     )
     return {
         "status": str(getattr(result, "status", "")),
@@ -474,6 +597,31 @@ def _run_docker(
         stderr = getattr(completed, "stderr", "") or getattr(completed, "stdout", "")
         raise RuntimeError(_redact(stderr or f"Docker command failed: {' '.join(cmd[:2])}"))
     return completed
+
+
+def _inspect_docker_container(
+    container_name: str,
+    *,
+    docker_cmd: tuple[str, ...],
+    run: Callable[..., Any],
+) -> dict[str, Any] | None:
+    if not container_name:
+        return None
+    completed = _run_docker(
+        [*docker_cmd, "inspect", container_name],
+        run=run,
+        timeout=30,
+        check=False,
+    )
+    if getattr(completed, "returncode", 1) != 0:
+        return None
+    try:
+        payload = json.loads(str(getattr(completed, "stdout", "") or "[]"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
+        return None
+    return dict(payload[0])
 
 
 def run_cancel_probe(
@@ -602,6 +750,7 @@ def main(argv: list[str] | None = None) -> int:
                     sandbox_executor_image=args.sandbox_executor_image or args.cancel_image,
                     workspace_root=args.workspace_root,
                     callback_url=callback_url,
+                    docker_cmd=docker_cmd,
                 )
             else:
                 recorder.runtime_mode = "executor"
