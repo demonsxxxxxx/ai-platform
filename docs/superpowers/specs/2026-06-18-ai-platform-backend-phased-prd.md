@@ -27,18 +27,18 @@ The backend route is:
    observability, cost, and release evidence.
 5. Raise capacity only after recorded load/backpressure evidence.
 
-The four P0 backend capabilities are:
+The first four backend productization priorities are:
 
 | Priority | Capability | Product target |
 | --- | --- | --- |
-| P0-1 | Memory/context usable | Selected workflows can use governed memory/context with provenance, opt-out, retention, delete/redaction, export, and deny-path evidence. |
-| P0-2 | Real sandbox usable | A Docker/equivalent provider can run governed SDK Skill tasks; `fake` is local/test-only. |
-| P0-3 | Worker/model-gateway capacity | The initial target profile, 10 concurrent sessions with peak 4 SDK subagents per session, is measured before any default increase. |
-| P0-4 | Skills management | Skills move from mutable folders to upload/import, immutable versioning, release review, rollback, dependency evidence, pinned run snapshots, and audit. |
+| 1 | Memory/context usable | Selected workflows can use governed memory/context with provenance, opt-out, retention, delete/redaction, export, and deny-path evidence. |
+| 2 | Real sandbox usable | A Docker/equivalent provider can run governed SDK Skill tasks; `fake` is local/test-only. |
+| 3 | Worker/model-gateway capacity | The initial target profile, 10 concurrent sessions with peak 4 SDK subagents per session, is measured before any default increase. |
+| 4 | Skills management | Skills move from mutable folders to upload/import, immutable versioning, release review, rollback, dependency evidence, pinned run snapshots, and audit. |
 
 Supporting capabilities are not optional: model-gateway/cost controls,
 file/artifact governance, exact tool-permission binding, and Admin Runtime
-observability are required for the P0 items to be safely exposed.
+observability are required for these priorities to be safely exposed.
 
 ## 1. Authority And Status Language
 
@@ -112,6 +112,13 @@ B0-B6 are planning and acceptance bundles. They do not replace G0-G10 gates.
 | B5 | Files/artifacts/tool permission governance | File upload, artifact ACL, preview/download, exact tool approvals, MCP/shell/filesystem policy, and replay denial are proven. | G6, G7, G9 | `local partial` |
 | B6 | Operations beta and workflow readiness | Admin Runtime, trace/export, alerting, golden-set eval, workflow owner signoff, rollback, and support model exist. | G9, G10 | `local partial` |
 
+Backend-only closure for B4-B6 requires public/admin projection contracts,
+route behavior, evidence records, and deny paths. Browser visual acceptance,
+frontend shell absorption, and detailed interaction polish are tracked by the
+frontend UI absorption PRD. A backend PR must still expose enough safe
+projection for the frontend to build against; it does not have to close visual
+acceptance unless the issue explicitly includes that scope.
+
 ## 4. Stage Gates And Acceptance Boundaries
 
 Each stage has four boundaries:
@@ -138,6 +145,23 @@ history.
 | `residual_caveats` | Non-closing caveats such as deployment-layout/env-file drift, runtime-only rebase workaround, or partial visual acceptance. |
 | `non_expansion_invariants` | Explicit booleans that prevent a narrow smoke from being read as broader production approval. |
 | `rollback_or_disable_path` | Operator action that restores the prior runtime/configuration or disables the capability. |
+
+Use these evidence levels consistently in issues, PR bodies, readiness output,
+release evidence, and closure comments:
+
+| Evidence level | Meaning | Cannot close |
+| --- | --- | --- |
+| `source_contract` | Code, tests, static verifier contracts, or docs define expected behavior and fail-closed conditions. | Runtime acceptance, 211 verification, or production exposure. |
+| `source_probe_on_target_runtime` | A target host can import, inspect, or bind the current source path, but no live governed run proves the behavior. | 211 acceptance for the governed runtime path. |
+| `controlled_live_probe` | A controlled verifier proves a bounded path on a named runtime. | Broad production hardening, ordinary-user exposure, or workflow beta. |
+| `live_worker_run_payload` | A real platform run and worker payload prove the governed path, including platform-issued run, context, Skill, artifact, and event relations. | Broader stage closure without issue, review, rollback, and residual-caveat evidence. |
+| `live_platform_probe` | Platform API, worker, queue, sandbox, or artifact state proves a live target resource lifecycle. | Source-regression-only controls, such as timeout/failure fallback, unless separately tested. |
+| `operator_reviewed_recorded_snapshot` | A redacted, source-bound, reviewed evidence snapshot is accepted by operators. | Product beta without named workflow owner signoff and support/rollback evidence. |
+
+Do not collapse these levels. For example, a `controlled_live_probe` can close a
+named runtime-smoke gap, but it cannot by itself close B2/G7 hardening. A
+`source_probe_on_target_runtime` can support source authority, but it is not a
+live worker-run acceptance proof.
 
 Use these default `non_expansion_invariants` unless a later issue explicitly
 changes and proves them:
@@ -188,10 +212,16 @@ changes and proves them:
 
 ### 4.2 B1 Memory And Context Usable
 
+Minimum product slice: one named document workflow can use a governed
+session/workspace-scoped context pack with provenance. Long-term cross-session
+memory stays disabled by default unless a separate issue proves the full
+long-term memory policy matrix.
+
 **Entry gate**
 
 - A concrete workflow is selected.
-- Memory scope is named: session, project/workspace, or policy-bound long-term.
+- Memory scope is named: session, project/workspace, or policy-bound long-term;
+  the default allowed scope is session/workspace only.
 - Retention, opt-out, delete/redaction, export, context-pack provenance, and
   rollback boundaries are specified.
 - Long-term memory remains fail-closed unless the issue explicitly changes that
@@ -204,25 +234,46 @@ changes and proves them:
   at least one cross-user or cross-tenant denial.
 - Public/admin projections do not expose raw memory content, executor private
   payloads, raw storage keys, or sandbox paths.
+- Export surfaces are allowlisted projections only: bounded metadata, redacted
+  summaries, policy state, provenance, and audit references. Raw memory content,
+  file bodies, artifact bodies, storage keys, backend paths, and sandbox paths
+  are not exported by the B1 backend contract unless a later issue explicitly
+  proves that surface.
 
 **Runtime acceptance**
 
-- One 211 workflow smoke proves memory/context is used by a governed run.
-- Evidence records context provenance, selected policy, redaction result,
-  artifact/event relation, and rollback or cleanup path.
+- A `live_worker_run_payload` smoke on 211 or another named target proves the
+  selected workflow uses memory/context through a governed platform run.
+- Evidence records `context_pack_version`, `context_pack_generated_at`, bounded
+  public provenance, selected policy, redaction result, artifact/event relation,
+  retention/delete/export posture, and rollback or cleanup path.
+- If only a source contract, source probe, or controlled verifier exists, B1
+  remains `local partial` even when a named runtime gap is closed.
 
 **Exit gate**
 
 - Memory is enabled only for the selected governed scope.
 - Long-term memory, if still not fully proven, remains disabled by default.
 - The issue records owner-facing behavior and operator rollback.
+- Closure evidence includes non-expansion invariants for
+  `long_term_cross_session_memory_enabled=false`,
+  `public_projection_only_for_ordinary_users=true`, and
+  `stores_private_executor_material_as_memory=false` unless an explicit later
+  gate changes those values.
 
 **Cannot claim**
 
 - A memory table or route alone does not make memory usable.
 - Session memory smoke does not prove long-term memory.
+- Runtime evidence for one document workflow does not close broader G6/G9,
+  department rollout, or every future memory scope.
 
 ### 4.3 B2 Real Sandbox Usable
+
+Minimum product slice: a real provider executes a governed SDK Skill path under
+platform lease, policy, callback, artifact, cleanup, and projection controls.
+Standalone verifier execution and worker-process task execution are not B2
+product proof.
 
 **Entry gate**
 
@@ -240,10 +291,19 @@ changes and proves them:
 
 **Runtime acceptance**
 
-- 211 Docker/equivalent smoke proves launch, command execution, artifact return,
-  cancel, cleanup, orphan scan, and no private projection leak.
+- 211 Docker/equivalent evidence is recorded at the right evidence level:
+  - `source_contract` for provider, lease, callback, failure, cleanup, and
+    projection tests.
+  - `controlled_live_probe` for bounded verifier launch, command execution,
+    artifact return, cancel, cleanup, orphan scan, and private-projection scan.
+  - `live_worker_run_payload` for a governed SDK Skill run that actually uses
+    the real provider through the platform worker path.
+  - `operator_reviewed_recorded_snapshot` before B2/G7 hardening is considered
+    closable.
 - Evidence includes image/container identity, sandbox profile, resource limit,
-  egress posture, callback validation, and cleanup result.
+  egress posture, callback validation, cancel behavior, artifact return,
+  cleanup result, and the distinction between `live_platform_probe` checks and
+  `source_regression_guard` checks.
 
 **Exit gate**
 
@@ -256,8 +316,19 @@ changes and proves them:
 
 - A successful SDK task in the worker process is not sandbox proof.
 - Docker provider source code without 211 smoke is not production-ready sandbox.
+- A standalone Docker verifier does not prove the governed SDK Skill path unless
+  it is bound to a platform run, Skill snapshot, sandbox lease, callback policy,
+  artifacts, events, and cleanup evidence.
+- Bounded latency or smoke evidence does not close resource-limit policy,
+  egress policy, security-option hardening, ordinary-user high-risk tool
+  exposure, or broader G7 production sandbox hardening.
 
 ### 4.4 B3 Worker And Model-Gateway Capacity
+
+Minimum product slice: prove the selected profile before changing defaults.
+The initial profile is 10 concurrent user sessions with peak 4 Claude Agent SDK
+subagents per session for selected workflows. This is a recorded capacity gate,
+not Foundation Runtime concurrency correctness evidence.
 
 **Entry gate**
 
@@ -265,6 +336,9 @@ changes and proves them:
   - 10 concurrent user sessions.
   - Peak 4 Claude Agent SDK subagents per session.
   - Selected workflows only.
+- Tenant mix, user mix, selected Skill/workflow mix, model/provider route,
+  sandbox involvement, timeout budget, stop condition, and rollback plan are
+  named before the run.
 - Existing production defaults remain unchanged until exit evidence is reviewed.
 
 **Local acceptance**
@@ -275,10 +349,15 @@ changes and proves them:
   volume, and cleanup.
 - Tests prove tenant-aware quota/backpressure, user-aware limits, bounded queue
   metadata, and fail-closed model-gateway policy.
+- The local contract defines pass/fail thresholds for p95/p99 latency, error
+  budget, retry/cancel/dead-letter behavior, cleanup completion, token/cost
+  ledger completeness, event/artifact volume, and model-gateway timeout or
+  provider-limit responses.
 
 **Runtime acceptance**
 
-- 211 or named target records the seven evidence gates:
+- 211 or named target records an `operator_reviewed_recorded_snapshot` covering
+  the seven evidence gates:
   1. API burst behavior.
   2. Run creation burst behavior.
   3. Queue depth and lease latency.
@@ -286,6 +365,11 @@ changes and proves them:
   5. Model-gateway timeout, retry/backoff, provider-limit, and backpressure.
   6. Sandbox/container pressure when workflow uses sandbox.
   7. Cleanup, dead-letter, event/artifact volume, token/cost, and rollback.
+- The snapshot records submitted count, completed count, failed count, cancelled
+  count, p50/p95/p99 latency where applicable, max queue depth, lease latency,
+  worker heartbeat gaps, model-gateway errors/backpressure, sandbox pressure,
+  token/cost totals, cleanup proof, stop-condition status, and residual
+  caveats.
 
 **Exit gate**
 
@@ -297,8 +381,17 @@ changes and proves them:
 
 - More worker processes or higher env values are not capacity proof.
 - One fast run does not prove SDK subagent fanout pressure.
+- Foundation Runtime concurrency evidence proves controlled POC correctness; it
+  does not close the B3 capacity-upgrade evidence gate.
+- A bounded probe or draft evidence bundle is not recorded gate evidence until
+  an operator-reviewed snapshot accepts it.
 
 ### 4.5 B4 Skills Management And Release Governance
+
+Minimum product slice: a run uses an immutable, reviewed platform Skill version
+and records a pinned run snapshot. A governed Skill run proves execution
+governance only; production Skill release also requires package/dependency
+review evidence.
 
 **Entry gate**
 
@@ -320,6 +413,15 @@ changes and proves them:
   applicable.
 - Evidence records selected Skill version, used-skill snapshot, artifacts,
   release decision, dependency review summary, and redaction result.
+- The run proves it used platform release state, immutable package or digest
+  identity, dependency metadata, and `run_skill_snapshots`; it must not rely on
+  a mutable repo folder, mutable image folder, or user-selected filesystem path
+  as production authority.
+- A gate-limited exception can permit a named controlled Skill run without full
+  production package evidence only when it records the exception scope,
+  rollback, dependency caveats, non-expansion invariants, and follow-up issue.
+  It cannot waive tenant visibility, disabled/unreviewed Skill denial, pinned
+  snapshot evidence, redaction, or audit.
 
 **Exit gate**
 
@@ -333,8 +435,14 @@ changes and proves them:
 
 - Copying a Skill directory into an image is not Skills management.
 - A successful ad hoc Skill run does not prove release governance.
+- Pinned Skill execution does not prove SBOM, license, vulnerability, signed
+  package, Admin visual acceptance, or 211 Skill release dashboard acceptance.
 
 ### 4.6 B5 Files, Artifacts, And Tool Permission Governance
+
+Minimum product slice: file/artifact authority and exact tool decisions are two
+sub-contracts under one stage. Evidence for one sub-contract cannot close the
+other.
 
 **Entry gate**
 
@@ -345,9 +453,14 @@ changes and proves them:
 
 **Local acceptance**
 
-- Tests cover file upload namespace, artifact owner/tenant ACL, preview/download
-  authorization, cross-user and cross-tenant denial, exact permission binding to
-  `tool_call_id` or stable request fingerprint, replay denial, and redaction.
+- B5a file/artifact authority tests cover upload namespace, file owner/tenant
+  ACL, artifact owner/tenant ACL, preview/download authorization, preview
+  allowlist, retention, redacted metadata export, and cross-user/cross-tenant
+  denial.
+- B5b exact tool decision tests cover shell, network, MCP, filesystem, and
+  write-capable operations; decisions bind to `tool_call_id` or a stable request
+  fingerprint; `allow_once` cannot replay across unrelated calls; stale,
+  expired, disabled, or wrong-run decisions fail closed.
 
 **Runtime acceptance**
 
@@ -355,6 +468,9 @@ changes and proves them:
   unauthorized denial for the selected workflow.
 - Evidence records principal, tenant/workspace/user/run/file/artifact relation,
   permission decisions, and redaction outcome.
+- If the workflow uses write-capable shell, network, MCP, or filesystem tools,
+  the runtime smoke must also prove exact permission decision binding and replay
+  denial. Otherwise B5b remains open even when B5a passes.
 
 **Exit gate**
 
@@ -367,14 +483,25 @@ changes and proves them:
 
 - Admin download success does not prove ordinary-user ACL safety.
 - Broad "latest allow" decisions do not satisfy exact tool approval.
+- File upload/download denial evidence does not prove shell, MCP, network, or
+  filesystem permission safety.
 
 ### 4.7 B6 Operations Beta And Department Workflow Readiness
+
+Minimum product slice: one or two named internal workflows have owners and
+evidence packages. Abstract platform readiness is not Operations Beta.
 
 **Entry gate**
 
 - One operations package or department workflow package has owner, SLO, capacity
   profile, cost budget, quality gate, alert, trace/export, rollback, and support
   requirements.
+- The workflow package names the workflow owner, business owner, support owner,
+  tenant/workspace scope, expected SDK subagent fanout, required Skills, file
+  and artifact surfaces, memory/context scope, sandbox/tool risk class, model
+  provider policy, alert route, and rollback drill.
+- The package links the relevant B1-B5 evidence or explicitly records which
+  stage remains non-closing for the workflow.
 
 **Local acceptance**
 
@@ -387,6 +514,9 @@ changes and proves them:
 - 211 evidence proves Admin Runtime, trace/export, alert calibration,
   golden-set evaluation, workflow smoke, rollback drill, and owner signoff for
   the selected workflow.
+- Evidence records workflow SLO, p95/p99 or owner-approved latency threshold,
+  quality threshold, cost budget, token/cost actuals, alert delivery, support
+  handoff, rollback timing, and residual caveats.
 
 **Exit gate**
 
@@ -400,6 +530,8 @@ changes and proves them:
 - A generated final document is workflow success, not operations beta.
 - Observability screenshots without redacted evidence and owner signoff are not
   gate closure.
+- B6 cannot be `gate closable` without a named workflow owner and linked B1-B5
+  evidence package.
 
 ## 5. Universal Gate Closure Checklist
 
@@ -427,6 +559,10 @@ Universal blockers:
 - Capacity default increases without B3 evidence.
 - SDK subagent fanout outside queue/admission/cost/event/artifact governance.
 - Long-term memory enabled by default without B1 full acceptance.
+- Treating `source_contract`, `source_probe_on_target_runtime`, or
+  `controlled_live_probe` as broader runtime hardening or beta evidence.
+- B6 or product-beta claims without a named workflow owner, support owner,
+  rollback drill, and linked B1-B5 evidence package.
 
 ## 6. Reference Code Projects
 
@@ -465,14 +601,29 @@ runtime dependency.
 
 The following repository names were checked for this PRD update and are allowed
 as confirmed repository references for planning and comparison. They are not
-approved dependencies.
+approved dependencies. The check recorded the public GitHub repository, default
+branch, license posture reported by GitHub, and latest observed activity on
+2026-06-19. Re-check before deep code review because these are live projects.
 
-| Area | Repository reference | Use only for |
-| --- | --- | --- |
-| B1 memory/context | `langchain-ai/langgraph`, `mem0ai/mem0`, `getzep/zep`, `getzep/graphiti` | Memory/checkpointing vocabulary, provenance ideas, retention/delete UX, and test-matrix patterns. |
-| B2 sandbox | `OpenHands/OpenHands`, `e2b-dev/E2B`, `daytonaio/daytona` | Sandbox lifecycle, workspace isolation, command execution, artifact return, cancel, cleanup, and cloud/local sandbox comparison. |
-| B3 worker/model gateway | `temporalio/sdk-python`, `celery/celery`, `Bogdanp/dramatiq`, `taskiq-python/taskiq`, `BerriAI/litellm` | Durable task vocabulary, queue/worker retry patterns, model gateway routing, rate limits, budgets, fallback, and token/cost concepts. |
-| B4 Skills management | `backstage/backstage`, `langgenius/dify`, `open-webui/open-webui`, `danny-avila/LibreChat`, `Mintplex-Labs/anything-llm` | Catalog metadata, marketplace UX, agent/app discovery, Skill release workflow vocabulary, slash-command/tool discovery patterns. |
+| Area | Repository reference | License posture | Use only for |
+| --- | --- | --- | --- |
+| B1 memory/context | [`langchain-ai/langgraph`](https://github.com/langchain-ai/langgraph) | MIT | Checkpointing and state-graph vocabulary; not ai-platform memory policy. |
+| B1 memory/context | [`mem0ai/mem0`](https://github.com/mem0ai/mem0) | Apache-2.0 | Memory update/delete UX and evaluation ideas; not tenant retention authority. |
+| B1 memory/context | [`getzep/zep`](https://github.com/getzep/zep) | Apache-2.0 | Conversation memory and temporal context patterns; not ai-platform storage schema. |
+| B1 memory/context | [`getzep/graphiti`](https://github.com/getzep/graphiti) | Apache-2.0 | Temporal knowledge graph concepts; not default long-term memory enablement. |
+| B2 sandbox | [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) | GitHub reports `Other` | AI development workspace and command/artifact UX concepts only unless license/provenance review approves code intake. |
+| B2 sandbox | [`e2b-dev/E2B`](https://github.com/e2b-dev/E2B) | Apache-2.0 | Secure sandbox lifecycle, templates, command execution, and artifact-return patterns. |
+| B2 sandbox | [`daytonaio/daytona`](https://github.com/daytonaio/daytona) | AGPL-3.0 | Elastic sandbox and workspace isolation concepts only unless a focused legal/provenance issue approves adaptation. |
+| B3 worker/model gateway | [`temporalio/sdk-python`](https://github.com/temporalio/sdk-python) | MIT | Durable workflow/retry vocabulary and test patterns; not a migration requirement. |
+| B3 worker/model gateway | [`celery/celery`](https://github.com/celery/celery) | GitHub reports `Other` | Worker pool, task retry, and queue monitoring vocabulary only unless license/provenance review approves intake. |
+| B3 worker/model gateway | [`Bogdanp/dramatiq`](https://github.com/Bogdanp/dramatiq) | LGPL-3.0 | Actor/queue concepts only unless license/provenance review approves adaptation. |
+| B3 worker/model gateway | [`taskiq-python/taskiq`](https://github.com/taskiq-python/taskiq) | MIT | Async task broker vocabulary and test ideas. |
+| B3 worker/model gateway | [`BerriAI/litellm`](https://github.com/BerriAI/litellm) | GitHub reports `Other` | Model gateway routing, rate limit, budget, fallback, token/cost concepts only unless license/provenance review approves intake. |
+| B4 Skills management | [`backstage/backstage`](https://github.com/backstage/backstage) | Apache-2.0 | Catalog metadata and ownership vocabulary. |
+| B4 Skills management | [`langgenius/dify`](https://github.com/langgenius/dify) | GitHub reports `Other` | App/agent workflow and marketplace UX concepts only. |
+| B4 Skills management | [`open-webui/open-webui`](https://github.com/open-webui/open-webui) | GitHub reports `Other` | Tool/function discovery and admin UX concepts only. |
+| B4 Skills management | [`danny-avila/LibreChat`](https://github.com/danny-avila/LibreChat) | MIT | Agents, tools, slash-command, chat UI vocabulary, and frontend UX reference. |
+| B4 Skills management | [`Mintplex-Labs/anything-llm`](https://github.com/Mintplex-Labs/anything-llm) | MIT | Workspace/agent marketplace concepts and local-first agent UX vocabulary. |
 
 Portkey, Keycloak, Authentik, Ory Kratos, OpenFGA, SpiceDB, Casbin, Open Policy
 Agent, ContextForge MCP Gateway, supergateway, Langfuse, Phoenix,
@@ -500,6 +651,13 @@ changing runtime architecture. Any code adaptation or runtime dependency must go
 through issue, license/provenance review, tests, PR review, and runtime evidence
 when applicable.
 
+Repositories with GitHub license posture `Other`, AGPL/LGPL/copyleft terms, or
+unknown license posture are concept-only references by default. They may inform
+terminology, workflow shape, test-matrix ideas, and UX comparison, but not code
+copying, vendoring, dependency addition, or runtime service introduction without
+a separate issue that records commit/tag, files, license review, security review,
+rollback, tests, and runtime evidence where applicable.
+
 ## 7. Immediate Issue Chain
 
 The next backend work should stay evidence-first:
@@ -507,34 +665,37 @@ The next backend work should stay evidence-first:
 | Order | Issue theme | First PR goal | Why first |
 | --- | --- | --- | --- |
 | 1 | B0 latest-main evidence refresh | Close only the current-source readiness gap that the evidence actually proves. | Prevents historical S1 evidence from being mistaken for latest-main readiness. |
-| 2 | B1 memory/context workflow smoke | Select one document workflow and prove policy, provenance, redaction, and rollback. | Memory becomes useful only when tied to a workflow and deny paths. |
-| 3 | B2 real sandbox smoke | Turn sandbox contracts into Docker/equivalent 211 evidence. | `fake` remains the most visible blocker to real tool/Skill execution credibility. |
-| 4 | B3 capacity profile | Measure 10 sessions x peak 4 SDK subagents without raising defaults. | SDK subagent capability exists; load, gateway, sandbox, event/artifact, and cost pressure remain unproven. |
-| 5 | B4 Skill lifecycle slice | Make upload/version/release/rollback and dependency review operational enough for reviewed Skill runs. | Skills are the user-facing product surface; mutable folders are not product governance. |
-| 6 | B5 file/artifact/tool deny paths | Prove exact permission, file ACL, artifact preview/download, and replay denial for document workflows. | File-heavy workflows are high-value and high-leakage-risk. |
-| 7 | B6 operations beta package | Add Admin Runtime, trace/export, alert, golden-set, rollback, and owner signoff for one named workflow. | Product beta needs supportability evidence, not just successful generated files. |
+| 2 | B1 governed document context-pack workflow | Select one document workflow and prove session/workspace context-pack policy, provenance, redaction, export/delete boundary, and rollback with `live_worker_run_payload` evidence. | Memory becomes useful only when tied to a workflow and deny paths; long-term memory remains fail-closed. |
+| 3 | B2 real sandbox smoke through SDK Skill path | Turn sandbox contracts into Docker/equivalent `controlled_live_probe` and then `live_worker_run_payload` evidence for a governed Skill path. | `fake` and standalone verifier success remain the most visible blockers to real tool/Skill execution credibility. |
+| 4 | B3 capacity profile | Produce an `operator_reviewed_recorded_snapshot` for 10 sessions x peak 4 SDK subagents/session without raising defaults. | SDK subagent capability exists; load, gateway, sandbox, event/artifact, and cost pressure remain unproven. |
+| 5 | B4 Skill lifecycle slice | Make upload/version/release/rollback and dependency review operational enough for reviewed immutable Skill runs. | Skills are the user-facing product surface; mutable folders are not product governance. |
+| 6 | B5 file/artifact plus exact-tool deny paths | Prove B5a file/artifact ACL and B5b exact shell/MCP/filesystem permission replay denial separately. | File-heavy workflows are high-value and high-leakage-risk; file ACL does not prove tool safety. |
+| 7 | B6 named operations beta package | Bind Admin Runtime, trace/export, alert, golden-set, rollback, B1-B5 evidence, and owner signoff to one named workflow. | Product beta needs supportability evidence, not just successful generated files. |
 
 ## 8. Backend Product Beta Definition Of Done
 
 The backend is product-beta ready only when one or two named internal workflows
 have all of the following:
 
-1. Company login and same-tenant admin/ordinary-user behavior.
-2. Governed Skill selection and immutable run snapshots.
-3. Memory/context policy with provenance, export, delete/redaction, opt-out, and
+1. A named workflow owner, business owner, support owner, tenant/workspace
+   scope, SLO, expected SDK subagent fanout, cost budget, alert route, and
+   rollback drill.
+2. Company login and same-tenant admin/ordinary-user behavior.
+3. Governed Skill selection and immutable run snapshots.
+4. Memory/context policy with provenance, export, delete/redaction, opt-out, and
    long-term fail-closed behavior unless explicitly proven otherwise.
-4. Real sandbox evidence when workflow executes shell/script/code or other
+5. Real sandbox evidence when workflow executes shell/script/code or other
    high-risk tools.
-5. File upload, artifact preview/download, and unauthorized denial evidence.
-6. Exact tool-permission decisions for shell, network, MCP, filesystem, and
+6. File upload, artifact preview/download, and unauthorized denial evidence.
+7. Exact tool-permission decisions for shell, network, MCP, filesystem, and
    write-capable operations.
-7. Worker/model-gateway capacity profile for the workflow, including token/cost
-   accounting and rollback.
-8. Admin Runtime visibility into queue, worker, sandbox, model gateway,
+8. Worker/model-gateway capacity profile for the workflow, including token/cost
+   accounting, event/artifact volume, and rollback.
+9. Admin Runtime visibility into queue, worker, sandbox, model gateway,
    token/cost, latency, errors, dead letters, and release evidence.
-9. Workflow owner signoff, quality threshold, cost budget, alert rules, support
-   owner, and rollback drill.
 10. Linked issue/PR/review/merge/211 evidence for every runtime claim.
+11. Operator-reviewed recorded snapshots where capacity, hardening, or beta
+    readiness is claimed.
 
 Until these are true, a successful Skill-generated file is a controlled workflow
 smoke, not product beta completion.
