@@ -100,6 +100,34 @@ REQUIRED_HARDENING_FLAGS = {
         "tenant_workspace_user_session_checked",
         "source_regression_tests",
     ],
+    "resource_limits": [
+        "evidence_class",
+        "memory_limit_mb",
+        "cpu_limit_count",
+        "pids_limit",
+        "process_timeout_seconds",
+        "limit_source",
+        "docker_inspection_verified",
+        "over_limit_cleanup_verified",
+        "bounded_error_projection_verified",
+    ],
+    "egress_policy": [
+        "evidence_class",
+        "default_deny_outbound",
+        "platform_allowlist_enforced",
+        "callback_exception_scoped_to_run_token",
+        "denied_egress_redacted",
+        "policy_source",
+    ],
+    "security_options": [
+        "evidence_class",
+        "privileged",
+        "no_new_privileges",
+        "capabilities_dropped",
+        "docker_socket_mounted",
+        "workspace_mount_mode",
+        "root_filesystem_read_only_or_minimal",
+    ],
 }
 HARDENING_EVIDENCE_CLASS = {
     "lease_isolation": "live_platform_probe",
@@ -108,6 +136,9 @@ HARDENING_EVIDENCE_CLASS = {
     "resource_timeout": "source_regression_guard",
     "failure_fallback": "source_regression_guard",
     "cached_lease_revalidation": "source_regression_guard",
+    "resource_limits": "live_platform_probe",
+    "egress_policy": "live_platform_probe",
+    "security_options": "live_platform_probe",
 }
 ALLOWED_SOURCE_REGRESSION_TESTS = {
     "resource_timeout": {
@@ -422,6 +453,21 @@ def _hardening_error(evidence: dict[str, Any]) -> str | None:
             return f"hardening section missing: {section_name}"
         if section.get("evidence_class") != HARDENING_EVIDENCE_CLASS[section_name]:
             return f"hardening evidence_class mismatch: {section_name}"
+        if section_name == "resource_limits":
+            section_error = _resource_limits_hardening_error(section)
+            if section_error:
+                return section_error
+            continue
+        if section_name == "egress_policy":
+            section_error = _egress_policy_hardening_error(section)
+            if section_error:
+                return section_error
+            continue
+        if section_name == "security_options":
+            section_error = _security_options_hardening_error(section)
+            if section_error:
+                return section_error
+            continue
         for field in required_fields:
             value = section.get(field)
             if field == "evidence_class":
@@ -462,6 +508,66 @@ def _hardening_error(evidence: dict[str, Any]) -> str | None:
         return "inputs container path mismatch"
     if hardening["resource_timeout"].get("timeout_error_code") != "executor_health_timeout":
         return "resource timeout evidence must prove executor_health_timeout fallback"
+    return None
+
+
+def _positive_number(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if not isinstance(value, int | float):
+        return False
+    return value > 0
+
+
+def _resource_limits_hardening_error(section: dict[str, Any]) -> str | None:
+    for field in (
+        "memory_limit_mb",
+        "cpu_limit_count",
+        "pids_limit",
+        "process_timeout_seconds",
+    ):
+        if not _positive_number(section.get(field)):
+            return f"hardening evidence missing: resource_limits.{field}"
+    if section.get("limit_source") != "platform_request":
+        return "hardening evidence missing: resource_limits.limit_source"
+    for field in (
+        "docker_inspection_verified",
+        "over_limit_cleanup_verified",
+        "bounded_error_projection_verified",
+    ):
+        if section.get(field) is not True:
+            return f"hardening evidence missing: resource_limits.{field}"
+    return None
+
+
+def _egress_policy_hardening_error(section: dict[str, Any]) -> str | None:
+    for field in (
+        "default_deny_outbound",
+        "platform_allowlist_enforced",
+        "callback_exception_scoped_to_run_token",
+        "denied_egress_redacted",
+    ):
+        if section.get(field) is not True:
+            return f"hardening evidence missing: egress_policy.{field}"
+    if section.get("policy_source") != "platform_policy":
+        return "hardening evidence missing: egress_policy.policy_source"
+    return None
+
+
+def _security_options_hardening_error(section: dict[str, Any]) -> str | None:
+    if section.get("privileged") is not False:
+        return "hardening evidence missing: security_options.privileged"
+    if section.get("docker_socket_mounted") is not False:
+        return "hardening evidence missing: security_options.docker_socket_mounted"
+    for field in (
+        "no_new_privileges",
+        "capabilities_dropped",
+        "root_filesystem_read_only_or_minimal",
+    ):
+        if section.get(field) is not True:
+            return f"hardening evidence missing: security_options.{field}"
+    if section.get("workspace_mount_mode") not in {"rw", "ro"}:
+        return "hardening evidence missing: security_options.workspace_mount_mode"
     return None
 
 

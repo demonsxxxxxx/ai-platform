@@ -426,6 +426,34 @@ def test_platform_runtime_hardening_requires_isolation_cleanup_and_fallback_evid
                 "tests/test_sandbox_container_provider.py::test_docker_provider_cached_lease_revalidates_container_scope_labels"
             ],
         },
+        "resource_limits": {
+            "evidence_class": "live_platform_probe",
+            "memory_limit_mb": 512,
+            "cpu_limit_count": 0.5,
+            "pids_limit": 128,
+            "process_timeout_seconds": 60,
+            "limit_source": "platform_request",
+            "docker_inspection_verified": True,
+            "over_limit_cleanup_verified": True,
+            "bounded_error_projection_verified": True,
+        },
+        "egress_policy": {
+            "evidence_class": "live_platform_probe",
+            "default_deny_outbound": True,
+            "platform_allowlist_enforced": True,
+            "callback_exception_scoped_to_run_token": True,
+            "denied_egress_redacted": True,
+            "policy_source": "platform_policy",
+        },
+        "security_options": {
+            "evidence_class": "live_platform_probe",
+            "privileged": False,
+            "no_new_privileges": True,
+            "capabilities_dropped": True,
+            "docker_socket_mounted": False,
+            "workspace_mount_mode": "rw",
+            "root_filesystem_read_only_or_minimal": True,
+        },
     }
     evidence.write_text(json.dumps({"run_id": "run-a", "hardening": hardening}), encoding="utf-8")
 
@@ -479,6 +507,33 @@ def test_platform_runtime_hardening_requires_isolation_cleanup_and_fallback_evid
     failed_incomplete_tests = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
     assert failed_incomplete_tests.passed is False
     assert "source_regression_tests" in failed_incomplete_tests.message
+
+    missing_resource_limits = dict(hardening)
+    missing_resource_limits.pop("resource_limits")
+    evidence.write_text(json.dumps({"run_id": "run-a", "hardening": missing_resource_limits}), encoding="utf-8")
+    failed_resource_limits = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
+    assert failed_resource_limits.passed is False
+    assert "resource_limits" in failed_resource_limits.message
+
+    unsafe_egress = dict(hardening)
+    unsafe_egress["egress_policy"] = {
+        **hardening["egress_policy"],
+        "default_deny_outbound": False,
+    }
+    evidence.write_text(json.dumps({"run_id": "run-a", "hardening": unsafe_egress}), encoding="utf-8")
+    failed_egress = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
+    assert failed_egress.passed is False
+    assert "egress_policy.default_deny_outbound" in failed_egress.message
+
+    privileged_container = dict(hardening)
+    privileged_container["security_options"] = {
+        **hardening["security_options"],
+        "privileged": True,
+    }
+    evidence.write_text(json.dumps({"run_id": "run-a", "hardening": privileged_container}), encoding="utf-8")
+    failed_security = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
+    assert failed_security.passed is False
+    assert "security_options.privileged" in failed_security.message
 
 
 def test_no_secret_leakage_rejects_sensitive_evidence(tmp_path):
@@ -757,8 +812,69 @@ def test_run_platform_runtime_probe_records_timings_and_hardening(tmp_path):
             "tests/test_sandbox_container_provider.py::test_docker_provider_cached_lease_revalidates_container_scope_labels"
         ],
     }
+    assert recorder.hardening["resource_limits"] == {
+        "evidence_class": "live_platform_probe",
+        "memory_limit_mb": 512,
+        "cpu_limit_count": 0,
+        "pids_limit": 128,
+        "process_timeout_seconds": 60,
+        "limit_source": "platform_request",
+        "docker_inspection_verified": False,
+        "over_limit_cleanup_verified": False,
+        "bounded_error_projection_verified": False,
+    }
+    assert recorder.hardening["egress_policy"] == {
+        "evidence_class": "live_platform_probe",
+        "default_deny_outbound": False,
+        "platform_allowlist_enforced": False,
+        "callback_exception_scoped_to_run_token": True,
+        "denied_egress_redacted": False,
+        "policy_source": "not_runtime_verified",
+    }
+    assert recorder.hardening["security_options"] == {
+        "evidence_class": "live_platform_probe",
+        "privileged": False,
+        "no_new_privileges": False,
+        "capabilities_dropped": False,
+        "docker_socket_mounted": False,
+        "workspace_mount_mode": "rw",
+        "root_filesystem_read_only_or_minimal": False,
+    }
     for section_name, allowed_tests in verifier.ALLOWED_SOURCE_REGRESSION_TESTS.items():
         assert set(recorder.hardening[section_name]["source_regression_tests"]) <= allowed_tests
+
+
+def test_generated_default_hardening_payload_does_not_pass_full_runtime_hardening_verifier(tmp_path):
+    generator = load_generator()
+    verifier = load_verifier()
+
+    recorder = generator.EvidenceRecorder(
+        run_id="run-a",
+        executor_url="http://executor.test",
+        callback_token="secret-token",
+    )
+    recorder.hardening = generator._platform_hardening_evidence(
+        run_id="run-a",
+        workspace_root=tmp_path,
+        recorded_lease_id="lease-a",
+        released_lease_id="lease-a",
+        release_reason="dispatch_completed",
+        resource_limits={"max_seconds": 60, "memory_mb": 512, "cpu_count": 0.5, "pids_limit": 128},
+    )
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text(
+        json.dumps({"run_id": "run-a", "hardening": recorder.hardening}),
+        encoding="utf-8",
+    )
+
+    failed = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
+
+    assert failed.passed is False
+    assert (
+        "resource_limits.docker_inspection_verified" in failed.message
+        or "egress_policy.default_deny_outbound" in failed.message
+        or "security_options.no_new_privileges" in failed.message
+    )
 
 
 def test_cancel_probe_stops_only_verifier_owned_container():
