@@ -211,13 +211,11 @@ def test_b2_sandbox_readiness_records_source_contract_without_gate_closure(tmp_p
         "resource_limits_policy_evidence",
         "egress_policy_evidence",
         "security_options_evidence",
-        "rollback_assumptions_evidence",
     ]
     assert readiness["broader_b2_g7_open_requirements"] == [
         "resource_limits_policy_evidence",
         "egress_policy_evidence",
         "security_options_evidence",
-        "rollback_assumptions_evidence",
     ]
     for future_requirement in (
         "resource_limits",
@@ -258,7 +256,6 @@ def test_b2_sandbox_readiness_accepts_future_reviewed_smoke_run_ids(tmp_path):
         "resource_limits_policy_evidence",
         "egress_policy_evidence",
         "security_options_evidence",
-        "rollback_assumptions_evidence",
     ]
     smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
     assert smoke_evidence["run_id"] == FUTURE_RUN_ID
@@ -350,7 +347,6 @@ def test_b2_sandbox_readiness_records_reviewed_211_smoke_without_closing_b2_gate
         "resource_limits_policy_evidence",
         "egress_policy_evidence",
         "security_options_evidence",
-        "rollback_assumptions_evidence",
     ]
     assert readiness["closed_runtime_gaps"] == [
         "b2_211_real_sandbox_smoke",
@@ -401,7 +397,18 @@ def test_b2_sandbox_readiness_records_reviewed_211_smoke_without_closing_b2_gate
         "resource_limits_policy_evidence",
         "egress_policy_evidence",
         "security_options_evidence",
-        "rollback_assumptions_evidence",
+    ]
+    rollback = readiness["rollback_assumptions"]
+    assert rollback["status"] == "recorded_source_operator_contract"
+    assert rollback["closed_gap"] == "rollback_assumptions_evidence"
+    assert rollback["does_not_close_broader_b2_g7_gate"] is True
+    assert rollback["does_not_claim_docker_sandbox_production_hardening"] is True
+    assert rollback["required_after_rollback_evidence"] == [
+        "Admin Runtime sandbox overview shows zero verifier-owned active containers or active leases",
+        "selected workflow is disabled or restored to fake/test-only provider posture",
+        "orphan cleanup scan completed for same tenant/workspace/user/session/run scope",
+        "B2 readiness still reports resource limits, egress, and security options as open",
+        "operator issue comment records source/runtime subject, command result, and residual caveats",
     ]
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
@@ -481,7 +488,7 @@ def test_b2_sandbox_readiness_markdown_is_gap_first_and_operator_readable():
     assert "- resource_limits_policy_evidence" in open_gap_section
     assert "- egress_policy_evidence" in open_gap_section
     assert "- security_options_evidence" in open_gap_section
-    assert "- rollback_assumptions_evidence" in open_gap_section
+    assert "- rollback_assumptions_evidence" not in open_gap_section
     assert "- b2_issue_review_and_closure_evidence" not in open_gap_section
     assert "## Closed Gate Boundary Gaps" in markdown
     assert "- b2_issue_review_and_closure_evidence" in markdown.split("## Closed Gate Boundary Gaps", 1)[1]
@@ -503,6 +510,9 @@ def test_b2_sandbox_readiness_markdown_is_gap_first_and_operator_readable():
     assert "admin_or_allowlist_only" in markdown
     assert "PRD B2/G7 requirements not yet verifier-checked" in markdown
     assert "resource_limits_policy_evidence" in markdown
+    assert "## Rollback Assumptions" in markdown
+    assert "recorded_source_operator_contract" in markdown
+    assert "Admin Runtime sandbox overview shows zero verifier-owned active containers" in markdown
     assert "## Closed Source Controls" in markdown
     assert "docker_provider_cached_lease_scope_revalidation" in markdown
     assert "fake-provider and source-regression evidence stay `local partial`" in markdown
@@ -528,15 +538,14 @@ def test_b2_sandbox_readiness_cli_outputs_json_without_secret_markers():
         "resource_limits_policy_evidence",
         "egress_policy_evidence",
         "security_options_evidence",
-        "rollback_assumptions_evidence",
     ]
     assert payload["closed_gate_boundary_gaps"] == ["b2_issue_review_and_closure_evidence"]
     assert payload["broader_b2_g7_open_requirements"] == [
         "resource_limits_policy_evidence",
         "egress_policy_evidence",
         "security_options_evidence",
-        "rollback_assumptions_evidence",
     ]
+    assert payload["rollback_assumptions"]["closed_gap"] == "rollback_assumptions_evidence"
     assert payload["gate_boundary_evidence"]["b2_issue_review_and_closure_evidence"]["status"] == (
         "recorded_issue_closure_evidence"
     )
@@ -555,7 +564,6 @@ def test_b2_issue_closure_gap_stays_open_without_valid_local_closure_evidence(tm
         "resource_limits_policy_evidence",
         "egress_policy_evidence",
         "security_options_evidence",
-        "rollback_assumptions_evidence",
     ]
     closure_evidence = readiness["gate_boundary_evidence"]["b2_issue_review_and_closure_evidence"]
     assert closure_evidence["status"] == "open_missing_issue_closure_evidence"

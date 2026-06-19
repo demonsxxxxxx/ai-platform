@@ -366,6 +366,14 @@ def test_s2_sandbox_runtime_smoke_contract_records_pr44_evidence_without_closing
     assert "The 211 service checkout and container internal source marker caveats remain" in release_evidence_text
     assert "2026-06-19-211-b1-memory-context-workflow-smoke-52ac62c.json" in release_evidence_text
     assert "after the 2026-06-19 `52ac62c` refresh it is retained as historical evidence" in release_evidence_text
+    assert "rollback assumptions source/operator contract is recorded by #116" in release_evidence_text
+    assert "remaining B2/G7 hardening gaps are resource-limit policy, egress policy, and security-option policy evidence" in release_evidence_text
+    compact_governance_text = " ".join(governance_text.split())
+    assert "Resource-limit policy evidence, egress-policy evidence, and security-option evidence remain PRD B2/G7 requirements" in compact_governance_text
+    assert "rollback-assumption evidence is now a source/operator contract" in compact_governance_text
+    assert "recorded_source_operator_contract" in governance_text
+    assert "rollback_assumptions_evidence" in governance_text
+    assert "Rollback assumptions are not Docker sandbox production hardening" in compact_governance_text
 
 
 def test_foundation_alpha_closure_records_stage_complete_baseline_and_boundaries():

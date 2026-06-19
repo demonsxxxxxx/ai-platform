@@ -129,7 +129,37 @@ _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED = [
     "resource_limits_policy_evidence",
     "egress_policy_evidence",
     "security_options_evidence",
-    "rollback_assumptions_evidence",
+]
+
+_ROLLBACK_ASSUMPTIONS_OPERATOR_STEPS = [
+    "record current source/runtime subject, sandbox provider, image, and active lease/container counts",
+    "disable governed Docker sandbox exposure for the selected workflow or restore the previous fake/test-only provider posture",
+    "cancel verifier-owned active runs before stopping verifier-owned ephemeral containers",
+    "run sandbox runtime cleanup for expired or same-scope active leases",
+    "verify Admin Runtime sandbox overview and B2 readiness after rollback",
+    "record issue comment with command result, source/runtime subject, and remaining hardening caveats",
+]
+
+_ROLLBACK_ASSUMPTIONS_PRECONDITIONS = [
+    "rollback is scoped to verifier-owned or selected-workflow sandbox resources",
+    "operator has current release evidence for the image and runtime subject being rolled back",
+    "no broad Docker socket mount or ordinary-user high-risk sandbox exposure is enabled by this contract",
+    "resource limits, egress policy, and security options remain separate open gates",
+]
+
+_ROLLBACK_ASSUMPTIONS_FAILURE_CONDITIONS = [
+    "active same-scope sandbox lease cannot be released",
+    "verifier-owned container cannot be stopped or identified safely",
+    "Admin Runtime sandbox overview cannot be read by same-tenant admin",
+    "B2 readiness stops reporting remaining hardening gaps as open",
+]
+
+_ROLLBACK_ASSUMPTIONS_AFTER_EVIDENCE = [
+    "Admin Runtime sandbox overview shows zero verifier-owned active containers or active leases",
+    "selected workflow is disabled or restored to fake/test-only provider posture",
+    "orphan cleanup scan completed for same tenant/workspace/user/session/run scope",
+    "B2 readiness still reports resource limits, egress, and security options as open",
+    "operator issue comment records source/runtime subject, command result, and residual caveats",
 ]
 
 _NON_EXPANSION_INVARIANTS = {
@@ -366,6 +396,25 @@ def _issue_closure_boundary_evidence(repo_root: Path) -> dict[str, Any]:
     }
 
 
+def _rollback_assumptions_contract() -> dict[str, Any]:
+    return {
+        "status": "recorded_source_operator_contract",
+        "closed_gap": "rollback_assumptions_evidence",
+        "does_not_close_broader_b2_g7_gate": True,
+        "does_not_claim_docker_sandbox_production_hardening": True,
+        "evidence_level": "source_contract",
+        "operator_steps": list(_ROLLBACK_ASSUMPTIONS_OPERATOR_STEPS),
+        "preconditions": list(_ROLLBACK_ASSUMPTIONS_PRECONDITIONS),
+        "failure_conditions": list(_ROLLBACK_ASSUMPTIONS_FAILURE_CONDITIONS),
+        "required_after_rollback_evidence": list(_ROLLBACK_ASSUMPTIONS_AFTER_EVIDENCE),
+        "remaining_hardening_gaps": list(_PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED),
+        "non_expansion_invariants": {
+            **dict(_B2_NON_EXPANSION_INVARIANTS),
+            "department_rollout_allowed": False,
+        },
+    }
+
+
 def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
     """Build the B2 real-sandbox readiness contract without claiming runtime closure."""
     root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
@@ -467,6 +516,7 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
         "closed_gate_boundary_gaps": closed_gate_boundary_gaps,
         "gate_boundary_evidence": gate_boundary_evidence,
         "broader_b2_g7_open_requirements": list(_PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED),
+        "rollback_assumptions": _rollback_assumptions_contract(),
         "runtime_acceptance_evidence": runtime_acceptance_evidence,
         "non_expansion_invariants": dict(_B2_NON_EXPANSION_INVARIANTS),
         "evidence_policy": (
@@ -531,6 +581,19 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
     pending_prd_requirements = "\n".join(
         f"- `{item}`" for item in readiness["broader_b2_g7_open_requirements"]
     )
+    rollback = readiness.get("rollback_assumptions", {})
+    rollback_operator_steps = "\n".join(
+        f"- {item}" for item in rollback.get("operator_steps", [])
+    ) or "- none"
+    rollback_preconditions = "\n".join(
+        f"- {item}" for item in rollback.get("preconditions", [])
+    ) or "- none"
+    rollback_failure_conditions = "\n".join(
+        f"- {item}" for item in rollback.get("failure_conditions", [])
+    ) or "- none"
+    rollback_after_evidence = "\n".join(
+        f"- {item}" for item in rollback.get("required_after_rollback_evidence", [])
+    ) or "- none"
     invariants = "\n".join(
         f"- `{key}={str(value).lower()}`"
         for key, value in readiness["non_expansion_invariants"].items()
@@ -567,6 +630,20 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"{runtime_evidence}\n\n"
         "PRD B2/G7 requirements not yet verifier-checked:\n\n"
         f"{pending_prd_requirements}\n\n"
+        "## Rollback Assumptions\n\n"
+        f"- status: `{rollback.get('status')}`\n"
+        f"- closed gap: `{rollback.get('closed_gap')}`\n"
+        f"- evidence level: `{rollback.get('evidence_level')}`\n"
+        f"- does not close broader B2/G7 gate: `{str(rollback.get('does_not_close_broader_b2_g7_gate')).lower()}`\n"
+        f"- does not claim Docker sandbox production hardening: `{str(rollback.get('does_not_claim_docker_sandbox_production_hardening')).lower()}`\n\n"
+        "Operator steps:\n\n"
+        f"{rollback_operator_steps}\n\n"
+        "Preconditions:\n\n"
+        f"{rollback_preconditions}\n\n"
+        "Failure conditions:\n\n"
+        f"{rollback_failure_conditions}\n\n"
+        "Required after-rollback evidence:\n\n"
+        f"{rollback_after_evidence}\n\n"
         "Non-expansion invariants:\n\n"
         f"{invariants}\n\n"
         "## Closed Source Controls\n\n"
