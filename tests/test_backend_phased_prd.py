@@ -68,6 +68,7 @@ def test_backend_prd_records_authority_status_and_stage_boundaries():
         "Exit gate: what must be true before the stage is `gate closable`.",
         "No docs-only PR may create `211 verified` or `gate closable` status.",
         "If the documents disagree, stop feature work and repair source authority first.",
+        "docs/superpowers/plans/2026-06-20-backend-productization-prd-gates.md",
         "All reports must use the narrowest true status",
     ):
         assert boundary_phrase in compact_text

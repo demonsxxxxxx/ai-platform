@@ -44,6 +44,8 @@ observability are required for the P0 capabilities to be safely exposed.
 
 This PRD narrows backend execution of the active product PRD:
 `docs/superpowers/specs/2026-06-10-ai-platform-product-prd-v2.md`.
+The task-by-task execution plan for this contract is
+`docs/superpowers/plans/2026-06-20-backend-productization-prd-gates.md`.
 
 Use these sources together:
 
