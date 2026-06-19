@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from app.backend_stage_closure_evidence import find_stage_issue_closure_evidence
+from app.sandbox_hardening_contract import bounded_error_projection_is_safe
 
 
 SCHEMA_VERSION = "ai-platform.b2-sandbox-readiness.v1"
@@ -348,7 +349,7 @@ def _positive_number(value: Any) -> bool:
     return value > 0
 
 
-def _resource_limits_runtime_verified(hardening: dict[str, Any]) -> bool:
+def _resource_limits_runtime_verified(hardening: dict[str, Any], *, run_id: str) -> bool:
     section = hardening.get("resource_limits")
     if not isinstance(section, dict):
         return False
@@ -368,6 +369,7 @@ def _resource_limits_runtime_verified(hardening: dict[str, Any]) -> bool:
         section.get("docker_inspection_verified") is True
         and section.get("over_limit_cleanup_verified") is True
         and section.get("bounded_error_projection_verified") is True
+        and bounded_error_projection_is_safe(section.get("bounded_error_projection"), run_id=run_id)
     )
 
 
@@ -412,9 +414,9 @@ def _security_options_runtime_verified(hardening: dict[str, Any]) -> bool:
     )
 
 
-def _hardening_runtime_evidence_status(hardening: dict[str, Any]) -> dict[str, str]:
+def _hardening_runtime_evidence_status(hardening: dict[str, Any], *, run_id: str) -> dict[str, str]:
     if not (
-        _resource_limits_runtime_verified(hardening)
+        _resource_limits_runtime_verified(hardening, run_id=run_id)
         and _egress_policy_runtime_verified(hardening)
         and _security_options_runtime_verified(hardening)
     ):
@@ -491,7 +493,7 @@ def _b2_smoke_evidence_summary(
         "redaction_scan_status": evidence.get("redaction_scan_status"),
         "does_not_close_b2_gate": True,
     }
-    hardening_runtime_evidence = _hardening_runtime_evidence_status(hardening)
+    hardening_runtime_evidence = _hardening_runtime_evidence_status(hardening, run_id=run_id)
     if hardening_runtime_evidence:
         summary["hardening_runtime_evidence"] = hardening_runtime_evidence
     return summary

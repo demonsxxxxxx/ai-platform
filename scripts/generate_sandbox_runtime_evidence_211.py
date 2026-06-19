@@ -26,6 +26,13 @@ from urllib.parse import urlparse
 from urllib import request as urllib_request
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from app.sandbox_hardening_contract import safe_bounded_error_projection
+
+
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 SAFE_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9_.-]+")
 EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime-211.v1"
@@ -348,6 +355,26 @@ def _platform_hardening_evidence(
     resource_probe = _runtime_probe_section(runtime_probe_results, "resource_limits")
     egress_probe = _runtime_probe_section(runtime_probe_results, "egress_policy")
     security_options = _docker_security_options(docker_inspect)
+    bounded_error_projection = safe_bounded_error_projection(
+        resource_probe.get("bounded_error_projection"),
+        run_id=run_id,
+    )
+    resource_limits_evidence: dict[str, object] = {
+        "evidence_class": "live_platform_probe",
+        "memory_limit_mb": int(limits.get("memory_mb") or 0),
+        "cpu_limit_count": float(limits.get("cpu_count") or 0),
+        "pids_limit": int(limits.get("pids_limit") or 0),
+        "process_timeout_seconds": int(limits.get("max_seconds") or 0),
+        "limit_source": "platform_request",
+        "docker_inspection_verified": _docker_resource_limits_verified(
+            resource_limits=limits,
+            docker_inspect=docker_inspect,
+        ),
+        "over_limit_cleanup_verified": resource_probe.get("over_limit_cleanup_verified") is True,
+        "bounded_error_projection_verified": bounded_error_projection is not None,
+    }
+    if bounded_error_projection is not None:
+        resource_limits_evidence["bounded_error_projection"] = bounded_error_projection
     return {
         "lease_isolation": {
             "evidence_class": "live_platform_probe",
@@ -404,20 +431,7 @@ def _platform_hardening_evidence(
                 "tests/test_sandbox_container_provider.py::test_docker_provider_cached_lease_revalidates_container_scope_labels",
             ],
         },
-        "resource_limits": {
-            "evidence_class": "live_platform_probe",
-            "memory_limit_mb": int(limits.get("memory_mb") or 0),
-            "cpu_limit_count": float(limits.get("cpu_count") or 0),
-            "pids_limit": int(limits.get("pids_limit") or 0),
-            "process_timeout_seconds": int(limits.get("max_seconds") or 0),
-            "limit_source": "platform_request",
-            "docker_inspection_verified": _docker_resource_limits_verified(
-                resource_limits=limits,
-                docker_inspect=docker_inspect,
-            ),
-            "over_limit_cleanup_verified": resource_probe.get("over_limit_cleanup_verified") is True,
-            "bounded_error_projection_verified": resource_probe.get("bounded_error_projection_verified") is True,
-        },
+        "resource_limits": resource_limits_evidence,
         "egress_policy": {
             "evidence_class": "live_platform_probe",
             "default_deny_outbound": egress_probe.get("default_deny_outbound") is True,

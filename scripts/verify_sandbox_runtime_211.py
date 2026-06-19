@@ -20,6 +20,13 @@ from typing import Any, Callable
 from urllib import request as urllib_request
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from app.sandbox_hardening_contract import bounded_error_projection_error
+
+
 SENSITIVE_PATTERNS = [
     re.compile(r"/var/run/docker\.sock", re.IGNORECASE),
     re.compile(r"%2Fvar%2Frun%2Fdocker\.sock", re.IGNORECASE),
@@ -454,7 +461,7 @@ def _hardening_error(evidence: dict[str, Any]) -> str | None:
         if section.get("evidence_class") != HARDENING_EVIDENCE_CLASS[section_name]:
             return f"hardening evidence_class mismatch: {section_name}"
         if section_name == "resource_limits":
-            section_error = _resource_limits_hardening_error(section)
+            section_error = _resource_limits_hardening_error(section, run_id=str(evidence.get("run_id") or ""))
             if section_error:
                 return section_error
             continue
@@ -519,7 +526,7 @@ def _positive_number(value: Any) -> bool:
     return value > 0
 
 
-def _resource_limits_hardening_error(section: dict[str, Any]) -> str | None:
+def _resource_limits_hardening_error(section: dict[str, Any], *, run_id: str) -> str | None:
     for field in (
         "memory_limit_mb",
         "cpu_limit_count",
@@ -537,6 +544,12 @@ def _resource_limits_hardening_error(section: dict[str, Any]) -> str | None:
     ):
         if section.get(field) is not True:
             return f"hardening evidence missing: resource_limits.{field}"
+    projection_error = bounded_error_projection_error(
+        section.get("bounded_error_projection"),
+        run_id=run_id,
+    )
+    if projection_error:
+        return f"hardening evidence missing: {projection_error}"
     return None
 
 

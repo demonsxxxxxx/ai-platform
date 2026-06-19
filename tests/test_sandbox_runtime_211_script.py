@@ -1,5 +1,7 @@
 import importlib.util
 import json
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -436,6 +438,15 @@ def test_platform_runtime_hardening_requires_isolation_cleanup_and_fallback_evid
             "docker_inspection_verified": True,
             "over_limit_cleanup_verified": True,
             "bounded_error_projection_verified": True,
+            "bounded_error_projection": {
+                "source": "admin_runtime_projection",
+                "run_id": "run-a",
+                "status": "failed",
+                "error_code": "executor_health_timeout",
+                "host_paths_redacted": True,
+                "raw_docker_payload_absent": True,
+                "callback_token_absent": True,
+            },
         },
         "egress_policy": {
             "evidence_class": "live_platform_probe",
@@ -514,6 +525,20 @@ def test_platform_runtime_hardening_requires_isolation_cleanup_and_fallback_evid
     failed_resource_limits = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
     assert failed_resource_limits.passed is False
     assert "resource_limits" in failed_resource_limits.message
+
+    self_asserted_bounded_projection = dict(hardening)
+    self_asserted_bounded_projection["resource_limits"] = {
+        **hardening["resource_limits"],
+        "bounded_error_projection_verified": True,
+    }
+    self_asserted_bounded_projection["resource_limits"].pop("bounded_error_projection")
+    evidence.write_text(
+        json.dumps({"run_id": "run-a", "hardening": self_asserted_bounded_projection}),
+        encoding="utf-8",
+    )
+    failed_projection = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
+    assert failed_projection.passed is False
+    assert "resource_limits.bounded_error_projection" in failed_projection.message
 
     unsafe_egress = dict(hardening)
     unsafe_egress["egress_policy"] = {
@@ -640,6 +665,26 @@ def test_main_json_reports_all_checks_as_structured_output(tmp_path, capsys):
         "check_platform_hardening_evidence",
         "check_no_secret_leakage",
     }
+
+
+def test_script_help_bootstraps_current_repo_before_importing_app_modules():
+    generator_result = subprocess.run(
+        [sys.executable, "scripts/generate_sandbox_runtime_evidence_211.py", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    verifier_result = subprocess.run(
+        [sys.executable, "scripts/verify_sandbox_runtime_211.py", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert generator_result.returncode == 0
+    assert "Generate ai-platform sandbox runtime evidence on 211" in generator_result.stdout
+    assert verifier_result.returncode == 0
+    assert "Verify ai-platform sandbox runtime on 211" in verifier_result.stdout
 
 
 def test_evidence_recorder_writes_sanitized_callback_evidence(tmp_path):
@@ -870,6 +915,15 @@ def test_platform_hardening_evidence_maps_runtime_docker_inspection_and_probe_re
         "resource_limits": {
             "over_limit_cleanup_verified": True,
             "bounded_error_projection_verified": True,
+            "bounded_error_projection": {
+                "source": "admin_runtime_projection",
+                "run_id": "run-a",
+                "status": "failed",
+                "error_code": "executor_health_timeout",
+                "host_paths_redacted": True,
+                "raw_docker_payload_absent": True,
+                "callback_token_absent": True,
+            },
         },
         "egress_policy": {
             "default_deny_outbound": True,
@@ -901,6 +955,15 @@ def test_platform_hardening_evidence_maps_runtime_docker_inspection_and_probe_re
         "docker_inspection_verified": True,
         "over_limit_cleanup_verified": True,
         "bounded_error_projection_verified": True,
+        "bounded_error_projection": {
+            "source": "admin_runtime_projection",
+            "run_id": "run-a",
+            "status": "failed",
+            "error_code": "executor_health_timeout",
+            "host_paths_redacted": True,
+            "raw_docker_payload_absent": True,
+            "callback_token_absent": True,
+        },
     }
     assert hardening["egress_policy"] == {
         "evidence_class": "live_platform_probe",
@@ -918,6 +981,67 @@ def test_platform_hardening_evidence_maps_runtime_docker_inspection_and_probe_re
         "docker_socket_mounted": False,
         "workspace_mount_mode": "rw",
         "root_filesystem_read_only_or_minimal": True,
+    }
+
+
+def test_platform_hardening_evidence_derives_bounded_projection_from_safe_shape(tmp_path):
+    generator = load_generator()
+
+    unsafe_probe_results = {
+        "resource_limits": {
+            "over_limit_cleanup_verified": True,
+            "bounded_error_projection_verified": True,
+        }
+    }
+
+    unsafe_hardening = generator._platform_hardening_evidence(
+        run_id="run-a",
+        workspace_root=tmp_path,
+        recorded_lease_id="lease-a",
+        released_lease_id="lease-a",
+        release_reason="dispatch_completed",
+        resource_limits={"max_seconds": 60, "memory_mb": 512, "cpu_count": 0.5, "pids_limit": 128},
+        runtime_probe_results=unsafe_probe_results,
+    )
+
+    assert unsafe_hardening["resource_limits"]["bounded_error_projection_verified"] is False
+    assert "bounded_error_projection" not in unsafe_hardening["resource_limits"]
+
+    safe_probe_results = {
+        "resource_limits": {
+            "over_limit_cleanup_verified": True,
+            "bounded_error_projection_verified": True,
+            "bounded_error_projection": {
+                "source": "admin_runtime_projection",
+                "run_id": "run-a",
+                "status": "failed",
+                "error_code": "executor_health_timeout",
+                "host_paths_redacted": True,
+                "raw_docker_payload_absent": True,
+                "callback_token_absent": True,
+            },
+        }
+    }
+
+    safe_hardening = generator._platform_hardening_evidence(
+        run_id="run-a",
+        workspace_root=tmp_path,
+        recorded_lease_id="lease-a",
+        released_lease_id="lease-a",
+        release_reason="dispatch_completed",
+        resource_limits={"max_seconds": 60, "memory_mb": 512, "cpu_count": 0.5, "pids_limit": 128},
+        runtime_probe_results=safe_probe_results,
+    )
+
+    assert safe_hardening["resource_limits"]["bounded_error_projection_verified"] is True
+    assert safe_hardening["resource_limits"]["bounded_error_projection"] == {
+        "source": "admin_runtime_projection",
+        "run_id": "run-a",
+        "status": "failed",
+        "error_code": "executor_health_timeout",
+        "host_paths_redacted": True,
+        "raw_docker_payload_absent": True,
+        "callback_token_absent": True,
     }
 
 def test_generated_default_hardening_payload_does_not_pass_full_runtime_hardening_verifier(tmp_path):
