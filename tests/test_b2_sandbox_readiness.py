@@ -750,6 +750,7 @@ def test_b2_sandbox_readiness_tracks_current_verifier_and_generator_contract():
         "source=platform_runtime_probe",
         "resource_limits",
         "egress_policy",
+        "security_options",
     ]
     for section_name in ("resource_limits", "egress_policy", "security_options"):
         assert section_name in verifier.REQUIRED_HARDENING_FLAGS

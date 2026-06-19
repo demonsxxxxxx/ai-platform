@@ -151,6 +151,7 @@ _RUNTIME_PROBE_RESULTS_REQUIRED_FIELDS = [
     "source=platform_runtime_probe",
     "resource_limits",
     "egress_policy",
+    "security_options",
 ]
 
 _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED = [

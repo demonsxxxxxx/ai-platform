@@ -51,8 +51,9 @@ RUNTIME_PROBE_RESULTS_ALLOWED_KEYS = {
     "source",
     "resource_limits",
     "egress_policy",
+    "security_options",
 }
-RUNTIME_PROBE_RESULTS_SECTION_KEYS = ("resource_limits", "egress_policy")
+RUNTIME_PROBE_RESULTS_SECTION_KEYS = ("resource_limits", "egress_policy", "security_options")
 
 
 def _safe_run_id(value: str) -> str:

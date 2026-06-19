@@ -1249,6 +1249,14 @@ def test_platform_runtime_mode_accepts_bound_runtime_probe_results_file(tmp_path
                     "denied_egress_redacted": True,
                     "policy_source": "platform_policy",
                 },
+                "security_options": {
+                    "privileged": False,
+                    "no_new_privileges": True,
+                    "capabilities_dropped": True,
+                    "docker_socket_mounted": False,
+                    "workspace_mount_mode": "rw",
+                    "root_filesystem_read_only_or_minimal": True,
+                },
             }
         ),
         encoding="utf-8",
@@ -1320,6 +1328,14 @@ def test_platform_runtime_mode_accepts_bound_runtime_probe_results_file(tmp_path
             "callback_exception_scoped_to_run_token": True,
             "denied_egress_redacted": True,
             "policy_source": "platform_policy",
+        },
+        "security_options": {
+            "privileged": False,
+            "no_new_privileges": True,
+            "capabilities_dropped": True,
+            "docker_socket_mounted": False,
+            "workspace_mount_mode": "rw",
+            "root_filesystem_read_only_or_minimal": True,
         },
     }
     assert str(runtime_probe_results_file) not in json.dumps(output)
