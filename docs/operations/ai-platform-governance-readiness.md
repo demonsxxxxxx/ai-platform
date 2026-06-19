@@ -512,9 +512,17 @@ partial`; `211 verified` begins only after the reviewed evidence gate is
 recorded. The B2 rollup reports the current verifier/generator contract for
 `admin_or_allowlist_only=true`, `hardening.evidence_class`, generated timings,
 hardening sections, callback/cancel evidence, and non-expansion invariants.
-Resource-limit policy evidence, egress-policy evidence, security-option
-evidence, and rollback-assumption evidence remain PRD B2/G7 requirements that
-are not yet verifier-checked and must not be treated as current verifier output.
+Resource-limit policy evidence, egress-policy evidence, and security-option
+evidence remain PRD B2/G7 requirements that are not yet verifier-checked and
+must not be treated as current verifier output. The rollback-assumption evidence
+is now a source/operator contract with status
+`recorded_source_operator_contract`: it names operator rollback steps,
+preconditions, failure conditions, and required after-rollback evidence while
+keeping resource-limit, egress, and security-option hardening open. Rollback
+assumptions are not Docker sandbox production hardening, not ordinary-user
+high-risk sandbox exposure, and not B2/G7 gate closure; the contract closes only
+`rollback_assumptions_evidence`.
+
 The
 hardening section must label lease/workspace/cleanup checks as
 `live_platform_probe` and timeout/failure/cached-lease checks as
