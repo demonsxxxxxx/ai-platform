@@ -329,6 +329,10 @@ def test_s2_sandbox_runtime_smoke_contract_records_pr44_evidence_without_closing
     assert "does not close `executor_context_pack_211_acceptance`" in release_evidence_text
     assert "closes only the #22 `executor_context_pack_211_acceptance` runtime gap" in release_evidence_text
     assert "G6/G9 closure" in release_evidence_text
+    assert "2026-06-19-211-b1-memory-context-workflow-smoke-75ab69b.json" in release_evidence_text
+    assert "Reviewed #114 B1 memory/context 211 smoke passed" in release_evidence_text
+    assert "this closes only the B1 `b1_runtime_evidence_review_against_merged_source` boundary" in release_evidence_text
+    assert "The 211 service checkout and container internal source marker caveats remain" in release_evidence_text
     assert "2026-06-19-211-b1-memory-context-workflow-smoke-52ac62c.json" in release_evidence_text
     assert "after the 2026-06-19 `52ac62c` refresh it is retained as historical evidence" in release_evidence_text
 
@@ -909,8 +913,10 @@ def test_governance_readiness_doc_records_b1_smoke_without_gate_closure():
     assert "B1 stage itself remains `local partial`" in governance_text
     assert "not `gate closable`" in governance_text
     assert "repo-local #75 closure evidence" in governance_text
-    assert "if later runtime-affecting source changes" in governance_text
-    assert "`52ac62cfbbab47172a659dda11e41aa4b2a5d699`" in governance_text
+    assert "If later runtime-affecting source changes" in governance_text
+    assert "`75ab69b939d0bf13987ac044ce0dc498f5eab999`" in governance_text
+    assert "closes only" in governance_text
+    assert "211 service checkout remains dirty/behind" in governance_text
     assert "`9687a7720528e2f3068bfcbdccbee45f80458ec0`" not in governance_text
     assert "final #75 review and issue-closure evidence" not in governance_text
     assert "`tools/verify_b1_memory_context_workflow.py`" in governance_text
@@ -918,7 +924,7 @@ def test_governance_readiness_doc_records_b1_smoke_without_gate_closure():
     assert "`local_controls_ready_runtime_smoke_required`, and keeps status label" not in governance_text
     assert "carries `211_memory_enabled_document_workflow_smoke` in the G6 open gaps" not in governance_text
     assert "reviewed B1 `211_memory_enabled_document_workflow_smoke` evidence" in memory_implemented
-    assert "B1 merged-source runtime evidence review for `52ac62c`" in memory_implemented
+    assert "B1 merged-source runtime evidence review for `75ab69b`" in memory_implemented
     assert "B1 rollback boundary local operator contract" in memory_implemented
     assert "`211_memory_enabled_document_workflow_smoke`" not in memory_remaining
     assert "B1 rollback boundary" not in memory_remaining
