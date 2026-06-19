@@ -88,7 +88,12 @@ gate wording.
 
 The backend phased PRD decomposes S2/S3 backend work into B0-B6 bundles. These
 bundles do not replace G0-G10 gates; they provide implementation order and
-acceptance boundaries for backend work.
+acceptance boundaries for backend work. The backend phased PRD is also the
+source for B0-B6 evidence-level vocabulary such as `source_contract`,
+`source_probe_on_target_runtime`, `controlled_live_probe`,
+`live_worker_run_payload`, `live_platform_probe`, and
+`operator_reviewed_recorded_snapshot`; this matrix summarizes those contracts
+but does not replace them.
 
 | Backend bundle | Acceptance focus | Cannot claim without |
 | --- | --- | --- |
