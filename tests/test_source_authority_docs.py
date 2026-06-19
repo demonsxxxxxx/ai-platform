@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 
@@ -827,11 +828,35 @@ def test_gitignore_excludes_real_env_variants_but_not_templates():
         "frontend/web/.env.*",
         "!frontend/web/.env.example",
         "frontend/web/*.tsbuildinfo",
+        "*.bak",
+        "*.bak.*",
+        "*.orig",
+        "*.rej",
         ".ai-platform-source-revision",
         ".ai-platform-source-snapshot.json",
     }
 
     assert required_patterns.issubset(gitignore_lines)
+
+
+def test_repository_does_not_track_local_backup_artifacts():
+    backup_suffixes = (".bak", ".orig", ".rej")
+    backup_markers = (".bak.",)
+    tracked_files = subprocess.check_output(
+        ["git", "-C", str(ROOT), "ls-files"],
+        text=True,
+    ).splitlines()
+    tracked_backup_files = [
+        path
+        for path in tracked_files
+        if (ROOT / path).exists()
+        and (
+            Path(path).name.endswith(backup_suffixes)
+            or any(marker in Path(path).name for marker in backup_markers)
+        )
+    ]
+
+    assert tracked_backup_files == []
 
 
 def test_frontend_source_import_is_documented_without_replacing_current_runtime():
