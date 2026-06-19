@@ -1143,14 +1143,50 @@ def test_gate_status_does_not_overstate_superseded_evidence_as_current():
     compact_text = " ".join(gate_status_text.split())
 
     assert "87528bf source-runtime relation manifest and #124 evidence" in gate_status_text
-    assert "active B0 latest-main reference is `87528bf` / #124" in gate_status_text
+    assert (
+        "the reviewed B0 runtime history immediately preceding the #136 current-source reopen"
+        in compact_text
+    )
     assert (
         "75ab69b source-runtime relation manifest and #112 evidence are retained as superseded reviewed history"
         in compact_text
     )
     assert "`380de6b` evidence above is the historical Foundation Alpha baseline" in compact_text
+    assert "active B0 latest-main reference is `87528bf` / #124" not in gate_status_text
     assert "when it consumes the 75ab69b source-runtime relation manifest and #112 evidence" not in compact_text
     assert "the `380de6b` evidence above is the active Foundation Alpha POC reference" not in gate_status_text
+
+
+def test_gate_status_records_issue136_b0_dirty_source_blocker():
+    gate_status_text = read(GATE_STATUS_DOC)
+    backend_prd_text = read(BACKEND_PRD)
+    combined_text = f"{gate_status_text}\n{backend_prd_text}"
+    compact_text = " ".join(combined_text.split())
+
+    for expected in (
+        "#136",
+        "0504ee09c6845731d90e9959184a17e1b5002f49",
+        "87528bf30609092c3c4e947bdca477768af3f8e5",
+        "foundation_alpha_stage_status=runtime_rollout_required",
+        "foundation_runtime_concurrency_evidence",
+        "B0 latest-main refresh is reopened",
+        "dirty 211 source",
+        "configured 211 source path",
+        "a15c74f0fe98914a893ab7ea784c6be941e0cd71",
+        "ai-platform:87528bf-issue124-runtime-only-v2",
+        "source_synced_runtime_pending",
+    ):
+        assert expected in combined_text
+
+    for boundary in (
+        "must not be overwritten or reset without a reconciliation plan",
+        "This is not `211 verified` for `0504ee0`",
+        "does not close B1/B2/B3 product gates",
+        "does not raise production concurrency defaults",
+        "does not claim Docker sandbox hardening",
+        "does not enable ordinary-user multi-agent exposure",
+    ):
+        assert boundary in compact_text
 
 
 def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
