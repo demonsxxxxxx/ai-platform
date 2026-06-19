@@ -36,6 +36,7 @@ Local verification evidence refreshed on 2026-06-19:
 - `corepack pnpm run lint` exited 0 with one existing `react-refresh/only-export-components` warning in `frontend/web/src/components/chat/ChatMessage/sessionImageGallery.tsx`.
 - `corepack pnpm run build` exited 0 with existing Vite large-chunk warnings.
 - `python -m pytest tests/test_frontend_static_proxy_smoke.py -q --basetemp .pytest-tmp\frontend-static-proxy-green3` reported `4 passed`.
+- `python -m pytest tests/test_frontend_official_entry_switch_plan.py -q --basetemp .pytest-tmp\frontend-switch-plan-green2` reported `2 passed`.
 - `python -m compileall -q tools tests` exited 0 after adding `tools/frontend_static_proxy_smoke.py`.
 - `git diff --check` exited 0.
 
@@ -77,6 +78,7 @@ Official 18001 switch readiness, observed 2026-06-19:
 - Current official 18001 index returned HTTP 200, `Content-Length: 11432`, `Last-Modified: Wed, 17 Jun 2026 01:44:08 GMT`.
 - Current preview 18003 index returned HTTP 200, `Content-Length: 10343`, `Last-Modified: Fri, 19 Jun 2026 05:58:25 GMT`.
 - Preview dist provenance remains frontend commit `5e3a747e031e7f1a1ce7c525d19a0ca2d64519ed`, dirty `false`; later PR commits are documentation-only evidence updates.
+- `tools/frontend_official_entry_switch_plan.py` generated a non-executing dry-run plan for the current observed 18001 PID and rollback command with schema `ai-platform.frontend-official-entry-switch-plan.v1`, `requires_operator_approval=true`, and `does_not_execute=true`.
 - Proposed switch command, only after explicit operator approval: stop PID `25816`, then start `python3 /home/xinlin.jiang/frontend-pr111-smoke/tools/serve_ai_platform_frontend.py --host 0.0.0.0 --port 18001 --root /home/xinlin.jiang/frontend-pr111-smoke/dist --api-base http://127.0.0.1:8020`, logging to an agreed 211 path.
 - Rollback command if the official smoke fails: stop the new 18001 process and restart the recorded old command above against `/home/xinlin.jiang/lambchat-poc/frontend-dist-ai-platform`.
 - Required post-switch smoke: official 18001 index and static assets, `/api/ai/health`, unauthenticated `/api/ai/auth/me`, login page render, unauthenticated `/chat` redirect, ordinary/admin RBAC route checks, and real company-account browser login when test credentials are available.
