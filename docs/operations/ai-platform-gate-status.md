@@ -188,6 +188,28 @@ orchestration, enable long-term memory by default, permit department rollout,
 or close the deploy-env-file/source authority caveat. The #104 `dde1749`
 refresh remains reviewed history for its runtime subject.
 
+After the B3 operator snapshot contract landed in `87528bf`, GitHub issue #124
+refreshed B0 latest-main evidence again on 2026-06-19. The 211 API and worker
+ran image `ai-platform:87528bf-issue124-runtime-only-v2` with image ID
+`sha256:e8b9d59e31e350b8576bffa58cba23ac2617d60ab1def9844a1038a5facf6a5c`,
+and the image labels, container source marker, source snapshot, runtime subject,
+runtime source marker, and `/api/ai/health` aligned to
+`87528bf30609092c3c4e947bdca477768af3f8e5`. The reviewed smoke set covers
+runtime POC smoke, Auth/RBAC smoke, Admin Runtime governance smoke,
+release-evidence runtime acceptance, and alert/trace export runtime acceptance.
+The Foundation Runtime concurrency rerun produced verified evidence for 12
+concurrent cases/sessions/runs across 2 tenants and 4 users, covering run
+creation, execution, cancel, retry, queue/admission, sandbox workspace,
+memory/context, artifact ACL, tool permission, skill snapshots, playback, and
+cleanup. This refresh removes the #124 current-subject
+`foundation_runtime_concurrency_evidence` readiness blocker for the `87528bf`
+latest-main source. It used the runtime-only rebase workaround and does not
+raise production concurrency defaults, close the seven-gate B3 capacity evidence
+gate, claim Docker sandbox hardening, open platform-level multi-run
+orchestration, enable long-term memory by default, permit department rollout, or
+close the deploy-env-file/source authority caveat. The #112 `75ab69b` refresh
+remains reviewed history for its runtime subject.
+
 The prior Foundation Alpha historical baseline remains
 `380de6bf9ffed5167f9bb2eaee8e63612a52c124`. On 2026-06-15, source and
 API/worker were advanced to that commit with image
@@ -227,7 +249,19 @@ evidence and the broader `dff48fb` POC smoke/auth/governance evidence as the
 current PR #40 Foundation Alpha POC evidence set, but it still does not close
 production/G0 deployment-layout follow-ups.
 
-The full 75ab69b #112 B0 POC smoke refresh includes reviewed, redacted entries for
+The full 87528bf #124 B0 POC smoke refresh includes reviewed, redacted entries for
+runtime POC smoke, Auth/RBAC smoke, Admin Runtime governance smoke,
+release-evidence runtime acceptance, and alert/trace export runtime acceptance:
+`docs/release-evidence/foundation-alpha-poc/87528bf30609092c3c4e947bdca477768af3f8e5/2026-06-19-211-foundation-alpha-poc-87528bf-runtime-poc-smoke.json`,
+`docs/release-evidence/foundation-alpha-poc/87528bf30609092c3c4e947bdca477768af3f8e5/2026-06-19-211-foundation-alpha-poc-87528bf-auth-rbac-smoke.json`,
+`docs/release-evidence/foundation-alpha-poc/87528bf30609092c3c4e947bdca477768af3f8e5/2026-06-19-211-foundation-alpha-poc-87528bf-governance-runtime-smoke.json`,
+`docs/release-evidence/foundation-alpha-poc/87528bf30609092c3c4e947bdca477768af3f8e5/2026-06-19-211-foundation-alpha-poc-87528bf-release-evidence-runtime-acceptance.json`, and
+`docs/release-evidence/foundation-alpha-poc/87528bf30609092c3c4e947bdca477768af3f8e5/2026-06-19-211-foundation-alpha-poc-87528bf-alert-trace-export-runtime-acceptance.json`.
+The 87528bf 2026-06-19 Foundation Runtime concurrency rerun is accepted
+Foundation Runtime concurrency evidence for this latest-main source:
+`docs/release-evidence/foundation-runtime-concurrency/87528bf30609092c3c4e947bdca477768af3f8e5-frc-b0-20260619/2026-06-19-211-foundation-alpha-poc-87528bf-foundation-runtime-concurrency.json`.
+The full 75ab69b #112 B0 POC smoke refresh is retained as superseded reviewed
+history and includes reviewed, redacted entries for
 runtime POC smoke, Auth/RBAC smoke, Admin Runtime governance smoke,
 release-evidence runtime acceptance, and alert/trace export runtime acceptance:
 `docs/release-evidence/foundation-alpha-poc/75ab69b939d0bf13987ac044ce0dc498f5eab999/2026-06-19-211-foundation-alpha-poc-75ab69b-runtime-poc-smoke.json`,
@@ -311,8 +345,10 @@ Runtime concurrency evidence for the prior runtime subject:
 `docs/release-evidence/foundation-runtime-concurrency/8e0389ea621a57f3ded2044e410943cc0d298571-frc-s2-0-20260617/2026-06-17-211-foundation-alpha-poc-8e0389e-foundation-runtime-concurrency.json`.
 The local readiness summary for the current B0 runtime-relevant source may now
 report `runtime_current_for_runtime_relevant_source` when it consumes the
-75ab69b source-runtime relation manifest and #112 evidence. Later
-documentation-only commits may keep that as
+87528bf source-runtime relation manifest and #124 evidence. The prior 75ab69b
+source-runtime relation manifest and #112 evidence are retained as superseded
+reviewed history and must not be used for current B0 latest-main claims after
+#124. Later documentation-only commits may keep the #124 result as
 `runtime_relevant_source_verified_by_running_runtime=true`, but runtime-affecting
 source changes must trigger a new B0 refresh.
 
@@ -584,9 +620,10 @@ Earlier smoke evidence for
 `8c0cffca63bc747fad0a5771f209acc8a608ab9e`,
 `bf20432f9889efa8b367afdf512c641068ba30bc`, and
 `3874281276c84a418bd08bda56d7ea55b52970b7` remains retained as historical
-evidence only; the `380de6b` evidence above is the active Foundation Alpha POC
-reference, and the `79495bf`, `dff48fb`, and `ac9a86b` evidence is now retained
-as superseded reviewed history.
+evidence only; the `380de6b` evidence above is the historical Foundation Alpha
+baseline, the active B0 latest-main reference is `87528bf` / #124, and the
+`75ab69b`, `79495bf`, `dff48fb`, and `ac9a86b` evidence is now retained as
+superseded reviewed history.
 The immediately superseded runtime image was `ai-platform:948179c-skill-release-scaffold`.
 
 This smoke does not close the recorded capacity-evidence gate, G7 Docker sandbox hardening, ordinary
@@ -630,13 +667,13 @@ follow-up for S2 instead of a standalone S1 stage blocker.
 
 | Gate | Current status | Evidence now in repository | Remaining blocker before closure |
 | --- | --- | --- | --- |
-| G0-G1 Source Authority / Security Baseline | Reviewed #112 B0 runtime smoke exists for `75ab69b`; source/runtime/image labels match for this runtime-relevant subject, but the 211 deployment-layout/env-file caveat remains open. | PRD v2, backend phased PRD, technical acceptance matrix, roadmap, guardrails, source-authority tests, repo-local compose context, frontend source migration, redacted deploy templates, 2026-06-19 `75ab69b` POC release evidence, 2026-06-19 `75ab69b` Foundation Runtime concurrency evidence, superseded 2026-06-19 `dde1749` evidence, superseded 2026-06-19 `14808bc` evidence, superseded 2026-06-18 `5698873` evidence, superseded 2026-06-18 `de12191` evidence, superseded 2026-06-17 `a15c74f` evidence, superseded 2026-06-16 `8e0389e` evidence, and 2026-06-15 `380de6b` historical baseline evidence. | Full PR/review/merge closure path, production auth rollout, exact current-source runtime match when runtime-affecting code changes again, and release-path/deployment-layout reconciliation are still required before production closure. |
+| G0-G1 Source Authority / Security Baseline | Reviewed #124 B0 runtime smoke exists for `87528bf`; source/runtime/image labels match for this latest-main subject, but the 211 deployment-layout/env-file caveat remains open. | PRD v2, backend phased PRD, technical acceptance matrix, roadmap, guardrails, source-authority tests, repo-local compose context, frontend source migration, redacted deploy templates, 2026-06-19 `87528bf` POC release evidence, 2026-06-19 `87528bf` Foundation Runtime concurrency evidence, superseded 2026-06-19 `75ab69b` evidence, superseded 2026-06-19 `dde1749` evidence, superseded 2026-06-19 `14808bc` evidence, superseded 2026-06-18 `5698873` evidence, superseded 2026-06-18 `de12191` evidence, superseded 2026-06-17 `a15c74f` evidence, superseded 2026-06-16 `8e0389e` evidence, and 2026-06-15 `380de6b` historical baseline evidence. | Full PR/review/merge closure path, production auth rollout, exact current-source runtime match when runtime-affecting code changes again, and release-path/deployment-layout reconciliation are still required before production closure. |
 | G2-G4 Control Plane MVP | Substantial coverage; keep under regression. | Session/run/file/artifact/skill/tool/memory/event/audit contracts, repositories, routes, schema indexes, and focused tests. | Full regression before PR/deploy, plus no executor-owned platform schema drift. |
-| G5 Run Lifecycle / Worker Runtime V1 | Foundation Alpha POC verified queue/run/worker execution and Admin capacity/backpressure projection exist; #112 current-subject Foundation Runtime concurrency evidence exists for `75ab69b`, but this is not capacity-closed. | Tenant-aware queue lease, worker maintenance, active-run admission, bounded metadata, Admin Runtime capacity/backpressure projection, #20 roadmap closure notes, 2026-06-19 `75ab69b` POC verifier evidence, 2026-06-19 `75ab69b` verified Foundation Runtime concurrency evidence, superseded 2026-06-19 `dde1749` POC verifier evidence, superseded 2026-06-19 `dde1749` verified Foundation Runtime concurrency evidence, superseded 2026-06-19 `14808bc` POC verifier evidence, superseded 2026-06-19 `14808bc` verified Foundation Runtime concurrency evidence, superseded 2026-06-19 `14808bc` 240s blocked FRC diagnostic, superseded 2026-06-18 `5698873` evidence, superseded 2026-06-18 `de12191` evidence, superseded 2026-06-17 `a15c74f` evidence, superseded 2026-06-16 `8e0389e` failed-closed FRC diagnostics, superseded 2026-06-17 `8e0389e` verified Foundation Runtime concurrency evidence, and 2026-06-15 `380de6b` historical accepted concurrency evidence. | #21 is currently closed in GitHub but recorded seven-gate load evidence, large queue bounded lookup pressure, worker parallelism/capacity profiling, and multi-tenant load evidence are still missing. Production defaults stay unchanged. |
+| G5 Run Lifecycle / Worker Runtime V1 | Foundation Alpha POC verified queue/run/worker execution and Admin capacity/backpressure projection exist; #124 current-subject Foundation Runtime concurrency evidence exists for `87528bf`, but this is not capacity-closed. | Tenant-aware queue lease, worker maintenance, active-run admission, bounded metadata, Admin Runtime capacity/backpressure projection, #20 roadmap closure notes, 2026-06-19 `87528bf` POC verifier evidence, 2026-06-19 `87528bf` verified Foundation Runtime concurrency evidence, superseded 2026-06-19 `75ab69b` POC verifier evidence, superseded 2026-06-19 `75ab69b` verified Foundation Runtime concurrency evidence, superseded 2026-06-19 `dde1749` POC verifier evidence, superseded 2026-06-19 `dde1749` verified Foundation Runtime concurrency evidence, superseded 2026-06-19 `14808bc` POC verifier evidence, superseded 2026-06-19 `14808bc` verified Foundation Runtime concurrency evidence, superseded 2026-06-19 `14808bc` 240s blocked FRC diagnostic, superseded 2026-06-18 `5698873` evidence, superseded 2026-06-18 `de12191` evidence, superseded 2026-06-17 `a15c74f` evidence, superseded 2026-06-16 `8e0389e` failed-closed FRC diagnostics, superseded 2026-06-17 `8e0389e` verified Foundation Runtime concurrency evidence, and 2026-06-15 `380de6b` historical accepted concurrency evidence. | #21 is currently closed in GitHub but recorded seven-gate load evidence, large queue bounded lookup pressure, worker parallelism/capacity profiling, and multi-tenant load evidence are still missing. Production defaults stay unchanged. |
 | G6 Tool / Skill / Memory Governance | Admin Runtime governance projection now has focused 211 smoke evidence for the POC runtime, and Foundation readiness records `memory_context_controls` with `session_scoped_memory=true`, `ordinary_user_opt_out=true`, `retention_cleanup=true`, `delete_redaction=true`, `public_admin_projection_safe=true`, `long_term_cross_session_memory_fail_closed=true`, exact tool-permission decision lookup source tests, admin bulk-review source-route runtime-control tests, Admin Skill release dashboard source-route runtime-control tests, source-level context-pack persistence/versioning, user-visible context provenance API projection source tests, frontend run-playback context provenance projection source tests, document-centric follow-up state source tests, reviewed `8e0389e` 211 executor context-pack evidence, and reviewed PR #44 211 sandbox latency split evidence. G6 remains partial and ordinary-user expansion remains blocked. | Tool policy taxonomy/history, exact tool-permission decision lookup source tests, admin bulk-review source-route runtime-control tests, Admin Skill release dashboard source-route runtime-control tests, public permission-card projection, skill release/dependency policy contracts, memory delete/retention/redaction/export readiness, office context-pack architecture readiness, `source_level_context_pack_persistence_and_versioning`, `context_pack_version`, `context_pack_generated_at`, context snapshot public provenance projection contract, user-visible context provenance API projection source tests, frontend run-playback context provenance projection source tests, document-centric follow-up state source tests, `8e0389e` executor context-pack runtime evidence, PR #44 `office-context-runtime` sandbox latency evidence, governance readiness CLI, POC runs using governed skills, and 2026-06-15 380de6b governance runtime smoke evidence. | Legacy frontend route remap/policy enforcement, signed package or SBOM review evidence, dependency vulnerability/license evidence, admin bulk-review visual acceptance, admin bulk-review 211 acceptance, Admin Skill release visual acceptance, Admin Skill release 211 acceptance, long-term cross-session memory policy closure, ordinary-user G8/G10 exposure controls, production Docker sandbox hardening, packaged frontend acceptance, and broader 211 acceptance. |
 | G7 Sandbox / Resource Hardening | Blocked for high-risk expansion. | Fake provider remains local/test-only; capacity docs expose sandbox limits and missing hardening warnings. | Docker provider hardening, egress/quota policy, orphan cleanup, container security options, and Docker-capable 211 smoke. |
 | G8 Multi-Agent Controlled Beta | Deferred parking-lot for platform-owned multi-run orchestration. SDK-internal agent/subagent behavior stays inside one governed platform run, and the current question is deployment capacity for SDK subagent fanout rather than basic subagent availability. | Historical dispatcher and child-run admission work exists behind controls but is not the current product route; Claude Agent SDK remains the execution-layer route for agent/subagent patterns. | Do not build a separate agent harness as the next step. Reopen for recorded SDK subagent fanout load evidence, tenant quota/backpressure, model-gateway pressure, sandbox pressure, artifact/event volume, token/cost accounting, and no ordinary-user exposure before prior gates. |
-| G9 Observability / Quality / Ops | Reviewed release-evidence runtime acceptance and alert/trace runtime acceptance exist for `75ab69b`; G9 remains partial for Operations Beta. | Admin Runtime overview, capacity/governance/observability readiness docs and tools, error taxonomy/dashboard contracts, release-evidence contracts, reviewed 211 release-evidence runtime export/retention acceptance for `75ab69b`, reviewed 211 alert/trace export runtime acceptance for `75ab69b`, trace/audit export contracts, frontend projection audit, and reviewed 211 POC smoke entry. | S2/G9 closure still requires runtime dashboard acceptance, recorded capacity evidence, model-gateway backpressure evidence, golden-set eval runtime, alert delivery enablement/runtime calibration, and remaining Admin Runtime observability follow-ups. |
+| G9 Observability / Quality / Ops | Reviewed release-evidence runtime acceptance and alert/trace runtime acceptance exist for `87528bf`; G9 remains partial for Operations Beta. | Admin Runtime overview, capacity/governance/observability readiness docs and tools, error taxonomy/dashboard contracts, release-evidence contracts, reviewed 211 release-evidence runtime export/retention acceptance for `87528bf`, reviewed 211 alert/trace export runtime acceptance for `87528bf`, trace/audit export contracts, frontend projection audit, and reviewed 211 POC smoke entry. | S2/G9 closure still requires runtime dashboard acceptance, recorded capacity evidence, model-gateway backpressure evidence, golden-set eval runtime, alert delivery enablement/runtime calibration, and remaining Admin Runtime observability follow-ups. |
 | G10 Internal Beta / Department Rollout | Blocked. | Candidate internal workflows are named only as examples in roadmap. | Select 1-2 real internal workflow owners, complete prior gates, record cost/quality/audit/rollback evidence, and pass 211 acceptance. |
 
 ## Issue-Driven Thin Spots

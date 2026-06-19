@@ -11,7 +11,7 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
-ACTIVE_RUNTIME_SUBJECT_SHA = "75ab69b939d0bf13987ac044ce0dc498f5eab999"
+ACTIVE_RUNTIME_SUBJECT_SHA = "87528bf30609092c3c4e947bdca477768af3f8e5"
 HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
@@ -918,7 +918,7 @@ def test_foundation_alpha_readiness_rejects_governance_runtime_smoke_with_wrong_
     auth_path.write_text(json.dumps(auth_payload), encoding="utf-8")
     governance_path = _write_governance_evidence(evidence_root, runtime_commit, image=image)
     governance_payload = json.loads(governance_path.read_text(encoding="utf-8"))
-    governance_payload["gate"] = "Foundation Alpha POC"
+    governance_payload["gate"] = "Wrong Runtime Gate"
     governance_payload["artifact_kind"] = "governance_runtime_smoke"
     governance_path.write_text(json.dumps(governance_payload), encoding="utf-8")
     monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
@@ -945,7 +945,7 @@ def test_foundation_alpha_readiness_rejects_governance_runtime_smoke_with_wrong_
     ("override_field", "override_value"),
     [
         ("artifact_kind", "211_runtime_smoke"),
-        ("gate", "Foundation Alpha POC"),
+        ("gate", "Wrong Runtime Gate"),
     ],
 )
 def test_foundation_alpha_readiness_rejects_release_evidence_runtime_acceptance_with_wrong_binding(
@@ -1004,7 +1004,7 @@ def test_foundation_alpha_readiness_rejects_alert_trace_export_runtime_acceptanc
     auth_path.write_text(json.dumps(auth_payload), encoding="utf-8")
     alert_path = _write_alert_trace_export_runtime_acceptance(evidence_root, runtime_commit, image=image)
     alert_payload = json.loads(alert_path.read_text(encoding="utf-8"))
-    alert_payload["gate"] = "Foundation Alpha POC"
+    alert_payload["gate"] = "Wrong Runtime Gate"
     alert_payload["artifact_kind"] = "alert_trace_export_runtime_acceptance"
     alert_path.write_text(json.dumps(alert_payload), encoding="utf-8")
     monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
@@ -1101,6 +1101,85 @@ def test_foundation_alpha_readiness_discovers_dedicated_runtime_evidence_artifac
 
     assert readiness["runtime_source_relation"]["status"] == "runtime_current_for_source_tree"
     assert readiness["evidence_entries"]["poc_smoke"] == foundation_alpha_readiness._path_for_output(smoke_path)
+    assert readiness["evidence_entries"]["auth_rbac_smoke"] == foundation_alpha_readiness._path_for_output(auth_path)
+    assert readiness["evidence_entries"]["governance_runtime_smoke"] == (
+        foundation_alpha_readiness._path_for_output(governance_path)
+    )
+    assert readiness["evidence_entries"]["release_evidence_runtime_acceptance"] == (
+        foundation_alpha_readiness._path_for_output(release_path)
+    )
+    assert readiness["evidence_entries"]["alert_trace_export_runtime_acceptance"] == (
+        foundation_alpha_readiness._path_for_output(alert_path)
+    )
+
+
+def test_foundation_alpha_readiness_accepts_stage_bundle_gate_for_dedicated_artifacts(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "fa"
+    runtime_commit = "87528bf30609092c3c4e947bdca477768af3f8e5"
+    image = "ai-platform:87528bf-issue124-runtime-only-v2"
+    smoke_path, auth_path = _write_release_evidence_pair(
+        evidence_root,
+        runtime_commit,
+        image=image,
+    )
+
+    auth_payload = json.loads(auth_path.read_text(encoding="utf-8"))
+    auth_payload["gate"] = "Foundation Alpha POC"
+    auth_payload["artifact_kind"] = "auth_rbac_smoke"
+    auth_path.write_text(json.dumps(auth_payload), encoding="utf-8")
+
+    governance_path = _write_governance_evidence(evidence_root, runtime_commit, image=image)
+    governance_payload = json.loads(governance_path.read_text(encoding="utf-8"))
+    governance_payload["gate"] = "Foundation Alpha POC"
+    governance_payload["artifact_kind"] = "governance_runtime_smoke"
+    governance_path.write_text(json.dumps(governance_payload), encoding="utf-8")
+
+    release_path = _write_release_evidence_runtime_acceptance(
+        evidence_root,
+        runtime_commit,
+        image=image,
+    )
+    release_payload = json.loads(release_path.read_text(encoding="utf-8"))
+    release_payload["gate"] = "Foundation Alpha POC"
+    release_payload["artifact_kind"] = "release_evidence_runtime_acceptance"
+    release_path.write_text(json.dumps(release_payload), encoding="utf-8")
+
+    alert_path = _write_alert_trace_export_runtime_acceptance(
+        evidence_root,
+        runtime_commit,
+        image=image,
+    )
+    alert_payload = json.loads(alert_path.read_text(encoding="utf-8"))
+    alert_payload["gate"] = "Foundation Alpha POC"
+    alert_payload["artifact_kind"] = "alert_trace_export_runtime_acceptance"
+    alert_path.write_text(json.dumps(alert_payload), encoding="utf-8")
+
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: runtime_commit,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_frontend_traceability_summary",
+        lambda: {
+            "status": "verified_packaged_release_followup_open",
+            "open_gap_count": 0,
+            "blockers": [],
+        },
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
     assert readiness["evidence_entries"]["auth_rbac_smoke"] == foundation_alpha_readiness._path_for_output(auth_path)
     assert readiness["evidence_entries"]["governance_runtime_smoke"] == (
         foundation_alpha_readiness._path_for_output(governance_path)
