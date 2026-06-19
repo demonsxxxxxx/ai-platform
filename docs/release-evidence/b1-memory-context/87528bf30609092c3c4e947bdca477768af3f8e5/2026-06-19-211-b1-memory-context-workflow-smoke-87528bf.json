@@ -1,0 +1,153 @@
+{
+  "artifact_kind": "211_memory_enabled_document_workflow_smoke",
+  "captured_at": "2026-06-19T20:09:55+08:00",
+  "commit_sha": "87528bf30609092c3c4e947bdca477768af3f8e5",
+  "evidence_id": "2026-06-19-211-b1-memory-context-workflow-smoke-87528bf",
+  "evidence_ref": {
+    "command": "python3 tools/verify_b1_memory_context_workflow.py --base-url http://127.0.0.1:8020 --commit-sha 87528bf30609092c3c4e947bdca477768af3f8e5 --runtime-subject-commit-sha 87528bf30609092c3c4e947bdca477768af3f8e5 --image ai-platform:87528bf-issue124-runtime-only-v2 --timeout-seconds 20",
+    "result": "ok:true",
+    "runtime_checks": {
+      "211_memory_enabled_document_workflow_smoke": {
+        "acceptance_gap": "211_memory_enabled_document_workflow_smoke",
+        "checks": {
+          "context_snapshot_public_provenance": true,
+          "create_governed_run": true,
+          "cross_user_context_denied": true,
+          "deleted_memory_absent_from_future_context": true,
+          "long_term_memory_fail_closed": true,
+          "memory_policy_disabled_blocks_create": true,
+          "memory_policy_disabled_blocks_list": true,
+          "memory_policy_enabled_for_governed_scope": true,
+          "memory_record_create_and_list": true,
+          "no_private_projection_leakage": true,
+          "playback_public_projection": true
+        },
+        "does_not_close_b1_gate": true,
+        "memory_record_count": 1,
+        "non_expansion_invariants": {
+          "frontend_state_is_canonical_context": false,
+          "gate_closure_claimed": false,
+          "long_term_cross_session_memory_enabled": false,
+          "stores_private_executor_material_as_memory": false
+        },
+        "ok": true,
+        "redaction_scan_status": "passed",
+        "remaining_gate_boundaries": [
+          "issue review and closure evidence",
+          "runtime evidence review against merged source",
+          "memory export boundary",
+          "rollback boundary"
+        ],
+        "schema_version": "ai-platform.b1-memory-context-workflow-smoke.v1",
+        "source": {
+          "commit_sha": "87528bf30609092c3c4e947bdca477768af3f8e5",
+          "gateway_secret_supplied": false,
+          "image": "ai-platform:87528bf-issue124-runtime-only-v2",
+          "runtime_subject_commit_sha": "87528bf30609092c3c4e947bdca477768af3f8e5"
+        },
+        "target": "211_api_memory_context_workflow",
+        "workflow": {
+          "agent_id": "general-agent",
+          "memory_record_created": true,
+          "run_id_present": true,
+          "session_id_present": true,
+          "workspace_id": "default"
+        }
+      },
+      "verifier_checks": [
+        {
+          "name": "check_b1_memory_context_workflow_smoke",
+          "passed": true
+        },
+        {
+          "name": "check_no_private_projection_leakage",
+          "passed": true
+        }
+      ]
+    },
+    "verifier": "tools/verify_b1_memory_context_workflow.py"
+  },
+  "gate": "B1 memory/context usable",
+  "issue_refs": [
+    "#128",
+    "#124"
+  ],
+  "open_followups": [
+    "This evidence closes only the B1 merged-source runtime evidence review gap for the 87528bf runtime subject because 87528bf -> 5cfe956 has no runtime-affecting delta in the current readiness classifier.",
+    "B1 stage remains local partial and not product beta; this record does not enable long-term cross-session memory by default.",
+    "The 211 service source checkout remains dirty/behind and the compose env label still points at the legacy external runtime env path; this is B1 workflow evidence rather than G0 source-authority closure.",
+    "This evidence does not claim production readiness, Docker sandbox hardening, ordinary-user multi-agent exposure, department rollout, or production concurrency default increases."
+  ],
+  "pr_refs": [],
+  "redaction_scan_status": "passed",
+  "review_notes": [
+    "211 verifier returned ok=true for schema ai-platform.b1-memory-context-workflow-smoke.v1 against target 211_api_memory_context_workflow.",
+    "The smoke covered governed run creation, governed-scope memory enablement, disabled-policy read/write blocking, memory create/list, context snapshot public provenance, playback public projection with memory_record_count=1, cross-user denial, delete followed by future-context absence, long-term memory fail-closed, and private projection leakage scan.",
+    "The running API and worker containers used image ai-platform:87528bf-issue124-runtime-only-v2 with OCI/source labels, container source markers, and source snapshot bound to 87528bf."
+  ],
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "87528bf30609092c3c4e947bdca477768af3f8e5",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "api_health": {
+      "status": "ok"
+    },
+    "branch": "main",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_layout_status": "external_env_file_label_present",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "gateway_secret_supplied": false,
+    "image": "ai-platform:87528bf-issue124-runtime-only-v2",
+    "image_id": "sha256:e8b9d59e31e350b8576bffa58cba23ac2617d60ab1def9844a1038a5facf6a5c",
+    "image_labels": {
+      "ai-platform.runtime-rollout": "issue124-b0-runtime-only-rebase-v1",
+      "ai-platform.runtime-subject": "87528bf30609092c3c4e947bdca477768af3f8e5",
+      "ai-platform.runtime_subject": "87528bf30609092c3c4e947bdca477768af3f8e5",
+      "ai-platform.source-branch": "main",
+      "ai-platform.source-note": "issue124-b0-runtime-only-rebase-v1",
+      "ai-platform.source-revision": "87528bf30609092c3c4e947bdca477768af3f8e5",
+      "ai-platform.source.note": "issue124-b0-runtime-only-rebase-v1",
+      "ai-platform.source.revision": "87528bf30609092c3c4e947bdca477768af3f8e5",
+      "ai-platform.source_revision": "87528bf30609092c3c4e947bdca477768af3f8e5",
+      "ai-platform.source_tree_commit": "87528bf30609092c3c4e947bdca477768af3f8e5",
+      "com.docker.compose.config-hash": "5d4241c2683813ba295726ff127ae09cc78934b763efb4493a1fc3127851afe5",
+      "com.docker.compose.container-number": "1",
+      "com.docker.compose.depends_on": "redis:service_healthy:false,minio:service_healthy:false,postgres:service_healthy:false",
+      "com.docker.compose.image": "sha256:e8b9d59e31e350b8576bffa58cba23ac2617d60ab1def9844a1038a5facf6a5c",
+      "com.docker.compose.oneoff": "False",
+      "com.docker.compose.project": "ai-platform-phaseb",
+      "com.docker.compose.project.config_files": "<redacted-repo-local-compose-path>",
+      "com.docker.compose.project.environment_file": "<redacted-external-runtime-env-path>",
+      "com.docker.compose.project.working_dir": "<redacted-repo-local-compose-workdir>",
+      "com.docker.compose.service": "api",
+      "com.docker.compose.version": "2.27.0",
+      "org.opencontainers.image.revision": "87528bf30609092c3c4e947bdca477768af3f8e5"
+    },
+    "repo_local_env_present": false,
+    "runtime_boundary": {
+      "api_container": "ai-platform-api",
+      "worker_container": "ai-platform-worker"
+    },
+    "runtime_commit": "87528bf30609092c3c4e947bdca477768af3f8e5",
+    "runtime_source_marker": "87528bf30609092c3c4e947bdca477768af3f8e5",
+    "runtime_subject_label_status": "runtime_subject_label_current",
+    "service_checkout_commit_sha": "a15c74f0fe98914a893ab7ea784c6be941e0cd71",
+    "service_checkout_dirty": true,
+    "source_authority_caveat": "211 service checkout remains dirty/behind and compose env label still points at the legacy external runtime env path; do not use this B1 evidence as G0 source-authority closure",
+    "source_revision_alias_label_status": "source_revision_alias_label_current",
+    "source_snapshot": {
+      "captured_by": "issue124-b0-runtime-refresh",
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "runtime_subject_commit_sha": "87528bf30609092c3c4e947bdca477768af3f8e5",
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "source_tree_commit_sha": "87528bf30609092c3c4e947bdca477768af3f8e5",
+      "source_tree_dirty": false
+    },
+    "source_tree_dirty": false
+  }
+}
