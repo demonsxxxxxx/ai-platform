@@ -74,7 +74,77 @@ def write_future_reviewed_b2_smoke(
         / directory_commit
         / "2026-06-20-211-b2-sandbox-runtime-smoke-1234567.json"
     )
-    evidence_path.parent.mkdir(parents=True)
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    evidence_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def write_b2_issue_closure_evidence(
+    repo_root: Path,
+    *,
+    evidence_refs: list[str] | None = None,
+    residual_caveats: list[str] | None = None,
+    non_expansion_invariants: dict[str, bool] | None = None,
+) -> None:
+    payload = {
+        "schema_version": "ai-platform.backend-stage-closure-evidence.v1",
+        "backend_stage": "B2 real sandbox usable",
+        "issue": "#89",
+        "issue_url": "https://github.com/demonsxxxxxx/ai-platform/issues/89",
+        "issue_state": "closed",
+        "closed_at": "2026-06-18T20:16:00Z",
+        "closed_gap": "b2_issue_review_and_closure_evidence",
+        "review_status": "reviewed",
+        "redaction_scan_status": "passed",
+        "linked_prs": [
+            {
+                "number": 90,
+                "url": "https://github.com/demonsxxxxxx/ai-platform/pull/90",
+                "merge_commit": "f8a0f3c1168c34663850345d8f30358d435a0134",
+            }
+        ],
+        "closure_comments": [
+            {
+                "url": "https://github.com/demonsxxxxxx/ai-platform/issues/89#issuecomment-4745786980",
+                "summary": "Final #89 closure evidence records only the issue-scope sandbox smoke loop.",
+            }
+        ],
+        "evidence_refs": (
+            evidence_refs
+            if evidence_refs is not None
+            else [
+                "docs/release-evidence/b2-sandbox/"
+                "f8a0f3c1168c34663850345d8f30358d435a0134/"
+                "2026-06-19-211-b2-sandbox-runtime-smoke-f8a0f3c.json"
+            ]
+        ),
+        "residual_caveats": (
+            residual_caveats
+            if residual_caveats is not None
+            else [
+                "does_not_close_broader_b2_g7_production_hardening_gate",
+            ]
+        ),
+        "non_expansion_invariants": (
+            non_expansion_invariants
+            if non_expansion_invariants is not None
+            else {
+                "ordinary_user_high_risk_sandbox_allowed": False,
+                "ordinary_user_multi_agent_allowed": False,
+                "production_concurrency_defaults_raised": False,
+                "docker_sandbox_production_hardening_claimed": False,
+            }
+        ),
+        "does_not_close_broader_gate": True,
+    }
+    evidence_path = (
+        repo_root
+        / "docs/release-evidence/backend-stage-closures/b2-sandbox"
+        / "2026-06-18-issue89-b2-closure.json"
+    )
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
     evidence_path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -143,6 +213,12 @@ def test_b2_sandbox_readiness_records_source_contract_without_gate_closure(tmp_p
         "security_options_evidence",
         "rollback_assumptions_evidence",
     ]
+    assert readiness["broader_b2_g7_open_requirements"] == [
+        "resource_limits_policy_evidence",
+        "egress_policy_evidence",
+        "security_options_evidence",
+        "rollback_assumptions_evidence",
+    ]
     for future_requirement in (
         "resource_limits",
         "egress_policy",
@@ -177,7 +253,13 @@ def test_b2_sandbox_readiness_accepts_future_reviewed_smoke_run_ids(tmp_path):
     readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
 
     assert readiness["status"] == "runtime_acceptance_recorded"
-    assert readiness["open_gaps"] == ["b2_issue_review_and_closure_evidence"]
+    assert readiness["open_gaps"] == [
+        "b2_issue_review_and_closure_evidence",
+        "resource_limits_policy_evidence",
+        "egress_policy_evidence",
+        "security_options_evidence",
+        "rollback_assumptions_evidence",
+    ]
     smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
     assert smoke_evidence["run_id"] == FUTURE_RUN_ID
     assert smoke_evidence["runtime_subject_commit_sha"] == FUTURE_RUNTIME_SUBJECT
@@ -264,10 +346,31 @@ def test_b2_sandbox_readiness_records_reviewed_211_smoke_without_closing_b2_gate
     assert readiness["runtime_acceptance"]["status"] == "verified_211_runtime_acceptance"
     assert readiness["runtime_acceptance"]["status_label_after_reviewed_evidence"] == "211 verified"
     assert readiness["runtime_acceptance"]["does_not_close_b2_gate_by_itself"] is True
-    assert readiness["open_gaps"] == ["b2_issue_review_and_closure_evidence"]
+    assert readiness["open_gaps"] == [
+        "resource_limits_policy_evidence",
+        "egress_policy_evidence",
+        "security_options_evidence",
+        "rollback_assumptions_evidence",
+    ]
     assert readiness["closed_runtime_gaps"] == [
         "b2_211_real_sandbox_smoke",
         "b2_reviewed_release_evidence",
+    ]
+    assert readiness["closed_gate_boundary_gaps"] == ["b2_issue_review_and_closure_evidence"]
+    closure_evidence = readiness["gate_boundary_evidence"]["b2_issue_review_and_closure_evidence"]
+    assert closure_evidence["status"] == "recorded_issue_closure_evidence"
+    assert closure_evidence["closed_gap"] == "b2_issue_review_and_closure_evidence"
+    assert closure_evidence["issue"] == "#89"
+    assert closure_evidence["issue_state"] == "closed"
+    assert closure_evidence["does_not_close_broader_b2_g7_gate"] is True
+    assert "docs/release-evidence/backend-stage-closures" in closure_evidence["path"]
+    assert closure_evidence["evidence_refs"] == [
+        "docs/release-evidence/b2-sandbox/"
+        "f8a0f3c1168c34663850345d8f30358d435a0134/"
+        "2026-06-19-211-b2-sandbox-runtime-smoke-f8a0f3c.json"
+    ]
+    assert "does_not_close_broader_b2_g7_production_hardening_gate" in closure_evidence[
+        "residual_caveats"
     ]
 
     smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
@@ -374,7 +477,19 @@ def test_b2_sandbox_readiness_markdown_is_gap_first_and_operator_readable():
     assert "# B2 Real Sandbox Readiness" in markdown
     assert "Status label: `local partial`" in markdown
     assert "## Open Gaps" in markdown
-    assert "- b2_issue_review_and_closure_evidence" in markdown
+    open_gap_section = markdown.split("## Closed Gate Boundary Gaps", 1)[0]
+    assert "- resource_limits_policy_evidence" in open_gap_section
+    assert "- egress_policy_evidence" in open_gap_section
+    assert "- security_options_evidence" in open_gap_section
+    assert "- rollback_assumptions_evidence" in open_gap_section
+    assert "- b2_issue_review_and_closure_evidence" not in open_gap_section
+    assert "## Closed Gate Boundary Gaps" in markdown
+    assert "- b2_issue_review_and_closure_evidence" in markdown.split("## Closed Gate Boundary Gaps", 1)[1]
+    assert "## Gate Boundary Evidence" in markdown
+    assert "### B2 Issue Closure Evidence" in markdown
+    assert "docs/release-evidence/backend-stage-closures/b2-sandbox" in markdown
+    assert "2026-06-19-211-b2-sandbox-runtime-smoke-f8a0f3c.json" in markdown
+    assert "does_not_close_broader_b2_g7_production_hardening_gate" in markdown
     assert "- b2_211_real_sandbox_smoke" not in markdown
     assert "- b2_reviewed_release_evidence" not in markdown
     assert "## Runtime Acceptance" in markdown
@@ -409,6 +524,59 @@ def test_b2_sandbox_readiness_cli_outputs_json_without_secret_markers():
     assert payload["runtime_acceptance"]["status"] == "verified_211_runtime_acceptance"
     assert payload["runtime_acceptance"]["status_label_after_smoke_before_review"] == "local partial"
     assert payload["runtime_acceptance"]["reviewed_evidence_required_for_211_verified"] is True
+    assert payload["open_gaps"] == [
+        "resource_limits_policy_evidence",
+        "egress_policy_evidence",
+        "security_options_evidence",
+        "rollback_assumptions_evidence",
+    ]
+    assert payload["closed_gate_boundary_gaps"] == ["b2_issue_review_and_closure_evidence"]
+    assert payload["broader_b2_g7_open_requirements"] == [
+        "resource_limits_policy_evidence",
+        "egress_policy_evidence",
+        "security_options_evidence",
+        "rollback_assumptions_evidence",
+    ]
+    assert payload["gate_boundary_evidence"]["b2_issue_review_and_closure_evidence"]["status"] == (
+        "recorded_issue_closure_evidence"
+    )
     assert "callback-secret" not in result.stdout
     assert "sandbox_workdir" not in result.stdout
     assert "gate closable" not in result.stdout.lower()
+
+
+def test_b2_issue_closure_gap_stays_open_without_valid_local_closure_evidence(tmp_path):
+    write_future_reviewed_b2_smoke(tmp_path)
+
+    readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
+
+    assert readiness["open_gaps"] == [
+        "b2_issue_review_and_closure_evidence",
+        "resource_limits_policy_evidence",
+        "egress_policy_evidence",
+        "security_options_evidence",
+        "rollback_assumptions_evidence",
+    ]
+    closure_evidence = readiness["gate_boundary_evidence"]["b2_issue_review_and_closure_evidence"]
+    assert closure_evidence["status"] == "open_missing_issue_closure_evidence"
+    assert closure_evidence["closed_gap"] is None
+    assert closure_evidence["required_next_step"] == (
+        "record reviewed local issue-closure evidence for #89 before closing this boundary"
+    )
+
+
+def test_b2_issue_closure_gap_stays_open_for_under_specified_closure_evidence(tmp_path):
+    write_future_reviewed_b2_smoke(tmp_path)
+
+    for kwargs in (
+        {"evidence_refs": []},
+        {"residual_caveats": []},
+        {"non_expansion_invariants": {}},
+    ):
+        write_b2_issue_closure_evidence(tmp_path, **kwargs)
+
+        readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
+
+        assert "b2_issue_review_and_closure_evidence" in readiness["open_gaps"]
+        closure_evidence = readiness["gate_boundary_evidence"]["b2_issue_review_and_closure_evidence"]
+        assert closure_evidence["status"] == "open_missing_issue_closure_evidence"
