@@ -292,6 +292,7 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
         "Bogdanp/dramatiq",
         "taskiq-python/taskiq",
         "BerriAI/litellm",
+        "Portkey-AI/gateway",
         "backstage/backstage",
         "langgenius/dify",
         "open-webui/open-webui",
@@ -317,6 +318,8 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
     for authority_boundary in (
         "Reference projects can shape implementation choices, tests, and UI vocabulary.",
         "They do not define ai-platform authority.",
+        "Repository names in this inventory were rechecked with `gh repo view` on 2026-06-20",
+        "it does not pin commits, approve licenses, approve dependencies, or change any code-adaptation intake state.",
         "Reading a project does not authorize copying code, adding dependencies, or changing runtime architecture.",
         "Any code adaptation or runtime dependency must go through issue, license/provenance review, tests, PR review, and runtime evidence",
         "Unconfirmed project names stay concept-only until a repository, commit or tag, license, and intake level are recorded.",

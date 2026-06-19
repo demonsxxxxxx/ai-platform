@@ -738,6 +738,11 @@ default branch, license posture reported by GitHub, and latest observed
 activity on 2026-06-19. Re-check before deep code review because these are live
 projects.
 
+Repository names in this inventory were rechecked with `gh repo view` on
+2026-06-20 for PR #139 follow-up review. That recheck confirms repository
+resolution only; it does not pin commits, approve licenses, approve
+dependencies, or change any code-adaptation intake state.
+
 | Area | Repository reference | Default branch | License posture | Observed activity | Use only for |
 | --- | --- | --- | --- | --- | --- |
 | B0 source/auth baseline | [`keycloak/keycloak`](https://github.com/keycloak/keycloak) | `main` | Apache-2.0 | 2026-06-19T11:14:21Z | OIDC, group/role mapping, and admin-login vocabulary; not ai-platform tenant/RBAC authority. |
