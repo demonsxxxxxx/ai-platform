@@ -104,9 +104,8 @@ rollout, and future runtime-affecting source changes remain separate closure
 conditions. Any new runtime-affecting merge reopens B0 until fresh source,
 runtime, image, health, concurrency, redaction, and review evidence is recorded.
 
-Issue #138 records that B0 latest-main refresh remains reopened for current
-`main` `4039e4bd870d99201da4fc0f002f76f2b5c4a892` after PR #137 closed
-#136 by the reviewed blocker-record path. Current readiness
+Issue #136 records that B0 latest-main refresh is reopened for current `main`
+`0504ee09c6845731d90e9959184a17e1b5002f49` after PR #135. Current readiness
 reports `foundation_alpha_stage_status=runtime_rollout_required` and
 `foundation_runtime_concurrency_evidence`, while the 211 API/worker runtime is
 still `ai-platform:87528bf-issue124-runtime-only-v2` with runtime/source labels
@@ -114,13 +113,13 @@ still `ai-platform:87528bf-issue124-runtime-only-v2` with runtime/source labels
 `source_synced_runtime_pending`. The configured 211 source path is a dirty 211
 source worktree at `a15c74f0fe98914a893ab7ea784c6be941e0cd71` and must not be
 overwritten or reset without a reconciliation plan. This is not `211 verified`
-for `4039e4b`, does not close B1/B2/B3 product gates, does not raise production
+for `0504ee0`, does not close B1/B2/B3 product gates, does not raise production
 concurrency defaults, does not claim Docker sandbox hardening, and does not
 enable ordinary-user multi-agent exposure.
 
 | Stage | Current planning status | Active next boundary |
 | --- | --- | --- |
-| B0 | `local partial` for current `4039e4b` because #138 records runtime rollout required and dirty 211 source; #124/#125 remains reviewed history for `87528bf` only, and #136 is closed by the reviewed blocker-record path. | Reopen only when readiness reports runtime rollout or current-source evidence drift. Reconcile or isolate the dirty 211 source, then refresh current-source runtime, image, health, Foundation Runtime concurrency, redaction, and review evidence. |
+| B0 | `local partial` for current `0504ee0` because #136 records runtime rollout required and dirty 211 source; #124/#125 remains reviewed history for `87528bf` only. | Reopen only when readiness reports runtime rollout or current-source evidence drift. Reconcile or isolate the dirty 211 source, then refresh current-source runtime, image, health, Foundation Runtime concurrency, redaction, and review evidence. |
 | B1 | `local partial`; source contracts and named runtime evidence exist, but the stage is not `gate closable`. | Choose one governed document workflow and prove memory/context through `live_worker_run_payload` plus rollback and deny paths. |
 | B2 | `local partial`; fake provider remains local/test-only and controlled probes do not prove governed SDK Skill execution. | Prove Docker/equivalent sandbox through a governed Skill run with lease, callback, resource, egress, artifact, cancel, cleanup, and redaction evidence. |
 | B3 | `local partial`; source contract only for `b3_10x4_sdk_subagents`; production defaults stay unchanged. | Record an operator-reviewed capacity snapshot for 10 sessions x peak 4 SDK subagents/session, including model-gateway, sandbox, token/cost, event/artifact, and cleanup pressure. |
