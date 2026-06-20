@@ -1220,6 +1220,245 @@ def test_platform_runtime_mode_defaults_executor_image_to_cancel_image(tmp_path,
     assert calls[0]["sandbox_executor_image"] == "ai-platform:local"
 
 
+def test_platform_runtime_mode_accepts_bound_runtime_probe_results_file(tmp_path, monkeypatch, capsys):
+    generator = load_generator()
+    calls = []
+    runtime_probe_results_file = tmp_path / "runtime-probe-results.json"
+    runtime_probe_results_file.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.sandbox-runtime-probe-results.v1",
+                "run_id": "run-a",
+                "source": "platform_runtime_probe",
+                "resource_limits": {
+                    "over_limit_cleanup_verified": True,
+                    "bounded_error_projection": {
+                        "source": "admin_runtime_projection",
+                        "run_id": "run-a",
+                        "status": "failed",
+                        "error_code": "executor_health_timeout",
+                        "host_paths_redacted": True,
+                        "raw_docker_payload_absent": True,
+                        "callback_token_absent": True,
+                    },
+                },
+                "egress_policy": {
+                    "default_deny_outbound": True,
+                    "platform_allowlist_enforced": True,
+                    "callback_exception_scoped_to_run_token": True,
+                    "denied_egress_redacted": True,
+                    "policy_source": "platform_policy",
+                },
+                "security_options": {
+                    "privileged": False,
+                    "no_new_privileges": True,
+                    "capabilities_dropped": True,
+                    "docker_socket_mounted": False,
+                    "workspace_mount_mode": "rw",
+                    "root_filesystem_read_only_or_minimal": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_run_platform_runtime_probe(**kwargs):
+        calls.append(kwargs)
+        recorder = kwargs["recorder"]
+        recorder.runtime_mode = "platform"
+        recorder.sandbox_provider = kwargs["sandbox_provider"]
+        recorder.executed_task = True
+        recorder.record_callback({"run_id": "run-a", "status": "running"}, recorder._callback_token)
+        recorder.record_callback({"run_id": "run-a", "status": "completed"}, recorder._callback_token)
+        recorder.timings = {
+            "schema_version": "ai-platform.sandbox-latency-split.v1",
+            "sandbox_lease_acquire_latency_ms": 1,
+            "sandbox_container_cold_start_latency_ms": 2,
+            "sandbox_healthcheck_latency_ms": 3,
+            "sandbox_executor_dispatch_latency_ms": 4,
+            "executor_model_latency_ms": 5,
+            "document_processing_latency_ms": 6,
+            "sandbox_cleanup_latency_ms": 7,
+            "sandbox_total_latency_ms": 28,
+        }
+
+    monkeypatch.setattr(generator, "run_platform_runtime_probe", fake_run_platform_runtime_probe)
+    monkeypatch.setattr(generator, "run_cancel_probe", lambda **kwargs: "container-a")
+
+    evidence = tmp_path / "evidence.json"
+    exit_code = generator.main(
+        [
+            "--runtime-mode",
+            "platform",
+            "--sandbox-provider",
+            "docker",
+            "--executor-url",
+            "http://executor.test",
+            "--evidence-file",
+            str(evidence),
+            "--run-id",
+            "run-a",
+            "--callback-timeout",
+            "0",
+            "--runtime-probe-results-file",
+            str(runtime_probe_results_file),
+            "--json",
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert output["runtime_mode"] == "platform"
+    assert calls[0]["runtime_probe_results"] == {
+        "resource_limits": {
+            "over_limit_cleanup_verified": True,
+            "bounded_error_projection": {
+                "source": "admin_runtime_projection",
+                "run_id": "run-a",
+                "status": "failed",
+                "error_code": "executor_health_timeout",
+                "host_paths_redacted": True,
+                "raw_docker_payload_absent": True,
+                "callback_token_absent": True,
+            },
+        },
+        "egress_policy": {
+            "default_deny_outbound": True,
+            "platform_allowlist_enforced": True,
+            "callback_exception_scoped_to_run_token": True,
+            "denied_egress_redacted": True,
+            "policy_source": "platform_policy",
+        },
+        "security_options": {
+            "privileged": False,
+            "no_new_privileges": True,
+            "capabilities_dropped": True,
+            "docker_socket_mounted": False,
+            "workspace_mount_mode": "rw",
+            "root_filesystem_read_only_or_minimal": True,
+        },
+    }
+    assert str(runtime_probe_results_file) not in json.dumps(output)
+
+
+def test_runtime_probe_results_file_rejects_wrong_run_and_sensitive_content(tmp_path):
+    generator = load_generator()
+    runtime_probe_results_file = tmp_path / "runtime-probe-results.json"
+
+    runtime_probe_results_file.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.sandbox-runtime-probe-results.v1",
+                "run_id": "other-run",
+                "source": "platform_runtime_probe",
+                "resource_limits": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        generator.load_runtime_probe_results(runtime_probe_results_file, run_id="run-a")
+    except RuntimeError as exc:
+        assert "run_id" in str(exc)
+    else:
+        raise AssertionError("mismatched runtime probe results should fail closed")
+
+    runtime_probe_results_file.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.sandbox-runtime-probe-results.v1",
+                "run_id": "run-a",
+                "source": "platform_runtime_probe",
+                "resource_limits": {
+                    "debug_path": "/tmp/raw-docker-output.json",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        generator.load_runtime_probe_results(runtime_probe_results_file, run_id="run-a")
+    except RuntimeError as exc:
+        assert "sensitive" in str(exc)
+    else:
+        raise AssertionError("sensitive runtime probe results should fail closed")
+
+    runtime_probe_results_file.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.sandbox-runtime-probe-results.v1",
+                "run_id": "run-a",
+                "source": "platform_runtime_probe",
+                "resource_limits": {},
+                "egress_policy": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        generator.load_runtime_probe_results(runtime_probe_results_file, run_id="run-a")
+    except RuntimeError as exc:
+        assert "security_options" in str(exc)
+    else:
+        raise AssertionError("incomplete runtime probe results should fail closed")
+
+
+def test_runtime_probe_results_file_rejects_under_specified_hardening_sections(tmp_path):
+    generator = load_generator()
+    runtime_probe_results_file = tmp_path / "runtime-probe-results.json"
+    base_payload = {
+        "schema_version": "ai-platform.sandbox-runtime-probe-results.v1",
+        "run_id": "run-a",
+        "source": "platform_runtime_probe",
+        "resource_limits": {
+            "over_limit_cleanup_verified": True,
+            "bounded_error_projection": {
+                "source": "admin_runtime_projection",
+                "run_id": "run-a",
+                "status": "failed",
+                "error_code": "executor_health_timeout",
+                "host_paths_redacted": True,
+                "raw_docker_payload_absent": True,
+                "callback_token_absent": True,
+            },
+        },
+        "egress_policy": {
+            "default_deny_outbound": True,
+            "platform_allowlist_enforced": True,
+            "callback_exception_scoped_to_run_token": True,
+            "denied_egress_redacted": True,
+            "policy_source": "platform_policy",
+        },
+        "security_options": {
+            "privileged": False,
+            "no_new_privileges": True,
+            "capabilities_dropped": True,
+            "docker_socket_mounted": False,
+            "workspace_mount_mode": "rw",
+            "root_filesystem_read_only_or_minimal": True,
+        },
+    }
+
+    for section_name, expected_message in (
+        ("resource_limits", "resource_limits.over_limit_cleanup_verified"),
+        ("egress_policy", "egress_policy.default_deny_outbound"),
+        ("security_options", "security_options.privileged"),
+    ):
+        payload = dict(base_payload)
+        payload[section_name] = {}
+        runtime_probe_results_file.write_text(json.dumps(payload), encoding="utf-8")
+
+        try:
+            generator.load_runtime_probe_results(runtime_probe_results_file, run_id="run-a")
+        except RuntimeError as exc:
+            assert expected_message in str(exc)
+        else:
+            raise AssertionError(f"under-specified {section_name} should fail closed")
+
+
 def test_run_platform_runtime_probe_captures_executor_container_inspect(monkeypatch, tmp_path):
     generator = load_generator()
     calls = []

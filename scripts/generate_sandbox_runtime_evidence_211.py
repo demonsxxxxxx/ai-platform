@@ -37,6 +37,7 @@ TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 SAFE_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9_.-]+")
 EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime-211.v1"
 LATENCY_SCHEMA_VERSION = "ai-platform.sandbox-latency-split.v1"
+RUNTIME_PROBE_RESULTS_SCHEMA_VERSION = "ai-platform.sandbox-runtime-probe-results.v1"
 NON_EXPANSION_INVARIANTS = {
     "ordinary_user_high_risk_sandbox_allowed": False,
     "admin_or_allowlist_only": True,
@@ -44,6 +45,51 @@ NON_EXPANSION_INVARIANTS = {
     "docker_sandbox_production_hardening_claimed": False,
     "ordinary_user_multi_agent_allowed": False,
 }
+RUNTIME_PROBE_RESULTS_ALLOWED_KEYS = {
+    "schema_version",
+    "run_id",
+    "source",
+    "resource_limits",
+    "egress_policy",
+    "security_options",
+}
+RUNTIME_PROBE_RESULTS_SECTION_KEYS = ("resource_limits", "egress_policy", "security_options")
+
+
+def _runtime_probe_section_error(section_name: str, section: dict[str, Any], *, run_id: str) -> str | None:
+    if section_name == "resource_limits":
+        if section.get("over_limit_cleanup_verified") is not True:
+            return "runtime probe results missing: resource_limits.over_limit_cleanup_verified"
+        if safe_bounded_error_projection(section.get("bounded_error_projection"), run_id=run_id) is None:
+            return "runtime probe results missing: resource_limits.bounded_error_projection"
+        return None
+    if section_name == "egress_policy":
+        for field in (
+            "default_deny_outbound",
+            "platform_allowlist_enforced",
+            "callback_exception_scoped_to_run_token",
+            "denied_egress_redacted",
+        ):
+            if section.get(field) is not True:
+                return f"runtime probe results missing: egress_policy.{field}"
+        if section.get("policy_source") != "platform_policy":
+            return "runtime probe results missing: egress_policy.policy_source"
+        return None
+    if section_name == "security_options":
+        if section.get("privileged") is not False:
+            return "runtime probe results missing: security_options.privileged"
+        if section.get("docker_socket_mounted") is not False:
+            return "runtime probe results missing: security_options.docker_socket_mounted"
+        for field in (
+            "no_new_privileges",
+            "capabilities_dropped",
+            "root_filesystem_read_only_or_minimal",
+        ):
+            if section.get(field) is not True:
+                return f"runtime probe results missing: security_options.{field}"
+        if section.get("workspace_mount_mode") not in {"rw", "ro"}:
+            return "runtime probe results missing: security_options.workspace_mount_mode"
+    return None
 
 
 def _safe_run_id(value: str) -> str:
@@ -73,6 +119,47 @@ def _redact(text: object) -> str:
 
 def redact_for_output(text: object) -> str:
     return _redact(text)
+
+
+def load_runtime_probe_results(path: str | Path, *, run_id: str) -> dict[str, Any]:
+    """Load bounded platform probe results for the same run without trusting raw payloads."""
+    if not run_id:
+        raise RuntimeError("runtime probe results require run_id")
+    probe_path = Path(path)
+    try:
+        raw = probe_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError("runtime probe results file cannot be read") from exc
+    if _redact(raw) != raw:
+        raise RuntimeError("runtime probe results contain sensitive content")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("runtime probe results file is not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("runtime probe results root must be an object")
+    if payload.get("schema_version") != RUNTIME_PROBE_RESULTS_SCHEMA_VERSION:
+        raise RuntimeError("runtime probe results schema mismatch")
+    if payload.get("run_id") != run_id:
+        raise RuntimeError("runtime probe results run_id mismatch")
+    if payload.get("source") != "platform_runtime_probe":
+        raise RuntimeError("runtime probe results source mismatch")
+    unknown_keys = sorted(str(key) for key in payload if key not in RUNTIME_PROBE_RESULTS_ALLOWED_KEYS)
+    if unknown_keys:
+        raise RuntimeError("runtime probe results contain unsupported fields")
+    results: dict[str, Any] = {}
+    for key in RUNTIME_PROBE_RESULTS_SECTION_KEYS:
+        section = payload.get(key)
+        if section is None:
+            raise RuntimeError(f"runtime probe results section is required: {key}")
+        if not isinstance(section, dict):
+            raise RuntimeError(f"runtime probe results section must be an object: {key}")
+        results[key] = dict(section)
+    for key, section in results.items():
+        section_error = _runtime_probe_section_error(key, section, run_id=run_id)
+        if section_error:
+            raise RuntimeError(section_error)
+    return results
 
 
 class EvidenceRecorder:
@@ -498,6 +585,7 @@ def run_platform_runtime_probe(
     callback_url: str,
     docker_cmd: tuple[str, ...] = ("docker",),
     run: Callable[..., Any] = subprocess.run,
+    runtime_probe_results: dict[str, Any] | None = None,
 ) -> dict[str, object]:
     captured: dict[str, Any] = {
         "recorded_lease_id": "",
@@ -592,6 +680,7 @@ def run_platform_runtime_probe(
         release_reason=captured.get("release_reason") or "",
         resource_limits={"max_seconds": 60, "memory_mb": 512, "cpu_count": 0.5, "pids_limit": 128},
         docker_inspect=captured.get("docker_inspect") if isinstance(captured.get("docker_inspect"), dict) else None,
+        runtime_probe_results=runtime_probe_results,
     )
     return {
         "status": str(getattr(result, "status", "")),
@@ -721,6 +810,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--callback-port", type=int, default=int(os.environ.get("AI_PLATFORM_CALLBACK_PORT", "0")))
     parser.add_argument("--callback-timeout", type=float, default=float(os.environ.get("AI_PLATFORM_CALLBACK_TIMEOUT", "10")))
     parser.add_argument(
+        "--runtime-probe-results-file",
+        default=os.environ.get("AI_PLATFORM_SANDBOX_RUNTIME_PROBE_RESULTS", ""),
+        help=(
+            "Optional same-run platform probe results JSON for resource-limit and egress hardening evidence. "
+            "The file must use ai-platform.sandbox-runtime-probe-results.v1 and match --run-id."
+        ),
+    )
+    parser.add_argument(
         "--runtime-mode",
         choices=["executor", "platform"],
         default=os.environ.get("AI_PLATFORM_SANDBOX_RUNTIME_MODE", "executor"),
@@ -748,6 +845,11 @@ def main(argv: list[str] | None = None) -> int:
     server: ThreadingHTTPServer | None = None
 
     try:
+        runtime_probe_results = (
+            load_runtime_probe_results(args.runtime_probe_results_file, run_id=args.run_id)
+            if args.runtime_probe_results_file
+            else None
+        )
         if not args.skip_live_submit:
             if not args.executor_url:
                 raise RuntimeError("executor URL not configured")
@@ -765,6 +867,7 @@ def main(argv: list[str] | None = None) -> int:
                     workspace_root=args.workspace_root,
                     callback_url=callback_url,
                     docker_cmd=docker_cmd,
+                    runtime_probe_results=runtime_probe_results,
                 )
             else:
                 recorder.runtime_mode = "executor"

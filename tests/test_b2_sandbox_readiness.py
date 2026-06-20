@@ -739,6 +739,40 @@ def test_b2_sandbox_readiness_tracks_current_verifier_and_generator_contract():
     assert runtime["hardening_evidence_class"] == verifier.HARDENING_EVIDENCE_CLASS
     assert runtime["required_non_expansion_invariants"] == verifier.REQUIRED_NON_EXPANSION_INVARIANTS
     assert runtime["required_non_expansion_invariants"] == generator.NON_EXPANSION_INVARIANTS
+    assert runtime["runtime_probe_results_schema_version"] == generator.RUNTIME_PROBE_RESULTS_SCHEMA_VERSION
+    assert runtime["runtime_probe_results_cli_flag"] == "--runtime-probe-results-file"
+    assert runtime["runtime_probe_results_environment_variable"] == (
+        "AI_PLATFORM_SANDBOX_RUNTIME_PROBE_RESULTS"
+    )
+    assert runtime["runtime_probe_results_required_fields"] == [
+        "schema_version",
+        "run_id",
+        "source=platform_runtime_probe",
+        "resource_limits",
+        "egress_policy",
+        "security_options",
+    ]
+    assert runtime["runtime_probe_results_required_section_fields"] == {
+        "resource_limits": [
+            "over_limit_cleanup_verified=true",
+            "bounded_error_projection.safe_admin_runtime_projection",
+        ],
+        "egress_policy": [
+            "default_deny_outbound=true",
+            "platform_allowlist_enforced=true",
+            "callback_exception_scoped_to_run_token=true",
+            "denied_egress_redacted=true",
+            "policy_source=platform_policy",
+        ],
+        "security_options": [
+            "privileged=false",
+            "docker_socket_mounted=false",
+            "no_new_privileges=true",
+            "capabilities_dropped=true",
+            "root_filesystem_read_only_or_minimal=true",
+            "workspace_mount_mode=rw|ro",
+        ],
+    }
     for section_name in ("resource_limits", "egress_policy", "security_options"):
         assert section_name in verifier.REQUIRED_HARDENING_FLAGS
         assert section_name in runtime["verifier_hardening_sections"]
@@ -778,6 +812,8 @@ def test_b2_sandbox_readiness_markdown_is_gap_first_and_operator_readable():
     assert "hardening.resource_limits" in markdown
     assert "hardening.egress_policy" in markdown
     assert "hardening.security_options" in markdown
+    assert "runtime probe results schema: `ai-platform.sandbox-runtime-probe-results.v1`" in markdown
+    assert "`--runtime-probe-results-file`" in markdown
     assert "resource_limits_policy_evidence" in markdown
     assert "## Hardening Policy Contracts" in markdown
     assert "resource_limits_runtime_hardening_evidence" in markdown
