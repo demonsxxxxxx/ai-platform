@@ -234,9 +234,11 @@ def render_b6_operations_beta_readiness_markdown(readiness: dict[str, Any]) -> s
         )
     boundary_lines = [
         "- does not create product beta",
+        "- does not create department rollout",
         "- does not create `211 verified`",
         "- does not close B6/G9/G10",
         "- does not claim owner signoff",
+        "- does not claim support handoff",
     ]
     return (
         "# ai-platform B6 Operations Beta Readiness\n\n"

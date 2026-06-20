@@ -72,7 +72,9 @@ def test_b6_operations_beta_readiness_markdown_is_operator_readable_and_gap_firs
     assert "workflow_owner" in markdown
     assert "## B6-G5 Owner Signoff And Rollback Drill" in markdown
     assert "does not create product beta" in markdown
+    assert "does not create department rollout" in markdown
     assert "does not close B6/G9/G10" in markdown
+    assert "does not claim support handoff" in markdown
 
 
 def test_b6_operations_beta_readiness_markdown_fails_closed_on_beta_boundary_regression():
