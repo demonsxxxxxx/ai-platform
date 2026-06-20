@@ -9,7 +9,7 @@
     "currentVersion": "当前版本",
     "gitTag": "Git 标签",
     "latestVersion": "最新版本",
-    "title": "关于 LambChat",
+    "title": "关于 AI Platform",
     "upToDate": "已是最新版本！",
     "updateAvailable": "发现新版本！",
     "viewOnGitHub": "在 GitHub 上查看",
@@ -192,7 +192,7 @@
       "name": "Search Agent"
     }
   },
-  "appName": "LambChat",
+  "appName": "AI Platform",
   "runPlayback": {
     "artifacts": "产物",
     "context": {
@@ -485,7 +485,7 @@
     "deleteError": "删除配置失败",
     "deleteSuccess": "配置已删除",
     "deleteTitle": "删除渠道实例",
-    "description": "连接您喜欢的聊天平台到 LambChat",
+    "description": "将受治理的公司频道接入 AI Platform",
     "disconnected": "未连接",
     "enabled": "启用渠道",
     "enabledDesc": "启用或禁用此渠道",
@@ -685,7 +685,7 @@
     "noResults": "未找到结果",
     "page": "第 {{page}} 页",
     "permissionRequired": "需要权限",
-    "poweredBy": "由 Clivia 驱动",
+    "poweredBy": "公司 AI Platform",
     "prev": "上一页",
     "previous": "上一页",
     "readMode": "只读模式",
@@ -1736,8 +1736,8 @@
       "title": "文件库"
     },
     "landing": {
-      "description": "LambChat 是一个可插拔的多租户 AI 对话平台，由 Skills + MCP 双引擎驱动。支持 Claude、GPT、Gemini 等多种模型，实时 SSE 流式输出，多智能体协作与模块化技能系统。",
-      "title": "LambChat - AI 智能体平台"
+      "description": "AI Platform 是公司内部受治理的 AI 工作台，覆盖对话、Skills、MCP 工具、文件、产物与工作流。",
+      "title": "AI Platform - 企业 AI 工作台"
     },
     "marketplace": {
       "description": "发现并安装社区构建的 AI 技能。浏览、评分和部署预构建能力，扩展 AI 智能体功能。",
@@ -1784,7 +1784,7 @@
     "ACCESS_TOKEN_EXPIRE_HOURS": "访问令牌过期时间（小时）",
     "ADMIN_CONTACT_EMAIL": "在关于对话框中显示给用户的管理员联系邮箱",
     "ADMIN_CONTACT_URL": "管理员联系/支持 URL（如帮助台、反馈表单），显示在关于对话框中",
-    "APP_BASE_URL": "文件下载/上传的公共基础 URL（如 https://lambchat.com）。在反向代理导致 request.base_url 不正确时需要配置。",
+    "APP_BASE_URL": "文件下载/上传的公共基础 URL（如 http://10.56.0.211:18001）。在反向代理导致 request.base_url 不正确时需要配置。",
     "AUDIO_TRANSCRIPTION_API_KEY": "音频转写服务的 API 密钥。支持 OpenAI 兼容端点，例如 OpenAI、SiliconFlow。",
     "AUDIO_TRANSCRIPTION_BASE_URL": "音频转写服务的 Base URL，例如 https://api.openai.com/v1 或 https://api.siliconflow.cn/v1。留空则使用默认 OpenAI 端点。",
     "AUDIO_TRANSCRIPTION_MODEL": "audio_transcribe 工具使用的默认转写模型，例如 gpt-4o-mini-transcribe 或 FunAudioLLM/SenseVoiceSmall。",
@@ -1954,7 +1954,8 @@
     "resetSuccess": "设置已重置",
     "saved": "设置已保存",
     "searchPlaceholder": "搜索设置...",
-    "title": "设置"
+    "title": "设置",
+    "APP_BASE_URL": "文件下载/上传的公共基础 URL（如 http://10.56.0.211:18001）。在反向代理导致 request.base_url 不正确时需要配置。"
   },
   "share": {
     "agent": "智能体",

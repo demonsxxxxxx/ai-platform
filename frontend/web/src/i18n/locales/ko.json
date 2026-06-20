@@ -9,7 +9,7 @@
     "currentVersion": "현재 버전",
     "gitTag": "Git 태그",
     "latestVersion": "최신 버전",
-    "title": "LambChat 정보",
+    "title": "AI Platform 정보",
     "upToDate": "최신 버전입니다!",
     "updateAvailable": "새 버전이 사용 가능합니다!",
     "viewOnGitHub": "GitHub에서 보기",
@@ -192,7 +192,7 @@
       "name": "Search Agent"
     }
   },
-  "appName": "LambChat",
+  "appName": "AI Platform",
   "runPlayback": {
     "artifacts": "아티팩트",
     "download": "다운로드",
@@ -470,7 +470,7 @@
     "deleteError": "설정 삭제 실패",
     "deleteSuccess": "설정이 삭제되었습니다",
     "deleteTitle": "채널 인스턴스 삭제",
-    "description": "선호하는 채팅 플랫폼을 LambChat에 연결하세요",
+    "description": "관리되는 회사 채널을 AI Platform에 연결합니다",
     "disconnected": "연결 끊김",
     "enabled": "채널 활성화",
     "enabledDesc": "이 채널 활성화 또는 비활성화",
@@ -667,7 +667,7 @@
     "noResults": "결과 없음",
     "page": "{{page}}페이지",
     "permissionRequired": "권한이 필요합니다",
-    "poweredBy": "Clivia 제공",
+    "poweredBy": "Company AI Platform",
     "prev": "이전",
     "previous": "이전",
     "readMode": "읽기 전용",
@@ -1686,8 +1686,8 @@
       "title": "파일 라이브러리"
     },
     "landing": {
-      "description": "LambChat은 Skills + MCP 듀얼 엔진 기반의 플러그인 가능한 멀티테넌트 AI 대화 플랫폼입니다. Claude, GPT, Gemini 등 다중 모델 지원, 실시간 SSE 스트리밍, 멀티 에이전트 오케스트레이션 및 모듈형 스킬 시스템을 제공합니다.",
-      "title": "LambChat - AI 에이전트 플랫폼"
+      "description": "AI Platform은 채팅, Skills, MCP 도구, 파일, 산출물, 워크플로를 위한 회사 내부 관리형 AI 워크벤치입니다.",
+      "title": "AI Platform - 엔터프라이즈 AI 워크벤치"
     },
     "marketplace": {
       "description": "커뮤니티에서 제작한 AI 스킬을 발견하고 설치하세요. 평가, 배포로 AI 에이전트 기능을 확장합니다.",
@@ -1734,7 +1734,7 @@
     "ACCESS_TOKEN_EXPIRE_HOURS": "액세스 토큰 만료 시간(시간)",
     "ADMIN_CONTACT_EMAIL": "정보 대화상자에 표시되는 관리자 연락처 이메일",
     "ADMIN_CONTACT_URL": "관리자 연락처/지원 URL(헬프데스크, 피드백 양식 등), 정보 대화상자에 표시",
-    "APP_BASE_URL": "파일 다운로드/업로드용 공개 기본 URL(예: https://lambchat.com). 리버스 프록시 환경에서 request.base_url이 올바르지 않은 경우 필요.",
+    "APP_BASE_URL": "파일 다운로드/업로드용 공개 기본 URL(예: http://10.56.0.211:18001). 리버스 프록시 환경에서 request.base_url이 올바르지 않은 경우 필요.",
     "AUDIO_TRANSCRIPTION_API_KEY": "오디오 전사 제공자의 API 키입니다. OpenAI, SiliconFlow 같은 OpenAI 호환 엔드포인트를 지원합니다.",
     "AUDIO_TRANSCRIPTION_BASE_URL": "오디오 전사 제공자의 Base URL입니다(예: https://api.openai.com/v1 또는 https://api.siliconflow.cn/v1). 비워두면 기본 OpenAI 엔드포인트를 사용합니다.",
     "AUDIO_TRANSCRIPTION_MODEL": "audio_transcribe 도구에서 사용할 기본 전사 모델 이름입니다. 예: gpt-4o-mini-transcribe 또는 FunAudioLLM/SenseVoiceSmall.",
@@ -1904,7 +1904,8 @@
     "resetSuccess": "설정이 재설정되었습니다",
     "saved": "설정이 저장되었습니다",
     "searchPlaceholder": "설정 검색...",
-    "title": "설정"
+    "title": "설정",
+    "APP_BASE_URL": "파일 다운로드/업로드용 공개 기본 URL(예: http://10.56.0.211:18001). 리버스 프록시 환경에서 request.base_url이 올바르지 않은 경우 필요."
   },
   "share": {
     "agent": "에이전트",

@@ -91,7 +91,7 @@ export function useBrowserNotification() {
           await registration.showNotification(title, {
             icon: options?.icon || "/icons/icon-192.png",
             badge: options?.badge || "/icons/icon-192.png",
-            tag: options?.tag || "lambchat-notification",
+            tag: options?.tag || "ai-platform-notification",
             body: options?.body,
             data: {
               ...(typeof options?.data === "object" && options.data !== null
@@ -118,7 +118,7 @@ export function useBrowserNotification() {
         const notification = new Notification(title, {
           icon: "/icons/icon.svg",
           badge: "/icons/icon.svg",
-          tag: "lambchat-notification",
+          tag: "ai-platform-notification",
           ...options,
         });
 

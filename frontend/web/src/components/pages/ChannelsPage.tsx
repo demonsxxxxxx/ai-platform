@@ -173,7 +173,7 @@ export function ChannelsPage() {
           title={t("channel.title", "Channels")}
           subtitle={t(
             "channel.description",
-            `Connect your favorite chat platforms to ${APP_NAME}`,
+            `Connect governed company channels to ${APP_NAME}`,
           )}
           icon={
             <Radio size={24} className="text-[var(--theme-text-secondary)]" />

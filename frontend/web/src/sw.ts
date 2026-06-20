@@ -13,8 +13,8 @@ declare const self: ServiceWorkerGlobalScope & {
   __WB_MANIFEST: Array<unknown>;
 };
 
-const APP_SHELL_CACHE = "lambchat-app-shell-v2";
-const STATIC_CACHE = "lambchat-static-v2";
+const APP_SHELL_CACHE = "ai-platform-app-shell-v1";
+const STATIC_CACHE = "ai-platform-static-v1";
 const OFFLINE_URL = "/offline.html";
 
 cleanupOutdatedCaches();
@@ -43,7 +43,7 @@ async function getOfflineFallback(): Promise<Response> {
 
   return (
     cachedFallback ||
-    new Response("LambChat is offline.", {
+    new Response("AI Platform is offline.", {
       status: 503,
       statusText: "Service Unavailable",
       headers: { "Content-Type": "text/plain; charset=utf-8" },
@@ -110,9 +110,12 @@ self.addEventListener("push", (event) => {
     payload = { body: event.data?.text() };
   }
 
-  const title = payload.title || "LambChat";
+  const title = payload.title || "AI Platform";
   const options: NotificationOptions = {
-    body: payload.body || payload.message || "You have a new LambChat update.",
+    body:
+      payload.body ||
+      payload.message ||
+      "You have a new AI Platform update.",
     icon: payload.icon || "/icons/icon-192.png",
     badge: payload.badge || "/icons/icon-192.png",
     data: {

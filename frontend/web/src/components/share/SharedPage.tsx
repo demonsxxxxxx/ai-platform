@@ -44,6 +44,10 @@ import {
 import { reconstructMessagesFromEvents } from "../../hooks/useAgent/historyLoader";
 import { APP_NAME, GITHUB_URL } from "../../constants";
 import { formatDate, formatDateTimeShort } from "../../utils/datetime";
+import {
+  LEGACY_THEME_STORAGE_KEY,
+  THEME_STORAGE_KEY,
+} from "../../utils/themeDom";
 import { getModelIconUrl, isMonochromeIcon } from "../agent/modelIcon";
 import { ScrollButtons } from "../landing/components/ScrollButtons";
 import {
@@ -128,7 +132,9 @@ function SharedPageLanguageToggle() {
 function useSharedPageTheme() {
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     if (typeof window !== "undefined") {
-      const stored = localStorage.getItem("lamb-agent-theme");
+      const stored =
+        localStorage.getItem(THEME_STORAGE_KEY) ||
+        localStorage.getItem(LEGACY_THEME_STORAGE_KEY);
       if (stored === "light" || stored === "dark") {
         return stored;
       }
@@ -146,7 +152,7 @@ function useSharedPageTheme() {
     } else {
       root.classList.remove("dark");
     }
-    localStorage.setItem("lamb-agent-theme", theme);
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
 
   const toggleTheme = () => {
@@ -433,9 +439,9 @@ export function SharedPage() {
     setTwitter("twitter:description", description);
 
     return () => {
-      document.title = `${APP_NAME} - AI Agent Platform`;
+      document.title = `${APP_NAME} - Enterprise AI Workbench`;
       setDescription(
-        "LambChat is a pluggable, multi-tenant AI conversation platform. Skills + MCP dual-engine driven, supporting Claude, GPT, Gemini and more.",
+        "AI Platform is a company-internal governed AI workbench for chat, Skills, MCP tools, files, artifacts, and workflows.",
       );
     };
   }, [data, messages, t]);

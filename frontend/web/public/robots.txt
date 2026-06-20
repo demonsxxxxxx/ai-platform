@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://lambchat.com/sitemap.xml
+Sitemap: http://10.56.0.211:18001/sitemap.xml

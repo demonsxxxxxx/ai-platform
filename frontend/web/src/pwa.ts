@@ -5,7 +5,7 @@ import {
   shouldRegisterPwa,
 } from "./pwaGuards";
 
-export interface LambChatPwaUpdateEventDetail {
+export interface AiPlatformPwaUpdateEventDetail {
   registration: ServiceWorkerRegistration;
 }
 
@@ -13,9 +13,12 @@ let reloadWhenControllerChanges = false;
 
 function notifyPwaUpdateAvailable(registration: ServiceWorkerRegistration) {
   window.dispatchEvent(
-    new CustomEvent<LambChatPwaUpdateEventDetail>(PWA_UPDATE_AVAILABLE_EVENT, {
-      detail: { registration },
-    }),
+    new CustomEvent<AiPlatformPwaUpdateEventDetail>(
+      PWA_UPDATE_AVAILABLE_EVENT,
+      {
+        detail: { registration },
+      },
+    ),
   );
 }
 
@@ -41,7 +44,7 @@ function watchForPwaUpdates(registration: ServiceWorkerRegistration) {
   });
 }
 
-export function activateWaitingLambChatPwaUpdate(
+export function activateWaitingAiPlatformPwaUpdate(
   registration: ServiceWorkerRegistration,
 ): boolean {
   if (!registration.waiting) return false;
@@ -51,7 +54,7 @@ export function activateWaitingLambChatPwaUpdate(
   return true;
 }
 
-export function registerLambChatPwa(): void {
+export function registerAiPlatformPwa(): void {
   const hasServiceWorker =
     typeof navigator !== "undefined" && "serviceWorker" in navigator;
 

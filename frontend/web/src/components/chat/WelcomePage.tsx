@@ -16,6 +16,7 @@ import {
 import { PersonaAvatarWithLoading } from "../persona/PersonaAvatarWithLoading";
 import { useSettingsContext } from "../../contexts/SettingsContext";
 import type { PersonaPreset, PersonaPresetSnapshot } from "../../types";
+import { APP_NAME } from "../../constants";
 
 interface WelcomePageProps {
   greeting: string;
@@ -178,7 +179,7 @@ export const WelcomePage = memo(function WelcomePage({
         <div className="sm:hidden relative mb-3">
           <img
             src="/icons/icon.svg"
-            alt="LambChat"
+            alt={APP_NAME}
             className="welcome-icon relative size-10 rounded-full shadow-md ring-1 ring-stone-200/60 dark:ring-stone-700/40"
           />
         </div>

@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { CircleHelp, ExternalLink, Keyboard } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ShortcutDialog } from "./ChatInputShortcuts";
+import { GITHUB_URL } from "../../constants";
 
 export function ChatInputHelpMenu() {
   const { t } = useTranslation();
@@ -54,7 +55,7 @@ export function ChatInputHelpMenu() {
           }}
         >
           <a
-            href="https://yanyutin753.github.io/LambChat/"
+            href={GITHUB_URL}
             target="_blank"
             rel="noopener noreferrer"
             role="menuitem"
@@ -74,7 +75,9 @@ export function ChatInputHelpMenu() {
               className="shrink-0"
               style={{ color: "var(--theme-text-secondary)" }}
             />
-            <span className="flex-1">{t("chat.helpDocs", "帮助文档")}</span>
+            <span className="flex-1">
+              {t("chat.helpDocs", "AI Platform documentation")}
+            </span>
             <ExternalLink
               size={12}
               style={{ color: "var(--theme-text-secondary)", opacity: 0.5 }}

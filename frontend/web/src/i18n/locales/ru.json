@@ -9,7 +9,7 @@
     "currentVersion": "Текущая версия",
     "gitTag": "Git тег",
     "latestVersion": "Последняя версия",
-    "title": "О LambChat",
+    "title": "Об AI Platform",
     "upToDate": "У вас последняя версия!",
     "updateAvailable": "Доступна новая версия!",
     "viewOnGitHub": "Смотреть на GitHub",
@@ -192,7 +192,7 @@
       "name": "Агент поиска"
     }
   },
-  "appName": "LambChat",
+  "appName": "AI Platform",
   "runPlayback": {
     "artifacts": "Артефакты",
     "download": "Скачать",
@@ -470,7 +470,7 @@
     "deleteError": "Не удалось удалить конфигурацию",
     "deleteSuccess": "Конфигурация удалена",
     "deleteTitle": "Удалить экземпляр канала",
-    "description": "Подключите любимые чат-платформы к LambChat",
+    "description": "Подключайте управляемые корпоративные каналы к AI Platform",
     "disconnected": "Отключено",
     "enabled": "Включить канал",
     "enabledDesc": "Включить или отключить этот канал",
@@ -669,7 +669,7 @@
     "noResults": "Ничего не найдено",
     "page": "Стр. {{page}}",
     "permissionRequired": "Требуется разрешение",
-    "poweredBy": "Работает на Clivia",
+    "poweredBy": "Company AI Platform",
     "prev": "Назад",
     "previous": "Назад",
     "readMode": "Только чтение",
@@ -1688,8 +1688,8 @@
       "title": "Библиотека файлов"
     },
     "landing": {
-      "description": "LambChat — подключаемая многопользовательская платформа AI-диалогов на двухдвигателе Skills + MCP. Поддержка Claude, GPT, Gemini и других моделей с потоковой передачей SSE в реальном времени, оркестрацией мультиагентов и модульной системой навыков.",
-      "title": "LambChat - Платформа AI-агентов"
+      "description": "AI Platform — внутреннее управляемое AI-рабочее место для чатов, Skills, MCP-инструментов, файлов, артефактов и рабочих процессов.",
+      "title": "AI Platform - корпоративное AI-рабочее место"
     },
     "marketplace": {
       "description": "Открывайте и устанавливайте AI-навыки от сообщества. Просматривайте, оценивайте и развёртывайте готовые функции для расширения возможностей AI-агента.",
@@ -1736,7 +1736,7 @@
     "ACCESS_TOKEN_EXPIRE_HOURS": "Срок действия access-токена в часах",
     "ADMIN_CONTACT_EMAIL": "Контактный email администратора, отображаемый в диалоге О программе",
     "ADMIN_CONTACT_URL": "URL контакта/поддержки администратора (например, служба помощи, форма обратной связи), отображаемый в диалоге О программе",
-    "APP_BASE_URL": "Публичный базовый URL для загрузки/выгрузки файлов (например, https://lambchat.com). Необходим при использовании обратного прокси, если request.base_url некорректен.",
+    "APP_BASE_URL": "Публичный базовый URL для загрузки/выгрузки файлов (например, http://10.56.0.211:18001). Необходим при использовании обратного прокси, если request.base_url некорректен.",
     "AUDIO_TRANSCRIPTION_API_KEY": "API-ключ провайдера распознавания аудио. Поддерживаются OpenAI-совместимые endpoint'ы, например OpenAI и SiliconFlow.",
     "AUDIO_TRANSCRIPTION_BASE_URL": "Base URL провайдера распознавания аудио, например https://api.openai.com/v1 или https://api.siliconflow.cn/v1. Оставьте пустым, чтобы использовать стандартный endpoint OpenAI.",
     "AUDIO_TRANSCRIPTION_MODEL": "Имя модели распознавания по умолчанию для инструмента audio_transcribe, например gpt-4o-mini-transcribe или FunAudioLLM/SenseVoiceSmall.",
@@ -1906,7 +1906,8 @@
     "resetSuccess": "Настройки сброшены",
     "saved": "Настройки сохранены",
     "searchPlaceholder": "Поиск настроек...",
-    "title": "Настройки"
+    "title": "Настройки",
+    "APP_BASE_URL": "Публичный базовый URL для загрузки/выгрузки файлов (например, http://10.56.0.211:18001). Необходим при использовании обратного прокси, если request.base_url некорректен."
   },
   "share": {
     "agent": "Агент",
