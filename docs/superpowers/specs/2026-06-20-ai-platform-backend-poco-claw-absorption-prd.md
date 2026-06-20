@@ -4,8 +4,9 @@
 >
 > Scope: absorb the useful backend ideas from poco-claw `c66da3cf`
 > (`0.5.7`, merged PR #145 on 2026-06-16) into ai-platform planning and
-> acceptance boundaries. This PRD does not copy code, add dependencies, or
-> change runtime behavior.
+> acceptance boundaries, then convert them into an executable phased backend
+> implementation plan. This PRD does not copy code, add dependencies, or change
+> runtime behavior.
 >
 > Frontend UI absorption remains outside this PRD.
 
@@ -42,9 +43,10 @@ OpenAI Codex manual guidance used for this one-PR work:
 | OpenAI Codex manual: Review | Record review evidence before merge. |
 | OpenAI Codex manual: Subagents | Use subagents only for bounded review or read-only analysis. |
 
-Single-PR rule: Keep one branch and one pull request for this issue. Do not
-split this absorption PRD into multiple PRs. If the scope grows beyond planning
-and tests, stop and open follow-up issues instead of expanding this PR.
+Single-PR rule: Keep one branch and one pull request for this issue. This issue
+is GitHub issue #160, and its one pull request is PR #159. Do not split this
+absorption PRD completion loop into multiple PRs. If the scope grows beyond
+planning and tests, stop and open follow-up issues instead of expanding this PR.
 
 ## 2. Absorption Scope
 
@@ -138,18 +140,20 @@ Reject these interpretations:
 
 ## 6. Single-PR Delivery Contract
 
-This issue must be completed in one PR:
+GitHub issue #160 must be completed in PR #159:
 
 1. One branch: `codex/backend-poco-absorption-prd`.
 2. One PR against `main`.
 3. One backend-only PRD file.
-4. One focused document-contract test file or focused extension to an existing
+4. One executable implementation plan:
+   `docs/superpowers/plans/2026-06-20-ai-platform-backend-poco-claw-absorption.md`.
+5. One focused document-contract test file or focused extension to an existing
    document-contract test.
-5. No frontend implementation.
-6. No backend runtime behavior change.
-7. No dependency addition.
-8. No code copied from poco-claw.
-9. No separate PR for review fixes; review fixes must land on the same PR
+6. No frontend implementation.
+7. No backend runtime behavior change.
+8. No dependency addition.
+9. No code copied from poco-claw.
+10. No separate PR for review fixes; review fixes must land on the same PR
    branch.
 
 If follow-up implementation is needed, create issues from this PRD after this
@@ -186,3 +190,22 @@ PR body must state:
 5. The verification commands and observed results.
 6. The claim boundary: this PR can be `merged` and `reviewed`, but not
    `211 verified` or `gate closable` because it is docs/test only.
+
+## 8. Implementation Plan Link
+
+The executable phased plan for this PRD is
+`docs/superpowers/plans/2026-06-20-ai-platform-backend-poco-claw-absorption.md`.
+
+The plan converts the accepted poco-claw backend concepts into issue-ready B1
+through B6 slices while keeping PR #159 as the only PR for GitHub issue #160.
+The first mergeable loop is:
+
+1. GitHub issue #160 records the PRD completion scope.
+2. Branch `codex/backend-poco-absorption-prd` carries PR #159.
+3. Local document-contract verification protects the PRD and plan boundaries.
+4. Review evidence is recorded on PR #159.
+5. PR #159 can merge as docs/test-only planning work.
+
+This implementation plan is not runtime execution evidence. It can advance the
+work to `PR ready`, `reviewed`, and then `merged` after review and verification,
+but it cannot create `211 verified` or `gate closable` status.

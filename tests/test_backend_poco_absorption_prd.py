@@ -4,7 +4,9 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 PRD = ROOT / "docs/superpowers/specs/2026-06-20-ai-platform-backend-poco-claw-absorption-prd.md"
+PLAN = ROOT / "docs/superpowers/plans/2026-06-20-ai-platform-backend-poco-claw-absorption.md"
 EXPECTED_PR_FILES = {
+    "docs/superpowers/plans/2026-06-20-ai-platform-backend-poco-claw-absorption.md",
     "docs/superpowers/specs/2026-06-20-ai-platform-backend-poco-claw-absorption-prd.md",
     "tests/test_backend_poco_absorption_prd.py",
 }
@@ -12,6 +14,10 @@ EXPECTED_PR_FILES = {
 
 def read_prd() -> str:
     return PRD.read_text(encoding="utf-8")
+
+
+def read_plan() -> str:
+    return PLAN.read_text(encoding="utf-8")
 
 
 def compact(text: str) -> str:
@@ -50,6 +56,7 @@ def test_backend_poco_absorption_prd_records_scope_and_authority_boundaries():
         "## 5. Non-Goals And Rejection Rules",
         "## 6. Single-PR Delivery Contract",
         "## 7. Review And Verification Requirements",
+        "## 8. Implementation Plan Link",
     ):
         assert required_section in text
 
@@ -61,6 +68,9 @@ def test_backend_poco_absorption_prd_records_scope_and_authority_boundaries():
         "No runtime dependency is introduced by this PRD.",
         "No platform-level multi-run agent harness is introduced.",
         "Claude Agent SDK remains the execution layer.",
+        "`docs/superpowers/plans/2026-06-20-ai-platform-backend-poco-claw-absorption.md`",
+        "GitHub issue #160",
+        "PR #159",
     ):
         assert boundary in compact_text
 
@@ -188,3 +198,56 @@ def test_backend_poco_absorption_prd_pr_scope_is_docs_and_tests_only():
     for relative_path in EXPECTED_PR_FILES:
         assert not relative_path.startswith(forbidden_prefixes)
         assert not relative_path.endswith(forbidden_suffixes)
+
+
+def test_backend_poco_absorption_implementation_plan_is_executable_and_backend_only():
+    text = read_plan()
+    compact_text = compact(text)
+
+    for required_header in (
+        "# Backend poco-claw Absorption Implementation Plan",
+        "REQUIRED SUB-SKILL",
+        "**Goal:**",
+        "**Architecture:**",
+        "**Tech Stack:**",
+        "## Global Constraints",
+        "## File Structure",
+        "### Task 1: Complete The PRD Closure Loop",
+        "### Task 2: Open B1 Context Snapshot Issue",
+        "### Task 3: Open B2 Runtime Lifecycle Issue",
+        "### Task 4: Open B3 Capacity Evidence Issue",
+        "### Task 5: Open B4 Skill Reference And Group Issue",
+        "### Task 6: Open B5 File Share And ACL Issue",
+        "### Task 7: Defer B6 Operations Beta Packaging",
+        "## Self-Review",
+    ):
+        assert required_header in text
+
+    for issue_or_pr_marker in (
+        "GitHub issue #160",
+        "PR #159",
+        "issue -> branch/PR -> local verification -> review evidence -> merge",
+        "one PR",
+        "single PR",
+    ):
+        assert issue_or_pr_marker in compact_text
+
+    for stage in ("B1", "B2", "B3", "B4", "B5", "B6"):
+        assert stage in text
+
+    for non_goal in (
+        "Do not modify frontend UI.",
+        "Do not copy poco-claw code.",
+        "Do not add runtime dependencies.",
+        "Do not claim `211 verified` from this docs/test PR.",
+        "Do not claim `gate closable` from this docs/test PR.",
+    ):
+        assert non_goal in compact_text
+
+    for required_command in (
+        "python -m pytest tests\\test_backend_poco_absorption_prd.py -q --basetemp .pytest-tmp\\poco-absorption-plan-green",
+        "python -m pytest tests\\test_backend_phased_prd.py tests\\test_source_authority_docs.py tests\\test_backend_poco_absorption_prd.py -q --basetemp .pytest-tmp\\poco-absorption-plan-docs",
+        "python -m compileall -q app tools scripts",
+        "git diff --check",
+    ):
+        assert required_command in text
