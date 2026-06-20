@@ -33,6 +33,9 @@ product-level multi-agent runtime.
 - If the available delegation tool requires explicit user authorization for
   sub-agents, do not spawn unless the active user request explicitly asks for
   multi-agent, parallel-agent, delegated, or review-agent work.
+- If high-risk or stage-gate work requires independent review but the available
+  delegation path is not authorized or not suitable, keep the review gate open
+  and record the blocker or acceptable alternate review path on the PR or issue.
 - Before delegating, identify the main critical-path task and keep that task in
   the main session unless it is clearly non-blocking.
 - Give each sub-agent a self-contained task with a clear scope, expected output,
@@ -83,6 +86,24 @@ Recommended next step:
 The main agent should review returned changes or conclusions before relying on
 them. For high-risk work, run the relevant verification in the main session or
 record why verification could not be run.
+
+## GitHub Review Evidence
+
+For goal-sized work, gate work, and PR merge decisions, sub-agent review only
+counts as durable review evidence after the main agent records it on the linked
+GitHub PR or issue. The GitHub comment should include:
+
+- reviewer role or identifier;
+- review scope and files or PRs inspected;
+- findings grouped by severity, or an explicit no-blocking-findings result;
+- accepted fixes, evidence-backed rejections, or follow-up issues;
+- verification commands and observed outcomes, or a clear statement that the
+  reviewer stayed read-only and did not run verification;
+- status boundary such as `reviewed`, `user-authorized review substitute`, not
+  `211 verified`, and not `gate closable`.
+
+Do not rely on a raw sub-agent transcript, a chat-only summary, or an unposted
+local note as the sole basis for issue closure or PR merge approval.
 
 ## Reporting
 

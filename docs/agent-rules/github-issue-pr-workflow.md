@@ -17,6 +17,25 @@ Use this sequence by default:
 7. Deploy and smoke on 211 when required.
 8. Close the issue with evidence.
 
+## CI/CD And Evidence Strategy
+
+Backend CI/CD is not currently a merge gate unless a concrete GitHub workflow
+exists for the changed path and is observed on the PR. Do not invent an
+implicit CI status, and do not wait for a nonexistent CI run.
+
+Until backend CI/CD is configured, choose durable GitHub evidence first:
+
+- Run the focused local verification required for the changed path.
+- Run independent review when the issue, gate, or risk level requires it.
+- Post the review result and verification commands to the PR or issue before
+  merge or issue closure.
+- Treat chat-only review, local-only sub-agent output, or unposted terminal
+  output as insufficient for `reviewed`, `merged`, or `gate closable` claims.
+
+If the missing CI/CD coverage itself becomes a blocker, create a separate issue
+and PR for the CI/CD workflow. Do not silently upgrade every unrelated PR into a
+CI/CD implementation task.
+
 ## Status Language
 
 Use precise status labels. Do not let an earlier status imply a later one.
@@ -83,6 +102,14 @@ Otherwise link the issue without auto-closing language.
 
 - High-risk or stage-gate work requires independent review when the available
   delegation path is suitable.
+- When review is performed by sub-agents or other local assistants, record the
+  result on GitHub before using it as review evidence. The comment should name
+  the reviewer role, scope, findings, fixes or rejections, and verification
+  evidence.
+- If GitHub `reviewDecision` is empty, do not call the PR formally approved.
+  Label the state explicitly, such as `user-authorized review substitute` or
+  `inherited-configuration review`, and keep that separate from a GitHub formal
+  review decision.
 - Validate review findings against current PRD, roadmap, guardrails, code,
   tests, and 211 evidence before changing code.
 - Every review finding must be handled in one of three ways: fixed with tests,
