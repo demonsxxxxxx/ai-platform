@@ -1,22 +1,22 @@
 {
-  "controlled_core_poc_loop_verified_for_runtime_relevant_source": false,
+  "controlled_core_poc_loop_verified_for_runtime_relevant_source": true,
   "controlled_poc_loop_verified_for_current_source": false,
   "current_source_verified_by_running_runtime": false,
   "decision": {
     "can_enter_next_stage_without_restrictions": false,
     "capacity_default_increase_allowed": false,
-    "controlled_core_poc_loop_verified_for_runtime_relevant_source": false,
+    "controlled_core_poc_loop_verified_for_runtime_relevant_source": true,
     "controlled_poc_loop_verified_for_current_source": false,
     "current_source_exact_runtime_commit_match": false,
     "current_source_verified_by_running_runtime": false,
     "docker_sandbox_hardened_claim_allowed": false,
-    "foundation_alpha_stage_complete": false,
-    "foundation_alpha_stage_status": "runtime_rollout_required",
+    "foundation_alpha_stage_complete": true,
+    "foundation_alpha_stage_status": "foundation_alpha_stage_complete",
     "ordinary_user_multi_agent_allowed": false,
     "production_claim_allowed": false,
     "reviewed_poc_loop_evidence_available": true,
-    "runtime_relevant_source_verified_by_running_runtime": false,
-    "runtime_rollout_required_for_current_source": true,
+    "runtime_relevant_source_verified_by_running_runtime": true,
+    "runtime_rollout_required_for_current_source": false,
     "stage_acceptance_blockers": []
   },
   "domains": {
@@ -69,8 +69,8 @@
           "dist_file_count": 0,
           "dist_status": "missing",
           "frontend_path": "frontend/web",
-          "git_commit": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
-          "git_dirty": null,
+          "git_commit": "fed9eda0793f9098e01f366bd0f97f9f4ad691d4",
+          "git_dirty": false,
           "open_gap_count": 3,
           "package_manager": "pnpm@10.32.1",
           "package_name": "lamb-agent-frontend",
@@ -95,9 +95,9 @@
     },
     "g0_g1_source_authority_security": {
       "evidence": {
-        "api_worker_label_revision": "87528bf30609092c3c4e947bdca477768af3f8e5",
+        "api_worker_label_revision": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
         "auth_rbac": {
-          "admin_company_login_audit_count": 43,
+          "admin_company_login_audit_count": 46,
           "admin_forbidden_projection_terms_present": false,
           "admin_required_sections_present": true,
           "admin_runtime_status": 200,
@@ -124,7 +124,7 @@
           "authenticated_auth_me_tenant_matches_requested": true,
           "authenticated_auth_me_user_matches_requested": true,
           "broader_auth_session_rbac_tenant_redaction_regression_verified": true,
-          "company_login_audit_count": 56,
+          "company_login_audit_count": 59,
           "company_login_audit_missing_requirements": [],
           "company_login_audit_verified": true,
           "invalid_gateway_secret_auth_me_status": 403,
@@ -132,18 +132,18 @@
           "ordinary_company_login_audit_count": 13,
           "unauthenticated_auth_me_status": 401
         },
-        "image": "ai-platform:87528bf-issue124-runtime-only-v2",
-        "image_id": "sha256:e8b9d59e31e350b8576bffa58cba23ac2617d60ab1def9844a1038a5facf6a5c",
+        "image": "ai-platform:4039e4b-issue138-runtime-only-v1",
+        "image_id": "sha256:1ce0b329f89d8d85affd309c1df6b0a5953eae0f3c74e8c05084e039cc619c5c",
         "repo_local_env_present": false,
-        "runtime_affecting_dirty_paths": null,
-        "runtime_source_marker": "87528bf30609092c3c4e947bdca477768af3f8e5",
-        "runtime_source_relation": "source_synced_runtime_pending",
-        "runtime_subject_commit_sha": "87528bf30609092c3c4e947bdca477768af3f8e5",
-        "source_tree_commit_sha": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
-        "source_tree_dirty": null
+        "runtime_affecting_dirty_paths": [],
+        "runtime_source_marker": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
+        "runtime_source_relation": "runtime_current_for_runtime_relevant_source",
+        "runtime_subject_commit_sha": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
+        "source_tree_commit_sha": "fed9eda0793f9098e01f366bd0f97f9f4ad691d4",
+        "source_tree_dirty": false
       },
       "open_followups": [],
-      "status": "source_synced_runtime_pending"
+      "status": "runtime_current_for_runtime_relevant_source"
     },
     "g2_g4_control_plane_contracts": {
       "evidence": {
@@ -151,7 +151,7 @@
           "checked_artifacts": 2,
           "results": [
             {
-              "artifact_id": "art_496bcff645e44d86a88286904f46ebc0",
+              "artifact_id": "art_a40f35b1e691458ebd4fb5fba0f322b1",
               "cross_tenant_status": 404,
               "cross_user_status": 404,
               "owner_bytes": 24056,
@@ -172,7 +172,7 @@
           "checked_artifacts": 2,
           "results": [
             {
-              "artifact_id": "art_496bcff645e44d86a88286904f46ebc0",
+              "artifact_id": "art_a40f35b1e691458ebd4fb5fba0f322b1",
               "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
               "cross_tenant_status": 404,
               "cross_user_status": 404,
@@ -405,7 +405,7 @@
           "artifact_id": null,
           "artifact_label": null,
           "artifact_size_bytes": null,
-          "run_id": "run_f57ea74e12d54d4cbbc978ac0e520047",
+          "run_id": "run_a5280f7846ba4a939aec2790299d8d2e",
           "skill_id": "general-chat",
           "status": "succeeded",
           "tenant_id": "default",
@@ -470,8 +470,8 @@
               }
             },
             "queue_position": 1,
-            "run_id": "run_8050168ecf8d428f87fb69bcc264a53b",
-            "session_id": "ses_7e022b8e859044608c29bed14582c6cd",
+            "run_id": "run_4d754fb82397479799e3db3293fa93ce",
+            "session_id": "ses_1d69366ede0d488ab5b0a4d939c4f87b",
             "status": "queued",
             "suggestions": []
           },
@@ -481,9 +481,9 @@
             "error_message": null,
             "executor_type": "claude-agent-worker",
             "file_ids": [
-              "file_a78e3eba3979432baac2bfb80557918a"
+              "file_dece02a0f493499e8a4627aa9f3ab311"
             ],
-            "run_id": "run_8050168ecf8d428f87fb69bcc264a53b",
+            "run_id": "run_4d754fb82397479799e3db3293fa93ce",
             "status": "succeeded",
             "worker_events": [
               {
@@ -493,7 +493,7 @@
                 "executor_type": "claude-agent-worker",
                 "severity": "info",
                 "visible_to_user": true,
-                "worker_id": "294dfc6659a7:4c5c5eab800c"
+                "worker_id": "6048c957f0ff:be9475b953a0"
               }
             ]
           },
@@ -502,15 +502,15 @@
           },
           "upload_check_status": 200,
           "upload_payload": {
-            "file_id": "file_a78e3eba3979432baac2bfb80557918a",
-            "key": "file_a78e3eba3979432baac2bfb80557918a",
+            "file_id": "file_dece02a0f493499e8a4627aa9f3ab311",
+            "key": "file_dece02a0f493499e8a4627aa9f3ab311",
             "mimeType": "text/plain",
             "mime_type": "text/plain",
             "name": "upload-gate.txt",
             "sha256": "8a34511f1e6f90afbeeab3f241dbd927b48100752d2208134eb1848df8c7bbbe",
             "size": 18,
             "type": "uploads",
-            "url": "/api/ai/files/file_a78e3eba3979432baac2bfb80557918a"
+            "url": "/api/ai/files/file_dece02a0f493499e8a4627aa9f3ab311"
           },
           "upload_status": 200
         }
@@ -607,8 +607,8 @@
               "mcp_tool_call_completed"
             ]
           },
-          "runtime_verified": false,
-          "status": "source_verified_runtime_rollout_required",
+          "runtime_verified": true,
+          "status": "source_verified_current_runtime",
           "tenant_policy_scope": "same_tenant_registered_tools_only",
           "unregistered_tool_behavior": "deny"
         },
@@ -676,7 +676,7 @@
           "blocked_entry_count": 0,
           "retention_status": "accepted_review_first_policy",
           "runtime_export_status": "ready_for_operator_review",
-          "safe_entry_count": 119,
+          "safe_entry_count": 125,
           "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
           "status": "verified_release_evidence_runtime_acceptance",
           "verified": true
@@ -687,16 +687,16 @@
     }
   },
   "evidence_entries": {
-    "alert_trace_export_runtime_acceptance": "docs/release-evidence/foundation-alpha-poc/87528bf30609092c3c4e947bdca477768af3f8e5/2026-06-19-211-foundation-alpha-poc-87528bf-alert-trace-export-runtime-acceptance.json",
-    "auth_rbac_smoke": "docs/release-evidence/foundation-alpha-poc/87528bf30609092c3c4e947bdca477768af3f8e5/2026-06-19-211-foundation-alpha-poc-87528bf-auth-rbac-smoke.json",
+    "alert_trace_export_runtime_acceptance": "docs/release-evidence/foundation-alpha-poc/4039e4bd870d99201da4fc0f002f76f2b5c4a892/2026-06-20-211-foundation-alpha-poc-4039e4b-alert-trace-export-runtime-acceptance.json",
+    "auth_rbac_smoke": "docs/release-evidence/foundation-alpha-poc/4039e4bd870d99201da4fc0f002f76f2b5c4a892/2026-06-20-211-foundation-alpha-poc-4039e4b-auth-rbac-smoke.json",
     "foundation_runtime_concurrency": "docs/release-evidence/foundation-runtime-concurrency/4039e4bd870d99201da4fc0f002f76f2b5c4a892-frc-b0-20260620/2026-06-20-211-foundation-alpha-poc-4039e4b-foundation-runtime-concurrency.json",
-    "governance_runtime_smoke": "docs/release-evidence/foundation-alpha-poc/87528bf30609092c3c4e947bdca477768af3f8e5/2026-06-19-211-foundation-alpha-poc-87528bf-governance-runtime-smoke.json",
-    "poc_smoke": "docs/release-evidence/foundation-alpha-poc/87528bf30609092c3c4e947bdca477768af3f8e5/2026-06-19-211-foundation-alpha-poc-87528bf-runtime-poc-smoke.json",
-    "release_evidence_runtime_acceptance": "docs/release-evidence/foundation-alpha-poc/87528bf30609092c3c4e947bdca477768af3f8e5/2026-06-19-211-foundation-alpha-poc-87528bf-release-evidence-runtime-acceptance.json"
+    "governance_runtime_smoke": "docs/release-evidence/foundation-alpha-poc/4039e4bd870d99201da4fc0f002f76f2b5c4a892/2026-06-20-211-foundation-alpha-poc-4039e4b-governance-runtime-smoke.json",
+    "poc_smoke": "docs/release-evidence/foundation-alpha-poc/4039e4bd870d99201da4fc0f002f76f2b5c4a892/2026-06-20-211-foundation-alpha-poc-4039e4b-runtime-poc-smoke.json",
+    "release_evidence_runtime_acceptance": "docs/release-evidence/foundation-alpha-poc/4039e4bd870d99201da4fc0f002f76f2b5c4a892/2026-06-20-211-foundation-alpha-poc-4039e4b-release-evidence-runtime-acceptance.json"
   },
   "evidence_policy": "source_docs_tests_211_smoke_and_release_evidence_required_before_stage_closure",
-  "foundation_alpha_stage_complete": false,
-  "foundation_alpha_stage_status": "runtime_rollout_required",
+  "foundation_alpha_stage_complete": true,
+  "foundation_alpha_stage_status": "foundation_alpha_stage_complete",
   "open_followups": [
     "g7_docker_sandbox_hardening",
     "g8_ordinary_user_multi_agent_exposure"
@@ -708,13 +708,11 @@
       "ordinary_user_multi_agent_exposure",
       "department_rollout"
     ],
-    "current_runtime_relation": "source_synced_runtime_pending",
-    "next_recommended_slices": [
-      "runtime_rollout_required_for_current_source"
-    ],
-    "poc_loop_status": "runtime_rollout_required",
+    "current_runtime_relation": "runtime_current_for_runtime_relevant_source",
+    "next_recommended_slices": [],
+    "poc_loop_status": "core_loop_verified_for_runtime_relevant_source",
     "poc_scope": "foundation_alpha_controlled_internal_poc",
-    "stage_acceptance_status": "runtime_rollout_required",
+    "stage_acceptance_status": "foundation_alpha_stage_complete",
     "stage_gate": "foundation_alpha_poc_not_production",
     "verified_poc_capabilities": [
       "source_authority_security_baseline",
@@ -723,28 +721,28 @@
       "frontend_public_projection_poc"
     ]
   },
-  "runtime_relevant_source_verified_by_running_runtime": false,
+  "runtime_relevant_source_verified_by_running_runtime": true,
   "runtime_source_relation": {
-    "runtime_affecting_changes_since_runtime_subject": null,
-    "runtime_affecting_dirty_paths": null,
+    "runtime_affecting_changes_since_runtime_subject": [],
+    "runtime_affecting_dirty_paths": [],
     "runtime_matches_source_tree": false,
-    "runtime_relevant_source_matches": false,
-    "runtime_source_marker": "87528bf30609092c3c4e947bdca477768af3f8e5",
-    "runtime_subject_commit_sha": "87528bf30609092c3c4e947bdca477768af3f8e5",
-    "source_tree_commit_sha": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
-    "source_tree_dirty": null,
-    "status": "source_synced_runtime_pending"
+    "runtime_relevant_source_matches": true,
+    "runtime_source_marker": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
+    "runtime_subject_commit_sha": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
+    "source_tree_commit_sha": "fed9eda0793f9098e01f366bd0f97f9f4ad691d4",
+    "source_tree_dirty": false,
+    "status": "runtime_current_for_runtime_relevant_source"
   },
-  "runtime_subject_commit_sha": "87528bf30609092c3c4e947bdca477768af3f8e5",
+  "runtime_subject_commit_sha": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
   "schema_version": "ai-platform.foundation-alpha-poc-readiness.v1",
-  "source_tree_commit_sha": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
-  "source_tree_dirty": null,
+  "source_tree_commit_sha": "fed9eda0793f9098e01f366bd0f97f9f4ad691d4",
+  "source_tree_dirty": false,
   "stage": "Foundation Alpha POC",
-  "status": "source_synced_runtime_pending_followups_open",
+  "status": "runtime_current_for_runtime_relevant_source_followups_open",
   "verified_runtime_subject": {
-    "commit_sha": "87528bf30609092c3c4e947bdca477768af3f8e5",
-    "evidence_scope": "reviewed_historical_runtime_evidence",
-    "image": "ai-platform:87528bf-issue124-runtime-only-v2",
-    "image_id": "sha256:e8b9d59e31e350b8576bffa58cba23ac2617d60ab1def9844a1038a5facf6a5c"
+    "commit_sha": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
+    "evidence_scope": "current_runtime_relevant_source",
+    "image": "ai-platform:4039e4b-issue138-runtime-only-v1",
+    "image_id": "sha256:1ce0b329f89d8d85affd309c1df6b0a5953eae0f3c74e8c05084e039cc619c5c"
   }
 }
