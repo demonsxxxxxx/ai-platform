@@ -17,8 +17,19 @@ import { ChatInputToolbar } from "./ChatInputToolbar";
 import { ChatInputSelectors } from "./ChatInputSelectors";
 import { ChatInputHelpMenu } from "./ChatInputHelpMenu";
 import { ChatInputAttachments } from "./ChatInputAttachments";
+import { ComposerSelectionChips } from "./ComposerSelectionChips";
+import { SlashCommandMenu } from "./SlashCommandMenu";
 import { getMentionPopupFixedPlacement } from "./chatInputViewport";
 import { FILE_CATEGORY_PERMISSIONS } from "./chatInputConstants";
+import {
+  applySlashCommandSelection,
+  buildSlashCommandOptions,
+  dedupeComposerTokens,
+  findSlashCommandMatch,
+  moveSlashCommandHighlight,
+  type ComposerSelectionToken,
+  type SlashCommandOption,
+} from "./slashCommand";
 import {
   consumePendingSelectionActionPrompt,
   SELECTION_ACTION_EVENT,
@@ -107,11 +118,20 @@ export const ChatInput = memo(function ChatInput({
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
   const [contactAdminOpen, setContactAdminOpen] = useState(false);
+  const [slashHighlightedIndex, setSlashHighlightedIndex] = useState(0);
+  const [composerTokens, setComposerTokens] = useState<
+    ComposerSelectionToken[]
+  >([]);
+  const [dismissedSlashKey, setDismissedSlashKey] = useState<string | null>(
+    null,
+  );
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [cursorPosition, setCursorPosition] = useState(0);
   const [mentionPopupPlacement, setMentionPopupPlacement] =
+    useState<ReturnType<typeof getMentionPopupFixedPlacement>>(null);
+  const [slashPopupPlacement, setSlashPopupPlacement] =
     useState<ReturnType<typeof getMentionPopupFixedPlacement>>(null);
   const { hasPermission } = useAuth();
 
@@ -260,6 +280,85 @@ export const ChatInput = memo(function ChatInput({
     };
   }, [mention.isActive]);
 
+  const slashMatch = useMemo(
+    () => findSlashCommandMatch(input, cursorPosition),
+    [input, cursorPosition],
+  );
+  const slashMatchKey = slashMatch
+    ? `${slashMatch.slashIndex}:${slashMatch.query}`
+    : null;
+
+  const slashOptions = useMemo(
+    () =>
+      slashMatch
+        ? buildSlashCommandOptions({
+            query: slashMatch.query,
+            skills,
+            tools,
+            agents,
+            currentAgent,
+            agentOptions,
+            agentOptionValues,
+            uploadCategories,
+          })
+        : [],
+    [
+      slashMatch,
+      skills,
+      tools,
+      agents,
+      currentAgent,
+      agentOptions,
+      agentOptionValues,
+      uploadCategories,
+    ],
+  );
+
+  const slashMenuActive =
+    !!slashMatch &&
+    slashMatchKey !== dismissedSlashKey &&
+    slashOptions.length > 0;
+
+  useEffect(() => {
+    if (!slashMenuActive) {
+      setSlashPopupPlacement(null);
+      setSlashHighlightedIndex(0);
+      return;
+    }
+
+    setSlashHighlightedIndex((current) =>
+      slashOptions.length === 0 ? 0 : Math.min(current, slashOptions.length - 1),
+    );
+
+    const updateSlashPopupPlacement = () => {
+      const container = containerRef.current;
+      setSlashPopupPlacement(
+        getMentionPopupFixedPlacement({
+          inputRect: container?.getBoundingClientRect() ?? null,
+          viewportHeight: window.visualViewport?.height ?? window.innerHeight,
+        }),
+      );
+    };
+
+    updateSlashPopupPlacement();
+    window.addEventListener("resize", updateSlashPopupPlacement);
+    window.addEventListener("scroll", updateSlashPopupPlacement, true);
+    window.visualViewport?.addEventListener("resize", updateSlashPopupPlacement);
+    window.visualViewport?.addEventListener("scroll", updateSlashPopupPlacement);
+    return () => {
+      window.removeEventListener("resize", updateSlashPopupPlacement);
+      window.removeEventListener("scroll", updateSlashPopupPlacement, true);
+      window.visualViewport?.removeEventListener(
+        "resize",
+        updateSlashPopupPlacement,
+      );
+      window.visualViewport?.removeEventListener(
+        "scroll",
+        updateSlashPopupPlacement,
+      );
+    };
+  }, [slashMenuActive, slashOptions.length]);
+
   const personaAvatar = useMemo(() => {
     if (!selectedPersonaPresetId) return null;
     const preset = personaPresets.find((p) => p.id === selectedPersonaPresetId);
@@ -292,14 +391,110 @@ export const ChatInput = memo(function ChatInput({
     [input, mention, onUsePersonaPreset, resetMention, scheduleTextareaResize],
   );
 
+  const applySlashSelection = useCallback(
+    async (option: SlashCommandOption) => {
+      if (!slashMatch || option.disabled) return;
+      const result = applySlashCommandSelection(input, slashMatch, option);
+
+      if (option.group === "skill" && option.value) {
+        const skillName = String(option.value);
+        const skill = skills.find((candidate) => candidate.name === skillName);
+        if (skill && !skill.enabled) {
+          const toggled = await onToggleSkill?.(skillName);
+          if (!toggled) return;
+        }
+      }
+
+      if (option.group === "mcp" && option.value) {
+        const toolName = String(option.value);
+        const tool = tools.find((candidate) => candidate.name === toolName);
+        if (tool?.system_disabled) return;
+        if (tool && !tool.enabled) {
+          onToggleTool?.(toolName);
+        }
+      }
+
+      if (option.group === "agent" && option.value) {
+        onSelectAgent?.(String(option.value));
+      }
+
+      if (
+        option.group === "model" &&
+        option.optionKey &&
+        option.value !== undefined
+      ) {
+        onToggleAgentOption?.(option.optionKey, option.value);
+      }
+
+      if (result.nextPanel) {
+        setActivePanel(result.nextPanel);
+      }
+
+      setInput(result.input);
+      setCursorPosition(result.cursorPosition);
+      if (result.token) {
+        setComposerTokens((current) =>
+          dedupeComposerTokens(current, result.token!),
+        );
+      }
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.selectionStart = textarea.selectionEnd = result.cursorPosition;
+        textarea.focus();
+        scheduleTextareaResize();
+      });
+    },
+    [
+      input,
+      slashMatch,
+      skills,
+      onToggleSkill,
+      tools,
+      onToggleTool,
+      onSelectAgent,
+      onToggleAgentOption,
+      scheduleTextareaResize,
+    ],
+  );
+
+  const removeComposerToken = useCallback((token: ComposerSelectionToken) => {
+    setComposerTokens((current) =>
+      current.filter(
+        (candidate) =>
+          candidate.type !== token.type || candidate.id !== token.id,
+      ),
+    );
+  }, []);
+
+  const buildSubmitOptions = useCallback(() => {
+    const selectedSkillNames = composerTokens
+      .filter((token) => token.type === "skill" && token.state === "selected")
+      .map((token) => token.id);
+    const selectedMcpTools = composerTokens
+      .filter((token) => token.type === "mcp" && token.state === "selected")
+      .map((token) => token.id);
+
+    return {
+      ...agentOptionValues,
+      ...(selectedSkillNames.length > 0
+        ? { selected_skill_names: selectedSkillNames.join(",") }
+        : {}),
+      ...(selectedMcpTools.length > 0
+        ? { selected_mcp_tools: selectedMcpTools.join(",") }
+        : {}),
+    };
+  }, [agentOptionValues, composerTokens]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSend) return;
     if (input.trim() && !isLoading && !disabled) {
       const trimmed = input.trim();
-      onSend(trimmed, agentOptionValues, attachments);
+      onSend(trimmed, buildSubmitOptions(), attachments);
       pushHistory(trimmed);
       setInput("");
+      setComposerTokens([]);
       setAttachments([]);
       requestAnimationFrame(() => {
         if (textareaRef.current) {
@@ -310,6 +505,36 @@ export const ChatInput = memo(function ChatInput({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (slashMenuActive) {
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashHighlightedIndex((current) =>
+          moveSlashCommandHighlight(current, "up", slashOptions.length),
+        );
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashHighlightedIndex((current) =>
+          moveSlashCommandHighlight(current, "down", slashOptions.length),
+        );
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        const highlighted = slashOptions[slashHighlightedIndex];
+        if (highlighted) void applySlashSelection(highlighted);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setSlashHighlightedIndex(0);
+        setSlashPopupPlacement(null);
+        setDismissedSlashKey(slashMatchKey);
+        return;
+      }
+    }
+
     if (mention.isActive) {
       if (e.key === "ArrowUp") {
         e.preventDefault();
@@ -454,6 +679,7 @@ export const ChatInput = memo(function ChatInput({
             isDraggingOver ? "border-dashed shadow-lg border-2" : ""
           }`}
           data-mention-active={mention.isActive || undefined}
+          data-slash-active={slashMenuActive || undefined}
           style={{
             backgroundColor: "var(--theme-bg-card)",
             borderColor: isDraggingOver
@@ -480,11 +706,31 @@ export const ChatInput = memo(function ChatInput({
             />
           )}
 
+          {slashMenuActive && (
+            <SlashCommandMenu
+              options={slashOptions}
+              highlightedIndex={slashHighlightedIndex}
+              onSelect={(option) => void applySlashSelection(option)}
+              onHover={setSlashHighlightedIndex}
+              onClose={() => {
+                setSlashHighlightedIndex(0);
+                setSlashPopupPlacement(null);
+                setDismissedSlashKey(slashMatchKey);
+              }}
+              placement={slashPopupPlacement ?? undefined}
+            />
+          )}
+
           <ChatInputAttachments
             attachments={attachments}
             onAttachmentsChange={setAttachments}
             onCancelUpload={cancelUpload}
             onImageViewerOpen={(url) => setImageViewerSrc(url)}
+          />
+
+          <ComposerSelectionChips
+            tokens={composerTokens}
+            onRemove={removeComposerToken}
           />
 
           <div className="px-2.5 pt-1">
