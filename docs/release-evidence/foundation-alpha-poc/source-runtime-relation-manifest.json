@@ -1,7 +1,7 @@
 {
-  "schema_version": "ai-platform.source-runtime-relation-manifest.v1",
-  "source_tree_commit_sha": "87528bf30609092c3c4e947bdca477768af3f8e5",
-  "runtime_subject_commit_sha": "87528bf30609092c3c4e947bdca477768af3f8e5",
+  "note": "Issue #138 211 runtime-only rollout evidence for 4039e4b. The live API/worker containers use ai-platform:4039e4b-issue138-runtime-only-v1 with matching source/runtime labels; configured 211 source path remained dirty and untouched, and compose still carries the external env-file label caveat.",
   "runtime_affecting_changes_since_runtime_subject": [],
-  "note": "Committed fallback for clean checkouts after the #124 B0 runtime refresh. Source tree and runtime subject both point to the reviewed 87528bf 211 runtime subject; later commits that only add docs/release-evidence records remain runtime-neutral unless readiness detects runtime-affecting paths. The legacy external env-file label caveat remains a non-closing G0 source-authority follow-up."
+  "runtime_subject_commit_sha": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
+  "schema_version": "ai-platform.source-runtime-relation-manifest.v1",
+  "source_tree_commit_sha": "4039e4bd870d99201da4fc0f002f76f2b5c4a892"
 }

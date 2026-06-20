@@ -1,0 +1,748 @@
+{
+  "controlled_core_poc_loop_verified_for_runtime_relevant_source": true,
+  "controlled_poc_loop_verified_for_current_source": false,
+  "current_source_verified_by_running_runtime": false,
+  "decision": {
+    "can_enter_next_stage_without_restrictions": false,
+    "capacity_default_increase_allowed": false,
+    "controlled_core_poc_loop_verified_for_runtime_relevant_source": true,
+    "controlled_poc_loop_verified_for_current_source": false,
+    "current_source_exact_runtime_commit_match": false,
+    "current_source_verified_by_running_runtime": false,
+    "docker_sandbox_hardened_claim_allowed": false,
+    "foundation_alpha_stage_complete": true,
+    "foundation_alpha_stage_status": "foundation_alpha_stage_complete",
+    "ordinary_user_multi_agent_allowed": false,
+    "production_claim_allowed": false,
+    "reviewed_poc_loop_evidence_available": true,
+    "runtime_relevant_source_verified_by_running_runtime": true,
+    "runtime_rollout_required_for_current_source": false,
+    "stage_acceptance_blockers": []
+  },
+  "domains": {
+    "frontend_poc": {
+      "evidence": {
+        "artifact_download_cross_user_statuses": [
+          404,
+          404
+        ],
+        "artifact_preview_cross_user_statuses": [
+          404,
+          404
+        ],
+        "forbidden_reference_count": 0,
+        "frontend_http_status": 200,
+        "frontend_packaged_runtime_smoke": {
+          "closed_evidence_items": [],
+          "runtime_host": null,
+          "status": "missing_frontend_packaged_runtime_smoke",
+          "verified": false
+        },
+        "frontend_projection_audit": {
+          "active_forbidden_projection_violation_count": 0,
+          "active_legacy_route_count": 11,
+          "ci_verify_includes_projection_audit": true,
+          "frontend_path": "frontend/web",
+          "open_gap_count": 3,
+          "open_gaps": [
+            "legacy_routes_need_policy_enforcement_or_ai_platform_remap",
+            "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap",
+            "quarantined_legacy_sources_need_ai_platform_projection_remap"
+          ],
+          "ordinary_user_acceptance": "accepted_active_legacy_routes_permission_gated",
+          "ordinary_user_reachable_legacy_route_count": 0,
+          "permission_gated_active_legacy_route_count": 11,
+          "schema_version": "ai-platform.frontend-projection-audit.v1",
+          "status": "pass_with_policy_gaps"
+        },
+        "frontend_release_traceability": {
+          "blockers": [
+            "dist_build_provenance_missing",
+            "frontend_dist_build_provenance_not_verified",
+            "frontend_dist_not_built"
+          ],
+          "ci_verify_includes_projection_audit": true,
+          "ci_verify_script_present": true,
+          "dist_build_commit": null,
+          "dist_build_provenance_status": "missing",
+          "dist_build_verified_same_commit": false,
+          "dist_file_count": 0,
+          "dist_status": "missing",
+          "frontend_path": "frontend/web",
+          "git_commit": "fed9eda0793f9098e01f366bd0f97f9f4ad691d4",
+          "git_dirty": false,
+          "open_gap_count": 3,
+          "package_manager": "pnpm@10.32.1",
+          "package_name": "lamb-agent-frontend",
+          "package_version": "2.3.0",
+          "packaged_contract_scan_status": "pass",
+          "packaged_frontend_image_status": "configured",
+          "projection_audit_script_present": true,
+          "schema_version": "ai-platform.frontend-release-traceability.v1",
+          "status": "frontend_release_traceability_followup_required",
+          "workflow_path": ".github/workflows/ai-platform-frontend.yml",
+          "workflow_status": "present"
+        },
+        "same_origin_api_health": {
+          "payload_status": "ok",
+          "status": 200
+        }
+      },
+      "open_followups": [
+        "packaged_frontend_image_release_acceptance"
+      ],
+      "status": "partial_followups_open"
+    },
+    "g0_g1_source_authority_security": {
+      "evidence": {
+        "api_worker_label_revision": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
+        "auth_rbac": {
+          "admin_company_login_audit_count": 46,
+          "admin_forbidden_projection_terms_present": false,
+          "admin_required_sections_present": true,
+          "admin_runtime_status": 200,
+          "admin_tenant_matches_requested": true,
+          "artifact_download_cross_tenant_statuses": [
+            404,
+            404
+          ],
+          "artifact_download_cross_user_statuses": [
+            404,
+            404
+          ],
+          "artifact_preview_cross_tenant_statuses": [
+            404,
+            404
+          ],
+          "artifact_preview_cross_user_statuses": [
+            404,
+            404
+          ],
+          "authenticated_auth_me_forbidden_projection_terms_present": false,
+          "authenticated_auth_me_route": "/api/ai/auth/me",
+          "authenticated_auth_me_status": 200,
+          "authenticated_auth_me_tenant_matches_requested": true,
+          "authenticated_auth_me_user_matches_requested": true,
+          "broader_auth_session_rbac_tenant_redaction_regression_verified": true,
+          "company_login_audit_count": 59,
+          "company_login_audit_missing_requirements": [],
+          "company_login_audit_verified": true,
+          "invalid_gateway_secret_auth_me_status": 403,
+          "ordinary_admin_runtime_status": 403,
+          "ordinary_company_login_audit_count": 13,
+          "unauthenticated_auth_me_status": 401
+        },
+        "image": "ai-platform:4039e4b-issue138-runtime-only-v1",
+        "image_id": "sha256:1ce0b329f89d8d85affd309c1df6b0a5953eae0f3c74e8c05084e039cc619c5c",
+        "repo_local_env_present": false,
+        "runtime_affecting_dirty_paths": [],
+        "runtime_source_marker": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
+        "runtime_source_relation": "runtime_current_for_runtime_relevant_source",
+        "runtime_subject_commit_sha": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
+        "source_tree_commit_sha": "fed9eda0793f9098e01f366bd0f97f9f4ad691d4",
+        "source_tree_dirty": false
+      },
+      "open_followups": [],
+      "status": "runtime_current_for_runtime_relevant_source"
+    },
+    "g2_g4_control_plane_contracts": {
+      "evidence": {
+        "artifact_download_isolation": {
+          "checked_artifacts": 2,
+          "results": [
+            {
+              "artifact_id": "art_a40f35b1e691458ebd4fb5fba0f322b1",
+              "cross_tenant_status": 404,
+              "cross_user_status": 404,
+              "owner_bytes": 24056,
+              "owner_status": 200,
+              "owner_user": "upload-review-gate-user"
+            },
+            {
+              "artifact_id": "art_a4fab332ce554042b7ca4ad5e8cc1fff",
+              "cross_tenant_status": 404,
+              "cross_user_status": 404,
+              "owner_bytes": 42902,
+              "owner_status": 200,
+              "owner_user": "ZX2834"
+            }
+          ]
+        },
+        "artifact_preview_isolation": {
+          "checked_artifacts": 2,
+          "results": [
+            {
+              "artifact_id": "art_a40f35b1e691458ebd4fb5fba0f322b1",
+              "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "cross_tenant_status": 404,
+              "cross_user_status": 404,
+              "owner_bytes": 24056,
+              "owner_cache_control": "no-store",
+              "owner_content_disposition": "inline; filename*=UTF-8''tmp-smoke-translate_reviewed.docx",
+              "owner_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "owner_status": 200,
+              "owner_user": "upload-review-gate-user",
+              "owner_x_content_type_options": "nosniff"
+            },
+            {
+              "artifact_id": "art_a4fab332ce554042b7ca4ad5e8cc1fff",
+              "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "cross_tenant_status": 404,
+              "cross_user_status": 404,
+              "owner_bytes": 42902,
+              "owner_cache_control": "no-store",
+              "owner_content_disposition": "inline; filename*=UTF-8''BD__translated.docx",
+              "owner_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "owner_status": 200,
+              "owner_user": "ZX2834",
+              "owner_x_content_type_options": "nosniff"
+            }
+          ]
+        },
+        "private_payload_leaked": null,
+        "public_playback_contract_version": null
+      },
+      "open_followups": [],
+      "status": "poc_verified_keep_under_regression"
+    },
+    "g5_run_lifecycle_worker_runtime": {
+      "evidence": {
+        "capacity_default_policy": "do_not_raise_without_separate_recorded_profile_evidence",
+        "document_review_attachment_run": {
+          "artifact_types": [
+            "report_txt",
+            "reviewed_docx"
+          ],
+          "playback_contract_version": "ai-platform.run-playback.v1",
+          "skill_id": "qa-file-reviewer",
+          "status": "succeeded"
+        },
+        "foundation_runtime_concurrency": {
+          "checks": {
+            "artifact_acl": {
+              "cross_tenant_statuses": [
+                404,
+                404,
+                404,
+                404,
+                404,
+                404,
+                404
+              ],
+              "cross_user_statuses": [
+                404,
+                404,
+                404,
+                404,
+                404,
+                404,
+                404
+              ],
+              "owner_statuses": [
+                200,
+                200,
+                200,
+                200,
+                200,
+                200,
+                200
+              ],
+              "preview_cross_tenant_statuses": [
+                404,
+                404,
+                404,
+                404,
+                404,
+                404,
+                404
+              ],
+              "preview_cross_user_statuses": [
+                404,
+                404,
+                404,
+                404,
+                404,
+                404,
+                404
+              ],
+              "status": "passed"
+            },
+            "memory_context": {
+              "context_pack_version_sample_count": 12,
+              "context_scope_probe_count": 12,
+              "context_snapshot_count": 12,
+              "context_snapshot_public_projection_count": 12,
+              "cross_scope_context_leaks": 0,
+              "long_term_cross_session_memory_read": false,
+              "missing_context_pack_version_count": 0,
+              "missing_public_summary_fields": [],
+              "status": "passed",
+              "unsafe_context_pack_version_count": 0
+            },
+            "queue_admission": {
+              "admission_limit_violations": 0,
+              "cancel_action_statuses": [
+                200,
+                200,
+                200
+              ],
+              "cancel_effect_run_count": 3,
+              "cancel_effect_statuses": [
+                "cancel_requested",
+                "cancelled",
+                "cancel_requested",
+                "cancelled",
+                "cancel_requested",
+                "cancelled"
+              ],
+              "cross_tenant_queue_leaks": 0,
+              "queue_position_duplicate_count": 0,
+              "queue_position_sample_count": 12,
+              "queue_probe_sample_count": 12,
+              "queue_probe_source": "admin_runtime_queue",
+              "retry_action_statuses": [
+                200,
+                200,
+                200
+              ],
+              "retry_created_run_count": 3,
+              "stale_queue_entries": 0,
+              "status": "passed",
+              "submitted_queue_position_sample_count": 12
+            },
+            "run_playback": {
+              "event_order_violations": 0,
+              "private_payload_leak_count": 0,
+              "status": "passed"
+            },
+            "sandbox_workspace": {
+              "active_lease_count": 0,
+              "cross_scope_lease_leaks": 0,
+              "lease_probe_source": "runtime_run_detail",
+              "sandbox_lease_sample_count": 12,
+              "status": "passed",
+              "workspace_scope_collisions": 0,
+              "workspace_scope_sample_count": 12
+            },
+            "skill_snapshots": {
+              "global_mutable_skill_lookup_used": false,
+              "mismatched_pinned_snapshots": [],
+              "missing_pinned_snapshots": [],
+              "run_skill_snapshot_count": 12,
+              "snapshot_binding_sample_count": 12,
+              "status": "passed",
+              "used_count": 6
+            },
+            "tool_permission": {
+              "allow_once_reuse_violations": 0,
+              "decision_sample_count": 24,
+              "negative_reuse_denied_count": 48,
+              "negative_reuse_probe_count": 48,
+              "negative_reuse_unexpected_successes": 0,
+              "status": "passed",
+              "tool_call_id_mismatch_violations": 0,
+              "wrong_decision_reuse_violations": 0
+            }
+          },
+          "evidence_policy": "This is Foundation Runtime POC correctness evidence only; it does not raise production concurrency defaults or open ordinary-user multi-agent, Docker sandbox hardening, long-term memory, or department rollout gates.",
+          "failures": [],
+          "non_expansion_invariants": {
+            "department_rollout_allowed": false,
+            "docker_sandbox_hardened_claim_allowed": false,
+            "long_term_cross_session_memory_enabled": false,
+            "ordinary_user_multi_agent_allowed": false,
+            "production_concurrency_increase_allowed": false
+          },
+          "requirements": {
+            "evidence_status": "required_before_foundation_runtime_poc_closure",
+            "minimum_concurrent_requests": 10,
+            "minimum_tenants": 2,
+            "required_checks": [
+              "queue_admission",
+              "sandbox_workspace",
+              "memory_context",
+              "artifact_acl",
+              "tool_permission",
+              "skill_snapshots",
+              "run_playback"
+            ],
+            "required_scenarios": [
+              "run_creation",
+              "execution",
+              "cancel",
+              "retry"
+            ]
+          },
+          "scenario_counts": {
+            "cancel": 3,
+            "execution": 3,
+            "retry": 3,
+            "run_creation": 3
+          },
+          "schema_version": "ai-platform.foundation-runtime-concurrency.v1",
+          "status": "verified_foundation_runtime_concurrency",
+          "summary": {
+            "concurrency_probe_source": "client_case_timestamps",
+            "concurrency_window_sample_count": 12,
+            "concurrent_request_count": 12,
+            "max_observed_concurrency": 12,
+            "run_count": 12,
+            "session_count": 12,
+            "tenant_count": 2,
+            "user_count": 4
+          },
+          "verified": true
+        },
+        "foundation_runtime_concurrency_evidence_current_subject": true,
+        "foundation_runtime_concurrency_evidence_subject": {
+          "commit_sha": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
+          "runtime_subject_commit_sha": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
+          "source_tree_commit_sha": "4039e4bd870d99201da4fc0f002f76f2b5c4a892"
+        },
+        "general_chat_run": {
+          "agent_id": "general-agent",
+          "artifact_content_type": null,
+          "artifact_id": null,
+          "artifact_label": null,
+          "artifact_size_bytes": null,
+          "run_id": "run_a5280f7846ba4a939aec2790299d8d2e",
+          "skill_id": "general-chat",
+          "status": "succeeded",
+          "tenant_id": "default",
+          "user_id": "b1-memory-smoke-user"
+        },
+        "upload_attachment_chat": {
+          "chat_payload": {
+            "intent_decision": {
+              "agent_id": "general-agent",
+              "confidence": 0.74,
+              "confirmed_by_user": false,
+              "intent": "general_chat",
+              "reason": "未检测到文件型或知识库专属意图",
+              "selected_capability": "general_chat",
+              "skill_id": null,
+              "status": "selected",
+              "suggestions": []
+            },
+            "queue_insight": {
+              "capacity": {
+                "available_worker_slots": 2,
+                "max_active_worker_runs": 3,
+                "processing_saturated": false,
+                "queue_lease_scan_limit": 50,
+                "queue_tenant_processing_limit": 0,
+                "queue_user_processing_limit": 0
+              },
+              "depths": {
+                "dead_letter": 19,
+                "processing": 1,
+                "queued": 0,
+                "tenant_processing": 1,
+                "tenant_queued": 0
+              },
+              "processing_state": {
+                "active": 1,
+                "missing_metadata": 0,
+                "reclaimable": 0,
+                "stale": 0
+              },
+              "queue_sample": {
+                "queued_sample_complete": true,
+                "queued_sampled": 0,
+                "queued_scan_limit": 500
+              },
+              "reason": "workers_busy",
+              "tenant_id": "default",
+              "throttling": {
+                "current_user": {
+                  "processing": 1,
+                  "processing_saturated": false,
+                  "queued": 0
+                },
+                "tenant_processing": 1,
+                "tenant_processing_limit": 0,
+                "tenant_processing_saturated": false,
+                "user_processing_limit": 0,
+                "users": {}
+              },
+              "workers": {
+                "active": 1
+              }
+            },
+            "queue_position": 1,
+            "run_id": "run_4d754fb82397479799e3db3293fa93ce",
+            "session_id": "ses_1d69366ede0d488ab5b0a4d939c4f87b",
+            "status": "queued",
+            "suggestions": []
+          },
+          "chat_status": 200,
+          "run": {
+            "error_code": null,
+            "error_message": null,
+            "executor_type": "claude-agent-worker",
+            "file_ids": [
+              "file_dece02a0f493499e8a4627aa9f3ab311"
+            ],
+            "run_id": "run_4d754fb82397479799e3db3293fa93ce",
+            "status": "succeeded",
+            "worker_events": [
+              {
+                "claude_agent_model": "deepseek-v4-flash",
+                "claude_agent_sdk_enabled": true,
+                "claude_agent_sdk_import": "ok",
+                "executor_type": "claude-agent-worker",
+                "severity": "info",
+                "visible_to_user": true,
+                "worker_id": "6048c957f0ff:be9475b953a0"
+              }
+            ]
+          },
+          "upload_check_payload": {
+            "exists": false
+          },
+          "upload_check_status": 200,
+          "upload_payload": {
+            "file_id": "file_dece02a0f493499e8a4627aa9f3ab311",
+            "key": "file_dece02a0f493499e8a4627aa9f3ab311",
+            "mimeType": "text/plain",
+            "mime_type": "text/plain",
+            "name": "upload-gate.txt",
+            "sha256": "8a34511f1e6f90afbeeab3f241dbd927b48100752d2208134eb1848df8c7bbbe",
+            "size": 18,
+            "type": "uploads",
+            "url": "/api/ai/files/file_dece02a0f493499e8a4627aa9f3ab311"
+          },
+          "upload_status": 200
+        }
+      },
+      "open_followups": [],
+      "status": "poc_verified_capacity_baseline_keep_defaults_locked"
+    },
+    "g6_poc_governance": {
+      "evidence": {
+        "context_snapshot_public_projection": {
+          "context_pack_generated_at_present": true,
+          "context_pack_version": "v1",
+          "execution_tier": "document_worker",
+          "forbidden_projection_leak_count": 0,
+          "input_keys": [
+            "attachments",
+            "message"
+          ],
+          "long_term_memory_read": false,
+          "memory_policy_source": "default",
+          "missing_public_summary_fields": [],
+          "raw_material_id_fields_present": false,
+          "referenced_material_counts": {
+            "artifact_count": 0,
+            "file_count": 1,
+            "memory_record_count": 0,
+            "message_count": 1
+          },
+          "status": "verified_public_context_projection",
+          "summary_source": "chat_stream"
+        },
+        "governance_readiness_status": "partial_blocked",
+        "governance_runtime_smoke": {
+          "admin_runtime_governance_status": 200,
+          "forbidden_projection_terms_present": false,
+          "governance_schema_version": "ai-platform.governance-readiness.v1",
+          "ordinary_admin_runtime_status": 403,
+          "required_domains_present": true,
+          "schema_version": "ai-platform.governance-runtime-smoke.v1",
+          "status": "verified_admin_runtime_governance_projection",
+          "verified": true
+        },
+        "governed_skill_runs": {
+          "real_task_statuses": {
+            "baoyu-translate": "succeeded",
+            "qa-file-reviewer": "succeeded"
+          },
+          "run_skill_snapshots": {
+            "mismatched_pinned_snapshots": [],
+            "missing_pinned_snapshots": [],
+            "pinned_snapshot_count": 2,
+            "pinned_snapshot_source": "release_decision",
+            "row_count": 2,
+            "used_count": 2,
+            "used_skill_ids": [
+              "qa-file-reviewer",
+              "baoyu-translate"
+            ],
+            "used_skills_source": "executor_hook"
+          },
+          "verified": true
+        },
+        "mcp_tool_permission_runtime_controls": {
+          "allow_once_consume_failure_fails_closed": true,
+          "allow_once_consumed_before_dispatch": true,
+          "covered_runtime_control_tests": [
+            "tests/test_worker.py::test_worker_audits_read_only_ragflow_tool_call",
+            "tests/test_worker.py::test_worker_blocks_disabled_mcp_tool_before_dispatch",
+            "tests/test_worker.py::test_worker_blocks_high_risk_mcp_tool_without_permission_decision",
+            "tests/test_worker.py::test_worker_allows_high_risk_mcp_tool_with_permission_decision",
+            "tests/test_worker.py::test_worker_consumes_allow_once_mcp_decision_before_dispatch",
+            "tests/test_worker.py::test_worker_fails_closed_when_allow_once_mcp_decision_cannot_be_consumed",
+            "tests/test_tool_permission_routes.py",
+            "tests/test_admin_tool_policies.py"
+          ],
+          "deny_decision": "deny",
+          "disabled_or_unregistered_deny": true,
+          "exact_allow_decisions": [
+            "allow_once",
+            "allow_for_run"
+          ],
+          "high_risk_or_write_requires_current_decision": true,
+          "ordinary_user_custom_mcp": "not_allowed",
+          "policy_source": "app.tool_policy_readiness",
+          "read_only_low_risk_auto_allow": true,
+          "registry_source": "platform_registered_mcp_tools_only",
+          "request_event_audit": {
+            "decision_audit_action": "tool.permission.decision",
+            "permission_decision_event": "tool_permission_decided",
+            "permission_request_event": "tool_permission_requested",
+            "worker_policy_audit_actions": [
+              "mcp_tool_policy_allowed",
+              "mcp_tool_policy_denied",
+              "mcp_tool_call_completed"
+            ]
+          },
+          "runtime_verified": true,
+          "status": "source_verified_current_runtime",
+          "tenant_policy_scope": "same_tenant_registered_tools_only",
+          "unregistered_tool_behavior": "deny"
+        },
+        "memory_context_controls": {
+          "closed_runtime_gaps": [
+            "executor_context_pack_211_acceptance",
+            "sandbox_cold_start_latency_split_211_acceptance"
+          ],
+          "delete_redaction": true,
+          "long_term_cross_session_memory_fail_closed": true,
+          "open_gaps": [
+            "b1_runtime_evidence_review_against_merged_source"
+          ],
+          "ordinary_user_opt_out": true,
+          "public_admin_projection_safe": true,
+          "retention_cleanup": true,
+          "session_scoped_memory": true,
+          "status": "verified_current_scope"
+        },
+        "memory_long_term_default_fail_closed": true,
+        "open_gap_count": 12,
+        "open_gaps": [
+          "legacy_frontend_route_policy_enforcement_or_ai_platform_remap",
+          "admin_policy_bulk_review_visual_acceptance",
+          "admin_policy_bulk_review_211_acceptance",
+          "signed_skill_package_or_sbom_release_gate",
+          "dependency_vulnerability_or_license_policy",
+          "skill_dependency_review_policy_runtime_acceptance",
+          "admin_skill_release_dashboard_visual_acceptance",
+          "admin_skill_release_dashboard_211_acceptance",
+          "b1_runtime_evidence_review_against_merged_source",
+          "ordinary_user_g9_acceptance_for_legacy_admin_mcp_model_envvar_routes",
+          "quarantined_legacy_frontend_sources_need_projection_remap",
+          "frontend_packaged_image_delivery_and_release_acceptance"
+        ],
+        "ordinary_user_policy": "fail_closed_until_projection_mapping_and_acceptance_pass",
+        "skill_snapshot_run_seen": true,
+        "tool_permission_decision_audit_required": true
+      },
+      "open_followups": [
+        "signed_skill_package_or_sbom_review_evidence"
+      ],
+      "status": "partial_followups_open"
+    },
+    "g9_admin_runtime_observability": {
+      "evidence": {
+        "admin_runtime_projection": "/api/ai/admin/runtime/overview",
+        "alert_trace_export_runtime_acceptance": {
+          "admin_runtime_status": 200,
+          "alert_delivery_not_enabled": true,
+          "alert_delivery_policy_status": "contract_only_not_enabled",
+          "ordinary_admin_runtime_status": 403,
+          "redaction_scan_status": "passed",
+          "schema_version": "ai-platform.alert-trace-export-runtime-acceptance.v1",
+          "status": "verified_alert_trace_export_runtime_acceptance",
+          "trace_export_contract_schema_version": "ai-platform.trace-audit-export-contract.v1",
+          "trace_export_not_raw_runtime_payloads": true,
+          "trace_export_sources_public_only": true,
+          "verified": true
+        },
+        "observability_readiness_status": "partial_blocked",
+        "open_gap_count": 16,
+        "release_evidence_result": "ok:true",
+        "release_evidence_runtime_acceptance": {
+          "blocked_entry_count": 0,
+          "retention_status": "accepted_review_first_policy",
+          "runtime_export_status": "ready_for_operator_review",
+          "safe_entry_count": 125,
+          "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
+          "status": "verified_release_evidence_runtime_acceptance",
+          "verified": true
+        }
+      },
+      "open_followups": [],
+      "status": "partial_followups_open"
+    }
+  },
+  "evidence_entries": {
+    "alert_trace_export_runtime_acceptance": "docs/release-evidence/foundation-alpha-poc/4039e4bd870d99201da4fc0f002f76f2b5c4a892/2026-06-20-211-foundation-alpha-poc-4039e4b-alert-trace-export-runtime-acceptance.json",
+    "auth_rbac_smoke": "docs/release-evidence/foundation-alpha-poc/4039e4bd870d99201da4fc0f002f76f2b5c4a892/2026-06-20-211-foundation-alpha-poc-4039e4b-auth-rbac-smoke.json",
+    "foundation_runtime_concurrency": "docs/release-evidence/foundation-runtime-concurrency/4039e4bd870d99201da4fc0f002f76f2b5c4a892-frc-b0-20260620/2026-06-20-211-foundation-alpha-poc-4039e4b-foundation-runtime-concurrency.json",
+    "governance_runtime_smoke": "docs/release-evidence/foundation-alpha-poc/4039e4bd870d99201da4fc0f002f76f2b5c4a892/2026-06-20-211-foundation-alpha-poc-4039e4b-governance-runtime-smoke.json",
+    "poc_smoke": "docs/release-evidence/foundation-alpha-poc/4039e4bd870d99201da4fc0f002f76f2b5c4a892/2026-06-20-211-foundation-alpha-poc-4039e4b-runtime-poc-smoke.json",
+    "release_evidence_runtime_acceptance": "docs/release-evidence/foundation-alpha-poc/4039e4bd870d99201da4fc0f002f76f2b5c4a892/2026-06-20-211-foundation-alpha-poc-4039e4b-release-evidence-runtime-acceptance.json"
+  },
+  "evidence_policy": "source_docs_tests_211_smoke_and_release_evidence_required_before_stage_closure",
+  "foundation_alpha_stage_complete": true,
+  "foundation_alpha_stage_status": "foundation_alpha_stage_complete",
+  "open_followups": [
+    "g7_docker_sandbox_hardening",
+    "g8_ordinary_user_multi_agent_exposure"
+  ],
+  "operator_context": {
+    "blocked_expansions": [
+      "production_concurrency_increase",
+      "docker_sandbox_hardening_claim",
+      "ordinary_user_multi_agent_exposure",
+      "department_rollout"
+    ],
+    "current_runtime_relation": "runtime_current_for_runtime_relevant_source",
+    "next_recommended_slices": [],
+    "poc_loop_status": "core_loop_verified_for_runtime_relevant_source",
+    "poc_scope": "foundation_alpha_controlled_internal_poc",
+    "stage_acceptance_status": "foundation_alpha_stage_complete",
+    "stage_gate": "foundation_alpha_poc_not_production",
+    "verified_poc_capabilities": [
+      "source_authority_security_baseline",
+      "control_plane_public_admin_projection_contracts",
+      "queue_worker_document_task_artifact_loop",
+      "frontend_public_projection_poc"
+    ]
+  },
+  "runtime_relevant_source_verified_by_running_runtime": true,
+  "runtime_source_relation": {
+    "runtime_affecting_changes_since_runtime_subject": [],
+    "runtime_affecting_dirty_paths": [],
+    "runtime_matches_source_tree": false,
+    "runtime_relevant_source_matches": true,
+    "runtime_source_marker": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
+    "runtime_subject_commit_sha": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
+    "source_tree_commit_sha": "fed9eda0793f9098e01f366bd0f97f9f4ad691d4",
+    "source_tree_dirty": false,
+    "status": "runtime_current_for_runtime_relevant_source"
+  },
+  "runtime_subject_commit_sha": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
+  "schema_version": "ai-platform.foundation-alpha-poc-readiness.v1",
+  "source_tree_commit_sha": "fed9eda0793f9098e01f366bd0f97f9f4ad691d4",
+  "source_tree_dirty": false,
+  "stage": "Foundation Alpha POC",
+  "status": "runtime_current_for_runtime_relevant_source_followups_open",
+  "verified_runtime_subject": {
+    "commit_sha": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
+    "evidence_scope": "current_runtime_relevant_source",
+    "image": "ai-platform:4039e4b-issue138-runtime-only-v1",
+    "image_id": "sha256:1ce0b329f89d8d85affd309c1df6b0a5953eae0f3c74e8c05084e039cc619c5c"
+  }
+}

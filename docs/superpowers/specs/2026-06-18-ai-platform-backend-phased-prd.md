@@ -92,35 +92,27 @@ bundle does not by itself create product beta.
 
 ### 1.2 Current Backend Productization State
 
-This section is a planning pointer for the 2026-06-19 backend route. The live
+This section is a planning pointer for the 2026-06-20 backend route. The live
 status source remains `docs/operations/ai-platform-gate-status.md`, release
 evidence, and the current readiness CLI output.
 
-The B0 latest-main evidence refresh has `211 verified` status for the narrow
-#124/#125 scope only: runtime subject
-`87528bf30609092c3c4e947bdca477768af3f8e5`, PR #125, and merge commit
-`279bf1b6b7a7822d88cca64ec3311517d255caa8`. It does not close full G0 source
-authority because the deployment-layout/env-file caveat, production auth
-rollout, and future runtime-affecting source changes remain separate closure
-conditions. Any new runtime-affecting merge reopens B0 until fresh source,
-runtime, image, health, concurrency, redaction, and review evidence is recorded.
-
-Issue #136 records that B0 latest-main refresh is reopened for current `main`
-`0504ee09c6845731d90e9959184a17e1b5002f49` after PR #135. Current readiness
-reports `foundation_alpha_stage_status=runtime_rollout_required` and
-`foundation_runtime_concurrency_evidence`, while the 211 API/worker runtime is
-still `ai-platform:87528bf-issue124-runtime-only-v2` with runtime/source labels
-`87528bf30609092c3c4e947bdca477768af3f8e5` and
-`source_synced_runtime_pending`. The configured 211 source path is a dirty 211
-source worktree at `a15c74f0fe98914a893ab7ea784c6be941e0cd71` and must not be
-overwritten or reset without a reconciliation plan. This is not `211 verified`
-for `0504ee0`, does not close B1/B2/B3 product gates, does not raise production
-concurrency defaults, does not claim Docker sandbox hardening, and does not
-enable ordinary-user multi-agent exposure.
+Issue #138 refreshes B0 latest-main runtime-relevant evidence for current
+`main` `4039e4bd870d99201da4fc0f002f76f2b5c4a892` after PR #137. The narrow
+B0 runtime-relevant scope has `211 verified` evidence for source/runtime/image
+labels, API/worker health, Foundation Runtime concurrency, redaction, and
+runtime export/trace acceptance. It does not close full G0 source authority
+because the configured 211 source path remains dirty and untouched, the rollout
+used an isolated archive snapshot plus runtime-only rebase workaround, the
+compose env-file label still points to the external env-file path, production
+auth rollout remains separate, and future runtime-affecting source changes
+reopen B0 until fresh source, runtime, image, health, concurrency, redaction,
+and review evidence is recorded. This does not close B1/B2/B3 product gates,
+raise production concurrency defaults, claim Docker sandbox hardening, or enable
+ordinary-user multi-agent exposure.
 
 | Stage | Current planning status | Active next boundary |
 | --- | --- | --- |
-| B0 | `local partial` for current `0504ee0` because #136 records runtime rollout required and dirty 211 source; #124/#125 remains reviewed history for `87528bf` only. | Reopen only when readiness reports runtime rollout or current-source evidence drift. Reconcile or isolate the dirty 211 source, then refresh current-source runtime, image, health, Foundation Runtime concurrency, redaction, and review evidence. |
+| B0 | `211 verified` for the narrow #138 runtime-relevant source scope on `4039e4b`; not `gate closable` because G0 source-authority caveats remain. | Reopen when readiness reports runtime rollout, source/runtime drift, or a runtime-affecting merge. Reconcile the configured dirty 211 source and env-file label before any full G0 closure claim. |
 | B1 | `local partial`; source contracts and named runtime evidence exist, but the stage is not `gate closable`. | Choose one governed document workflow and prove memory/context through `live_worker_run_payload` plus rollback and deny paths. |
 | B2 | `local partial`; fake provider remains local/test-only and controlled probes do not prove governed SDK Skill execution. | Prove Docker/equivalent sandbox through a governed Skill run with lease, callback, resource, egress, artifact, cancel, cleanup, and redaction evidence. |
 | B3 | `local partial`; source contract only for `b3_10x4_sdk_subagents`; production defaults stay unchanged. | Record an operator-reviewed capacity snapshot for 10 sessions x peak 4 SDK subagents/session, including model-gateway, sandbox, token/cost, event/artifact, and cleanup pressure. |
@@ -845,12 +837,13 @@ provenance, run dependency/security review, and pass the elevated intake above.
 ## 8. Immediate Issue Chain
 
 The next backend work should stay evidence-first. B0 is now a freshness watch
-item after #124/#125; do not spend the next active implementation slice on B0
-unless readiness reports runtime rollout or current-source evidence drift.
+item after #138; do not spend the next active implementation slice on B0 unless
+readiness reports runtime rollout, source/runtime drift, or a runtime-affecting
+merge.
 
 | Order | Issue theme | First PR goal | Why first |
 | --- | --- | --- | --- |
-| 0 | B0 freshness watch | Re-run B0 only when readiness reports runtime rollout, source/runtime drift, or a runtime-affecting merge. | Keeps #124/#125 latest-main evidence from being reused after it becomes stale. |
+| 0 | B0 freshness watch | Re-run B0 only when readiness reports runtime rollout, source/runtime drift, or a runtime-affecting merge. | Keeps #138 latest-main evidence from being reused after it becomes stale. |
 | 1 | B1 governed document context-pack workflow | Select one document workflow and prove session/workspace context-pack policy, provenance, redaction, export/delete boundary, and rollback with `live_worker_run_payload` evidence. | Memory becomes useful only when tied to a workflow and deny paths; long-term memory remains fail-closed. |
 | 2 | B2 real sandbox smoke through SDK Skill path | Turn sandbox contracts into Docker/equivalent `controlled_live_probe` and then `live_worker_run_payload` evidence for a governed Skill path. | `fake` and standalone verifier success remain the most visible blockers to real tool/Skill execution credibility. |
 | 3 | B3 capacity profile | Produce an `operator_reviewed_recorded_snapshot` for 10 sessions x peak 4 SDK subagents/session without raising defaults. | SDK subagent capability exists; load, gateway, sandbox, event/artifact, and cost pressure remain unproven. |
