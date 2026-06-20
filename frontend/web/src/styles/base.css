@@ -114,17 +114,18 @@ select:-webkit-autofill:active {
 
 :root {
   font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
-  /* Theme color - stone tone */
-  --theme-primary: #78716c; /* stone-500 */
-  --theme-primary-hover: #57534e; /* stone-600 */
-  --theme-primary-light: #f5f5f4; /* stone-100 */
-  --theme-ring: #78716c; /* stone-500 */
-  --theme-bg: #f5f5f4; /* stone-100 */
+  --theme-primary: #111827;
+  --theme-primary-hover: #000000;
+  --theme-primary-light: #f3f4f6;
+  --theme-ring: #111827;
+  --theme-bg: #f7f7f8;
   --theme-bg-card: #ffffff;
-  --theme-bg-sidebar: #f5f5f4; /* stone-100 */
-  --theme-border: #e7e5e4; /* stone-200 */
-  --theme-text: #1c1917; /* stone-900 */
-  --theme-text-secondary: #78716c; /* stone-500 */
+  --theme-bg-sidebar: #f9fafb;
+  --theme-border: #e5e7eb;
+  --theme-border-strong: #d1d5db;
+  --theme-text: #111827;
+  --theme-text-secondary: #6b7280;
+  --theme-text-tertiary: #9ca3af;
   --theme-overlay: rgba(0, 0, 0, 0.4);
   --theme-overlay-strong: rgba(0, 0, 0, 0.5);
   --theme-shadow-sm: rgba(0, 0, 0, 0.04);
@@ -138,16 +139,18 @@ select:-webkit-autofill:active {
 }
 
 .dark {
-  --theme-primary: #d6d3d1; /* stone-300 */
-  --theme-primary-hover: #e7e5e4; /* stone-200 */
-  --theme-primary-light: #292524; /* stone-800 */
-  --theme-ring: #d6d3d1; /* stone-300 */
-  --theme-bg: #151210; /* closer to sidebar */
-  --theme-bg-card: #1c1917; /* stone-900 */
-  --theme-bg-sidebar: #171412; /* stone-950 variant */
-  --theme-border: #44403c; /* stone-700 */
-  --theme-text: #ffffff; /* pure white */
-  --theme-text-secondary: #d6d3d1; /* stone-300 */
+  --theme-primary: #f9fafb;
+  --theme-primary-hover: #ffffff;
+  --theme-primary-light: #1f2937;
+  --theme-ring: #d1d5db;
+  --theme-bg: #111827;
+  --theme-bg-card: #1f2937;
+  --theme-bg-sidebar: #0f172a;
+  --theme-border: #374151;
+  --theme-border-strong: #4b5563;
+  --theme-text: #f9fafb;
+  --theme-text-secondary: #d1d5db;
+  --theme-text-tertiary: #9ca3af;
   --theme-overlay: rgba(0, 0, 0, 0.6);
   --theme-overlay-strong: rgba(0, 0, 0, 0.7);
   --theme-shadow-sm: rgba(0, 0, 0, 0.2);

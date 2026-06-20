@@ -1,5 +1,5 @@
 import { memo, useMemo, useState, useCallback, useRef } from "react";
-import { RefreshCw, Sparkles, UserRound, ChevronRight } from "lucide-react";
+import { RefreshCw, UserRound, ChevronRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { ChatInput } from "./ChatInput";
@@ -172,40 +172,22 @@ export const WelcomePage = memo(function WelcomePage({
       ref={rootRef}
       className="welcome-root relative flex h-full flex-col items-center justify-center px-4"
     >
-      {/* Greeting section */}
-      <div className="welcome-hero relative flex flex-col items-center mb-3 sm:mb-4 md:mb-5 xl:mb-6 2xl:mb-7 w-full max-w-[90vw]">
-        {/* App icon (mobile only) */}
-        <div className="sm:hidden relative mb-3">
-          <img
-            src="/icons/icon.svg"
-            alt="LambChat"
-            className="welcome-icon relative size-10 rounded-full shadow-md ring-1 ring-stone-200/60 dark:ring-stone-700/40"
-          />
-        </div>
-
-        {/* Greeting */}
+      <div className="welcome-hero relative flex flex-col items-center mb-4 sm:mb-5 md:mb-6 w-full max-w-[90vw]">
         <h1
-          className="welcome-greeting max-w-[90vw] text-[1.65rem] sm:text-[2rem] md:text-[2.25rem] lg:text-[2.35rem] xl:text-[2.4rem] 2xl:text-[2.5rem] font-semibold tracking-[-0.02em] leading-[1.2] text-center font-serif"
+          className="welcome-greeting max-w-[90vw] text-[1.5rem] sm:text-[1.85rem] md:text-[2rem] font-semibold leading-[1.25] text-center"
           style={{ color: "var(--theme-text)" }}
         >
-          <img
-            src="/icons/icon.svg"
-            alt=""
-            className="welcome-icon hidden sm:inline-block size-10 2xl:size-12 mr-4 align-text-bottom rounded-full"
-          />
           {greeting}
         </h1>
-        {/* Subtle subtitle prompt */}
         <p
-          className="welcome-subtitle mt-2 sm:mt-3 md:mt-3.5 xl:mt-4 2xl:mt-4 text-sm sm:text-base md:text-[17px] xl:text-lg 2xl:text-lg text-center font-serif"
+          className="welcome-subtitle mt-2 text-sm sm:text-[15px] text-center"
           style={{ color: "var(--theme-text-secondary)" }}
         >
           {subtitle}
         </p>
       </div>
 
-      {/* ChatInput centered — the focal point */}
-      <div className="welcome-input w-full sm:max-w-[44rem] md:max-w-[46rem] lg:max-w-[48rem] xl:max-w-[50rem] 2xl:max-w-[52rem]">
+      <div className="welcome-input w-full sm:max-w-[44rem] md:max-w-[46rem] lg:max-w-[48rem]">
         <ChatInput
           {...chatInputProps}
           onMentionQueryChange={handleMentionQueryChange}
@@ -223,13 +205,9 @@ export const WelcomePage = memo(function WelcomePage({
         >
           <div className="welcome-suggestions-header flex items-center justify-between mb-2 sm:mb-3 md:mb-3 xl:mb-4 2xl:mb-4 px-2 sm:px-0">
             <div
-              className="flex items-center gap-1 text-xs sm:text-sm md:text-sm font-medium font-serif"
+              className="flex items-center gap-1 text-xs sm:text-sm md:text-sm font-medium"
               style={{ color: "var(--theme-text-secondary)" }}
             >
-              <Sparkles
-                size={11}
-                className="opacity-60 sm:w-3.5 sm:h-3.5 xl:w-4 xl:h-4 2xl:w-4 2xl:h-4"
-              />
               <span>
                 {selectedPersonaPresetId
                   ? starterPromptsLabel ||
@@ -241,7 +219,7 @@ export const WelcomePage = memo(function WelcomePage({
               {showPersonaCards && (
                 <button
                   onClick={() => navigate("/persona")}
-                  className="flex items-center gap-0.5 px-2 py-1 rounded-lg text-[11px] sm:text-[12px] md:text-[12px] font-medium transition-all duration-300 cursor-pointer font-serif"
+                  className="flex items-center gap-0.5 px-2 py-1 rounded-md text-[11px] sm:text-[12px] md:text-[12px] font-medium transition-colors duration-150 cursor-pointer"
                   style={{
                     color: "var(--theme-text-secondary)",
                     backgroundColor: "transparent",
@@ -254,7 +232,7 @@ export const WelcomePage = memo(function WelcomePage({
               {selectedPersonaPresetId && onClearPersonaPreset && (
                 <button
                   onClick={handleRefresh}
-                  className="welcome-refresh-btn flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] sm:text-[12px] md:text-[12px] font-medium transition-all duration-300 cursor-pointer font-serif"
+                  className="welcome-refresh-btn flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] sm:text-[12px] md:text-[12px] font-medium transition-colors duration-150 cursor-pointer"
                   style={{
                     color: "var(--theme-text-secondary)",
                     backgroundColor: "transparent",
@@ -312,20 +290,18 @@ export const WelcomePage = memo(function WelcomePage({
                     onClick={() => handlePersonaClick(preset)}
                     disabled={personaPresetsMutating}
                     className={getWelcomePersonaCardClass(i)}
-                    style={{
-                      backgroundColor: "var(--theme-bg-card)",
-                      borderColor: "var(--theme-border)",
-                      animationDelay: `${i * 60}ms`,
-                    }}
-                  >
-                    <span className="welcome-card-shimmer" aria-hidden="true" />
+                  style={{
+                    backgroundColor: "var(--theme-bg-card)",
+                    borderColor: "var(--theme-border)",
+                  }}
+                >
                     <span className="welcome-persona-header relative flex items-start gap-3">
                       <PersonaAvatarWithLoading
                         preset={preset}
-                        className="welcome-persona-avatar relative flex items-center justify-center size-11 rounded-xl shrink-0 overflow-hidden transition-transform duration-300 group-hover:scale-105"
+                        className="welcome-persona-avatar relative flex items-center justify-center size-10 rounded-lg shrink-0 overflow-hidden"
                         imgClassName="h-full w-full object-cover"
-                        iconSize={22}
-                        fallbackIcon={<UserRound size={22} />}
+                        iconSize={20}
+                        fallbackIcon={<UserRound size={20} />}
                         style={{
                           backgroundColor: "var(--theme-primary-light)",
                           color: "var(--theme-primary)",
@@ -383,22 +359,20 @@ export const WelcomePage = memo(function WelcomePage({
                     style={{
                       backgroundColor: "var(--theme-bg-card)",
                       borderColor: "var(--theme-border)",
-                      animationDelay: `${i * 60}ms`,
                     }}
                   >
-                    {/* Hover shimmer layer */}
-                    <span className="welcome-card-shimmer" aria-hidden="true" />
+                    {suggestion.icon && (
+                      <span
+                        className="relative flex items-center justify-center size-5 sm:size-6 shrink-0 text-[13px] sm:text-[14px]"
+                        style={{
+                          color: "var(--theme-text-secondary)",
+                        }}
+                      >
+                        {suggestion.icon}
+                      </span>
+                    )}
                     <span
-                      className="relative flex items-center justify-center size-6 sm:size-7 xl:size-8 2xl:size-8 rounded-lg text-[13px] sm:text-[15px] xl:text-lg 2xl:text-lg shrink-0 transition-transform duration-300 group-hover:scale-110"
-                      style={{
-                        backgroundColor: "var(--theme-primary-light)",
-                        color: "var(--theme-primary)",
-                      }}
-                    >
-                      {suggestion.icon || "✨"}
-                    </span>
-                    <span
-                      className="relative text-[12.5px] sm:text-[13.5px] leading-[1.4] sm:leading-[1.45] truncate transition-colors duration-300 group-hover:text-[var(--theme-text)]"
+                      className="relative text-[12.5px] sm:text-[13.5px] leading-[1.4] sm:leading-[1.45] truncate transition-colors duration-150 group-hover:text-[var(--theme-text)]"
                       style={{ color: "var(--theme-text-secondary)" }}
                     >
                       {suggestion.text}

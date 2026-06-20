@@ -10,7 +10,7 @@ import { getUserMessageActionButtonVisibilityClass } from "./userMessageBubbleSt
 import { copyToClipboard } from "../../../utils/clipboard";
 import { useSessionImageGallery } from "./sessionImageGallery";
 
-// User message bubble component (with copy function, supports markdown rendering) - ChatGPT style
+// User message bubble component with copy support.
 export function UserMessageBubble({
   content,
   attachments,
@@ -77,10 +77,10 @@ export function UserMessageBubble({
           {/* Message bubble */}
           {hasContent && (
             <div
-              className="rounded-3xl max-w-full px-5 py-2 shadow-sm border"
+              className="rounded-2xl max-w-full px-4 py-2 border"
               style={{
                 background:
-                  "linear-gradient(135deg, var(--theme-primary-light), var(--theme-bg))",
+                  "color-mix(in srgb, var(--theme-text-secondary) 8%, var(--theme-bg-card))",
                 borderColor: "var(--theme-border)",
               }}
             >

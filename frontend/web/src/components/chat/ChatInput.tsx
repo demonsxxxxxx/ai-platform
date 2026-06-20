@@ -675,8 +675,8 @@ export const ChatInput = memo(function ChatInput({
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          className={`chat-input-container flex flex-col relative w-full rounded-3xl px-1 border transition-all duration-300 ${
-            isDraggingOver ? "border-dashed shadow-lg border-2" : ""
+          className={`chat-input-container flex flex-col relative w-full rounded-2xl px-1 border transition-[border-color,box-shadow] duration-150 ${
+            isDraggingOver ? "border-dashed border-2" : ""
           }`}
           data-mention-active={mention.isActive || undefined}
           data-slash-active={slashMenuActive || undefined}
@@ -687,7 +687,7 @@ export const ChatInput = memo(function ChatInput({
               : "var(--theme-border)",
             boxShadow: isDraggingOver
               ? undefined
-              : "0 2px 12px rgba(0,0,0,0.06)",
+              : "0 1px 6px rgba(15,23,42,0.07)",
           }}
         >
           {mention.isActive && !onMentionQueryChange && (
@@ -749,7 +749,7 @@ export const ChatInput = memo(function ChatInput({
                   canSend ? t("chat.placeholder") : t("chat.noPermission")
                 }
                 disabled={disabled || !canSend}
-                className="bg-transparent outline-none w-full pt-[10px] resize-none text-[15px] disabled:opacity-50 leading-relaxed overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] min-h-[40px] sm:min-h-[44px]"
+                className="bg-transparent outline-none w-full pt-[10px] resize-none text-[15px] disabled:opacity-50 leading-relaxed overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] min-h-[38px] sm:min-h-[42px]"
                 style={{
                   color: "var(--theme-text)",
                   paddingLeft: 4,

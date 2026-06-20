@@ -57,10 +57,10 @@ function UserMessageSkeleton({
           className={`flex flex-col items-stretch max-w-[90%] ${msg.bubble}`}
         >
           <div
-            className="rounded-3xl w-full px-5 py-2 shadow-sm border"
+            className="rounded-2xl w-full px-4 py-2 border"
             style={{
               background:
-                "linear-gradient(135deg, var(--theme-primary-light), var(--theme-bg))",
+                "color-mix(in srgb, var(--theme-text-secondary) 8%, var(--theme-bg-card))",
               borderColor: "var(--theme-border)",
             }}
           >
@@ -165,17 +165,17 @@ export function ChatSkeletonMessagesOnly({ count = 3 }: { count?: number }) {
   );
 }
 
-/** Shared ChatInput skeleton — matches real ChatInput rounded-3xl container + toolbar */
+/** Shared ChatInput skeleton — matches the compact chat composer container. */
 function ChatInputSkeleton() {
   return (
     <div className="shrink-0 sm:px-4 pb-3 pt-1">
       <div className="mx-auto max-w-3xl lg:max-w-4xl xl:max-w-5xl px-2">
         <div
-          className="flex flex-col w-full rounded-3xl px-1 border"
+          className="flex flex-col w-full rounded-2xl px-1 border"
           style={{
             backgroundColor: "var(--theme-bg-card)",
             borderColor: "var(--theme-border)",
-            boxShadow: "0 2px 12px rgba(0,0,0,0.06)",
+            boxShadow: "0 1px 6px rgba(15,23,42,0.07)",
           }}
         >
           {/* Textarea area */}
@@ -206,35 +206,26 @@ function ChatInputSkeleton() {
 export function WelcomeSkeleton() {
   return (
     <div className="welcome-root relative flex h-full flex-col items-center justify-center px-4 overflow-hidden animate-fade-in">
-      {/* Hero section */}
-      <div className="welcome-hero relative flex flex-col items-center mb-3 sm:mb-4 md:mb-5 xl:mb-6 2xl:mb-7 w-full max-w-[90vw]">
-        {/* Mobile icon */}
-        <div className="sm:hidden relative mb-3">
-          <div className="skeleton-line size-10 rounded-full shadow-md ring-1 ring-stone-200/60 dark:ring-stone-700/40" />
-        </div>
-        {/* Greeting line — desktop icon inline */}
+      <div className="welcome-hero relative flex flex-col items-center mb-4 sm:mb-5 md:mb-6 w-full max-w-[90vw]">
         <div className="max-w-[90vw] w-full flex items-center justify-center">
-          <div className="skeleton-line size-10 2xl:size-12 rounded-full hidden sm:inline-block shrink-0 shadow-md ring-1 ring-stone-200/60 dark:ring-stone-700/40 mr-4" />
           <SkeletonLine
-            width="w-48 sm:w-64 md:w-72 lg:w-80 xl:w-[22rem] 2xl:w-96"
-            className="!h-[1.65rem] sm:!h-8 md:!h-9 lg:!h-[2.35rem] xl:!h-[2.4rem] 2xl:!h-10 !rounded-lg"
+            width="w-44 sm:w-60 md:w-64"
+            className="!h-[1.5rem] sm:!h-[1.85rem] md:!h-8 !rounded-lg"
           />
         </div>
-        {/* Subtitle */}
         <SkeletonLine
-          width="w-36 sm:w-44 md:w-48 xl:w-56 2xl:w-60"
-          className="!h-3.5 sm:!h-4 md:!h-[17px] xl:!h-5 mt-2 sm:mt-3 md:mt-3.5 xl:mt-4 2xl:mt-4 !rounded-lg"
+          width="w-36 sm:w-44 md:w-48"
+          className="!h-3.5 sm:!h-4 mt-2 !rounded-lg"
         />
       </div>
 
-      {/* ChatInput skeleton */}
-      <div className="welcome-input w-full sm:max-w-[44rem] md:max-w-[46rem] lg:max-w-[48rem] xl:max-w-[50rem] 2xl:max-w-[52rem]">
+      <div className="welcome-input w-full sm:max-w-[44rem] md:max-w-[46rem] lg:max-w-[48rem]">
         <div
-          className="flex flex-col w-full rounded-3xl px-1 border"
+          className="flex flex-col w-full rounded-2xl px-1 border"
           style={{
             backgroundColor: "var(--theme-bg-card)",
             borderColor: "var(--theme-border)",
-            boxShadow: "0 2px 12px rgba(0,0,0,0.06)",
+            boxShadow: "0 1px 6px rgba(15,23,42,0.07)",
           }}
         >
           {/* Textarea area */}

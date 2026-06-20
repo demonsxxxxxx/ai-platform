@@ -9,7 +9,7 @@
     "currentVersion": "Current Version",
     "gitTag": "Git Tag",
     "latestVersion": "Latest Version",
-    "title": "About LambChat",
+    "title": "About AI Platform",
     "upToDate": "You're up to date!",
     "updateAvailable": "New version available!",
     "viewOnGitHub": "View on GitHub",
@@ -192,7 +192,7 @@
       "name": "Search Agent"
     }
   },
-  "appName": "LambChat",
+  "appName": "AI Platform",
   "runPlayback": {
     "artifacts": "Artifacts",
     "context": {
@@ -485,7 +485,7 @@
     "deleteError": "Failed to delete configuration",
     "deleteSuccess": "Configuration deleted",
     "deleteTitle": "Delete Channel Instance",
-    "description": "Connect your favorite chat platforms to LambChat",
+    "description": "Connect your favorite chat platforms to AI Platform",
     "disconnected": "Disconnected",
     "enabled": "Enable Channel",
     "enabledDesc": "Enable or disable this channel",
@@ -605,9 +605,9 @@
     "noPermission": "No permission to send messages",
     "noPermissionHint": "You don't have permission to send messages",
     "outline": "Outline",
-    "placeholder": "@ to select a persona, or type a message...",
-    "placeholderWithHintCtrl": "@ to select a persona, or type a message…  Enter for newline, Ctrl+Enter to send",
-    "placeholderWithHintShift": "@ to select a persona, or type a message…  Enter to send, Shift+Enter for newline",
+    "placeholder": "Message AI Platform, or type / for Skills, MCP, assistants...",
+    "placeholderWithHintCtrl": "Message AI Platform, or type / for Skills, MCP, assistants…  Enter for newline, Ctrl+Enter to send",
+    "placeholderWithHintShift": "Message AI Platform, or type / for Skills, MCP, assistants…  Enter to send, Shift+Enter for newline",
     "queueFull": "Queue is full, please try again later",
     "queueStart": "Task started processing",
     "queued": "Queued (position {{position}})...",
@@ -1704,8 +1704,8 @@
       "title": "File Library"
     },
     "landing": {
-      "description": "LambChat is a pluggable multi-tenant AI conversation platform powered by Skills and MCP dual-engine. Supports Claude, GPT, Gemini and more with real-time SSE streaming, multi-agent orchestration, and modular skill system.",
-      "title": "LambChat - AI Agent Platform"
+      "description": "AI Platform is a pluggable multi-tenant AI conversation platform powered by Skills and MCP dual-engine. Supports Claude, GPT, Gemini and more with real-time SSE streaming, multi-agent orchestration, and modular skill system.",
+      "title": "AI Platform - AI Agent Platform"
     },
     "marketplace": {
       "description": "Discover and install community-built AI skills. Browse, rate, and deploy pre-built capabilities to extend your AI agent functionality.",

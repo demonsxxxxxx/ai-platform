@@ -96,7 +96,7 @@ export function ChatInputToolbar({
   );
 
   return (
-    <div className="flex justify-between flex-nowrap pt-3 pb-3 px-2 mx-0.5 max-w-full">
+    <div className="flex justify-between flex-nowrap pt-2.5 pb-2.5 px-2 mx-0.5 max-w-full">
       <div className="flex items-center gap-1 sm:gap-2 self-end flex-1 min-w-0 overflow-x-auto no-scrollbar">
         <input
           ref={fileInputRef}
@@ -167,7 +167,10 @@ export function ChatInputToolbar({
                   />
                 )}
               </span>
-              <span className="max-w-40 truncate text-sm font-semibold text-blue-600 dark:text-blue-400">
+              <span
+                className="max-w-40 truncate text-sm font-medium"
+                style={{ color: "var(--theme-text)" }}
+              >
                 {selectedPersonaName}
               </span>
               <ChevronDown size={14} className="opacity-50 shrink-0" />
@@ -185,7 +188,7 @@ export function ChatInputToolbar({
               e.stopPropagation();
               onNoPermissionClick();
             }}
-            className="flex items-center justify-center rounded-full p-2 cursor-pointer transition-all duration-200 hover:scale-105"
+            className="flex min-h-8 min-w-8 items-center justify-center rounded-lg p-2 cursor-pointer transition-colors duration-150"
             style={{
               backgroundColor: "var(--theme-primary-light)",
               color: "var(--theme-text-secondary)",
@@ -202,7 +205,7 @@ export function ChatInputToolbar({
               e.stopPropagation();
               onStopClick();
             }}
-            className="chat-tool-btn-active flex items-center justify-center rounded-full p-2 transition-all duration-300 hover:scale-105 active:scale-95"
+            className="chat-tool-btn-active flex min-h-8 min-w-8 items-center justify-center rounded-lg p-2 transition-colors duration-150"
             style={{
               borderColor: "color-mix(in srgb, #fbbf24 40%, transparent)",
               background: "color-mix(in srgb, #fbbf24 10%, transparent)",
@@ -216,17 +219,15 @@ export function ChatInputToolbar({
           <button
             type="submit"
             disabled={!canSubmit}
-            className={`flex items-center justify-center rounded-full p-2 transition-all duration-300 ${
-              canSubmit ? "hover:scale-105 active:scale-95" : ""
-            }`}
+            className="flex min-h-8 min-w-8 items-center justify-center rounded-lg p-2 transition-colors duration-150"
             style={{
-              backgroundColor: "transparent",
-              border: canSubmit
-                ? "1px solid color-mix(in srgb, var(--theme-primary) 40%, transparent)"
-                : "1px solid var(--theme-border)",
-              color: canSubmit
+              backgroundColor: canSubmit
                 ? "var(--theme-primary)"
-                : "var(--theme-text-secondary)",
+                : "transparent",
+              border: canSubmit
+                ? "1px solid var(--theme-primary)"
+                : "1px solid var(--theme-border)",
+              color: canSubmit ? "var(--theme-bg-card)" : "var(--theme-text-secondary)",
             }}
             title={
               hasUploadingAttachment

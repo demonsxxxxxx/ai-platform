@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { CircleHelp, ExternalLink, Keyboard } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ShortcutDialog } from "./ChatInputShortcuts";
+import { GITHUB_URL } from "../../constants";
 
 export function ChatInputHelpMenu() {
   const { t } = useTranslation();
@@ -34,7 +35,7 @@ export function ChatInputHelpMenu() {
         aria-label="Help"
         aria-expanded={helpMenuOpen}
         onClick={() => setHelpMenuOpen((v) => !v)}
-        className="flex items-center justify-center w-8 h-8 text-sm font-medium rounded-full shadow-md backdrop-blur-sm transition-all duration-200 hover:shadow-lg hover:scale-110 active:scale-95"
+        className="flex items-center justify-center w-8 h-8 text-sm font-medium rounded-lg shadow-sm backdrop-blur-sm transition-colors duration-150"
         style={{
           backgroundColor:
             "color-mix(in srgb, var(--theme-bg-card) 85%, transparent)",
@@ -47,14 +48,14 @@ export function ChatInputHelpMenu() {
       {helpMenuOpen && (
         <div
           role="menu"
-          className="absolute bottom-full right-0 mb-2 w-[200px] rounded-xl p-1 shadow-lg"
+          className="absolute bottom-full right-0 mb-2 w-[200px] rounded-lg p-1 shadow-lg"
           style={{
             backgroundColor: "var(--theme-bg-card)",
             border: "1px solid var(--theme-border)",
           }}
         >
           <a
-            href="https://yanyutin753.github.io/LambChat/"
+            href={GITHUB_URL}
             target="_blank"
             rel="noopener noreferrer"
             role="menuitem"

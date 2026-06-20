@@ -315,7 +315,7 @@ export const ChatMessage = memo(function ChatMessage({
               personaAvatar={personaAvatar}
             />
             <span
-              className="text-base sm:text-lg font-semibold tracking-tight font-serif"
+              className="text-sm sm:text-[15px] font-semibold"
               style={{ color: "var(--theme-text)" }}
             >
               {personaName || t("chat.message.assistant")}

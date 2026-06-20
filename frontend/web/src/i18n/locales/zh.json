@@ -9,7 +9,7 @@
     "currentVersion": "当前版本",
     "gitTag": "Git 标签",
     "latestVersion": "最新版本",
-    "title": "关于 LambChat",
+    "title": "关于 AI Platform",
     "upToDate": "已是最新版本！",
     "updateAvailable": "发现新版本！",
     "viewOnGitHub": "在 GitHub 上查看",
@@ -192,7 +192,7 @@
       "name": "Search Agent"
     }
   },
-  "appName": "LambChat",
+  "appName": "AI Platform",
   "runPlayback": {
     "artifacts": "产物",
     "context": {
@@ -485,7 +485,7 @@
     "deleteError": "删除配置失败",
     "deleteSuccess": "配置已删除",
     "deleteTitle": "删除渠道实例",
-    "description": "连接您喜欢的聊天平台到 LambChat",
+    "description": "连接您喜欢的聊天平台到 AI Platform",
     "disconnected": "未连接",
     "enabled": "启用渠道",
     "enabledDesc": "启用或禁用此渠道",
@@ -605,9 +605,9 @@
     "noPermission": "没有发送消息的权限",
     "noPermissionHint": "您没有发送消息的权限",
     "outline": "大纲",
-    "placeholder": "@ 选择角色，或输入消息...",
-    "placeholderWithHintCtrl": "@ 选择角色，或输入消息…  Enter 换行，Ctrl+Enter 发送",
-    "placeholderWithHintShift": "@ 选择角色，或输入消息…  Enter 发送，Shift+Enter 换行",
+    "placeholder": "输入消息，或用 / 选择 Skills、MCP、助手...",
+    "placeholderWithHintCtrl": "输入消息，或用 / 选择 Skills、MCP、助手…  Enter 换行，Ctrl+Enter 发送",
+    "placeholderWithHintShift": "输入消息，或用 / 选择 Skills、MCP、助手…  Enter 发送，Shift+Enter 换行",
     "queueFull": "排队已满，请稍后再试",
     "queueStart": "任务开始处理",
     "queued": "排队中 (第 {{position}} 位)...",
@@ -1705,8 +1705,8 @@
       "title": "文件库"
     },
     "landing": {
-      "description": "LambChat 是一个可插拔的多租户 AI 对话平台，由 Skills + MCP 双引擎驱动。支持 Claude、GPT、Gemini 等多种模型，实时 SSE 流式输出，多智能体协作与模块化技能系统。",
-      "title": "LambChat - AI 智能体平台"
+      "description": "AI Platform 是一个可插拔的多租户 AI 对话平台，由 Skills + MCP 双引擎驱动。支持 Claude、GPT、Gemini 等多种模型，实时 SSE 流式输出，多智能体协作与模块化技能系统。",
+      "title": "AI Platform - AI 智能体平台"
     },
     "marketplace": {
       "description": "发现并安装社区构建的 AI 技能。浏览、评分和部署预构建能力，扩展 AI 智能体功能。",
