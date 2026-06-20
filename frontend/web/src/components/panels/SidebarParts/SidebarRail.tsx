@@ -13,7 +13,7 @@ import { useTranslation } from "react-i18next";
 import { APP_NAME } from "../../../constants";
 
 const railBtn =
-  "sidebar-rail-btn flex h-9 w-9 items-center justify-center rounded-full transition-colors mx-2 touch-manipulation";
+  "sidebar-rail-btn workbench-rail-btn flex h-11 w-11 items-center justify-center rounded-lg transition-colors mx-1 touch-manipulation";
 
 interface SidebarRailProps {
   user: { username?: string; avatar_url?: string } | null;
@@ -62,7 +62,7 @@ export function SidebarRail({
 
   return (
     <nav
-      className="absolute inset-0 flex h-full w-[--sidebar-rail-width] flex-col items-start border-r select-none transition-opacity duration-150 ease-[steps(1,end)] opacity-100 pointer-events-auto"
+      className="workbench-rail absolute inset-0 flex h-full w-[--sidebar-rail-width] flex-col items-start border-r select-none transition-opacity duration-150 ease-[steps(1,end)] opacity-100 pointer-events-auto"
       style={{
         backgroundColor: "var(--theme-bg-sidebar)",
         borderColor: "var(--theme-border)",

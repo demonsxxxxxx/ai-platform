@@ -42,7 +42,7 @@ import {
   type RevealPreviewOpenSource,
 } from "../chat/ChatMessage/items/revealPreviewState";
 import { reconstructMessagesFromEvents } from "../../hooks/useAgent/historyLoader";
-import { APP_NAME, GITHUB_URL } from "../../constants";
+import { APP_HOME_URL, APP_NAME, GITHUB_URL } from "../../constants";
 import { formatDate, formatDateTimeShort } from "../../utils/datetime";
 import {
   LEGACY_THEME_STORAGE_KEY,
@@ -519,13 +519,13 @@ export function SharedPage() {
               <p className="text-stone-500 dark:text-stone-400 mb-8 leading-relaxed">
                 {t("share.notFoundDesc")}
               </p>
-              <Link
-                to="/"
+              <a
+                href={APP_HOME_URL}
                 className="inline-flex items-center gap-2 px-6 py-3 bg-stone-900 dark:bg-stone-100 hover:bg-stone-800 dark:hover:bg-stone-200 text-white dark:text-stone-900 rounded-xl font-medium transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]"
               >
                 {t("errors.backToHome")}
                 <BackIcon size={16} />
-              </Link>
+              </a>
             </div>
           </div>
         </div>
@@ -548,8 +548,8 @@ export function SharedPage() {
         />
         <div className="max-w-6xl mx-auto px-4 sm:px-8 h-14 flex items-center justify-between">
           {/* Left: Brand */}
-          <Link
-            to="/"
+          <a
+            href={APP_HOME_URL}
             className="flex items-center gap-2.5 cursor-pointer group"
           >
             <img
@@ -560,18 +560,18 @@ export function SharedPage() {
             <span className="text-md sm:text-lg font-bold tracking-tight text-stone-900 dark:text-stone-100 font-serif">
               {APP_NAME}
             </span>
-          </Link>
+          </a>
 
           {/* Right: Controls */}
           <div className="flex items-center gap-1.5 flex-shrink-0">
-            <Link
-              to="/"
+            <a
+              href={APP_HOME_URL}
               className="flex items-center justify-center w-9 h-9 rounded-xl bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-600 dark:text-stone-300 transition-all duration-200 hover:scale-105 active:scale-95"
               title={t("share.goToChat")}
               aria-label={t("share.goToChat")}
             >
               <MessageCircle size={18} />
-            </Link>
+            </a>
             <SharedPageLanguageToggle />
             <button
               onClick={toggleTheme}
@@ -803,8 +803,8 @@ export function SharedPage() {
               </div>
 
               {/* Button */}
-              <Link
-                to="/"
+              <a
+                href={APP_HOME_URL}
                 className="group flex-shrink-0 inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-[13px] font-semibold text-white bg-stone-900 dark:bg-stone-100 dark:text-stone-900 hover:bg-stone-800 dark:hover:bg-stone-200 active:scale-[0.97] transition-all duration-200 shadow-sm hover:shadow-md font-serif"
               >
                 <img src="/icons/icon.svg" alt="" className="w-4 h-4 rounded" />
@@ -823,7 +823,7 @@ export function SharedPage() {
                   <path d="M5 12h14" />
                   <path d="m12 5 7 7-7 7" />
                 </svg>
-              </Link>
+              </a>
             </div>
           </div>
 

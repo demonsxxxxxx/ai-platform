@@ -37,6 +37,7 @@ import { getRestoredModelSelection } from "./sessionState";
 import { buildEffectiveSkills, countEnabledSkills } from "./skillAvailability";
 import { AppShell } from "./AppShell";
 import { ChatView } from "./ChatView";
+import { WorkbenchShell } from "../../workbench/WorkbenchShell";
 import { shouldShowMessageOutline } from "./messageOutline";
 import { RunPlaybackPanel } from "./RunPlaybackPanel";
 import { openPersistentToolPanel } from "../../chat/ChatMessage/items/persistentToolPanelState";
@@ -819,6 +820,7 @@ export function ChatAppContent({
           }
           externalScrollToBottom={externalScrollToBottom}
           outlineToggleRef={outlineToggleRef}
+          WorkbenchShellComponent={WorkbenchShell}
         />
         <BlockPreviewPortal />
       </>

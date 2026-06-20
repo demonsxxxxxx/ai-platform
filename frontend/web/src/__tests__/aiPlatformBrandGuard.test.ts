@@ -68,3 +68,18 @@ test("ai-platform product constants are the active brand source", () => {
     /export const APP_HOME_URL = "http:\/\/10\.56\.0\.211:18001\/"/,
   );
 });
+
+test("brand entry surfaces consume the ai-platform home authority", () => {
+  const entryFiles = [
+    "src/components/auth/AuthPage.tsx",
+    "src/components/share/SharedPage.tsx",
+    "src/components/panels/SidebarParts/SessionListContent.tsx",
+  ];
+
+  const offenders = entryFiles.filter((file) => {
+    const source = readFileSync(join(root, file), "utf8");
+    return !source.includes("APP_HOME_URL");
+  });
+
+  assert.deepEqual(offenders, []);
+});
