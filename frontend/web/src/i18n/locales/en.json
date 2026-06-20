@@ -514,6 +514,14 @@
     "testSuccess": "Connection successful",
     "title": "Channels"
   },
+  "channelImport": {
+    "redaction": "Redaction",
+    "retention": "Retention",
+    "unavailable": {
+      "description": "Channel import requires ai-platform channel ACL projections. No channel metadata is shown until those APIs are available.",
+      "title": "Channel import is not available yet"
+    }
+  },
   "chat": {
     "assistant": "Assistant",
     "attachFile": "Attach file",
@@ -1388,6 +1396,7 @@
   "launchpad": {
     "clearSearch": "Clear search",
     "currentCategory": "Current category",
+    "boundary": "These entries open existing company systems in a new tab. AI Platform does not replace their login, permissions, workflow, or audit rules.",
     "entriesCount": "{{count}} entries",
     "groupNavigation": "Application category navigation",
     "noResults": "No matching entries found",
@@ -2016,6 +2025,24 @@
     "taskPending": "Pending",
     "taskRunning": "Running",
     "title": "Share Session",
+    "unavailable": {
+      "denied": {
+        "description": "Your current account is not allowed to view this shared session.",
+        "title": "Share access denied"
+      },
+      "expired": {
+        "description": "This share has expired and no session metadata is available.",
+        "title": "Share expired"
+      },
+      "revoked": {
+        "description": "This share was revoked and no session metadata is available.",
+        "title": "Share revoked"
+      },
+      "unavailable": {
+        "description": "The share cannot be loaded through an authorized ai-platform projection.",
+        "title": "Share unavailable"
+      }
+    },
     "userMessage": "(User Message: {{message}})",
     "visibility": "Access Control"
   },

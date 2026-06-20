@@ -514,6 +514,14 @@
     "testSuccess": "连接成功",
     "title": "渠道管理"
   },
+  "channelImport": {
+    "redaction": "脱敏",
+    "retention": "保留策略",
+    "unavailable": {
+      "description": "频道导入需要 ai-platform 的频道 ACL 投影。相关 API 可用前不会展示频道元数据。",
+      "title": "频道导入暂不可用"
+    }
+  },
   "chat": {
     "assistant": "助手",
     "attachFile": "附件",
@@ -1389,6 +1397,7 @@
   "launchpad": {
     "clearSearch": "清除搜索",
     "currentCategory": "当前分类",
+    "boundary": "这些入口会在新标签页打开现有公司系统。AI Platform 不替代目标系统的登录、权限、流程或审计规则。",
     "entriesCount": "{{count}} 个入口",
     "groupNavigation": "应用分类导航",
     "noResults": "没有找到匹配的入口",
@@ -2017,6 +2026,24 @@
     "taskPending": "等待中",
     "taskRunning": "运行中",
     "title": "分享会话",
+    "unavailable": {
+      "denied": {
+        "description": "当前账号无权查看这个会话分享。",
+        "title": "无权访问分享"
+      },
+      "expired": {
+        "description": "这个分享已过期，不展示任何会话元数据。",
+        "title": "分享已过期"
+      },
+      "revoked": {
+        "description": "这个分享已撤销，不展示任何会话元数据。",
+        "title": "分享已撤销"
+      },
+      "unavailable": {
+        "description": "无法通过授权的 ai-platform 投影加载该分享。",
+        "title": "分享暂不可用"
+      }
+    },
     "userMessage": "（用户消息：{{message}}）",
     "visibility": "访问权限"
   },

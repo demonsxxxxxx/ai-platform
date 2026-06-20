@@ -90,6 +90,12 @@ export function LaunchpadPanel() {
             <p className="mt-1 text-sm text-stone-500 dark:text-stone-400">
               {t("launchpad.subtitle")}
             </p>
+            <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-500 dark:text-stone-400">
+              {t(
+                "launchpad.boundary",
+                "These entries open existing company systems in a new tab. AI Platform does not replace their login, permissions, workflow, or audit rules.",
+              )}
+            </p>
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">

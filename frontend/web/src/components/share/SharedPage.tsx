@@ -4,15 +4,12 @@
  */
 
 import { useEffect, useState, useMemo, useRef, useCallback } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import {
-  AlertCircle,
   MessageSquare,
   Sun,
   Moon,
-  ExternalLink,
-  Lock,
   Languages,
   MessageCircle,
   Check,
@@ -20,7 +17,6 @@ import {
   XCircle,
 } from "lucide-react";
 
-import { BackIcon } from "../common/BackIcon";
 import { shareApi } from "../../services/api/share";
 import type { SharedContentResponse } from "../../types";
 import { ChatMessage } from "../chat/ChatMessage";
@@ -54,6 +50,7 @@ import {
   PersonaAvatarImage,
   PersonaAvatarIcon,
 } from "../persona/PersonaAvatarIcon";
+import { ShareUnavailableState } from "./ShareUnavailableState";
 
 const LANGUAGES = [
   { code: "en", nativeName: "English" },
@@ -226,6 +223,22 @@ export function SharedPage() {
         if (err instanceof Error) {
           if (err.message.includes("401") || err.message.includes("需要登录")) {
             setError("auth_required");
+          } else if (
+            err.message.includes("403") ||
+            err.message.includes("无权") ||
+            err.message.includes("forbidden")
+          ) {
+            setError("denied");
+          } else if (
+            err.message.includes("expired") ||
+            err.message.includes("过期")
+          ) {
+            setError("expired");
+          } else if (
+            err.message.includes("revoked") ||
+            err.message.includes("撤销")
+          ) {
+            setError("revoked");
           } else if (
             err.message.includes("404") ||
             err.message.includes("不存在")
@@ -469,68 +482,24 @@ export function SharedPage() {
 
   // Auth required error
   if (error === "auth_required") {
-    return (
-      <div className="min-h-dvh bg-[#faf9f7] dark:bg-[#0f0e0d] flex items-center justify-center p-4">
-        <div className="max-w-md w-full animate-in fade-in slide-in-from-bottom-4 duration-500">
-          <div className="bg-white dark:bg-stone-900 rounded-2xl shadow-xl shadow-stone-900/5 dark:shadow-black/30 border border-stone-200/60 dark:border-stone-800/60 overflow-hidden">
-            <div className="p-8 text-center">
-              <div className="w-16 h-16 mx-auto mb-6 rounded-2xl bg-amber-50 dark:bg-amber-900/20 flex items-center justify-center">
-                <Lock
-                  size={28}
-                  className="text-amber-500 dark:text-amber-400"
-                />
-              </div>
-              <h1 className="text-xl font-semibold text-stone-900 dark:text-stone-100 font-serif mb-2 font-serif tracking-tight">
-                {t("share.loginRequired")}
-              </h1>
-              <p className="text-stone-500 dark:text-stone-400 mb-8 leading-relaxed">
-                {t("share.loginRequiredDesc")}
-              </p>
-              <Link
-                to="/auth/login"
-                className="inline-flex items-center gap-2 px-6 py-3 bg-stone-900 dark:bg-stone-100 hover:bg-stone-800 dark:hover:bg-stone-200 text-white dark:text-stone-900 rounded-xl font-medium transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]"
-              >
-                {t("auth.loginNow")}
-                <ExternalLink size={16} />
-              </Link>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
+    return <ShareUnavailableState reason="denied" />;
+  }
+
+  if (error === "denied") {
+    return <ShareUnavailableState reason="denied" />;
+  }
+
+  if (error === "expired") {
+    return <ShareUnavailableState reason="expired" />;
+  }
+
+  if (error === "revoked") {
+    return <ShareUnavailableState reason="revoked" />;
   }
 
   // Not found error
   if (error === "not_found" || !data) {
-    return (
-      <div className="min-h-dvh bg-[#faf9f7] dark:bg-[#0f0e0d] flex items-center justify-center p-4">
-        <div className="max-w-md w-full animate-in fade-in slide-in-from-bottom-4 duration-500">
-          <div className="bg-white dark:bg-stone-900 rounded-2xl shadow-xl shadow-stone-900/5 dark:shadow-black/30 border border-stone-200/60 dark:border-stone-800/60 overflow-hidden">
-            <div className="p-8 text-center">
-              <div className="w-16 h-16 mx-auto mb-6 rounded-2xl bg-red-50 dark:bg-red-900/20 flex items-center justify-center">
-                <AlertCircle
-                  size={28}
-                  className="text-red-500 dark:text-red-400"
-                />
-              </div>
-              <h1 className="text-xl font-semibold text-stone-900 dark:text-stone-100 font-serif mb-2 font-serif tracking-tight">
-                {t("share.notFound")}
-              </h1>
-              <p className="text-stone-500 dark:text-stone-400 mb-8 leading-relaxed">
-                {t("share.notFoundDesc")}
-              </p>
-              <a
-                href={APP_HOME_URL}
-                className="inline-flex items-center gap-2 px-6 py-3 bg-stone-900 dark:bg-stone-100 hover:bg-stone-800 dark:hover:bg-stone-200 text-white dark:text-stone-900 rounded-xl font-medium transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]"
-              >
-                {t("errors.backToHome")}
-                <BackIcon size={16} />
-              </a>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
+    return <ShareUnavailableState reason="unavailable" />;
   }
 
   // Main content — editorial blog layout
