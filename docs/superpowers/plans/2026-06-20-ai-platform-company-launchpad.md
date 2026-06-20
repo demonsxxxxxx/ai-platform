@@ -232,3 +232,96 @@ Expected: exit 0.
 
 Run from repo root: `git diff --check`
 Expected: no whitespace errors.
+
+### Task 5: Deployable Delivery Handoff
+
+**Files:**
+- No new files.
+
+**Interfaces:**
+- Consumes all previous tasks.
+- Produces operator-facing delivery evidence and a safe 211 deployment path.
+
+- [x] **Step 1: Local verification evidence**
+
+Completed local verification for the first delivery PR:
+
+```bash
+cd frontend/web
+pnpm exec tsx --test src\components\launchpad\__tests__\catalog.test.ts src\components\launchpad\__tests__\launchpadSource.test.ts src\__tests__\launchpadRoute.test.ts
+pnpm run build
+cd ../..
+git diff --check
+```
+
+Observed evidence:
+
+- Launchpad targeted tests: 11 tests passed.
+- Frontend production build: exit 0; only existing Vite large chunk warnings.
+- Diff whitespace check: exit 0; only CRLF conversion warnings.
+- Browser smoke on `http://127.0.0.1:5174/apps`:
+  - desktop rendered `公司导航` with 29 Lingxi cards.
+  - search `SOP` returned one `SOP问询助手` card and `知识库1` navigation.
+  - no-result search rendered `没有找到匹配的入口` without stale group links.
+  - 390px viewport rendered 29 cards, mobile category strip, and no horizontal overflow.
+
+- [x] **Step 2: Delivery boundary**
+
+The first delivery is PR-ready source and build output, not a live 211 rollout.
+Do not label this work `211 verified` until the merged frontend has been copied
+to the real 211 static frontend root and smoke-tested on the official entry.
+
+The page is intentionally an AI Platform homepage entry. It links to existing
+systems and does not migrate nonGMPlims Vue business modules, target-system
+permissions, todo widgets, dashboards, workflow pages, or statistics into AI
+Platform.
+
+- [x] **Step 3: 211 deployment procedure after merge**
+
+Use the real 211 runtime target. Previous evidence showed port `18001` is served
+by a Python static frontend process rather than an Open WebUI container. Before
+touching the host, verify the current listener and process again.
+
+Recommended operator sequence:
+
+```bash
+# on 211
+ss -ltnp | grep ':18001'
+ps -ef | grep -E 'serve_ai_platform_frontend|18001' | grep -v grep
+
+cd /home/xinlin.jiang/ai-platform-phaseb/services/ai-platform
+git fetch --all --prune
+git checkout main
+git pull --ff-only
+
+cd frontend/web
+pnpm install --frozen-lockfile
+pnpm run build
+```
+
+Then replace the current static frontend only after taking a timestamped backup
+of the existing dist root used by the live `18001` process. Keep the backup on
+the host until smoke passes.
+
+If the live process still uses the known Python static server pattern, restart
+that process with the same API base as the existing command. Do not assume a
+Docker container owns the frontend port.
+
+- [x] **Step 4: 211 smoke checklist**
+
+After the static frontend is replaced and the service is restarted, verify:
+
+- `http://10.56.0.211:18001/auth/login` renders.
+- Company login redirects to `/apps`.
+- `http://10.56.0.211:18001/apps` renders `公司导航`.
+- Lingxi tab shows 29 entries.
+- Search `SOP` returns `SOP问询助手`.
+- Empty search result has no stale category anchors.
+- A known systemKey entry, for example `SampleSender`, opens a legacy
+  nonGMPlims URL under `http://10.56.0.211:8080/#/RDSampleSender/dashboard/overview`
+  unless `VITE_LEGACY_NONGMP_URL` has been configured differently.
+- `/chat` still opens the existing chat page.
+- Backend health is still reachable through the frontend environment's API base.
+
+Only after these checks pass on `http://10.56.0.211:18001/` should the work be
+reported as `211 verified`.
