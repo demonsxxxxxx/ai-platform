@@ -144,7 +144,7 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
   const visibleNav = navItems.filter((i) => i.show);
 
   const menuItemClass =
-    "flex w-full items-center gap-3 px-3 py-1.5 sm:py-2.5 text-left text-sm transition-colors text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-primary-light)] active:scale-[0.98]";
+    "flex w-full items-center gap-3 px-3 py-1.5 sm:py-2.5 text-left text-sm transition-colors text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-primary-light)]";
 
   const renderNavItem = (item: {
     path: string;
@@ -257,8 +257,8 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
               onError={() => setImgError(true)}
             />
           ) : (
-            <div className="flex size-5 items-center justify-center bg-gradient-to-br from-amber-400 to-orange-500 rounded-full">
-              <span className="text-xs font-semibold text-white font-serif">
+            <div className="flex size-5 items-center justify-center rounded-full bg-stone-200 text-stone-700 dark:bg-stone-700 dark:text-stone-200">
+              <span className="text-xs font-semibold">
                 {user?.username?.charAt(0).toUpperCase() || "U"}
               </span>
             </div>
@@ -279,7 +279,7 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
                     menuRef.current = el;
                     swipeRef.current = el;
                   }}
-                  className="fixed inset-x-0 bottom-0 z-[101] rounded-t-2xl shadow-2xl max-h-[85vh] overflow-y-auto animate-slide-up-sheet"
+                  className="fixed inset-x-0 bottom-0 z-[101] rounded-t-xl shadow-xl max-h-[85vh] overflow-y-auto animate-slide-up-sheet"
                   style={{ backgroundColor: "var(--theme-bg-card)" }}
                   onClick={(e) => e.stopPropagation()}
                 >
@@ -301,7 +301,7 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
                 />
                 <div
                   ref={menuRef}
-                  className="fixed z-[301] w-52 rounded-xl shadow-xl border overflow-hidden animate-scale-in"
+                  className="fixed z-[301] w-52 rounded-lg shadow-lg border overflow-hidden animate-scale-in"
                   style={{
                     top: `${menuPosition.top}px`,
                     right: `${menuPosition.right}px`,

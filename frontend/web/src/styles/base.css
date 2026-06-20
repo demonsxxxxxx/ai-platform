@@ -120,7 +120,7 @@ select:-webkit-autofill:active {
   --theme-ring: #111827;
   --theme-bg: #f7f7f8;
   --theme-bg-card: #ffffff;
-  --theme-bg-sidebar: #f9fafb;
+  --theme-bg-sidebar: #f7f7f8;
   --theme-border: #e5e7eb;
   --theme-border-strong: #d1d5db;
   --theme-text: #111827;
@@ -145,7 +145,7 @@ select:-webkit-autofill:active {
   --theme-ring: #d1d5db;
   --theme-bg: #111827;
   --theme-bg-card: #1f2937;
-  --theme-bg-sidebar: #0f172a;
+  --theme-bg-sidebar: #111827;
   --theme-border: #374151;
   --theme-border-strong: #4b5563;
   --theme-text: #f9fafb;
@@ -297,9 +297,10 @@ html[data-mobile-keyboard="true"] #root {
   color: var(--theme-text-secondary);
 }
 .sidebar-nav-btn:hover {
-  background-color: var(
-    --glass-bg-subtle,
-    color-mix(in srgb, var(--theme-bg) 80%, white)
+  background-color: color-mix(
+    in srgb,
+    var(--theme-text-secondary) 8%,
+    transparent
   );
   color: var(--theme-text);
 }
@@ -309,9 +310,10 @@ html[data-mobile-keyboard="true"] #root {
   color: var(--theme-text-secondary);
 }
 .sidebar-rail-btn:hover {
-  background-color: var(
-    --glass-bg-subtle,
-    color-mix(in srgb, var(--theme-bg) 80%, white)
+  background-color: color-mix(
+    in srgb,
+    var(--theme-text-secondary) 8%,
+    transparent
   );
   color: var(--theme-text);
 }

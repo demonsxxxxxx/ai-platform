@@ -21,7 +21,7 @@ export interface ChatInputProps {
   disabled?: boolean;
   canSend?: boolean;
   tools?: ToolState[];
-  onToggleTool?: (toolName: string) => void;
+  onToggleTool?: (toolName: string) => boolean | Promise<boolean>;
   onToggleCategory?: (category: ToolCategory, enabled: boolean) => void;
   onToggleAll?: (enabled: boolean) => void;
   toolsLoading?: boolean;

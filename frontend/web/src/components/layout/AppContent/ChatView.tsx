@@ -90,7 +90,7 @@ interface ChatViewProps {
   connectionStatus?: ConnectionStatus;
   canSendMessage: boolean;
   tools: ToolState[];
-  onToggleTool: (name: string) => void;
+  onToggleTool: (name: string) => boolean | Promise<boolean>;
   onToggleCategory: (category: ToolCategory, enabled: boolean) => void;
   onToggleAll: (enabled: boolean) => void;
   toolsLoading: boolean;

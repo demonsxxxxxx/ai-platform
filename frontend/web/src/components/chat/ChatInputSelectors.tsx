@@ -20,7 +20,7 @@ export interface ChatInputSelectorsProps {
   onActivePanelChange: (panel: FeaturePanel) => void;
   // Tools
   tools?: ToolState[];
-  onToggleTool?: (toolName: string) => void;
+  onToggleTool?: (toolName: string) => boolean | Promise<boolean>;
   onToggleCategory?: (category: ToolCategory, enabled: boolean) => void;
   onToggleAll?: (enabled: boolean) => void;
   enabledToolsCount?: number;

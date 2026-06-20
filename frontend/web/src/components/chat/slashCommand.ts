@@ -65,6 +65,8 @@ export interface ApplySlashCommandSelectionResult {
   nextPanel: FeaturePanel;
 }
 
+export type SlashCommandToggleResult = boolean | void | null | undefined;
+
 const BASE_COMMANDS: Array<
   Pick<
     SlashCommandOption,
@@ -260,6 +262,18 @@ export function applySlashCommandSelection(
     },
     nextPanel: option.nextPanel,
   };
+}
+
+export function canApplySlashEntitySelection(
+  option: SlashCommandOption,
+  toggleResult?: SlashCommandToggleResult,
+): boolean {
+  if (option.disabled) return false;
+  if (option.kind !== "entity") return true;
+  if (!option.value) return false;
+  if (option.group !== "skill" && option.group !== "mcp") return true;
+  if (option.selected) return true;
+  return toggleResult === true;
 }
 
 export function moveSlashCommandHighlight(

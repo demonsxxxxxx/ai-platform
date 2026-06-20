@@ -172,15 +172,15 @@ export const WelcomePage = memo(function WelcomePage({
       ref={rootRef}
       className="welcome-root relative flex h-full flex-col items-center justify-center px-4"
     >
-      <div className="welcome-hero relative flex flex-col items-center mb-4 sm:mb-5 md:mb-6 w-full max-w-[90vw]">
+      <div className="welcome-hero relative flex flex-col items-center mb-3 sm:mb-4 md:mb-5 w-full max-w-[90vw]">
         <h1
-          className="welcome-greeting max-w-[90vw] text-[1.5rem] sm:text-[1.85rem] md:text-[2rem] font-semibold leading-[1.25] text-center"
+          className="welcome-greeting max-w-[90vw] text-[1.25rem] sm:text-[1.55rem] md:text-[1.75rem] font-semibold leading-[1.25] text-center"
           style={{ color: "var(--theme-text)" }}
         >
           {greeting}
         </h1>
         <p
-          className="welcome-subtitle mt-2 text-sm sm:text-[15px] text-center"
+          className="welcome-subtitle mt-1.5 text-sm text-center"
           style={{ color: "var(--theme-text-secondary)" }}
         >
           {subtitle}

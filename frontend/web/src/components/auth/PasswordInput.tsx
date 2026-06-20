@@ -35,7 +35,7 @@ export function PasswordInput({
         type={visible ? "text" : "password"}
         value={value}
         onChange={onChange}
-        className={`auth-input w-full rounded-xl py-2.5 pl-10 pr-10 text-sm transition-all sm:py-2.5 sm:pl-10 sm:pr-10 md:py-3 md:pl-11 md:pr-4 ${className}`}
+        className={`auth-input w-full rounded-lg py-2.5 pl-10 pr-10 text-sm transition-all sm:py-2.5 sm:pl-10 sm:pr-10 md:py-3 md:pl-11 md:pr-4 ${className}`}
         placeholder={placeholder}
         autoComplete={autoComplete}
       />

@@ -57,7 +57,7 @@ export function ShortcutDialog({
         style={{ backgroundColor: "rgba(0,0,0,0.4)" }}
       />
       <div
-        className="relative w-full max-w-md mx-4 rounded-2xl p-5 shadow-xl"
+        className="relative w-full max-w-md mx-4 rounded-xl p-5 shadow-lg"
         style={{
           backgroundColor: "var(--theme-bg-card)",
           border: "1px solid var(--theme-border)",

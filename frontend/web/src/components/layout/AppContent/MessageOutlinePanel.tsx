@@ -57,8 +57,8 @@ function UserAvatar({
   }
 
   return (
-    <div className="flex size-[22px] items-center justify-center bg-gradient-to-br from-amber-400 to-orange-500 rounded-full shadow-[0_1px_3px_rgba(0,0,0,0.15)]">
-      <span className="text-[10px] font-bold text-white leading-none">
+    <div className="flex size-[22px] items-center justify-center rounded-full bg-stone-200 text-stone-700 dark:bg-stone-700 dark:text-stone-200">
+      <span className="text-[10px] font-semibold leading-none">
         {username.charAt(0).toUpperCase() || "U"}
       </span>
     </div>
@@ -71,12 +71,12 @@ function OutlineFlowNode({ data }: { data: OutlineNodeData }) {
   return (
     <div
       className={clsx(
-        "px-3 py-[10px] rounded-2xl w-[220px] cursor-pointer transition-all duration-200",
+        "px-3 py-[10px] rounded-xl w-[220px] cursor-pointer transition-colors duration-150",
         "bg-stone-100/80 dark:bg-stone-700/40 border",
         "border-stone-200/80 dark:border-stone-600/50",
-        "hover:-translate-y-[1px] hover:shadow-lg hover:border-stone-300 dark:hover:border-stone-500",
+        "hover:border-stone-300 dark:hover:border-stone-500",
         data.isActive &&
-          "border-[var(--theme-primary)] shadow-lg shadow-[color-mix(in_srgb,var(--theme-primary)_10%,transparent)] ring-1 ring-[color-mix(in_srgb,var(--theme-primary)_15%,transparent)] -translate-y-[1px]",
+          "border-[var(--theme-primary)] ring-1 ring-[color-mix(in_srgb,var(--theme-primary)_15%,transparent)]",
         !data.isActive && "shadow-sm",
       )}
     >

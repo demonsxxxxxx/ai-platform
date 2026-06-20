@@ -24,6 +24,7 @@ import { FILE_CATEGORY_PERMISSIONS } from "./chatInputConstants";
 import {
   applySlashCommandSelection,
   buildSlashCommandOptions,
+  canApplySlashEntitySelection,
   dedupeComposerTokens,
   findSlashCommandMatch,
   moveSlashCommandHighlight,
@@ -395,13 +396,14 @@ export const ChatInput = memo(function ChatInput({
     async (option: SlashCommandOption) => {
       if (!slashMatch || option.disabled) return;
       const result = applySlashCommandSelection(input, slashMatch, option);
+      let toggleResult: boolean | void | null | undefined;
 
       if (option.group === "skill" && option.value) {
         const skillName = String(option.value);
         const skill = skills.find((candidate) => candidate.name === skillName);
         if (skill && !skill.enabled) {
-          const toggled = await onToggleSkill?.(skillName);
-          if (!toggled) return;
+          toggleResult = await onToggleSkill?.(skillName);
+          if (!canApplySlashEntitySelection(option, toggleResult)) return;
         }
       }
 
@@ -410,7 +412,8 @@ export const ChatInput = memo(function ChatInput({
         const tool = tools.find((candidate) => candidate.name === toolName);
         if (tool?.system_disabled) return;
         if (tool && !tool.enabled) {
-          onToggleTool?.(toolName);
+          toggleResult = await onToggleTool?.(toolName);
+          if (!canApplySlashEntitySelection(option, toggleResult)) return;
         }
       }
 
@@ -432,7 +435,7 @@ export const ChatInput = memo(function ChatInput({
 
       setInput(result.input);
       setCursorPosition(result.cursorPosition);
-      if (result.token) {
+      if (result.token && canApplySlashEntitySelection(option, toggleResult)) {
         setComposerTokens((current) =>
           dedupeComposerTokens(current, result.token!),
         );
@@ -675,7 +678,7 @@ export const ChatInput = memo(function ChatInput({
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          className={`chat-input-container flex flex-col relative w-full rounded-2xl px-1 border transition-[border-color,box-shadow] duration-150 ${
+          className={`chat-input-container flex flex-col relative w-full rounded-xl px-1 border transition-[border-color,box-shadow] duration-150 ${
             isDraggingOver ? "border-dashed border-2" : ""
           }`}
           data-mention-active={mention.isActive || undefined}
@@ -687,7 +690,7 @@ export const ChatInput = memo(function ChatInput({
               : "var(--theme-border)",
             boxShadow: isDraggingOver
               ? undefined
-              : "0 1px 6px rgba(15,23,42,0.07)",
+              : "0 1px 2px rgba(15,23,42,0.04)",
           }}
         >
           {mention.isActive && !onMentionQueryChange && (
@@ -749,7 +752,7 @@ export const ChatInput = memo(function ChatInput({
                   canSend ? t("chat.placeholder") : t("chat.noPermission")
                 }
                 disabled={disabled || !canSend}
-                className="bg-transparent outline-none w-full pt-[10px] resize-none text-[15px] disabled:opacity-50 leading-relaxed overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] min-h-[38px] sm:min-h-[42px]"
+                className="bg-transparent outline-none w-full pt-[10px] resize-none text-[15px] disabled:opacity-50 leading-relaxed overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] min-h-[38px] sm:min-h-[40px]"
                 style={{
                   color: "var(--theme-text)",
                   paddingLeft: 4,

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   applySlashCommandSelection,
   buildSlashCommandOptions,
+  canApplySlashEntitySelection,
   dedupeComposerTokens,
   findSlashCommandMatch,
   moveSlashCommandHighlight,
@@ -177,6 +178,23 @@ test("applySlashCommandSelection returns an MCP token and removes slash text", (
     },
     nextPanel: null,
   });
+});
+
+test("canApplySlashEntitySelection keeps disabled MCP tools fail-closed without a confirmed toggle", () => {
+  const option = buildSlashCommandOptions({
+    query: "finance",
+    skills: [],
+    tools,
+    agents: [],
+    uploadCategories: [],
+  }).find((candidate) => candidate.id === "mcp:finance.quote");
+
+  assert.ok(option);
+  assert.equal(option.selected, false);
+  assert.equal(option.disabled, false);
+  assert.equal(canApplySlashEntitySelection(option), false);
+  assert.equal(canApplySlashEntitySelection(option, false), false);
+  assert.equal(canApplySlashEntitySelection(option, true), true);
 });
 
 test("applySlashCommandSelection keeps unavailable context fail-closed", () => {

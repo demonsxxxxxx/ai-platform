@@ -1,38 +1,10 @@
 .auth-shell {
   position: relative;
-  background: linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.96) 0%,
-      rgba(250, 250, 249, 0.98) 100%
-    ),
-    radial-gradient(
-      ellipse 80% 50% at 70% 12%,
-      rgba(251, 191, 36, 0.045) 0%,
-      transparent 62%
-    ),
-    radial-gradient(
-      ellipse 60% 42% at 18% 62%,
-      rgba(56, 189, 248, 0.03) 0%,
-      transparent 60%
-    );
+  background: #f7f7f8;
 }
 
 html.dark .auth-shell {
-  background: linear-gradient(
-      180deg,
-      rgba(12, 10, 9, 0.97) 0%,
-      rgba(28, 25, 23, 0.98) 100%
-    ),
-    radial-gradient(
-      ellipse 80% 50% at 70% 12%,
-      rgba(251, 191, 36, 0.028) 0%,
-      transparent 62%
-    ),
-    radial-gradient(
-      ellipse 60% 42% at 18% 62%,
-      rgba(56, 189, 248, 0.02) 0%,
-      transparent 60%
-    );
+  background: #111827;
 }
 
 html,
@@ -42,94 +14,41 @@ body {
 
 html.dark,
 html.dark body {
-  background: #0c0a09;
+  background: #111827;
 }
 
-/* Auth crosshatch background (dark mode only; light mode stays clean) */
 .auth-crosshatch {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
+  display: none;
 }
 
-.auth-crosshatch::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-image: none;
-  background-size: 48px 48px;
-}
-
-html.dark .auth-crosshatch::before {
-  background-image: linear-gradient(
-      rgba(255, 255, 255, 0.015) 1px,
-      transparent 1px
-    ),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
-}
-
-/* Auth atmospheric gradients (matches landing page hero) */
 .auth-atmosphere {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  overflow: hidden;
+  display: none;
 }
 
-/* Auth panel - clean card */
 .auth-panel {
   position: relative;
   z-index: 1;
   overflow: hidden;
-  border: 1px solid rgba(231, 229, 228, 0.72);
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.92) 0%,
-    rgba(255, 255, 255, 0.82) 100%
-  );
-  backdrop-filter: blur(20px) saturate(1.08);
-  -webkit-backdrop-filter: blur(20px) saturate(1.08);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.8) inset,
-    0 18px 55px rgba(41, 37, 36, 0.1),
-    0 4px 14px rgba(41, 37, 36, 0.06);
+  border: 1px solid var(--theme-border);
+  background: var(--theme-bg-card);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 .auth-panel::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(251, 191, 36, 0.5),
-    transparent
-  );
-  opacity: 0.75;
-  pointer-events: none;
+  display: none;
 }
 
 html.dark .auth-panel {
-  border-color: rgba(87, 83, 78, 0.52);
-  background: linear-gradient(
-    180deg,
-    rgba(41, 37, 36, 0.88) 0%,
-    rgba(28, 25, 23, 0.82) 100%
-  );
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.04) inset,
-    0 18px 55px rgba(0, 0, 0, 0.28),
-    0 4px 14px rgba(0, 0, 0, 0.18);
+  border-color: var(--theme-border);
+  background: var(--theme-bg-card);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
 /* Auth input - refined with better visual weight */
 .auth-input {
-  border: 1px solid rgba(214, 211, 209, 0.74);
-  background: rgba(250, 250, 249, 0.74);
-  color: #1c1917;
+  border: 1px solid var(--theme-border);
+  background: #ffffff;
+  color: var(--theme-text);
   transition:
     background-color 0.2s ease,
     border-color 0.2s ease,
@@ -137,34 +56,30 @@ html.dark .auth-panel {
 }
 
 .auth-input::placeholder {
-  color: rgba(168, 162, 158, 0.6);
+  color: var(--theme-text-tertiary);
 }
 
 .auth-input:focus {
-  border-color: rgba(120, 113, 108, 0.82);
+  border-color: var(--theme-border-strong);
   background: #fff;
-  box-shadow:
-    0 0 0 3px rgba(251, 191, 36, 0.1),
-    0 1px 4px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 0 0 3px rgba(17, 24, 39, 0.06);
   outline: none;
 }
 
 html.dark .auth-input {
-  border-color: rgba(68, 64, 60, 0.8);
-  background: rgba(12, 10, 9, 0.5);
-  color: #fafaf9;
+  border-color: var(--theme-border);
+  background: #111827;
+  color: var(--theme-text);
 }
 
 html.dark .auth-input::placeholder {
-  color: rgba(214, 211, 209, 0.45);
+  color: var(--theme-text-tertiary);
 }
 
 html.dark .auth-input:focus {
-  border-color: #d6d3d1;
-  background: rgba(12, 10, 9, 0.7);
-  box-shadow:
-    0 0 0 3px rgba(214, 211, 209, 0.06),
-    0 1px 4px rgba(0, 0, 0, 0.15);
+  border-color: var(--theme-border-strong);
+  background: #111827;
+  box-shadow: 0 0 0 3px rgba(209, 213, 219, 0.08);
 }
 
 /* 浏览器自动填充样式覆盖 */
@@ -200,65 +115,39 @@ html.dark .auth-input:autofill:focus {
 .auth-primary-button {
   position: relative;
   overflow: hidden;
-  background: #1c1917;
-  color: #fafaf9;
-  letter-spacing: 0.02em;
+  background: var(--theme-primary);
+  color: var(--theme-bg-card);
+  letter-spacing: 0;
   font-weight: 500;
-  box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.1),
-    0 8px 22px rgba(41, 37, 36, 0.14);
+  box-shadow: none;
 }
 
 .auth-primary-button:hover {
-  background: #292524;
-  box-shadow:
-    0 2px 4px rgba(0, 0, 0, 0.12),
-    0 12px 30px rgba(41, 37, 36, 0.16);
+  background: var(--theme-primary-hover);
+  box-shadow: none;
 }
 
 html.dark .auth-primary-button {
-  background: #f5f5f4;
-  color: #1c1917;
-  box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.2),
-    0 8px 24px rgba(0, 0, 0, 0.28);
+  background: var(--theme-primary);
+  color: var(--theme-bg);
+  box-shadow: none;
 }
 
 html.dark .auth-primary-button:hover {
-  background: #fafaf9;
-  box-shadow:
-    0 2px 4px rgba(0, 0, 0, 0.25),
-    0 12px 32px rgba(0, 0, 0, 0.34);
+  background: var(--theme-primary-hover);
+  box-shadow: none;
 }
 
-/* Shimmer sweep on hover (matches blog-btn-primary) */
 .auth-primary-button::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: -100%;
-  width: 100%;
-  height: 100%;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(255, 255, 255, 0.08),
-    transparent
-  );
-  transition: left 0.5s ease;
+  display: none;
 }
 
 .auth-primary-button:hover::after {
-  left: 100%;
+  display: none;
 }
 
 html.dark .auth-primary-button::after {
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(0, 0, 0, 0.06),
-    transparent
-  );
+  display: none;
 }
 
 /* Auth secondary button - ghost pill (matches landing ghost button) */
@@ -484,39 +373,11 @@ html.dark .auth-muted-panel {
     opacity: 0.75;
   }
 
-  .auth-glow-main {
-    width: 34rem;
-    height: 25rem;
-    opacity: 0.92;
-  }
-
-  .auth-glow-blue {
-    top: 42%;
-    left: -9rem;
-    width: 18rem;
-    height: 18rem;
-    opacity: 0.75;
-  }
-
-  .auth-glow-violet {
-    right: -8rem;
-    bottom: 8%;
-    width: 17rem;
-    height: 17rem;
-    opacity: 0.78;
-  }
-
   .auth-panel {
-    box-shadow:
-      0 1px 0 rgba(255, 255, 255, 0.7) inset,
-      0 14px 42px rgba(41, 37, 36, 0.11),
-      0 3px 12px rgba(41, 37, 36, 0.06);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
   }
 
   html.dark .auth-panel {
-    box-shadow:
-      0 1px 0 rgba(255, 255, 255, 0.04) inset,
-      0 14px 42px rgba(0, 0, 0, 0.3),
-      0 3px 12px rgba(0, 0, 0, 0.18);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
   }
 }

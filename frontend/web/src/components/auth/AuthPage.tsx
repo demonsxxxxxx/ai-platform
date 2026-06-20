@@ -319,13 +319,6 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
     <div className="auth-shell min-h-[100svh] min-h-[100dvh] overflow-y-auto overflow-x-hidden">
       <div className="auth-crosshatch" aria-hidden="true" />
 
-      {/* Subtle background gradient */}
-      <div className="auth-atmosphere" aria-hidden="true">
-        <div className="auth-glow-main absolute -top-24 left-1/2 -translate-x-1/2 w-[720px] h-[520px] bg-[radial-gradient(ellipse_at_center,rgba(251,191,36,0.065)_0%,rgba(251,146,60,0.025)_42%,transparent_70%)] dark:bg-[radial-gradient(ellipse_at_center,rgba(251,191,36,0.04)_0%,rgba(251,146,60,0.018)_42%,transparent_70%)]" />
-        <div className="auth-glow-blue absolute top-[34%] left-[4%] w-[360px] h-[360px] bg-[radial-gradient(circle,rgba(56,189,248,0.04)_0%,transparent_62%)] dark:bg-[radial-gradient(circle,rgba(56,189,248,0.028)_0%,transparent_62%)]" />
-        <div className="auth-glow-violet absolute bottom-[10%] right-[8%] w-[300px] h-[300px] bg-[radial-gradient(circle,rgba(168,85,247,0.035)_0%,transparent_60%)] dark:bg-[radial-gradient(circle,rgba(168,85,247,0.022)_0%,transparent_60%)]" />
-      </div>
-
       {/* Navbar */}
       <nav className="fixed top-0 inset-x-0 z-50 bg-white/90 dark:bg-stone-950/90 border-b border-stone-100/60 dark:border-stone-800/40 transition-shadow duration-300">
         <div className="mx-auto flex h-14 max-w-full items-center justify-between px-4 sm:px-8">
@@ -333,9 +326,9 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
             <img
               src="/icons/icon.svg"
               alt={APP_NAME}
-              className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg transition-transform duration-300 group-hover:scale-105"
+              className="w-6 h-6 rounded-md"
             />
-            <span className="text-[15px] sm:text-lg font-bold tracking-tight text-stone-900 dark:text-stone-100 font-serif">
+            <span className="text-[15px] font-semibold text-stone-900 dark:text-stone-100">
               {APP_NAME}
             </span>
           </Link>
@@ -351,7 +344,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
         <div className="w-full max-w-[22.5rem] sm:max-w-[420px] lg:max-w-[450px] 2xl:max-w-[480px]">
           {/* Title area */}
           <div className="mb-5 text-center sm:mb-6">
-            <h1 className="text-[2.65rem] sm:text-4xl lg:text-5xl font-extrabold font-serif tracking-[-0.045em] sm:tracking-[-0.03em] leading-[0.9] sm:leading-[0.95] text-stone-900 dark:text-stone-50 mb-2">
+            <h1 className="text-2xl sm:text-[1.75rem] font-semibold leading-tight text-stone-900 dark:text-stone-50 mb-2">
               {APP_NAME}
             </h1>
             <p className="mx-auto max-w-[18rem] text-xs leading-relaxed text-stone-500 dark:text-stone-400 sm:text-[13px] lg:text-sm">
@@ -360,7 +353,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
           </div>
 
           {/* Form card */}
-          <div className="auth-panel rounded-[1.35rem] p-4 shadow-stone-200/50 sm:rounded-2xl sm:p-6 lg:p-8 2xl:p-10 dark:shadow-stone-950/40">
+          <div className="auth-panel rounded-xl p-4 sm:p-6 lg:p-7 2xl:p-8">
             {/* OAuth buttons */}
             {oauthProviders.length > 0 && (
               <div className="mb-4 sm:mb-5 lg:mb-6 2xl:mb-8">
@@ -370,7 +363,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
                       <button
                         type="button"
                         onClick={() => handleOAuthLogin(provider.id)}
-                        className="flex h-11 min-w-12 items-center justify-center gap-2 rounded-xl border border-stone-200 bg-white/85 px-3 text-sm font-medium text-stone-700 shadow-sm transition-all hover:-translate-y-0.5 hover:bg-white hover:shadow-md active:translate-y-0 dark:border-stone-700 dark:bg-stone-800/70 dark:text-stone-200 dark:hover:bg-stone-800 dark:hover:shadow-lg sm:h-auto sm:gap-2.5 sm:p-3"
+                        className="flex h-11 min-w-12 items-center justify-center gap-2 rounded-lg border border-stone-200 bg-white px-3 text-sm font-medium text-stone-700 transition-colors hover:bg-stone-50 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700 sm:h-auto sm:gap-2.5 sm:p-3"
                       >
                         {provider.id === "google" && (
                           <svg
@@ -472,7 +465,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
                     type="text"
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
-                    className="auth-input w-full rounded-xl py-2.5 pl-10 pr-3 text-sm transition-all sm:py-2.5 sm:pl-10 sm:pr-3 md:py-3 md:pl-11 md:pr-4"
+                    className="auth-input w-full rounded-lg py-2.5 pl-10 pr-3 text-sm transition-all sm:py-2.5 sm:pl-10 sm:pr-3 md:py-3 md:pl-11 md:pr-4"
                     placeholder={
                       mode === "login"
                         ? t("auth.usernameOrEmailPlaceholder")
@@ -502,7 +495,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
                       type="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      className="auth-input w-full rounded-xl py-2.5 pl-10 pr-3 text-sm transition-all sm:py-2.5 sm:pl-10 sm:pr-3 md:py-3 md:pl-11 md:pr-4"
+                      className="auth-input w-full rounded-lg py-2.5 pl-10 pr-3 text-sm transition-all sm:py-2.5 sm:pl-10 sm:pr-3 md:py-3 md:pl-11 md:pr-4"
                       placeholder={t("auth.emailPlaceholder")}
                       autoComplete="email"
                     />
@@ -567,7 +560,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
               <button
                 type="submit"
                 disabled={isSubmitting || isRedirecting}
-                className="auth-primary-button min-h-12 w-full rounded-xl py-3 text-sm font-semibold transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50 lg:py-3.5 2xl:py-4"
+                className="auth-primary-button min-h-12 w-full rounded-lg py-3 text-sm font-semibold transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 lg:py-3.5 2xl:py-4"
               >
                 <span className="inline-flex items-center justify-center gap-2">
                   {isSubmitting && (
@@ -649,7 +642,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
                 href={GITHUB_URL}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="font-serif text-stone-600 hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-200"
+                className="font-medium text-stone-600 hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-200"
               >
                 {APP_NAME}
               </a>

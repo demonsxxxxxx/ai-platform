@@ -77,7 +77,7 @@ export function UserMessageBubble({
           {/* Message bubble */}
           {hasContent && (
             <div
-              className="rounded-2xl max-w-full px-4 py-2 border"
+              className="rounded-xl max-w-full px-4 py-2 border"
               style={{
                 background:
                   "color-mix(in srgb, var(--theme-text-secondary) 8%, var(--theme-bg-card))",

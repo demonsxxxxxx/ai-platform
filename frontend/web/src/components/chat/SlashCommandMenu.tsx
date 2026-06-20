@@ -86,7 +86,9 @@ export function SlashCommandMenu({
       <div className="slash-command-menu" role="listbox" aria-label="Slash commands">
         <div className="slash-command-header">
           <Search size={14} />
-          <span>Choose Skills, MCP, agents, models, files, or context</span>
+          <span>
+            Type / to add skills, MCP tools, agents, models, files, or context
+          </span>
         </div>
         <div className="slash-command-list">
           {options.map((option, index) => {

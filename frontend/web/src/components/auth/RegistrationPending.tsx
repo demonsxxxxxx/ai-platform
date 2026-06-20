@@ -45,7 +45,7 @@ export function RegistrationPending() {
         <div className="auth-status-icon relative mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-emerald-50 dark:bg-emerald-900/20">
           <CheckCircle className="h-6 w-6 text-emerald-600 dark:text-emerald-400" />
         </div>
-        <h1 className="text-xl font-bold text-stone-900 dark:text-stone-100 mb-1 font-serif">
+        <h1 className="text-xl font-semibold text-stone-900 dark:text-stone-100 mb-1">
           {t("auth.registrationSuccessTitle")}
         </h1>
         <p className="text-sm text-stone-400 dark:text-stone-500">
@@ -103,7 +103,7 @@ export function RegistrationPending() {
         <button
           onClick={handleResendVerification}
           disabled={isResending}
-          className="blog-btn-ghost auth-secondary-button mb-2.5 w-full rounded-full py-2.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
+          className="auth-secondary-button mb-2.5 w-full rounded-lg py-2.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
         >
           <span className="inline-flex items-center justify-center gap-2">
             {isResending && <LoadingSpinner size="sm" />}
@@ -114,7 +114,7 @@ export function RegistrationPending() {
 
       <button
         onClick={handleGoToLogin}
-        className="blog-btn-primary auth-primary-button w-full rounded-full py-2.5 text-sm font-medium transition-all"
+        className="auth-primary-button w-full rounded-lg py-2.5 text-sm font-medium transition-colors"
       >
         {t("auth.backToLogin")}
       </button>

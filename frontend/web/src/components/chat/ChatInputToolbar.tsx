@@ -188,7 +188,7 @@ export function ChatInputToolbar({
               e.stopPropagation();
               onNoPermissionClick();
             }}
-            className="flex min-h-8 min-w-8 items-center justify-center rounded-lg p-2 cursor-pointer transition-colors duration-150"
+            className="flex min-h-8 min-w-8 items-center justify-center rounded-md p-2 cursor-pointer transition-colors duration-150"
             style={{
               backgroundColor: "var(--theme-primary-light)",
               color: "var(--theme-text-secondary)",
@@ -205,7 +205,7 @@ export function ChatInputToolbar({
               e.stopPropagation();
               onStopClick();
             }}
-            className="chat-tool-btn-active flex min-h-8 min-w-8 items-center justify-center rounded-lg p-2 transition-colors duration-150"
+            className="chat-tool-btn-active flex min-h-8 min-w-8 items-center justify-center rounded-md p-2 transition-colors duration-150"
             style={{
               borderColor: "color-mix(in srgb, #fbbf24 40%, transparent)",
               background: "color-mix(in srgb, #fbbf24 10%, transparent)",
@@ -219,7 +219,7 @@ export function ChatInputToolbar({
           <button
             type="submit"
             disabled={!canSubmit}
-            className="flex min-h-8 min-w-8 items-center justify-center rounded-lg p-2 transition-colors duration-150"
+            className="flex min-h-8 min-w-8 items-center justify-center rounded-md p-2 transition-colors duration-150"
             style={{
               backgroundColor: canSubmit
                 ? "var(--theme-primary)"

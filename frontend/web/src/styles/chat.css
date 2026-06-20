@@ -8,7 +8,7 @@
 
 .chat-input-container:focus-within {
   border-color: var(--theme-border-strong, var(--theme-border));
-  box-shadow: 0 2px 10px rgb(15 23 42 / 0.08);
+  box-shadow: 0 1px 4px rgb(15 23 42 / 0.08);
 }
 
 .chat-input-container textarea::placeholder {
@@ -41,7 +41,7 @@
   justify-content: center;
   min-width: 2rem;
   min-height: 2rem;
-  border-radius: 0.5rem;
+  border-radius: 0.375rem;
   padding: 0.5rem;
   border: none;
   background: transparent;
@@ -63,18 +63,16 @@
 }
 
 .feature-menu-dropdown {
-  border-radius: 0.75rem;
+  border-radius: 0.5rem;
   border: 1px solid var(--theme-border);
-  padding: 0.375rem;
-  box-shadow:
-    0 12px 28px -18px rgb(15 23 42 / 0.35),
-    0 0 0 1px rgb(15 23 42 / 0.03);
+  padding: 0.25rem;
+  box-shadow: 0 8px 24px -18px rgb(15 23 42 / 0.35);
   animation: feature-menu-in 0.15s cubic-bezier(0.16, 1, 0.3, 1);
 }
 @media (min-width: 640px) {
   .feature-menu-dropdown {
-    padding: 0.625rem;
-    border-radius: 0.875rem;
+    padding: 0.375rem;
+    border-radius: 0.625rem;
   }
 }
 @keyframes feature-menu-in {
@@ -167,7 +165,7 @@
   align-items: center;
   gap: 0.5rem;
   width: 100%;
-  padding: 0.375rem 0.625rem;
+  padding: 0.4rem 0.625rem;
   font-size: 0.8125rem;
   font-weight: 400;
   line-height: 1.25;
@@ -180,10 +178,10 @@
 }
 @media (min-width: 640px) {
   .feature-menu-item {
-    padding: 0.5625rem 0.875rem;
+    padding: 0.5rem 0.75rem;
     font-size: 0.875rem;
     gap: 0.75rem;
-    border-radius: 0.5rem;
+    border-radius: 0.375rem;
   }
 }
 .feature-menu-item:hover {
@@ -250,11 +248,9 @@
   flex-direction: column;
   max-height: var(--slash-command-max-height, 260px);
   border: 1px solid var(--theme-border);
-  border-radius: 0.75rem;
+  border-radius: 0.625rem;
   background: var(--theme-bg-card);
-  box-shadow:
-    0 18px 42px -26px rgb(15 23 42 / 0.4),
-    0 0 0 1px rgb(15 23 42 / 0.03);
+  box-shadow: 0 10px 28px -22px rgb(15 23 42 / 0.45);
   animation: feature-menu-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   overflow: hidden;
 }
@@ -263,11 +259,11 @@
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  min-height: 2.25rem;
-  padding: 0.5rem 0.625rem;
+  min-height: 2rem;
+  padding: 0.45rem 0.625rem;
   border-bottom: 1px solid var(--theme-border);
   color: var(--theme-text-secondary);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 500;
 }
 
@@ -276,7 +272,7 @@
   flex-direction: column;
   gap: 1px;
   margin: 0.25rem;
-  padding: 0.125rem;
+  padding: 0;
   max-height: calc(var(--slash-command-max-height, 260px) - 2.75rem);
   overflow-y: auto;
   scrollbar-width: thin;
@@ -292,10 +288,10 @@
   align-items: center;
   gap: 0.625rem;
   width: 100%;
-  min-height: 2.5rem;
-  padding: 0.375rem 0.5rem;
+  min-height: 2.375rem;
+  padding: 0.35rem 0.5rem;
   border: none;
-  border-radius: 0.5rem;
+  border-radius: 0.375rem;
   background: transparent;
   color: var(--theme-text);
   font-family: inherit;
@@ -323,7 +319,7 @@
   width: 1.5rem;
   height: 1.5rem;
   flex-shrink: 0;
-  border-radius: 0.375rem;
+  border-radius: 0.25rem;
   color: var(--theme-text-secondary);
   background: transparent;
 }
@@ -365,11 +361,11 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 2.5rem;
+  min-width: 2.25rem;
   max-width: 5rem;
   min-height: 1.35rem;
   padding: 0.125rem 0.375rem;
-  border-radius: 0.375rem;
+  border-radius: 0.25rem;
   color: var(--theme-text-secondary);
   background: color-mix(in srgb, var(--theme-text-secondary) 7%, transparent);
   font-size: 0.6875rem;
@@ -394,10 +390,10 @@
   min-height: 1.75rem;
   gap: 0.35rem;
   border: 1px solid var(--theme-border);
-  border-radius: 0.5rem;
+  border-radius: 0.375rem;
   padding: 0.25rem 0.25rem 0.25rem 0.625rem;
   color: var(--theme-text);
-  background: color-mix(in srgb, var(--theme-text-secondary) 6%, transparent);
+  background: color-mix(in srgb, var(--theme-text-secondary) 5%, transparent);
   font-size: 0.75rem;
   font-weight: 500;
 }
@@ -451,12 +447,10 @@
 .mention-popup {
   display: flex;
   max-height: var(--mention-popup-max-height, 220px);
-  border-radius: 0.75rem;
+  border-radius: 0.625rem;
   border: 1px solid var(--theme-border);
   background: var(--theme-bg-card);
-  box-shadow:
-    0 18px 42px -26px rgb(15 23 42 / 0.4),
-    0 0 0 1px rgb(15 23 42 / 0.03);
+  box-shadow: 0 10px 28px -22px rgb(15 23 42 / 0.45);
   animation: feature-menu-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   overflow: hidden;
 }

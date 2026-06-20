@@ -10,7 +10,7 @@ import { useTranslation } from "react-i18next";
 import { APP_NAME } from "../../../constants";
 
 const railBtn =
-  "sidebar-rail-btn flex h-9 w-9 items-center justify-center rounded-full transition-colors mx-2 touch-manipulation";
+  "sidebar-rail-btn flex h-9 w-9 items-center justify-center rounded-lg transition-colors mx-2 touch-manipulation";
 
 interface SidebarRailProps {
   user: { username?: string; avatar_url?: string } | null;
@@ -67,7 +67,7 @@ export function SidebarRail({
           <img
             src="/icons/icon.svg"
             alt={APP_NAME}
-            className="size-5 rounded-full object-cover group-hover:hidden"
+            className="size-5 rounded-md object-cover group-hover:hidden"
           />
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -173,8 +173,8 @@ export function SidebarRail({
                 draggable={false}
               />
             ) : (
-              <div className="flex w-full h-full items-center justify-center bg-gradient-to-br from-amber-400 to-orange-500 rounded-full">
-                <span className="text-xs font-semibold text-white">
+              <div className="flex w-full h-full items-center justify-center rounded-full bg-stone-200 text-stone-700 dark:bg-stone-700 dark:text-stone-200">
+                <span className="text-xs font-semibold">
                   {user?.username?.charAt(0).toUpperCase() || "U"}
                 </span>
               </div>

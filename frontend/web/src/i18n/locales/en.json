@@ -1684,7 +1684,7 @@
   },
   "seo": {
     "agents": {
-      "description": "Configure and manage AI agents. Set up system prompts, select models, define tools, and orchestrate multi-agent workflows for complex tasks.",
+      "description": "Configure and manage AI agents. Set up system prompts, select models, define tools, and run governed task patterns for complex work.",
       "title": "AI Agents"
     },
     "channels": {
@@ -1692,7 +1692,7 @@
       "title": "Communication Channels"
     },
     "chat": {
-      "description": "Have intelligent conversations with AI agents. Multi-model switching, real-time streaming responses, session management, file uploads, and multi-agent collaboration.",
+      "description": "Have intelligent conversations with AI agents. Multi-model switching, real-time streaming responses, session management, file uploads, Skills, and MCP tools.",
       "title": "AI Chat"
     },
     "feedback": {
@@ -1704,7 +1704,7 @@
       "title": "File Library"
     },
     "landing": {
-      "description": "AI Platform is a pluggable multi-tenant AI conversation platform powered by Skills and MCP dual-engine. Supports Claude, GPT, Gemini and more with real-time SSE streaming, multi-agent orchestration, and modular skill system.",
+      "description": "AI Platform is a pluggable multi-tenant AI conversation platform powered by Skills and MCP. Supports Claude, GPT, Gemini and more with real-time SSE streaming, governed runs, and modular skill management.",
       "title": "AI Platform - AI Agent Platform"
     },
     "marketplace": {

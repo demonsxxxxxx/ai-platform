@@ -31,6 +31,11 @@ test("ChatInput submits selected slash skill and MCP token intent", () => {
   assert.match(chatInputSource, /buildSubmitOptions/);
 });
 
+test("ChatInput gates slash entity tokens on confirmed enablement", () => {
+  assert.match(chatInputSource, /canApplySlashEntitySelection/);
+  assert.match(chatInputSource, /toggleResult/);
+});
+
 function readSource(relativePath: string): string {
   return readFileSync(
     fileURLToPath(new URL(relativePath, import.meta.url)),

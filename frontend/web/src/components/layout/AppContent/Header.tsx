@@ -207,7 +207,7 @@ export function Header({
                 <ChevronLeft size={20} />
               </button>
               <div className="flex flex-col justify-center">
-                <span className="text-base font-bold text-stone-700 dark:text-stone-200 font-serif leading-tight">
+                <span className="text-base font-semibold text-stone-700 dark:text-stone-200 leading-tight">
                   {t(`nav.${activeTab}`, { defaultValue: activeTab })}
                 </span>
               </div>
@@ -234,7 +234,7 @@ export function Header({
               createPortal(
                 <div
                   ref={mobileMenuPanelRef}
-                  className="fixed z-[301] w-56 rounded-xl shadow-xl border overflow-hidden animate-scale-in"
+                  className="fixed z-[301] w-56 rounded-lg shadow-lg border overflow-hidden animate-scale-in"
                   style={{
                     top: getMenuPosition().top,
                     right: getMenuPosition().right,
@@ -364,7 +364,7 @@ export function Header({
           {langMenuOpen &&
             createPortal(
               <div
-                className="fixed z-[302] w-56 rounded-xl shadow-xl border overflow-hidden animate-scale-in"
+                className="fixed z-[302] w-56 rounded-lg shadow-lg border overflow-hidden animate-scale-in"
                 style={{
                   top: getMenuPosition().top,
                   right: getMenuPosition().right,

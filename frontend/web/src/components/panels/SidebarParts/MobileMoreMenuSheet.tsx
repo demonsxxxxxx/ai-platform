@@ -69,7 +69,7 @@ export function MobileMoreMenuSheet({
           (menuRef as React.RefObject<HTMLDivElement | null>).current = el;
           (swipeRef as React.RefObject<HTMLDivElement | null>).current = el;
         }}
-        className="fixed bottom-0 left-0 right-0 z-50 sm:hidden bg-white dark:bg-stone-800 rounded-t-2xl shadow-xl max-h-[70vh] overflow-y-auto"
+        className="fixed bottom-0 left-0 right-0 z-50 sm:hidden bg-white dark:bg-stone-800 rounded-t-xl shadow-xl max-h-[70vh] overflow-y-auto"
       >
         <div className="flex justify-center py-2">
           <div

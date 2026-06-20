@@ -74,7 +74,7 @@ export const AgentOptionButton = memo(function AgentOptionButton({
                 onClick={() => setShowDropdown(false)}
               >
                 <div
-                  className="sm:rounded-2xl rounded-t-2xl shadow-2xl px-4 pt-3 pb-6 sm:pb-4 animate-in fade-in slide-in-from-bottom-4 sm:scale-in-95 sm:slide-in-from-bottom-0 duration-200 sm:w-[28rem] sm:max-w-[90vw]"
+                  className="rounded-t-xl px-4 pt-3 pb-6 shadow-xl sm:w-[28rem] sm:max-w-[90vw] sm:rounded-xl sm:pb-4 animate-in fade-in slide-in-from-bottom-4 sm:scale-in-95 sm:slide-in-from-bottom-0 duration-200"
                   style={{
                     background: "var(--theme-bg-card)",
                     maxHeight: "60vh",
@@ -105,7 +105,7 @@ export const AgentOptionButton = memo(function AgentOptionButton({
                             onChange(opt.value);
                             setShowDropdown(false);
                           }}
-                          className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm transition-colors text-left cursor-pointer active:scale-[0.98]"
+                          className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors text-left cursor-pointer"
                           style={{
                             background: isActive
                               ? `color-mix(in srgb, ${optColor.text} 12%, transparent)`
@@ -154,7 +154,7 @@ export const AgentOptionButton = memo(function AgentOptionButton({
       <button
         type="button"
         onClick={() => onChange(!value)}
-        className={`flex items-center justify-center rounded-full p-2 border transition-all duration-300 ${
+        className={`flex items-center justify-center rounded-md p-2 border transition-all duration-150 ${
           isActive ? "chat-tool-btn-active" : "chat-tool-btn"
         }`}
         title={description}
@@ -222,7 +222,7 @@ export const AgentOptionButton = memo(function AgentOptionButton({
               >
                 <div className="absolute inset-0 bg-black/40" />
                 <div
-                  className="relative rounded-t-2xl px-4 pt-3 pb-6 animate-in fade-in slide-in-from-bottom-4 duration-200"
+                  className="relative rounded-t-xl px-4 pt-3 pb-6 animate-in fade-in slide-in-from-bottom-4 duration-200"
                   style={{
                     background: "var(--theme-bg-card)",
                     maxHeight: "60vh",
@@ -253,7 +253,7 @@ export const AgentOptionButton = memo(function AgentOptionButton({
                             onChange(opt.value);
                             setShowDropdown(false);
                           }}
-                          className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm transition-colors text-left active:scale-[0.98]"
+                          className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors text-left"
                           style={{
                             background: isActive
                               ? `color-mix(in srgb, ${optColor.text} 12%, transparent)`
@@ -292,7 +292,7 @@ export const AgentOptionButton = memo(function AgentOptionButton({
               {/* Desktop: dropdown with stepped slider */}
               <div
                 ref={portalRef}
-                className="hidden sm:block w-72 rounded-xl px-2 py-1.5 border shadow-sm animate-in fade-in slide-in-from-bottom-2 duration-200"
+                className="hidden sm:block w-72 rounded-lg px-2 py-1.5 border shadow-sm animate-in fade-in slide-in-from-bottom-2 duration-200"
                 style={{
                   ...getDropdownStyle(),
                   background: "var(--theme-bg-card)",
@@ -434,7 +434,7 @@ export const AgentOptionButton = memo(function AgentOptionButton({
       onClick={() =>
         onChange(value === option.default ? !option.default : option.default)
       }
-      className={`flex items-center justify-center rounded-full p-2 border transition-all duration-300 ${
+      className={`flex items-center justify-center rounded-md p-2 border transition-all duration-150 ${
         value !== option.default ? "chat-tool-btn-active" : "chat-tool-btn"
       }`}
       title={description}

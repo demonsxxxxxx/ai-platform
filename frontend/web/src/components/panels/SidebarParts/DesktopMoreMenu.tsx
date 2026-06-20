@@ -42,7 +42,7 @@ export function DesktopMoreMenu({
     <button
       key={item.path}
       type="button"
-      className={`flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm transition-colors text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-primary-light)] active:scale-[0.98] ${
+      className={`flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm transition-colors text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-primary-light)] ${
         (item.matchPaths ?? [item.path]).includes(location.pathname)
           ? "bg-[var(--theme-primary-light)] text-[var(--theme-text)]"
           : ""
@@ -62,7 +62,7 @@ export function DesktopMoreMenu({
   return createPortal(
     <div
       ref={menuRef}
-      className="fixed z-[301] w-52 rounded-xl shadow-xl border border-stone-200/60 dark:border-stone-800/60 overflow-hidden animate-scale-in bg-[var(--theme-bg-sidebar)]"
+      className="fixed z-[301] w-52 rounded-lg shadow-lg border border-stone-200/60 dark:border-stone-800/60 overflow-hidden animate-scale-in bg-[var(--theme-bg-sidebar)]"
       style={{
         top: position.top,
         left: position.left,

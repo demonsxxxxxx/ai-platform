@@ -1685,7 +1685,7 @@
   },
   "seo": {
     "agents": {
-      "description": "配置和管理 AI 智能体。设置系统提示词、选择模型、定义工具，编排多智能体工作流以处理复杂任务。",
+      "description": "配置和管理 AI 智能体。设置系统提示词、选择模型、定义工具，并在受治理的运行内处理复杂任务。",
       "title": "AI 智能体"
     },
     "channels": {
@@ -1693,7 +1693,7 @@
       "title": "通信渠道"
     },
     "chat": {
-      "description": "与 AI 智能体进行智能对话。支持多模型切换、实时流式响应、会话管理、文件上传和多智能体协作。",
+      "description": "与 AI 智能体进行智能对话。支持多模型切换、实时流式响应、会话管理、文件上传、Skills 和 MCP 工具。",
       "title": "AI 对话"
     },
     "feedback": {
@@ -1705,7 +1705,7 @@
       "title": "文件库"
     },
     "landing": {
-      "description": "AI Platform 是一个可插拔的多租户 AI 对话平台，由 Skills + MCP 双引擎驱动。支持 Claude、GPT、Gemini 等多种模型，实时 SSE 流式输出，多智能体协作与模块化技能系统。",
+      "description": "AI Platform 是一个可插拔的多租户 AI 对话平台，由 Skills + MCP 驱动。支持 Claude、GPT、Gemini 等多种模型，实时 SSE 流式输出、受治理运行与模块化技能管理。",
       "title": "AI Platform - AI 智能体平台"
     },
     "marketplace": {

@@ -412,13 +412,17 @@ export function ChatAppContent({
   const effectiveToggleTool = useCallback(
     (toolName: string) => {
       const tool = tools.find((t) => t.name === toolName);
-      if (!tool) return;
-
-      if (tool.category === "mcp") {
-        toggleSessionMcpTool(toolName);
+      if (!tool || tool.system_disabled || tool.category !== "mcp") {
+        return false;
       }
+
+      const isSessionDisabled =
+        sessionConfig.disabledMcpTools.includes(toolName);
+      const nextEnabled = tool.enabled && isSessionDisabled;
+      toggleSessionMcpTool(toolName);
+      return nextEnabled;
     },
-    [tools, toggleSessionMcpTool],
+    [tools, sessionConfig.disabledMcpTools, toggleSessionMcpTool],
   );
 
   const effectiveToggleCategory = useCallback(

@@ -133,13 +133,13 @@ export function SessionListContent({
           <img
             src="/icons/icon.svg"
             alt={APP_NAME}
-            className="size-6 rounded-full object-cover"
+            className="size-5 rounded-md object-cover"
           />
           <a
             href={GITHUB_URL}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-lg font-semibold leading-none text-stone-800 dark:text-stone-100 hover:text-stone-900 dark:hover:text-stone-50 transition-colors"
+            className="text-sm font-semibold leading-none text-stone-800 dark:text-stone-100 hover:text-stone-900 dark:hover:text-stone-50 transition-colors"
           >
             {APP_NAME}
           </a>
@@ -445,7 +445,7 @@ export function SessionListContent({
       <div className="shrink-0 px-2 py-1 border-t border-stone-200/60 dark:border-stone-800/60">
         <div
           onClick={onShowProfile}
-          className="group flex items-center rounded-xl py-3 px-2 w-full hover:bg-stone-100 dark:hover:bg-stone-800/60 transition cursor-pointer"
+          className="group flex items-center rounded-lg py-2 px-2 w-full hover:bg-stone-100 dark:hover:bg-stone-800/60 transition cursor-pointer"
         >
           <div className="shrink-0 w-8 h-8 rounded-full overflow-hidden ring-1 ring-stone-200 dark:ring-stone-700 group-hover:ring-[var(--theme-primary)] transition mr-3">
             {user?.avatar_url && !imgError ? (
@@ -457,8 +457,8 @@ export function SessionListContent({
                 draggable={false}
               />
             ) : (
-              <div className="flex w-full h-full items-center justify-center bg-gradient-to-br from-amber-400 to-orange-500 rounded-full">
-                <span className="text-xs font-semibold text-white">
+              <div className="flex w-full h-full items-center justify-center rounded-full bg-stone-200 text-stone-700 dark:bg-stone-700 dark:text-stone-200">
+                <span className="text-xs font-semibold">
                   {user?.username?.charAt(0).toUpperCase() || "U"}
                 </span>
               </div>
