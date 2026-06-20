@@ -519,7 +519,7 @@
     "dropFilesHere": "拖放文件到此处上传",
     "enterToSend": "发送",
     "errorPrefix": "错误：{{error}}",
-    "commandTrigger": "打开命令：/ 选择技能，$ 选择 MCP 工具",
+    "commandTrigger": "打开命令：/ 或 $ 选择 Skills，/mcp 选择 MCP 工具",
     "featureMenu": {
       "enhance": "增强",
       "persona": "角色",
@@ -868,7 +868,9 @@
     "persona": "角色",
     "settings": "设置",
     "skillsMarketplace": "技能市场",
-    "upload": "上传"
+    "upload": "上传",
+    "model": "模型",
+    "context": "上下文"
   },
   "feedback": {
     "addComment": "添加评论",
@@ -2378,6 +2380,18 @@
       "enterPassword": "请输入密码",
       "enterUsername": "请输入用户名",
       "passwordMinLength": "密码至少需要6个字符"
+    }
+  },
+  "composerChip": {
+    "unavailableDescription": "该命令已按前端体验展示，但还没有受 ai-platform 治理的后端合约支撑。",
+    "status": {
+      "enabled": "已启用",
+      "disabled": "已停用",
+      "pending": "处理中",
+      "denied": "已拒绝",
+      "uploading": "上传中",
+      "unavailable": "不可用",
+      "admin-only": "仅管理员"
     }
   }
 }

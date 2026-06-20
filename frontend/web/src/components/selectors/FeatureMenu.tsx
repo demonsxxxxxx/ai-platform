@@ -34,6 +34,9 @@ export type FeaturePanel =
   | "tools"
   | "skills"
   | "agent"
+  | "model"
+  | "file"
+  | "context"
   | "thinking"
   | null;
 
@@ -205,7 +208,8 @@ export const FeatureMenu = memo(function FeatureMenu({
     totalSkillsCount > 0 ||
     hasPersonaSelector ||
     hasAgentSelector ||
-    hasThinkingOption;
+    hasThinkingOption ||
+    uploadCategories.length > 0;
   if (!hasFeatureItems && uploadCategories.length === 0) return null;
 
   const resolvedTriggerLabel = triggerLabel ?? t("chat.features", "功能");
@@ -309,7 +313,7 @@ export const FeatureMenu = memo(function FeatureMenu({
                 )}
               </MenuGroup>
             )}
-            {(hasAgentSelector || hasThinkingOption) && (
+            {(hasAgentSelector || hasThinkingOption || uploadCategories.length > 0) && (
               <MenuGroup
                 label={t("featureMenu.settings", "设置")}
                 icon={<Settings2 size={18} />}
@@ -323,6 +327,29 @@ export const FeatureMenu = memo(function FeatureMenu({
                     onClick={() => onOpen("agent")}
                   />
                 )}
+                <MenuItem
+                  icon={<Settings2 size={18} />}
+                  label={t("featureMenu.model", "Model")}
+                  active={activePanel === "model"}
+                  onClick={() => onOpen("model")}
+                />
+                {uploadCategories.length > 0 && (
+                  <MenuItem
+                    icon={<FileText size={18} />}
+                    label={t("featureMenu.fileReference", "File reference")}
+                    active={activePanel === "file"}
+                    onClick={() => {
+                      onFileCategorySelect(uploadCategories[0]);
+                      setIsOpen(false);
+                    }}
+                  />
+                )}
+                <MenuItem
+                  icon={<Layers size={18} />}
+                  label={t("featureMenu.context", "Context")}
+                  active={activePanel === "context"}
+                  onClick={() => onOpen("context")}
+                />
                 {hasThinkingOption && (
                   <MenuItem
                     icon={<Brain size={18} />}

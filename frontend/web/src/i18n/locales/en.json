@@ -519,7 +519,7 @@
     "dropFilesHere": "Drop files here to upload",
     "enterToSend": "to send",
     "errorPrefix": "Error: {{error}}",
-    "commandTrigger": "Open commands: / for Skills, $ for MCP tools",
+    "commandTrigger": "Open commands: / or $ for Skills, /mcp for MCP tools",
     "featureMenu": {
       "enhance": "Enhance",
       "persona": "Persona",
@@ -867,7 +867,9 @@
     "persona": "Persona",
     "settings": "Settings",
     "skillsMarketplace": "Skills Marketplace",
-    "upload": "Upload"
+    "upload": "Upload",
+    "model": "Model",
+    "context": "Context"
   },
   "feedback": {
     "addComment": "Add comment",
@@ -2377,6 +2379,18 @@
       "enterPassword": "Please enter password",
       "enterUsername": "Please enter username",
       "passwordMinLength": "Password must be at least 6 characters"
+    }
+  },
+  "composerChip": {
+    "unavailableDescription": "This command is visible for parity but is not backed by a governed ai-platform contract yet.",
+    "status": {
+      "enabled": "enabled",
+      "disabled": "disabled",
+      "pending": "pending",
+      "denied": "denied",
+      "uploading": "uploading",
+      "unavailable": "unavailable",
+      "admin-only": "admin only"
     }
   }
 }

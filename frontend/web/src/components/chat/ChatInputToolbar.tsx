@@ -1,4 +1,4 @@
-import { useRef, useCallback, useState } from "react";
+import { useRef, useCallback, useEffect, useState } from "react";
 import { ArrowUp, Square, Lock, X, ChevronDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { FeatureMenu, type FeaturePanel } from "../selectors/FeatureMenu";
@@ -31,6 +31,7 @@ export interface ChatInputToolbarProps {
   uploadCategories: FileCategory[];
   uploadLimits: UploadLimits | null;
   uploadFiles: (files: FileList | File[], category?: FileCategory) => void;
+  onFileCommandReady?: (openFileCommand: () => void) => void;
   selectedPersonaName?: string | null;
   personaAvatar: { avatar?: string; primaryTag: string } | null;
   onClearPersonaPreset?: () => void;
@@ -66,6 +67,7 @@ export function ChatInputToolbar({
   uploadCategories,
   uploadLimits,
   uploadFiles,
+  onFileCommandReady,
   selectedPersonaName,
   personaAvatar,
   onClearPersonaPreset,
@@ -84,6 +86,15 @@ export function ChatInputToolbar({
       fileInputRef.current.click();
     }
   }, []);
+
+  useEffect(() => {
+    if (!onFileCommandReady) return;
+    onFileCommandReady(() => {
+      const fallbackCategory = uploadCategories[0];
+      if (!fallbackCategory) return;
+      handleFileCategorySelect(fallbackCategory);
+    });
+  }, [handleFileCategorySelect, onFileCommandReady, uploadCategories]);
 
   const handleFileInputChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {

@@ -32,10 +32,10 @@ const sessionSidebarSource = readFileSync(
 );
 const zhSource = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
 
-test("slash and dollar command prefixes open Skills and MCP selectors", () => {
+test("slash and dollar command prefixes open Skills-first selectors", () => {
   assert.match(commandSource, /COMMAND_PREFIX_PANEL/);
   assert.match(commandSource, /"\/":\s*"skills"/);
-  assert.match(commandSource, /"\$":\s*"tools"/);
+  assert.match(commandSource, /"\$":\s*"skills"/);
   assert.match(chatInputSource, /resolveCommandPrefixPanel/);
   assert.match(chatInputSource, /setActivePanel\(commandPanel\)/);
   assert.match(chatInputSource, /setInput\(""\)/);
@@ -48,7 +48,7 @@ test("command prefixes respect selector availability", () => {
   );
   assert.equal(
     resolveCommandPrefixPanel("$", { skills: true, tools: false }),
-    null,
+    "skills",
   );
   assert.equal(
     resolveCommandPrefixPanel("/", { skills: true, tools: false }),
@@ -56,7 +56,7 @@ test("command prefixes respect selector availability", () => {
   );
   assert.equal(
     resolveCommandPrefixPanel("$", { skills: false, tools: true }),
-    "tools",
+    null,
   );
   assert.equal(
     resolveCommandPrefixPanel("normal input", { skills: true, tools: true }),
@@ -66,14 +66,22 @@ test("command prefixes respect selector availability", () => {
 
 test("composer exposes first-phase command and file reference affordances", () => {
   assert.match(toolbarSource, /chat\.commandTrigger/);
-  assert.match(chatInputSource, /chat\.fileReferences/);
   assert.match(chatInputSource, /chat\.fileReferenceChip/);
+  assert.match(chatInputSource, /referenceId:\s*attachment\.id/);
 });
 
 test("feature menu names current ai-platform capabilities in PRD terms", () => {
   assert.match(featureMenuSource, /featureMenu\.skillsMarketplace/);
   assert.match(featureMenuSource, /featureMenu\.mcpTools/);
   assert.match(featureMenuSource, /featureMenu\.fileReference/);
+  assert.match(featureMenuSource, /featureMenu\.model/);
+  assert.match(featureMenuSource, /featureMenu\.context/);
+});
+
+test("composer renders durable selected context chips", () => {
+  assert.match(chatInputSource, /<ComposerChips/);
+  assert.match(chatInputSource, /composerSelectionReducer/);
+  assert.match(chatInputSource, /referenceId:\s*attachment\.id/);
 });
 
 test("rail exposes company launchpad Skills and MCP as first-level workbench entries", () => {

@@ -1,6 +1,14 @@
-import { useState, useRef, useEffect, useCallback, useMemo, memo } from "react";
+import {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  useMemo,
+  useReducer,
+  memo,
+} from "react";
 import toast from "react-hot-toast";
-import { Ban, Paperclip } from "lucide-react";
+import { Ban } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ImageViewer } from "../common";
 import { ConfirmDialog } from "../common/ConfirmDialog";
@@ -17,7 +25,17 @@ import { ChatInputToolbar } from "./ChatInputToolbar";
 import { ChatInputSelectors } from "./ChatInputSelectors";
 import { ChatInputHelpMenu } from "./ChatInputHelpMenu";
 import { ChatInputAttachments } from "./ChatInputAttachments";
-import { resolveCommandPrefixPanel } from "./chatInputCommands";
+import {
+  parseComposerCommand,
+  resolveCommandPrefixPanel,
+  type ComposerCommandPanel,
+} from "./chatInputCommands";
+import { ComposerChips } from "./ComposerChips";
+import {
+  composerSelectionReducer,
+  type ComposerSelection,
+  type ComposerSelectionKind,
+} from "./composerSelections";
 import { getMentionPopupFixedPlacement } from "./chatInputViewport";
 import { FILE_CATEGORY_PERMISSIONS } from "./chatInputConstants";
 import {
@@ -108,9 +126,14 @@ export const ChatInput = memo(function ChatInput({
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
   const [contactAdminOpen, setContactAdminOpen] = useState(false);
+  const [composerSelections, dispatchComposerSelection] = useReducer(
+    composerSelectionReducer,
+    [],
+  );
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const openFileCommandRef = useRef<(() => void) | null>(null);
   const [cursorPosition, setCursorPosition] = useState(0);
   const [mentionPopupPlacement, setMentionPopupPlacement] =
     useState<ReturnType<typeof getMentionPopupFixedPlacement>>(null);
@@ -399,21 +422,214 @@ export const ChatInput = memo(function ChatInput({
         !!onToggleCategory &&
         !!onToggleAll &&
         totalToolsCount > 0,
+      agents: agents.length > 0 && !!onSelectAgent,
+      models: false,
+      files: uploadCategories.length > 0,
+      context: false,
     }),
     [
+      agents.length,
       enableSkills,
       onToggleAll,
       onToggleAllSkills,
       onToggleCategory,
+      onSelectAgent,
       onToggleSkill,
       onToggleSkillCategory,
       onToggleTool,
       totalSkillsCount,
       totalToolsCount,
+      uploadCategories.length,
     ],
   );
   const canSubmit =
     hasContent && canSend && !isLoading && !hasUploadingAttachment;
+
+  const toFeaturePanel = useCallback(
+    (panel: ComposerCommandPanel): FeaturePanel | null => {
+      return panel === "skills" || panel === "tools" || panel === "agent"
+        ? panel
+        : null;
+    },
+    [],
+  );
+
+  const upsertUnavailableCommandChip = useCallback(
+    (command: ReturnType<typeof parseComposerCommand>) => {
+      if (!command) return;
+      const selectionKindByPanel: Record<ComposerCommandPanel, ComposerSelectionKind> = {
+        skills: "skill",
+        tools: "mcp",
+        agent: "agent",
+        thinking: "context",
+        persona: "context",
+        model: "model",
+        file: "file",
+        context: "context",
+      };
+      const kind = selectionKindByPanel[command.panel];
+      const label = command.query
+        ? `${command.command}: ${command.query}`
+        : `/${command.command}`;
+      dispatchComposerSelection({
+        type: "upsert",
+        selection: {
+          id: `unavailable:${command.command}`,
+          kind,
+          label,
+          state: "unavailable",
+          description: t(
+            "composerChip.unavailableDescription",
+            "This command is visible for parity but is not backed by a governed ai-platform contract yet.",
+          ),
+        },
+      });
+    },
+    [t],
+  );
+
+  const openCommandPanel = useCallback(
+    (nextValue: string): boolean => {
+      const command = parseComposerCommand(nextValue, commandPanelAvailability);
+      if (!command) return false;
+      if (!command.unavailable && command.panel === "file") {
+        openFileCommandRef.current?.();
+        setInput("");
+        setCursorPosition(0);
+        requestAnimationFrame(scheduleTextareaResize);
+        return true;
+      }
+      if (command.unavailable) {
+        upsertUnavailableCommandChip(command);
+        setActivePanel(null);
+      } else {
+        const commandPanel = toFeaturePanel(command.panel);
+        if (commandPanel) {
+          setActivePanel(commandPanel);
+        } else {
+          upsertUnavailableCommandChip({
+            ...command,
+            unavailable: true,
+          });
+        }
+      }
+      setInput("");
+      setCursorPosition(0);
+      requestAnimationFrame(scheduleTextareaResize);
+      return true;
+    },
+    [
+      commandPanelAvailability,
+      scheduleTextareaResize,
+      toFeaturePanel,
+      upsertUnavailableCommandChip,
+    ],
+  );
+
+  const handlePanelChange = useCallback(
+    (panel: FeaturePanel) => {
+      if (panel === "file") {
+        openFileCommandRef.current?.();
+        return;
+      }
+      if (panel === "model" || panel === "context") {
+        upsertUnavailableCommandChip({
+          trigger: "/",
+          command: panel,
+          panel,
+          query: "",
+          unavailable: true,
+        });
+        return;
+      }
+      setActivePanel(panel);
+    },
+    [upsertUnavailableCommandChip],
+  );
+
+  useEffect(() => {
+    const fileSelections = attachments.map<ComposerSelection>((attachment) => ({
+      id: `file:${attachment.id}`,
+      kind: "file",
+      label: attachment.name,
+      state: attachment.isUploading ? "pending" : "enabled",
+      referenceId: attachment.id,
+      description: t("chat.fileReferenceChip", {
+        name: attachment.name,
+        type: t(`fileUpload.categories.${attachment.type}`),
+      }),
+    }));
+
+    dispatchComposerSelection({ type: "clear-kind", kind: "file" });
+    for (const selection of fileSelections) {
+      dispatchComposerSelection({ type: "upsert", selection });
+    }
+  }, [attachments, t]);
+
+  useEffect(() => {
+    dispatchComposerSelection({ type: "clear-kind", kind: "skill" });
+    for (const skill of skills.filter((item) => item.enabled)) {
+      dispatchComposerSelection({
+        type: "upsert",
+        selection: {
+          id: `skill:${skill.name}`,
+          kind: "skill",
+          label: skill.name,
+          state: "enabled",
+          source: skill.source,
+          description: skill.description,
+          referenceId: skill.name,
+        },
+      });
+    }
+  }, [skills]);
+
+  useEffect(() => {
+    dispatchComposerSelection({ type: "clear-kind", kind: "mcp" });
+    for (const tool of tools.filter((item) => item.enabled)) {
+      dispatchComposerSelection({
+        type: "upsert",
+        selection: {
+          id: `mcp:${tool.name}`,
+          kind: "mcp",
+          label: tool.name,
+          state: tool.system_disabled ? "denied" : "enabled",
+          source: tool.server ?? tool.category,
+          description: tool.description,
+          referenceId: tool.name,
+        },
+      });
+    }
+  }, [tools]);
+
+  const handleRemoveComposerSelection = useCallback(
+    (id: string) => {
+      dispatchComposerSelection({ type: "remove", id });
+      if (id.startsWith("file:")) {
+        const attachmentId = id.slice("file:".length);
+        setAttachments((previous) =>
+          previous.filter((attachment) => attachment.id !== attachmentId),
+        );
+        return;
+      }
+      if (id.startsWith("skill:")) {
+        const skillName = id.slice("skill:".length);
+        const skill = skills.find((item) => item.name === skillName);
+        if (skill?.enabled) {
+          onToggleSkill?.(skillName).catch((error) => {
+            console.error("Failed to remove selected skill chip:", error);
+          });
+        }
+        return;
+      }
+      if (id.startsWith("mcp:")) {
+        const toolName = id.slice("mcp:".length);
+        const tool = tools.find((item) => item.name === toolName);
+        if (tool?.enabled) onToggleTool?.(toolName);
+      }
+    },
+    [onToggleSkill, onToggleTool, setAttachments, skills, tools],
+  );
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -514,49 +730,10 @@ export const ChatInput = memo(function ChatInput({
             onImageViewerOpen={(url) => setImageViewerSrc(url)}
           />
 
-          {attachments.length > 0 && (
-            <div
-              className="mx-3 mt-2 flex flex-wrap items-center gap-1.5 text-xs"
-              aria-label={t("chat.fileReferences")}
-            >
-              <span
-                className="font-medium"
-                style={{ color: "var(--theme-text-secondary)" }}
-              >
-                {t("chat.fileReferences")}
-              </span>
-              {attachments.map((attachment) => {
-                const typeLabel = t(`fileUpload.categories.${attachment.type}`);
-                return (
-                  <span
-                    key={`file-ref-${attachment.id}`}
-                    title={t("chat.fileReferenceChip", {
-                      name: attachment.name,
-                      type: typeLabel,
-                    })}
-                    className="inline-flex max-w-[180px] items-center gap-1 rounded-full border px-2 py-1"
-                    style={{
-                      borderColor: "var(--theme-border)",
-                      background:
-                        "color-mix(in srgb, var(--theme-primary) 8%, transparent)",
-                      color: "var(--theme-text)",
-                    }}
-                  >
-                    <Paperclip size={12} className="shrink-0" />
-                    <span className="truncate">{attachment.name}</span>
-                    {attachment.isUploading && (
-                      <span
-                        className="shrink-0"
-                        style={{ color: "var(--theme-text-secondary)" }}
-                      >
-                        {t("fileUpload.uploading", "uploading")}
-                      </span>
-                    )}
-                  </span>
-                );
-              })}
-            </div>
-          )}
+          <ComposerChips
+            selections={composerSelections}
+            onRemove={handleRemoveComposerSelection}
+          />
 
           <div className="px-2.5 pt-1">
             <div className="relative">
@@ -576,6 +753,7 @@ export const ChatInput = memo(function ChatInput({
                     requestAnimationFrame(scheduleTextareaResize);
                     return;
                   }
+                  if (openCommandPanel(nextValue)) return;
                   setInput(nextValue);
                   setCursorPosition(e.target.selectionStart);
                 }}
@@ -598,7 +776,7 @@ export const ChatInput = memo(function ChatInput({
 
           <ChatInputToolbar
             activePanel={activePanel}
-            onActivePanelChange={setActivePanel}
+            onActivePanelChange={handlePanelChange}
             canSend={canSend}
             isLoading={isLoading}
             canSubmit={canSubmit}
@@ -623,6 +801,9 @@ export const ChatInput = memo(function ChatInput({
             uploadCategories={uploadCategories}
             uploadLimits={uploadLimits}
             uploadFiles={uploadFiles}
+            onFileCommandReady={(openFileCommand) => {
+              openFileCommandRef.current = openFileCommand;
+            }}
             selectedPersonaName={selectedPersonaName}
             personaAvatar={personaAvatar}
             onClearPersonaPreset={onClearPersonaPreset}
@@ -634,7 +815,7 @@ export const ChatInput = memo(function ChatInput({
 
       <ChatInputSelectors
         activePanel={activePanel}
-        onActivePanelChange={setActivePanel}
+        onActivePanelChange={handlePanelChange}
         tools={tools}
         onToggleTool={onToggleTool}
         onToggleCategory={onToggleCategory}
