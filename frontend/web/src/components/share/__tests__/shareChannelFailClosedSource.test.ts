@@ -31,11 +31,17 @@ test("channel import page is governed and fail closed", () => {
     join(root, "src/components/pages/ChannelsPage.tsx"),
     "utf8",
   );
+  const tabContent = readFileSync(
+    join(root, "src/components/layout/AppContent/TabContent.tsx"),
+    "utf8",
+  );
 
   assert.match(channelPanel, /channelImport\.unavailable/);
   assert.match(channelPanel, /redaction/);
   assert.match(channelPanel, /retention/);
   assert.match(channelsPage, /ChannelImportPanel/);
+  assert.match(tabContent, /ChannelImportPanel/);
+  assert.match(tabContent, /channels:\s*ChannelImportPanel/);
 });
 
 test("launchpad copy keeps click-through boundary visible", () => {

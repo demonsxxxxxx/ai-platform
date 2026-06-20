@@ -35,6 +35,11 @@ const QuarantinedLegacyPanel = lazy(() =>
     default: m.QuarantinedLegacyPanel,
   })),
 );
+const ChannelImportPanel = lazy(() =>
+  import("../../channels/ChannelImportPanel").then((m) => ({
+    default: m.ChannelImportPanel,
+  })),
+);
 const RevealedFilesPage = lazy(() =>
   import("../../fileLibrary/RevealedFilesPanel").then((m) => ({
     default: m.RevealedFilesPanel,
@@ -73,7 +78,7 @@ const panelMap: Record<
   settings: SettingsPanel,
   mcp: MCPPanel,
   feedback: FeedbackPanel,
-  channels: QuarantinedLegacyPanel,
+  channels: ChannelImportPanel,
   agents: AgentConfigPanel,
   models: QuarantinedLegacyPanel,
   files: RevealedFilesPage,
