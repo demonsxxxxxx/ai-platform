@@ -19,14 +19,15 @@ def test_backend_prd_records_authority_status_and_stage_boundaries():
 
     for required_section in (
         "## 0. Executive Decision",
-        "## 1. Authority And Status Language",
-        "## 2. Non-Goals",
+        "## 1. Source Authority And Status Language",
+        "## 2. Product Non-Goals",
         "## 3. Backend Stage Model",
-        "## 4. Stage Gates And Acceptance Boundaries",
-        "## 5. Universal Gate Closure Checklist",
-        "## 6. Reference Code Projects",
-        "## 7. Immediate Issue Chain",
-        "## 8. Backend Product Beta Definition Of Done",
+        "## 4. Gate Register",
+        "## 5. Acceptance Boundaries By Stage",
+        "## 6. Universal Gate Closure Checklist",
+        "## 7. Reference Code Projects",
+        "## 8. Immediate Issue Chain",
+        "## 9. Backend Product Beta Definition Of Done",
     ):
         assert required_section in text
 
@@ -42,7 +43,13 @@ def test_backend_prd_records_authority_status_and_stage_boundaries():
 
     for stage in ("B0", "B1", "B2", "B3", "B4", "B5", "B6"):
         assert f"| {stage} |" in text
-        assert f"### 4." in text
+
+    for sequencing_rule in (
+        "B0 runs first whenever source/runtime evidence is stale or ambiguous.",
+        "After B0, the product order is B1 memory/context, B2 real sandbox, B3 worker/model-gateway capacity, then B4 Skills management.",
+        "A runtime blocker can pause the sequence, but it must be recorded as a named issue instead of silently reordering the roadmap.",
+    ):
+        assert sequencing_rule in compact_text
 
     assert "| B3 | `source_contract`" not in text
     assert (
@@ -51,13 +58,13 @@ def test_backend_prd_records_authority_status_and_stage_boundaries():
     )
 
     for stage_heading in (
-        "### 4.1 B0 Latest-Main Backend Readiness Refresh",
-        "### 4.2 B1 Memory And Context Usable",
-        "### 4.3 B2 Real Sandbox Usable",
-        "### 4.4 B3 Worker And Model-Gateway Capacity",
-        "### 4.5 B4 Skills Management And Release Governance",
-        "### 4.6 B5 Files, Artifacts, And Tool Permission Governance",
-        "### 4.7 B6 Operations Beta And Department Workflow Readiness",
+        "### 5.2 B0 Latest-Main Backend Readiness Refresh",
+        "### 5.3 B1 Memory And Context Usable",
+        "### 5.4 B2 Real Sandbox Usable",
+        "### 5.5 B3 Worker And Model-Gateway Capacity",
+        "### 5.6 B4 Skills Management And Release Governance",
+        "### 5.7 B5 Files, Artifacts, And Tool Permission Governance",
+        "### 5.8 B6 Operations Beta And Department Workflow Readiness",
     ):
         assert stage_heading in text
 
@@ -67,7 +74,8 @@ def test_backend_prd_records_authority_status_and_stage_boundaries():
         "Runtime acceptance: what 211 or another named Docker-capable target must prove",
         "Exit gate: what must be true before the stage is `gate closable`.",
         "No docs-only PR may create `211 verified` or `gate closable` status.",
-        "If the documents disagree, stop feature work and repair source authority first.",
+        "If these documents disagree, stop feature work and repair source authority before making product claims.",
+        "docs/superpowers/plans/2026-06-20-backend-productization-prd-gates.md",
         "All reports must use the narrowest true status",
     ):
         assert boundary_phrase in compact_text
@@ -94,7 +102,7 @@ def test_backend_prd_records_claim_ladder_and_stage_evidence_fields():
     ):
         assert phrase in compact_text
 
-    assert "### 4.0 Required Evidence Shape" in text
+    assert "### 5.1 Required Evidence Shape" in text
     for field in (
         "`issue_or_decision`",
         "`source_subject`",
@@ -120,7 +128,7 @@ def test_backend_prd_records_claim_ladder_and_stage_evidence_fields():
 def test_backend_prd_records_explicit_gate_register():
     text = read_backend_prd()
 
-    assert "### 3.1 Gate Register" in text
+    assert "## 4. Gate Register" in text
     assert "Every backend issue must name the smallest gate it is moving." in text
 
     for gate in (
@@ -235,6 +243,7 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
         "gVisor",
         "Kata Containers",
         "Firecracker",
+        "Anthropic Sandbox Runtime",
         "Temporal Python SDK",
         "Celery",
         "Dramatiq",
@@ -246,7 +255,9 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
         "Casbin",
         "Open Policy Agent",
         "ContextForge MCP Gateway",
-        "supergateway",
+        "MCP Gateway Registry",
+        "labspace MCP Gateway",
+        "mcp-supergateway",
         "Keycloak",
         "Authentik",
         "Ory Kratos",
@@ -275,11 +286,13 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
         "google/gvisor",
         "kata-containers/kata-containers",
         "firecracker-microvm/firecracker",
+        "anthropic-experimental/sandbox-runtime",
         "temporalio/sdk-python",
         "celery/celery",
         "Bogdanp/dramatiq",
         "taskiq-python/taskiq",
         "BerriAI/litellm",
+        "Portkey-AI/gateway",
         "backstage/backstage",
         "langgenius/dify",
         "open-webui/open-webui",
@@ -290,6 +303,9 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
         "apache/casbin",
         "open-policy-agent/opa",
         "IBM/mcp-context-forge",
+        "agentic-community/mcp-gateway-registry",
+        "dockersamples/labspace-mcp-gateway",
+        "goodatlas/mcp-supergateway",
         "langfuse/langfuse",
         "Arize-ai/phoenix",
         "open-telemetry/opentelemetry-collector",
@@ -302,6 +318,8 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
     for authority_boundary in (
         "Reference projects can shape implementation choices, tests, and UI vocabulary.",
         "They do not define ai-platform authority.",
+        "Repository names in this inventory were rechecked with `gh repo view` on 2026-06-20",
+        "it does not pin commits, approve licenses, approve dependencies, or change any code-adaptation intake state.",
         "Reading a project does not authorize copying code, adding dependencies, or changing runtime architecture.",
         "Any code adaptation or runtime dependency must go through issue, license/provenance review, tests, PR review, and runtime evidence",
         "Unconfirmed project names stay concept-only until a repository, commit or tag, license, and intake level are recorded.",
@@ -317,8 +335,8 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
     ):
         assert intake_level in text
 
-    assert "### 6.3 Repository Reference Inventory" in text
-    assert "### 6.3 Confirmed Repository References" not in text
+    assert "### 7.3 Repository Reference Inventory" in text
+    assert "### 7.3 Confirmed Repository References" not in text
 
     for provenance_boundary in (
         "license posture reported by GitHub",
@@ -334,10 +352,10 @@ def test_backend_prd_records_reference_projects_without_delegating_authority():
     for stage_reference in (
         "| B0 source/auth baseline | Keycloak, Authentik, Ory Kratos |",
         "| B1 memory/context | LangGraph, Mem0, Zep, Graphiti |",
-        "| B2 sandbox | OpenHands, E2B, Daytona, gVisor, Kata Containers, Firecracker, Anthropic Sandbox Runtime/SRT concept notes |",
+        "| B2 sandbox | OpenHands, E2B, Daytona, gVisor, Kata Containers, Firecracker, Anthropic Sandbox Runtime |",
         "| B3 worker/model gateway | Temporal Python SDK, Celery, Dramatiq, Taskiq, LiteLLM, Portkey |",
         "| B4 Skills management | Backstage, Dify, Open WebUI, LibreChat, AnythingLLM |",
-        "| B5 files/tools/authz | OpenFGA, SpiceDB, Casbin, Open Policy Agent, ContextForge MCP Gateway, supergateway |",
+        "| B5 files/tools/authz | OpenFGA, SpiceDB, Casbin, Open Policy Agent, ContextForge MCP Gateway, MCP Gateway Registry, labspace MCP Gateway, mcp-supergateway |",
         "| B6 observability/quality | Langfuse, Phoenix, OpenTelemetry Collector, promptfoo, Ragas, Giskard |",
     ):
         assert stage_reference in text
