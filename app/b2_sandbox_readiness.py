@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from app.backend_stage_closure_evidence import find_stage_issue_closure_evidence
+from app.foundation_alpha_readiness import _resolve_runtime_affecting_changes_between
 from app.sandbox_hardening_contract import bounded_error_projection_is_safe
 
 
@@ -14,6 +15,7 @@ ISSUE = "#89"
 RUNTIME_ACCEPTANCE_GAP = "b2_211_real_sandbox_smoke"
 REVIEWED_EVIDENCE_GAP = "b2_reviewed_release_evidence"
 ISSUE_CLOSURE_GAP = "b2_issue_review_and_closure_evidence"
+RUNTIME_SOURCE_REVIEW_GAP = "b2_runtime_evidence_review_against_merged_source"
 GENERATOR_SCRIPT = "scripts/generate_sandbox_runtime_evidence_211.py"
 VERIFIER_SCRIPT = "scripts/verify_sandbox_runtime_211.py"
 RUNTIME_ACCEPTANCE_ARTIFACT_KIND = "211_sandbox_runtime_smoke"
@@ -286,6 +288,22 @@ def _load_json(path: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _resolve_source_tree_revision(repo_root: Path) -> str:
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return result.stdout.strip() or "unknown"
 
 
 def _runtime_subject(payload: dict[str, Any]) -> str:
@@ -584,6 +602,67 @@ def _issue_closure_boundary_evidence(repo_root: Path) -> dict[str, Any]:
     }
 
 
+def _runtime_subject_commit_from_evidence(
+    runtime_acceptance_evidence: dict[str, dict[str, Any]],
+) -> str:
+    evidence = runtime_acceptance_evidence.get(RUNTIME_ACCEPTANCE_GAP)
+    if not isinstance(evidence, dict):
+        return ""
+    value = evidence.get("runtime_subject_commit_sha")
+    return value if isinstance(value, str) else ""
+
+
+def _merged_source_runtime_review(
+    repo_root: Path,
+    runtime_acceptance_evidence: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    current_source = _resolve_source_tree_revision(repo_root)
+    runtime_subject = _runtime_subject_commit_from_evidence(runtime_acceptance_evidence)
+    if not runtime_subject:
+        return {
+            "status": "open_missing_runtime_subject_evidence",
+            "closed_gap": None,
+            "runtime_subject_commit_sha": "",
+            "current_source_commit_sha": current_source,
+            "runtime_affecting_changes_since_runtime_subject": None,
+            "required_next_step": "record reviewed 211 B2 sandbox smoke evidence before reviewing merged-source drift",
+            "does_not_close_broader_b2_g7_gate": True,
+        }
+    runtime_affecting_changes = _resolve_runtime_affecting_changes_between(
+        runtime_subject,
+        current_source,
+    )
+    if runtime_affecting_changes is None:
+        return {
+            "status": "open_unable_to_classify_runtime_delta",
+            "closed_gap": None,
+            "runtime_subject_commit_sha": runtime_subject,
+            "current_source_commit_sha": current_source,
+            "runtime_affecting_changes_since_runtime_subject": None,
+            "required_next_step": "classify runtime-affecting source delta before accepting or rerunning B2 211 sandbox smoke evidence",
+            "does_not_close_broader_b2_g7_gate": True,
+        }
+    if runtime_affecting_changes:
+        return {
+            "status": "runtime_affecting_delta_requires_fresh_211_smoke",
+            "closed_gap": None,
+            "runtime_subject_commit_sha": runtime_subject,
+            "current_source_commit_sha": current_source,
+            "runtime_affecting_changes_since_runtime_subject": runtime_affecting_changes,
+            "required_next_step": "deploy current main to 211 and rerun scripts/verify_sandbox_runtime_211.py before closing this gap",
+            "does_not_close_broader_b2_g7_gate": True,
+        }
+    return {
+        "status": "recorded_local_contract",
+        "closed_gap": RUNTIME_SOURCE_REVIEW_GAP,
+        "runtime_subject_commit_sha": runtime_subject,
+        "current_source_commit_sha": current_source,
+        "runtime_affecting_changes_since_runtime_subject": [],
+        "required_next_step": "record issue closure evidence after final issue review",
+        "does_not_close_broader_b2_g7_gate": True,
+    }
+
+
 def _rollback_assumptions_contract() -> dict[str, Any]:
     return {
         "status": "recorded_source_operator_contract",
@@ -638,6 +717,10 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
     ]
     gate_boundary_evidence = {
         ISSUE_CLOSURE_GAP: _issue_closure_boundary_evidence(root),
+        RUNTIME_SOURCE_REVIEW_GAP: _merged_source_runtime_review(
+            root,
+            runtime_acceptance_evidence,
+        ),
     }
     closed_gate_boundary_gaps = [
         gap
@@ -652,7 +735,7 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
     if b2_smoke_recorded:
         open_gaps = [
             gap
-            for gap in [ISSUE_CLOSURE_GAP]
+            for gap in [ISSUE_CLOSURE_GAP, RUNTIME_SOURCE_REVIEW_GAP]
             if gap not in closed_gate_boundary_gaps
         ]
         open_gaps.extend(
@@ -772,6 +855,7 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
         or "- none"
     )
     issue_closure = readiness.get("gate_boundary_evidence", {}).get(ISSUE_CLOSURE_GAP)
+    runtime_review = readiness.get("gate_boundary_evidence", {}).get(RUNTIME_SOURCE_REVIEW_GAP)
     issue_closure_lines = "- none"
     if isinstance(issue_closure, dict):
         evidence_refs = issue_closure.get("evidence_refs")
@@ -803,6 +887,22 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
             "- residual caveats:\n"
             f"{residual_caveat_lines}\n"
             f"- does not close broader B2/G7 gate: `{str(issue_closure.get('does_not_close_broader_b2_g7_gate')).lower()}`"
+        )
+    runtime_review_lines = "- none"
+    if isinstance(runtime_review, dict):
+        runtime_delta = runtime_review.get("runtime_affecting_changes_since_runtime_subject")
+        if isinstance(runtime_delta, list):
+            runtime_delta_lines = "\n".join(f"- {item}" for item in runtime_delta) or "- none"
+        else:
+            runtime_delta_lines = "- unknown"
+        runtime_review_lines = (
+            f"- status: `{runtime_review.get('status')}`\n"
+            f"- runtime subject commit: `{runtime_review.get('runtime_subject_commit_sha')}`\n"
+            f"- current source commit: `{runtime_review.get('current_source_commit_sha')}`\n"
+            "- runtime-affecting changes since runtime subject:\n"
+            f"{runtime_delta_lines}\n"
+            f"- required next step: `{runtime_review.get('required_next_step')}`\n"
+            f"- does not close broader B2/G7 gate: `{str(runtime_review.get('does_not_close_broader_b2_g7_gate')).lower()}`"
         )
     closed_source_controls = "\n".join(
         f"- {control}" for control in readiness["closed_source_controls"]
@@ -874,6 +974,8 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
         "## Gate Boundary Evidence\n\n"
         "### B2 Issue Closure Evidence\n\n"
         f"{issue_closure_lines}\n\n"
+        "### B2 Runtime Evidence Review Against Merged Source\n\n"
+        f"{runtime_review_lines}\n\n"
         "## Runtime Acceptance\n\n"
         f"- generator: `{runtime['generator_script']}`\n"
         f"- verifier: `{runtime['verifier_script']}`\n"
