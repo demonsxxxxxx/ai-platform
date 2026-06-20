@@ -5,6 +5,9 @@ import {
   MoreHorizontal,
   FolderOpen,
   UserRound,
+  LayoutGrid,
+  Sparkles,
+  Server,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { APP_NAME } from "../../../constants";
@@ -20,9 +23,13 @@ interface SidebarRailProps {
   onNewSession: () => void;
   onOpenSearch: () => void;
   onOpenRecentChats: () => void;
+  onOpenLaunchpad: () => void;
   onOpenFileLibrary: () => void;
   onOpenPersonaPlaza: () => void;
   onOpenSkills: () => void;
+  onOpenMcp: () => void;
+  showSkills: boolean;
+  showMcp: boolean;
   hasMoreMenuItems: boolean;
   onToggleMoreMenu: () => void;
   moreMenuBtnRef: React.RefObject<HTMLButtonElement | null>;
@@ -38,8 +45,13 @@ export function SidebarRail({
   onNewSession,
   onOpenSearch,
   onOpenRecentChats,
+  onOpenLaunchpad,
   onOpenFileLibrary,
   onOpenPersonaPlaza,
+  onOpenSkills,
+  onOpenMcp,
+  showSkills,
+  showMcp,
   hasMoreMenuItems,
   onToggleMoreMenu,
   moreMenuBtnRef,
@@ -108,6 +120,37 @@ export function SidebarRail({
         >
           <Search size={20} />
         </button>
+        <button
+          type="button"
+          onClick={onOpenLaunchpad}
+          className={railBtn}
+          title={t("nav.apps")}
+          aria-label={t("nav.apps")}
+        >
+          <LayoutGrid size={20} />
+        </button>
+        {showSkills && (
+          <button
+            type="button"
+            onClick={onOpenSkills}
+            className={railBtn}
+            title={t("featureMenu.skillsMarketplace")}
+            aria-label={t("featureMenu.skillsMarketplace")}
+          >
+            <Sparkles size={20} />
+          </button>
+        )}
+        {showMcp && (
+          <button
+            type="button"
+            onClick={onOpenMcp}
+            className={railBtn}
+            title={t("featureMenu.mcpTools")}
+            aria-label={t("featureMenu.mcpTools")}
+          >
+            <Server size={20} />
+          </button>
+        )}
         <button
           type="button"
           onClick={onOpenPersonaPlaza}

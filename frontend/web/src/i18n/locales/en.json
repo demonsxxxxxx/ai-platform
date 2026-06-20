@@ -519,12 +519,15 @@
     "dropFilesHere": "Drop files here to upload",
     "enterToSend": "to send",
     "errorPrefix": "Error: {{error}}",
+    "commandTrigger": "Open commands: / for Skills, $ for MCP tools",
     "featureMenu": {
       "enhance": "Enhance",
       "persona": "Persona",
       "settings": "Settings",
       "upload": "Upload"
     },
+    "fileReferenceChip": "{{name}} · {{type}}",
+    "fileReferences": "File references",
     "features": "Features",
     "goodAfternoon": "Good afternoon, {{name}}",
     "goodEvening": "Good evening, {{name}}",
@@ -859,8 +862,11 @@
   },
   "featureMenu": {
     "enhance": "Enhance",
+    "fileReference": "File reference",
+    "mcpTools": "MCP Tools",
     "persona": "Persona",
     "settings": "Settings",
+    "skillsMarketplace": "Skills Marketplace",
     "upload": "Upload"
   },
   "feedback": {

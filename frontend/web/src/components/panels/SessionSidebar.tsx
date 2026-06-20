@@ -821,9 +821,13 @@ export const SessionSidebar = forwardRef<
               setIsRecentChatsOpen(false);
             }}
             onOpenRecentChats={() => setIsRecentChatsOpen(true)}
+            onOpenLaunchpad={() => navigate("/apps")}
             onOpenFileLibrary={() => navigate("/files")}
             onOpenPersonaPlaza={() => navigate("/persona")}
             onOpenSkills={() => navigate("/skills")}
+            onOpenMcp={() => navigate("/mcp")}
+            showSkills={canReadSkills}
+            showMcp={canReadMCP}
             hasMoreMenuItems={hasMoreMenuItems}
             onToggleMoreMenu={() => {
               setIsMoreMenuOpen((prev) => !prev);

@@ -47,6 +47,7 @@ const FILE_CATEGORY_ICONS: Record<FileCategory, React.ElementType> = {
 interface FeatureMenuProps {
   activePanel: FeaturePanel;
   onOpen: (panel: FeaturePanel) => void;
+  triggerLabel?: string;
   enabledToolsCount: number;
   totalToolsCount: number;
   enabledSkillsCount: number;
@@ -148,6 +149,7 @@ function MenuItem({
 export const FeatureMenu = memo(function FeatureMenu({
   activePanel,
   onOpen,
+  triggerLabel,
   enabledToolsCount,
   totalToolsCount,
   enabledSkillsCount,
@@ -206,6 +208,8 @@ export const FeatureMenu = memo(function FeatureMenu({
     hasThinkingOption;
   if (!hasFeatureItems && uploadCategories.length === 0) return null;
 
+  const resolvedTriggerLabel = triggerLabel ?? t("chat.features", "功能");
+
   return (
     <>
       <button
@@ -218,7 +222,8 @@ export const FeatureMenu = memo(function FeatureMenu({
         }}
         style={isOpen ? { position: "relative", zIndex: 10000 } : undefined}
         className="chat-tool-btn"
-        aria-label={t("chat.features", "功能")}
+        aria-label={resolvedTriggerLabel}
+        title={resolvedTriggerLabel}
       >
         <Plus size={18} />
       </button>
@@ -236,7 +241,7 @@ export const FeatureMenu = memo(function FeatureMenu({
           >
             {uploadCategories.length > 0 && (
               <MenuGroup
-                label={t("featureMenu.upload", "上传")}
+                label={t("featureMenu.fileReference", "文件引用")}
                 icon={<Upload size={18} />}
                 defaultExpanded
               >
@@ -287,7 +292,7 @@ export const FeatureMenu = memo(function FeatureMenu({
                 {totalToolsCount > 0 && (
                   <MenuItem
                     icon={<Wrench size={18} />}
-                    label={t("tools.title")}
+                    label={t("featureMenu.mcpTools")}
                     badge={`${enabledToolsCount}/${totalToolsCount}`}
                     active={activePanel === "tools"}
                     onClick={() => onOpen("tools")}
@@ -296,7 +301,7 @@ export const FeatureMenu = memo(function FeatureMenu({
                 {totalSkillsCount > 0 && (
                   <MenuItem
                     icon={<Sparkles size={18} />}
-                    label={t("skillSelector.title", "技能")}
+                    label={t("featureMenu.skillsMarketplace")}
                     badge={`${enabledSkillsCount}/${totalSkillsCount}`}
                     active={activePanel === "skills"}
                     onClick={() => onOpen("skills")}

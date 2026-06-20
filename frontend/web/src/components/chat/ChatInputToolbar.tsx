@@ -108,6 +108,7 @@ export function ChatInputToolbar({
         <FeatureMenu
           activePanel={activePanel}
           onOpen={onActivePanelChange}
+          triggerLabel={t("chat.commandTrigger")}
           enabledToolsCount={enabledToolsCount}
           totalToolsCount={totalToolsCount}
           enabledSkillsCount={enabledSkillsCount}
