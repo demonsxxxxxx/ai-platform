@@ -180,12 +180,15 @@ PUBLIC_CONTEXT_MEMORY_POLICY_SOURCE_VALUES = {"default", "not_recorded", "stored
 PUBLIC_CONTEXT_SOURCE_VALUES = {
     "chat_stream",
     "copy_run",
+    "fork_context_snapshot",
+    "import_context_snapshot",
     "manual_context_snapshot",
     "multi_agent_dispatch_handoff",
     "multi_agent_dispatch_tick",
     "resume_run",
     "retry_run",
     "runs_api",
+    "share_context_snapshot",
     "stored_context_snapshot",
     "worker_refresh",
 }

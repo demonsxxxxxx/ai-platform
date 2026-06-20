@@ -23,6 +23,9 @@ from app.repositories import (
     get_admin_run_detail,
     get_context_snapshot_for_worker,
     get_exact_tool_permission_decision,
+    get_authorized_context_target_session,
+    get_latest_authorized_executor_context_snapshot,
+    list_context_share_snapshots_for_target_session,
     get_latest_tool_permission_decision,
     get_run_identity,
     list_multi_agent_dispatch_candidate_run_ids,
@@ -513,6 +516,130 @@ async def test_get_context_snapshot_for_worker_scopes_by_full_run_identity():
     assert "run_id = %s" in conn.sql
     assert "id = %s" in conn.sql
     assert conn.params == ("tenant-a", "workspace-a", "user-a", "session-a", "run-a", "ctx-a")
+
+
+@pytest.mark.asyncio
+async def test_get_authorized_context_target_session_scopes_by_tenant_workspace_user_and_session():
+    class SessionCursor:
+        async def fetchone(self):
+            return {
+                "id": "session-target",
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "agent_id": "general-agent",
+                "status": "active",
+            }
+
+    class SessionConnection:
+        def __init__(self):
+            self.sql = ""
+            self.params = None
+
+        async def execute(self, sql, params):
+            self.sql = " ".join(sql.split())
+            self.params = params
+            return SessionCursor()
+
+    conn = SessionConnection()
+
+    row = await get_authorized_context_target_session(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-target",
+    )
+
+    assert row["id"] == "session-target"
+    assert "from sessions" in conn.sql
+    assert "tenant_id = %s" in conn.sql
+    assert "workspace_id = %s" in conn.sql
+    assert "user_id = %s" in conn.sql
+    assert "id = %s" in conn.sql
+    assert "status = 'active'" in conn.sql
+    assert conn.params == ("tenant-a", "workspace-a", "user-a", "session-target")
+
+
+@pytest.mark.asyncio
+async def test_list_context_share_snapshots_for_target_session_filters_public_payload_target_binding():
+    class ShareCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "id": "ctx-share",
+                    "payload_json": {
+                        "share_fork_context": {
+                            "target_session_id": "session-target",
+                            "redaction_state": "public_redacted",
+                        }
+                    },
+                }
+            ]
+
+    class ShareConnection:
+        def __init__(self):
+            self.sql = ""
+            self.params = None
+
+        async def execute(self, sql, params):
+            self.sql = " ".join(sql.split())
+            self.params = params
+            return ShareCursor()
+
+    conn = ShareConnection()
+
+    rows = await list_context_share_snapshots_for_target_session(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        target_session_id="session-target",
+    )
+
+    assert rows[0]["id"] == "ctx-share"
+    assert "from run_context_snapshots" in conn.sql
+    assert "context_kind = 'share_fork'" in conn.sql
+    assert "payload_json->'share_fork_context'->>'target_session_id' = %s" in conn.sql
+    assert "tenant_id = %s" in conn.sql
+    assert "workspace_id = %s" in conn.sql
+    assert "user_id = %s" in conn.sql
+    assert conn.params == ("tenant-a", "workspace-a", "user-a", "session-target")
+
+
+@pytest.mark.asyncio
+async def test_get_latest_authorized_executor_context_snapshot_excludes_share_fork_rows():
+    class ExecutorSnapshotCursor:
+        async def fetchone(self):
+            return {"id": "ctx-executor", "context_kind": "executor"}
+
+    class ExecutorSnapshotConnection:
+        def __init__(self):
+            self.sql = ""
+            self.params = None
+
+        async def execute(self, sql, params):
+            self.sql = " ".join(sql.split())
+            self.params = params
+            return ExecutorSnapshotCursor()
+
+    conn = ExecutorSnapshotConnection()
+
+    row = await get_latest_authorized_executor_context_snapshot(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        run_id="run-source",
+    )
+
+    assert row["id"] == "ctx-executor"
+    assert "from run_context_snapshots" in conn.sql
+    assert "tenant_id = %s" in conn.sql
+    assert "user_id = %s" in conn.sql
+    assert "run_id = %s" in conn.sql
+    assert "context_kind = 'executor'" in conn.sql
+    assert "limit 1" in conn.sql
+    assert conn.params == ("tenant-a", "user-a", "run-source")
 
 
 @pytest.mark.asyncio
