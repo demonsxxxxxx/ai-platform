@@ -47,7 +47,7 @@ export function LandingPage() {
   const closeViewer = useCallback(() => setViewerSrc(null), []);
 
   useEffect(() => {
-    if (!isLoading && isAuthenticated) navigate("/chat", { replace: true });
+    if (!isLoading && isAuthenticated) navigate("/apps", { replace: true });
   }, [isLoading, isAuthenticated, navigate]);
 
   useEffect(() => {

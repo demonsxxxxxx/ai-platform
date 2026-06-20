@@ -1,0 +1,53 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+const appSource = readFileSync(resolve(import.meta.dirname, "../App.tsx"), "utf8");
+const typesSource = readFileSync(
+  resolve(import.meta.dirname, "../components/layout/AppContent/types.ts"),
+  "utf8",
+);
+const tabSource = readFileSync(
+  resolve(import.meta.dirname, "../components/layout/AppContent/TabContent.tsx"),
+  "utf8",
+);
+const sidebarSource = readFileSync(
+  resolve(import.meta.dirname, "../components/panels/SessionSidebar.tsx"),
+  "utf8",
+);
+const authRedirectSource = readFileSync(
+  resolve(
+    import.meta.dirname,
+    "../components/auth/authRedirectTransition.ts",
+  ),
+  "utf8",
+);
+const oauthCallbackSource = readFileSync(
+  resolve(import.meta.dirname, "../components/auth/OAuthCallback.tsx"),
+  "utf8",
+);
+const landingSource = readFileSync(
+  resolve(import.meta.dirname, "../components/landing/LandingPage.tsx"),
+  "utf8",
+);
+
+test("launchpad route is protected and mapped to AppContent", () => {
+  assert.match(appSource, /path="\/apps"/);
+  assert.match(appSource, /<LaunchpadPage \/>/);
+  assert.match(appSource, /activeTab="apps"/);
+});
+
+test("launchpad tab is registered in layout and sidebar", () => {
+  assert.match(typesSource, /\|\s*"apps"/);
+  assert.match(tabSource, /apps:\s*LaunchpadPanel/);
+  assert.match(sidebarSource, /path:\s*"\/apps"/);
+  assert.match(sidebarSource, /nav\.apps/);
+});
+
+test("company launchpad is the default authenticated landing destination", () => {
+  assert.match(authRedirectSource, /return redirectPath \|\| "\/apps"/);
+  assert.match(appSource, /navigate\(redirectPath \?\? "\/apps"/);
+  assert.match(oauthCallbackSource, /getRedirectPath\(\) \|\| "\/apps"/);
+  assert.match(landingSource, /navigate\("\/apps", \{ replace: true \}\)/);
+});

@@ -151,6 +151,15 @@ function ChatPage() {
 }
 
 // Simple page components that set the page title and render AppContent
+function LaunchpadPage() {
+  useSEO({
+    title: "seo.apps.title",
+    description: "seo.apps.description",
+    path: "/apps",
+  });
+  return <AppContent key="apps" activeTab="apps" />;
+}
+
 function SkillsPage() {
   useSEO({
     title: "seo.skills.title",
@@ -277,7 +286,7 @@ function MemoryPage() {
   return <AppContent key="memory" activeTab="memory" />;
 }
 
-// Auth page wrapper - redirects to /chat after successful login/register
+// Auth page wrapper - redirects to the company launchpad after successful login/register
 function AuthPageWrapper({
   initialMode,
 }: {
@@ -293,7 +302,7 @@ function AuthPageWrapper({
     <AuthPage
       initialMode={initialMode}
       onSuccess={(redirectPath) =>
-        navigate(redirectPath ?? "/chat", { replace: true })
+        navigate(redirectPath ?? "/apps", { replace: true })
       }
     />
   );
@@ -349,6 +358,14 @@ function App() {
               element={
                 <ProtectedRoute>
                   <ChatPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/apps"
+              element={
+                <ProtectedRoute>
+                  <LaunchpadPage />
                 </ProtectedRoute>
               }
             />
