@@ -125,18 +125,18 @@ Status label rules:
 
 ## 5. Non-Goals And Rejection Rules
 
-Reject these interpretations:
+Reject these overclaims:
 
-| Rejected claim | Reason |
+| Rejected overclaim | Required boundary |
 | --- | --- |
-| A docs-only absorption PR cannot create `211 verified` status. | Runtime claims require named source/runtime evidence. |
-| A reference implementation cannot close B2 sandbox hardening. | B2/G7 needs ai-platform sandbox leases, provider hardening, resource/egress/security evidence, and reviewed 211 proof. |
-| Persistent runtime design cannot raise worker defaults. | B3 capacity must prove load, backpressure, model-gateway, sandbox, token/cost, events/artifacts, cleanup, and rollback first. |
-| A slash or skill reference UI pattern cannot define backend Skill release authority. | Backend Skill release authority is immutable version, release decision, dependency evidence, pinned snapshot, and audit. |
-| Session sharing design cannot expose public artifacts without B5 ACL and redaction evidence. | Share/fork/import must preserve tenant/workspace/user/run/file/artifact ACL and redaction. |
-| The 10 sessions x peak 4 SDK subagents profile remains B3 evidence work. | SDK subagent capability exists, but production capacity and governance remain unproven until measured. |
-| A poco-claw internal API pattern cannot replace ai-platform auth. | ai-platform must enforce company auth, internal token, tenant isolation, RBAC, and audit. |
-| A persistent runtime container label cannot become source authority. | Source authority still comes from local main, 211 source, deploy composition, image labels, runtime health, and release evidence. |
+| This docs-only absorption PR is `211 verified`. | A docs-only absorption PR cannot create `211 verified` status. Runtime claims require named source/runtime evidence. |
+| A reference implementation closes B2 sandbox hardening. | A reference implementation cannot close B2 sandbox hardening. B2/G7 needs ai-platform sandbox leases, provider hardening, resource/egress/security evidence, and reviewed 211 proof. |
+| Persistent runtime design raises worker defaults. | Persistent runtime design cannot raise worker defaults. B3 capacity must prove load, backpressure, model-gateway, sandbox, token/cost, events/artifacts, cleanup, and rollback first. |
+| Slash or skill reference UI patterns define backend Skill release authority. | A slash or skill reference UI pattern cannot define backend Skill release authority. Backend Skill release authority is immutable version, release decision, dependency evidence, pinned snapshot, and audit. |
+| Session sharing design can expose public artifacts before B5 evidence. | Session sharing design cannot expose public artifacts without B5 ACL and redaction evidence. Share/fork/import must preserve tenant/workspace/user/run/file/artifact ACL and redaction. |
+| SDK subagent capability proves the 10 sessions x peak 4 profile. | The 10 sessions x peak 4 SDK subagents profile remains B3 evidence work. Production capacity and governance remain unproven until measured. |
+| A poco-claw internal API pattern replaces ai-platform auth. | ai-platform must enforce company auth, internal token, tenant isolation, RBAC, and audit. |
+| A persistent runtime container label becomes source authority. | Source authority still comes from local main, 211 source, deploy composition, image labels, runtime health, and release evidence. |
 
 ## 6. Single-PR Delivery Contract
 

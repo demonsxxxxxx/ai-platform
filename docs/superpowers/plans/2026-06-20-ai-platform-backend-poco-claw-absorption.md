@@ -314,23 +314,23 @@ gh issue create --repo demonsxxxxxx/ai-platform --title "B4 immutable Skill refe
 
 Expected: a new issue exists and keeps Skill authority in backend release contracts.
 
-### Task 6: Open B5 File Share And ACL Issue
+### Task 6: Open B5 File Share ACL And Exact Tool Issues
 
 **Files:**
 - No PR #159 code changes. Future issue only.
 
 **Interfaces:**
 - Consumes: poco-claw file reference and share artifact export concepts.
-- Produces: A future GitHub issue for file references, selected-file snapshots, artifact ACL, redaction, retention, and share/export projection safety.
+- Produces: Two future GitHub issues: B5a for file references, selected-file snapshots, artifact ACL, redaction, retention, and share/export projection safety; B5b for exact tool permission decisions, `tool_call_id` or stable request fingerprint binding, input hash checks, expiry, and replay denial.
 
-- [ ] **Step 1: Create the B5 issue body**
+- [ ] **Step 1: Create the B5a file/share issue body**
 
-Create `.pytest-tmp\issue-b5-poco-file-share-acl.md` with this content:
+Create `.pytest-tmp\issue-b5a-poco-file-share-acl.md` with this content:
 
 ```markdown
 ## Scope
 
-Implement backend file reference and share artifact governance using poco-claw file-reference and share/export concepts as reference input only.
+Implement backend file reference and share artifact governance using poco-claw file-reference and share/export concepts as reference input only. This is B5a file/artifact ACL work only; it does not close B5b exact tool permission.
 
 ## Acceptance criteria
 
@@ -353,15 +353,54 @@ Implement backend file reference and share artifact governance using poco-claw f
 Required for runtime file upload -> governed run -> artifact preview/download evidence.
 ```
 
-- [ ] **Step 2: Open the issue after PR #159 merges**
+- [ ] **Step 2: Open the B5a issue after PR #159 merges**
 
 Run:
 
 ```powershell
-gh issue create --repo demonsxxxxxx/ai-platform --title "B5 file references, share snapshots, and artifact ACL" --body-file .pytest-tmp\issue-b5-poco-file-share-acl.md
+gh issue create --repo demonsxxxxxx/ai-platform --title "B5a file references, share snapshots, and artifact ACL" --body-file .pytest-tmp\issue-b5a-poco-file-share-acl.md
 ```
 
 Expected: a new issue exists and separates file/artifact authority from UI reference convenience.
+
+- [ ] **Step 3: Create the B5b exact-tool issue body**
+
+Create `.pytest-tmp\issue-b5b-exact-tool-permission.md` with this content:
+
+```markdown
+## Scope
+
+Implement B5b exact tool permission decision binding for shell, network, MCP, filesystem, and write-capable operations. This issue is separate from B5a file/artifact ACL; neither issue closes the other.
+
+## Acceptance criteria
+
+- Tool approvals bind to `tool_call_id` or a stable request fingerprint, input hash, run, user, tenant, expiry, and policy version.
+- Replay attempts with the same approval but a different input hash, run, user, tenant, tool name, or expired timestamp are denied.
+- Decisions cover shell, network, MCP, filesystem, and write-capable operations separately.
+- Public and admin projections show decision state without raw private executor payloads, secrets, local paths, sandbox paths, or unredacted document text.
+- Audit records enough context to explain allow, deny, expiry, and replay-denial decisions.
+
+## Verification
+
+- Targeted exact-permission route, repository, and decision-replay tests.
+- Deny-path matrix for `tool_call_id`, input hash, run, user, tenant, expiry, and tool type.
+- `python -m compileall -q app tools scripts`
+- `git diff --check`
+
+## 211
+
+Required before any runtime tool-permission claim involving shell, network, MCP, filesystem, or write-capable operations.
+```
+
+- [ ] **Step 4: Open the B5b issue after PR #159 merges**
+
+Run:
+
+```powershell
+gh issue create --repo demonsxxxxxx/ai-platform --title "B5b exact tool permission binding and replay denial" --body-file .pytest-tmp\issue-b5b-exact-tool-permission.md
+```
+
+Expected: a new issue exists and explicitly separates exact tool permission from file/artifact ACL.
 
 ### Task 7: Defer B6 Operations Beta Packaging
 
@@ -422,7 +461,7 @@ Expected: a B6 issue exists only after prerequisite evidence is linked, or it is
 
 ## Self-Review
 
-- Spec coverage: The plan covers issue #160, PR #159, B1 context snapshots, B2 runtime lifecycle and internal auth, B3 capacity evidence, B4 Skill references and groups, B5 file/share ACL, and deferred B6 operations beta.
+- Spec coverage: The plan covers issue #160, PR #159, B1 context snapshots, B2 runtime lifecycle and internal auth, B3 capacity evidence, B4 Skill references and groups, B5a file/share ACL, B5b exact tool permission, and deferred B6 operations beta.
 - Placeholder scan: The plan contains no unfinished placeholder markers.
 - Boundary consistency: PR #159 remains docs/test-only and cannot claim `211 verified` or `gate closable`.
 - Type and name consistency: Stage names use B1 through B6, status labels match the PRD, and future issue commands use GitHub CLI syntax already used by the repository workflow.

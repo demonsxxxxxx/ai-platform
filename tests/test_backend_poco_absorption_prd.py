@@ -27,6 +27,7 @@ def compact(text: str) -> str:
 def changed_paths() -> set[str]:
     commands = (
         ("git", "diff", "--name-only", "origin/main...HEAD"),
+        ("git", "diff", "--name-only"),
         ("git", "diff", "--name-only", "--cached"),
         ("git", "ls-files", "--others", "--exclude-standard"),
     )
@@ -217,7 +218,7 @@ def test_backend_poco_absorption_implementation_plan_is_executable_and_backend_o
         "### Task 3: Open B2 Runtime Lifecycle Issue",
         "### Task 4: Open B3 Capacity Evidence Issue",
         "### Task 5: Open B4 Skill Reference And Group Issue",
-        "### Task 6: Open B5 File Share And ACL Issue",
+        "### Task 6: Open B5 File Share ACL And Exact Tool Issues",
         "### Task 7: Defer B6 Operations Beta Packaging",
         "## Self-Review",
     ):
@@ -235,6 +236,17 @@ def test_backend_poco_absorption_implementation_plan_is_executable_and_backend_o
     for stage in ("B1", "B2", "B3", "B4", "B5", "B6"):
         assert stage in text
 
+    for b5_boundary in (
+        "B5a",
+        "B5b",
+        "file/artifact ACL",
+        "exact tool permission",
+        "tool_call_id",
+        "input hash",
+        "replay denial",
+    ):
+        assert b5_boundary in compact_text
+
     for non_goal in (
         "Do not modify frontend UI.",
         "Do not copy poco-claw code.",
@@ -251,3 +263,11 @@ def test_backend_poco_absorption_implementation_plan_is_executable_and_backend_o
         "git diff --check",
     ):
         assert required_command in text
+
+
+def test_backend_poco_absorption_scope_guard_includes_unstaged_tracked_diff():
+    source = Path(__file__).read_text(encoding="utf-8")
+
+    assert '("git", "diff", "--name-only")' in source
+    assert '("git", "diff", "--name-only", "--cached")' in source
+    assert '("git", "ls-files", "--others", "--exclude-standard")' in source
