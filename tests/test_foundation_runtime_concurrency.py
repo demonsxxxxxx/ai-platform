@@ -271,6 +271,72 @@ def test_foundation_runtime_concurrency_rejects_missing_tool_permission_negative
     assert "tool_permission_negative_reuse_probe_missing" in readiness["failures"]
 
 
+def test_foundation_runtime_concurrency_rejects_terminal_run_failures_explicitly():
+    weak = complete_evidence(
+        terminal_run_failures=[
+            {
+                "run_id": "run-failed",
+                "status": "failed",
+                "error_code": "claude_agent_sdk_runtime_error",
+                "error_message": "API Error: 402 Insufficient Balance",
+            }
+        ]
+    )
+
+    readiness = build_foundation_runtime_concurrency_readiness(weak)
+
+    assert readiness["status"] == "blocked_foundation_runtime_concurrency_evidence"
+    assert "run_terminal_failures" in readiness["failures"]
+    assert readiness["terminal_run_failures"][0]["error_code"] == "claude_agent_sdk_runtime_error"
+
+
+def test_foundation_runtime_concurrency_rejects_missing_artifact_acl_samples_explicitly():
+    weak = complete_evidence()
+    weak["checks"]["artifact_acl"] = {
+        "status": "passed",
+        "owner_statuses": [],
+        "cross_user_statuses": [],
+        "cross_tenant_statuses": [],
+        "preview_cross_user_statuses": [],
+        "preview_cross_tenant_statuses": [],
+    }
+
+    readiness = build_foundation_runtime_concurrency_readiness(weak)
+
+    assert readiness["status"] == "blocked_foundation_runtime_concurrency_evidence"
+    assert "artifact_acl_samples_missing" in readiness["failures"]
+
+
+def test_foundation_runtime_concurrency_does_not_add_denial_failures_when_artifact_samples_missing():
+    weak = complete_evidence(
+        terminal_run_failures=[
+            {
+                "run_id": "run-failed",
+                "status": "failed",
+                "raw_status": "failed",
+                "error_code": "claude_agent_sdk_runtime_error",
+                "error_message_summary": "API Error: 402 Insufficient Balance",
+            }
+        ]
+    )
+    weak["checks"]["artifact_acl"] = {
+        "status": "passed",
+        "owner_statuses": [],
+        "cross_user_statuses": [],
+        "cross_tenant_statuses": [],
+        "preview_cross_user_statuses": [],
+        "preview_cross_tenant_statuses": [],
+    }
+
+    readiness = build_foundation_runtime_concurrency_readiness(weak)
+
+    assert "artifact_acl_samples_missing" in readiness["failures"]
+    assert "artifact_acl_cross_user_not_denied" not in readiness["failures"]
+    assert "artifact_acl_cross_tenant_not_denied" not in readiness["failures"]
+    assert "artifact_preview_cross_user_not_denied" not in readiness["failures"]
+    assert "artifact_preview_cross_tenant_not_denied" not in readiness["failures"]
+
+
 def test_foundation_runtime_concurrency_rejects_weak_or_leaky_evidence():
     weak = complete_evidence()
     weak["summary"]["concurrent_request_count"] = 9
