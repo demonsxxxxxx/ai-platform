@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo, memo } from "react";
 import toast from "react-hot-toast";
-import { Ban } from "lucide-react";
+import { Ban, Paperclip } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ImageViewer } from "../common";
 import { ConfirmDialog } from "../common/ConfirmDialog";
@@ -17,6 +17,7 @@ import { ChatInputToolbar } from "./ChatInputToolbar";
 import { ChatInputSelectors } from "./ChatInputSelectors";
 import { ChatInputHelpMenu } from "./ChatInputHelpMenu";
 import { ChatInputAttachments } from "./ChatInputAttachments";
+import { resolveCommandPrefixPanel } from "./chatInputCommands";
 import { getMentionPopupFixedPlacement } from "./chatInputViewport";
 import { FILE_CATEGORY_PERMISSIONS } from "./chatInputConstants";
 import {
@@ -385,6 +386,32 @@ export const ChatInput = memo(function ChatInput({
 
   const hasContent = !!input.trim() && !disabled;
   const hasUploadingAttachment = attachments.some((a) => a.isUploading);
+  const commandPanelAvailability = useMemo(
+    () => ({
+      skills:
+        enableSkills &&
+        !!onToggleSkill &&
+        !!onToggleSkillCategory &&
+        !!onToggleAllSkills &&
+        totalSkillsCount > 0,
+      tools:
+        !!onToggleTool &&
+        !!onToggleCategory &&
+        !!onToggleAll &&
+        totalToolsCount > 0,
+    }),
+    [
+      enableSkills,
+      onToggleAll,
+      onToggleAllSkills,
+      onToggleCategory,
+      onToggleSkill,
+      onToggleSkillCategory,
+      onToggleTool,
+      totalSkillsCount,
+      totalToolsCount,
+    ],
+  );
   const canSubmit =
     hasContent && canSend && !isLoading && !hasUploadingAttachment;
 
@@ -487,13 +514,69 @@ export const ChatInput = memo(function ChatInput({
             onImageViewerOpen={(url) => setImageViewerSrc(url)}
           />
 
+          {attachments.length > 0 && (
+            <div
+              className="mx-3 mt-2 flex flex-wrap items-center gap-1.5 text-xs"
+              aria-label={t("chat.fileReferences")}
+            >
+              <span
+                className="font-medium"
+                style={{ color: "var(--theme-text-secondary)" }}
+              >
+                {t("chat.fileReferences")}
+              </span>
+              {attachments.map((attachment) => {
+                const typeLabel = t(`fileUpload.categories.${attachment.type}`);
+                return (
+                  <span
+                    key={`file-ref-${attachment.id}`}
+                    title={t("chat.fileReferenceChip", {
+                      name: attachment.name,
+                      type: typeLabel,
+                    })}
+                    className="inline-flex max-w-[180px] items-center gap-1 rounded-full border px-2 py-1"
+                    style={{
+                      borderColor: "var(--theme-border)",
+                      background:
+                        "color-mix(in srgb, var(--theme-primary) 8%, transparent)",
+                      color: "var(--theme-text)",
+                    }}
+                  >
+                    <Paperclip size={12} className="shrink-0" />
+                    <span className="truncate">{attachment.name}</span>
+                    {attachment.isUploading && (
+                      <span
+                        className="shrink-0"
+                        style={{ color: "var(--theme-text-secondary)" }}
+                      >
+                        {t("fileUpload.uploading", "uploading")}
+                      </span>
+                    )}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+
           <div className="px-2.5 pt-1">
             <div className="relative">
               <textarea
                 ref={textareaRef}
                 value={input}
                 onChange={(e) => {
-                  setInput(e.target.value);
+                  const nextValue = e.target.value;
+                  const commandPanel = resolveCommandPrefixPanel(
+                    nextValue,
+                    commandPanelAvailability,
+                  );
+                  if (commandPanel) {
+                    setActivePanel(commandPanel);
+                    setInput("");
+                    setCursorPosition(0);
+                    requestAnimationFrame(scheduleTextareaResize);
+                    return;
+                  }
+                  setInput(nextValue);
                   setCursorPosition(e.target.selectionStart);
                 }}
                 onFocus={scheduleTextareaResize}

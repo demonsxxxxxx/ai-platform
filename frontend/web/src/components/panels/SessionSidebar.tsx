@@ -25,6 +25,7 @@ import {
   Settings,
   Server,
   Brain,
+  LayoutGrid,
   MessageCircle,
   Sparkles,
 } from "lucide-react";
@@ -142,6 +143,12 @@ export const SessionSidebar = forwardRef<
   const canReadMemory = enableMemory;
   const canReadSkills = hasAnyPermission([Permission.SKILL_READ]);
   const moreMenuFeatureItems = [
+    {
+      path: "/apps",
+      label: t("nav.apps"),
+      icon: LayoutGrid,
+      show: true,
+    },
     {
       path: "/skills",
       label: t("nav.skills"),
@@ -814,9 +821,13 @@ export const SessionSidebar = forwardRef<
               setIsRecentChatsOpen(false);
             }}
             onOpenRecentChats={() => setIsRecentChatsOpen(true)}
+            onOpenLaunchpad={() => navigate("/apps")}
             onOpenFileLibrary={() => navigate("/files")}
             onOpenPersonaPlaza={() => navigate("/persona")}
             onOpenSkills={() => navigate("/skills")}
+            onOpenMcp={() => navigate("/mcp")}
+            showSkills={canReadSkills}
+            showMcp={canReadMCP}
             hasMoreMenuItems={hasMoreMenuItems}
             onToggleMoreMenu={() => {
               setIsMoreMenuOpen((prev) => !prev);

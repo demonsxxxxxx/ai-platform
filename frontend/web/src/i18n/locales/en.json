@@ -519,12 +519,15 @@
     "dropFilesHere": "Drop files here to upload",
     "enterToSend": "to send",
     "errorPrefix": "Error: {{error}}",
+    "commandTrigger": "Open commands: / for Skills, $ for MCP tools",
     "featureMenu": {
       "enhance": "Enhance",
       "persona": "Persona",
       "settings": "Settings",
       "upload": "Upload"
     },
+    "fileReferenceChip": "{{name}} · {{type}}",
+    "fileReferences": "File references",
     "features": "Features",
     "goodAfternoon": "Good afternoon, {{name}}",
     "goodEvening": "Good evening, {{name}}",
@@ -859,8 +862,11 @@
   },
   "featureMenu": {
     "enhance": "Enhance",
+    "fileReference": "File reference",
+    "mcpTools": "MCP Tools",
     "persona": "Persona",
     "settings": "Settings",
+    "skillsMarketplace": "Skills Marketplace",
     "upload": "Upload"
   },
   "feedback": {
@@ -1369,9 +1375,29 @@
     "hideCode": "Hide code",
     "showCode": "Show code"
   },
+  "launchpad": {
+    "clearSearch": "Clear search",
+    "currentCategory": "Current category",
+    "entriesCount": "{{count}} entries",
+    "groupNavigation": "Application category navigation",
+    "noResults": "No matching entries found",
+    "open": "Open",
+    "openEntry": "Open {{name}}",
+    "searchPlaceholder": "Search all apps...",
+    "searchResults": "Search results",
+    "subtitle": "AI Platform is the home entry. Open cards to jump to existing systems.",
+    "tabs": {
+      "ai": "AI Apps",
+      "common": "Web Links",
+      "lingxi": "Lingxi Platform"
+    },
+    "title": "Company Apps",
+    "unavailable": "Pending integration"
+  },
   "nav": {
     "adminMarketplace": "Admin Marketplace",
     "agents": "Agents",
+    "apps": "Company Apps",
     "channels": "Channels",
     "chat": "Chat",
     "feedback": "Feedback",
@@ -1392,6 +1418,7 @@
   },
   "navDesc": {
     "agents": "Configure and manage AI agents",
+    "apps": "Open internal systems and frequently used sites",
     "channels": "Manage communication channels",
     "chat": "Conversations with AI agents",
     "feedback": "View and manage user feedback",
@@ -1686,6 +1713,10 @@
     "agents": {
       "description": "Configure and manage AI agents. Set up system prompts, select models, define tools, and orchestrate multi-agent workflows for complex tasks.",
       "title": "AI Agents"
+    },
+    "apps": {
+      "description": "Company internal systems and frequently used site navigation.",
+      "title": "Company Apps"
     },
     "channels": {
       "description": "Manage communication channels. Connect external messaging platforms and notification services for multi-channel AI interactions.",

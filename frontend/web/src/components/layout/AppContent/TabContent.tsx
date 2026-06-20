@@ -50,6 +50,11 @@ const MemoryPanel = lazy(() =>
     default: m.MemoryPanel,
   })),
 );
+const LaunchpadPanel = lazy(() =>
+  import("../../launchpad").then((m) => ({
+    default: m.LaunchpadPanel,
+  })),
+);
 const PersonaPlazaPanel = lazy(() =>
   import("../../persona/PersonaPlazaPanel").then((m) => ({
     default: m.PersonaPlazaPanel,
@@ -60,6 +65,7 @@ const panelMap: Record<
   string,
   React.LazyExoticComponent<React.ComponentType>
 > = {
+  apps: LaunchpadPanel,
   skills: SkillsHubPanel,
   marketplace: SkillsHubPanel,
   users: UsersPanel,

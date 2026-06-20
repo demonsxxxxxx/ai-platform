@@ -1,5 +1,21 @@
 # LibreChat Frontend UI Absorption PRD
 
+> Status update, 2026-06-19: this PRD is scope-frozen as the Phase 1A
+> frontend foundation contract. It is useful for auth, session, RBAC, route
+> guard, projection-audit, build, packaged-entry, and 211 static-entry/API-proxy
+> evidence, but it is not the final chat product experience contract.
+>
+> The Phase 1A implementation must not be treated as `gate closable` until a
+> valid company-account browser login and ordinary/admin workflow smoke pass on
+> the official 211 entry. It also does not close visual/product parity: the
+> authenticated app can still read as the imported LambChat-style shell, and the
+> composer can still lack the required slash-command Skills/MCP/agent workflow.
+>
+> Product-experience acceptance is now owned by
+> `docs/superpowers/specs/2026-06-19-ai-platform-chat-experience-parity-prd.md`.
+> Future frontend work should use this document only as the backend-authority and
+> foundation boundary, not as proof that the target user experience is complete.
+
 > Status: proposed companion PRD for S2 frontend direction.
 >
 > Scope: define the product goal, adoption boundary, migration slices, and
