@@ -34,6 +34,14 @@
 
 ## Task 1: B0 Current-Source Status Calibration
 
+> Historical note: this task captured the pre-#140 red/green calibration that
+> exposed the #138 `4039e4b` current-source blocker. If stacked with #140 or
+> later evidence that records the narrow #138 `211 verified` runtime-relevant
+> source refresh, keep the examples below as historical test-first context
+> rather than current status wording. Current B0 text should follow the latest
+> readiness result and still avoid `gate closable`, production, Docker sandbox
+> hardening, ordinary-user multi-agent, and department-rollout claims.
+
 **Files:**
 - Modify: `docs/superpowers/specs/2026-06-18-ai-platform-backend-phased-prd.md`
 - Modify: `docs/operations/ai-platform-gate-status.md`
