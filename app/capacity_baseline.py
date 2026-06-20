@@ -137,10 +137,20 @@ _B3_TARGET_PROFILE = {
     "status_label_before_evidence": "local partial",
 }
 _PROFILE_EVIDENCE_REQUIRED_FIELDS = (
+    "target_profile_id",
+    "evidence_source",
     "observed_concurrent_sessions",
     "observed_peak_sdk_subagents_per_session",
     "sdk_subagent_fanout_measurement_ref",
+    "production_concurrency_defaults_raised",
+    "safe_concurrency_claimed",
+    "ordinary_user_multi_agent_enabled",
 )
+_PROFILE_EVIDENCE_ALLOWED_SOURCES = {
+    "platform_runtime_profile",
+    "live_worker_run_payload",
+    "operator_reviewed_recorded_snapshot",
+}
 _B3_OPERATOR_REVIEW_REQUIRED_EVIDENCE = [
     "runtime_source_identity_and_image_labels",
     "tenant_user_skill_mix",
@@ -1149,16 +1159,28 @@ def _safe_capacity_evidence_ref(value: object) -> str | None:
 
 def _safe_b3_profile_evidence(value: object) -> dict[str, Any]:
     source = _dict(value)
+    target_profile_id = _safe_identity(source.get("target_profile_id"))
+    evidence_source = _safe_identity(source.get("evidence_source"))
     observed_sessions = _coerce_int(source.get("observed_concurrent_sessions"))
     observed_subagents = _coerce_int(source.get("observed_peak_sdk_subagents_per_session"))
     measurement_ref = _safe_capacity_evidence_ref(source.get("sdk_subagent_fanout_measurement_ref"))
     result: dict[str, Any] = {}
+    if target_profile_id == _B3_TARGET_PROFILE_ID:
+        result["target_profile_id"] = target_profile_id
+    if evidence_source in _PROFILE_EVIDENCE_ALLOWED_SOURCES:
+        result["evidence_source"] = evidence_source
     if observed_sessions > 0:
         result["observed_concurrent_sessions"] = observed_sessions
     if observed_subagents > 0:
         result["observed_peak_sdk_subagents_per_session"] = observed_subagents
     if measurement_ref is not None:
         result["sdk_subagent_fanout_measurement_ref"] = measurement_ref
+    if source.get("production_concurrency_defaults_raised") is False:
+        result["production_concurrency_defaults_raised"] = False
+    if source.get("safe_concurrency_claimed") is False:
+        result["safe_concurrency_claimed"] = False
+    if source.get("ordinary_user_multi_agent_enabled") is False:
+        result["ordinary_user_multi_agent_enabled"] = False
     return result
 
 
@@ -1222,6 +1244,16 @@ def _operator_reviewed_recorded_snapshot_contract(profile: dict[str, Any]) -> di
         "required_profile_evidence": list(_PROFILE_EVIDENCE_REQUIRED_FIELDS)
         if is_b3_target
         else [],
+        "allowed_profile_evidence_sources": sorted(_PROFILE_EVIDENCE_ALLOWED_SOURCES)
+        if is_b3_target
+        else [],
+        "required_non_expansion_flags": {
+            "production_concurrency_defaults_raised": False,
+            "safe_concurrency_claimed": False,
+            "ordinary_user_multi_agent_enabled": False,
+        }
+        if is_b3_target
+        else {},
         "required_load_test_gates": list(profile.get("required_load_test_gates") or LOAD_TEST_GATES),
         "required_admin_runtime_sections": list(_LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS),
         "required_operator_review_evidence": list(_B3_OPERATOR_REVIEW_REQUIRED_EVIDENCE),

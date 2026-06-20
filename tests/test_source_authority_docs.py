@@ -1216,6 +1216,14 @@ def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
         assert "ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1" in text
         assert "b3_10x4_sdk_subagents" in text
         assert "10 sessions x peak 4 SDK subagents/session" in text
+        assert "target_profile_id = b3_10x4_sdk_subagents" in text
+        assert "evidence_source = platform_runtime_profile" in text
+        assert "observed_concurrent_sessions >= 10" in text
+        assert "observed_peak_sdk_subagents_per_session >= 4" in text
+        assert "sdk_subagent_fanout_measurement_ref" in text
+        assert "production_concurrency_defaults_raised = false" in text
+        assert "safe_concurrency_claimed = false" in text
+        assert "ordinary_user_multi_agent_enabled = false" in text
         assert "runtime_source_identity_and_image_labels" in text
         assert "tenant_user_skill_mix" in text
         assert "token_cost_ledger" in text
