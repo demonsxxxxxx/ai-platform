@@ -560,6 +560,396 @@ def test_create_context_snapshot_redacts_payload_before_persisting(monkeypatch):
     assert "/var/lib/ai-platform/run-a" not in serialized
 
 
+def test_create_share_context_snapshot_binds_source_run_and_target_session(monkeypatch):
+    calls = []
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("tenant-a", "user-a", "run-source")
+        return {
+            "id": run_id,
+            "workspace_id": "workspace-a",
+            "session_id": "session-source",
+            "trace_id": "trace-source",
+        }
+
+    async def fake_get_authorized_context_target_session(conn, *, tenant_id, workspace_id, user_id, session_id):
+        calls.append(("target_session", tenant_id, workspace_id, user_id, session_id))
+        return {
+            "id": session_id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "user_id": user_id,
+            "agent_id": "general-agent",
+        }
+
+    async def fake_get_latest_authorized_executor_context_snapshot(conn, *, tenant_id, user_id, run_id):
+        calls.append(("source_executor_snapshot", tenant_id, user_id, run_id))
+        return {
+            "id": "ctx-source",
+            "tenant_id": tenant_id,
+            "workspace_id": "workspace-a",
+            "user_id": user_id,
+            "session_id": "session-source",
+            "run_id": run_id,
+            "trace_id": "trace-source",
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_kind": "executor",
+            "included_message_ids": ["msg-source-a", "msg-source-b"],
+            "included_file_ids": ["file-source-a"],
+            "included_artifact_ids": ["art-source-a"],
+            "included_memory_record_ids": ["mem-source-must-not-copy"],
+            "redaction_summary_json": {"long_term_memory_read": False},
+            "payload_json": {
+                "source_note": "safe source context",
+                "operator_note": "authoritative source value",
+                "raw_storage_key": "tenants/tenant-a/hidden-source.docx",
+                "used_context_summary": {
+                    "source": "runs_api",
+                    "input_keys": ["message", "raw_storage_key"],
+                    "memory_policy_source": "stored",
+                    "long_term_memory_read": True,
+                },
+            },
+            "created_at": None,
+        }
+
+    async def fake_create_context_snapshot(conn, **kwargs):
+        calls.append(("snapshot", kwargs))
+        return {
+            "id": "ctx-share",
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "session_id": kwargs["session_id"],
+            "run_id": kwargs["run_id"],
+            "trace_id": kwargs["trace_id"],
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_kind": kwargs["context_kind"],
+            "included_message_ids": kwargs["included_message_ids"],
+            "included_file_ids": kwargs["included_file_ids"],
+            "included_artifact_ids": kwargs["included_artifact_ids"],
+            "included_memory_record_ids": kwargs["included_memory_record_ids"],
+            "redaction_summary_json": kwargs["redaction_summary_json"],
+            "payload_json": kwargs["payload_json"],
+        }
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-share"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr(
+        "app.routes.context.repositories.get_authorized_context_target_session",
+        fake_get_authorized_context_target_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.context.repositories.get_latest_authorized_executor_context_snapshot",
+        fake_get_latest_authorized_executor_context_snapshot,
+    )
+    monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fake_create_context_snapshot)
+    monkeypatch.setattr("app.routes.context.repositories.append_event", fake_append_event)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runs/run-source/context/share-snapshots",
+        headers=headers(),
+        json={
+            "share_kind": "fork",
+            "target_session_id": "session-target",
+            "payload": {
+                "operator_note": "continue this work",
+                "raw_storage_key": "tenants/tenant-a/secret.docx",
+                "private_payload": {"sandbox_workdir": "/tmp/run-source"},
+            },
+            "rollback": {
+                "reason": "user can unlink fork",
+                "raw_storage_key": "s3://secret-bucket/source",
+                "source_run_id": "run-source",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()["context_snapshot"]
+    assert body["context_snapshot_id"] == "ctx-share"
+    assert body["context_kind"] == "share_fork"
+    assert body["payload"]["share_fork_context"] == {
+        "share_kind": "fork",
+        "source_session_id": "session-source",
+        "target_session_id": "session-target",
+        "redaction_state": "public_redacted",
+        "lineage": {
+            "source_binding": "authorized_route_run",
+            "target_binding": "authorized_target_session",
+        },
+        "rollback": {"reason": "user can unlink fork"},
+    }
+    assert body["payload"]["operator_note"] == "authoritative source value"
+    assert body["payload"]["source_note"] == "safe source context"
+    assert body["payload"]["referenced_materials"] == {
+        "message_count": 2,
+        "file_count": 1,
+        "artifact_count": 1,
+        "memory_record_count": 0,
+    }
+    assert body["payload"]["used_context_summary"] == {
+        "source": "fork_context_snapshot",
+        "input_keys": ["attachments", "operator_note", "share_fork_context", "source_note"],
+        "memory_policy_source": "not_recorded",
+        "long_term_memory_read": False,
+    }
+
+    snapshot_call = next(item[1] for item in calls if item[0] == "snapshot")
+    assert snapshot_call["context_kind"] == "share_fork"
+    assert snapshot_call["session_id"] == "session-source"
+    assert snapshot_call["included_message_ids"] == ["msg-source-a", "msg-source-b"]
+    assert snapshot_call["included_file_ids"] == ["file-source-a"]
+    assert snapshot_call["included_artifact_ids"] == ["art-source-a"]
+    assert snapshot_call["included_memory_record_ids"] == []
+    assert snapshot_call["redaction_summary_json"] == {
+        "redaction_state": "public_redacted",
+        "share_kind": "fork",
+        "source_session_bound": True,
+        "target_session_bound": True,
+        "long_term_memory_read": False,
+    }
+    assert ("target_session", "tenant-a", "workspace-a", "user-a", "session-target") in calls
+    assert ("source_executor_snapshot", "tenant-a", "user-a", "run-source") in calls
+    assert next(item[1] for item in calls if item[0] == "event")["event_type"] == "context_snapshot_created"
+    serialized = response.text + str(snapshot_call)
+    assert "raw_storage_key" not in serialized
+    assert "private_payload" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "tenants/tenant-a/secret.docx" not in serialized
+    assert "tenants/tenant-a/hidden-source.docx" not in serialized
+    assert "s3://secret-bucket/source" not in serialized
+    assert "source_run_id" not in serialized
+    assert "mem-source-must-not-copy" not in serialized
+    assert "raw_storage_key" not in serialized
+    assert body["run_id"] == "run-source"
+
+
+def test_create_share_context_snapshot_rejects_wrong_target_session_before_writing(monkeypatch):
+    calls = []
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        calls.append(("source_run", tenant_id, user_id, run_id))
+        return {"id": run_id, "workspace_id": "workspace-a", "session_id": "session-source", "trace_id": "trace-source"}
+
+    async def fake_get_authorized_context_target_session(conn, *, tenant_id, workspace_id, user_id, session_id):
+        calls.append(("target_session", tenant_id, workspace_id, user_id, session_id))
+        return None
+
+    async def fail_create_context_snapshot(*args, **kwargs):
+        raise AssertionError("unauthorized target session must not create a context snapshot")
+
+    async def fail_append_event(*args, **kwargs):
+        raise AssertionError("unauthorized target session must not append an event")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr(
+        "app.routes.context.repositories.get_authorized_context_target_session",
+        fake_get_authorized_context_target_session,
+    )
+    monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fail_create_context_snapshot)
+    monkeypatch.setattr("app.routes.context.repositories.append_event", fail_append_event)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runs/run-source/context/share-snapshots",
+        headers=headers(),
+        json={"share_kind": "share", "target_session_id": "session-cross-tenant"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "target_session_not_found"
+    assert calls == [
+        ("source_run", "tenant-a", "user-a", "run-source"),
+        ("target_session", "tenant-a", "workspace-a", "user-a", "session-cross-tenant"),
+    ]
+
+
+def test_create_share_context_snapshot_rejects_wrong_source_run_before_target_lookup(monkeypatch):
+    calls = []
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        calls.append(("source_run", tenant_id, user_id, run_id))
+        return None
+
+    async def fail_get_authorized_context_target_session(*args, **kwargs):
+        raise AssertionError("missing source run must not look up a target session")
+
+    async def fail_create_context_snapshot(*args, **kwargs):
+        raise AssertionError("missing source run must not create a context snapshot")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr(
+        "app.routes.context.repositories.get_authorized_context_target_session",
+        fail_get_authorized_context_target_session,
+    )
+    monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fail_create_context_snapshot)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runs/run-cross-user/context/share-snapshots",
+        headers=headers(),
+        json={"share_kind": "import", "target_session_id": "session-target"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "run_not_found"
+    assert calls == [("source_run", "tenant-a", "user-a", "run-cross-user")]
+
+
+def test_create_share_context_snapshot_rejects_missing_source_context_snapshot(monkeypatch):
+    calls = []
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        calls.append(("source_run", tenant_id, user_id, run_id))
+        return {"id": run_id, "workspace_id": "workspace-a", "session_id": "session-source", "trace_id": "trace-source"}
+
+    async def fake_get_authorized_context_target_session(conn, *, tenant_id, workspace_id, user_id, session_id):
+        calls.append(("target_session", tenant_id, workspace_id, user_id, session_id))
+        return {"id": session_id, "workspace_id": workspace_id, "user_id": user_id, "status": "active"}
+
+    async def fake_get_latest_authorized_executor_context_snapshot(conn, *, tenant_id, user_id, run_id):
+        calls.append(("source_executor_snapshot", tenant_id, user_id, run_id))
+        return None
+
+    async def fail_create_context_snapshot(*args, **kwargs):
+        raise AssertionError("missing source context snapshot must not create a share snapshot")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr(
+        "app.routes.context.repositories.get_authorized_context_target_session",
+        fake_get_authorized_context_target_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.context.repositories.get_latest_authorized_executor_context_snapshot",
+        fake_get_latest_authorized_executor_context_snapshot,
+    )
+    monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fail_create_context_snapshot)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runs/run-source/context/share-snapshots",
+        headers=headers(),
+        json={"share_kind": "share", "target_session_id": "session-target"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "source_context_snapshot_not_found"
+    assert calls == [
+        ("source_run", "tenant-a", "user-a", "run-source"),
+        ("target_session", "tenant-a", "workspace-a", "user-a", "session-target"),
+        ("source_executor_snapshot", "tenant-a", "user-a", "run-source"),
+    ]
+
+
+def test_list_target_session_share_context_snapshots_uses_authorized_target_binding(monkeypatch):
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        assert (tenant_id, user_id, session_id) == ("tenant-a", "user-a", "session-target")
+        return {"id": session_id, "workspace_id": "workspace-a", "status": "active"}
+
+    async def fake_list_context_share_snapshots_for_target_session(
+        conn, *, tenant_id, workspace_id, user_id, target_session_id
+    ):
+        assert (tenant_id, workspace_id, user_id, target_session_id) == (
+            "tenant-a",
+            "workspace-a",
+            "user-a",
+            "session-target",
+        )
+        return [
+            {
+                "id": "ctx-share-target",
+                "tenant_id": tenant_id,
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "session_id": "session-source",
+                "run_id": "run-source",
+                "trace_id": "trace-source",
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "context_kind": "share_fork",
+                "included_message_ids": ["msg-source-a"],
+                "included_file_ids": [],
+                "included_artifact_ids": [],
+                "included_memory_record_ids": [],
+                "redaction_summary_json": {"redaction_state": "public_redacted"},
+                "payload_json": {
+                    "share_fork_context": {
+                        "share_kind": "share",
+                        "source_session_id": "session-source",
+                        "target_session_id": "session-target",
+                        "redaction_state": "public_redacted",
+                        "lineage": {
+                            "source_binding": "authorized_route_run",
+                            "target_binding": "authorized_target_session",
+                        },
+                        "rollback": {},
+                    },
+                    "source_note": "safe source context",
+                },
+                "created_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr(
+        "app.routes.context.repositories.list_context_share_snapshots_for_target_session",
+        fake_list_context_share_snapshots_for_target_session,
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/sessions/session-target/context/share-snapshots", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["session_id"] == "session-target"
+    assert body["context_snapshots"][0]["context_snapshot_id"] == "ctx-share-target"
+    assert body["context_snapshots"][0]["payload"]["share_fork_context"]["target_session_id"] == "session-target"
+    assert body["context_snapshots"][0]["payload"]["referenced_materials"] == {
+        "message_count": 1,
+        "file_count": 0,
+        "artifact_count": 0,
+        "memory_record_count": 0,
+    }
+    serialized = response.text
+    assert "msg-source-a" not in serialized
+
+
+def test_list_target_session_share_context_snapshots_rejects_wrong_session(monkeypatch):
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        return None
+
+    async def fail_list_context_share_snapshots_for_target_session(*args, **kwargs):
+        raise AssertionError("wrong target session must not list share snapshots")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr(
+        "app.routes.context.repositories.list_context_share_snapshots_for_target_session",
+        fail_list_context_share_snapshots_for_target_session,
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/sessions/session-cross-user/context/share-snapshots", headers=headers())
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "target_session_not_found"
+
+
 def test_list_context_snapshots_redacts_legacy_dirty_payload_and_summary(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         return {"id": run_id, "workspace_id": "workspace-a", "session_id": "session-a", "trace_id": "trace-a"}

@@ -226,6 +226,22 @@ class ContextSnapshotRequest(BaseModel):
         return [assert_safe_id(item, info.field_name) for item in value]
 
 
+class ShareContextSnapshotRequest(BaseModel):
+    """Request a governed share/fork context snapshot for another owned session."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    share_kind: Literal["share", "fork", "import"] = "share"
+    target_session_id: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    rollback: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("target_session_id")
+    @classmethod
+    def validate_target_session_id(cls, value: str):
+        return assert_safe_id(value, "target_session_id")
+
+
 class MemoryRecordRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

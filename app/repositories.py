@@ -1085,6 +1085,30 @@ async def get_authorized_session(
     return await cursor.fetchone()
 
 
+async def get_authorized_context_target_session(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+) -> dict[str, Any] | None:
+    """Load a target session only when it matches the source run owner scope."""
+    cursor = await conn.execute(
+        """
+        select id, tenant_id, workspace_id, user_id, agent_id, status
+        from sessions
+        where tenant_id = %s
+          and workspace_id = %s
+          and user_id = %s
+          and id = %s
+          and status = 'active'
+        """,
+        (tenant_id, workspace_id, user_id, session_id),
+    )
+    return await cursor.fetchone()
+
+
 async def list_run_events(
     conn: AsyncConnection,
     *,
@@ -1253,6 +1277,61 @@ async def list_context_snapshots(conn: AsyncConnection, *, tenant_id: str, user_
         order by created_at desc
         """,
         (tenant_id, user_id, run_id),
+    )
+    return list(await cursor.fetchall())
+
+
+async def get_latest_authorized_executor_context_snapshot(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    run_id: str,
+) -> dict[str, Any] | None:
+    """Load the latest executor context snapshot, excluding share/fork derivative rows."""
+    cursor = await conn.execute(
+        """
+        select id, tenant_id, workspace_id, user_id, session_id, run_id, trace_id,
+               schema_version, context_kind, included_message_ids, included_file_ids,
+               included_artifact_ids, included_memory_record_ids, redaction_summary_json,
+               payload_json, created_at
+        from run_context_snapshots
+        where tenant_id = %s
+          and user_id = %s
+          and run_id = %s
+          and context_kind = 'executor'
+        order by created_at desc
+        limit 1
+        """,
+        (tenant_id, user_id, run_id),
+    )
+    return await cursor.fetchone()
+
+
+async def list_context_share_snapshots_for_target_session(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    target_session_id: str,
+) -> list[dict[str, Any]]:
+    """List share/fork snapshots whose public binding names an authorized target session."""
+    cursor = await conn.execute(
+        """
+        select id, tenant_id, workspace_id, user_id, session_id, run_id, trace_id,
+               schema_version, context_kind, included_message_ids, included_file_ids,
+               included_artifact_ids, included_memory_record_ids, redaction_summary_json,
+               payload_json, created_at
+        from run_context_snapshots
+        where tenant_id = %s
+          and workspace_id = %s
+          and user_id = %s
+          and context_kind = 'share_fork'
+          and payload_json->'share_fork_context'->>'target_session_id' = %s
+        order by created_at desc
+        """,
+        (tenant_id, workspace_id, user_id, target_session_id),
     )
     return list(await cursor.fetchall())
 

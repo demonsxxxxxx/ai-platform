@@ -9,7 +9,13 @@ from app.control_plane_contracts import sanitize_public_payload, standard_trace_
 from app.db import transaction
 from app.memory_redaction import redact_memory_metadata, redact_memory_text
 from app.context_builder import ensure_public_context_provenance
-from app.models import ContextSnapshotRequest, MemoryPolicyRequest, MemoryRecordRequest, MemoryRedactionPreviewRequest
+from app.models import (
+    ContextSnapshotRequest,
+    MemoryPolicyRequest,
+    MemoryRecordRequest,
+    MemoryRedactionPreviewRequest,
+    ShareContextSnapshotRequest,
+)
 from app.projection_redaction import internal_agent_id_for_request, public_agent_id_for_projection
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.validation import assert_safe_id
@@ -102,6 +108,18 @@ def _snapshot_response(
         "payload": payload,
         "created_at": row.get("created_at"),
     }
+
+
+def _safe_share_rollback_payload(value: dict[str, Any]) -> dict[str, Any]:
+    sanitized = sanitize_public_payload(value if isinstance(value, dict) else {})
+    return sanitized if isinstance(sanitized, dict) else {}
+
+
+def _safe_snapshot_material_ids(row: dict[str, Any], key: str) -> list[str]:
+    values = row.get(key)
+    if not isinstance(values, list):
+        return []
+    return [str(item) for item in values if isinstance(item, str)]
 
 
 def _memory_response(row: dict[str, Any]) -> dict[str, Any]:
@@ -375,6 +393,127 @@ async def create_run_context_snapshot(
     return {"context_snapshot": _snapshot_response(snapshot, provenance_source="manual_context_snapshot")}
 
 
+@router.post("/runs/{run_id}/context/share-snapshots")
+async def create_share_context_snapshot(
+    run_id: str,
+    request: ShareContextSnapshotRequest,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    """Create a redacted share/fork context snapshot after source and target scope checks."""
+    async with transaction() as conn:
+        run = await repositories.get_authorized_run(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            run_id=run_id,
+        )
+        if run is None:
+            raise HTTPException(status_code=404, detail="run_not_found")
+        workspace_id = str(run["workspace_id"])
+        source_session_id = str(run["session_id"])
+        target_session = await repositories.get_authorized_context_target_session(
+            conn,
+            tenant_id=principal.tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+            session_id=request.target_session_id,
+        )
+        if target_session is None:
+            raise HTTPException(status_code=404, detail="target_session_not_found")
+        trace_id = str(run.get("trace_id") or standard_trace_id(run_id))
+        source_snapshot = await repositories.get_latest_authorized_executor_context_snapshot(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            run_id=run_id,
+        )
+        if source_snapshot is None:
+            raise HTTPException(status_code=409, detail="source_context_snapshot_not_found")
+        source_payload = sanitize_public_payload(
+            source_snapshot.get("payload_json") if isinstance(source_snapshot.get("payload_json"), dict) else {}
+        )
+        if not isinstance(source_payload, dict):
+            source_payload = {}
+        source_message_ids = _safe_snapshot_material_ids(source_snapshot, "included_message_ids")
+        source_file_ids = _safe_snapshot_material_ids(source_snapshot, "included_file_ids")
+        source_artifact_ids = _safe_snapshot_material_ids(source_snapshot, "included_artifact_ids")
+        share_source = f"{request.share_kind}_context_snapshot"
+        payload = sanitize_public_payload(request.payload)
+        if not isinstance(payload, dict):
+            payload = {}
+        payload = {
+            **payload,
+            **source_payload,
+            "share_fork_context": {
+                "share_kind": request.share_kind,
+                "source_session_id": source_session_id,
+                "target_session_id": request.target_session_id,
+                "redaction_state": "public_redacted",
+                "lineage": {
+                    "source_binding": "authorized_route_run",
+                    "target_binding": "authorized_target_session",
+                },
+                "rollback": _safe_share_rollback_payload(request.rollback),
+            },
+        }
+        payload = ensure_public_context_provenance(
+            payload,
+            source=share_source,
+            message_count=len(source_message_ids),
+            file_count=len(source_file_ids),
+            artifact_count=len(source_artifact_ids),
+            memory_record_count=0,
+            memory_policy_source="not_recorded",
+            long_term_memory_read=False,
+        )
+        redaction_summary = {
+            "redaction_state": "public_redacted",
+            "share_kind": request.share_kind,
+            "source_session_bound": True,
+            "target_session_bound": True,
+            "long_term_memory_read": False,
+        }
+        snapshot = await repositories.create_context_snapshot(
+            conn,
+            tenant_id=principal.tenant_id,
+            workspace_id=workspace_id,
+            user_id=principal.user_id,
+            session_id=source_session_id,
+            run_id=run_id,
+            trace_id=trace_id,
+            context_kind="share_fork",
+            included_message_ids=source_message_ids,
+            included_file_ids=source_file_ids,
+            included_artifact_ids=source_artifact_ids,
+            included_memory_record_ids=[],
+            redaction_summary_json=redaction_summary,
+            payload_json=payload,
+        )
+        await repositories.append_event(
+            conn,
+            tenant_id=principal.tenant_id,
+            run_id=run_id,
+            trace_id=trace_id,
+            event_type="context_snapshot_created",
+            stage="context",
+            message="已记录共享上下文快照",
+            payload={
+                "visible_to_user": False,
+                "context_snapshot_id": snapshot["id"],
+                "context_kind": "share_fork",
+                "share_kind": request.share_kind,
+                "redaction_state": "public_redacted",
+                "source_session_bound": True,
+                "target_session_bound": True,
+                "message_count": len(source_message_ids),
+                "file_count": len(source_file_ids),
+                "artifact_count": len(source_artifact_ids),
+                "memory_record_count": 0,
+            },
+        )
+    return {"context_snapshot": _snapshot_response(snapshot, provenance_source=share_source)}
+
+
 @router.get("/runs/{run_id}/context/snapshots")
 async def list_run_context_snapshots(
     run_id: str,
@@ -396,6 +535,33 @@ async def list_run_context_snapshots(
             run_id=run_id,
         )
     return {"run_id": run_id, "context_snapshots": [_snapshot_response(row) for row in rows]}
+
+
+@router.get("/sessions/{session_id}/context/share-snapshots")
+async def list_target_session_share_context_snapshots(
+    session_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    async with transaction() as conn:
+        session = await repositories.get_authorized_session(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            session_id=session_id,
+        )
+        if session is None:
+            raise HTTPException(status_code=404, detail="target_session_not_found")
+        rows = await repositories.list_context_share_snapshots_for_target_session(
+            conn,
+            tenant_id=principal.tenant_id,
+            workspace_id=str(session["workspace_id"]),
+            user_id=principal.user_id,
+            target_session_id=session_id,
+        )
+    return {
+        "session_id": session_id,
+        "context_snapshots": [_snapshot_response(row) for row in rows],
+    }
 
 
 @router.post("/memory/records")
