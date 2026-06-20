@@ -45,7 +45,9 @@
   },
   "agent": {
     "selectMode": "Select Mode",
-    "selectModeDesc": "Switch agent mode"
+    "selectModeDesc": "Switch agent mode",
+    "searchPlaceholder": "Search agents",
+    "noMatchingAgents": "No matching agents"
   },
   "agentConfig": {
     "addFirstModel": "Add your first model",
@@ -1310,7 +1312,13 @@
     "title": "MCP Servers",
     "updateFailed": "Failed to update MCP server",
     "updateSuccess": "MCP server updated successfully",
-    "userServerVisible": "User Server (only visible to you)"
+    "userServerVisible": "User Server (only visible to you)",
+    "permissionMode": "Permission mode",
+    "addToComposer": "Use /mcp in chat to search governed tools and add enabled tools to the composer.",
+    "lifecycleUnavailable": "Runtime lifecycle controls",
+    "lifecycleUnavailableDescription": "Start, stop, restart, and raw credential controls stay server-side until ai-platform exposes governed runtime contracts.",
+    "noMatchingTools": "No matching tools",
+    "toolsSearchPlaceholder": "Search tools"
   },
   "memory": {
     "accesses": "accesses",
@@ -2243,7 +2251,11 @@
     "upload": "Upload",
     "uploadZipTitle": "Upload Skill ZIP",
     "uploading": "Uploading...",
-    "userSkillVisible": "User Skill (only visible to you)"
+    "userSkillVisible": "User Skill (only visible to you)",
+    "marketplace": {
+      "departmentAvailability": "Department availability",
+      "groupToggleUnavailable": "Department and group toggles require the next ai-platform governance contract, so this view fails closed for now."
+    }
   },
   "skillsHub": {
     "subtitle": "Manage local skills and explore the marketplace",
@@ -2320,6 +2332,7 @@
     "done": "Done",
     "loadFailed": "Failed to load tools",
     "noDescription": "No description",
+    "noMatchingTools": "No matching tools",
     "noTools": "No tools available",
     "parameters": "Parameters",
     "selectAll": "Select all",
@@ -2331,6 +2344,7 @@
       "type": "Type"
     },
     "title": "Tools",
+    "searchPlaceholder": "Search tools",
     "toolsEnabled": "tools enabled"
   },
   "users": {
@@ -2392,5 +2406,12 @@
       "unavailable": "unavailable",
       "admin-only": "admin only"
     }
+  },
+  "governance": {
+    "adminOnly": "Admin only",
+    "disabled": "Disabled",
+    "enabled": "Enabled",
+    "inherited": "Inherited",
+    "unavailable": "Unavailable"
   }
 }

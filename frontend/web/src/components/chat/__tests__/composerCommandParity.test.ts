@@ -8,6 +8,7 @@ import {
 } from "../composerSelections";
 import {
   parseComposerCommand,
+  resolveComposerCommandDraft,
   resolveCommandPrefixPanel,
 } from "../chatInputCommands";
 
@@ -83,6 +84,69 @@ test("dollar command is Skills-first and never maps to tools", () => {
     unavailable: false,
   });
   assert.equal(resolveCommandPrefixPanel("$", allAvailable), "skills");
+});
+
+test("composer command drafts preserve multi-character typing and seed selector queries", () => {
+  assert.deepEqual(resolveComposerCommandDraft("/", allAvailable), {
+    command: {
+      trigger: "/",
+      command: "skill",
+      panel: "skills",
+      query: "",
+      unavailable: false,
+    },
+    panel: "skills",
+    selectorQuery: "",
+    shouldExecute: false,
+  });
+  assert.deepEqual(resolveComposerCommandDraft("/m", allAvailable), {
+    command: {
+      trigger: "/",
+      command: "skill",
+      panel: "skills",
+      query: "m",
+      unavailable: false,
+    },
+    panel: "skills",
+    selectorQuery: "m",
+    shouldExecute: false,
+  });
+  assert.deepEqual(resolveComposerCommandDraft("/mcp fetch", allAvailable), {
+    command: {
+      trigger: "/",
+      command: "mcp",
+      panel: "tools",
+      query: "fetch",
+      unavailable: false,
+    },
+    panel: "tools",
+    selectorQuery: "fetch",
+    shouldExecute: false,
+  });
+  assert.deepEqual(resolveComposerCommandDraft("$ qa", allAvailable), {
+    command: {
+      trigger: "$",
+      command: "skill",
+      panel: "skills",
+      query: "qa",
+      unavailable: false,
+    },
+    panel: "skills",
+    selectorQuery: "qa",
+    shouldExecute: false,
+  });
+});
+
+test("file and unavailable commands execute only when the command word is complete", () => {
+  assert.equal(resolveComposerCommandDraft("/f", allAvailable)?.shouldExecute, false);
+  assert.equal(resolveComposerCommandDraft("/file", allAvailable)?.shouldExecute, true);
+  assert.equal(
+    resolveComposerCommandDraft("/model opus", {
+      ...allAvailable,
+      models: false,
+    })?.shouldExecute,
+    true,
+  );
 });
 
 test("missing backend authority returns explicit unavailable command state", () => {

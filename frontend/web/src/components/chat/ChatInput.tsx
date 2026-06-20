@@ -27,7 +27,7 @@ import { ChatInputHelpMenu } from "./ChatInputHelpMenu";
 import { ChatInputAttachments } from "./ChatInputAttachments";
 import {
   parseComposerCommand,
-  resolveCommandPrefixPanel,
+  resolveComposerCommandDraft,
   type ComposerCommandPanel,
 } from "./chatInputCommands";
 import { ComposerChips } from "./ComposerChips";
@@ -119,6 +119,10 @@ export const ChatInput = memo(function ChatInput({
   }, [pendingInput, onPendingInputConsumed]);
 
   const [activePanel, setActivePanel] = useState<FeaturePanel>(null);
+  const [commandSearchSeed, setCommandSearchSeed] = useState<{
+    panel: FeaturePanel;
+    query: string;
+  } | null>(null);
   const [internalAttachments, setInternalAttachments] = useState<
     MessageAttachment[]
   >([]);
@@ -319,6 +323,7 @@ export const ChatInput = memo(function ChatInput({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSend) return;
+    if (handleComposerCommandSubmit(input)) return;
     if (input.trim() && !isLoading && !disabled) {
       const trimmed = input.trim();
       onSend(trimmed, agentOptionValues, attachments);
@@ -445,15 +450,6 @@ export const ChatInput = memo(function ChatInput({
   const canSubmit =
     hasContent && canSend && !isLoading && !hasUploadingAttachment;
 
-  const toFeaturePanel = useCallback(
-    (panel: ComposerCommandPanel): FeaturePanel | null => {
-      return panel === "skills" || panel === "tools" || panel === "agent"
-        ? panel
-        : null;
-    },
-    [],
-  );
-
   const upsertUnavailableCommandChip = useCallback(
     (command: ReturnType<typeof parseComposerCommand>) => {
       if (!command) return;
@@ -490,29 +486,48 @@ export const ChatInput = memo(function ChatInput({
 
   const openCommandPanel = useCallback(
     (nextValue: string): boolean => {
-      const command = parseComposerCommand(nextValue, commandPanelAvailability);
-      if (!command) return false;
-      if (!command.unavailable && command.panel === "file") {
-        openFileCommandRef.current?.();
-        setInput("");
-        setCursorPosition(0);
-        requestAnimationFrame(scheduleTextareaResize);
-        return true;
+      const draft = resolveComposerCommandDraft(
+        nextValue,
+        commandPanelAvailability,
+      );
+      if (!draft) return false;
+      if (draft.panel) {
+        setActivePanel(draft.panel);
+        setCommandSearchSeed({
+          panel: draft.panel,
+          query: draft.selectorQuery,
+        });
       }
-      if (command.unavailable) {
-        upsertUnavailableCommandChip(command);
-        setActivePanel(null);
-      } else {
-        const commandPanel = toFeaturePanel(command.panel);
-        if (commandPanel) {
-          setActivePanel(commandPanel);
-        } else {
-          upsertUnavailableCommandChip({
-            ...command,
-            unavailable: true,
+      return true;
+    },
+    [commandPanelAvailability],
+  );
+
+  const handleComposerCommandSubmit = useCallback(
+    (value: string): boolean => {
+      const draft = resolveComposerCommandDraft(value, commandPanelAvailability);
+      if (!draft) return false;
+      if (!draft.shouldExecute) {
+        if (draft.panel) {
+          setActivePanel(draft.panel);
+          setCommandSearchSeed({
+            panel: draft.panel,
+            query: draft.selectorQuery,
           });
         }
+        return true;
       }
+      if (!draft.command.unavailable && draft.command.panel === "file") {
+        openFileCommandRef.current?.();
+      } else {
+        upsertUnavailableCommandChip(
+          draft.command.unavailable
+            ? draft.command
+            : { ...draft.command, unavailable: true },
+        );
+      }
+      setActivePanel(null);
+      setCommandSearchSeed(null);
       setInput("");
       setCursorPosition(0);
       requestAnimationFrame(scheduleTextareaResize);
@@ -521,13 +536,13 @@ export const ChatInput = memo(function ChatInput({
     [
       commandPanelAvailability,
       scheduleTextareaResize,
-      toFeaturePanel,
       upsertUnavailableCommandChip,
     ],
   );
 
   const handlePanelChange = useCallback(
     (panel: FeaturePanel) => {
+      setCommandSearchSeed(null);
       if (panel === "file") {
         openFileCommandRef.current?.();
         return;
@@ -602,6 +617,25 @@ export const ChatInput = memo(function ChatInput({
     }
   }, [tools]);
 
+  useEffect(() => {
+    dispatchComposerSelection({ type: "clear-kind", kind: "agent" });
+    if (!currentAgent) return;
+    const agent = agents.find((item) => item.id === currentAgent);
+    if (!agent) return;
+    dispatchComposerSelection({
+      type: "upsert",
+      selection: {
+        id: `agent:${agent.id}`,
+        kind: "agent",
+        label: t(agent.name),
+        state: "enabled",
+        source: "agent",
+        description: agent.description ? t(agent.description) : undefined,
+        referenceId: agent.id,
+      },
+    });
+  }, [agents, currentAgent, t]);
+
   const handleRemoveComposerSelection = useCallback(
     (id: string) => {
       dispatchComposerSelection({ type: "remove", id });
@@ -626,9 +660,23 @@ export const ChatInput = memo(function ChatInput({
         const toolName = id.slice("mcp:".length);
         const tool = tools.find((item) => item.name === toolName);
         if (tool?.enabled) onToggleTool?.(toolName);
+        return;
+      }
+      if (id.startsWith("agent:")) {
+        const fallbackAgent = agents.find((agent) => agent.id !== currentAgent);
+        if (fallbackAgent) onSelectAgent?.(fallbackAgent.id);
       }
     },
-    [onToggleSkill, onToggleTool, setAttachments, skills, tools],
+    [
+      agents,
+      currentAgent,
+      onSelectAgent,
+      onToggleSkill,
+      onToggleTool,
+      setAttachments,
+      skills,
+      tools,
+    ],
   );
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -742,20 +790,9 @@ export const ChatInput = memo(function ChatInput({
                 value={input}
                 onChange={(e) => {
                   const nextValue = e.target.value;
-                  const commandPanel = resolveCommandPrefixPanel(
-                    nextValue,
-                    commandPanelAvailability,
-                  );
-                  if (commandPanel) {
-                    setActivePanel(commandPanel);
-                    setInput("");
-                    setCursorPosition(0);
-                    requestAnimationFrame(scheduleTextareaResize);
-                    return;
-                  }
-                  if (openCommandPanel(nextValue)) return;
                   setInput(nextValue);
                   setCursorPosition(e.target.selectionStart);
+                  openCommandPanel(nextValue);
                 }}
                 onFocus={scheduleTextareaResize}
                 onKeyDown={handleKeyDown}
@@ -816,6 +853,7 @@ export const ChatInput = memo(function ChatInput({
       <ChatInputSelectors
         activePanel={activePanel}
         onActivePanelChange={handlePanelChange}
+        commandSearchSeed={commandSearchSeed}
         tools={tools}
         onToggleTool={onToggleTool}
         onToggleCategory={onToggleCategory}

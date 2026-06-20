@@ -19,6 +19,8 @@ import { MCPServerCard } from "../mcp/MCPServerCard";
 import { MCPServerForm } from "../mcp/MCPServerForm";
 import { ConfirmDialog } from "../common/ConfirmDialog";
 import { EditorSidebar } from "../common/EditorSidebar";
+import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
+import { resolveGroupAvailability } from "../governance/groupAvailability";
 import { useMCP } from "../../hooks/useMcp";
 import { useAuth } from "../../hooks/useAuth";
 import { Permission } from "../../types";
@@ -89,6 +91,11 @@ export function MCPPanel() {
     Permission.MCP_WRITE_HTTP,
   ]);
   const canAdmin = hasAnyPermission([Permission.MCP_ADMIN]);
+  const permissionAvailability = resolveGroupAvailability({
+    enabled: canWrite,
+    inherited: canRead && !canWrite,
+  });
+  const lifecycleAvailability = resolveGroupAvailability({ backed: false });
 
   // 动态生成用户可以使用的传输类型权限
   const allowedTransports = [
@@ -402,6 +409,41 @@ export function MCPPanel() {
           </button>
         </div>
       )}
+
+      <div className="px-4 pb-2 pt-3">
+        <section className="rounded-lg border border-stone-200/70 bg-white p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900">
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="flex items-start justify-between gap-3 rounded-md bg-stone-50/80 p-3 dark:bg-stone-950/40">
+              <div className="min-w-0">
+                <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                  {t("mcp.permissionMode")}
+                </h3>
+                <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                  {t("mcp.addToComposer")}
+                </p>
+              </div>
+              <GovernanceAvailabilityBadge
+                state={permissionAvailability.state}
+                labelKey={permissionAvailability.labelKey}
+              />
+            </div>
+            <div className="flex items-start justify-between gap-3 rounded-md bg-stone-50/80 p-3 dark:bg-stone-950/40">
+              <div className="min-w-0">
+                <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                  {t("mcp.lifecycleUnavailable")}
+                </h3>
+                <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                  {t("mcp.lifecycleUnavailableDescription")}
+                </p>
+              </div>
+              <GovernanceAvailabilityBadge
+                state={lifecycleAvailability.state}
+                labelKey={lifecycleAvailability.labelKey}
+              />
+            </div>
+          </div>
+        </section>
+      </div>
 
       {/* Servers List */}
       <div className="flex-1 overflow-y-auto py-2 sm:py-4 px-4">

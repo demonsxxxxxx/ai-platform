@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { Bot, X } from "lucide-react";
@@ -10,6 +10,7 @@ interface AgentModeSelectorProps {
   onSelectAgent?: (id: string) => void;
   isOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
+  searchSeed?: string;
 }
 
 export function AgentModeSelector({
@@ -18,13 +19,25 @@ export function AgentModeSelector({
   onSelectAgent,
   isOpen: externalIsOpen,
   onOpenChange: externalOnOpenChange,
+  searchSeed,
 }: AgentModeSelectorProps) {
   const { t } = useTranslation();
   const [internalOpen, setInternalOpen] = useState(false);
   const open = externalIsOpen ?? internalOpen;
   const setOpen = externalOnOpenChange ?? setInternalOpen;
+  const [searchQuery, setSearchQuery] = useState("");
 
   const current = agents.find((a) => a.id === currentAgent);
+  const filteredAgents = useMemo(() => {
+    const normalized = searchQuery.trim().toLowerCase();
+    if (!normalized) return agents;
+    return agents.filter(
+      (agent) =>
+        agent.id.toLowerCase().includes(normalized) ||
+        agent.name.toLowerCase().includes(normalized) ||
+        agent.description.toLowerCase().includes(normalized),
+    );
+  }, [agents, searchQuery]);
   const sheetRef = useSwipeToClose({ onClose: () => setOpen(false) });
 
   const handleClose = useCallback(() => setOpen(false), [setOpen]);
@@ -38,6 +51,11 @@ export function AgentModeSelector({
       document.body.style.overflow = previous;
     };
   }, [open]);
+
+  useEffect(() => {
+    if (!open || searchSeed === undefined) return;
+    setSearchQuery(searchSeed);
+  }, [open, searchSeed]);
 
   // Close on Escape
   useEffect(() => {
@@ -104,9 +122,19 @@ export function AgentModeSelector({
                   </button>
                 </div>
 
+                <div className="border-b border-stone-200/80 bg-white/80 px-4 py-3 dark:border-stone-700/80 dark:bg-stone-800/60 sm:px-5">
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder={t("agent.searchPlaceholder", "Search agents")}
+                    className="w-full rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-700 outline-none transition-colors focus:border-[var(--theme-primary)] focus:bg-white dark:border-stone-700 dark:bg-stone-900/60 dark:text-stone-100 dark:focus:bg-stone-900"
+                  />
+                </div>
+
                 {/* Agent list */}
                 <div className="flex-1 overflow-y-auto py-2 sm:py-4 px-4 space-y-1.5">
-                  {agents.map((agent) => {
+                  {filteredAgents.map((agent) => {
                     const isActive = agent.id === currentAgent;
                     return (
                       <button
@@ -168,6 +196,11 @@ export function AgentModeSelector({
                       </button>
                     );
                   })}
+                  {filteredAgents.length === 0 && (
+                    <div className="rounded-xl border border-dashed border-stone-200 bg-stone-50/70 px-4 py-6 text-center text-sm text-stone-500 dark:border-stone-700 dark:bg-stone-800/40 dark:text-stone-400">
+                      {t("agent.noMatchingAgents", "No matching agents")}
+                    </div>
+                  )}
                 </div>
 
                 {/* Footer */}

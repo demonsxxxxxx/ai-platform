@@ -28,6 +28,7 @@ interface ToolSelectorProps {
   totalCount: number;
   isOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
+  searchSeed?: string;
 }
 
 const categoryIcons: Record<ToolCategory, typeof Bot> = {
@@ -47,6 +48,7 @@ export function ToolSelector({
   totalCount,
   isOpen: externalIsOpen,
   onOpenChange: externalOnOpenChange,
+  searchSeed,
 }: ToolSelectorProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -57,6 +59,7 @@ export function ToolSelector({
   const [expandedCategories, setExpandedCategories] = useState<
     Set<ToolCategory>
   >(new Set(["mcp"]));
+  const [searchQuery, setSearchQuery] = useState("");
   const swipeRef = useSwipeToClose({
     onClose: () => setIsOpen(false),
     enabled: isOpen,
@@ -74,10 +77,27 @@ export function ToolSelector({
     };
   }, [isOpen]);
 
+  useEffect(() => {
+    if (!isOpen || searchSeed === undefined) return;
+    setSearchQuery(searchSeed);
+  }, [isOpen, searchSeed]);
+
   // 按类别分组，每组内按工具名称排序 - 使用 useMemo 缓存计算结果
+  const filteredTools = useMemo(() => {
+    const normalized = searchQuery.trim().toLowerCase();
+    if (!normalized) return tools;
+    return tools.filter(
+      (tool) =>
+        tool.name.toLowerCase().includes(normalized) ||
+        tool.description.toLowerCase().includes(normalized) ||
+        tool.category.toLowerCase().includes(normalized) ||
+        (tool.server ?? "").toLowerCase().includes(normalized),
+    );
+  }, [searchQuery, tools]);
+
   const groupedTools = useMemo(
     () =>
-      tools.reduce(
+      filteredTools.reduce(
         (acc, tool) => {
           if (!acc[tool.category]) {
             acc[tool.category] = [];
@@ -87,7 +107,7 @@ export function ToolSelector({
         },
         {} as Record<ToolCategory, ToolState[]>,
       ),
-    [tools],
+    [filteredTools],
   );
 
   // Sort tools within each category by name
@@ -194,6 +214,16 @@ export function ToolSelector({
           <Plus size={14} />
           <span>{t("tools.add")}</span>
         </button>
+      </div>
+
+      <div className="border-b border-stone-200/80 bg-white/80 px-4 py-3 dark:border-stone-700/80 dark:bg-stone-800/60 sm:px-5">
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder={t("tools.searchPlaceholder", "Search tools")}
+          className="w-full rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-700 outline-none transition-colors focus:border-[var(--theme-primary)] focus:bg-white dark:border-stone-700 dark:bg-stone-900/60 dark:text-stone-100 dark:focus:bg-stone-900"
+        />
       </div>
 
       {/* Categories */}
@@ -393,6 +423,11 @@ export function ToolSelector({
               </div>
             );
           },
+        )}
+        {filteredTools.length === 0 && (
+          <div className="rounded-xl border border-dashed border-stone-200 bg-stone-50/70 px-4 py-6 text-center text-sm text-stone-500 dark:border-stone-700 dark:bg-stone-800/40 dark:text-stone-400">
+            {t("tools.noMatchingTools", "No matching tools")}
+          </div>
         )}
       </div>
 

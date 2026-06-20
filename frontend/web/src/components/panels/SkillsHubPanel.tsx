@@ -9,6 +9,8 @@ import { PanelHeader } from "../common/PanelHeader";
 import { MarketplacePanel } from "./MarketplacePanel";
 import { SkillsPanel } from "./SkillsPanel";
 import { resolveSkillsHubTab, type SkillsHubTab } from "./SkillsHubPanel/state";
+import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
+import { resolveGroupAvailability } from "../governance/groupAvailability";
 
 const TAB_PATHS: Record<SkillsHubTab, string> = {
   skills: "/skills",
@@ -32,6 +34,7 @@ export function SkillsHubPanel() {
     canReadMarketplace,
   );
   const showTabSwitcher = canReadSkills && canReadMarketplace;
+  const departmentAvailability = resolveGroupAvailability({ backed: false });
 
   useEffect(() => {
     if (!visibleTab) return;
@@ -109,6 +112,25 @@ export function SkillsHubPanel() {
           ) : undefined
         }
       />
+
+      <div className="px-4 pb-3">
+        <section className="rounded-lg border border-stone-200/70 bg-white p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                {t("skills.marketplace.departmentAvailability")}
+              </h3>
+              <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                {t("skills.marketplace.groupToggleUnavailable")}
+              </p>
+            </div>
+            <GovernanceAvailabilityBadge
+              state={departmentAvailability.state}
+              labelKey={departmentAvailability.labelKey}
+            />
+          </div>
+        </section>
+      </div>
 
       {/* Child panel handles its own padding via skill-panel-header + skill-content-area */}
       <div className="min-h-0 flex-1 overflow-hidden">

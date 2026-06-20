@@ -27,6 +27,13 @@ export interface ParsedComposerCommand {
   unavailable: boolean;
 }
 
+export interface ComposerCommandDraft {
+  command: ParsedComposerCommand;
+  panel: FeaturePanel;
+  selectorQuery: string;
+  shouldExecute: boolean;
+}
+
 export const COMMAND_PREFIX_PANEL: Record<string, Exclude<FeaturePanel, null>> =
   {
     "/": "skills",
@@ -62,6 +69,12 @@ const commandAvailabilityKey: Record<
   file: "files",
   context: "context",
 };
+
+const panelCommandNames = new Set<ComposerCommandName>([
+  "skill",
+  "mcp",
+  "agent",
+]);
 
 /** Resolve a typed command prefix only when its target selector is available. */
 export function resolveCommandPrefixPanel(
@@ -126,5 +139,38 @@ export function parseComposerCommand(
     panel: commandPanelByName[command],
     query,
     unavailable: !normalizedAvailability[availabilityKey],
+  };
+}
+
+function isCompleteCommandWord(input: string, command: ComposerCommandName): boolean {
+  const trimmedStart = input.trimStart();
+  const body = trimmedStart.slice(1);
+  const firstToken = body.trimStart().split(/\s+/)[0] ?? "";
+  return firstToken === command;
+}
+
+export function resolveComposerCommandDraft(
+  input: string,
+  availability: CommandPanelAvailability,
+): ComposerCommandDraft | null {
+  const command = parseComposerCommand(input, availability);
+  if (!command) return null;
+
+  const panel =
+    command.panel === "skills" ||
+    command.panel === "tools" ||
+    command.panel === "agent"
+      ? command.panel
+      : null;
+  const shouldExecute =
+    command.unavailable ||
+    (!panelCommandNames.has(command.command) &&
+      isCompleteCommandWord(input, command.command));
+
+  return {
+    command,
+    panel,
+    selectorQuery: command.query,
+    shouldExecute,
   };
 }

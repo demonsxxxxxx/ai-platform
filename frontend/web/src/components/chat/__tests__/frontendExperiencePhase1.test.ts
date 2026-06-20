@@ -36,9 +36,9 @@ test("slash and dollar command prefixes open Skills-first selectors", () => {
   assert.match(commandSource, /COMMAND_PREFIX_PANEL/);
   assert.match(commandSource, /"\/":\s*"skills"/);
   assert.match(commandSource, /"\$":\s*"skills"/);
-  assert.match(chatInputSource, /resolveCommandPrefixPanel/);
-  assert.match(chatInputSource, /setActivePanel\(commandPanel\)/);
-  assert.match(chatInputSource, /setInput\(""\)/);
+  assert.match(chatInputSource, /resolveComposerCommandDraft/);
+  assert.match(chatInputSource, /setCommandSearchSeed/);
+  assert.match(chatInputSource, /setInput\(nextValue\)/);
 });
 
 test("command prefixes respect selector availability", () => {
