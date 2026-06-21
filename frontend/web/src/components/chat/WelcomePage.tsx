@@ -1,5 +1,16 @@
 import { memo, useMemo, useState, useCallback, useRef } from "react";
-import { RefreshCw, Sparkles, UserRound, ChevronRight } from "lucide-react";
+import {
+  Bot,
+  Boxes,
+  ChevronRight,
+  FileText,
+  MessageSquareText,
+  RefreshCw,
+  ShieldCheck,
+  Sparkles,
+  UserRound,
+  Wrench,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { ChatInput } from "./ChatInput";
@@ -17,6 +28,7 @@ import { PersonaAvatarWithLoading } from "../persona/PersonaAvatarWithLoading";
 import { useSettingsContext } from "../../contexts/SettingsContext";
 import type { PersonaPreset, PersonaPresetSnapshot } from "../../types";
 import { APP_NAME } from "../../constants";
+import { workbenchSurface } from "../workbench/workbenchSurface";
 
 interface WelcomePageProps {
   greeting: string;
@@ -36,6 +48,50 @@ interface WelcomePageProps {
     preset: PersonaPreset,
   ) => Promise<PersonaPresetSnapshot | null>;
   onClearPersonaPreset?: () => void;
+}
+
+interface WorkbenchQueueItem {
+  id: string;
+  icon: typeof Sparkles;
+  label: string;
+  value: string;
+  tone?: "default" | "enabled" | "blocked";
+}
+
+function WorkbenchQueueList({ items }: { items: WorkbenchQueueItem[] }) {
+  return (
+    <div className="space-y-2">
+      {items.map((item) => {
+        const Icon = item.icon;
+        return (
+          <div
+            key={item.id}
+            className="flex min-h-11 items-center justify-between gap-3 rounded-lg border border-stone-200 bg-white px-3 py-2 text-xs shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900"
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              <span
+                className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${
+                  item.tone === "enabled"
+                    ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
+                    : item.tone === "blocked"
+                      ? "bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300"
+                      : "bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-300"
+                }`}
+              >
+                <Icon size={14} />
+              </span>
+              <span className="truncate font-medium text-stone-700 dark:text-stone-200">
+                {item.label}
+              </span>
+            </span>
+            <span className="shrink-0 rounded-md bg-stone-100 px-2 py-1 font-medium text-stone-600 dark:bg-stone-800 dark:text-stone-300">
+              {item.value}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 export const WelcomePage = memo(function WelcomePage({
@@ -167,53 +223,177 @@ export const WelcomePage = memo(function WelcomePage({
     personaPresetsLoading,
     displayCards.length,
   );
+  const enabledSkillsCount = chatInputProps.enabledSkillsCount ?? 0;
+  const totalSkillsCount = chatInputProps.totalSkillsCount ?? 0;
+  const enabledToolsCount = chatInputProps.enabledToolsCount ?? 0;
+  const totalToolsCount = chatInputProps.totalToolsCount ?? 0;
+  const attachedFilesCount = chatInputProps.attachments?.length ?? 0;
+  const currentAgentName =
+    chatInputProps.agents?.find(
+      (agent) => agent.id === chatInputProps.currentAgent,
+    )?.name ?? chatInputProps.currentAgent;
+  const queueItems = useMemo<WorkbenchQueueItem[]>(
+    () => [
+      {
+        id: "skills",
+        icon: Sparkles,
+        label: t("featureMenu.skills", "Skills"),
+        value:
+          totalSkillsCount > 0
+            ? `${enabledSkillsCount}/${totalSkillsCount}`
+            : t("workbench.unavailableShort", "Unavailable"),
+        tone: enabledSkillsCount > 0 ? "enabled" : "blocked",
+      },
+      {
+        id: "mcp",
+        icon: Wrench,
+        label: t("featureMenu.mcpTools", "MCP tools"),
+        value:
+          totalToolsCount > 0
+            ? `${enabledToolsCount}/${totalToolsCount}`
+            : t("workbench.unavailableShort", "Unavailable"),
+        tone: enabledToolsCount > 0 ? "enabled" : "blocked",
+      },
+      {
+        id: "agent",
+        icon: Bot,
+        label: t("featureMenu.agents", "Agents"),
+        value: currentAgentName || t("workbench.defaultAgent", "Default"),
+        tone: currentAgentName ? "enabled" : "default",
+      },
+      {
+        id: "files",
+        icon: FileText,
+        label: t("chat.fileReferences", "File references"),
+        value:
+          attachedFilesCount > 0
+            ? String(attachedFilesCount)
+            : t("workbench.none", "None"),
+      },
+    ],
+    [
+      attachedFilesCount,
+      currentAgentName,
+      enabledSkillsCount,
+      enabledToolsCount,
+      t,
+      totalSkillsCount,
+      totalToolsCount,
+    ],
+  );
 
   return (
     <div
       ref={rootRef}
-      className="welcome-root relative flex h-full flex-col items-center justify-center px-4"
+      data-workbench-empty-state="chat"
+      className="welcome-root welcome-workbench-cockpit relative flex h-full min-h-0 flex-col overflow-y-auto px-3 py-3 sm:px-4"
     >
-      {/* Greeting section */}
-      <div className="welcome-hero relative flex flex-col items-center mb-3 sm:mb-4 md:mb-5 xl:mb-6 2xl:mb-7 w-full max-w-[90vw]">
-        {/* App icon (mobile only) */}
-        <div className="sm:hidden relative mb-3">
-          <img
-            src="/icons/icon.svg"
-            alt={APP_NAME}
-            className="welcome-icon relative size-10 rounded-full shadow-md ring-1 ring-stone-200/60 dark:ring-stone-700/40"
-          />
-        </div>
+      <div className={workbenchSurface.cockpit}>
+        <aside className="space-y-3">
+          <section className={`${workbenchSurface.compactPanel} p-4`}>
+            <div className="flex items-center gap-3">
+              <img
+                src="/icons/icon.svg"
+                alt={APP_NAME}
+                className="h-9 w-9 rounded-lg ring-1 ring-stone-200 dark:ring-stone-800"
+              />
+              <div className="min-w-0">
+                <p className={workbenchSurface.label}>
+                  {t("workbench.cockpit", "Workbench")}
+                </p>
+                <h1 className="truncate text-base font-semibold text-stone-900 dark:text-stone-50">
+                  {greeting}
+                </h1>
+              </div>
+            </div>
+            <p className="mt-3 text-sm leading-6 text-stone-600 dark:text-stone-300">
+              {subtitle}
+            </p>
+          </section>
 
-        {/* Greeting */}
-        <h1
-          className="welcome-greeting max-w-[90vw] text-[1.65rem] sm:text-[2rem] md:text-[2.25rem] lg:text-[2.35rem] xl:text-[2.4rem] 2xl:text-[2.5rem] font-semibold tracking-[-0.02em] leading-[1.2] text-center font-serif"
-          style={{ color: "var(--theme-text)" }}
-        >
-          <img
-            src="/icons/icon.svg"
-            alt=""
-            className="welcome-icon hidden sm:inline-block size-10 2xl:size-12 mr-4 align-text-bottom rounded-full"
-          />
-          {greeting}
-        </h1>
-        {/* Subtle subtitle prompt */}
-        <p
-          className="welcome-subtitle mt-2 sm:mt-3 md:mt-3.5 xl:mt-4 2xl:mt-4 text-sm sm:text-base md:text-[17px] xl:text-lg 2xl:text-lg text-center font-serif"
-          style={{ color: "var(--theme-text-secondary)" }}
-        >
-          {subtitle}
-        </p>
-      </div>
+          <section className={`${workbenchSurface.compactPanel} p-3`}>
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <p className={workbenchSurface.label}>
+                {t("workbench.selectionState", "Selection state")}
+              </p>
+              <ShieldCheck size={15} className="text-stone-400" />
+            </div>
+            <WorkbenchQueueList items={queueItems} />
+          </section>
+        </aside>
 
-      {/* ChatInput centered — the focal point */}
-      <div className="welcome-input w-full sm:max-w-[44rem] md:max-w-[46rem] lg:max-w-[48rem] xl:max-w-[50rem] 2xl:max-w-[52rem]">
-        <ChatInput
-          {...chatInputProps}
-          onMentionQueryChange={handleMentionQueryChange}
-          pendingInput={pendingInput}
-          onPendingInputConsumed={() => setPendingInput(null)}
-          className="mx-auto w-full px-2"
-        />
+        <section className={`${workbenchSurface.compactPanel} min-w-0 p-3 sm:p-4`}>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
+              <p className={workbenchSurface.label}>
+                {t("workbench.newConversation", "New conversation")}
+              </p>
+              <h2 className="mt-1 text-xl font-semibold leading-7 text-stone-900 dark:text-stone-50">
+                {t(
+                  "workbench.commandFirstTitle",
+                  "Start with a prompt, Skill, MCP tool, file, or context.",
+                )}
+              </h2>
+            </div>
+            <div className="grid grid-cols-3 gap-1 rounded-lg border border-stone-200 bg-stone-50 p-1 text-[11px] font-semibold text-stone-600 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-300">
+              <span className="rounded-md bg-white px-2 py-1 text-center shadow-sm dark:bg-stone-900">
+                /
+              </span>
+              <span className="rounded-md bg-white px-2 py-1 text-center shadow-sm dark:bg-stone-900">
+                $
+              </span>
+              <span className="rounded-md bg-white px-2 py-1 text-center shadow-sm dark:bg-stone-900">
+                @
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-2 sm:grid-cols-3">
+            {[
+              {
+                icon: Sparkles,
+                label: t("featureMenu.skills", "Skills"),
+                value: t("workbench.slashSkillsHint", "/skill or $"),
+              },
+              {
+                icon: Wrench,
+                label: t("featureMenu.mcpTools", "MCP tools"),
+                value: t("workbench.slashMcpHint", "/mcp"),
+              },
+              {
+                icon: Boxes,
+                label: t("featureMenu.context", "Context"),
+                value: t("workbench.slashContextHint", "/file /context"),
+              },
+            ].map((item) => {
+              const Icon = item.icon;
+              return (
+                <div
+                  key={item.label}
+                  className="rounded-lg border border-stone-200 bg-stone-50/80 p-3 dark:border-stone-800 dark:bg-stone-950/60"
+                >
+                  <Icon size={16} className="text-stone-500 dark:text-stone-400" />
+                  <p className="mt-2 text-sm font-semibold text-stone-800 dark:text-stone-100">
+                    {item.label}
+                  </p>
+                  <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+                    {item.value}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="welcome-input mt-4">
+            <ChatInput
+              {...chatInputProps}
+              onMentionQueryChange={handleMentionQueryChange}
+              pendingInput={pendingInput}
+              onPendingInputConsumed={() => setPendingInput(null)}
+              className="mx-auto w-full px-0"
+            />
+          </div>
+        </section>
       </div>
 
       {(showPersonaCards || showStarterPrompts) && (
@@ -224,7 +404,7 @@ export const WelcomePage = memo(function WelcomePage({
         >
           <div className="welcome-suggestions-header flex items-center justify-between mb-2 sm:mb-3 md:mb-3 xl:mb-4 2xl:mb-4 px-2 sm:px-0">
             <div
-              className="flex items-center gap-1 text-xs sm:text-sm md:text-sm font-medium font-serif"
+              className="flex items-center gap-1 text-xs sm:text-sm md:text-sm font-medium"
               style={{ color: "var(--theme-text-secondary)" }}
             >
               <Sparkles
@@ -242,7 +422,7 @@ export const WelcomePage = memo(function WelcomePage({
               {showPersonaCards && (
                 <button
                   onClick={() => navigate("/persona")}
-                  className="flex items-center gap-0.5 px-2 py-1 rounded-lg text-[11px] sm:text-[12px] md:text-[12px] font-medium transition-all duration-300 cursor-pointer font-serif"
+                  className="flex items-center gap-0.5 px-2 py-1 rounded-lg text-[11px] sm:text-[12px] md:text-[12px] font-medium transition-all duration-300 cursor-pointer"
                   style={{
                     color: "var(--theme-text-secondary)",
                     backgroundColor: "transparent",
@@ -255,7 +435,7 @@ export const WelcomePage = memo(function WelcomePage({
               {selectedPersonaPresetId && onClearPersonaPreset && (
                 <button
                   onClick={handleRefresh}
-                  className="welcome-refresh-btn flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] sm:text-[12px] md:text-[12px] font-medium transition-all duration-300 cursor-pointer font-serif"
+                  className="welcome-refresh-btn flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] sm:text-[12px] md:text-[12px] font-medium transition-all duration-300 cursor-pointer"
                   style={{
                     color: "var(--theme-text-secondary)",
                     backgroundColor: "transparent",
@@ -396,7 +576,7 @@ export const WelcomePage = memo(function WelcomePage({
                         color: "var(--theme-primary)",
                       }}
                     >
-                      {suggestion.icon || "✨"}
+                      <MessageSquareText size={14} />
                     </span>
                     <span
                       className="relative text-[12.5px] sm:text-[13.5px] leading-[1.4] sm:leading-[1.45] truncate transition-colors duration-300 group-hover:text-[var(--theme-text)]"
