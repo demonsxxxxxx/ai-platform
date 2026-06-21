@@ -2,6 +2,7 @@ import asyncio
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import hashlib
 import json
+import re
 import time as _time
 from dataclasses import dataclass
 from typing import Any
@@ -13,6 +14,7 @@ from app.control_plane_contracts import (
     CONTEXT_SNAPSHOT_SCHEMA_VERSION,
     artifact_lineage_contract,
     artifact_manifest_contract,
+    sanitize_public_text,
     standard_trace_id,
 )
 from app.context_builder import ensure_public_context_provenance, record_initial_context_snapshot
@@ -62,6 +64,27 @@ class _WorkerRuntimeSandboxLease:
 
 _PARENT_ROLLUP_RETRY_ATTEMPTS = 3
 _PARENT_ROLLUP_RETRY_DELAY_SECONDS = 0.05
+_EXECUTOR_ERROR_REQUEST_ID_RE = re.compile(
+    r"\brequest[_ -]?id\s*[:=]\s*[A-Za-z0-9._~+/=-]+\b",
+    re.IGNORECASE,
+)
+
+
+def _public_executor_failure_message(result: ExecutorResult) -> str:
+    generic_message = "Executor reported failure"
+    for candidate in (
+        result.result.get("message"),
+        result.result.get("sdk_error"),
+        result.executor_payload.get("sdk_error"),
+    ):
+        raw_text = _EXECUTOR_ERROR_REQUEST_ID_RE.sub(
+            "request id: [redacted-id]",
+            str(candidate or ""),
+        )
+        safe_text = sanitize_public_text(raw_text)
+        if safe_text and safe_text != generic_message:
+            return safe_text
+    return generic_message
 
 
 def parse_queue_payload(raw: dict[str, Any]) -> QueueRunPayload:
@@ -1775,7 +1798,7 @@ async def process_run_payload(
                 terminal_outcome = WorkerOutcome("succeeded", payload.run_id)
             else:
                 reported_error_code = str(result.result.get("error_code") or "executor_reported_failure")
-                reported_error_message = str(result.result.get("message") or "Executor reported failure")
+                reported_error_message = _public_executor_failure_message(result)
                 await _attach_multi_agent_result_summary(
                     conn,
                     tenant_id=payload.tenant_id,

@@ -2587,6 +2587,52 @@ async def test_worker_marks_adapter_reported_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_worker_uses_sdk_error_when_adapter_failure_message_is_generic(monkeypatch):
+    calls = []
+
+    class SdkFailureAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            return ExecutorResult(
+                status="failed",
+                adapter_version="adapter/1",
+                executor_type="fake",
+                executor_version="fake/1",
+                capabilities={},
+                result={
+                    "error_code": "claude_agent_sdk_runtime_error",
+                    "message": "Executor reported failure",
+                    "sdk_error": "API Error: 529 upstream overloaded request id: req_abc123",
+                },
+                executor_payload={
+                    "sdk_error": "API Error: 529 upstream overloaded request id: req_abc123",
+                },
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
+        calls.append(("event", event_type, stage, message))
+
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+        calls.append(("fail", error_code, error_message, result_json))
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": SdkFailureAdapter()}))
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "claude_agent_sdk_runtime_error"
+    assert outcome.error_message == "API Error: 529 upstream overloaded request id: [redacted-id]"
+    fail_call = next(item for item in calls if item[0] == "fail")
+    assert fail_call[2] == "API Error: 529 upstream overloaded request id: [redacted-id]"
+    assert fail_call[3]["sdk_error"] == "API Error: 529 upstream overloaded request id: req_abc123"
+
+
+@pytest.mark.asyncio
 async def test_worker_records_non_secret_runtime_evidence(monkeypatch):
     events = []
 
