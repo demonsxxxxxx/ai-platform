@@ -2,6 +2,8 @@ import base64
 import asyncio
 from contextlib import asynccontextmanager
 import hashlib
+import json
+import subprocess
 import sys
 import types
 
@@ -72,6 +74,16 @@ class FakeSdkRuntimeErrorWithSkillUse:
     session_id = "sdk-session"
     usage = {"input_tokens": 1}
     error = "model gateway timeout"
+    used_skills = ["qa-file-reviewer"]
+    used_skills_source = "executor_hook"
+
+
+class FakeSdkMaxTurnsWithSkillUse:
+    used_sdk = True
+    message = ""
+    session_id = "sdk-session"
+    usage = {"input_tokens": 1}
+    error = "Reached maximum number of turns (128)"
     used_skills = ["qa-file-reviewer"]
     used_skills_source = "executor_hook"
 
@@ -199,6 +211,79 @@ def write_skill(root, name="qa-file-reviewer", description="Review Word document
         encoding="utf-8",
     )
     return skill_dir
+
+
+def write_runner_skill(
+    root,
+    *,
+    name="qa-file-reviewer",
+    script_name="run_qa_review.py",
+    artifact_name="reviewed.docx",
+    description="Review Word documents.",
+):
+    skill_dir = write_skill(root, name=name, description=description)
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / script_name).write_text(
+        "import pathlib\n"
+        "import sys\n"
+        "out = pathlib.Path(sys.argv[2])\n"
+        "out.mkdir(parents=True, exist_ok=True)\n"
+        f"(out / {artifact_name!r}).write_bytes(b'reviewed artifact')\n"
+        "print('deterministic runner completed')\n",
+        encoding="utf-8",
+    )
+    return skill_dir
+
+
+def write_empty_bash_loop_transcript(workspace, *, count=3):
+    transcript_dir = workspace / ".claude-config" / "projects" / "run"
+    transcript_dir.mkdir(parents=True, exist_ok=True)
+    transcript = transcript_dir / "session.jsonl"
+    lines = []
+    for index in range(count):
+        lines.append(
+            json.dumps(
+                {
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Bash",
+                                "id": f"call-{index}",
+                                "input": {},
+                            }
+                        ]
+                    }
+                }
+            )
+        )
+    transcript.write_text("\n".join(lines), encoding="utf-8")
+    return transcript
+
+
+def write_bash_command_transcript(workspace, *, command="echo ok", project="run-command"):
+    transcript_dir = workspace / ".claude-config" / "projects" / project
+    transcript_dir.mkdir(parents=True, exist_ok=True)
+    transcript = transcript_dir / "session.jsonl"
+    transcript.write_text(
+        json.dumps(
+            {
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Bash",
+                            "id": "call-command",
+                            "input": {"command": command},
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return transcript
 
 
 def symlink_or_skip(target, link):
@@ -522,6 +607,393 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
     assert "Latest artifact version: v4" in calls["prompt"]
     assert "raw_storage_key" not in calls["prompt"]
     assert "s3://private" not in calls["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_file_skill_uses_controlled_runner_when_sdk_tool_schema_loops(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    write_runner_skill(tmp_path / "skills")
+    write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
+    pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer", input_payload={"message": "审核一下"})
+    stored = []
+    events = []
+
+    async def materialize_file(payload, workspace):
+        (workspace / "sample.docx").write_bytes(b"docx")
+        return ["sample.docx"]
+
+    async def sdk_turn_exhausted(payload, event_sink=None, **kwargs):
+        write_empty_bash_loop_transcript(kwargs["workspace"])
+        return FakeSdkMaxTurnsWithSkillUse()
+
+    async def event_sink(**event):
+        events.append(event)
+
+    class FakeStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            stored.append((storage_key, content, content_type))
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr(adapter, "_materialize_files", materialize_file)
+    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_turn_exhausted)
+
+    result = await adapter.submit_run(
+        payload(
+            skill_id="qa-file-reviewer",
+            agent_id="qa-word-review",
+            input={"message": "审核一下"},
+            skill_manifests=pins,
+        ),
+        event_sink=event_sink,
+    )
+
+    assert result.status == "succeeded"
+    assert result.result["controlled_runner_used"] is True
+    assert result.result["controlled_runner_reason"] == "empty_bash_tool_input_loop"
+    assert result.result["sdk_error"] == "Reached maximum number of turns (128)"
+    assert result.artifacts[0].artifact_type == "reviewed_docx"
+    assert stored[0][1] == b"reviewed artifact"
+    assert result.result["used_skills"] == ["qa-file-reviewer"]
+    assert result.executor_payload["used_skills"] == ["qa-file-reviewer"]
+    assert result.executor_payload["inferred_used_skills"] == ["qa-file-reviewer", "minimax-docx"]
+    manifests = {item["skill_id"]: item for item in result.executor_payload["skill_manifests"]}
+    assert manifests["qa-file-reviewer"]["used"] is True
+    assert manifests["minimax-docx"]["used"] is False
+    assert any(event["event_type"] == "controlled_runner_completed" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_baoyu_translate_uses_controlled_runner_when_sdk_tool_schema_loops(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    write_runner_skill(
+        tmp_path / "skills",
+        name="baoyu-translate",
+        script_name="run_translation.py",
+        artifact_name="translated.docx",
+        description="Translate Word documents.",
+    )
+    pins = _registry_pins(tmp_path / "skills", skill_id="baoyu-translate", input_payload={"message": "翻译一下"})
+    stored = []
+
+    async def materialize_file(payload, workspace):
+        (workspace / "sample.docx").write_bytes(b"docx")
+        return ["sample.docx"]
+
+    async def sdk_turn_exhausted(payload, event_sink=None, **kwargs):
+        write_empty_bash_loop_transcript(kwargs["workspace"])
+        return FakeSdkMaxTurnsWithSkillUse()
+
+    class FakeStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            stored.append((storage_key, content, content_type))
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr(adapter, "_materialize_files", materialize_file)
+    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_turn_exhausted)
+
+    result = await adapter.submit_run(
+        payload(
+            skill_id="baoyu-translate",
+            agent_id="baoyu-translate",
+            input={"message": "翻译一下"},
+            skill_manifests=pins,
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.result["controlled_runner_used"] is True
+    assert result.artifacts[0].artifact_type == "translated_docx"
+    assert stored[0][1] == b"reviewed artifact"
+
+
+@pytest.mark.asyncio
+async def test_controlled_runner_failure_keeps_sdk_failure(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    skill_dir = write_skill(tmp_path / "skills")
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "run_qa_review.py").write_text("import sys\nsys.exit(7)\n", encoding="utf-8")
+    write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
+    pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer", input_payload={"message": "审核一下"})
+    events = []
+
+    async def materialize_file(payload, workspace):
+        (workspace / "sample.docx").write_bytes(b"docx")
+        return ["sample.docx"]
+
+    async def sdk_turn_exhausted(payload, event_sink=None, **kwargs):
+        write_empty_bash_loop_transcript(kwargs["workspace"])
+        return FakeSdkMaxTurnsWithSkillUse()
+
+    async def event_sink(**event):
+        events.append(event)
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_materialize_files", materialize_file)
+    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_turn_exhausted)
+
+    result = await adapter.submit_run(
+        payload(
+            skill_id="qa-file-reviewer",
+            agent_id="qa-word-review",
+            input={"message": "审核一下"},
+            skill_manifests=pins,
+        ),
+        event_sink=event_sink,
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
+    assert result.result["sdk_error"] == "Reached maximum number of turns (128)"
+    assert any(event["event_type"] == "controlled_runner_failed" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_controlled_runner_success_without_artifacts_keeps_sdk_failure(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    skill_dir = write_skill(tmp_path / "skills")
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "run_qa_review.py").write_text(
+        "import pathlib\n"
+        "import sys\n"
+        "pathlib.Path(sys.argv[2]).mkdir(parents=True, exist_ok=True)\n"
+        "print('runner completed without artifacts')\n",
+        encoding="utf-8",
+    )
+    write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
+    pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer", input_payload={"message": "审核一下"})
+    events = []
+
+    async def materialize_file(payload, workspace):
+        (workspace / "sample.docx").write_bytes(b"docx")
+        return ["sample.docx"]
+
+    async def sdk_turn_exhausted(payload, event_sink=None, **kwargs):
+        write_empty_bash_loop_transcript(kwargs["workspace"])
+        return FakeSdkMaxTurnsWithSkillUse()
+
+    async def event_sink(**event):
+        events.append(event)
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_materialize_files", materialize_file)
+    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_turn_exhausted)
+
+    result = await adapter.submit_run(
+        payload(
+            skill_id="qa-file-reviewer",
+            agent_id="qa-word-review",
+            input={"message": "审核一下"},
+            skill_manifests=pins,
+        ),
+        event_sink=event_sink,
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
+    assert result.result["sdk_error"] == "Reached maximum number of turns (128)"
+    assert any(event["event_type"] == "controlled_runner_failed" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_controlled_runner_launch_timeout_keeps_sdk_failure(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    write_runner_skill(tmp_path / "skills")
+    write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
+    pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer", input_payload={"message": "审核一下"})
+    events = []
+
+    async def materialize_file(payload, workspace):
+        (workspace / "sample.docx").write_bytes(b"docx")
+        return ["sample.docx"]
+
+    async def sdk_turn_exhausted(payload, event_sink=None, **kwargs):
+        write_empty_bash_loop_transcript(kwargs["workspace"])
+        return FakeSdkMaxTurnsWithSkillUse()
+
+    async def event_sink(**event):
+        events.append(event)
+
+    def timeout_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=kwargs.get("args") or "runner", timeout=kwargs.get("timeout"))
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr("app.executors.claude_agent_worker.subprocess.run", timeout_run)
+    monkeypatch.setattr(adapter, "_materialize_files", materialize_file)
+    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_turn_exhausted)
+
+    result = await adapter.submit_run(
+        payload(
+            skill_id="qa-file-reviewer",
+            agent_id="qa-word-review",
+            input={"message": "审核一下"},
+            skill_manifests=pins,
+        ),
+        event_sink=event_sink,
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
+    assert result.result["sdk_error"] == "Reached maximum number of turns (128)"
+    assert any(event["event_type"] == "controlled_runner_failed" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_controlled_runner_launch_oserror_keeps_sdk_failure(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    write_runner_skill(tmp_path / "skills")
+    write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
+    pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer", input_payload={"message": "审核一下"})
+    events = []
+
+    async def materialize_file(payload, workspace):
+        (workspace / "sample.docx").write_bytes(b"docx")
+        return ["sample.docx"]
+
+    async def sdk_turn_exhausted(payload, event_sink=None, **kwargs):
+        write_empty_bash_loop_transcript(kwargs["workspace"])
+        return FakeSdkMaxTurnsWithSkillUse()
+
+    async def event_sink(**event):
+        events.append(event)
+
+    def broken_run(*args, **kwargs):
+        raise OSError("runner launch failed")
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr("app.executors.claude_agent_worker.subprocess.run", broken_run)
+    monkeypatch.setattr(adapter, "_materialize_files", materialize_file)
+    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_turn_exhausted)
+
+    result = await adapter.submit_run(
+        payload(
+            skill_id="qa-file-reviewer",
+            agent_id="qa-word-review",
+            input={"message": "审核一下"},
+            skill_manifests=pins,
+        ),
+        event_sink=event_sink,
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
+    assert result.result["sdk_error"] == "Reached maximum number of turns (128)"
+    assert any(event["event_type"] == "controlled_runner_failed" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_controlled_runner_does_not_mask_gateway_failures(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    write_runner_skill(tmp_path / "skills")
+    write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
+    pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer", input_payload={"message": "审核一下"})
+
+    async def materialize_file(payload, workspace):
+        (workspace / "sample.docx").write_bytes(b"docx")
+        return ["sample.docx"]
+
+    async def sdk_gateway_failed(payload, event_sink=None, **kwargs):
+        return FakeSdkRuntimeErrorWithSkillUse()
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_materialize_files", materialize_file)
+    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_gateway_failed)
+
+    result = await adapter.submit_run(
+        payload(
+            skill_id="qa-file-reviewer",
+            agent_id="qa-word-review",
+            input={"message": "审核一下"},
+            skill_manifests=pins,
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
+    assert result.result["sdk_error"] == "model gateway timeout"
+    assert "controlled_runner_used" not in result.result
+
+
+@pytest.mark.asyncio
+async def test_controlled_runner_does_not_mask_max_turns_without_transcript(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    write_runner_skill(tmp_path / "skills")
+    write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
+    pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer", input_payload={"message": "审核一下"})
+
+    async def materialize_file(payload, workspace):
+        (workspace / "sample.docx").write_bytes(b"docx")
+        return ["sample.docx"]
+
+    async def sdk_turn_exhausted(payload, event_sink=None, **kwargs):
+        return FakeSdkMaxTurnsWithSkillUse()
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_materialize_files", materialize_file)
+    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_turn_exhausted)
+
+    result = await adapter.submit_run(
+        payload(
+            skill_id="qa-file-reviewer",
+            agent_id="qa-word-review",
+            input={"message": "审核一下"},
+            skill_manifests=pins,
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
+    assert result.result["sdk_error"] == "Reached maximum number of turns (128)"
+    assert "controlled_runner_used" not in result.result
+
+
+@pytest.mark.asyncio
+async def test_controlled_runner_does_not_mask_max_turns_with_bash_command(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    write_runner_skill(tmp_path / "skills")
+    write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
+    pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer", input_payload={"message": "审核一下"})
+
+    async def materialize_file(payload, workspace):
+        (workspace / "sample.docx").write_bytes(b"docx")
+        return ["sample.docx"]
+
+    async def sdk_turn_exhausted(payload, event_sink=None, **kwargs):
+        write_empty_bash_loop_transcript(kwargs["workspace"])
+        write_bash_command_transcript(kwargs["workspace"])
+        return FakeSdkMaxTurnsWithSkillUse()
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_materialize_files", materialize_file)
+    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_turn_exhausted)
+
+    result = await adapter.submit_run(
+        payload(
+            skill_id="qa-file-reviewer",
+            agent_id="qa-word-review",
+            input={"message": "审核一下"},
+            skill_manifests=pins,
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
+    assert result.result["sdk_error"] == "Reached maximum number of turns (128)"
+    assert "controlled_runner_used" not in result.result
 
 
 @pytest.mark.asyncio
