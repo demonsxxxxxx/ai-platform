@@ -73,7 +73,7 @@ function WorkbenchQueueList({ items }: { items: WorkbenchQueueItem[] }) {
                   item.tone === "enabled"
                     ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
                     : item.tone === "blocked"
-                      ? "bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300"
+                      ? "bg-slate-100 text-slate-500 dark:bg-stone-800 dark:text-stone-400"
                       : "bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-300"
                 }`}
               >
@@ -453,7 +453,7 @@ export const WelcomePage = memo(function WelcomePage({
               Array.from({ length: personaSkeletonCount }).map((_, i) => (
                 <div
                   key={`persona-skeleton-${i}`}
-                  className="welcome-persona-card welcome-persona-skeleton relative min-w-[15.75rem] snap-start rounded-2xl border p-2.5"
+                  className="welcome-persona-card welcome-persona-skeleton relative min-w-[15.75rem] snap-start rounded-lg border p-2.5"
                   style={{
                     backgroundColor: "var(--theme-bg-card)",
                     borderColor: "var(--theme-border)",
@@ -482,11 +482,10 @@ export const WelcomePage = memo(function WelcomePage({
                       animationDelay: `${i * 60}ms`,
                     }}
                   >
-                    <span className="welcome-card-shimmer" aria-hidden="true" />
                     <span className="welcome-persona-header relative flex items-start gap-3">
                       <PersonaAvatarWithLoading
                         preset={preset}
-                        className="welcome-persona-avatar relative flex items-center justify-center size-11 rounded-xl shrink-0 overflow-hidden transition-transform duration-300 group-hover:scale-105"
+                        className="welcome-persona-avatar relative flex items-center justify-center size-11 rounded-lg shrink-0 overflow-hidden transition-transform duration-200 group-hover:scale-[1.02]"
                         imgClassName="h-full w-full object-cover"
                         iconSize={22}
                         fallbackIcon={<UserRound size={22} />}
@@ -498,7 +497,7 @@ export const WelcomePage = memo(function WelcomePage({
                       <span className="welcome-persona-info min-w-0 flex-1 pt-0.5">
                         <span className="welcome-persona-name-row relative flex items-center gap-1.5">
                           <span
-                            className="truncate text-[14px] font-semibold leading-[1.35] transition-colors duration-300 group-hover:text-[var(--theme-text)]"
+                            className="truncate text-[14px] font-semibold leading-[1.35] transition-colors duration-200 group-hover:text-[var(--theme-text)]"
                             style={{ color: "var(--theme-text)" }}
                           >
                             {preset.name}
@@ -546,14 +545,12 @@ export const WelcomePage = memo(function WelcomePage({
                     className={getWelcomeSuggestionButtonClass(i)}
                     style={{
                       backgroundColor: "var(--theme-bg-card)",
-                      borderColor: "var(--theme-border)",
-                      animationDelay: `${i * 60}ms`,
-                    }}
-                  >
-                    {/* Hover shimmer layer */}
-                    <span className="welcome-card-shimmer" aria-hidden="true" />
+                        borderColor: "var(--theme-border)",
+                        animationDelay: `${i * 60}ms`,
+                      }}
+                    >
                     <span
-                      className="relative flex items-center justify-center size-6 sm:size-7 xl:size-8 2xl:size-8 rounded-lg text-[13px] sm:text-[15px] xl:text-lg 2xl:text-lg shrink-0 transition-transform duration-300 group-hover:scale-110"
+                      className="relative flex items-center justify-center size-6 sm:size-7 xl:size-8 2xl:size-8 rounded-lg text-[13px] sm:text-[15px] xl:text-lg 2xl:text-lg shrink-0 transition-transform duration-200 group-hover:scale-[1.02]"
                       style={{
                         backgroundColor: "var(--theme-primary-light)",
                         color: "var(--theme-primary)",
@@ -562,7 +559,7 @@ export const WelcomePage = memo(function WelcomePage({
                       <MessageSquareText size={14} />
                     </span>
                     <span
-                      className="relative text-[12.5px] sm:text-[13.5px] leading-[1.4] sm:leading-[1.45] truncate transition-colors duration-300 group-hover:text-[var(--theme-text)]"
+                      className="relative text-[12.5px] sm:text-[13.5px] leading-[1.4] sm:leading-[1.45] truncate transition-colors duration-200 group-hover:text-[var(--theme-text)]"
                       style={{ color: "var(--theme-text-secondary)" }}
                     >
                       {suggestion.text}

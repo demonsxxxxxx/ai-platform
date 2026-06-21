@@ -317,6 +317,8 @@ test("composer first screen exposes slash dollar skills and governed shortcuts",
   assert.match(shortcutBar, /\$ Skills/);
   assert.match(shortcutBar, /\/mcp/);
   assert.match(slashMenu, /data-composer-command-menu/);
+  assert.match(slashMenu, /commandAlias/);
+  assert.match(slashMenu, /\$/);
   assert.match(zh, /输入 \//);
   assert.match(zh, /输入 \$/);
   assert.match(zh, /Skills/);
@@ -337,7 +339,9 @@ test("composer shortcut hints fail closed when a governed surface is unavailable
 
   assert.match(shortcutBar, /disabled=\{!available\}/);
   assert.match(shortcutBar, /aria-disabled=\{!available\}/);
-  assert.match(shortcutBar, /cursor-not-allowed/);
+  assert.match(shortcutBar, /data-governed-unavailable/);
+  assert.doesNotMatch(shortcutBar, /cursor-not-allowed/);
+  assert.doesNotMatch(shortcutBar, /border-amber-200 bg-amber-50/);
   assert.match(chatInput, /shortcutAvailabilityByCommand/);
   assert.match(chatInput, /if \(!shortcutAvailabilityByCommand\[command\]\) \{/);
   assert.match(chatInput, /upsertUnavailableCommandChip/);

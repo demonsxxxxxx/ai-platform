@@ -287,7 +287,7 @@ export function MarketplacePanel({
         />
       </button>
       {isFilterOpen && (
-        <div className="skill-filter-dropdown absolute right-0 top-[calc(100%+0.5rem)] z-20 w-72 rounded-2xl border  p-3 shadow-lg">
+        <div className="skill-filter-dropdown absolute right-0 top-[calc(100%+0.5rem)] z-20 w-72 rounded-lg border p-3 shadow-lg">
           <div className="mb-2 flex items-center justify-between">
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--theme-text-secondary)]">
               {t("adminMarketplace.tags")}
@@ -356,7 +356,7 @@ export function MarketplacePanel({
     <div
       data-phase1c-surface="marketplace"
       data-marketplace-catalog-shell
-      className="skill-theme-shell flex h-full min-h-0 flex-col"
+      className="flex h-full min-h-0 flex-col bg-slate-50 text-slate-950 dark:bg-stone-950 dark:text-stone-100"
     >
       {embedded && (
         <div className="skill-panel-header">

@@ -105,8 +105,11 @@ export function TabContent({ activeTab }: { activeTab: TabType }) {
   if (!Panel) return null;
 
   return (
-    <main className="flex-1 overflow-hidden">
-      <div className="mx-auto max-w-4xl sm:max-w-5xl lg:max-w-6xl w-full h-full flex flex-col">
+    <main
+      className="flex-1 overflow-hidden"
+      data-authenticated-workbench-page={activeTab}
+    >
+      <div className="flex h-full w-full flex-col">
         <Suspense fallback={<PanelLoader />}>
           <Panel />
         </Suspense>

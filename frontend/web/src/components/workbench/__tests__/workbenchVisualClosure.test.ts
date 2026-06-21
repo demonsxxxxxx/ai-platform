@@ -31,10 +31,13 @@ test("authenticated workbench source avoids marketing and nested-card patterns",
     read("src/components/chat/WelcomePage.tsx"),
     read("src/styles/chat.css"),
   ].join("\n");
+  const tabContent = read("src/components/layout/AppContent/TabContent.tsx");
 
   assert.doesNotMatch(text, /hero-card|gradient-orb|nested-card/);
   assert.doesNotMatch(text, /rounded-3xl/);
   assert.match(text, /rounded-lg/);
+  assert.doesNotMatch(tabContent, /max-w-4xl|sm:max-w-5xl|lg:max-w-6xl/);
+  assert.match(tabContent, /data-authenticated-workbench-page/);
 });
 
 test("composer and command surfaces use stable dimensions", () => {
@@ -48,6 +51,7 @@ test("composer and command surfaces use stable dimensions", () => {
 
 test("empty chat keeps the command dock compact and composer-first", () => {
   const welcome = read("src/components/chat/WelcomePage.tsx");
+  const welcomeLayout = read("src/components/chat/welcomeLayout.ts");
 
   assert.match(welcome, /data-composer-command-dock/);
   assert.match(welcome, /workbench\.commandDock/);
@@ -56,4 +60,8 @@ test("empty chat keeps the command dock compact and composer-first", () => {
   assert.doesNotMatch(welcome, /workbench\.slashSkillsHint/);
   assert.doesNotMatch(welcome, /workbench\.slashMcpHint/);
   assert.doesNotMatch(welcome, /workbench\.slashContextHint/);
+  assert.doesNotMatch(welcome, /welcome-card-shimmer/);
+  assert.doesNotMatch(welcome, /rounded-2xl/);
+  assert.doesNotMatch(welcomeLayout, /rounded-2xl/);
+  assert.match(welcomeLayout, /rounded-lg/);
 });

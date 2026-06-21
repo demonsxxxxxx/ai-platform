@@ -70,7 +70,7 @@ export function MCPPanel() {
     <div
       data-phase1c-surface="mcp"
       data-mcp-directory-shell
-      className="glass-shell flex h-full min-h-0 flex-col"
+      className="flex h-full min-h-0 flex-col bg-slate-50 text-slate-950 dark:bg-stone-950 dark:text-stone-100"
     >
       <PanelHeader
         title={t("mcp.title")}

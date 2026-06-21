@@ -31,6 +31,7 @@ test("department skill policy is rendered as a fail-closed group toggle row", ()
 test("skills and marketplace surfaces expose department availability controls", () => {
   const skillsHub = read("src/components/panels/SkillsHubPanel.tsx");
   const marketplace = read("src/components/panels/MarketplacePanel.tsx");
+  const mcp = read("src/components/panels/MCPPanel.tsx");
 
   assert.match(skillsHub, /GroupAvailabilityToggleRow/);
   assert.match(skillsHub, /skills\.marketplace\.departmentAvailability/);
@@ -38,6 +39,10 @@ test("skills and marketplace surfaces expose department availability controls", 
   assert.match(marketplace, /GroupAvailabilityToggleRow/);
   assert.match(marketplace, /skills\.marketplace\.departmentAvailability/);
   assert.match(marketplace, /data-phase1c-surface="marketplace"/);
+  for (const source of [skillsHub, marketplace, mcp]) {
+    assert.doesNotMatch(source, /skill-theme-shell|glass-shell/);
+    assert.match(source, /bg-slate-50/);
+  }
 });
 
 test("skills and marketplace remain catalog shells when backend enablement is unavailable", () => {
@@ -53,6 +58,22 @@ test("skills and marketplace remain catalog shells when backend enablement is un
   assert.match(skillsPanel, /governedUnavailable/);
   assert.match(marketplace, /governedUnavailable/);
   assert.match(marketplace, /data-marketplace-catalog-shell/);
+});
+
+test("skills marketplace cards use restrained workbench tiles instead of gradient cards", () => {
+  const baseCard = read("src/components/common/SkillBaseCard.tsx");
+  const marketplaceCard = read(
+    "src/components/panels/MarketplacePanel/SkillCard.tsx",
+  );
+  const marketplace = read("src/components/panels/MarketplacePanel.tsx");
+
+  assert.doesNotMatch(baseCard, /rounded-2xl/);
+  assert.doesNotMatch(baseCard, /linear-gradient/);
+  assert.doesNotMatch(baseCard, /scb__banner/);
+  assert.doesNotMatch(marketplaceCard, /nameToGradient/);
+  assert.doesNotMatch(marketplaceCard, /gradient=\{gradient\}/);
+  assert.doesNotMatch(marketplace, /rounded-2xl/);
+  assert.match(baseCard, /rounded-lg/);
 });
 
 test("mcp lifecycle governance remains visible but not writable", () => {

@@ -17,6 +17,11 @@ const commandIcons: Record<
   context: Layers,
 };
 
+const commandAlias: Partial<Record<Exclude<ComposerCommandName, "menu">, string>> =
+  {
+    skill: "$",
+  };
+
 export interface SlashCommandMenuProps {
   items: SlashCommandMenuItem[];
   highlightedIndex: number;
@@ -50,6 +55,7 @@ export function SlashCommandMenu({
         {items.map((item, index) => {
           const Icon = commandIcons[item.command];
           const active = index === highlightedIndex;
+          const alias = commandAlias[item.command];
           return (
             <button
               key={item.command}
@@ -78,8 +84,13 @@ export function SlashCommandMenu({
                   <span className="rounded bg-stone-100 px-1.5 py-0.5 font-mono text-[11px] text-stone-500 dark:bg-stone-800 dark:text-stone-300">
                     /{item.command}
                   </span>
+                  {alias && (
+                    <span className="rounded bg-stone-100 px-1.5 py-0.5 font-mono text-[11px] text-stone-500 dark:bg-stone-800 dark:text-stone-300">
+                      {alias}
+                    </span>
+                  )}
                   {item.unavailable && (
-                    <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-200">
+                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-500 dark:bg-stone-800 dark:text-stone-300">
                       {t("composerChip.status.unavailable", "unavailable")}
                     </span>
                   )}

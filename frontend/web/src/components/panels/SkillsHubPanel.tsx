@@ -54,7 +54,7 @@ export function SkillsHubPanel() {
   return (
     <div
       data-phase1c-surface="skills-hub"
-      className="skill-theme-shell flex h-full min-h-0 flex-col"
+      className="flex h-full min-h-0 flex-col bg-slate-50 text-slate-950 dark:bg-stone-950 dark:text-stone-100"
     >
       <PanelHeader
         className="skill-panel-header"
