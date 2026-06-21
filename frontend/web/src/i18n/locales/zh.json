@@ -618,9 +618,9 @@
     "noPermission": "没有发送消息的权限",
     "noPermissionHint": "您没有发送消息的权限",
     "outline": "大纲",
-    "placeholder": "@ 选择角色，或输入消息...",
-    "placeholderWithHintCtrl": "@ 选择角色，或输入消息…  Enter 换行，Ctrl+Enter 发送",
-    "placeholderWithHintShift": "@ 选择角色，或输入消息…  Enter 发送，Shift+Enter 换行",
+    "placeholder": "输入 / 选择命令，输入 $ 选择 Skills，或直接描述任务...",
+    "placeholderWithHintCtrl": "输入 / 选择命令，输入 $ 选择 Skills…  Enter 换行，Ctrl+Enter 发送",
+    "placeholderWithHintShift": "输入 / 选择命令，输入 $ 选择 Skills…  Enter 发送，Shift+Enter 换行",
     "queueFull": "排队已满，请稍后再试",
     "queueStart": "任务开始处理",
     "queued": "排队中 (第 {{position}} 位)...",
@@ -2461,6 +2461,14 @@
     "skill": {
       "description": "搜索允许的 Skills，并加入持久 Skill chip。",
       "label": "Skill"
+    },
+    "shortcut": {
+      "context": "/context 上下文",
+      "file": "/file 文件",
+      "label": "输入框快捷入口",
+      "mcp": "/mcp MCP",
+      "skills": "$ Skills",
+      "unavailable": "已展示，等待受治理后端合约"
     }
   },
   "governance": {

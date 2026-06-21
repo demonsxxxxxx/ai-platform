@@ -290,3 +290,37 @@ test("chat input routes the available /file command to the safe upload picker", 
     /item\.panel === "file"[\s\S]{0,160}upsertUnavailableCommandChip/,
   );
 });
+
+test("composer first screen exposes slash dollar skills and governed shortcuts", () => {
+  const chatInput = readFileSync(
+    join(root, "src/components/chat/ChatInput.tsx"),
+    "utf8",
+  );
+  const shortcutBar = readFileSync(
+    join(root, "src/components/chat/ComposerCommandHintBar.tsx"),
+    "utf8",
+  );
+  const slashMenu = readFileSync(
+    join(root, "src/components/chat/SlashCommandMenu.tsx"),
+    "utf8",
+  );
+  const zh = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
+  const en = readFileSync(join(root, "src/i18n/locales/en.json"), "utf8");
+
+  assert.match(chatInput, /<ComposerCommandHintBar/);
+  assert.match(chatInput, /handleComposerCommandShortcut/);
+  assert.match(shortcutBar, /data-composer-command-hints/);
+  assert.match(shortcutBar, /composerCommand\.shortcut\.skills/);
+  assert.match(shortcutBar, /composerCommand\.shortcut\.mcp/);
+  assert.match(shortcutBar, /composerCommand\.shortcut\.file/);
+  assert.match(shortcutBar, /composerCommand\.shortcut\.context/);
+  assert.match(shortcutBar, /\$ Skills/);
+  assert.match(shortcutBar, /\/mcp/);
+  assert.match(slashMenu, /data-composer-command-menu/);
+  assert.match(zh, /输入 \//);
+  assert.match(zh, /输入 \$/);
+  assert.match(zh, /Skills/);
+  assert.match(en, /Type \//);
+  assert.match(en, /type \$/i);
+  assert.match(en, /Skills/);
+});

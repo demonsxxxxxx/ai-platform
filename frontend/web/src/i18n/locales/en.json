@@ -618,9 +618,9 @@
     "noPermission": "No permission to send messages",
     "noPermissionHint": "You don't have permission to send messages",
     "outline": "Outline",
-    "placeholder": "@ to select a persona, or type a message...",
-    "placeholderWithHintCtrl": "@ to select a persona, or type a message…  Enter for newline, Ctrl+Enter to send",
-    "placeholderWithHintShift": "@ to select a persona, or type a message…  Enter to send, Shift+Enter for newline",
+    "placeholder": "Type / for commands, type $ for Skills, or describe the task...",
+    "placeholderWithHintCtrl": "Type / for commands, type $ for Skills…  Enter for newline, Ctrl+Enter to send",
+    "placeholderWithHintShift": "Type / for commands, type $ for Skills…  Enter to send, Shift+Enter for newline",
     "queueFull": "Queue is full, please try again later",
     "queueStart": "Task started processing",
     "queued": "Queued (position {{position}})...",
@@ -2460,6 +2460,14 @@
     "skill": {
       "description": "Search allowed Skills and add a durable Skill chip.",
       "label": "Skill"
+    },
+    "shortcut": {
+      "context": "/context Context",
+      "file": "/file File",
+      "label": "Composer shortcuts",
+      "mcp": "/mcp MCP",
+      "skills": "$ Skills",
+      "unavailable": "Visible, waiting for governed backend contract"
     }
   },
   "governance": {

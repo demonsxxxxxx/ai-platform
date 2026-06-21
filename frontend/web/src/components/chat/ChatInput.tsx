@@ -25,6 +25,7 @@ import { ChatInputToolbar } from "./ChatInputToolbar";
 import { ChatInputSelectors } from "./ChatInputSelectors";
 import { ChatInputHelpMenu } from "./ChatInputHelpMenu";
 import { ChatInputAttachments } from "./ChatInputAttachments";
+import { ComposerCommandHintBar } from "./ComposerCommandHintBar";
 import {
   parseComposerCommand,
   resolveComposerCommandDraft,
@@ -704,6 +705,32 @@ export const ChatInput = memo(function ChatInput({
     [closeSlashMenu, upsertUnavailableCommandChip],
   );
 
+  const handleComposerCommandShortcut = useCallback(
+    (command: "$" | "/skill" | "/mcp" | "/file" | "/context") => {
+      if (command === "/file" && commandPanelAvailability.files) {
+        executeAvailableFileCommand();
+        return;
+      }
+      const nextValue = command === "$" ? "$ " : `${command} `;
+      setInput(nextValue);
+      setCursorPosition(nextValue.length);
+      openCommandPanel(nextValue);
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.focus();
+        textarea.selectionStart = textarea.selectionEnd = nextValue.length;
+        scheduleTextareaResize();
+      });
+    },
+    [
+      commandPanelAvailability.files,
+      executeAvailableFileCommand,
+      openCommandPanel,
+      scheduleTextareaResize,
+    ],
+  );
+
   useEffect(() => {
     const fileSelections = attachments.map<ComposerSelection>((attachment) => ({
       id: `file:${attachment.id}`,
@@ -923,6 +950,14 @@ export const ChatInput = memo(function ChatInput({
           <ComposerChips
             selections={composerSelections}
             onRemove={handleRemoveComposerSelection}
+          />
+
+          <ComposerCommandHintBar
+            onCommand={handleComposerCommandShortcut}
+            skillsAvailable={commandPanelAvailability.skills}
+            mcpAvailable={commandPanelAvailability.tools}
+            filesAvailable={commandPanelAvailability.files}
+            contextAvailable={commandPanelAvailability.context}
           />
 
           <div className="px-2.5 pt-1">

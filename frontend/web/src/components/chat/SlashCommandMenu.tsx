@@ -40,6 +40,7 @@ export function SlashCommandMenu({
     <div
       className="absolute bottom-full left-2 right-2 z-40 mb-2 overflow-hidden rounded-lg border border-stone-200 bg-white shadow-[0_12px_32px_rgba(15,23,42,0.16)] dark:border-stone-800 dark:bg-stone-900"
       role="listbox"
+      data-composer-command-menu
       aria-label={t("composerCommand.menuLabel", "Composer command menu")}
     >
       <div className="border-b border-stone-100 px-3 py-2 text-[11px] font-semibold uppercase text-stone-400 dark:border-stone-800 dark:text-stone-500">
