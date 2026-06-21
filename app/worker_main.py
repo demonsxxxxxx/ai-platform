@@ -123,10 +123,13 @@ async def run_once(
     *,
     worker_id: str | None = None,
     heartbeat_interval_seconds: float = 10.0,
+    run_initial_maintenance: bool = True,
+    run_background_maintenance: bool = True,
 ) -> WorkerOutcome:
     resolved_worker_id = worker_id or default_worker_id()
     settings = get_settings()
-    await run_worker_maintenance(settings)
+    if run_initial_maintenance:
+        await run_worker_maintenance(settings)
     message = await queue.lease_run(
         timeout_seconds=timeout_seconds,
         worker_id=resolved_worker_id,
@@ -141,8 +144,12 @@ async def run_once(
     heartbeat_task = asyncio.create_task(
         _heartbeat_until_done(message.message_id, resolved_worker_id, heartbeat_interval_seconds)
     )
-    maintenance_task = asyncio.create_task(
-        _maintenance_until_done(settings, _worker_maintenance_interval_seconds(settings))
+    maintenance_task = (
+        asyncio.create_task(
+            _maintenance_until_done(settings, _worker_maintenance_interval_seconds(settings))
+        )
+        if run_background_maintenance
+        else None
     )
     try:
         try:
@@ -155,9 +162,12 @@ async def run_once(
                 error_message=str(exc),
             )
     finally:
-        for task in (heartbeat_task, maintenance_task):
+        tasks = [heartbeat_task]
+        if maintenance_task is not None:
+            tasks.append(maintenance_task)
+        for task in tasks:
             task.cancel()
-        for task in (heartbeat_task, maintenance_task):
+        for task in tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
     if outcome.status in {"succeeded", "failed", "skipped", "cancelled"}:
@@ -185,6 +195,66 @@ async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float =
         await close_pool()
 
 
+async def _run_worker_slot(
+    *,
+    worker_id: str,
+    poll_timeout_seconds: int,
+    idle_sleep_seconds: float,
+) -> None:
+    registry = AdapterRegistry()
+    while True:
+        outcome = await run_once(
+            registry=registry,
+            timeout_seconds=poll_timeout_seconds,
+            worker_id=worker_id,
+            run_initial_maintenance=False,
+            run_background_maintenance=False,
+        )
+        if outcome.status == "idle":
+            await asyncio.sleep(idle_sleep_seconds)
+
+
+async def run_worker_pool(
+    *,
+    worker_count: int,
+    poll_timeout_seconds: int = 5,
+    idle_sleep_seconds: float = 0.5,
+) -> None:
+    resolved_worker_count = max(int(worker_count), 1)
+    if resolved_worker_count == 1:
+        await run_forever(poll_timeout_seconds=poll_timeout_seconds, idle_sleep_seconds=idle_sleep_seconds)
+        return
+
+    settings = get_settings()
+    await run_worker_maintenance(settings)
+    registry = AdapterRegistry()
+    maintenance_task = asyncio.create_task(
+        _maintenance_until_done(settings, _worker_maintenance_interval_seconds(settings)),
+        name="ai-platform-worker-maintenance",
+    )
+    tasks = [
+        asyncio.create_task(
+            _run_worker_slot(
+                worker_id=default_worker_id(),
+                poll_timeout_seconds=poll_timeout_seconds,
+                idle_sleep_seconds=idle_sleep_seconds,
+            ),
+            name=f"ai-platform-worker-{index + 1}",
+        )
+        for index in range(resolved_worker_count)
+    ]
+    try:
+        await asyncio.gather(*tasks)
+    finally:
+        for task in [*tasks, maintenance_task]:
+            if not task.done():
+                task.cancel()
+        for task in [*tasks, maintenance_task]:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        await close_pool()
+
+
 async def run_once_and_close(timeout_seconds: int) -> WorkerOutcome:
     try:
         return await run_once(timeout_seconds=timeout_seconds)
@@ -202,7 +272,8 @@ def main() -> None:
         outcome = asyncio.run(run_once_and_close(timeout_seconds=args.timeout))
         print(outcome)
         return
-    asyncio.run(run_forever(poll_timeout_seconds=args.timeout))
+    settings = get_settings()
+    asyncio.run(run_worker_pool(worker_count=settings.worker_concurrency, poll_timeout_seconds=args.timeout))
 
 
 if __name__ == "__main__":

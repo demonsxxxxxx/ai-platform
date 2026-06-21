@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     queue_metadata_fallback_scan_limit: int = Field(default=500)
     worker_heartbeat_ttl_seconds: float = Field(default=60.0)
     worker_maintenance_interval_seconds: float = Field(default=30.0)
+    worker_concurrency: int = Field(default=1)
     memory_retention_worker_cleanup_enabled: bool = Field(default=True)
     memory_retention_worker_cleanup_interval_seconds: float = Field(default=300.0)
     memory_retention_worker_cleanup_limit: int = Field(default=200)
