@@ -1173,6 +1173,10 @@
     "confirmInstallMessage": "Are you sure you want to install this skill?",
     "confirmUpdate": "Update Skill",
     "confirmUpdateMessage": "This will re-download the skill from the marketplace and overwrite your local changes. Continue?",
+    "catalogUnavailable": {
+      "description": "The marketplace catalog shell is visible, but install, publish, and department availability actions stay disabled until ai-platform exposes governed Skill projections.",
+      "title": "Marketplace catalog is governed"
+    },
     "createAndPublish": "Publish Skill",
     "createHint": "To publish a skill to the marketplace, create it in your Skills panel first, then click the publish button.",
     "createTitle": "Publish Skill to Marketplace",
@@ -1316,6 +1320,10 @@
       "description": "MCP is visible in the workbench, but your current role can only use governed tools after ai-platform publishes an allowed tool projection.",
       "title": "MCP tools are governed"
     },
+    "catalogUnavailable": {
+      "description": "The MCP directory remains visible for discovery, while server credentials, lifecycle controls, and tool selection wait for governed ai-platform projections.",
+      "title": "MCP tool directory is governed"
+    },
     "overwriteExisting": "Overwrite existing servers with the same name",
     "promoteFailed": "Failed to promote MCP server",
     "promoteSuccess": "MCP server promoted to system server",
@@ -1330,6 +1338,7 @@
     "addToComposer": "Use /mcp in chat to search governed tools and add enabled tools to the composer.",
     "lifecycleUnavailable": "Runtime lifecycle controls",
     "lifecycleUnavailableDescription": "Start, stop, restart, and raw credential controls stay server-side until ai-platform exposes governed runtime contracts.",
+    "credentialsUnavailable": "Credential assignment and secret rotation remain unavailable in Phase 1.",
     "noMatchingTools": "No matching tools",
     "toolsSearchPlaceholder": "Search tools"
   },
@@ -2195,6 +2204,10 @@
     "exportToJSON": "Export to JSON",
     "exportZip": "Export ZIP",
     "featureDisabled": "Skills feature is disabled. Please contact administrator to enable it.",
+    "catalogUnavailable": {
+      "description": "The Skills catalog remains visible for discovery. Create, import, publish, and enable actions stay disabled until ai-platform grants a readable Skill projection.",
+      "title": "Skills catalog is governed"
+    },
     "form": {
       "addFile": "Add file",
       "content": "Content (Markdown with optional YAML frontmatter)",
@@ -2290,6 +2303,10 @@
     }
   },
   "skillsHub": {
+    "composerEntry": {
+      "description": "Use / for commands or $ for Skills inside chat; unavailable entries become chips instead of silently disappearing.",
+      "title": "Composer-first entry"
+    },
     "featureDisabled": {
       "description": "Skills are disabled at the platform level. The workbench keeps this governed entry visible, but only an administrator can enable Skill discovery and department access.",
       "title": "Skills are waiting for administrator enablement"
@@ -2469,6 +2486,12 @@
       "description": "Select an allowed model where model projections exist.",
       "label": "Model"
     },
+    "modelSelector": {
+      "description": "Choose an ai-platform approved model for this session.",
+      "empty": "No matching models",
+      "searchPlaceholder": "Search models",
+      "title": "Select model"
+    },
     "skill": {
       "description": "Search allowed Skills and add a durable Skill chip.",
       "label": "Skill"
@@ -2480,13 +2503,34 @@
       "mcp": "/mcp MCP",
       "skills": "$ Skills",
       "unavailable": "Visible, waiting for governed backend contract"
+    },
+    "contextSelector": {
+      "chip": "/context",
+      "description": "Context selection is visible in Phase 1 but remains disabled until ai-platform exposes governed context projections.",
+      "title": "Context selector unavailable"
+    },
+    "unavailable": {
+      "failClosed": "Fail-closed surface",
+      "subtitle": "Visible by design, disabled until ai-platform exposes the governed contract."
     }
+  },
+  "workbench": {
+    "cockpit": "Workbench",
+    "commandDock": "Composer",
+    "commandDockHint": "Type commands directly in the input; governed entries become chips.",
+    "commandFirstTitle": "Start with a prompt, Skill, MCP tool, file, or context.",
+    "defaultAgent": "Default",
+    "newConversation": "New conversation",
+    "none": "None",
+    "selectionState": "Selection state",
+    "unavailableShort": "Unavailable"
   },
   "governance": {
     "adminOnly": "Admin only",
     "disabled": "Disabled",
     "enabled": "Enabled",
     "inherited": "Inherited",
+    "toggleBacked": "Backed by ai-platform policy",
     "unavailable": "Unavailable"
   }
 }

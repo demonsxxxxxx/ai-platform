@@ -89,3 +89,28 @@ test("launchpad copy keeps click-through boundary visible", () => {
   assert.match(launchpad, /launchpad\.boundary/);
   assert.doesNotMatch(launchpad, /migrate.*nonGMPlims/i);
 });
+
+test("share channel and launchpad use shared workbench unavailable language", () => {
+  const unavailable = readFileSync(
+    join(root, "src/components/workbench/WorkbenchUnavailableState.tsx"),
+    "utf8",
+  );
+  const share = readFileSync(
+    join(root, "src/components/share/ShareUnavailableState.tsx"),
+    "utf8",
+  );
+  const channel = readFileSync(
+    join(root, "src/components/channels/ChannelImportPanel.tsx"),
+    "utf8",
+  );
+  const launchpad = readFileSync(
+    join(root, "src/components/launchpad/LaunchpadPanel.tsx"),
+    "utf8",
+  );
+
+  assert.match(unavailable, /data-workbench-unavailable/);
+  assert.match(share, /WorkbenchUnavailableState/);
+  assert.match(channel, /WorkbenchUnavailableState/);
+  assert.match(channel, /channel-import-projection/);
+  assert.match(launchpad, /launchpad\.boundary/);
+});

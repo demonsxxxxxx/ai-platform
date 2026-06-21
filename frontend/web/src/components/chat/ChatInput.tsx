@@ -99,6 +99,9 @@ export const ChatInput = memo(function ChatInput({
   agents = [],
   currentAgent,
   onSelectAgent,
+  availableModels = [],
+  currentModelId,
+  onSelectModel,
   attachments: externalAttachments,
   onAttachmentsChange: externalOnAttachmentsChange,
   onMentionQueryChange,
@@ -469,17 +472,19 @@ export const ChatInput = memo(function ChatInput({
         !!onToggleAll &&
         totalToolsCount > 0,
       agents: agents.length > 0 && !!onSelectAgent,
-      models: false,
+      models: !!availableModels?.length && !!onSelectModel,
       files: uploadCategories.length > 0,
-      context: false,
+      context: true,
     }),
     [
       agents.length,
+      availableModels?.length,
       enableSkills,
       onToggleAll,
       onToggleAllSkills,
       onToggleCategory,
       onSelectAgent,
+      onSelectModel,
       onToggleSkill,
       onToggleSkillCategory,
       onToggleTool,
@@ -556,6 +561,37 @@ export const ChatInput = memo(function ChatInput({
     requestAnimationFrame(scheduleTextareaResize);
   }, [closeSlashMenu, scheduleTextareaResize]);
 
+  const upsertContextUnavailableChip = useCallback(() => {
+    dispatchComposerSelection({
+      type: "upsert",
+      selection: {
+        id: "unavailable:context-selector",
+        kind: "context",
+        label: t("composerCommand.contextSelector.chip", "/context"),
+        state: "unavailable",
+        source: "context-selector",
+        description: t(
+          "composerCommand.contextSelector.description",
+          "Context selection is visible in Phase 1 but remains disabled until ai-platform exposes governed context projections.",
+        ),
+      },
+    });
+  }, [t]);
+
+  const markContextUnavailableCommand = useCallback(() => {
+    upsertContextUnavailableChip();
+    setInput("");
+    setCursorPosition(0);
+    setActivePanel(null);
+    setCommandSearchSeed(null);
+    closeSlashMenu();
+    requestAnimationFrame(scheduleTextareaResize);
+  }, [
+    closeSlashMenu,
+    scheduleTextareaResize,
+    upsertContextUnavailableChip,
+  ]);
+
   const openCommandPanel = useCallback(
     (nextValue: string): boolean => {
       const draft = resolveComposerCommandDraft(
@@ -605,7 +641,7 @@ export const ChatInput = memo(function ChatInput({
         executeAvailableFileCommand();
         return;
       }
-      if (item.unavailable || item.panel === "model" || item.panel === "context") {
+      if (item.unavailable) {
         upsertUnavailableCommandChip({
           trigger: "/",
           command: item.command,
@@ -616,6 +652,10 @@ export const ChatInput = memo(function ChatInput({
         setInput("");
         setCursorPosition(0);
         requestAnimationFrame(scheduleTextareaResize);
+        return;
+      }
+      if (item.panel === "context") {
+        markContextUnavailableCommand();
         return;
       }
       setInput(nextInput);
@@ -637,6 +677,7 @@ export const ChatInput = memo(function ChatInput({
       closeSlashMenu,
       executeAvailableFileCommand,
       input,
+      markContextUnavailableCommand,
       scheduleTextareaResize,
       upsertUnavailableCommandChip,
     ],
@@ -660,6 +701,10 @@ export const ChatInput = memo(function ChatInput({
             panel: draft.panel,
             query: draft.selectorQuery,
           });
+          if (draft.panel === "context") {
+            markContextUnavailableCommand();
+            return true;
+          }
         }
         return true;
       }
@@ -689,6 +734,7 @@ export const ChatInput = memo(function ChatInput({
       closeSlashMenu,
       executeAvailableFileCommand,
       handleSlashCommandSelect,
+      markContextUnavailableCommand,
       scheduleTextareaResize,
       slashCommandItems,
       slashMenuHighlight,
@@ -703,20 +749,14 @@ export const ChatInput = memo(function ChatInput({
         openFileCommandRef.current?.();
         return;
       }
-      if (panel === "model" || panel === "context") {
-        upsertUnavailableCommandChip({
-          trigger: "/",
-          command: panel,
-          panel,
-          query: "",
-          unavailable: true,
-        });
+      if (panel === "context") {
+        markContextUnavailableCommand();
         return;
       }
       setActivePanel(panel);
       closeSlashMenu();
     },
-    [closeSlashMenu, upsertUnavailableCommandChip],
+    [closeSlashMenu, markContextUnavailableCommand],
   );
 
   const handleComposerCommandShortcut = useCallback(
@@ -767,6 +807,10 @@ export const ChatInput = memo(function ChatInput({
         executeAvailableFileCommand();
         return;
       }
+      if (command === "/context") {
+        markContextUnavailableCommand();
+        return;
+      }
       const nextValue = command === "$" ? "$ " : `${command} `;
       setInput(nextValue);
       setCursorPosition(nextValue.length);
@@ -783,6 +827,7 @@ export const ChatInput = memo(function ChatInput({
       commandPanelAvailability.files,
       closeSlashMenu,
       executeAvailableFileCommand,
+      markContextUnavailableCommand,
       openCommandPanel,
       scheduleTextareaResize,
       shortcutAvailabilityByCommand,
@@ -864,6 +909,41 @@ export const ChatInput = memo(function ChatInput({
     });
   }, [agents, currentAgent, t]);
 
+  useEffect(() => {
+    dispatchComposerSelection({ type: "clear-kind", kind: "model" });
+    if (!currentModelId) return;
+    const selectedModel = availableModels.find(
+      (model) => model.id === currentModelId,
+    );
+    if (!selectedModel) return;
+    dispatchComposerSelection({
+      type: "upsert",
+      selection: {
+        id: `model:${currentModelId}`,
+        kind: "model",
+        label: selectedModel.label,
+        state: "enabled",
+        source: selectedModel.provider ?? "model",
+        description: selectedModel.description ?? selectedModel.value,
+        referenceId: selectedModel.id,
+      },
+    });
+  }, [availableModels, currentModelId]);
+
+  const handleSelectModelChip = useCallback(
+    (modelId: string, modelValue: string) => {
+      onSelectModel?.(modelId, modelValue);
+      dispatchComposerSelection({ type: "remove", id: `unavailable:model` });
+      setInput("");
+      setCursorPosition(0);
+      setActivePanel(null);
+      setCommandSearchSeed(null);
+      closeSlashMenu();
+      requestAnimationFrame(scheduleTextareaResize);
+    },
+    [closeSlashMenu, onSelectModel, scheduleTextareaResize],
+  );
+
   const handleRemoveComposerSelection = useCallback(
     (id: string) => {
       dispatchComposerSelection({ type: "remove", id });
@@ -893,6 +973,10 @@ export const ChatInput = memo(function ChatInput({
       if (id.startsWith("agent:")) {
         const fallbackAgent = agents.find((agent) => agent.id !== currentAgent);
         if (fallbackAgent) onSelectAgent?.(fallbackAgent.id);
+        return;
+      }
+      if (id.startsWith("model:")) {
+        return;
       }
     },
     [
@@ -969,7 +1053,7 @@ export const ChatInput = memo(function ChatInput({
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          className={`chat-input-container flex flex-col relative w-full rounded-3xl px-1 border transition-all duration-300 ${
+          className={`chat-input-container flex flex-col relative w-full rounded-lg px-1 border transition-all duration-300 ${
             isDraggingOver ? "border-dashed shadow-lg border-2" : ""
           }`}
           data-mention-active={mention.isActive || undefined}
@@ -1134,6 +1218,9 @@ export const ChatInput = memo(function ChatInput({
         agents={agents}
         currentAgent={currentAgent}
         onSelectAgent={onSelectAgent}
+        availableModels={availableModels}
+        currentModelId={currentModelId}
+        onSelectModel={handleSelectModelChip}
         agentOptions={agentOptions}
         agentOptionValues={agentOptionValues}
         onToggleAgentOption={onToggleAgentOption}

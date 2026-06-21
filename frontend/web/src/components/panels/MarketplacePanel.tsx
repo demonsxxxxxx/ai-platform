@@ -21,12 +21,17 @@ import { Permission } from "../../types";
 import type { SkillResponse, SkillCreate } from "../../types";
 import { SkillCard } from "./MarketplacePanel/SkillCard";
 import { SkillPreviewModal } from "./MarketplacePanel/SkillPreviewModal";
+import { GroupAvailabilityToggleRow } from "../governance/GroupAvailabilityToggleRow";
 
 interface MarketplacePanelProps {
   embedded?: boolean;
+  governedUnavailable?: boolean;
 }
 
-export function MarketplacePanel({ embedded = false }: MarketplacePanelProps) {
+export function MarketplacePanel({
+  embedded = false,
+  governedUnavailable = false,
+}: MarketplacePanelProps) {
   const { t } = useTranslation();
   const { hasAnyPermission } = useAuth();
   const {
@@ -58,15 +63,16 @@ export function MarketplacePanel({ embedded = false }: MarketplacePanelProps) {
     readPreviewFile,
     closePreview,
     setPreviewFileContent,
-  } = useMarketplace();
+  } = useMarketplace({ enabled: !governedUnavailable });
 
   const {
     skills: userSkills,
     fetchSkills: fetchUserSkills,
     isLoading: userSkillsLoading,
     getSkill,
-  } = useSkills();
-  const canWrite = hasAnyPermission([Permission.MARKETPLACE_PUBLISH]);
+  } = useSkills({ enabled: !governedUnavailable });
+  const canWrite =
+    hasAnyPermission([Permission.MARKETPLACE_PUBLISH]) && !governedUnavailable;
   const canAdmin = hasAnyPermission([Permission.MARKETPLACE_ADMIN]);
 
   const installedMarketplaceNames = new Set(
@@ -327,6 +333,7 @@ export function MarketplacePanel({ embedded = false }: MarketplacePanelProps) {
       )}
       <button
         onClick={() => fetchSkills()}
+        disabled={governedUnavailable}
         className="btn-secondary h-10"
         title={t("common.refresh")}
       >
@@ -346,7 +353,11 @@ export function MarketplacePanel({ embedded = false }: MarketplacePanelProps) {
   }
 
   return (
-    <div className="skill-theme-shell flex h-full min-h-0 flex-col">
+    <div
+      data-phase1c-surface="marketplace"
+      data-marketplace-catalog-shell
+      className="skill-theme-shell flex h-full min-h-0 flex-col"
+    >
       {embedded && (
         <div className="skill-panel-header">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -404,6 +415,15 @@ export function MarketplacePanel({ embedded = false }: MarketplacePanelProps) {
         </div>
       )}
 
+      <div className="px-4 pt-3">
+        <GroupAvailabilityToggleRow
+          label={t("skills.marketplace.departmentAvailability")}
+          description={t("skills.marketplace.groupToggleUnavailable")}
+          state="unavailable"
+          backed={false}
+        />
+      </div>
+
       {/* Skills List */}
       <div className="skill-content-area flex-1 overflow-y-auto py-2 sm:py-4 px-4 sm:p-6">
         {skills.length === 0 ? (
@@ -412,12 +432,16 @@ export function MarketplacePanel({ embedded = false }: MarketplacePanelProps) {
               <ShoppingBag size={28} />
             </div>
             <p className="skill-empty-state__title">
-              {searchQuery || selectedTags.length > 0
+              {governedUnavailable
+                ? t("marketplace.catalogUnavailable.title")
+                : searchQuery || selectedTags.length > 0
                 ? t("marketplace.noMatchingSkills")
                 : t("marketplace.noSkills")}
             </p>
             <p className="skill-empty-state__description">
-              {searchQuery || selectedTags.length > 0
+              {governedUnavailable
+                ? t("marketplace.catalogUnavailable.description")
+                : searchQuery || selectedTags.length > 0
                 ? t("marketplace.subtitle")
                 : t("marketplace.createHint")}
             </p>
@@ -439,7 +463,7 @@ export function MarketplacePanel({ embedded = false }: MarketplacePanelProps) {
                   skill.skill_name,
                 )}
                 isOwner={skill.is_owner}
-                canManage={skill.is_owner || canAdmin}
+                canManage={!governedUnavailable && (skill.is_owner || canAdmin)}
                 canWrite={canWrite}
                 installingSkill={installingSkill}
                 userSkillsLoading={userSkillsLoading}

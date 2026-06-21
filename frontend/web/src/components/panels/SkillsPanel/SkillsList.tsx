@@ -20,6 +20,7 @@ import type { SkillResponse } from "../../../types";
 
 interface SkillsListProps {
   embedded?: boolean;
+  governedUnavailable?: boolean;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
   selectedTags: string[];
@@ -54,6 +55,7 @@ interface SkillsListProps {
 
 export function SkillsList({
   embedded = false,
+  governedUnavailable = false,
   searchQuery,
   setSearchQuery,
   selectedTags,
@@ -184,15 +186,27 @@ export function SkillsList({
           </span>
         </button>
       )}
-      <button onClick={onGithubClick} className="btn-secondary h-10">
+      <button
+        onClick={onGithubClick}
+        disabled={governedUnavailable}
+        className="btn-secondary h-10"
+      >
         <Github size={16} />
         <span className="hidden sm:inline">GitHub</span>
       </button>
-      <button onClick={onZipClick} className="btn-secondary h-10">
+      <button
+        onClick={onZipClick}
+        disabled={governedUnavailable}
+        className="btn-secondary h-10"
+      >
         <Archive size={16} />
         <span className="hidden sm:inline">ZIP</span>
       </button>
-      <button onClick={onCreate} className="btn-primary h-10">
+      <button
+        onClick={onCreate}
+        disabled={governedUnavailable}
+        className="btn-primary h-10"
+      >
         <Plus size={16} />
         <span className="hidden sm:inline">{t("skills.newSkill")}</span>
       </button>
@@ -262,16 +276,20 @@ export function SkillsList({
               <FolderOpen size={28} />
             </div>
             <p className="skill-empty-state__title">
-              {hasActiveFilters
+              {governedUnavailable
+                ? t("skills.catalogUnavailable.title")
+                : hasActiveFilters
                 ? t("skills.noMatchingSkills")
                 : t("skills.noSkills")}
             </p>
             <p className="skill-empty-state__description">
-              {hasActiveFilters
+              {governedUnavailable
+                ? t("skills.catalogUnavailable.description")
+                : hasActiveFilters
                 ? t("skills.subtitle")
                 : t("skills.createFirst")}
             </p>
-            {!hasActiveFilters && canWrite && (
+            {!hasActiveFilters && canWrite && !governedUnavailable && (
               <button onClick={onCreate} className="btn-primary mt-4">
                 <Plus size={16} />
                 <span>{t("skills.newSkill")}</span>

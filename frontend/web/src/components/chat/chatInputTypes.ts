@@ -1,4 +1,5 @@
 import type { FeaturePanel } from "../selectors/FeatureMenu";
+import type { ModelOption } from "../../services/api/modelPublic";
 import type {
   ToolState,
   ToolCategory,
@@ -73,6 +74,9 @@ export interface ChatInputProps {
   agents?: { id: string; name: string; description: string }[];
   currentAgent?: string;
   onSelectAgent?: (id: string) => void;
+  availableModels?: ModelOption[];
+  currentModelId?: string;
+  onSelectModel?: (modelId: string, modelValue: string) => void;
   attachments?: MessageAttachment[];
   onAttachmentsChange?: (
     attachments:

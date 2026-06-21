@@ -6,12 +6,30 @@
   display: none;
 }
 
+.chat-input-container {
+  border-radius: 8px;
+  min-height: 44px;
+  max-height: min(52dvh, 420px);
+  overflow: hidden;
+}
+
 /* Chat input focus glow effect */
 .chat-input-container:focus-within {
   border-color: var(--theme-ring);
   box-shadow:
     0 0 0 3px color-mix(in srgb, var(--theme-ring) 12%, transparent),
-    0 4px 16px rgba(0, 0, 0, 0.08);
+    0 8px 22px rgba(15, 23, 42, 0.08);
+}
+
+.composer-command-surface {
+  max-height: min(48dvh, 360px);
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.composer-command-list {
+  max-height: min(42dvh, 312px);
+  overflow-y: auto;
 }
 
 /* Chat input textarea placeholder */

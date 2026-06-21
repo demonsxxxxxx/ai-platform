@@ -81,6 +81,8 @@ const panelCommandNames = new Set<ComposerCommandName>([
   "skill",
   "mcp",
   "agent",
+  "model",
+  "context",
 ]);
 
 export interface SlashCommandMenuItem {
@@ -264,7 +266,9 @@ export function resolveComposerCommandDraft(
       ? "command-menu"
       : command.panel === "skills" ||
           command.panel === "tools" ||
-          command.panel === "agent"
+          command.panel === "agent" ||
+          command.panel === "model" ||
+          command.panel === "context"
         ? command.panel
         : null;
   const shouldExecute =

@@ -70,7 +70,9 @@ export function WorkbenchRightPanel({
         </dl>
       </section>
 
-      <section className={`${workbenchSurface.panel} flex min-h-0 flex-1 flex-col p-4`}>
+      <section
+        className={`${workbenchSurface.panel} flex min-h-0 flex-1 flex-col p-3`}
+      >
         <p className={workbenchSurface.label}>
           {t("workbench.runSurfaces", "Run surfaces")}
         </p>
@@ -78,17 +80,17 @@ export function WorkbenchRightPanel({
           {statusItems.map((item) => {
             const Icon = item.icon;
             return (
-              <div
-                key={item.label}
-                className="rounded-lg border border-stone-100 bg-stone-50/80 p-3 dark:border-stone-800 dark:bg-stone-950/60"
-              >
+              <div key={item.label} className={workbenchSurface.statusTile}>
                 <div className="flex items-center gap-2">
-                  <Icon size={15} className="text-stone-500 dark:text-stone-400" />
-                  <span className="text-xs font-medium text-stone-800 dark:text-stone-100">
+                  <Icon
+                    size={15}
+                    className="text-slate-500 dark:text-stone-400"
+                  />
+                  <span className="text-xs font-medium text-slate-800 dark:text-stone-100">
                     {item.label}
                   </span>
                 </div>
-                <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-stone-400">
                   {item.value}
                 </p>
               </div>
@@ -96,10 +98,10 @@ export function WorkbenchRightPanel({
           })}
         </div>
 
-        <div className="mt-auto rounded-lg border border-dashed border-stone-200 bg-white p-3 text-xs leading-5 text-stone-500 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-400">
+        <div className={`mt-auto ${workbenchSurface.unavailable}`}>
           {t(
             "workbench.phase2Unavailable",
-            "Artifact playback, selected context, and provenance drawer will stay read-only until backed by ai-platform projections.",
+            "Artifact playback, selected context, and provenance drawer stay read-only until backed by ai-platform projections.",
           )}
         </div>
       </section>

@@ -805,6 +805,9 @@ export function ChatAppContent({
           agents={agents}
           currentAgent={currentAgent}
           onSelectAgent={switchAgent}
+          availableModels={filteredModels ?? []}
+          currentModelId={currentModelId}
+          onSelectModel={handleSelectModel}
           approvals={approvals}
           onRespondApproval={respondToApproval}
           approvalLoading={approvalLoading}

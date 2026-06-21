@@ -1,6 +1,7 @@
-import { MessageSquarePlus, ShieldAlert } from "lucide-react";
+import { MessageSquarePlus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { workbenchSurface } from "../workbench/workbenchSurface";
+import { WorkbenchUnavailableState } from "../workbench/WorkbenchUnavailableState";
 
 export function ChannelImportPanel() {
   const { t } = useTranslation();
@@ -10,6 +11,11 @@ export function ChannelImportPanel() {
     redaction: string;
     retention: string;
   }> = [];
+  const importMetadataLabels = {
+    redaction: t("channelImport.redaction"),
+    retention: t("channelImport.retention"),
+  };
+  void importMetadataLabels;
 
   if (backedSources.length === 0) {
     return (
@@ -17,17 +23,11 @@ export function ChannelImportPanel() {
         data-phase1c-surface="channel-import"
         className="flex h-full min-h-0 items-center justify-center p-6"
       >
-        <section
-          className={`${workbenchSurface.compactPanel} max-w-xl p-5 text-center`}
-        >
-          <ShieldAlert className="mx-auto text-slate-500" size={32} />
-          <h2 className="mt-4 text-base font-semibold text-slate-900 dark:text-stone-100">
-            {t("channelImport.unavailable.title")}
-          </h2>
-          <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-stone-300">
-            {t("channelImport.unavailable.description")}
-          </p>
-        </section>
+        <WorkbenchUnavailableState
+          surface="channel-import-projection"
+          title={t("channelImport.unavailable.title")}
+          description={t("channelImport.unavailable.description")}
+        />
       </div>
     );
   }

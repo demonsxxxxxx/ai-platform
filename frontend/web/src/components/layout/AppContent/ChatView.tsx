@@ -87,6 +87,7 @@ import type { ExternalNavigationTargetFile } from "./externalNavigationState";
 import { isFileLink } from "../../documents/utils";
 import { sessionApi } from "../../../services/api";
 import { buildFileLinkPreviewRequest } from "../../chat/ChatMessage/items/fileLinkPreview";
+import type { ModelOption } from "../../../services/api/modelPublic";
 
 const FLOATING_SCROLL_BUTTON_OFFSET_CLASS = "bottom-full mb-3";
 
@@ -157,6 +158,9 @@ interface ChatViewProps {
   agents: { id: string; name: string; description: string }[];
   currentAgent: string;
   onSelectAgent: (id: string) => void;
+  availableModels: ModelOption[];
+  currentModelId: string;
+  onSelectModel: (modelId: string, modelValue: string) => void;
   approvals: PendingApproval[];
   onRespondApproval: (
     id: string,
@@ -232,6 +236,9 @@ export function ChatView({
   agents,
   currentAgent,
   onSelectAgent,
+  availableModels,
+  currentModelId,
+  onSelectModel,
   approvals,
   onRespondApproval,
   approvalLoading,
@@ -696,6 +703,9 @@ export function ChatView({
     agents,
     currentAgent,
     onSelectAgent,
+    availableModels,
+    currentModelId,
+    onSelectModel,
     attachments,
     onAttachmentsChange,
   };

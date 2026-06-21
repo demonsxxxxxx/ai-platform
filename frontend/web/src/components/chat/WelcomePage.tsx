@@ -1,7 +1,6 @@
 import { memo, useMemo, useState, useCallback, useRef } from "react";
 import {
   Bot,
-  Boxes,
   ChevronRight,
   FileText,
   MessageSquareText,
@@ -262,6 +261,13 @@ export const WelcomePage = memo(function WelcomePage({
         tone: currentAgentName ? "enabled" : "default",
       },
       {
+        id: "model",
+        icon: Sparkles,
+        label: t("featureMenu.model", "Model"),
+        value: chatInputProps.currentModelId || t("workbench.none", "None"),
+        tone: chatInputProps.currentModelId ? "enabled" : "default",
+      },
+      {
         id: "files",
         icon: FileText,
         label: t("chat.fileReferences", "File references"),
@@ -276,6 +282,7 @@ export const WelcomePage = memo(function WelcomePage({
       currentAgentName,
       enabledSkillsCount,
       enabledToolsCount,
+      chatInputProps.currentModelId,
       t,
       totalSkillsCount,
       totalToolsCount,
@@ -335,56 +342,32 @@ export const WelcomePage = memo(function WelcomePage({
                 )}
               </h2>
             </div>
-            <div className="grid grid-cols-3 gap-1 rounded-lg border border-stone-200 bg-stone-50 p-1 text-[11px] font-semibold text-stone-600 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-300">
-              <span className="rounded-md bg-white px-2 py-1 text-center shadow-sm dark:bg-stone-900">
-                /
-              </span>
-              <span className="rounded-md bg-white px-2 py-1 text-center shadow-sm dark:bg-stone-900">
-                $
-              </span>
-              <span className="rounded-md bg-white px-2 py-1 text-center shadow-sm dark:bg-stone-900">
-                @
-              </span>
-            </div>
           </div>
 
-          <div className="mt-4 grid gap-2 sm:grid-cols-3">
-            {[
-              {
-                icon: Sparkles,
-                label: t("featureMenu.skills", "Skills"),
-                value: t("workbench.slashSkillsHint", "/skill or $"),
-              },
-              {
-                icon: Wrench,
-                label: t("featureMenu.mcpTools", "MCP tools"),
-                value: t("workbench.slashMcpHint", "/mcp"),
-              },
-              {
-                icon: Boxes,
-                label: t("featureMenu.context", "Context"),
-                value: t("workbench.slashContextHint", "/file /context"),
-              },
-            ].map((item) => {
-              const Icon = item.icon;
-              return (
-                <div
-                  key={item.label}
-                  className="rounded-lg border border-stone-200 bg-stone-50/80 p-3 dark:border-stone-800 dark:bg-stone-950/60"
-                >
-                  <Icon size={16} className="text-stone-500 dark:text-stone-400" />
-                  <p className="mt-2 text-sm font-semibold text-stone-800 dark:text-stone-100">
-                    {item.label}
-                  </p>
-                  <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">
-                    {item.value}
-                  </p>
-                </div>
-              );
-            })}
+          <div
+            data-composer-command-dock
+            className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-xs text-stone-600 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-300"
+          >
+            <span className="font-medium text-stone-800 dark:text-stone-100">
+              {t("workbench.commandDock", "Composer")}
+            </span>
+            {["/", "$", "/mcp", "/model", "/file", "/context"].map((command) => (
+              <span
+                key={command}
+                className="rounded-md bg-white px-2 py-1 font-semibold shadow-sm dark:bg-stone-900"
+              >
+                {command}
+              </span>
+            ))}
+            <span className="min-w-0 text-stone-500 dark:text-stone-400">
+              {t(
+                "workbench.commandDockHint",
+                "Type commands directly in the input; governed entries become chips.",
+              )}
+            </span>
           </div>
 
-          <div className="welcome-input mt-4">
+          <div className="welcome-input mt-3">
             <ChatInput
               {...chatInputProps}
               onMentionQueryChange={handleMentionQueryChange}

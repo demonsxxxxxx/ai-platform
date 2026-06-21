@@ -13,7 +13,7 @@ export function WorkbenchShell({
   rightPanel,
 }: WorkbenchShellProps) {
   return (
-    <section className={workbenchSurface.root}>
+    <section className={workbenchSurface.root} data-phase1-closure-shell>
       <div className={workbenchSurface.workspace}>
         <div className={workbenchSurface.thread}>
           <div
@@ -32,7 +32,10 @@ export function WorkbenchShell({
           )}
         </div>
 
-        <div data-workbench-region="context" className={workbenchSurface.context}>
+        <div
+          data-workbench-region="context"
+          className={workbenchSurface.context}
+        >
           {rightPanel}
         </div>
       </div>

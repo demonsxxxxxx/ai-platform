@@ -1,10 +1,14 @@
 import { useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { ToolSelector } from "../selectors/ToolSelector";
 import { SkillSelector } from "../selectors/SkillSelector";
 import { AgentModeSelector } from "../selectors/AgentModeSelector";
 import { PersonaPresetSelector } from "../persona/PersonaPresetSelector";
 import { AgentOptionButton } from "./AgentOptionButton";
+import { ComposerModelPanel } from "./ComposerModelPanel";
+import { ComposerUnavailablePanel } from "./ComposerUnavailablePanel";
 import type { FeaturePanel } from "../selectors/FeatureMenu";
+import type { ModelOption } from "../../services/api/modelPublic";
 import type {
   ToolState,
   ToolCategory,
@@ -65,6 +69,10 @@ export interface ChatInputSelectorsProps {
   agents?: { id: string; name: string; description: string }[];
   currentAgent?: string;
   onSelectAgent?: (id: string) => void;
+  // Model selector
+  availableModels?: ModelOption[];
+  currentModelId?: string;
+  onSelectModel?: (modelId: string, modelValue: string) => void;
   // Agent options
   agentOptions?: Record<string, AgentOption>;
   agentOptionValues?: Record<string, boolean | string | number>;
@@ -109,11 +117,15 @@ export function ChatInputSelectors({
   agents = [],
   currentAgent,
   onSelectAgent,
+  availableModels = [],
+  currentModelId,
+  onSelectModel,
   agentOptions,
   agentOptionValues = {},
   onToggleAgentOption,
 }: ChatInputSelectorsProps) {
   const navigate = useNavigate();
+  const { t } = useTranslation();
 
   return (
     <>
@@ -194,6 +206,27 @@ export function ChatInputSelectors({
             ? commandSearchSeed.query
             : undefined
         }
+      />
+      {onSelectModel && availableModels.length > 0 && (
+        <ComposerModelPanel
+          models={availableModels}
+          currentModelId={currentModelId}
+          isOpen={activePanel === "model"}
+          onOpenChange={(open) => onActivePanelChange(open ? "model" : null)}
+          onSelectModel={onSelectModel}
+          searchSeed={
+            commandSearchSeed?.panel === "model"
+              ? commandSearchSeed.query
+              : undefined
+          }
+        />
+      )}
+      <ComposerUnavailablePanel
+        isOpen={activePanel === "context"}
+        onOpenChange={(open) => onActivePanelChange(open ? "context" : null)}
+        surface="context-selector"
+        title={t("composerCommand.contextSelector.title")}
+        description={t("composerCommand.contextSelector.description")}
       />
       {agentOptions &&
         onToggleAgentOption &&

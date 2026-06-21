@@ -42,7 +42,6 @@ export function MCPPanel() {
     }),
     [page, searchQuery],
   );
-  const { servers, total, isLoading, error } = useMCP({ listParams });
   const { hasAnyPermission } = useAuth();
 
   useEffect(() => {
@@ -51,43 +50,28 @@ export function MCPPanel() {
 
   const canRead = hasAnyPermission([Permission.MCP_READ]);
   const canSelect = hasAnyPermission([Permission.MCP_READ]);
+  const governedUnavailable = !canRead;
+  const { servers, total, isLoading, error } = useMCP({
+    enabled: !governedUnavailable,
+    listParams,
+  });
   const permissionAvailability = resolveGroupAvailability({
+    backed: !governedUnavailable,
     enabled: canSelect,
     inherited: canRead && !canSelect,
   });
   const lifecycleAvailability = resolveGroupAvailability({ backed: false });
-
-  if (!canRead) {
-    return (
-      <div
-        data-phase1c-surface="mcp"
-        className="flex h-full min-h-0 items-center justify-center p-6"
-      >
-        <section className="max-w-xl rounded-lg border border-stone-200 bg-white p-5 text-center shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900">
-          <ShieldCheck className="mx-auto text-stone-500" size={32} />
-          <h2 className="mt-4 text-base font-semibold text-stone-900 dark:text-stone-100">
-            {t("mcp.permissionLimited.title")}
-          </h2>
-          <p className="mt-2 text-sm leading-6 text-stone-600 dark:text-stone-300">
-            {t("mcp.permissionLimited.description")}
-          </p>
-          <div className="mt-4 flex justify-center">
-            <GovernanceAvailabilityBadge
-              state={permissionAvailability.state}
-              labelKey={permissionAvailability.labelKey}
-            />
-          </div>
-        </section>
-      </div>
-    );
-  }
 
   if (isLoading) {
     return <MCPPanelSkeleton />;
   }
 
   return (
-    <div data-phase1c-surface="mcp" className="glass-shell flex h-full min-h-0 flex-col">
+    <div
+      data-phase1c-surface="mcp"
+      data-mcp-directory-shell
+      className="glass-shell flex h-full min-h-0 flex-col"
+    >
       <PanelHeader
         title={t("mcp.title")}
         subtitle={t("mcp.subtitle")}
@@ -141,7 +125,10 @@ export function MCPPanel() {
                 labelKey={permissionAvailability.labelKey}
               />
             </div>
-            <div className="flex items-start justify-between gap-3 rounded-md bg-stone-50/80 p-3 dark:bg-stone-950/40">
+            <div
+              data-fail-closed-surface="mcp-lifecycle"
+              className="flex items-start justify-between gap-3 rounded-md bg-stone-50/80 p-3 dark:bg-stone-950/40"
+            >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <Boxes size={16} className="text-stone-500" />
@@ -151,6 +138,9 @@ export function MCPPanel() {
                 </div>
                 <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
                   {t("mcp.lifecycleUnavailableDescription")}
+                </p>
+                <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                  {t("mcp.credentialsUnavailable")}
                 </p>
               </div>
               <GovernanceAvailabilityBadge
@@ -171,10 +161,16 @@ export function MCPPanel() {
               <FolderOpen size={42} className="mb-3 text-theme-text-secondary" />
             )}
             <p className="text-center text-sm">
-              {searchQuery ? t("mcp.noMatchingServers") : t("mcp.noServers")}
+              {governedUnavailable
+                ? t("mcp.catalogUnavailable.title")
+                : searchQuery
+                ? t("mcp.noMatchingServers")
+                : t("mcp.noServers")}
             </p>
             <p className="mt-2 max-w-md text-center text-xs leading-5 text-stone-500 dark:text-stone-400">
-              {t("mcp.lifecycleUnavailableDescription")}
+              {governedUnavailable
+                ? t("mcp.catalogUnavailable.description")
+                : t("mcp.lifecycleUnavailableDescription")}
             </p>
           </div>
         ) : (
