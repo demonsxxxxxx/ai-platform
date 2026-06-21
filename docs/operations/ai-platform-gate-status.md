@@ -283,6 +283,21 @@ release-evidence runtime acceptance, and alert/trace export runtime acceptance:
 The 4039e4b 2026-06-20 Foundation Runtime concurrency rerun is accepted
 Foundation Runtime concurrency evidence for this latest-main runtime-relevant source:
 `docs/release-evidence/foundation-runtime-concurrency/4039e4bd870d99201da4fc0f002f76f2b5c4a892-frc-b0-20260620/2026-06-20-211-foundation-alpha-poc-4039e4b-foundation-runtime-concurrency.json`.
+After PR #165 merged as `e8e8a0a4dc31b01f5c36ce4b8652165454a2867c`, 211 API and
+worker were restarted on `ai-platform:e8e8a0a-issue164-runtime-only-v1` and
+four reviewed, redacted partial B0 entries passed for Auth/RBAC, Admin Runtime
+governance, release-evidence runtime acceptance, and alert/trace export runtime
+acceptance. These records are useful 211 evidence for #164 but are not a full
+B0 closure set: the `e8e8a0a` runtime still lacks a passing runtime POC smoke
+entry and successful Foundation Runtime concurrency evidence. A 2026-06-21
+container-side model-gateway probe returned HTTP 402 `Insufficient Balance` for
+both `deepseek-v4-flash` and `deepseek-v4-pro`, so readiness must keep reporting
+`runtime_rollout_required` / `foundation_runtime_concurrency_evidence` until the
+gateway is restored and successful evidence is recorded:
+`docs/release-evidence/foundation-alpha-poc/e8e8a0a4dc31b01f5c36ce4b8652165454a2867c/2026-06-21-211-foundation-alpha-poc-e8e8a0a-auth-rbac-smoke.json`,
+`docs/release-evidence/foundation-alpha-poc/e8e8a0a4dc31b01f5c36ce4b8652165454a2867c/2026-06-21-211-foundation-alpha-poc-e8e8a0a-governance-runtime-smoke.json`,
+`docs/release-evidence/foundation-alpha-poc/e8e8a0a4dc31b01f5c36ce4b8652165454a2867c/2026-06-21-211-foundation-alpha-poc-e8e8a0a-release-evidence-runtime-acceptance.json`, and
+`docs/release-evidence/foundation-alpha-poc/e8e8a0a4dc31b01f5c36ce4b8652165454a2867c/2026-06-21-211-foundation-alpha-poc-e8e8a0a-alert-trace-export-runtime-acceptance.json`.
 The full 87528bf #124 B0 POC smoke refresh is retained as superseded reviewed
 history and includes reviewed, redacted entries for
 runtime POC smoke, Auth/RBAC smoke, Admin Runtime governance smoke,

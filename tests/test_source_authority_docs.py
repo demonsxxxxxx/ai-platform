@@ -625,6 +625,13 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert "runtime-only rebase workaround" in compact_gate_status_text
     assert f"{ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID}.json" in release_evidence_index
+    assert "2026-06-21-211-foundation-alpha-poc-e8e8a0a-auth-rbac-smoke.json" in release_evidence_index
+    assert "2026-06-21-211-foundation-alpha-poc-e8e8a0a-governance-runtime-smoke.json" in release_evidence_index
+    assert "2026-06-21-211-foundation-alpha-poc-e8e8a0a-release-evidence-runtime-acceptance.json" in release_evidence_index
+    assert "2026-06-21-211-foundation-alpha-poc-e8e8a0a-alert-trace-export-runtime-acceptance.json" in release_evidence_index
+    assert "Foundation Alpha POC partial B0 evidence" in release_evidence_index
+    assert "still lacks a passing `verify_poc_gate.py` runtime POC smoke entry" in release_evidence_index
+    assert "HTTP 402 `Insufficient Balance`" in release_evidence_index
     assert "2026-06-13-211-foundation-alpha-poc-cbbfaff-governance-runtime-smoke.json" in release_evidence_index
     assert "2026-06-13-211-foundation-alpha-poc-cbbfaff-frontend-packaged-runtime-smoke-blocked.json" in release_evidence_index
     assert "2026-06-12-211-foundation-alpha-poc-d4486eb-governance-runtime-smoke.json" in release_evidence_index
@@ -1155,6 +1162,9 @@ def test_gate_status_does_not_overstate_superseded_evidence_as_current():
     assert "`380de6b` evidence above is the historical Foundation Alpha baseline" in compact_text
     assert "the `4039e4b` / #138 evidence is the active B0 latest-main reference" in gate_status_text
     assert "active B0 latest-main reference is `87528bf` / #124" not in gate_status_text
+    assert "e8e8a0a` runtime still lacks a passing runtime POC smoke" in gate_status_text
+    assert "readiness must keep reporting" in gate_status_text
+    assert "the `e8e8a0a` / #164 evidence is the active B0 latest-main reference" not in gate_status_text
     assert "when it consumes the 87528bf source-runtime relation manifest and #124 evidence" not in compact_text
     assert "when it consumes the 75ab69b source-runtime relation manifest and #112 evidence" not in compact_text
     assert "the `380de6b` evidence above is the active Foundation Alpha POC reference" not in gate_status_text

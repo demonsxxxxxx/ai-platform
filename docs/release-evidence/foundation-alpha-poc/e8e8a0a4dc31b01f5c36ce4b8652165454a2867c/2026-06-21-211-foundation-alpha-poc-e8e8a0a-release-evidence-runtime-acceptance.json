@@ -1,0 +1,117 @@
+{
+  "artifact_kind": "release_evidence_runtime_acceptance",
+  "captured_at": "2026-06-21T10:57:41+08:00",
+  "commit_sha": "e8e8a0a4dc31b01f5c36ce4b8652165454a2867c",
+  "evidence_id": "2026-06-21-211-foundation-alpha-poc-e8e8a0a-release-evidence-runtime-acceptance",
+  "evidence_ref": {
+    "command": "python3 tools/verify_release_evidence_runtime_acceptance.py --format json --commit-sha e8e8a0a4dc31b01f5c36ce4b8652165454a2867c --runtime-subject-commit-sha e8e8a0a4dc31b01f5c36ce4b8652165454a2867c --image ai-platform:e8e8a0a-issue164-runtime-only-v1",
+    "result": "ok:true",
+    "runtime_checks": {
+      "release_evidence_runtime_acceptance": {
+        "checks": {
+          "retention_runtime_acceptance": {
+            "default_retention_days": 180,
+            "delete_only_reviewed_redacted_entries": true,
+            "forbidden_delete_targets_present": true,
+            "minimum_retention_days": 30,
+            "policy_status": "contract_only_not_runtime_enforced",
+            "requires_review_before_delete": true,
+            "schema_version": "ai-platform.release-evidence-retention-policy.v1",
+            "status": "accepted_review_first_policy"
+          },
+          "runtime_export_acceptance": {
+            "blocked_entry_count": 0,
+            "does_not_export_raw_runtime_payloads": true,
+            "excluded_entry_count": 62,
+            "export_policy": "safe_reviewed_index_only_not_runtime_export",
+            "safe_entry_count": 130,
+            "safe_entry_fields_only": true,
+            "status": "ready_for_operator_review"
+          }
+        },
+        "does_not_close_g9": true,
+        "does_not_export_raw_runtime_payloads": true,
+        "ok": true,
+        "open_gaps": [],
+        "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
+        "source": {
+          "commit_sha": "e8e8a0a4dc31b01f5c36ce4b8652165454a2867c",
+          "evidence_root": "docs/release-evidence",
+          "image": "ai-platform:e8e8a0a-issue164-runtime-only-v1",
+          "runtime_subject_commit_sha": "e8e8a0a4dc31b01f5c36ce4b8652165454a2867c"
+        },
+        "status": "accepted_for_operator_review"
+      }
+    },
+    "runtime_source": {
+      "commit_sha": "e8e8a0a4dc31b01f5c36ce4b8652165454a2867c",
+      "evidence_root": "docs/release-evidence",
+      "image": "ai-platform:e8e8a0a-issue164-runtime-only-v1",
+      "runtime_subject_commit_sha": "e8e8a0a4dc31b01f5c36ce4b8652165454a2867c"
+    },
+    "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
+    "verifier": "tools/verify_release_evidence_runtime_acceptance.py"
+  },
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#164"
+  ],
+  "open_followups": [
+    "foundation_runtime_concurrency_evidence"
+  ],
+  "pr_refs": [
+    "#165"
+  ],
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "e8e8a0a4dc31b01f5c36ce4b8652165454a2867c",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "api_health": {
+      "status": "ok"
+    },
+    "branch": "main",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_layout_status": "external_env_file_label_present",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "gateway_secret_supplied": false,
+    "image": "ai-platform:e8e8a0a-issue164-runtime-only-v1",
+    "image_id": "sha256:4b60dcdb79d6294f85eccfa94b04e7b559260a7d05152734cb599d9f2d973983",
+    "image_labels": {
+      "ai-platform.runtime-rollout": "issue164-b0-runtime-only-rebase-v2",
+      "ai-platform.runtime-subject": "e8e8a0a4dc31b01f5c36ce4b8652165454a2867c",
+      "ai-platform.runtime_subject": "e8e8a0a4dc31b01f5c36ce4b8652165454a2867c",
+      "ai-platform.source-branch": "main",
+      "ai-platform.source-note": "issue164-runtime-only-rebase-from-d8a77ee-pr165-merged-main",
+      "ai-platform.source-revision": "e8e8a0a4dc31b01f5c36ce4b8652165454a2867c",
+      "ai-platform.source.note": "issue124-b0-runtime-only-rebase-v1",
+      "ai-platform.source.revision": "e8e8a0a4dc31b01f5c36ce4b8652165454a2867c",
+      "ai-platform.source_revision": "e8e8a0a4dc31b01f5c36ce4b8652165454a2867c",
+      "ai-platform.source_tree_commit": "e8e8a0a4dc31b01f5c36ce4b8652165454a2867c",
+      "org.opencontainers.image.revision": "e8e8a0a4dc31b01f5c36ce4b8652165454a2867c"
+    },
+    "repo_local_env_present": false,
+    "runtime_commit": "e8e8a0a4dc31b01f5c36ce4b8652165454a2867c",
+    "runtime_source_marker": "e8e8a0a4dc31b01f5c36ce4b8652165454a2867c",
+    "runtime_subject_label_status": "runtime_subject_label_current",
+    "source_revision_alias_label_status": "source_revision_alias_label_current",
+    "source_snapshot": {
+      "git_head": "d8a77eef8fd706c4047f9010fb077e996238d68c",
+      "git_status_short_branch": [
+        "## HEAD (no branch)",
+        " M app/foundation_runtime_concurrency.py",
+        " M docker-entrypoint.sh",
+        " M tests/test_foundation_runtime_concurrency.py",
+        " M tests/test_verify_multiuser_poc.py",
+        " M tools/verify_multiuser_poc.py",
+        "?? .source-commit"
+      ],
+      "source_commit_file": "e8e8a0a4dc31b01f5c36ce4b8652165454a2867c",
+      "source_sync_caveat": "files synced to source_commit_file while .git remains detached at prior runtime subject; do not claim full G0 source-authority closure from this snapshot alone"
+    }
+  }
+}
