@@ -9,6 +9,7 @@ import {
 import {
   parseComposerCommand,
   resolveComposerCommandDraft,
+  resolveSlashCommandMenu,
   resolveCommandPrefixPanel,
 } from "../chatInputCommands";
 
@@ -26,8 +27,8 @@ const allAvailable = {
 test("slash command parser maps command words to governed panels", () => {
   assert.deepEqual(parseComposerCommand("/", allAvailable), {
     trigger: "/",
-    command: "skill",
-    panel: "skills",
+    command: "menu",
+    panel: "command-menu",
     query: "",
     unavailable: false,
   });
@@ -64,7 +65,7 @@ test("slash command parser maps command words to governed panels", () => {
     command: "file",
     panel: "file",
     query: "report",
-    unavailable: false,
+    unavailable: true,
   });
   assert.deepEqual(parseComposerCommand("/context memory", allAvailable), {
     trigger: "/",
@@ -90,24 +91,24 @@ test("composer command drafts preserve multi-character typing and seed selector 
   assert.deepEqual(resolveComposerCommandDraft("/", allAvailable), {
     command: {
       trigger: "/",
-      command: "skill",
-      panel: "skills",
+      command: "menu",
+      panel: "command-menu",
       query: "",
       unavailable: false,
     },
-    panel: "skills",
+    panel: "command-menu",
     selectorQuery: "",
     shouldExecute: false,
   });
   assert.deepEqual(resolveComposerCommandDraft("/m", allAvailable), {
     command: {
       trigger: "/",
-      command: "skill",
-      panel: "skills",
+      command: "menu",
+      panel: "command-menu",
       query: "m",
       unavailable: false,
     },
-    panel: "skills",
+    panel: "command-menu",
     selectorQuery: "m",
     shouldExecute: false,
   });
@@ -141,11 +142,38 @@ test("file and unavailable commands execute only when the command word is comple
   assert.equal(resolveComposerCommandDraft("/f", allAvailable)?.shouldExecute, false);
   assert.equal(resolveComposerCommandDraft("/file", allAvailable)?.shouldExecute, true);
   assert.equal(
+    resolveComposerCommandDraft("/file report", allAvailable)?.command
+      .unavailable,
+    true,
+  );
+  assert.equal(
     resolveComposerCommandDraft("/model opus", {
       ...allAvailable,
       models: false,
     })?.shouldExecute,
     true,
+  );
+});
+
+test("slash command menu exposes the Phase 1B command groups", () => {
+  assert.deepEqual(
+    resolveSlashCommandMenu("/", allAvailable).map((item) => ({
+      command: item.command,
+      panel: item.panel,
+      unavailable: item.unavailable,
+    })),
+    [
+      { command: "skill", panel: "skills", unavailable: false },
+      { command: "mcp", panel: "tools", unavailable: false },
+      { command: "agent", panel: "agent", unavailable: false },
+      { command: "model", panel: "model", unavailable: false },
+      { command: "file", panel: "file", unavailable: true },
+      { command: "context", panel: "context", unavailable: false },
+    ],
+  );
+  assert.deepEqual(
+    resolveSlashCommandMenu("/m", allAvailable).map((item) => item.command),
+    ["mcp", "model"],
   );
 });
 
@@ -231,6 +259,8 @@ test("chat input renders composer chips and expanded command groups", () => {
 
   assert.match(chatInput, /<ComposerChips/);
   assert.match(chatInput, /composerSelectionReducer/);
+  assert.match(chatInput, /resolveSlashCommandMenu/);
+  assert.match(chatInput, /command-menu/);
   assert.match(featureMenu, /featureMenu\.model/);
   assert.match(featureMenu, /featureMenu\.context/);
   assert.match(featureMenu, /featureMenu\.fileReference/);

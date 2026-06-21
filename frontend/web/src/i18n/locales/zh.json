@@ -2435,6 +2435,33 @@
       "admin-only": "仅管理员"
     }
   },
+  "composerCommand": {
+    "agent": {
+      "description": "选择平台批准的智能体或应用模式。",
+      "label": "智能体"
+    },
+    "context": {
+      "description": "在有后端支撑时挂载会话、记忆或频道上下文。",
+      "label": "上下文"
+    },
+    "file": {
+      "description": "在文件 ACL 投影可用时引用受治理文件和产物。",
+      "label": "文件"
+    },
+    "mcp": {
+      "description": "搜索受治理的 MCP 工具，并将允许的工具加入 chip。",
+      "label": "MCP 工具"
+    },
+    "menuLabel": "输入框命令菜单",
+    "model": {
+      "description": "在模型投影存在时选择允许使用的模型。",
+      "label": "模型"
+    },
+    "skill": {
+      "description": "搜索允许的 Skills，并加入持久 Skill chip。",
+      "label": "Skill"
+    }
+  },
   "governance": {
     "adminOnly": "仅管理员",
     "disabled": "已禁用",

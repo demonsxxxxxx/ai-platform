@@ -2434,6 +2434,33 @@
       "admin-only": "admin only"
     }
   },
+  "composerCommand": {
+    "agent": {
+      "description": "Select a platform-approved agent or app mode.",
+      "label": "Agent"
+    },
+    "context": {
+      "description": "Attach conversation, memory, or channel context where backed.",
+      "label": "Context"
+    },
+    "file": {
+      "description": "Reference governed files and artifacts when file ACL projections are available.",
+      "label": "File"
+    },
+    "mcp": {
+      "description": "Search governed MCP tools and add allowed tools as chips.",
+      "label": "MCP tool"
+    },
+    "menuLabel": "Composer command menu",
+    "model": {
+      "description": "Select an allowed model where model projections exist.",
+      "label": "Model"
+    },
+    "skill": {
+      "description": "Search allowed Skills and add a durable Skill chip.",
+      "label": "Skill"
+    }
+  },
   "governance": {
     "adminOnly": "Admin only",
     "disabled": "Disabled",

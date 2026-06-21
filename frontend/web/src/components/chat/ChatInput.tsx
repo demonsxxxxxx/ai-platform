@@ -28,9 +28,12 @@ import { ChatInputAttachments } from "./ChatInputAttachments";
 import {
   parseComposerCommand,
   resolveComposerCommandDraft,
+  resolveSlashCommandMenu,
   type ComposerCommandPanel,
+  type SlashCommandMenuItem,
 } from "./chatInputCommands";
 import { ComposerChips } from "./ComposerChips";
+import { SlashCommandMenu } from "./SlashCommandMenu";
 import {
   composerSelectionReducer,
   type ComposerSelection,
@@ -123,6 +126,8 @@ export const ChatInput = memo(function ChatInput({
     panel: FeaturePanel;
     query: string;
   } | null>(null);
+  const [slashMenuOpen, setSlashMenuOpen] = useState(false);
+  const [slashMenuHighlight, setSlashMenuHighlight] = useState(0);
   const [internalAttachments, setInternalAttachments] = useState<
     MessageAttachment[]
   >([]);
@@ -339,6 +344,39 @@ export const ChatInput = memo(function ChatInput({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (slashMenuOpen) {
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashMenuHighlight((index) =>
+          slashCommandItems.length
+            ? (index - 1 + slashCommandItems.length) % slashCommandItems.length
+            : 0,
+        );
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashMenuHighlight((index) =>
+          slashCommandItems.length
+            ? (index + 1) % slashCommandItems.length
+            : 0,
+        );
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        const item =
+          slashCommandItems[slashMenuHighlight] ?? slashCommandItems[0];
+        if (item) handleSlashCommandSelect(item);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeSlashMenu();
+        return;
+      }
+    }
+
     if (mention.isActive) {
       if (e.key === "ArrowUp") {
         e.preventDefault();
@@ -453,7 +491,11 @@ export const ChatInput = memo(function ChatInput({
   const upsertUnavailableCommandChip = useCallback(
     (command: ReturnType<typeof parseComposerCommand>) => {
       if (!command) return;
-      const selectionKindByPanel: Record<ComposerCommandPanel, ComposerSelectionKind> = {
+      if (command.panel === "command-menu") return;
+      const selectionKindByPanel: Record<
+        Exclude<ComposerCommandPanel, "command-menu">,
+        ComposerSelectionKind
+      > = {
         skills: "skill",
         tools: "mcp",
         agent: "agent",
@@ -491,22 +533,96 @@ export const ChatInput = memo(function ChatInput({
         commandPanelAvailability,
       );
       if (!draft) return false;
+      if (draft.panel === "command-menu") {
+        setSlashMenuOpen(true);
+        setSlashMenuHighlight(0);
+        setActivePanel(null);
+        setCommandSearchSeed(null);
+        return true;
+      }
       if (draft.panel) {
         setActivePanel(draft.panel);
         setCommandSearchSeed({
           panel: draft.panel,
           query: draft.selectorQuery,
         });
+        setSlashMenuOpen(false);
       }
       return true;
     },
     [commandPanelAvailability],
   );
 
+  const closeSlashMenu = useCallback(() => {
+    setSlashMenuOpen(false);
+    setSlashMenuHighlight(0);
+  }, []);
+
+  const slashCommandItems = useMemo(
+    () =>
+      slashMenuOpen
+        ? resolveSlashCommandMenu(input, commandPanelAvailability)
+        : [],
+    [commandPanelAvailability, input, slashMenuOpen],
+  );
+
+  useEffect(() => {
+    if (slashMenuHighlight >= slashCommandItems.length) {
+      setSlashMenuHighlight(Math.max(0, slashCommandItems.length - 1));
+    }
+  }, [slashCommandItems.length, slashMenuHighlight]);
+
+  const handleSlashCommandSelect = useCallback(
+    (item: SlashCommandMenuItem) => {
+      const nextInput = `/${item.command}${input.trimStart().slice(1).trim() ? " " : ""}`;
+      closeSlashMenu();
+      if (item.unavailable || item.panel === "model" || item.panel === "file" || item.panel === "context") {
+        upsertUnavailableCommandChip({
+          trigger: "/",
+          command: item.command,
+          panel: item.panel,
+          query: "",
+          unavailable: true,
+        });
+        setInput("");
+        setCursorPosition(0);
+        requestAnimationFrame(scheduleTextareaResize);
+        return;
+      }
+      setInput(nextInput);
+      setCursorPosition(nextInput.length);
+      setActivePanel(item.panel);
+      setCommandSearchSeed({
+        panel: item.panel,
+        query: "",
+      });
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.focus();
+        textarea.selectionStart = textarea.selectionEnd = nextInput.length;
+        scheduleTextareaResize();
+      });
+    },
+    [
+      closeSlashMenu,
+      input,
+      scheduleTextareaResize,
+      upsertUnavailableCommandChip,
+    ],
+  );
+
   const handleComposerCommandSubmit = useCallback(
     (value: string): boolean => {
       const draft = resolveComposerCommandDraft(value, commandPanelAvailability);
       if (!draft) return false;
+      if (draft.panel === "command-menu") {
+        const item = slashCommandItems[slashMenuHighlight] ?? slashCommandItems[0];
+        if (item) {
+          handleSlashCommandSelect(item);
+        }
+        return true;
+      }
       if (!draft.shouldExecute) {
         if (draft.panel) {
           setActivePanel(draft.panel);
@@ -517,17 +633,14 @@ export const ChatInput = memo(function ChatInput({
         }
         return true;
       }
-      if (!draft.command.unavailable && draft.command.panel === "file") {
-        openFileCommandRef.current?.();
-      } else {
-        upsertUnavailableCommandChip(
-          draft.command.unavailable
-            ? draft.command
-            : { ...draft.command, unavailable: true },
-        );
-      }
+      upsertUnavailableCommandChip(
+        draft.command.unavailable
+          ? draft.command
+          : { ...draft.command, unavailable: true },
+      );
       setActivePanel(null);
       setCommandSearchSeed(null);
+      closeSlashMenu();
       setInput("");
       setCursorPosition(0);
       requestAnimationFrame(scheduleTextareaResize);
@@ -535,7 +648,11 @@ export const ChatInput = memo(function ChatInput({
     },
     [
       commandPanelAvailability,
+      closeSlashMenu,
+      handleSlashCommandSelect,
       scheduleTextareaResize,
+      slashCommandItems,
+      slashMenuHighlight,
       upsertUnavailableCommandChip,
     ],
   );
@@ -558,8 +675,9 @@ export const ChatInput = memo(function ChatInput({
         return;
       }
       setActivePanel(panel);
+      closeSlashMenu();
     },
-    [upsertUnavailableCommandChip],
+    [closeSlashMenu, upsertUnavailableCommandChip],
   );
 
   useEffect(() => {
@@ -785,6 +903,15 @@ export const ChatInput = memo(function ChatInput({
 
           <div className="px-2.5 pt-1">
             <div className="relative">
+              {slashMenuOpen && (
+                <SlashCommandMenu
+                  items={slashCommandItems}
+                  highlightedIndex={slashMenuHighlight}
+                  onHighlight={setSlashMenuHighlight}
+                  onSelect={handleSlashCommandSelect}
+                  onClose={closeSlashMenu}
+                />
+              )}
               <textarea
                 ref={textareaRef}
                 value={input}
@@ -792,7 +919,9 @@ export const ChatInput = memo(function ChatInput({
                   const nextValue = e.target.value;
                   setInput(nextValue);
                   setCursorPosition(e.target.selectionStart);
-                  openCommandPanel(nextValue);
+                  if (!openCommandPanel(nextValue)) {
+                    closeSlashMenu();
+                  }
                 }}
                 onFocus={scheduleTextareaResize}
                 onKeyDown={handleKeyDown}

@@ -146,6 +146,11 @@ export function ToolSelector({
     });
   };
 
+  const handleToolToggle = (tool: ToolState) => {
+    if (tool.system_disabled) return;
+    onToggleTool(tool.name);
+  };
+
   const ModalContent = () => (
     <div
       ref={swipeRef as React.RefObject<HTMLDivElement>}
@@ -288,11 +293,14 @@ export function ToolSelector({
                             {/* Tool Row */}
                             <div
                               className={`flex items-center gap-1.5 sm:gap-2 px-2 sm:px-2.5 py-2 sm:py-2 rounded-lg cursor-pointer transition-all duration-150 ${
-                                tool.enabled
+                                tool.system_disabled
+                                  ? "cursor-not-allowed bg-red-50/60 opacity-70 dark:bg-red-500/10"
+                                  : tool.enabled
                                   ? "hover:bg-stone-50 dark:hover:bg-stone-700/30 active:bg-stone-100/80 dark:active:bg-stone-600/40"
                                   : "bg-[var(--theme-primary)]/[0.06] dark:bg-[var(--theme-primary)]/[0.08] hover:bg-[var(--theme-primary)]/[0.12] dark:hover:bg-[var(--theme-primary)]/[0.14] active:bg-[var(--theme-primary)]/[0.18] dark:active:bg-[var(--theme-primary)]/[0.20]"
                               }`}
-                              onClick={() => onToggleTool(tool.name)}
+                              onClick={() => handleToolToggle(tool)}
+                              aria-disabled={tool.system_disabled || undefined}
                             >
                               {/* Expand button for tools with params */}
                               <button
@@ -343,7 +351,7 @@ export function ToolSelector({
                               </div>
                               <Checkbox
                                 checked={tool.enabled}
-                                onChange={() => onToggleTool(tool.name)}
+                                onChange={() => handleToolToggle(tool)}
                                 disabled={tool.system_disabled}
                               />
                             </div>
