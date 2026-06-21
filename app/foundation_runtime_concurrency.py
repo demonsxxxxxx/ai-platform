@@ -43,6 +43,7 @@ _QUEUE_PROBE_SOURCES = {"redis_metadata", "admin_runtime_queue"}
 _SANDBOX_LEASE_PROBE_SOURCES = {"runtime_run_detail"}
 _MINIMUM_TOOL_PERMISSION_NEGATIVE_REUSE_PROBES_PER_RUN = 4
 _REVISION_REF_RE = re.compile(r"^[0-9a-f]{40}(?:[-A-Za-z0-9_.:]*)?$")
+_TERMINAL_FAILURE_LIMIT = 20
 
 
 def _requirements() -> dict[str, Any]:
@@ -122,6 +123,29 @@ def _checks_from_evidence(evidence: dict[str, Any]) -> dict[str, dict[str, Any]]
     return {name: _safe_dict(checks.get(name)) for name in _REQUIRED_CHECKS}
 
 
+def _terminal_run_failures(evidence: dict[str, Any]) -> list[dict[str, Any]]:
+    failures = []
+    for item in _safe_list(evidence.get("terminal_run_failures")):
+        if not isinstance(item, dict):
+            continue
+        failures.append(
+            {
+                "tenant_id": str(item.get("tenant_id") or ""),
+                "account": str(item.get("account") or ""),
+                "case": str(item.get("case") or ""),
+                "scenario": str(item.get("scenario") or ""),
+                "run_id": str(item.get("run_id") or ""),
+                "status": str(item.get("status") or ""),
+                "raw_status": str(item.get("raw_status") or ""),
+                "error_code": str(item.get("error_code") or ""),
+                "error_message_summary": str(item.get("error_message_summary") or "")[:160],
+            }
+        )
+        if len(failures) >= _TERMINAL_FAILURE_LIMIT:
+            break
+    return failures
+
+
 def _safe_invariants(evidence: dict[str, Any] | None = None) -> dict[str, bool]:
     source = _safe_dict(evidence.get("non_expansion_invariants")) if evidence else {}
     result = dict(_DEFAULT_INVARIANTS)
@@ -183,6 +207,9 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
 
     if _safe_int(evidence.get("failed_case_count")) > 0 or _safe_list(evidence.get("failed_cases")):
         failures.append("foundation_runtime_case_failures")
+    terminal_run_failures = _terminal_run_failures(evidence)
+    if terminal_run_failures:
+        failures.append("run_terminal_failures")
 
     checks = _checks_from_evidence(evidence)
     for name, check in checks.items():
@@ -249,13 +276,21 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
         failures.append("long_term_cross_session_memory_not_fail_closed")
 
     artifact_acl = checks["artifact_acl"]
-    if not _all_denied(artifact_acl.get("cross_user_statuses")):
+    if (
+        not _safe_list(artifact_acl.get("owner_statuses"))
+        or not _safe_list(artifact_acl.get("cross_user_statuses"))
+        or not _safe_list(artifact_acl.get("cross_tenant_statuses"))
+        or not _safe_list(artifact_acl.get("preview_cross_user_statuses"))
+        or not _safe_list(artifact_acl.get("preview_cross_tenant_statuses"))
+    ):
+        failures.append("artifact_acl_samples_missing")
+    if _safe_list(artifact_acl.get("cross_user_statuses")) and not _all_denied(artifact_acl.get("cross_user_statuses")):
         failures.append("artifact_acl_cross_user_not_denied")
-    if not _all_denied(artifact_acl.get("cross_tenant_statuses")):
+    if _safe_list(artifact_acl.get("cross_tenant_statuses")) and not _all_denied(artifact_acl.get("cross_tenant_statuses")):
         failures.append("artifact_acl_cross_tenant_not_denied")
-    if not _all_denied(artifact_acl.get("preview_cross_user_statuses")):
+    if _safe_list(artifact_acl.get("preview_cross_user_statuses")) and not _all_denied(artifact_acl.get("preview_cross_user_statuses")):
         failures.append("artifact_preview_cross_user_not_denied")
-    if not _all_denied(artifact_acl.get("preview_cross_tenant_statuses")):
+    if _safe_list(artifact_acl.get("preview_cross_tenant_statuses")) and not _all_denied(artifact_acl.get("preview_cross_tenant_statuses")):
         failures.append("artifact_preview_cross_tenant_not_denied")
 
     tool_permission = checks["tool_permission"]
@@ -325,6 +360,7 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
         "summary": summary,
         "scenario_counts": scenario_counts,
         "checks": checks,
+        "terminal_run_failures": terminal_run_failures,
         "non_expansion_invariants": invariants,
     }
 
@@ -351,6 +387,7 @@ def build_foundation_runtime_concurrency_readiness(
         "summary": normalized["summary"],
         "scenario_counts": normalized["scenario_counts"],
         "checks": normalized["checks"],
+        "terminal_run_failures": normalized.get("terminal_run_failures", []),
         "non_expansion_invariants": normalized["non_expansion_invariants"],
         "failures": failures,
         "evidence_policy": (

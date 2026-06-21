@@ -24,6 +24,7 @@ from app.foundation_runtime_concurrency import (  # noqa: E402
     FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA,
     build_foundation_runtime_concurrency_readiness,
 )
+from app.control_plane_contracts import sanitize_public_text
 from app.public_context_keys import safe_public_context_pack_version
 from app.validation import assert_safe_id
 from tools.verify_poc_gate import _context_public_projection_findings, _context_snapshot_payload_summary
@@ -79,6 +80,8 @@ FORBIDDEN_PUBLIC_VALUE_PATTERNS = (
 )
 RUN_ID_RE = re.compile(r"\brun=(?P<run_id>run_[A-Za-z0-9_]+|run-[A-Za-z0-9_-]+)\b")
 SESSION_ID_RE = re.compile(r"\bsession=(?P<session_id>ses_[A-Za-z0-9_]+|ses-[A-Za-z0-9_-]+)\b")
+ERROR_REQUEST_ID_RE = re.compile(r"\brequest[_ -]?id\s*[:=]\s*[A-Za-z0-9._~+/=-]+\b", re.IGNORECASE)
+ERROR_URL_RE = re.compile(r"https?://[^\s,)]+", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -1512,6 +1515,8 @@ def run_case(
         },
         "status": final_status.get("status"),
         "raw_status": final_status.get("raw_status"),
+        "error_code": final_status.get("error_code"),
+        "error_message": final_status.get("error_message"),
         "artifact_ids": artifact_ids,
         "downloads": downloads,
         "cancel_action_statuses": cancel_action_statuses,
@@ -1959,6 +1964,16 @@ def _skill_snapshot_summary(run_payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _run_detail_run_summary(run_payload: dict[str, Any]) -> dict[str, Any]:
+    run = run_payload.get("run") if isinstance(run_payload.get("run"), dict) else run_payload
+    summary: dict[str, Any] = {}
+    for key in ("status", "raw_status", "error_code", "error_message"):
+        value = run.get(key) if isinstance(run, dict) else None
+        if isinstance(value, str) and value.strip():
+            summary[key] = value.strip()
+    return summary
+
+
 def _extract_failed_case_ids(message: str) -> dict[str, str]:
     run_match = RUN_ID_RE.search(message)
     session_match = SESSION_ID_RE.search(message)
@@ -2231,6 +2246,7 @@ def attach_run_detail_probe_results(
         detail_path = "/api/ai/admin/runs" if trusted_header_role == "developer" else "/api/ai/runs"
         status, run_payload = json_request("GET", f"{api_url.rstrip()}{detail_path}/{run_id}", headers=headers, timeout=30)
         if status == 200 and isinstance(run_payload, dict):
+            item.update(_run_detail_run_summary(run_payload))
             item["workspace_fingerprint"] = _workspace_fingerprint(run_payload, tenant_id=account.tenant_id, session_id=session_id, run_id=run_id)
             item["context_snapshot_id"] = _context_snapshot_id(run_payload)
             detail_queue_probe = _queue_probe_from_run_detail(run_payload)
@@ -2624,6 +2640,40 @@ def _foundation_runtime_concurrency_summary(results: list[dict[str, Any]]) -> di
     }
 
 
+def _terminal_error_message_summary(value: Any) -> str:
+    text = sanitize_public_text(value)
+    text = ERROR_REQUEST_ID_RE.sub("request id: [redacted-id]", text)
+    text = ERROR_URL_RE.sub("[redacted-url]", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:160]
+
+
+def _foundation_runtime_terminal_run_failures(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    for item in results:
+        status = str(item.get("status") or "").strip().lower()
+        raw_status = str(item.get("raw_status") or "").strip().lower()
+        if status not in {"failed", "error"} and raw_status not in {"failed", "error"}:
+            continue
+        record = {
+            "tenant_id": str(item.get("tenant_id") or ""),
+            "account": str(item.get("account") or ""),
+            "case": str(item.get("case") or ""),
+            "scenario": str(item.get("scenario") or ""),
+            "run_id": str(item.get("run_id") or ""),
+            "status": status,
+            "raw_status": raw_status,
+        }
+        error_code = str(item.get("error_code") or "").strip()
+        if error_code:
+            record["error_code"] = error_code
+        error_message = _terminal_error_message_summary(item.get("error_message"))
+        if error_message:
+            record["error_message_summary"] = error_message
+        failures.append(record)
+    return failures
+
+
 def _has_cancel_effect(item: dict[str, Any]) -> bool:
     statuses = item.get("cancel_effect_statuses")
     if not isinstance(statuses, list):
@@ -2678,6 +2728,7 @@ def build_foundation_runtime_concurrency_evidence(
     ) else "passed"
     scenario_counts = _scenario_counts(results)
     concurrency_summary = _foundation_runtime_concurrency_summary(results)
+    terminal_run_failures = _foundation_runtime_terminal_run_failures(results)
     evidence = {
         "schema_version": FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA,
         "artifact_kind": "foundation_runtime_concurrency",
@@ -2755,6 +2806,8 @@ def build_foundation_runtime_concurrency_evidence(
             "long_term_cross_session_memory_enabled": False,
         },
     }
+    if terminal_run_failures:
+        evidence["terminal_run_failures"] = terminal_run_failures
     if failed_cases:
         evidence["failed_case_count"] = len(failed_cases)
         evidence["failed_cases"] = failed_cases
