@@ -59,8 +59,25 @@ export function MCPPanel() {
 
   if (!canRead) {
     return (
-      <div className="flex h-full items-center justify-center text-theme-text-secondary">
-        {t("mcp.noPermission")}
+      <div
+        data-phase1c-surface="mcp"
+        className="flex h-full min-h-0 items-center justify-center p-6"
+      >
+        <section className="max-w-xl rounded-lg border border-stone-200 bg-white p-5 text-center shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900">
+          <ShieldCheck className="mx-auto text-stone-500" size={32} />
+          <h2 className="mt-4 text-base font-semibold text-stone-900 dark:text-stone-100">
+            {t("mcp.permissionLimited.title")}
+          </h2>
+          <p className="mt-2 text-sm leading-6 text-stone-600 dark:text-stone-300">
+            {t("mcp.permissionLimited.description")}
+          </p>
+          <div className="mt-4 flex justify-center">
+            <GovernanceAvailabilityBadge
+              state={permissionAvailability.state}
+              labelKey={permissionAvailability.labelKey}
+            />
+          </div>
+        </section>
       </div>
     );
   }
@@ -70,7 +87,7 @@ export function MCPPanel() {
   }
 
   return (
-    <div className="glass-shell flex h-full min-h-0 flex-col">
+    <div data-phase1c-surface="mcp" className="glass-shell flex h-full min-h-0 flex-col">
       <PanelHeader
         title={t("mcp.title")}
         subtitle={t("mcp.subtitle")}
@@ -89,7 +106,24 @@ export function MCPPanel() {
 
       <div className="px-4 pb-2 pt-3">
         <section className="rounded-lg border border-stone-200/70 bg-white p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900">
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid gap-3 lg:grid-cols-3">
+            <div className="flex items-start justify-between gap-3 rounded-md bg-stone-50/80 p-3 dark:bg-stone-950/40">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck size={16} className="text-stone-500" />
+                  <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                    {t("mcp.permissionLimited.title")}
+                  </h3>
+                </div>
+                <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                  {t("mcp.permissionLimited.description")}
+                </p>
+              </div>
+              <GovernanceAvailabilityBadge
+                state={permissionAvailability.state}
+                labelKey={permissionAvailability.labelKey}
+              />
+            </div>
             <div className="flex items-start justify-between gap-3 rounded-md bg-stone-50/80 p-3 dark:bg-stone-950/40">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">

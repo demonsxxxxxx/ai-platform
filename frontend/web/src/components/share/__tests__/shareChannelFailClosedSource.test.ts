@@ -44,6 +44,43 @@ test("channel import page is governed and fail closed", () => {
   assert.match(tabContent, /channels:\s*ChannelImportPanel/);
 });
 
+test("phase 1C discovery pages explain unavailable governance instead of blank denial", () => {
+  const skillsHub = readFileSync(
+    join(root, "src/components/panels/SkillsHubPanel.tsx"),
+    "utf8",
+  );
+  const mcpPanel = readFileSync(
+    join(root, "src/components/panels/MCPPanel.tsx"),
+    "utf8",
+  );
+  const channelPanel = readFileSync(
+    join(root, "src/components/channels/ChannelImportPanel.tsx"),
+    "utf8",
+  );
+
+  assert.match(skillsHub, /skillsHub\.permissionLimited/);
+  assert.match(skillsHub, /skillsHub\.featureDisabled/);
+  assert.match(skillsHub, /data-phase1c-surface="skills-hub"/);
+  assert.match(skillsHub, /GovernanceAvailabilityBadge/);
+  assert.doesNotMatch(skillsHub, /skills\.featureDisabled/);
+  assert.match(mcpPanel, /mcp\.permissionLimited/);
+  assert.match(mcpPanel, /data-phase1c-surface="mcp"/);
+  assert.match(channelPanel, /data-phase1c-surface="channel-import"/);
+});
+
+test("phase 1C governance copy exists in every supported locale", () => {
+  for (const locale of ["en", "zh", "ja", "ko", "ru"]) {
+    const source = readFileSync(
+      join(root, `src/i18n/locales/${locale}.json`),
+      "utf8",
+    );
+
+    assert.match(source, /"mcp"[\s\S]*"permissionLimited"/, locale);
+    assert.match(source, /"skillsHub"[\s\S]*"permissionLimited"/, locale);
+    assert.match(source, /"skillsHub"[\s\S]*"featureDisabled"/, locale);
+  }
+});
+
 test("launchpad copy keeps click-through boundary visible", () => {
   const launchpad = readFileSync(
     join(root, "src/components/launchpad/LaunchpadPanel.tsx"),

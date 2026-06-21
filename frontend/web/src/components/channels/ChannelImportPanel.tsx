@@ -13,7 +13,10 @@ export function ChannelImportPanel() {
 
   if (backedSources.length === 0) {
     return (
-      <div className="flex h-full min-h-0 items-center justify-center p-6">
+      <div
+        data-phase1c-surface="channel-import"
+        className="flex h-full min-h-0 items-center justify-center p-6"
+      >
         <section
           className={`${workbenchSurface.compactPanel} max-w-xl p-5 text-center`}
         >
@@ -30,7 +33,10 @@ export function ChannelImportPanel() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3 p-4">
+    <div
+      data-phase1c-surface="channel-import"
+      className="flex h-full min-h-0 flex-col gap-3 p-4"
+    >
       {backedSources.map((source) => (
         <section
           key={source.id}

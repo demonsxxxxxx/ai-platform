@@ -1279,6 +1279,10 @@
     "noPermission": "MCPサーバーを表示する権限がありません。",
     "noServers": "MCPサーバーが設定されていません",
     "operationFailed": "操作に失敗しました",
+    "permissionLimited": {
+      "description": "MCP はワークベンチに表示されていますが、現在のロールで利用できる管理済みツールは、ai-platform の許可済みツール投影が公開された後に選択できます。",
+      "title": "MCP ツールはガバナンス対象です"
+    },
     "overwriteExisting": "同名の既存サーバーを上書き",
     "promoteFailed": "MCPサーバーの昇格に失敗しました",
     "promoteSuccess": "MCPサーバーがシステムサーバーに昇格しました",
@@ -2195,6 +2199,14 @@
     "userSkillVisible": "ユーザースキル（自分のみに表示）"
   },
   "skillsHub": {
+    "featureDisabled": {
+      "description": "Skills はプラットフォームレベルで無効です。ワークベンチには管理対象の入口を表示しますが、Skill 探索と部門アクセスは管理者が有効化した後に利用できます。",
+      "title": "Skills は管理者の有効化待ちです"
+    },
+    "permissionLimited": {
+      "description": "Skills とマーケットプレイス探索はこのワークベンチの一部です。現在のロールには読み取り可能な Skill 投影がないため、管理者が部門アクセスを有効にするまでページは読み取り専用です。",
+      "title": "Skills アクセスはガバナンス対象です"
+    },
     "subtitle": "ローカルスキルを管理し、マーケットプレイスを探索",
     "title": "スキル"
   },

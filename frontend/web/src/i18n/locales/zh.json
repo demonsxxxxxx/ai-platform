@@ -1313,6 +1313,10 @@
     "noPermission": "您没有权限查看 MCP 服务器。",
     "noServers": "未配置 MCP 服务器",
     "operationFailed": "操作失败",
+    "permissionLimited": {
+      "description": "MCP 已作为工作台能力展示，但当前角色需要等待 ai-platform 发布允许使用的工具投影后，才能选择受治理工具。",
+      "title": "MCP 工具受治理"
+    },
     "overwriteExisting": "覆盖同名服务器",
     "promoteFailed": "升级 MCP 服务器失败",
     "promoteSuccess": "MCP 服务器已升级为系统服务器",
@@ -2287,6 +2291,14 @@
     }
   },
   "skillsHub": {
+    "featureDisabled": {
+      "description": "Skills 当前在平台级关闭。工作台仍保留这个受治理入口，但需要管理员启用 Skill 发现与部门访问后才能使用。",
+      "title": "Skills 等待管理员启用"
+    },
+    "permissionLimited": {
+      "description": "Skills 与技能市场已经作为工作台入口展示。当前角色还没有可读取的 Skill 投影，管理员为部门启用前页面保持只读。",
+      "title": "Skills 访问受治理"
+    },
     "subtitle": "管理本地技能并浏览技能商店",
     "title": "技能"
   },

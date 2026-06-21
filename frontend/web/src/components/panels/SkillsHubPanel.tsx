@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Package, PackageX, ShoppingBag, Sparkles } from "lucide-react";
+import { Package, ShieldCheck, ShoppingBag, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useSettingsContext } from "../../contexts/SettingsContext";
@@ -33,8 +33,13 @@ export function SkillsHubPanel() {
     canReadSkills,
     canReadMarketplace,
   );
+  const hasDiscoveryPermission = canReadSkills || canReadMarketplace;
   const showTabSwitcher = canReadSkills && canReadMarketplace;
   const departmentAvailability = resolveGroupAvailability({ backed: false });
+  const permissionAvailability = resolveGroupAvailability({
+    enabled: hasDiscoveryPermission,
+    adminOnly: !hasDiscoveryPermission,
+  });
 
   useEffect(() => {
     if (!visibleTab) return;
@@ -46,26 +51,59 @@ export function SkillsHubPanel() {
 
   if (!enableSkills) {
     return (
-      <div className="flex h-full flex-col items-center justify-center text-stone-500 dark:text-stone-400">
-        <PackageX
-          size={48}
-          className="mb-3 text-stone-300 dark:text-stone-600"
-        />
-        <p className="text-center">{t("skills.featureDisabled")}</p>
+      <div
+        data-phase1c-surface="skills-hub"
+        className="flex h-full min-h-0 items-center justify-center p-6"
+      >
+        <section className="max-w-xl rounded-lg border border-stone-200 bg-white p-5 text-center shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900">
+          <ShieldCheck className="mx-auto text-stone-500" size={32} />
+          <h2 className="mt-4 text-base font-semibold text-stone-900 dark:text-stone-100">
+            {t("skillsHub.featureDisabled.title")}
+          </h2>
+          <p className="mt-2 text-sm leading-6 text-stone-600 dark:text-stone-300">
+            {t("skillsHub.featureDisabled.description")}
+          </p>
+          <div className="mt-4 flex justify-center">
+            <GovernanceAvailabilityBadge
+              state="admin-only"
+              labelKey="governance.adminOnly"
+            />
+          </div>
+        </section>
       </div>
     );
   }
 
   if (!visibleTab) {
     return (
-      <div className="flex h-full items-center justify-center text-stone-500 dark:text-stone-400">
-        {t("skills.noPermission")}
+      <div
+        data-phase1c-surface="skills-hub"
+        className="flex h-full min-h-0 items-center justify-center p-6"
+      >
+        <section className="max-w-xl rounded-lg border border-stone-200 bg-white p-5 text-center shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900">
+          <ShieldCheck className="mx-auto text-stone-500" size={32} />
+          <h2 className="mt-4 text-base font-semibold text-stone-900 dark:text-stone-100">
+            {t("skillsHub.permissionLimited.title")}
+          </h2>
+          <p className="mt-2 text-sm leading-6 text-stone-600 dark:text-stone-300">
+            {t("skillsHub.permissionLimited.description")}
+          </p>
+          <div className="mt-4 flex justify-center">
+            <GovernanceAvailabilityBadge
+              state={permissionAvailability.state}
+              labelKey={permissionAvailability.labelKey}
+            />
+          </div>
+        </section>
       </div>
     );
   }
 
   return (
-    <div className="skill-theme-shell flex h-full min-h-0 flex-col">
+    <div
+      data-phase1c-surface="skills-hub"
+      className="skill-theme-shell flex h-full min-h-0 flex-col"
+    >
       <PanelHeader
         className="skill-panel-header"
         title={t("skillsHub.title")}
@@ -114,7 +152,21 @@ export function SkillsHubPanel() {
       />
 
       <div className="px-4 pb-3">
-        <section className="rounded-lg border border-stone-200/70 bg-white p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900">
+        <section className="space-y-3 rounded-lg border border-stone-200/70 bg-white p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                {t("skillsHub.permissionLimited.title")}
+              </h3>
+              <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                {t("skillsHub.permissionLimited.description")}
+              </p>
+            </div>
+            <GovernanceAvailabilityBadge
+              state={permissionAvailability.state}
+              labelKey={permissionAvailability.labelKey}
+            />
+          </div>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">

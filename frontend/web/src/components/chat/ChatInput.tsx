@@ -53,6 +53,8 @@ import type { MessageAttachment, PersonaPreset } from "../../types";
 
 export type { ChatInputProps } from "./chatInputTypes";
 
+type ComposerShortcutCommand = "$" | "/skill" | "/mcp" | "/file" | "/context";
+
 export const ChatInput = memo(function ChatInput({
   onSend,
   onStop,
@@ -486,6 +488,18 @@ export const ChatInput = memo(function ChatInput({
       uploadCategories.length,
     ],
   );
+  const shortcutAvailabilityByCommand = useMemo<
+    Record<ComposerShortcutCommand, boolean>
+  >(
+    () => ({
+      $: commandPanelAvailability.skills,
+      "/skill": commandPanelAvailability.skills,
+      "/mcp": commandPanelAvailability.tools,
+      "/file": commandPanelAvailability.files,
+      "/context": commandPanelAvailability.context,
+    }),
+    [commandPanelAvailability],
+  );
   const canSubmit =
     hasContent && canSend && !isLoading && !hasUploadingAttachment;
 
@@ -706,7 +720,49 @@ export const ChatInput = memo(function ChatInput({
   );
 
   const handleComposerCommandShortcut = useCallback(
-    (command: "$" | "/skill" | "/mcp" | "/file" | "/context") => {
+    (command: ComposerShortcutCommand) => {
+      if (!shortcutAvailabilityByCommand[command]) {
+        const unavailableCommand =
+          command === "$" || command === "/skill"
+            ? ({
+                trigger: command === "$" ? "$" : "/",
+                command: "skill",
+                panel: "skills",
+                query: "",
+                unavailable: true,
+              } as const)
+            : command === "/mcp"
+              ? ({
+                  trigger: "/",
+                  command: "mcp",
+                  panel: "tools",
+                  query: "",
+                  unavailable: true,
+                } as const)
+              : command === "/file"
+                ? ({
+                    trigger: "/",
+                    command: "file",
+                    panel: "file",
+                    query: "",
+                    unavailable: true,
+                  } as const)
+                : ({
+                    trigger: "/",
+                    command: "context",
+                    panel: "context",
+                    query: "",
+                    unavailable: true,
+                  } as const);
+        upsertUnavailableCommandChip(unavailableCommand);
+        setInput("");
+        setCursorPosition(0);
+        setActivePanel(null);
+        setCommandSearchSeed(null);
+        closeSlashMenu();
+        requestAnimationFrame(scheduleTextareaResize);
+        return;
+      }
       if (command === "/file" && commandPanelAvailability.files) {
         executeAvailableFileCommand();
         return;
@@ -725,9 +781,12 @@ export const ChatInput = memo(function ChatInput({
     },
     [
       commandPanelAvailability.files,
+      closeSlashMenu,
       executeAvailableFileCommand,
       openCommandPanel,
       scheduleTextareaResize,
+      shortcutAvailabilityByCommand,
+      upsertUnavailableCommandChip,
     ],
   );
 

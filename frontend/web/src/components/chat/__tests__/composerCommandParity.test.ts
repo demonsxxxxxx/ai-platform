@@ -330,10 +330,17 @@ test("composer shortcut hints fail closed when a governed surface is unavailable
     join(root, "src/components/chat/ComposerCommandHintBar.tsx"),
     "utf8",
   );
+  const chatInput = readFileSync(
+    join(root, "src/components/chat/ChatInput.tsx"),
+    "utf8",
+  );
 
   assert.match(shortcutBar, /disabled=\{!available\}/);
   assert.match(shortcutBar, /aria-disabled=\{!available\}/);
   assert.match(shortcutBar, /cursor-not-allowed/);
+  assert.match(chatInput, /shortcutAvailabilityByCommand/);
+  assert.match(chatInput, /if \(!shortcutAvailabilityByCommand\[command\]\) \{/);
+  assert.match(chatInput, /upsertUnavailableCommandChip/);
 });
 
 test("all supported placeholders are slash and dollar skills first", () => {

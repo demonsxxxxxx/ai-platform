@@ -1312,6 +1312,10 @@
     "noPermission": "You don't have permission to view MCP servers.",
     "noServers": "No MCP servers configured",
     "operationFailed": "Operation failed",
+    "permissionLimited": {
+      "description": "MCP is visible in the workbench, but your current role can only use governed tools after ai-platform publishes an allowed tool projection.",
+      "title": "MCP tools are governed"
+    },
     "overwriteExisting": "Overwrite existing servers with the same name",
     "promoteFailed": "Failed to promote MCP server",
     "promoteSuccess": "MCP server promoted to system server",
@@ -2286,6 +2290,14 @@
     }
   },
   "skillsHub": {
+    "featureDisabled": {
+      "description": "Skills are disabled at the platform level. The workbench keeps this governed entry visible, but only an administrator can enable Skill discovery and department access.",
+      "title": "Skills are waiting for administrator enablement"
+    },
+    "permissionLimited": {
+      "description": "Skills and marketplace discovery are part of this workbench. Your current role has no readable Skill projection yet, so the page stays read-only until an administrator enables department access.",
+      "title": "Skills access is governed"
+    },
     "subtitle": "Manage local skills and explore the marketplace",
     "title": "Skills"
   },

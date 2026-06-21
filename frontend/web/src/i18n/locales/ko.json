@@ -1279,6 +1279,10 @@
     "noPermission": "MCP 서버를 볼 권한이 없습니다.",
     "noServers": "구성된 MCP 서버가 없습니다",
     "operationFailed": "작업에 실패했습니다",
+    "permissionLimited": {
+      "description": "MCP는 워크벤치에 표시되지만, 현재 역할은 ai-platform이 허용된 도구 프로젝션을 게시한 뒤에만 관리되는 도구를 선택할 수 있습니다.",
+      "title": "MCP 도구는 거버넌스 대상입니다"
+    },
     "overwriteExisting": "동일한 이름의 기존 서버 덮어쓰기",
     "promoteFailed": "MCP 서버 승격에 실패했습니다",
     "promoteSuccess": "MCP 서버가 시스템 서버로 승격되었습니다",
@@ -2195,6 +2199,14 @@
     "userSkillVisible": "사용자 스킬 (나에게만 표시)"
   },
   "skillsHub": {
+    "featureDisabled": {
+      "description": "Skills는 플랫폼 수준에서 비활성화되어 있습니다. 워크벤치는 이 거버넌스 진입점을 계속 표시하지만, Skill 탐색과 부서 접근은 관리자가 활성화한 뒤 사용할 수 있습니다.",
+      "title": "Skills는 관리자 활성화를 기다리는 중입니다"
+    },
+    "permissionLimited": {
+      "description": "Skills와 마켓플레이스 탐색은 이 워크벤치의 일부입니다. 현재 역할에는 읽을 수 있는 Skill 프로젝션이 없으므로, 관리자가 부서 접근을 활성화할 때까지 페이지는 읽기 전용으로 유지됩니다.",
+      "title": "Skills 접근은 거버넌스 대상입니다"
+    },
     "subtitle": "로컬 스킬을 관리하고 마켓플레이스를 탐색하세요",
     "title": "스킬"
   },

@@ -39,6 +39,41 @@ test("app routes expose PRD phase 1B and 1C surfaces", () => {
   assert.match(tabs, /channels:\s*ChannelImportPanel/);
 });
 
+test("phase 1C discovery routes are login reachable and fail closed inside pages", () => {
+  const app = readFileSync(join(root, "src/App.tsx"), "utf8");
+
+  for (const route of [
+    "/skills",
+    "/marketplace",
+    "/mcp",
+    "/channels/:channelType?/:instanceId?",
+  ]) {
+    const routePattern = new RegExp(
+      `path="${route.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"[\\s\\S]{0,260}<ProtectedRoute>[\\s\\S]{0,180}<`,
+    );
+    assert.match(
+      app,
+      routePattern,
+      `${route} should render inside the authenticated shell without route-level business permission redirects`,
+    );
+  }
+
+  for (const [route, page] of [
+    ["/users", "UsersPage"],
+    ["/roles", "RolesPage"],
+    ["/settings", "SettingsPage"],
+  ]) {
+    const adminRoutePattern = new RegExp(
+      `path="${route}"[\\s\\S]{0,520}<ProtectedRoute[\\s\\S]{0,180}permissions=\\{\\[[\\s\\S]{0,260}<${page} \\/>`,
+    );
+    assert.match(
+      app,
+      adminRoutePattern,
+      `${page} should remain route-gated because it exposes admin-only operations`,
+    );
+  }
+});
+
 test("legacy brand authority is absent from active browser entry", () => {
   const index = readFileSync(join(root, "index.html"), "utf8");
   assert.doesNotMatch(index, /\bLambChat\b|lambchat\.com/i);
