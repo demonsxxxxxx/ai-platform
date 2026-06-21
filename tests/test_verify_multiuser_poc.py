@@ -596,6 +596,63 @@ def test_foundation_runtime_evidence_from_results_fails_closed_without_probe_sou
     assert "check_skill_snapshots_not_passed" in readiness["failures"]
 
 
+def test_foundation_runtime_evidence_from_results_records_terminal_run_failures():
+    module = load_verify_multiuser_poc()
+    results = complete_foundation_runtime_results()
+    results[0]["status"] = "failed"
+    results[0]["raw_status"] = "error"
+    results[0]["error_code"] = "claude_agent_sdk_runtime_error"
+    results[0]["error_message"] = "API Error: 402 Insufficient Balance"
+
+    evidence = module.build_foundation_runtime_concurrency_evidence(
+        results,
+        commit_sha="3843395b180324b165cbca7c59b6d7e1a934e290",
+        runtime_subject_commit_sha="ac9a86bbea14a28748867cade8d80b2f9ff420ec",
+    )
+    readiness = build_foundation_runtime_concurrency_readiness(evidence)
+
+    assert evidence["terminal_run_failures"] == [
+        {
+            "account": "tenant-a-user-0",
+            "case": "case-0",
+            "error_code": "claude_agent_sdk_runtime_error",
+            "error_message_summary": "API Error: 402 Insufficient Balance",
+            "raw_status": "error",
+            "run_id": "run-0",
+            "scenario": "run_creation",
+            "status": "failed",
+            "tenant_id": "tenant-a",
+        }
+    ]
+    assert "run_terminal_failures" in readiness["failures"]
+
+
+def test_foundation_runtime_evidence_redacts_terminal_failure_message_summary():
+    module = load_verify_multiuser_poc()
+    results = complete_foundation_runtime_results()
+    results[0]["status"] = "failed"
+    results[0]["raw_status"] = "failed"
+    results[0]["error_code"] = "claude_agent_sdk_runtime_error"
+    results[0]["error_message"] = (
+        "API Error: 402 Insufficient Balance request id: req-123 "
+        "key=sk-test-secret password=hunter2 url=https://gateway.internal.example/v1"
+    )
+
+    evidence = module.build_foundation_runtime_concurrency_evidence(
+        results,
+        commit_sha="3843395b180324b165cbca7c59b6d7e1a934e290",
+        runtime_subject_commit_sha="ac9a86bbea14a28748867cade8d80b2f9ff420ec",
+    )
+
+    summary = evidence["terminal_run_failures"][0]["error_message_summary"]
+    assert "API Error: 402 Insufficient Balance" in summary
+    assert "sk-test-secret" not in summary
+    assert "hunter2" not in summary
+    assert "gateway.internal.example" not in summary
+    assert "req-123" not in summary
+    assert len(summary) <= 160
+
+
 def test_foundation_runtime_cli_evidence_mode_fails_closed_without_public_context_projection(
     monkeypatch, tmp_path, capsys
 ):
@@ -1303,6 +1360,9 @@ def test_attach_run_detail_probe_results_aggregates_safe_projection_and_context(
             return 200, {
                 "run": {
                     "workspace_id": "default",
+                    "status": "failed",
+                    "error_code": "claude_agent_sdk_runtime_error",
+                    "error_message": "API Error: 402 Insufficient Balance",
                     "input": {"context_snapshot_id": "ctx-a"},
                     "result": {"sandbox_lease_id": "lease-a"},
                 },
@@ -1335,6 +1395,9 @@ def test_attach_run_detail_probe_results_aggregates_safe_projection_and_context(
     assert results[0]["workspace_fingerprint"] == "tenant-a:default:session-a:run-a"
     assert results[0]["context_snapshot_id"] == "ctx-a"
     assert results[0]["sandbox_lease_id"] == "lease-a"
+    assert results[0]["status"] == "failed"
+    assert results[0]["error_code"] == "claude_agent_sdk_runtime_error"
+    assert results[0]["error_message"] == "API Error: 402 Insufficient Balance"
     assert results[0]["tool_permission"]["decision_sample_count"] == 1
     assert results[0]["skill_snapshot"]["run_skill_snapshot_count"] == 1
     assert results[0]["playback"]["event_order_violations"] == 0
