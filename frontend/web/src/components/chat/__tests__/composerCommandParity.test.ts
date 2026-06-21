@@ -324,3 +324,27 @@ test("composer first screen exposes slash dollar skills and governed shortcuts",
   assert.match(en, /type \$/i);
   assert.match(en, /Skills/);
 });
+
+test("composer shortcut hints fail closed when a governed surface is unavailable", () => {
+  const shortcutBar = readFileSync(
+    join(root, "src/components/chat/ComposerCommandHintBar.tsx"),
+    "utf8",
+  );
+
+  assert.match(shortcutBar, /disabled=\{!available\}/);
+  assert.match(shortcutBar, /aria-disabled=\{!available\}/);
+  assert.match(shortcutBar, /cursor-not-allowed/);
+});
+
+test("all supported placeholders are slash and dollar skills first", () => {
+  for (const locale of ["en", "zh", "ja", "ko", "ru"]) {
+    const source = readFileSync(
+      join(root, `src/i18n/locales/${locale}.json`),
+      "utf8",
+    );
+
+    assert.match(source, /"\s*placeholder"\s*:\s*"[^"]*\//, locale);
+    assert.match(source, /"\s*placeholder"\s*:\s*"[^"]*\$/, locale);
+    assert.match(source, /"\s*placeholder"\s*:\s*"[^"]*Skills/, locale);
+  }
+});

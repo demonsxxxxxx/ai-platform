@@ -72,10 +72,11 @@ export function ComposerCommandHintBar({
             key={item.id}
             type="button"
             onClick={() => onCommand(item.command)}
+            disabled={!available}
             className={`inline-flex min-h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-400 ${
               available
                 ? "border-stone-200 bg-stone-50 text-stone-700 hover:bg-stone-100 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700"
-                : "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
+                : "cursor-not-allowed border-amber-200 bg-amber-50 text-amber-700 opacity-80 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
             }`}
             aria-disabled={!available}
             title={
