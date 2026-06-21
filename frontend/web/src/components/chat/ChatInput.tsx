@@ -526,6 +526,21 @@ export const ChatInput = memo(function ChatInput({
     [t],
   );
 
+  const closeSlashMenu = useCallback(() => {
+    setSlashMenuOpen(false);
+    setSlashMenuHighlight(0);
+  }, []);
+
+  const executeAvailableFileCommand = useCallback(() => {
+    openFileCommandRef.current?.();
+    setActivePanel(null);
+    setCommandSearchSeed(null);
+    closeSlashMenu();
+    setInput("");
+    setCursorPosition(0);
+    requestAnimationFrame(scheduleTextareaResize);
+  }, [closeSlashMenu, scheduleTextareaResize]);
+
   const openCommandPanel = useCallback(
     (nextValue: string): boolean => {
       const draft = resolveComposerCommandDraft(
@@ -553,11 +568,6 @@ export const ChatInput = memo(function ChatInput({
     [commandPanelAvailability],
   );
 
-  const closeSlashMenu = useCallback(() => {
-    setSlashMenuOpen(false);
-    setSlashMenuHighlight(0);
-  }, []);
-
   const slashCommandItems = useMemo(
     () =>
       slashMenuOpen
@@ -576,7 +586,11 @@ export const ChatInput = memo(function ChatInput({
     (item: SlashCommandMenuItem) => {
       const nextInput = `/${item.command}${input.trimStart().slice(1).trim() ? " " : ""}`;
       closeSlashMenu();
-      if (item.unavailable || item.panel === "model" || item.panel === "file" || item.panel === "context") {
+      if (item.command === "file" && !item.unavailable) {
+        executeAvailableFileCommand();
+        return;
+      }
+      if (item.unavailable || item.panel === "model" || item.panel === "context") {
         upsertUnavailableCommandChip({
           trigger: "/",
           command: item.command,
@@ -606,6 +620,7 @@ export const ChatInput = memo(function ChatInput({
     },
     [
       closeSlashMenu,
+      executeAvailableFileCommand,
       input,
       scheduleTextareaResize,
       upsertUnavailableCommandChip,
@@ -633,6 +648,14 @@ export const ChatInput = memo(function ChatInput({
         }
         return true;
       }
+      if (
+        draft.command.command === "file" &&
+        !draft.command.unavailable &&
+        !draft.command.query
+      ) {
+        executeAvailableFileCommand();
+        return true;
+      }
       upsertUnavailableCommandChip(
         draft.command.unavailable
           ? draft.command
@@ -649,6 +672,7 @@ export const ChatInput = memo(function ChatInput({
     [
       commandPanelAvailability,
       closeSlashMenu,
+      executeAvailableFileCommand,
       handleSlashCommandSelect,
       scheduleTextareaResize,
       slashCommandItems,

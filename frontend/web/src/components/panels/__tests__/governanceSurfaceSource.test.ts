@@ -32,6 +32,9 @@ test("mcp panel exposes governed tools without raw lifecycle controls", () => {
   assert.match(source, /GovernanceAvailabilityBadge/);
   assert.match(source, /mcp\.permissionMode/);
   assert.match(source, /mcp\.lifecycleUnavailable/);
+  assert.match(source, /roleQuotaCount/);
+  assert.doesNotMatch(source, /enabledToolCount/);
+  assert.doesNotMatch(source, /mcp\.card\.tools/);
   assert.doesNotMatch(
     source,
     /MCPServerCard|MCPServerForm|ConfirmDialog|EditorSidebar/,

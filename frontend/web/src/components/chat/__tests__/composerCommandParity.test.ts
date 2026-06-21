@@ -67,6 +67,13 @@ test("slash command parser maps command words to governed panels", () => {
     query: "report",
     unavailable: true,
   });
+  assert.deepEqual(parseComposerCommand("/file", allAvailable), {
+    trigger: "/",
+    command: "file",
+    panel: "file",
+    query: "",
+    unavailable: false,
+  });
   assert.deepEqual(parseComposerCommand("/context memory", allAvailable), {
     trigger: "/",
     command: "context",
@@ -142,6 +149,10 @@ test("file and unavailable commands execute only when the command word is comple
   assert.equal(resolveComposerCommandDraft("/f", allAvailable)?.shouldExecute, false);
   assert.equal(resolveComposerCommandDraft("/file", allAvailable)?.shouldExecute, true);
   assert.equal(
+    resolveComposerCommandDraft("/file", allAvailable)?.command.unavailable,
+    false,
+  );
+  assert.equal(
     resolveComposerCommandDraft("/file report", allAvailable)?.command
       .unavailable,
     true,
@@ -167,7 +178,7 @@ test("slash command menu exposes the Phase 1B command groups", () => {
       { command: "mcp", panel: "tools", unavailable: false },
       { command: "agent", panel: "agent", unavailable: false },
       { command: "model", panel: "model", unavailable: false },
-      { command: "file", panel: "file", unavailable: true },
+      { command: "file", panel: "file", unavailable: false },
       { command: "context", panel: "context", unavailable: false },
     ],
   );
@@ -264,4 +275,18 @@ test("chat input renders composer chips and expanded command groups", () => {
   assert.match(featureMenu, /featureMenu\.model/);
   assert.match(featureMenu, /featureMenu\.context/);
   assert.match(featureMenu, /featureMenu\.fileReference/);
+});
+
+test("chat input routes the available /file command to the safe upload picker", () => {
+  const chatInput = readFileSync(
+    join(root, "src/components/chat/ChatInput.tsx"),
+    "utf8",
+  );
+
+  assert.match(chatInput, /executeAvailableFileCommand/);
+  assert.match(chatInput, /openFileCommandRef\.current\?\.\(\)/);
+  assert.doesNotMatch(
+    chatInput,
+    /item\.panel === "file"[\s\S]{0,160}upsertUnavailableCommandChip/,
+  );
 });

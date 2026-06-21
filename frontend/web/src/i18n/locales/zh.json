@@ -1232,6 +1232,7 @@
       "headersCount": "{{count}} 个头",
       "noTools": "未发现工具",
       "roleCount": "{{count}} 个角色",
+      "roleQuotaCount": "角色配额",
       "system": "系统",
       "systemDisabled": "系统禁用",
       "toolToggleFailed": "切换工具失败",

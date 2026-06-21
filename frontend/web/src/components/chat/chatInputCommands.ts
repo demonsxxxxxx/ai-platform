@@ -153,7 +153,7 @@ function normalizeAvailability(
     tools: availability.tools,
     agents: availability.agents ?? true,
     models: availability.models ?? false,
-    files: false,
+    files: availability.files ?? false,
     context: availability.context ?? false,
   };
 }
@@ -228,12 +228,17 @@ export function parseComposerCommand(
   const query = queryParts.join(" ");
 
   const availabilityKey = commandAvailabilityKey[command];
+  const unavailable =
+    command === "file" && query.trim()
+      ? true
+      : !normalizedAvailability[availabilityKey];
+
   return {
     trigger,
     command,
     panel: commandPanelByName[command],
     query,
-    unavailable: !normalizedAvailability[availabilityKey],
+    unavailable,
   };
 }
 

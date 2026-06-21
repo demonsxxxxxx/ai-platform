@@ -19,7 +19,7 @@ import { useAuth } from "../../hooks/useAuth";
 import { Permission } from "../../types";
 import type { MCPServerResponse } from "../../types";
 
-function enabledToolCount(server: MCPServerResponse): number {
+function roleQuotaCount(server: MCPServerResponse): number {
   return Object.values(server.role_quotas ?? {}).filter(Boolean).length;
 }
 
@@ -150,7 +150,7 @@ export function MCPPanel() {
                 enabled: server.enabled,
               });
               const roleCount = server.allowed_roles?.length ?? 0;
-              const toolCount = enabledToolCount(server);
+              const quotaCount = roleQuotaCount(server);
               return (
                 <article
                   key={server.name}
@@ -199,10 +199,10 @@ export function MCPPanel() {
                     </div>
                     <div className="rounded-md bg-stone-50 p-2 dark:bg-stone-950/50">
                       <dt className="text-stone-400 dark:text-stone-500">
-                        {t("mcp.card.tools")}
+                        {t("mcp.card.roleQuotaCount")}
                       </dt>
                       <dd className="mt-1 font-medium text-stone-700 dark:text-stone-200">
-                        {toolCount}
+                        {quotaCount}
                       </dd>
                     </div>
                   </dl>

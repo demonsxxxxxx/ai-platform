@@ -1231,6 +1231,7 @@
       "headersCount": "{{count}} header(s)",
       "noTools": "No tools found",
       "roleCount": "{{count}} roles",
+      "roleQuotaCount": "Role quotas",
       "system": "System",
       "systemDisabled": "System Disabled",
       "toolToggleFailed": "Failed to toggle tool",
