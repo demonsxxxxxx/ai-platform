@@ -377,6 +377,57 @@ async def test_run_forever_closes_database_pool_when_cancelled(monkeypatch):
     assert calls == [("run_once", 2, True), ("close_pool",)]
 
 
+@pytest.mark.asyncio
+async def test_run_worker_pool_starts_configured_parallel_workers(monkeypatch):
+    started = asyncio.Event()
+    calls = []
+
+    class Settings:
+        worker_maintenance_interval_seconds = 60.0
+
+    async def fake_run_worker_maintenance(settings):
+        calls.append(("maintenance", settings.worker_maintenance_interval_seconds))
+
+    async def fake_run_worker_slot(*, worker_id, poll_timeout_seconds, idle_sleep_seconds):
+        calls.append(("slot", bool(worker_id), poll_timeout_seconds, idle_sleep_seconds))
+        if len([call for call in calls if call[0] == "slot"]) == 3:
+            started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.worker_main.run_worker_maintenance", fake_run_worker_maintenance)
+    monkeypatch.setattr("app.worker_main._run_worker_slot", fake_run_worker_slot)
+
+    task = asyncio.create_task(worker_main.run_worker_pool(worker_count=3, poll_timeout_seconds=2, idle_sleep_seconds=0.25))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=0.5)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert calls == [
+        ("maintenance", 60.0),
+        ("slot", True, 2, 0.25),
+        ("slot", True, 2, 0.25),
+        ("slot", True, 2, 0.25),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_worker_pool_clamps_invalid_worker_count_to_one(monkeypatch):
+    calls = []
+
+    async def fake_run_forever(poll_timeout_seconds=5, idle_sleep_seconds=0.5):
+        calls.append(("run_forever", poll_timeout_seconds, idle_sleep_seconds))
+
+    monkeypatch.setattr("app.worker_main.run_forever", fake_run_forever)
+
+    await worker_main.run_worker_pool(worker_count=0, poll_timeout_seconds=4, idle_sleep_seconds=0.75)
+
+    assert calls == [("run_forever", 4, 0.75)]
+
+
 def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
     calls = []
 
@@ -395,6 +446,24 @@ def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
 
     assert calls == [("run_once", 7), ("close_pool",)]
     assert "WorkerOutcome(status='idle'" in capsys.readouterr().out
+
+
+def test_worker_main_uses_configured_worker_concurrency(monkeypatch):
+    calls = []
+
+    class Settings:
+        worker_concurrency = 4
+
+    async def fake_run_worker_pool(*, worker_count, poll_timeout_seconds=5):
+        calls.append(("run_worker_pool", worker_count, poll_timeout_seconds))
+
+    monkeypatch.setattr(sys, "argv", ["worker", "--timeout", "9"])
+    monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.worker_main.run_worker_pool", fake_run_worker_pool)
+
+    worker_main.main()
+
+    assert calls == [("run_worker_pool", 4, 9)]
 
 
 @pytest.mark.asyncio
