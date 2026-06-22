@@ -631,6 +631,145 @@ class AdminRunDetailResponse(BaseModel):
     audit: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class PublicSkillResponse(BaseModel):
+    """User-facing skill catalog item for the Phase 1 Skills surface."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill_name: str
+    description: str = ""
+    tags: list[str] = Field(default_factory=list)
+    files: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    file_count: int = 0
+    installed_from: Literal["manual", "marketplace"] = "marketplace"
+    published_marketplace_name: str | None = None
+    created_at: Any | None = None
+    updated_at: Any | None = None
+    is_published: bool = True
+    marketplace_is_active: bool = True
+
+
+class PublicSkillsResponse(BaseModel):
+    """Paginated public Skills response consumed by the frontend shell."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skills: list[PublicSkillResponse] = Field(default_factory=list)
+    total: int = 0
+    skip: int = 0
+    limit: int = 50
+    available_tags: list[str] = Field(default_factory=list)
+    effective_permissions: list[str] = Field(default_factory=list)
+
+
+class PublicSkillDetailResponse(BaseModel):
+    """Public skill detail with file paths and tenant availability."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    files: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    skill_name: str
+    description: str = ""
+    tags: list[str] = Field(default_factory=list)
+    is_published: bool = True
+    marketplace_is_active: bool = True
+
+
+class PublicSkillFileResponse(BaseModel):
+    """Public skill file content response with binary-safe metadata."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    content: str
+    is_binary: bool = False
+    url: str | None = None
+    mime_type: str | None = None
+    size: int | None = None
+
+
+class PublicSkillToggleRequest(BaseModel):
+    """Request body for enabling or disabling a tenant-visible skill."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+
+
+class PublicSkillToggleResponse(BaseModel):
+    """Toggle result for the public Skills surface."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill_name: str
+    enabled: bool
+    message: str
+
+
+class PublicSkillFileUpdateRequest(BaseModel):
+    """Request body for frontend file-write attempts, currently permission-gated."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    content: str
+
+
+class PublishToMarketplaceRequest(BaseModel):
+    """User-facing publish request accepted by the public Skills contract."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill_name: str | None = None
+    description: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    version: str | None = None
+
+
+class MarketplaceSkillResponse(BaseModel):
+    """Marketplace catalog item for frontend browsing and preview."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill_name: str
+    description: str = ""
+    tags: list[str] = Field(default_factory=list)
+    version: str
+    created_at: Any | None = None
+    updated_at: Any | None = None
+    created_by: str | None = None
+    created_by_username: str | None = None
+    is_active: bool = True
+    is_owner: bool = False
+    file_count: int = 0
+
+
+class MarketplaceSkillFilesResponse(BaseModel):
+    """Marketplace skill file listing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    files: list[str] = Field(default_factory=list)
+
+
+class MarketplaceInstallResponse(BaseModel):
+    """Marketplace install/update result for tenant skill availability."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str
+    skill_name: str
+    file_count: int
+
+
+class MarketplaceTagsResponse(BaseModel):
+    """Available marketplace tag projection."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tags: list[str] = Field(default_factory=list)
+
+
 class AdminSkillVersionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
