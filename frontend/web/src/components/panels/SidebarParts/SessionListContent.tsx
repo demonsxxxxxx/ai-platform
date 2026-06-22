@@ -3,10 +3,11 @@ import {
   ChevronsUpDown,
   Search,
   FolderPlus,
-  FolderOpen,
   MessageSquarePlus,
-  MoreHorizontal,
-  UserRound,
+  LayoutGrid,
+  Server,
+  Sparkles,
+  Bot,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
@@ -58,9 +59,6 @@ interface SessionListContentProps {
   onNewSession: () => void;
   onOpenSearch: () => void;
   onShowProfile: () => void;
-  hasMoreMenuItems: boolean;
-  onToggleMoreMenu: () => void;
-  expandedMoreMenuBtnRef: React.RefObject<HTMLButtonElement | null>;
   scrollEl: HTMLDivElement | null;
   onSetScrollEl: (el: HTMLDivElement | null) => void;
   uncategorizedSessions: BackendSession[];
@@ -92,9 +90,6 @@ export function SessionListContent({
   onNewSession,
   onOpenSearch,
   onShowProfile,
-  hasMoreMenuItems,
-  onToggleMoreMenu,
-  expandedMoreMenuBtnRef,
   scrollEl,
   onSetScrollEl,
   uncategorizedSessions,
@@ -130,14 +125,12 @@ export function SessionListContent({
       {/* Header */}
       <div className="flex items-center justify-between px-3 pt-3 pb-1 sm:px-4">
         <div className="flex h-7 items-center gap-2">
-          <img
-            src="/icons/icon.svg"
-            alt={APP_NAME}
-            className="size-6 rounded-full object-cover"
-          />
+          <span className="flex size-6 items-center justify-center rounded-md bg-slate-900 text-white shadow-sm dark:bg-stone-100 dark:text-stone-950">
+            <Bot size={15} strokeWidth={2.2} aria-hidden="true" />
+          </span>
           <a
             href={APP_HOME_URL}
-            className="text-lg font-bold leading-none text-stone-800 dark:text-stone-100 hover:text-stone-900 dark:hover:text-stone-50 transition-colors font-serif"
+            className="text-[15px] font-semibold leading-none text-slate-900 transition-colors hover:text-slate-700 dark:text-stone-100 dark:hover:text-stone-50"
           >
             {APP_NAME}
           </a>
@@ -177,6 +170,30 @@ export function SessionListContent({
         </button>
 
         <button
+          onClick={() => navigate("/apps")}
+          className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+        >
+          <LayoutGrid size={20} />
+          <span>{t("nav.apps")}</span>
+        </button>
+
+        <button
+          onClick={() => navigate("/marketplace")}
+          className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+        >
+          <Sparkles size={20} />
+          <span>{t("featureMenu.skillsMarketplace")}</span>
+        </button>
+
+        <button
+          onClick={() => navigate("/mcp")}
+          className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+        >
+          <Server size={20} />
+          <span>{t("featureMenu.mcpTools")}</span>
+        </button>
+
+        <button
           onClick={onOpenSearch}
           className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors group"
         >
@@ -191,35 +208,6 @@ export function SessionListContent({
             ⌘K
           </kbd>
         </button>
-
-        <button
-          onClick={() => navigate("/persona")}
-          className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
-        >
-          <UserRound size={20} />
-          <span>{t("personaPresets.title", "角色广场")}</span>
-        </button>
-
-        <button
-          onClick={() => navigate("/files")}
-          className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
-        >
-          <FolderOpen size={20} />
-          <span>{t("fileLibrary.title")}</span>
-        </button>
-
-        {hasMoreMenuItems && (
-          <div className="relative">
-            <button
-              ref={expandedMoreMenuBtnRef}
-              onClick={onToggleMoreMenu}
-              className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
-            >
-              <MoreHorizontal size={20} />
-              <span className="flex-1 text-left">{t("nav.more", "更多")}</span>
-            </button>
-          </div>
-        )}
       </div>
 
       {/* Session list */}
@@ -455,8 +443,8 @@ export function SessionListContent({
                 draggable={false}
               />
             ) : (
-              <div className="flex w-full h-full items-center justify-center bg-gradient-to-br from-amber-400 to-orange-500 rounded-full">
-                <span className="text-xs font-semibold text-white font-serif">
+              <div className="flex w-full h-full items-center justify-center rounded-full bg-teal-700">
+                <span className="text-xs font-semibold text-white">
                   {user?.username?.charAt(0).toUpperCase() || "U"}
                 </span>
               </div>
@@ -466,7 +454,7 @@ export function SessionListContent({
             <div className="text-sm font-medium text-stone-800 dark:text-stone-100 truncate">
               {user?.username || "User"}
             </div>
-            <div className="text-xs text-stone-400 dark:text-stone-500 whitespace-nowrap font-serif">
+            <div className="text-xs text-stone-400 dark:text-stone-500 whitespace-nowrap">
               {(user?.roles?.[0] || "User").replace(/^./, (c) =>
                 c.toUpperCase(),
               )}

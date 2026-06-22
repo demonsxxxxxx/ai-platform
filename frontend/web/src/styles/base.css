@@ -114,17 +114,17 @@ select:-webkit-autofill:active {
 
 :root {
   font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
-  /* Theme color - stone tone */
-  --theme-primary: #78716c; /* stone-500 */
-  --theme-primary-hover: #57534e; /* stone-600 */
-  --theme-primary-light: #f5f5f4; /* stone-100 */
-  --theme-ring: #78716c; /* stone-500 */
-  --theme-bg: #f5f5f4; /* stone-100 */
+  /* Enterprise workbench tokens */
+  --theme-primary: #0f766e;
+  --theme-primary-hover: #115e59;
+  --theme-primary-light: #eef2f7;
+  --theme-ring: #0f766e;
+  --theme-bg: #f3f5f8;
   --theme-bg-card: #ffffff;
-  --theme-bg-sidebar: #f5f5f4; /* stone-100 */
-  --theme-border: #e7e5e4; /* stone-200 */
-  --theme-text: #1c1917; /* stone-900 */
-  --theme-text-secondary: #78716c; /* stone-500 */
+  --theme-bg-sidebar: #f3f5f8;
+  --theme-border: #e2e8f0;
+  --theme-text: #111827;
+  --theme-text-secondary: #64748b;
   --theme-overlay: rgba(0, 0, 0, 0.4);
   --theme-overlay-strong: rgba(0, 0, 0, 0.5);
   --theme-shadow-sm: rgba(0, 0, 0, 0.04);
@@ -294,11 +294,13 @@ html[data-mobile-keyboard="true"] #root {
   color: var(--theme-text-secondary);
 }
 .sidebar-nav-btn:hover {
-  background-color: var(
-    --glass-bg-subtle,
-    color-mix(in srgb, var(--theme-bg) 80%, white)
-  );
+  background-color: #ffffff;
   color: var(--theme-text);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.dark .sidebar-nav-btn:hover {
+  background-color: #292524;
+  box-shadow: none;
 }
 
 /* Sidebar rail button — theme-aware hover */
@@ -306,11 +308,13 @@ html[data-mobile-keyboard="true"] #root {
   color: var(--theme-text-secondary);
 }
 .sidebar-rail-btn:hover {
-  background-color: var(
-    --glass-bg-subtle,
-    color-mix(in srgb, var(--theme-bg) 80%, white)
-  );
+  background-color: #ffffff;
   color: var(--theme-text);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.dark .sidebar-rail-btn:hover {
+  background-color: #292524;
+  box-shadow: none;
 }
 
 /* Mobile bottom-sheet drag handle — touch feedback */

@@ -71,7 +71,7 @@ export function WorkbenchRightPanel({
       </section>
 
       <section
-        className={`${workbenchSurface.panel} flex min-h-0 flex-1 flex-col p-3`}
+        className={`${workbenchSurface.secondaryPanel} flex min-h-0 flex-1 flex-col p-3`}
       >
         <p className={workbenchSurface.label}>
           {t("workbench.runSurfaces", "Run surfaces")}

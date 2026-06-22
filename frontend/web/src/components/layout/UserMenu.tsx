@@ -257,8 +257,8 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
               onError={() => setImgError(true)}
             />
           ) : (
-            <div className="flex size-5 items-center justify-center bg-gradient-to-br from-amber-400 to-orange-500 rounded-full">
-              <span className="text-xs font-semibold text-white font-serif">
+            <div className="flex size-5 items-center justify-center rounded-full bg-teal-700">
+              <span className="text-xs font-semibold text-white">
                 {user?.username?.charAt(0).toUpperCase() || "U"}
               </span>
             </div>

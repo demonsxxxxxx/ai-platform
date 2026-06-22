@@ -207,7 +207,7 @@ export function Header({
                 <ChevronLeft size={20} />
               </button>
               <div className="flex flex-col justify-center">
-                <span className="text-base font-bold text-stone-700 dark:text-stone-200 font-serif leading-tight">
+                <span className="text-base font-semibold leading-tight text-slate-800 dark:text-stone-200">
                   {t(`nav.${activeTab}`, { defaultValue: activeTab })}
                 </span>
               </div>

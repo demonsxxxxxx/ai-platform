@@ -12,31 +12,14 @@ import {
   forwardRef,
   useImperativeHandle,
 } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import toast from "react-hot-toast";
 import { useTranslation } from "react-i18next";
-import {
-  Users,
-  Shield,
-  Bot,
-  Cpu,
-  Star,
-  Bell,
-  Settings,
-  Server,
-  Brain,
-  LayoutGrid,
-  MessageCircle,
-  Sparkles,
-} from "lucide-react";
 import { sessionApi, type BackendSession } from "../../services/api";
 import { useAuth } from "../../hooks/useAuth";
-import { useSettingsContext } from "../../contexts/SettingsContext";
-import { Permission } from "../../types";
 import { useProjectSessionList } from "../../hooks/useSession";
 import { useProjectManager } from "../../hooks/useProjectManager";
 import { useTouchDrag } from "../../hooks/useTouchDrag";
-import { useSwipeToClose } from "../../hooks/useSwipeToClose";
 import { ConfirmDialog } from "../common/ConfirmDialog";
 import { DeleteProjectDialog } from "../common/DeleteProjectDialog";
 import type { ProjectItemHandle } from "../sidebar/ProjectItem";
@@ -53,8 +36,6 @@ import { NewProjectModal } from "./NewProjectModal";
 import {
   SessionListContent,
   SidebarRail,
-  MobileMoreMenuSheet,
-  DesktopMoreMenu,
 } from "./SidebarParts";
 import type { SessionActions, ProjectActions } from "./SidebarParts";
 
@@ -121,127 +102,11 @@ export const SessionSidebar = forwardRef<
   >(null);
   const [shareDialogSessionName, setShareDialogSessionName] = useState("");
   const [isRecentChatsOpen, setIsRecentChatsOpen] = useState(false);
-  const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
-  const [moreMenuPosition, setMoreMenuPosition] = useState({ top: 0, left: 0 });
-  const { hasAnyPermission } = useAuth();
-  const { enableMemory } = useSettingsContext();
-
-  const canManageUsers = hasAnyPermission([
-    Permission.USER_READ,
-    Permission.USER_WRITE,
-  ]);
-  const canManageRoles = hasAnyPermission([Permission.ROLE_MANAGE]);
-  const canManageAgents = hasAnyPermission([Permission.AGENT_READ]);
-  const canManageModels = hasAnyPermission([Permission.MODEL_ADMIN]);
-  const canViewFeedback = hasAnyPermission([Permission.FEEDBACK_READ]);
-  const canManageNotifications = hasAnyPermission([
-    Permission.NOTIFICATION_MANAGE,
-  ]);
-  const canManageSettings = hasAnyPermission([Permission.SETTINGS_MANAGE]);
-  const canReadMCP = hasAnyPermission([Permission.MCP_READ]);
-  const canReadChannels = hasAnyPermission([Permission.CHANNEL_READ]);
-  const canReadMemory = enableMemory;
-  const canReadSkills = hasAnyPermission([Permission.SKILL_READ]);
-  const moreMenuFeatureItems = [
-    {
-      path: "/apps",
-      label: t("nav.apps"),
-      icon: LayoutGrid,
-      show: true,
-    },
-    {
-      path: "/skills",
-      label: t("nav.skills"),
-      icon: Sparkles,
-      show: canReadSkills,
-    },
-    {
-      path: "/mcp",
-      label: t("nav.mcp"),
-      icon: Server,
-      show: canReadMCP,
-    },
-    {
-      path: "/channels",
-      label: t("nav.channels"),
-      icon: MessageCircle,
-      show: canReadChannels,
-    },
-    {
-      path: "/memory",
-      label: t("nav.memory"),
-      icon: Brain,
-      show: canReadMemory,
-    },
-  ];
-
-  const moreMenuUserItems = [
-    {
-      path: "/users",
-      label: t("nav.users"),
-      icon: Users,
-      show: canManageUsers,
-    },
-    {
-      path: "/roles",
-      label: t("nav.roles"),
-      icon: Shield,
-      show: canManageRoles,
-    },
-    {
-      path: "/agents",
-      label: t("nav.agents"),
-      icon: Bot,
-      show: canManageAgents,
-    },
-    {
-      path: "/models",
-      label: t("nav.models"),
-      icon: Cpu,
-      show: canManageModels,
-    },
-  ];
-
-  const moreMenuSysItems = [
-    {
-      path: "/feedback",
-      label: t("nav.feedback"),
-      icon: Star,
-      show: canViewFeedback,
-    },
-    {
-      path: "/notifications",
-      label: t("nav.notifications"),
-      icon: Bell,
-      show: canManageNotifications,
-    },
-    {
-      path: "/settings",
-      label: t("nav.systemSettings"),
-      icon: Settings,
-      show: canManageSettings,
-    },
-  ];
-
-  const hasMoreMenuItems =
-    moreMenuFeatureItems.some((i) => i.show) ||
-    moreMenuUserItems.some((i) => i.show) ||
-    moreMenuSysItems.some((i) => i.show);
 
   const [isMobile, setIsMobile] = useState(
     () => window.matchMedia("(max-width: 639px)").matches,
   );
 
-  const moreMenuRef = useRef<HTMLDivElement>(null);
-  const moreMenuBtnRef = useRef<HTMLButtonElement>(null);
-  const expandedMoreMenuBtnRef = useRef<HTMLButtonElement>(null);
-  const moreMenuDragHandleRef = useRef<HTMLDivElement>(null);
-  const moreMenuSwipeRef = useSwipeToClose({
-    onClose: () => setIsMoreMenuOpen(false),
-    enabled: isMoreMenuOpen && isMobile,
-    dragHandleRef: moreMenuDragHandleRef,
-  });
-  const location = useLocation();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -250,31 +115,6 @@ export const SessionSidebar = forwardRef<
     mq.addEventListener("change", handler);
     return () => mq.removeEventListener("change", handler);
   }, []);
-
-  useEffect(() => {
-    if (!isMoreMenuOpen) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (activeMoreMenuBtnRef.current?.contains(e.target as Node)) return;
-      if (moreMenuRef.current?.contains(e.target as Node)) return;
-      setIsMoreMenuOpen(false);
-    };
-    // Defer by one frame so the opening click event has finished bubbling
-    // and the menu DOM is mounted (important on mobile where the same
-    // click can re-trigger the listener before the menu renders).
-    const id = requestAnimationFrame(() => {
-      document.addEventListener("click", handleClickOutside);
-    });
-    return () => {
-      cancelAnimationFrame(id);
-      document.removeEventListener("click", handleClickOutside);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isMoreMenuOpen]);
-
-  useEffect(() => {
-    if (isMoreMenuOpen) setIsMoreMenuOpen(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname]);
 
   const handleNewSessionInProject = useCallback(
     (projectId: string) => {
@@ -286,26 +126,6 @@ export const SessionSidebar = forwardRef<
 
   const isCollapsed = externalCollapsed ?? internalCollapsed;
   const setIsCollapsed = onToggleCollapsed ?? setInternalCollapsed;
-  const activeMoreMenuBtnRef = isCollapsed
-    ? moreMenuBtnRef
-    : expandedMoreMenuBtnRef;
-
-  useEffect(() => {
-    if (!isMoreMenuOpen || !activeMoreMenuBtnRef.current) return;
-    const rect = activeMoreMenuBtnRef.current.getBoundingClientRect();
-    const panelWidth = 208;
-    const panelMaxHeight = 480;
-    let top = rect.top;
-    let left = rect.right + 2;
-    if (left + panelWidth > window.innerWidth)
-      left = window.innerWidth - panelWidth - 8;
-    if (left < 8) left = 8;
-    if (top + panelMaxHeight > window.innerHeight)
-      top = window.innerHeight - panelMaxHeight - 8;
-    if (top < 8) top = 8;
-    setMoreMenuPosition({ top, left });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isMoreMenuOpen, isCollapsed]);
 
   // ─── Hooks ──────────────────────────────────────────────────────
 
@@ -704,9 +524,6 @@ export const SessionSidebar = forwardRef<
             onNewSession={onNewSession}
             onOpenSearch={() => setIsSearchOpen(true)}
             onShowProfile={onShowProfile!}
-            hasMoreMenuItems={hasMoreMenuItems}
-            onToggleMoreMenu={() => setIsMoreMenuOpen((prev) => !prev)}
-            expandedMoreMenuBtnRef={expandedMoreMenuBtnRef}
             scrollEl={scrollEl}
             onSetScrollEl={setScrollEl}
             uncategorizedSessions={uncategorizedList.sessions}
@@ -732,17 +549,6 @@ export const SessionSidebar = forwardRef<
         ) : (
           <div className="flex-1" />
         )}
-
-        <MobileMoreMenuSheet
-          featureItems={moreMenuFeatureItems}
-          userItems={moreMenuUserItems}
-          sysItems={moreMenuSysItems}
-          isOpen={isMoreMenuOpen}
-          onClose={() => setIsMoreMenuOpen(false)}
-          menuRef={moreMenuRef}
-          swipeRef={moreMenuSwipeRef}
-          dragHandleRef={moreMenuDragHandleRef}
-        />
       </div>
 
       {/* Desktop: always render sidebar container */}
@@ -768,9 +574,6 @@ export const SessionSidebar = forwardRef<
               onNewSession={onNewSession}
               onOpenSearch={() => setIsSearchOpen(true)}
               onShowProfile={onShowProfile!}
-              hasMoreMenuItems={hasMoreMenuItems}
-              onToggleMoreMenu={() => setIsMoreMenuOpen((prev) => !prev)}
-              expandedMoreMenuBtnRef={expandedMoreMenuBtnRef}
               scrollEl={scrollEl}
               onSetScrollEl={setScrollEl}
               uncategorizedSessions={uncategorizedList.sessions}
@@ -822,18 +625,8 @@ export const SessionSidebar = forwardRef<
             }}
             onOpenRecentChats={() => setIsRecentChatsOpen(true)}
             onOpenLaunchpad={() => navigate("/apps")}
-            onOpenFileLibrary={() => navigate("/files")}
-            onOpenPersonaPlaza={() => navigate("/persona")}
-            onOpenSkills={() => navigate("/skills")}
+            onOpenSkills={() => navigate("/marketplace")}
             onOpenMcp={() => navigate("/mcp")}
-            showSkills={canReadSkills}
-            showMcp={canReadMCP}
-            hasMoreMenuItems={hasMoreMenuItems}
-            onToggleMoreMenu={() => {
-              setIsMoreMenuOpen((prev) => !prev);
-              setIsRecentChatsOpen(false);
-            }}
-            moreMenuBtnRef={moreMenuBtnRef}
             recentChatsBtnRef={recentChatsBtnRef}
             onShowProfile={onShowProfile!}
           />
@@ -916,18 +709,6 @@ export const SessionSidebar = forwardRef<
         currentSessionId={currentSessionId}
         anchorEl={recentChatsBtnRef.current}
       />
-
-      {!isMobile && (
-        <DesktopMoreMenu
-          featureItems={moreMenuFeatureItems}
-          userItems={moreMenuUserItems}
-          sysItems={moreMenuSysItems}
-          isOpen={isMoreMenuOpen}
-          onClose={() => setIsMoreMenuOpen(false)}
-          menuRef={moreMenuRef}
-          position={moreMenuPosition}
-        />
-      )}
     </>
   );
 });
