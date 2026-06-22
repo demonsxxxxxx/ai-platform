@@ -2290,6 +2290,85 @@ async def test_worker_persists_run_skill_snapshots(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_worker_persists_platform_controlled_runner_skill_as_used(monkeypatch):
+    snapshots = []
+
+    class ControlledRunnerSkillAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="test-adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="test-executor/1",
+                capabilities={"skills": True},
+                result={
+                    "message": "controlled runner completed",
+                    "allowed_skills": ["qa-file-reviewer", "minimax-docx"],
+                    "staged_skills": ["qa-file-reviewer", "minimax-docx"],
+                },
+                executor_payload={
+                    "used_skills": ["qa-file-reviewer"],
+                    "used_skills_source": "platform_controlled_runner",
+                    "inferred_used_skills": ["qa-file-reviewer", "minimax-docx"],
+                    "skill_manifests": [
+                        {
+                            "skill_id": "qa-file-reviewer",
+                            "version": "hash-reviewer",
+                            "content_hash": "hash-reviewer",
+                            "source": {"kind": "builtin"},
+                            "dependency_ids": ["minimax-docx"],
+                            "allowed": True,
+                            "staged": True,
+                            "used": True,
+                        },
+                        {
+                            "skill_id": "minimax-docx",
+                            "version": "hash-docx",
+                            "content_hash": "hash-docx",
+                            "source": {"kind": "builtin"},
+                            "dependency_ids": [],
+                            "allowed": True,
+                            "staged": True,
+                            "used": False,
+                        },
+                    ],
+                },
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        return "evt-a"
+
+    async def complete_run(conn, **kwargs):
+        return None
+
+    async def upsert_run_skill_snapshot(conn, **kwargs):
+        snapshots.append(kwargs)
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
+
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": ControlledRunnerSkillAdapter()}))
+
+    assert outcome.status == "succeeded"
+    assert snapshots[0]["skill_id"] == "qa-file-reviewer"
+    assert snapshots[0]["used"] is True
+    assert snapshots[0]["used_skills_source"] == "platform_controlled_runner"
+    assert snapshots[0]["inferred_used"] is False
+    assert snapshots[1]["skill_id"] == "minimax-docx"
+    assert snapshots[1]["used"] is False
+    assert snapshots[1]["used_skills_source"] == "inferred"
+    assert snapshots[1]["inferred_used"] is True
+
+
+@pytest.mark.asyncio
 async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
     snapshots = []
     completed = {}

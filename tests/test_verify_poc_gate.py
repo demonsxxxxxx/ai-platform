@@ -23,6 +23,60 @@ def test_api_compat_gate_requires_user_and_admin_permissions(monkeypatch):
     assert gate.evidence["missing_permissions"] == ["admin:status", "agent:admin", "model:admin", "settings:manage"]
 
 
+def test_api_compat_gate_accepts_runtime_default_model_from_catalog(monkeypatch):
+    def fake_http_json(url: str):
+        if url.endswith("/api/auth/oauth/providers"):
+            return 200, {"registration_enabled": False}
+        if url.endswith("/api/agent/models/available"):
+            return 200, {
+                "default_model_id": "gpt-5.3-codex-spark",
+                "models": [
+                    {"id": "deepseek-v4-flash"},
+                    {"id": "gpt-5.3-codex-spark"},
+                ],
+            }
+        if url.endswith("/api/auth/permissions"):
+            return 200, {
+                "all_permissions": [{"value": value} for value in sorted(verify_poc_gate.REQUIRED_UI_PERMISSIONS)]
+            }
+        return 200, {}
+
+    monkeypatch.setattr(verify_poc_gate, "http_json", fake_http_json)
+
+    gate = verify_poc_gate.check_api_compat("http://api.local")
+
+    assert gate.ok is True
+    assert gate.evidence["default_model_id"] == "gpt-5.3-codex-spark"
+    assert "gpt-5.3-codex-spark" in gate.evidence["available_model_ids"]
+
+
+def test_api_compat_gate_rejects_default_model_drift_from_runtime(monkeypatch):
+    def fake_http_json(url: str):
+        if url.endswith("/api/auth/oauth/providers"):
+            return 200, {"registration_enabled": False}
+        if url.endswith("/api/agent/models/available"):
+            return 200, {
+                "default_model_id": "deepseek-v4-flash",
+                "models": [
+                    {"id": "deepseek-v4-flash"},
+                    {"id": "gpt-5.3-codex-spark"},
+                ],
+            }
+        if url.endswith("/api/auth/permissions"):
+            return 200, {
+                "all_permissions": [{"value": value} for value in sorted(verify_poc_gate.REQUIRED_UI_PERMISSIONS)]
+            }
+        return 200, {}
+
+    monkeypatch.setattr(verify_poc_gate, "http_json", fake_http_json)
+
+    gate = verify_poc_gate.check_api_compat("http://api.local", expected_default_model_id="gpt-5.3-codex-spark")
+
+    assert gate.ok is False
+    assert gate.evidence["expected_default_model_id"] == "gpt-5.3-codex-spark"
+    assert gate.evidence["default_model_matches_expected"] is False
+
+
 def test_poc_gate_cli_bootstraps_repo_root_for_direct_script_execution():
     script_text = Path("tools/verify_poc_gate.py").read_text(encoding="utf-8")
     watcher_text = Path("tools/watch_poc_gate.py").read_text(encoding="utf-8")
@@ -382,6 +436,62 @@ def test_runtime_env_values_uses_env_file_only_when_container_env_unavailable(tm
     assert values["EXISTING_AUTH_BASE_URL"] == "http://auth.local"
 
 
+def test_runtime_config_accepts_consistent_model_from_catalog():
+    gate = verify_poc_gate.check_runtime_config(
+        "unused.env",
+        {
+            "CLAUDE_AGENT_SDK_ENABLED": "true",
+            "CLAUDE_AGENT_MODEL": "gpt-5.3-codex-spark",
+            "OPENAI_MODEL": "gpt-5.3-codex-spark",
+            "ANTHROPIC_MODEL": "gpt-5.3-codex-spark",
+            "DEFAULT_MODEL_ID": "gpt-5.3-codex-spark",
+            "MODEL_CATALOG_JSON": '[{"id":"deepseek-v4-flash"},{"id":"gpt-5.3-codex-spark"}]',
+            "CLAUDE_AGENT_SDK_SKILLS": "general-chat,qa-file-reviewer,baoyu-translate",
+        },
+    )
+
+    assert gate.ok is True
+    assert gate.evidence["configured_model_id"] == "gpt-5.3-codex-spark"
+    assert gate.evidence["model_catalog_contains_configured_model"] is True
+
+
+def test_runtime_config_rejects_malformed_model_catalog_json():
+    gate = verify_poc_gate.check_runtime_config(
+        "unused.env",
+        {
+            "CLAUDE_AGENT_SDK_ENABLED": "true",
+            "CLAUDE_AGENT_MODEL": "gpt-5.3-codex-spark",
+            "OPENAI_MODEL": "gpt-5.3-codex-spark",
+            "ANTHROPIC_MODEL": "gpt-5.3-codex-spark",
+            "DEFAULT_MODEL_ID": "gpt-5.3-codex-spark",
+            "MODEL_CATALOG_JSON": "{not-json",
+            "CLAUDE_AGENT_SDK_SKILLS": "general-chat,qa-file-reviewer,baoyu-translate",
+        },
+    )
+
+    assert gate.ok is False
+    assert gate.evidence["model_catalog_status"] == "invalid_json"
+
+
+def test_runtime_config_rejects_catalog_missing_configured_model():
+    gate = verify_poc_gate.check_runtime_config(
+        "unused.env",
+        {
+            "CLAUDE_AGENT_SDK_ENABLED": "true",
+            "CLAUDE_AGENT_MODEL": "gpt-5.3-codex-spark",
+            "OPENAI_MODEL": "gpt-5.3-codex-spark",
+            "ANTHROPIC_MODEL": "gpt-5.3-codex-spark",
+            "DEFAULT_MODEL_ID": "gpt-5.3-codex-spark",
+            "MODEL_CATALOG_JSON": '[{"id":"deepseek-v4-flash"}]',
+            "CLAUDE_AGENT_SDK_SKILLS": "general-chat,qa-file-reviewer,baoyu-translate",
+        },
+    )
+
+    assert gate.ok is False
+    assert gate.evidence["model_catalog_status"] == "present"
+    assert gate.evidence["model_catalog_contains_configured_model"] is False
+
+
 def test_container_auth_url_source_of_truth_can_fail_gate_despite_valid_env_file(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
     env_path.write_text("EXISTING_AUTH_BASE_URL=http://auth.local\n", encoding="utf-8")
@@ -523,6 +633,95 @@ def test_word_review_attachment_chat_routes_to_qa_runner(monkeypatch):
     assert gate.evidence["playback"]["matched_preview_artifact_count"] == 1
     assert gate.evidence["playback"]["private_payload_leaked"] is False
     assert gate.evidence["context_snapshot_public_projection"]["ok"] is True
+
+
+def test_word_review_attachment_chat_honors_wait_attempts(monkeypatch):
+    attempts = 0
+
+    monkeypatch.setattr(verify_poc_gate, "sample_docx_bytes", lambda: ("review.docx", b"docx-bytes"))
+    monkeypatch.setattr(verify_poc_gate.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", lambda *args, **kwargs: (200, {"key": "file_review_gate_1"}))
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "http_json_post_with_headers",
+        lambda *args, **kwargs: (200, {"run_id": "run_review_gate_1"}),
+    )
+
+    def fake_psql_rows(container: str, db_user: str, db_name: str, sql: str):
+        nonlocal attempts
+        attempts += 1
+        status = "succeeded" if attempts == 3 else "running"
+        return [
+            {
+                "run_id": "run_review_gate_1",
+                "agent_id": "qa-word-review",
+                "skill_id": "qa-file-reviewer",
+                "status": status,
+                "file_ids": ["file_review_gate_1"],
+                "error_message": None,
+                "artifact_count": 1 if status == "succeeded" else 0,
+                "artifacts": [
+                    {
+                        "artifact_id": "artifact_review_1",
+                        "artifact_type": "reviewed_docx",
+                        "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    }
+                ]
+                if status == "succeeded"
+                else [],
+            }
+        ]
+
+    def fake_get(url: str, headers: dict[str, str], timeout: float = 15.0):
+        if url.endswith("/context/snapshots"):
+            return 200, {
+                "context_snapshots": [
+                    {
+                        "payload": {
+                            "referenced_materials": {
+                                "message_count": 1,
+                                "file_count": 1,
+                                "artifact_count": 1,
+                                "memory_record_count": 0,
+                            },
+                            "used_context_summary": {
+                                "source": "stored_context_snapshot",
+                                "input_keys": ["message", "attachments"],
+                                "memory_policy_source": "stored",
+                                "long_term_memory_read": False,
+                            },
+                            "execution_tier": "document_worker",
+                            "context_pack_version": "v1",
+                            "context_pack_generated_at": "2026-06-12T01:00:00Z",
+                        }
+                    }
+                ]
+            }
+        return 200, {
+            "contract_version": "ai-platform.run-playback.v1",
+            "artifacts": [
+                {
+                    "artifact_id": "artifact_review_1",
+                    "artifact_type": "reviewed_docx",
+                    "download_url": "/api/ai/artifacts/artifact_review_1/download",
+                    "preview_url": "/api/ai/artifacts/artifact_review_1/preview",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(verify_poc_gate, "psql_rows", fake_psql_rows)
+    monkeypatch.setattr(verify_poc_gate, "http_json_get_with_headers", fake_get)
+
+    gate = verify_poc_gate.check_word_review_attachment_chat(
+        "http://api.local",
+        "postgres",
+        "user",
+        "db",
+        wait_attempts=3,
+    )
+
+    assert gate.ok is True
+    assert attempts == 3
 
 
 def test_governed_skill_runs_gate_summarizes_real_task_snapshot_pins(monkeypatch):
@@ -1381,6 +1580,57 @@ def test_upload_attachment_chat_reports_worker_runtime_evidence(monkeypatch):
     assert gate.evidence["run"]["error_code"] == "claude_agent_sdk_disabled"
     assert gate.evidence["run"]["worker_events"][0]["worker_id"] == "worker-old"
     assert gate.evidence["run"]["worker_events"][0]["claude_agent_sdk_enabled"] is False
+
+
+def test_upload_attachment_chat_accepts_worker_started_running_run(monkeypatch):
+    monkeypatch.setattr(verify_poc_gate.time, "sleep", lambda seconds: None)
+
+    def fake_json_post(url: str, payload=None, headers=None, timeout: float = 15.0):
+        if url == "http://api.local/api/upload/check":
+            return 200, {"exists": False}
+        if url == "http://api.local/api/chat/stream?agent_id=general-agent":
+            return 200, {"run_id": "run_upload"}
+        raise AssertionError(url)
+
+    def fake_upload(url: str, **kwargs):
+        return 200, {
+            "key": "file_upload",
+            "file_id": "file_upload",
+            "name": "upload-gate.txt",
+            "mimeType": "text/plain",
+            "size": 18,
+        }
+
+    def fake_psql_rows(container: str, db_user: str, db_name: str, sql: str):
+        return [
+            {
+                "run_id": "run_upload",
+                "status": "running",
+                "file_ids": ["file_upload"],
+                "error_code": None,
+                "error_message": None,
+                "executor_type": None,
+                "worker_events": [
+                    {
+                        "worker_id": "worker-current",
+                        "executor_type": "claude-agent-worker",
+                        "claude_agent_sdk_enabled": True,
+                        "claude_agent_model": "gpt-5.3-codex-spark",
+                        "claude_agent_sdk_import": "ok",
+                    }
+                ],
+            }
+        ]
+
+    monkeypatch.setattr(verify_poc_gate, "http_json_post_with_headers", fake_json_post)
+    monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", fake_upload)
+    monkeypatch.setattr(verify_poc_gate, "psql_rows", fake_psql_rows)
+
+    gate = verify_poc_gate.check_upload_attachment_chat("http://api.local", "postgres", "user", "db")
+
+    assert gate.ok is True
+    assert gate.evidence["run"]["status"] == "running"
+    assert gate.evidence["run"]["worker_events"][0]["worker_id"] == "worker-current"
 
 
 def test_auth_audit_gate_reports_raw_login_diagnostics(monkeypatch):
