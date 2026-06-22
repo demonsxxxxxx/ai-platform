@@ -1,7 +1,7 @@
 {
-  "note": "Issue #164 211 runtime-only rollout evidence for dab7dbc after PR #171. The live API/worker containers use ai-platform:dab7dbc-b0-smoke-verifier-v2 with matching source/runtime labels; compose still carries the external env-file label caveat and the image used a runtime-only marker rebase workaround.",
+  "note": "Issue #164 post-PR #173 current-main 211 runtime-only rollout evidence for d94d274. The live API/worker containers use ai-platform:d94d274-issue164-post-pr173-runtime-only-v1 with matching runtime subject, runtime source marker, OCI revision, and hyphen/underscore source-revision labels; the legacy dotted ai-platform.source.revision label still records dab7dbc as a runtime-only rebase caveat. Compose still carries the external env-file label caveat.",
   "runtime_affecting_changes_since_runtime_subject": [],
-  "runtime_subject_commit_sha": "dab7dbc30a43725d58a8a6b2ddb8e52888f303b5",
+  "runtime_subject_commit_sha": "d94d274b48eaf076dda74d56312a1ada094edaff",
   "schema_version": "ai-platform.source-runtime-relation-manifest.v1",
-  "source_tree_commit_sha": "dab7dbc30a43725d58a8a6b2ddb8e52888f303b5"
+  "source_tree_commit_sha": "d94d274b48eaf076dda74d56312a1ada094edaff"
 }

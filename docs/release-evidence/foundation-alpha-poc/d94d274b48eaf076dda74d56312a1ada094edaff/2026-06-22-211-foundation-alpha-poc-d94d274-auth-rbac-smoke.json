@@ -1,0 +1,135 @@
+{
+  "artifact_kind": "auth_rbac_smoke",
+  "captured_at": "2026-06-22T19:59:56+08:00",
+  "commit_sha": "d94d274b48eaf076dda74d56312a1ada094edaff",
+  "evidence_id": "2026-06-22-211-foundation-alpha-poc-d94d274-auth-rbac-smoke",
+  "evidence_ref": {
+    "command": "AI_PLATFORM_GATEWAY_SECRET=<redacted> python3 tools/verify_auth_rbac_smoke.py --base-url http://127.0.0.1:8020 --commit-sha d94d274 --image ai-platform:d94d274-issue164-post-pr173-runtime-only-v1",
+    "result": "ok:true",
+    "runtime_checks": {
+      "admin_runtime": {
+        "expected_status": 200,
+        "forbidden_projection_terms_present": false,
+        "missing_sections": [],
+        "queue_lease_scan_limit": 50,
+        "required_sections_present": true,
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "sandbox_active_leases": 0,
+        "status": 200,
+        "tenant_id": "default",
+        "tenant_matches_requested": true
+      },
+      "authenticated_auth_me": {
+        "expected_status": 200,
+        "forbidden_projection_terms_present": false,
+        "is_admin": true,
+        "route": "/api/ai/auth/me",
+        "source": "frontend-poc",
+        "status": 200,
+        "tenant_id": "default",
+        "tenant_matches_requested": true,
+        "user_id": "poc-admin-smoke",
+        "user_matches_requested": true
+      },
+      "invalid_gateway_secret_auth_me": {
+        "detail": "invalid_gateway_principal_secret",
+        "expected_status": 403,
+        "route": "/api/ai/auth/me",
+        "status": 403
+      },
+      "ordinary_admin_runtime": {
+        "detail": "not_ai_admin",
+        "expected_status": 403,
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "status": 403
+      },
+      "unauthenticated_auth_me": {
+        "detail": "missing_authenticated_principal",
+        "expected_status": 401,
+        "route": "/api/auth/me",
+        "status": 401
+      }
+    },
+    "runtime_source": {
+      "commit_sha": "d94d274b48eaf076dda74d56312a1ada094edaff",
+      "image": "ai-platform:d94d274-issue164-post-pr173-runtime-only-v1"
+    },
+    "schema_version": "ai-platform.auth-rbac-smoke.v1",
+    "verifier": "tools/verify_auth_rbac_smoke.py"
+  },
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#164"
+  ],
+  "open_followups": [
+    "g7_docker_sandbox_hardening",
+    "g8_ordinary_user_multi_agent_exposure",
+    "packaged_frontend_image_release_acceptance",
+    "capacity_upgrade_evidence_gate"
+  ],
+  "pr_refs": [
+    "#173"
+  ],
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "d94d274b48eaf076dda74d56312a1ada094edaff",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "api_health": {
+      "status": "ok"
+    },
+    "branch": "main",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_layout_status": "external_env_file_label_present",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "gateway_secret_supplied": false,
+    "image": "ai-platform:d94d274-issue164-post-pr173-runtime-only-v1",
+    "image_id": "sha256:70552c8bbe14db5b46003a33157ea9d0383d9150a44bb9e94b036ec8642ebd25",
+    "image_labels": {
+      "ai-platform.build-mode": "runtime-only-marker-rebase",
+      "ai-platform.runtime-rollout": "issue164-pr173-post-merge-runtime-only-v1",
+      "ai-platform.runtime-subject": "d94d274b48eaf076dda74d56312a1ada094edaff",
+      "ai-platform.runtime_subject": "d94d274b48eaf076dda74d56312a1ada094edaff",
+      "ai-platform.source-branch": "main",
+      "ai-platform.source-note": "issue164-pr171-marker-fix-from-dab7dbc-v1",
+      "ai-platform.source-origin": "local-git-archive",
+      "ai-platform.source-revision": "d94d274b48eaf076dda74d56312a1ada094edaff",
+      "ai-platform.source.note": "d94d274-post-pr173-runtime-only-rebase-from-dab7dbc",
+      "ai-platform.source.revision": "dab7dbc30a43725d58a8a6b2ddb8e52888f303b5",
+      "ai-platform.source_revision": "d94d274b48eaf076dda74d56312a1ada094edaff",
+      "ai-platform.source_tree_commit": "d94d274b48eaf076dda74d56312a1ada094edaff",
+      "com.docker.compose.config-hash": "5bc97ebb9e39ea44eff6b3c34853dddf84eeb401ea7dbd502c49a562f9ef0a49",
+      "com.docker.compose.container-number": "1",
+      "com.docker.compose.depends_on": "minio:service_healthy:false,postgres:service_healthy:false,redis:service_healthy:false",
+      "com.docker.compose.image": "sha256:70552c8bbe14db5b46003a33157ea9d0383d9150a44bb9e94b036ec8642ebd25",
+      "com.docker.compose.oneoff": "False",
+      "com.docker.compose.project": "ai-platform-phaseb",
+      "com.docker.compose.project.config_files": "<redacted-path>",
+      "com.docker.compose.project.environment_file": "<redacted-path>",
+      "com.docker.compose.project.working_dir": "<redacted-path>",
+      "com.docker.compose.replace": "138dbc3e93a67eb54c635c26749a5e5217b8aca002728339635d8811c6c072e3",
+      "com.docker.compose.service": "api",
+      "com.docker.compose.version": "2.27.0",
+      "org.opencontainers.image.created": "2026-06-21T12:56:49Z",
+      "org.opencontainers.image.revision": "d94d274b48eaf076dda74d56312a1ada094edaff"
+    },
+    "repo_local_env_present": false,
+    "runtime_commit": "d94d274b48eaf076dda74d56312a1ada094edaff",
+    "runtime_source_marker": "d94d274b48eaf076dda74d56312a1ada094edaff",
+    "runtime_subject_label_status": "runtime_subject_label_current",
+    "source_revision_alias_label_status": "source_revision_alias_label_current",
+    "source_snapshot": {
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "runtime_subject_commit_sha": "d94d274b48eaf076dda74d56312a1ada094edaff",
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "snapshot": "d94d274-20260622-issue164-pr173-post-merge-runtime-only-rebase",
+      "source_tree_commit_sha": "d94d274b48eaf076dda74d56312a1ada094edaff",
+      "source_tree_dirty": false
+    }
+  }
+}

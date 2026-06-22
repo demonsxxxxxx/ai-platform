@@ -26,24 +26,24 @@ RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_RUNTIME_RELATION_MANIFEST = (
     ROOT / "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json"
 )
-ACTIVE_RUNTIME_SUBJECT_SHA = "dab7dbc30a43725d58a8a6b2ddb8e52888f303b5"
-ACTIVE_SOURCE_TREE_SHA = "dab7dbc30a43725d58a8a6b2ddb8e52888f303b5"
+ACTIVE_RUNTIME_SUBJECT_SHA = "d94d274b48eaf076dda74d56312a1ada094edaff"
+ACTIVE_SOURCE_TREE_SHA = "d94d274b48eaf076dda74d56312a1ada094edaff"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_SUBJECT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
 ACTIVE_CLOSURE_SOURCE_TREE_SHA = "3c06c5351517028111c18a365ff9a24ed22ffa33"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE = "ai-platform:380de6b-merged-main-runtime"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE_ID = "sha256:e36e4dfad072cdd12b841019db3ccbcdef4b63ccf5262869c994757fef5663f9"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:dab7dbc-b0-smoke-verifier-v2"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:da92722aaa60775958c1939c53068a88fed52fac9d934d5f6d4fc67c6774f0d6"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-22-211-foundation-alpha-poc-dab7dbc-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-22-211-foundation-alpha-poc-dab7dbc-auth-rbac-smoke"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:d94d274-issue164-post-pr173-runtime-only-v1"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:70552c8bbe14db5b46003a33157ea9d0383d9150a44bb9e94b036ec8642ebd25"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-22-211-foundation-alpha-poc-d94d274-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-22-211-foundation-alpha-poc-d94d274-auth-rbac-smoke"
 ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID = (
-    "2026-06-22-211-foundation-alpha-poc-dab7dbc-governance-runtime-smoke"
+    "2026-06-22-211-foundation-alpha-poc-d94d274-governance-runtime-smoke"
 )
 ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-22-211-foundation-alpha-poc-dab7dbc-release-evidence-runtime-acceptance"
+    "2026-06-22-211-foundation-alpha-poc-d94d274-release-evidence-runtime-acceptance"
 )
 ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-22-211-foundation-alpha-poc-dab7dbc-alert-trace-export-runtime-acceptance"
+    "2026-06-22-211-foundation-alpha-poc-d94d274-alert-trace-export-runtime-acceptance"
 )
 CBBFAFF_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
 CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
@@ -1165,10 +1165,11 @@ def test_gate_status_does_not_overstate_superseded_evidence_as_current():
     assert "active B0 latest-main reference is `87528bf` / #124" not in gate_status_text
     assert "e8e8a0a` runtime still lacks a passing runtime POC smoke" in gate_status_text
     assert "readiness must keep reporting" in gate_status_text
-    assert "after the `dab7dbc` source-runtime relation manifest and #164 evidence" in compact_text
+    assert "after the `d94d274` source-runtime relation manifest and #164 evidence" in compact_text
     assert "runtime rollout requirement such as `source_synced_runtime_pending`" in gate_status_text
     assert "the `dab7dbc` / #164 evidence is the active B0 latest-main reference" not in gate_status_text
-    assert "the `dab7dbc` / #164 evidence is the current reviewed runtime-subject reference" in compact_text
+    assert "the `dab7dbc` / #164 evidence is the current reviewed runtime-subject reference" not in compact_text
+    assert "the `d94d274` / #164 evidence is the current reviewed runtime-subject reference" in compact_text
     assert "the `e8e8a0a` / #164 evidence is the active B0 latest-main reference" not in gate_status_text
     assert "the `4039e4b` / #138 evidence is the active B0 latest-main reference" not in gate_status_text
     assert "when it consumes the 87528bf source-runtime relation manifest and #124 evidence" not in compact_text
@@ -1184,16 +1185,15 @@ def test_gate_status_records_issue164_b0_runtime_refresh_with_source_caveats():
 
     for expected in (
         "#164",
-        "dab7dbc30a43725d58a8a6b2ddb8e52888f303b5",
-        "dab7dbc-b0-smoke-verifier-v2",
-        "source_synced_runtime_pending",
+        "d94d274b48eaf076dda74d56312a1ada094edaff",
+        "d94d274-issue164-post-pr173-runtime-only-v1",
+        "runtime_current_for_runtime_relevant_source",
         "Foundation Runtime concurrency rerun",
         "current-subject `foundation_runtime_concurrency_evidence`",
-        "dirty 211 source",
-        "configured 211 source path",
         "external env-file caveat",
     ):
         assert expected in combined_text
+    assert "legacy dotted `ai-platform.source.revision` label still records `dab7dbc`" in compact_text
     assert "does not prove current-source runtime verification for later `main` commits" in compact_text
 
     for boundary in (
