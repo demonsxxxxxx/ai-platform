@@ -2541,6 +2541,10 @@
     "commandDockHint": "直接在输入框输入命令；受治理但暂不可用的能力会转成 chip。",
     "commandFirstTitle": "从提示词、Skill、MCP 工具、文件或上下文开始。",
     "defaultAgent": "默认",
+    "forbidden": {
+      "description": "该页面仍保留在工作台中，但当前账号缺少 {{permission}}。需要管理员授权后才能使用其中的控制项。",
+      "title": "{{page}} 受权限治理"
+    },
     "newConversation": "新对话",
     "none": "无",
     "selectionState": "已选能力",

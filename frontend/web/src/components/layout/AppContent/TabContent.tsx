@@ -1,5 +1,6 @@
 import { Suspense, lazy } from "react";
-import type { TabType } from "./types";
+import { WorkbenchUnavailableState } from "../../workbench/WorkbenchUnavailableState";
+import type { RouteUnavailableConfig, TabType } from "./types";
 
 const SkillsHubPanel = lazy(() =>
   import("../../panels/SkillsHubPanel").then((m) => ({
@@ -92,8 +93,32 @@ function PanelLoader() {
   );
 }
 
-export function TabContent({ activeTab }: { activeTab: TabType }) {
+export function TabContent({
+  activeTab,
+  routeUnavailable,
+}: {
+  activeTab: TabType;
+  routeUnavailable?: RouteUnavailableConfig;
+}) {
   if (activeTab === "chat") return null;
+
+  if (routeUnavailable) {
+    return (
+      <main
+        className="flex-1 overflow-hidden bg-[var(--theme-bg)]"
+        data-authenticated-workbench-page={activeTab}
+        data-frontend-governance-state={routeUnavailable.state}
+      >
+        <div className="flex h-full w-full items-center justify-center px-4">
+          <WorkbenchUnavailableState
+            title={routeUnavailable.title}
+            description={routeUnavailable.description}
+            surface={routeUnavailable.surface}
+          />
+        </div>
+      </main>
+    );
+  }
 
   const Panel = panelMap[activeTab];
   if (!Panel) return null;

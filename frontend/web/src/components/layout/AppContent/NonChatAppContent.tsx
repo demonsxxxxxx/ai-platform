@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { SessionSidebar } from "../../panels/SessionSidebar";
 import { AppShell } from "./AppShell";
 import { TabContent } from "./TabContent";
-import type { TabType } from "./types";
+import type { RouteUnavailableConfig, TabType } from "./types";
 
 export interface NonChatAppContentProps {
   activeTab: Exclude<TabType, "chat">;
@@ -15,6 +15,7 @@ export interface NonChatAppContentProps {
   mobileSidebarOpen: boolean;
   setMobileSidebarOpen: (open: boolean) => void;
   onShowProfile: () => void;
+  routeUnavailable?: RouteUnavailableConfig;
 }
 
 export function NonChatAppContent({
@@ -27,6 +28,7 @@ export function NonChatAppContent({
   mobileSidebarOpen,
   setMobileSidebarOpen,
   onShowProfile,
+  routeUnavailable,
 }: NonChatAppContentProps) {
   const navigate = useNavigate();
 
@@ -70,7 +72,7 @@ export function NonChatAppContent({
         />
       }
     >
-      <TabContent activeTab={activeTab} />
+      <TabContent activeTab={activeTab} routeUnavailable={routeUnavailable} />
     </AppShell>
   );
 }

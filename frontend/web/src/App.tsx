@@ -22,6 +22,7 @@ import {
 } from "./utils/sessionTitleEvents";
 import { APP_TOASTER_CLASS_NAME } from "./components/layout/AppContent/appToastLayout";
 import { useAuth } from "./hooks/useAuth";
+import type { TabType } from "./components/layout/AppContent/types";
 
 const SharedPage = lazy(() =>
   import("./components/share/SharedPage").then((m) => ({
@@ -293,6 +294,33 @@ function MemoryPage() {
   return <AppContent key="memory" activeTab="memory" />;
 }
 
+function WorkbenchForbiddenPage({
+  activeTab,
+  permissionLabel,
+}: {
+  activeTab: Exclude<TabType, "chat">;
+  permissionLabel: string;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <AppContent
+      key={`${activeTab}-forbidden`}
+      activeTab={activeTab}
+      routeUnavailable={{
+        state: "forbidden",
+        title: t("workbench.forbidden.title", {
+          page: t(`launchpad.apps.${activeTab}`),
+        }),
+        description: t("workbench.forbidden.description", {
+          permission: permissionLabel,
+        }),
+        surface: `${activeTab}-route-permission`,
+      }}
+    />
+  );
+}
+
 // Auth page wrapper - redirects to the chat-first workbench after successful login/register
 function AuthPageWrapper({
   initialMode,
@@ -317,7 +345,6 @@ function AuthPageWrapper({
 
 // Main App Component
 function App() {
-  const { t } = useTranslation();
   return (
     <ThemeProvider>
       <ErrorBoundary>
@@ -405,9 +432,12 @@ function App() {
               element={
                 <ProtectedRoute
                   permissions={[Permission.USER_READ]}
-                  redirectTo="/chat"
-                  showToast
-                  toastMessage={t("errors.noPermission")}
+                  fallbackComponent={
+                    <WorkbenchForbiddenPage
+                      activeTab="users"
+                      permissionLabel={Permission.USER_READ}
+                    />
+                  }
                 >
                   <UsersPage />
                 </ProtectedRoute>
@@ -418,9 +448,12 @@ function App() {
               element={
                 <ProtectedRoute
                   permissions={[Permission.ROLE_MANAGE]}
-                  redirectTo="/chat"
-                  showToast
-                  toastMessage={t("errors.noPermission")}
+                  fallbackComponent={
+                    <WorkbenchForbiddenPage
+                      activeTab="roles"
+                      permissionLabel={Permission.ROLE_MANAGE}
+                    />
+                  }
                 >
                   <RolesPage />
                 </ProtectedRoute>
@@ -431,9 +464,12 @@ function App() {
               element={
                 <ProtectedRoute
                   permissions={[Permission.SETTINGS_MANAGE]}
-                  redirectTo="/chat"
-                  showToast
-                  toastMessage={t("errors.noPermission")}
+                  fallbackComponent={
+                    <WorkbenchForbiddenPage
+                      activeTab="settings"
+                      permissionLabel={Permission.SETTINGS_MANAGE}
+                    />
+                  }
                 >
                   <SettingsPage />
                 </ProtectedRoute>
@@ -444,9 +480,12 @@ function App() {
               element={
                 <ProtectedRoute
                   permissions={[Permission.FEEDBACK_READ]}
-                  redirectTo="/chat"
-                  showToast
-                  toastMessage={t("errors.noPermission")}
+                  fallbackComponent={
+                    <WorkbenchForbiddenPage
+                      activeTab="feedback"
+                      permissionLabel={Permission.FEEDBACK_READ}
+                    />
+                  }
                 >
                   <FeedbackPage />
                 </ProtectedRoute>
@@ -465,9 +504,12 @@ function App() {
               element={
                 <ProtectedRoute
                   permissions={[Permission.AGENT_ADMIN]}
-                  redirectTo="/chat"
-                  showToast
-                  toastMessage={t("errors.noPermission")}
+                  fallbackComponent={
+                    <WorkbenchForbiddenPage
+                      activeTab="agents"
+                      permissionLabel={Permission.AGENT_ADMIN}
+                    />
+                  }
                 >
                   <AgentsPage />
                 </ProtectedRoute>
@@ -502,9 +544,12 @@ function App() {
               element={
                 <ProtectedRoute
                   permissions={[Permission.NOTIFICATION_MANAGE]}
-                  redirectTo="/chat"
-                  showToast
-                  toastMessage={t("errors.noPermission")}
+                  fallbackComponent={
+                    <WorkbenchForbiddenPage
+                      activeTab="notifications"
+                      permissionLabel={Permission.NOTIFICATION_MANAGE}
+                    />
+                  }
                 >
                   <NotificationsPage />
                 </ProtectedRoute>
@@ -518,9 +563,12 @@ function App() {
                     Permission.CHAT_READ,
                     Permission.SESSION_READ,
                   ]}
-                  redirectTo="/chat"
-                  showToast
-                  toastMessage={t("errors.noPermission")}
+                  fallbackComponent={
+                    <WorkbenchForbiddenPage
+                      activeTab="memory"
+                      permissionLabel={`${Permission.CHAT_READ} / ${Permission.SESSION_READ}`}
+                    />
+                  }
                 >
                   <MemoryPage />
                 </ProtectedRoute>

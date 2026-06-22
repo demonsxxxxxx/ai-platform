@@ -64,14 +64,18 @@ test("phase 1C discovery routes are login reachable and fail closed inside pages
     ["/settings", "SettingsPage"],
   ]) {
     const adminRoutePattern = new RegExp(
-      `path="${route}"[\\s\\S]{0,520}<ProtectedRoute[\\s\\S]{0,180}permissions=\\{\\[[\\s\\S]{0,260}<${page} \\/>`,
+      `path="${route}"[\\s\\S]{0,760}<ProtectedRoute[\\s\\S]{0,220}permissions=\\{\\[[\\s\\S]{0,360}fallbackComponent=\\{[\\s\\S]{0,220}<WorkbenchForbiddenPage[\\s\\S]{0,360}<${page} \\/>`,
     );
     assert.match(
       app,
       adminRoutePattern,
-      `${page} should remain route-gated because it exposes admin-only operations`,
+      `${page} should stay route-gated but render a workbench forbidden state instead of redirecting to chat`,
     );
   }
+
+  assert.doesNotMatch(app, /redirectTo="\/chat"/);
+  assert.match(app, /function WorkbenchForbiddenPage/);
+  assert.match(app, /routeUnavailable=\{\{/);
 });
 
 test("authenticated sidebar uses governed workbench entries instead of old plaza shortcuts", () => {

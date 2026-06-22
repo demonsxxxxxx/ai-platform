@@ -2540,6 +2540,10 @@
     "commandDockHint": "Type commands directly in the input; governed entries become chips.",
     "commandFirstTitle": "Start with a prompt, Skill, MCP tool, file, or context.",
     "defaultAgent": "Default",
+    "forbidden": {
+      "description": "This page remains visible in the workbench, but your account is missing {{permission}}. Ask an administrator to grant access before using its controls.",
+      "title": "{{page}} is governed"
+    },
     "newConversation": "New conversation",
     "none": "None",
     "selectionState": "Selection state",

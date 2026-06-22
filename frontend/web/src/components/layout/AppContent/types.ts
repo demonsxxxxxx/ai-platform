@@ -14,3 +14,10 @@ export type TabType =
   | "files"
   | "notifications"
   | "memory";
+
+export interface RouteUnavailableConfig {
+  state: "forbidden" | "no-workspace" | "degraded";
+  title: string;
+  description: string;
+  surface: string;
+}
