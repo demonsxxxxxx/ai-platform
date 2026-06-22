@@ -163,6 +163,37 @@ def test_active_prd_v2_records_appendix_and_closure_workflow_authority():
     assert OLD_PRD.exists()
 
 
+def test_github_workflow_records_sdk_worker_diagnostic_layers():
+    workflow_text = read(GITHUB_WORKFLOW)
+    compact_workflow_text = " ".join(workflow_text.split())
+
+    for expected in (
+        "SDK / worker diagnostics must be layered",
+        "Claude Agent SDK",
+        "skill execution",
+        "worker launch",
+        "terminal execution",
+        "user-facing runtime errors",
+        "tool registration -> runner selection -> subprocess/terminal -> SDK event -> user-facing error",
+        "minimal reproduction",
+        "observable log or event evidence",
+        "Generic `sdk_error`",
+        "empty Bash input loops",
+        "terminal run failures",
+        "missing native skill evidence",
+        "platform-controlled runner selection",
+        "classified at the layer where they are observed",
+    ):
+        assert expected in compact_workflow_text
+
+    assert (
+        "Local diagnostic evidence by itself is `local partial` or `PR ready` evidence only"
+        in compact_workflow_text
+    )
+    assert "not `reviewed`, `211 verified`, or `gate closable`" in compact_workflow_text
+    assert "does not close #164 or any other stage/gate issue" in compact_workflow_text
+
+
 def test_technical_acceptance_summarizes_backend_p0_productization_bundles():
     tech_text = read(TECH_ACCEPTANCE)
     compact_tech_text = " ".join(tech_text.split())
