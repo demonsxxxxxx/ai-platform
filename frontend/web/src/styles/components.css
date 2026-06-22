@@ -52,14 +52,15 @@
 /* Panel card - modern style without borders */
 .panel-card {
   background-color: var(--theme-bg-card);
-  border-radius: 0.75rem;
+  border-radius: 0.5rem;
   padding: 1rem;
-  box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1);
+  border: 1px solid var(--theme-border);
+  box-shadow: 0 4px 12px rgba(18, 38, 63, 0.03);
   transition: box-shadow 0.2s ease;
 }
 
 .panel-card:hover {
-  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+  box-shadow: 0 8px 18px rgba(18, 38, 63, 0.05);
 }
 
 /* Panel header - sticky, blends with background */
@@ -67,7 +68,7 @@
   position: sticky;
   top: 0;
   z-index: 10;
-  background-color: transparent;
+  background-color: var(--theme-bg);
   border-bottom: 1px solid var(--theme-border);
   padding: 0.75rem 1rem;
 }
@@ -221,17 +222,17 @@
   align-items: center;
   gap: 0.25rem;
   border-radius: 0.5rem;
-  border: 1px solid #e7e5e4;
-  background-color: white;
+  border: 1px solid var(--theme-border);
+  background-color: var(--theme-bg-card);
   padding: 0.5rem 1rem;
   font-size: 0.875rem;
   font-weight: 500;
-  color: #44403c;
+  color: var(--theme-text);
   transition: background-color 0.2s;
 }
 
 .btn-secondary:hover {
-  background-color: #fafaf9;
+  background-color: color-mix(in srgb, var(--theme-bg-card) 78%, var(--theme-bg));
 }
 
 .dark .btn-secondary {

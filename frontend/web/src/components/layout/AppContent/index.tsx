@@ -9,12 +9,14 @@ import {
   getAppToastSidebarOffset,
 } from "./appToastLayout";
 import type { TabType } from "./types";
+import type { RouteUnavailableConfig } from "./types";
 
 interface AppContentProps {
   activeTab: TabType;
+  routeUnavailable?: RouteUnavailableConfig;
 }
 
-export function AppContent({ activeTab }: AppContentProps) {
+export function AppContent({ activeTab, routeUnavailable }: AppContentProps) {
   const { versionInfo } = useVersion();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -94,6 +96,7 @@ export function AppContent({ activeTab }: AppContentProps) {
       mobileSidebarOpen={mobileSidebarOpen}
       setMobileSidebarOpen={setMobileSidebarOpen}
       onShowProfile={handleShowProfile}
+      routeUnavailable={routeUnavailable}
     />
   );
 }

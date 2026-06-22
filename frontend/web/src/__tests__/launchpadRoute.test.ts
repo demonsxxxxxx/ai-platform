@@ -16,6 +16,12 @@ const sidebarSource = readFileSync(
   resolve(import.meta.dirname, "../components/panels/SessionSidebar.tsx"),
   "utf8",
 );
+const sidebarPartsSource = [
+  "../components/panels/SidebarParts/SessionListContent.tsx",
+  "../components/panels/SidebarParts/SidebarRail.tsx",
+]
+  .map((path) => readFileSync(resolve(import.meta.dirname, path), "utf8"))
+  .join("\n");
 const authRedirectSource = readFileSync(
   resolve(
     import.meta.dirname,
@@ -41,8 +47,8 @@ test("launchpad route is protected and mapped to AppContent", () => {
 test("launchpad tab is registered in layout and sidebar", () => {
   assert.match(typesSource, /\|\s*"apps"/);
   assert.match(tabSource, /apps:\s*LaunchpadPanel/);
-  assert.match(sidebarSource, /path:\s*"\/apps"/);
-  assert.match(sidebarSource, /nav\.apps/);
+  assert.match(`${sidebarSource}\n${sidebarPartsSource}`, /navigate\("\/apps"\)/);
+  assert.match(sidebarPartsSource, /nav\.apps/);
 });
 
 test("chat workbench is the default authenticated landing destination", () => {

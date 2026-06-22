@@ -1,6 +1,5 @@
 import { useTranslation } from "react-i18next";
 import { useAuth } from "../../../hooks/useAuth";
-import { useSettingsContext } from "../../../contexts/SettingsContext";
 import { Permission } from "../../../types";
 import { ConfirmDialog } from "../../common/ConfirmDialog";
 import { useSkillsActions } from "./useSkillsActions";
@@ -14,26 +13,40 @@ import { PublishDialog } from "./PublishDialog";
 interface SkillsPanelProps {
   embedded?: boolean;
   governedUnavailable?: boolean;
+  settingsStateDegraded?: boolean;
 }
 
 export function SkillsPanel({
   embedded = false,
   governedUnavailable = false,
+  settingsStateDegraded = false,
 }: SkillsPanelProps) {
   const { t } = useTranslation();
-  const { enableSkills } = useSettingsContext();
   const { hasAnyPermission } = useAuth();
 
   const canRead = hasAnyPermission([Permission.SKILL_READ]);
-  const canWrite = hasAnyPermission([Permission.SKILL_WRITE]);
-  const canPublish = hasAnyPermission([Permission.MARKETPLACE_PUBLISH]);
-  const isGovernedUnavailable =
-    governedUnavailable || !enableSkills || !canRead;
+  const canDelete = hasAnyPermission([Permission.SKILL_DELETE]);
+  const canPublishByAuth = hasAnyPermission([Permission.MARKETPLACE_PUBLISH]);
+  const isGovernedUnavailable = governedUnavailable || !canRead;
 
   const actions = useSkillsActions({ enabled: !isGovernedUnavailable });
+  const effectivePermissions = new Set(actions.effectivePermissions);
+  const canWrite =
+    !isGovernedUnavailable &&
+    (hasAnyPermission([Permission.SKILL_WRITE]) ||
+      effectivePermissions.has(Permission.SKILL_WRITE));
+  const canDeleteSkill =
+    !isGovernedUnavailable &&
+    (canDelete || effectivePermissions.has(Permission.SKILL_DELETE));
+  const canPublish =
+    !isGovernedUnavailable &&
+    (canPublishByAuth || effectivePermissions.has(Permission.MARKETPLACE_PUBLISH));
 
   return (
-    <div className="skill-theme-shell flex h-full min-h-0 flex-col">
+    <div
+      className="skill-theme-shell flex h-full min-h-0 flex-col"
+      data-settings-state-degraded={settingsStateDegraded || undefined}
+    >
       <SkillsList
         embedded={embedded}
         searchQuery={actions.searchQuery}
@@ -54,6 +67,7 @@ export function SkillsPanel({
         error={actions.error}
         clearError={actions.clearError}
         canWrite={canWrite && !isGovernedUnavailable}
+        canDelete={canDeleteSkill && !isGovernedUnavailable}
         canPublish={canPublish && !isGovernedUnavailable}
         governedUnavailable={isGovernedUnavailable}
         selectedNames={actions.selectedNames}
@@ -133,6 +147,8 @@ export function SkillsPanel({
         <BatchActionBar
           selectedCount={actions.selectedNames.size}
           batchLoading={actions.batchLoading}
+          canWrite={canWrite && !isGovernedUnavailable}
+          canDelete={canDeleteSkill && !isGovernedUnavailable}
           onBatchToggle={actions.handleBatchToggle}
           onBatchDelete={actions.handleBatchDelete}
           onClearSelection={actions.clearSelection}

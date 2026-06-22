@@ -27,11 +27,13 @@ import { GroupAvailabilityToggleRow } from "../governance/GroupAvailabilityToggl
 interface MarketplacePanelProps {
   embedded?: boolean;
   governedUnavailable?: boolean;
+  settingsStateDegraded?: boolean;
 }
 
 export function MarketplacePanel({
   embedded = false,
   governedUnavailable = false,
+  settingsStateDegraded = false,
 }: MarketplacePanelProps) {
   const { t } = useTranslation();
   const { hasAnyPermission } = useAuth();
@@ -72,9 +74,18 @@ export function MarketplacePanel({
     isLoading: userSkillsLoading,
     getSkill,
   } = useSkills({ enabled: !governedUnavailable });
-  const canWrite =
-    hasAnyPermission([Permission.MARKETPLACE_PUBLISH]) && !governedUnavailable;
-  const canAdmin = hasAnyPermission([Permission.MARKETPLACE_ADMIN]);
+  const marketplaceDirectWriteBacked = false;
+  const canInstall =
+    hasAnyPermission([Permission.SKILL_WRITE]) &&
+    hasAnyPermission([Permission.MARKETPLACE_READ]) &&
+    !governedUnavailable;
+  const canCreateInMarketplace =
+    marketplaceDirectWriteBacked &&
+    hasAnyPermission([Permission.MARKETPLACE_PUBLISH]) &&
+    !governedUnavailable;
+  const canAdmin =
+    marketplaceDirectWriteBacked &&
+    hasAnyPermission([Permission.MARKETPLACE_ADMIN]);
 
   const installedMarketplaceNames = new Set(
     userSkills
@@ -350,7 +361,7 @@ export function MarketplacePanel({
 
   const headerActions = (
     <>
-      {canWrite && (
+      {canCreateInMarketplace && (
         <button onClick={handleCreate} className="btn-primary h-10">
           <Plus size={16} />
           <span className="hidden sm:inline">
@@ -383,7 +394,8 @@ export function MarketplacePanel({
     <div
       data-phase1c-surface="marketplace"
       data-marketplace-catalog-shell
-      className="flex h-full min-h-0 flex-col bg-slate-50 text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      data-settings-state-degraded={settingsStateDegraded || undefined}
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
     >
       {embedded && (
         <div className="skill-panel-header">
@@ -442,6 +454,7 @@ export function MarketplacePanel({
         </div>
       )}
 
+      {!embedded && (
       <div className="px-4 pt-3">
         <GroupAvailabilityToggleRow
           label={t("skills.marketplace.departmentAvailability")}
@@ -450,37 +463,40 @@ export function MarketplacePanel({
           backed={false}
         />
       </div>
+      )}
 
-      <div
-        data-marketplace-filter-shell
-        className="mx-4 mt-3 flex flex-col gap-2 rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-600 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900 dark:text-stone-300 sm:flex-row sm:items-center sm:justify-between"
-      >
-        <div className="flex min-w-0 items-center gap-2">
-          <Building2 size={16} className="shrink-0 text-slate-500" />
-          <span className="font-medium text-slate-900 dark:text-stone-100">
-            {t("skills.marketplace.departmentAvailability")}
-          </span>
-          <span className="truncate text-slate-500 dark:text-stone-400">
-            {governedUnavailable
-              ? t("marketplace.catalogUnavailable.description")
-              : t("marketplace.subtitle")}
-          </span>
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          {[
-            t("marketplace.filter.availableToMe", "Available to me"),
-            t("marketplace.filter.department", "Department"),
-            t("marketplace.filter.approved", "Approved"),
-          ].map((label) => (
-            <span
-              key={label}
-              className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 font-medium text-slate-500 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-400"
-            >
-              {label}
+      {!embedded && (
+        <div
+          data-marketplace-filter-shell
+          className="mx-4 mt-3 flex flex-col gap-2 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 text-xs text-slate-600 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900 dark:text-stone-300 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            <Building2 size={16} className="shrink-0 text-slate-500" />
+            <span className="font-medium text-slate-900 dark:text-stone-100">
+              {t("skills.marketplace.departmentAvailability")}
             </span>
-          ))}
+            <span className="truncate text-slate-500 dark:text-stone-400">
+              {governedUnavailable
+                ? t("marketplace.catalogUnavailable.description")
+                : t("marketplace.subtitle")}
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {[
+              t("marketplace.filter.availableToMe", "Available to me"),
+              t("marketplace.filter.department", "Department"),
+              t("marketplace.filter.approved", "Approved"),
+            ].map((label) => (
+              <span
+                key={label}
+                className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-2 py-1 font-medium text-slate-500 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-400"
+              >
+                {label}
+              </span>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Skills List */}
       <div className="skill-content-area flex-1 overflow-y-auto py-2 sm:py-4 px-4 sm:p-6">
@@ -488,7 +504,7 @@ export function MarketplacePanel({
           <div data-marketplace-unavailable-shell className="space-y-4">
             <div
               data-marketplace-ordinary-user-copy
-              className="rounded-lg border border-dashed border-slate-300 bg-white p-4 text-sm leading-6 text-slate-600 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300"
+              className="rounded-lg border border-dashed border-slate-300 bg-[var(--theme-bg-card)] p-4 text-sm leading-6 text-slate-600 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300"
             >
               <p className="font-semibold text-slate-900 dark:text-stone-100">
                 {t("marketplace.catalogUnavailable.title")}
@@ -504,7 +520,7 @@ export function MarketplacePanel({
               {marketplacePlaceholderItems.map((item) => (
                 <article
                   key={item.id}
-                  className="rounded-lg border border-slate-200 bg-white p-4 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900"
+                  className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-4 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900"
                 >
                   <div className="flex items-center gap-2">
                     <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-500 dark:bg-stone-800 dark:text-stone-300">
@@ -566,8 +582,12 @@ export function MarketplacePanel({
                   skill.skill_name,
                 )}
                 isOwner={skill.is_owner}
-                canManage={!governedUnavailable && (skill.is_owner || canAdmin)}
-                canWrite={canWrite}
+                canManage={
+                  marketplaceDirectWriteBacked &&
+                  !governedUnavailable &&
+                  (skill.is_owner || canAdmin)
+                }
+                canInstall={canInstall}
                 installingSkill={installingSkill}
                 userSkillsLoading={userSkillsLoading}
                 selectedTags={selectedTags}

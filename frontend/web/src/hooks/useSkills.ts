@@ -75,6 +75,9 @@ export function useSkills(options?: {
   const listParams = options?.listParams;
   const [skills, setSkills] = useState<SkillResponse[]>([]);
   const [availableTags, setAvailableTags] = useState<string[]>([]);
+  const [effectivePermissions, setEffectivePermissions] = useState<string[]>(
+    [],
+  );
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -103,6 +106,7 @@ export function useSkills(options?: {
         const composed = userSkills.map((u) => composeSkillResponse(u));
         setTotal(response.total);
         setAvailableTags(response.available_tags || []);
+        setEffectivePermissions(response.effective_permissions || []);
         // 保留正在 toggle 中的 skill 的乐观状态，避免竞态覆盖
         const pendingToggles = pendingTogglesRef.current;
         if (pendingToggles.size === 0) {
@@ -652,6 +656,7 @@ export function useSkills(options?: {
   return {
     skills,
     availableTags,
+    effectivePermissions,
     total,
     isLoading,
     error,

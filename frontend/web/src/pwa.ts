@@ -20,6 +20,7 @@ function notifyPwaUpdateAvailable(registration: ServiceWorkerRegistration) {
       },
     ),
   );
+  activateWaitingAiPlatformPwaUpdate(registration);
 }
 
 function watchForPwaUpdates(registration: ServiceWorkerRegistration) {

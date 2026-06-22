@@ -47,6 +47,7 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
   const {
     skills,
     availableTags,
+    effectivePermissions,
     total,
     isLoading,
     error,
@@ -511,6 +512,7 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     filteredSkills,
     paginatedSkills,
     availableTags,
+    effectivePermissions,
     total,
     page,
     pageSize,

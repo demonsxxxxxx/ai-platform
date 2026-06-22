@@ -26,7 +26,7 @@ interface SkillCardProps {
   hasLocalManualConflict: boolean;
   isOwner: boolean;
   canManage: boolean;
-  canWrite: boolean;
+  canInstall: boolean;
   installingSkill: string | null;
   userSkillsLoading: boolean;
   selectedTags: string[];
@@ -47,7 +47,7 @@ export function SkillCard({
   hasLocalManualConflict,
   isOwner,
   canManage,
-  canWrite,
+  canInstall,
   installingSkill,
   userSkillsLoading,
   selectedTags,
@@ -64,6 +64,8 @@ export function SkillCard({
   const navigate = useNavigate();
   const primaryTag = skill.tags[0];
   const CategoryIcon = primaryTag ? getCategoryIcon(primaryTag) : Sparkles;
+  const versionLabel =
+    skill.version.length > 14 ? `${skill.version.slice(0, 12)}...` : skill.version;
 
   return (
     <SkillBaseCard
@@ -161,7 +163,9 @@ export function SkillCard({
               {skill.file_count}
             </span>
             <span className="inline-block h-1 w-1 rounded-full bg-[var(--theme-border)]" />
-            <span>v{skill.version}</span>
+            <span className="max-w-28 truncate" title={`v${skill.version}`}>
+              v{versionLabel}
+            </span>
           </div>
           <div className="flex items-center gap-1.5">
             <button
@@ -174,7 +178,7 @@ export function SkillCard({
             >
               <Eye size={16} />
             </button>
-            {canWrite &&
+            {canInstall &&
               (installingSkill === skill.skill_name ? (
                 <button
                   disabled

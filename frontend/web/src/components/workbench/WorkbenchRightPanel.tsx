@@ -36,8 +36,8 @@ export function WorkbenchRightPanel({
   ];
 
   return (
-    <aside className="flex h-full min-h-0 flex-col gap-3 p-3">
-      <section className={`${workbenchSurface.panel} p-4`}>
+    <aside className="flex h-full min-h-0 flex-col gap-3 bg-[var(--theme-bg-sidebar)] p-3">
+      <section className={`${workbenchSurface.secondaryPanel} p-4`}>
         <div className="flex items-center justify-between gap-3">
           <div>
             <p className={workbenchSurface.label}>
@@ -71,7 +71,7 @@ export function WorkbenchRightPanel({
       </section>
 
       <section
-        className={`${workbenchSurface.panel} flex min-h-0 flex-1 flex-col p-3`}
+        className={`${workbenchSurface.secondaryPanel} flex min-h-0 flex-1 flex-col p-3`}
       >
         <p className={workbenchSurface.label}>
           {t("workbench.runSurfaces", "Run surfaces")}

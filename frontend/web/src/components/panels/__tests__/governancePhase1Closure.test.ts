@@ -41,7 +41,7 @@ test("skills and marketplace surfaces expose department availability controls", 
   assert.match(marketplace, /data-phase1c-surface="marketplace"/);
   for (const source of [skillsHub, marketplace, mcp]) {
     assert.doesNotMatch(source, /skill-theme-shell|glass-shell/);
-    assert.match(source, /bg-slate-50/);
+    assert.match(source, /bg-\[var\(--theme-bg\)\]/);
   }
 });
 
@@ -52,10 +52,12 @@ test("skills and marketplace remain catalog shells when backend enablement is un
 
   assert.doesNotMatch(skillsHub, /if\s*\(!enableSkills\)\s*{\s*return/);
   assert.doesNotMatch(skillsPanel, /if\s*\(!enableSkills\)\s*{\s*return/);
-  assert.match(skillsHub, /skillsGloballyDisabled/);
+  assert.match(skillsHub, /skillsProjectionDegraded/);
   assert.match(skillsHub, /data-skill-catalog-shell/);
   assert.match(skillsHub, /data-marketplace-catalog-shell/);
+  assert.match(skillsHub, /data-frontend-governance-state/);
   assert.match(skillsPanel, /governedUnavailable/);
+  assert.doesNotMatch(skillsPanel, /!enableSkills/);
   assert.match(marketplace, /governedUnavailable/);
   assert.match(marketplace, /data-marketplace-catalog-shell/);
   assert.match(marketplace, /data-marketplace-unavailable-shell/);
@@ -120,6 +122,8 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
   const marketplaceHook = read("src/hooks/useMarketplace.ts");
   const mcpHook = read("src/hooks/useMcp.ts");
   const skillsHook = read("src/hooks/useSkills.ts");
+  const skillsList = read("src/components/panels/SkillsPanel/SkillsList.tsx");
+  const skillCard = read("src/components/skill/SkillCard.tsx");
 
   for (const apiName of [
     "installSkill",
@@ -191,4 +195,69 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
     /const toggleAll = useCallback\(\s*async \(nextEnabled: boolean\): Promise<boolean> => {\s*if \(!enabled\) return false;/,
     "toggleAll must guard hook-level enabled before using target state",
   );
+  assert.match(skillsHook, /effectivePermissions/);
+  assert.match(skillsList, /canImportSkills/);
+  assert.match(skillsList, /canManageSkills/);
+  assert.match(skillCard, /hasWriteActions/);
+  assert.doesNotMatch(
+    skillsList,
+    /disabled=\{governedUnavailable \|\| !canWrite\}/,
+  );
+  assert.doesNotMatch(skillCard, /disabled=\{!canWrite\}/);
+  assert.doesNotMatch(skillCard, /disabled=\{!canDelete\}/);
+});
+
+test("read-only skills catalog removes write controls instead of showing disabled placeholders", () => {
+  const skillsList = read("src/components/panels/SkillsPanel/SkillsList.tsx");
+  const skillCard = read("src/components/skill/SkillCard.tsx");
+  const batchActionBar = read(
+    "src/components/panels/SkillsPanel/BatchActionBar.tsx",
+  );
+  const skillsPanel = read("src/components/panels/SkillsPanel/index.tsx");
+
+  assert.match(skillsList, /canImportSkills/);
+  assert.match(skillsList, /canManageSkills/);
+  assert.match(skillsList, /\{canManageSkills && filteredSkills\.length > 0 &&/);
+  assert.match(skillsList, /\{canImportSkills && \(/);
+  assert.match(skillsList, /\{canCreateSkills && \(/);
+  assert.doesNotMatch(
+    skillsList,
+    /disabled=\{governedUnavailable \|\| !canWrite\}/,
+  );
+
+  assert.match(skillCard, /hasWriteActions/);
+  assert.match(skillCard, /footer=\{\s*hasWriteActions/);
+  assert.match(skillCard, /\{canWrite && \(/);
+  assert.match(skillCard, /\{canDelete && \(/);
+  assert.doesNotMatch(skillCard, /disabled=\{!canWrite\}/);
+  assert.doesNotMatch(skillCard, /disabled=\{!canDelete\}/);
+
+  assert.match(batchActionBar, /canWrite: boolean/);
+  assert.match(batchActionBar, /canDelete: boolean/);
+  assert.match(batchActionBar, /\{canWrite && \(/);
+  assert.match(batchActionBar, /\{canDelete && \(/);
+  assert.match(skillsPanel, /canWrite=\{canWrite && !isGovernedUnavailable\}/);
+  assert.match(
+    skillsPanel,
+    /canDelete=\{canDeleteSkill && !isGovernedUnavailable\}/,
+  );
+});
+
+test("marketplace hides direct write governance until backend contracts exist", () => {
+  const marketplace = read("src/components/panels/MarketplacePanel.tsx");
+  const marketplaceCard = read(
+    "src/components/panels/MarketplacePanel/SkillCard.tsx",
+  );
+
+  assert.match(marketplace, /marketplaceDirectWriteBacked = false/);
+  assert.match(marketplace, /canCreateInMarketplace/);
+  assert.match(marketplace, /canInstall/);
+  assert.match(marketplace, /Permission\.SKILL_WRITE/);
+  assert.match(marketplace, /Permission\.MARKETPLACE_READ/);
+  assert.doesNotMatch(
+    marketplace,
+    /const canWrite =\s*hasAnyPermission\(\[Permission\.MARKETPLACE_PUBLISH\]\)/,
+  );
+  assert.match(marketplaceCard, /canInstall/);
+  assert.doesNotMatch(marketplaceCard, /canWrite/);
 });

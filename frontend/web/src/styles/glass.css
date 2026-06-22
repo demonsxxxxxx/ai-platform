@@ -1,37 +1,35 @@
-/* ===== Polished Glass ===== */
+/* ===== Enterprise Surface Compatibility Layer ===== */
 
 .glass-shell {
-  --glass-bg: color-mix(in srgb, white 72%, transparent);
-  --glass-bg-hover: color-mix(in srgb, white 82%, transparent);
-  --glass-bg-subtle: color-mix(in srgb, white 60%, transparent);
-  --glass-border: color-mix(in srgb, var(--theme-border) 64%, transparent);
+  --glass-bg: var(--theme-bg-card);
+  --glass-bg-hover: color-mix(in srgb, var(--theme-bg-card) 92%, var(--theme-bg));
+  --glass-bg-subtle: color-mix(in srgb, var(--theme-bg-card) 82%, var(--theme-bg));
+  --glass-border: var(--theme-border);
   --glass-border-hover: color-mix(
     in srgb,
-    var(--theme-primary) 22%,
+    var(--theme-primary) 16%,
     var(--theme-border)
   );
-  --glass-shadow: 0 4px 24px -8px rgb(0 0 0 / 0.08);
-  --glass-shadow-hover: 0 8px 32px -8px rgb(0 0 0 / 0.12);
-  --glass-glow: 0 0 20px
-    color-mix(in srgb, var(--theme-primary) 8%, transparent);
-  --glass-blur: blur(12px);
+  --glass-shadow: 0 4px 12px rgba(18, 38, 63, 0.03);
+  --glass-shadow-hover: 0 8px 18px rgba(18, 38, 63, 0.05);
+  --glass-glow: 0 0 0 transparent;
+  --glass-blur: none;
 }
 
 .dark .glass-shell {
-  --glass-bg: color-mix(in srgb, var(--theme-bg-card) 64%, transparent);
-  --glass-bg-hover: color-mix(in srgb, var(--theme-bg-card) 74%, transparent);
-  --glass-bg-subtle: color-mix(in srgb, var(--theme-bg-card) 50%, transparent);
-  --glass-border: color-mix(in srgb, var(--theme-border) 54%, transparent);
+  --glass-bg: var(--theme-bg-card);
+  --glass-bg-hover: color-mix(in srgb, var(--theme-bg-card) 86%, var(--theme-bg));
+  --glass-bg-subtle: color-mix(in srgb, var(--theme-bg-card) 76%, var(--theme-bg));
+  --glass-border: var(--theme-border);
   --glass-border-hover: color-mix(
     in srgb,
-    var(--theme-primary) 28%,
+    var(--theme-primary) 18%,
     var(--theme-border)
   );
-  --glass-shadow: 0 4px 24px -8px rgb(0 0 0 / 0.24);
-  --glass-shadow-hover: 0 8px 32px -8px rgb(0 0 0 / 0.32);
-  --glass-glow: 0 0 24px
-    color-mix(in srgb, var(--theme-primary) 10%, transparent);
-  --glass-blur: blur(12px);
+  --glass-shadow: none;
+  --glass-shadow-hover: none;
+  --glass-glow: 0 0 0 transparent;
+  --glass-blur: none;
 }
 
 .glass-card {
@@ -39,7 +37,7 @@
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
   border: 1px solid var(--glass-border);
-  border-radius: 0.875rem;
+  border-radius: 0.5rem;
   box-shadow: var(--glass-shadow);
   transition:
     border-color 0.24s ease,
@@ -49,21 +47,21 @@
 
 .glass-card:hover {
   border-color: var(--glass-border-hover);
-  box-shadow: var(--glass-shadow-hover), var(--glass-glow);
+  box-shadow: var(--glass-shadow-hover);
 }
 
 .glass-card-subtle {
   background: var(--glass-bg-subtle);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   border: 1px solid var(--glass-border);
-  border-radius: 0.75rem;
+  border-radius: 0.5rem;
 }
 
 .glass-input {
   background: var(--theme-bg);
   border: 1px solid var(--theme-border);
-  border-radius: 0.625rem;
+  border-radius: 0.5rem;
   color: var(--theme-text);
   transition:
     border-color 0.2s ease,
@@ -152,13 +150,8 @@
   right: 1rem;
   height: 2px;
   border-radius: 9999px;
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--theme-primary) 60%, transparent),
-    var(--theme-primary),
-    color-mix(in srgb, var(--theme-primary) 60%, transparent)
-  );
-  box-shadow: 0 0 8px color-mix(in srgb, var(--theme-primary) 20%, transparent);
+  background: var(--theme-primary);
+  box-shadow: none;
 }
 
 .glass-divider {
@@ -264,7 +257,7 @@
   animation: glass-drag-glow 1.2s ease-in-out infinite;
 }
 
-/* ===== End Polished Glass ===== */
+/* ===== End Enterprise Surface Compatibility Layer ===== */
 
 /* ═══════════════════════════════════════════
    Marketplace Card Styles — Refined Editorial

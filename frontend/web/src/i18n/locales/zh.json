@@ -1593,7 +1593,7 @@
     "tagsAndSkills": "标签与技能",
     "tagsInput": "标签",
     "tagsInputPlaceholder": "用逗号分隔，如：写作, 翻译, 代码",
-    "title": "角色广场",
+    "title": "角色",
     "tryOtherFilters": "试试其他搜索条件",
     "updateFailed": "更新角色预设失败",
     "updateSuccess": "角色「{{name}}」已更新",
@@ -2324,9 +2324,17 @@
       "description": "Skills 当前在平台级关闭。工作台仍保留这个受治理入口，但需要管理员启用 Skill 发现与部门访问后才能使用。",
       "title": "Skills 等待管理员启用"
     },
+    "degraded": {
+      "description": "Skills 读目录已接入，部分平台开关状态暂时无法确认。可继续浏览，创建、导入、发布等写操作仍按权限锁定。",
+      "title": "Skills 处于降级可读状态"
+    },
     "permissionLimited": {
       "description": "Skills 与技能市场已经作为工作台入口展示。管理员为你的部门启用 Skill 访问前，页面保持只读。",
       "title": "Skills 访问受治理"
+    },
+    "ready": {
+      "description": "Skills 与技能市场已经接入当前账号的读权限。写入、发布和部门可用范围继续按管理员授权开放。",
+      "title": "Skills 目录可用"
     },
     "subtitle": "管理本地技能并浏览技能商店",
     "title": "技能"
@@ -2533,6 +2541,10 @@
     "commandDockHint": "直接在输入框输入命令；受治理但暂不可用的能力会转成 chip。",
     "commandFirstTitle": "从提示词、Skill、MCP 工具、文件或上下文开始。",
     "defaultAgent": "默认",
+    "forbidden": {
+      "description": "该页面仍保留在工作台中，但当前账号缺少 {{permission}}。需要管理员授权后才能使用其中的控制项。",
+      "title": "{{page}} 受权限治理"
+    },
     "newConversation": "新对话",
     "none": "无",
     "selectionState": "已选能力",

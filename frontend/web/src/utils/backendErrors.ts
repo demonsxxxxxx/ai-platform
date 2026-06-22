@@ -130,6 +130,11 @@ const BACKEND_ERROR_PATTERNS: Array<{
     values: (match) => ({ permission: match[1] }),
   },
   {
+    pattern: /^missing_permission:(.+)$/,
+    key: "backendErrors.permissionMissing",
+    values: (match) => ({ permission: match[1] }),
+  },
+  {
     pattern: /^No permission to upload (.+) files$/,
     key: "backendErrors.fileUploadNoPermission",
     values: (match) => ({ category: match[1] }),

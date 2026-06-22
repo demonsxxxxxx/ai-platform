@@ -39,6 +39,7 @@ interface SkillsListProps {
   error: string | null;
   clearError: () => void;
   canWrite: boolean;
+  canDelete: boolean;
   canPublish: boolean;
   selectedNames: Set<string>;
   onToggle: (name: string) => void;
@@ -74,6 +75,7 @@ export function SkillsList({
   error,
   clearError,
   canWrite,
+  canDelete,
   canPublish,
   selectedNames,
   onToggle,
@@ -114,6 +116,9 @@ export function SkillsList({
 
   const hasActiveFilters =
     searchQuery.trim().length > 0 || selectedTags.length > 0;
+  const canCreateSkills = canWrite && !governedUnavailable;
+  const canImportSkills = canWrite && !governedUnavailable;
+  const canManageSkills = (canWrite || canDelete) && !governedUnavailable;
 
   const filterMenu = availableTags.length > 0 && (
     <div className="relative shrink-0" ref={filterRef}>
@@ -173,10 +178,13 @@ export function SkillsList({
     </div>
   );
 
-  const headerActions = (
+  const headerActions = canManageSkills ? (
     <div className="flex items-center gap-2">
-      {filteredSkills.length > 0 && (
-        <button onClick={onSelectAll} className="btn-secondary h-10">
+      {canManageSkills && filteredSkills.length > 0 && (
+        <button
+          onClick={onSelectAll}
+          className="btn-secondary h-10"
+        >
           <Check size={16} />
           <span className="hidden sm:inline">
             {selectedNames.size === filteredSkills.length &&
@@ -186,32 +194,26 @@ export function SkillsList({
           </span>
         </button>
       )}
-      <button
-        onClick={onGithubClick}
-        disabled={governedUnavailable}
-        className="btn-secondary h-10"
-      >
-        <Github size={16} />
-        <span className="hidden sm:inline">GitHub</span>
-      </button>
-      <button
-        onClick={onZipClick}
-        disabled={governedUnavailable}
-        className="btn-secondary h-10"
-      >
-        <Archive size={16} />
-        <span className="hidden sm:inline">ZIP</span>
-      </button>
-      <button
-        onClick={onCreate}
-        disabled={governedUnavailable}
-        className="btn-primary h-10"
-      >
-        <Plus size={16} />
-        <span className="hidden sm:inline">{t("skills.newSkill")}</span>
-      </button>
+      {canImportSkills && (
+        <>
+          <button onClick={onGithubClick} className="btn-secondary h-10">
+            <Github size={16} />
+            <span className="hidden sm:inline">GitHub</span>
+          </button>
+          <button onClick={onZipClick} className="btn-secondary h-10">
+            <Archive size={16} />
+            <span className="hidden sm:inline">ZIP</span>
+          </button>
+        </>
+      )}
+      {canCreateSkills && (
+        <button onClick={onCreate} className="btn-primary h-10">
+          <Plus size={16} />
+          <span className="hidden sm:inline">{t("skills.newSkill")}</span>
+        </button>
+      )}
     </div>
-  );
+  ) : undefined;
 
   return (
     <>
@@ -234,9 +236,11 @@ export function SkillsList({
               </div>
               {filterMenu}
             </div>
-            <div className="flex flex-nowrap shrink-0 items-center gap-1.5 sm:gap-2">
-              {headerActions}
-            </div>
+            {headerActions && (
+              <div className="flex flex-nowrap shrink-0 items-center gap-1.5 sm:gap-2">
+                {headerActions}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -289,7 +293,7 @@ export function SkillsList({
                 ? t("skills.subtitle")
                 : t("skills.createFirst")}
             </p>
-            {!hasActiveFilters && canWrite && !governedUnavailable && (
+            {!hasActiveFilters && canCreateSkills && (
               <button onClick={onCreate} className="btn-primary mt-4">
                 <Plus size={16} />
                 <span>{t("skills.newSkill")}</span>
@@ -314,14 +318,16 @@ export function SkillsList({
                 onToggle={onToggle}
                 onEdit={onEdit}
                 onDelete={onDelete}
-                onExportZip={onExportZip}
+                onExportZip={canImportSkills ? onExportZip : undefined}
                 onPublish={
                   canPublish ? (s: SkillResponse) => onPublish?.(s) : undefined
                 }
+                canWrite={canWrite}
+                canDelete={canDelete}
                 isPublished={skill.is_published}
                 selected={selectedNames.has(skill.name)}
                 onSelect={onSelectSkill}
-                selectionMode={true}
+                selectionMode={canWrite || canDelete}
               />
             ))}
           </div>

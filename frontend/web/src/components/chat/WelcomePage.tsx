@@ -1,13 +1,6 @@
 import { memo, useMemo, useState, useCallback, useRef } from "react";
-import {
-  ChevronRight,
-  MessageSquareText,
-  RefreshCw,
-  Sparkles,
-  UserRound,
-} from "lucide-react";
+import { MessageSquareText, RefreshCw, Sparkles, UserRound } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useNavigate } from "react-router-dom";
 import { ChatInput } from "./ChatInput";
 import type { ChatInputProps } from "./ChatInput";
 import { ContactAdminDialog } from "../common/ContactAdminDialog";
@@ -68,7 +61,6 @@ export const WelcomePage = memo(function WelcomePage({
   onClearPersonaPreset,
 }: WelcomePageProps) {
   const { i18n, t } = useTranslation();
-  const navigate = useNavigate();
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [animKey, setAnimKey] = useState(0);
   const [contactAdminOpen, setContactAdminOpen] = useState(false);
@@ -250,7 +242,7 @@ export const WelcomePage = memo(function WelcomePage({
     >
       <section
         data-chat-start-surface
-        className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center py-5"
+        className="chat-start-surface mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center py-5"
       >
         <div className="mb-5 text-center">
           <p className="text-xs font-semibold uppercase text-stone-400 dark:text-stone-500">
@@ -284,7 +276,7 @@ export const WelcomePage = memo(function WelcomePage({
           {["/", "$", "/mcp", "/model", "/file", "/context"].map((command) => (
             <span
               key={command}
-              className="rounded-md border border-stone-200 bg-white px-1.5 py-0.5 font-semibold text-stone-700 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-200"
+              className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-1.5 py-0.5 font-semibold text-stone-700 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-200"
             >
               {command}
             </span>
@@ -309,7 +301,7 @@ export const WelcomePage = memo(function WelcomePage({
                   ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200"
                   : item.state === "unavailable"
                     ? "border-stone-200 bg-stone-50 text-stone-500 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400"
-                    : "border-stone-200 bg-white text-stone-500 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-400"
+                    : "border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-stone-500 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-400"
               }`}
               title={`${item.label}: ${item.value}`}
             >
@@ -343,19 +335,6 @@ export const WelcomePage = memo(function WelcomePage({
               </span>
             </div>
             <div className="flex items-center gap-2">
-              {showPersonaCards && (
-                <button
-                  onClick={() => navigate("/persona")}
-                  className="flex items-center gap-0.5 px-2 py-1 rounded-lg text-[11px] sm:text-[12px] md:text-[12px] font-medium transition-all duration-300 cursor-pointer"
-                  style={{
-                    color: "var(--theme-text-secondary)",
-                    backgroundColor: "transparent",
-                  }}
-                >
-                  <span>{t("common.manage", "管理")}</span>
-                  <ChevronRight size={12} />
-                </button>
-              )}
               {selectedPersonaPresetId && onClearPersonaPreset && (
                 <button
                   onClick={handleRefresh}

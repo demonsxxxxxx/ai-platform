@@ -1,4 +1,3 @@
-import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { ToolSelector } from "../selectors/ToolSelector";
 import { SkillSelector } from "../selectors/SkillSelector";
@@ -124,7 +123,6 @@ export function ChatInputSelectors({
   agentOptionValues = {},
   onToggleAgentOption,
 }: ChatInputSelectorsProps) {
-  const navigate = useNavigate();
   const { t } = useTranslation();
 
   return (
@@ -188,7 +186,6 @@ export function ChatInputSelectors({
           onUsePreset={onUsePersonaPreset}
           onTogglePreference={onTogglePersonaPreference}
           onCopyPreset={onCopyPersonaPreset}
-          onManagePresets={() => navigate("/persona")}
           onClearPreset={() => {
             onClearPersonaPreset();
             onActivePanelChange(null);

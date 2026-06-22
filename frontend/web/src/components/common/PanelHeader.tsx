@@ -46,16 +46,16 @@ export function PanelHeader({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
           {icon && (
-            <div className="[&>svg]:size-[24px] flex size-12 flex-shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-stone-100 to-stone-50 text-stone-600 shadow-sm ring-1 ring-stone-200/60 dark:from-stone-800 dark:to-stone-900 dark:text-stone-300 dark:ring-stone-700/50">
+            <div className="[&>svg]:size-[22px] flex size-10 flex-shrink-0 items-center justify-center rounded-lg bg-[var(--theme-bg-card)] text-slate-600 shadow-[0_4px_12px_rgba(18,38,63,0.03)] ring-1 ring-[var(--theme-border)] dark:text-stone-300">
               {icon}
             </div>
           )}
           <div className="min-w-0">
-            <h1 className="truncate text-lg font-bold tracking-tight text-stone-900 dark:text-stone-50 font-serif">
+            <h1 className="truncate text-base font-semibold text-slate-900 dark:text-stone-50">
               {title}
             </h1>
             {subtitle && (
-              <p className="mt-0.5 truncate text-sm leading-snug text-stone-500 dark:text-stone-400">
+              <p className="mt-0.5 line-clamp-2 text-sm leading-snug text-slate-500 dark:text-stone-400 sm:truncate">
                 {subtitle}
               </p>
             )}

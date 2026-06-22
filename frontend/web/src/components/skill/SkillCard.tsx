@@ -24,6 +24,8 @@ interface SkillCardProps {
   onDelete: (name: string) => void;
   onExportZip?: (name: string) => void;
   onPublish?: (skill: SkillResponse) => void;
+  canWrite?: boolean;
+  canDelete?: boolean;
   isPublished?: boolean;
   selected?: boolean;
   onSelect?: (name: string) => void;
@@ -42,6 +44,8 @@ export function SkillCard({
   onDelete,
   onExportZip,
   onPublish,
+  canWrite = true,
+  canDelete = true,
   isPublished,
   selected = false,
   onSelect,
@@ -51,6 +55,11 @@ export function SkillCard({
   const primaryTag = skill.tags[0];
   const CategoryIcon = primaryTag ? getCategoryIcon(primaryTag) : Sparkles;
   const sourceLabel = t(`skillSelector.sources.${skill.source}`, skill.source);
+  const canPublishSkill =
+    skill.source === "manual" && isPublished !== undefined && Boolean(onPublish);
+  const canExportSkill = Boolean(onExportZip);
+  const hasWriteActions =
+    canWrite || canDelete || canPublishSkill || canExportSkill;
 
   return (
     <SkillBaseCard
@@ -123,41 +132,52 @@ export function SkillCard({
         </div>
       }
       footer={
-        <div className="flex items-center gap-1">
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggle(skill.name);
-            }}
-            className="scb__action-btn scb__action-btn--ghost"
-            title={
-              skill.enabled ? t("skills.card.disable") : t("skills.card.enable")
-            }
-          >
-            {skill.enabled ? (
-              <ToggleRight
-                size={15}
-                className="text-green-600 dark:text-green-500"
-              />
-            ) : (
-              <ToggleLeft size={15} />
+        hasWriteActions ? (
+          <div className="flex items-center gap-1">
+            {canWrite && (
+              <>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggle(skill.name);
+                  }}
+                  className="scb__action-btn scb__action-btn--ghost"
+                  title={
+                    skill.enabled
+                      ? t("skills.card.disable")
+                      : t("skills.card.enable")
+                  }
+                  aria-label={
+                    skill.enabled
+                      ? t("skills.card.disable")
+                      : t("skills.card.enable")
+                  }
+                >
+                  {skill.enabled ? (
+                    <ToggleRight
+                      size={15}
+                      className="text-green-600 dark:text-green-500"
+                    />
+                  ) : (
+                    <ToggleLeft size={15} />
+                  )}
+                </button>
+
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onEdit(skill);
+                  }}
+                  className="scb__action-btn scb__action-btn--ghost"
+                  title={t("skills.card.edit")}
+                  aria-label={t("skills.card.edit")}
+                >
+                  <Edit3 size={13} />
+                </button>
+              </>
             )}
-          </button>
 
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onEdit(skill);
-            }}
-            className="scb__action-btn scb__action-btn--ghost"
-            title={t("skills.card.edit")}
-          >
-            <Edit3 size={13} />
-          </button>
-
-          {skill.source === "manual" &&
-            isPublished !== undefined &&
-            onPublish && (
+            {canPublishSkill && onPublish && (
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -165,6 +185,11 @@ export function SkillCard({
                 }}
                 className="scb__action-btn scb__action-btn--ghost"
                 title={
+                  isPublished
+                    ? t("skills.card.republish")
+                    : t("skills.card.publishToMarketplace")
+                }
+                aria-label={
                   isPublished
                     ? t("skills.card.republish")
                     : t("skills.card.publishToMarketplace")
@@ -181,32 +206,37 @@ export function SkillCard({
               </button>
             )}
 
-          {onExportZip && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onExportZip(skill.name);
-              }}
-              className="scb__action-btn scb__action-btn--ghost"
-              title={t("skills.exportZip")}
-            >
-              <Archive size={13} />
-            </button>
-          )}
+            {canExportSkill && onExportZip && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onExportZip(skill.name);
+                }}
+                className="scb__action-btn scb__action-btn--ghost"
+                title={t("skills.exportZip")}
+                aria-label={t("skills.exportZip")}
+              >
+                <Archive size={13} />
+              </button>
+            )}
 
-          <div className="ml-auto" />
+            <div className="ml-auto" />
 
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete(skill.name);
-            }}
-            className="scb__action-btn text-[var(--theme-text-secondary)] transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/30 dark:hover:text-red-400"
-            title={t("skills.card.delete")}
-          >
-            <Trash2 size={14} />
-          </button>
-        </div>
+            {canDelete && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete(skill.name);
+                }}
+                className="scb__action-btn text-[var(--theme-text-secondary)] transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/30 dark:hover:text-red-400"
+                title={t("skills.card.delete")}
+                aria-label={t("skills.card.delete")}
+              >
+                <Trash2 size={14} />
+              </button>
+            )}
+          </div>
+        ) : undefined
       }
     />
   );

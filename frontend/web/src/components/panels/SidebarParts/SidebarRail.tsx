@@ -2,15 +2,12 @@ import {
   MessageSquarePlus,
   Search,
   Clock,
-  MoreHorizontal,
-  FolderOpen,
-  UserRound,
   LayoutGrid,
   Sparkles,
   Server,
+  Bot,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { APP_NAME } from "../../../constants";
 
 const railBtn =
   "sidebar-rail-btn workbench-rail-btn flex h-11 w-11 items-center justify-center rounded-lg transition-colors mx-1 touch-manipulation";
@@ -24,15 +21,8 @@ interface SidebarRailProps {
   onOpenSearch: () => void;
   onOpenRecentChats: () => void;
   onOpenLaunchpad: () => void;
-  onOpenFileLibrary: () => void;
-  onOpenPersonaPlaza: () => void;
   onOpenSkills: () => void;
   onOpenMcp: () => void;
-  showSkills: boolean;
-  showMcp: boolean;
-  hasMoreMenuItems: boolean;
-  onToggleMoreMenu: () => void;
-  moreMenuBtnRef: React.RefObject<HTMLButtonElement | null>;
   recentChatsBtnRef: React.RefObject<HTMLButtonElement | null>;
   onShowProfile: () => void;
 }
@@ -46,15 +36,8 @@ export function SidebarRail({
   onOpenSearch,
   onOpenRecentChats,
   onOpenLaunchpad,
-  onOpenFileLibrary,
-  onOpenPersonaPlaza,
   onOpenSkills,
   onOpenMcp,
-  showSkills,
-  showMcp,
-  hasMoreMenuItems,
-  onToggleMoreMenu,
-  moreMenuBtnRef,
   recentChatsBtnRef,
   onShowProfile,
 }: SidebarRailProps) {
@@ -76,11 +59,9 @@ export function SidebarRail({
           className={`${railBtn} group cursor-e-resize rtl:cursor-w-resize`}
           aria-label={t("sidebar.expandSidebar")}
         >
-          <img
-            src="/icons/icon.svg"
-            alt={APP_NAME}
-            className="size-5 rounded-full object-cover group-hover:hidden"
-          />
+          <span className="flex size-8 items-center justify-center rounded-lg bg-slate-900 text-white shadow-sm group-hover:hidden dark:bg-stone-100 dark:text-stone-950">
+            <Bot size={17} strokeWidth={2.2} aria-hidden="true" />
+          </span>
           <svg
             xmlns="http://www.w3.org/2000/svg"
             fill="none"
@@ -129,45 +110,23 @@ export function SidebarRail({
         >
           <LayoutGrid size={20} />
         </button>
-        {showSkills && (
-          <button
-            type="button"
-            onClick={onOpenSkills}
-            className={railBtn}
-            title={t("featureMenu.skillsMarketplace")}
-            aria-label={t("featureMenu.skillsMarketplace")}
-          >
-            <Sparkles size={20} />
-          </button>
-        )}
-        {showMcp && (
-          <button
-            type="button"
-            onClick={onOpenMcp}
-            className={railBtn}
-            title={t("featureMenu.mcpTools")}
-            aria-label={t("featureMenu.mcpTools")}
-          >
-            <Server size={20} />
-          </button>
-        )}
         <button
           type="button"
-          onClick={onOpenPersonaPlaza}
+          onClick={onOpenSkills}
           className={railBtn}
-          title={t("personaPresets.title", "角色广场")}
-          aria-label={t("personaPresets.title", "角色广场")}
+          title={t("featureMenu.skillsMarketplace")}
+          aria-label={t("featureMenu.skillsMarketplace")}
         >
-          <UserRound size={20} />
+          <Sparkles size={20} />
         </button>
         <button
           type="button"
-          onClick={onOpenFileLibrary}
+          onClick={onOpenMcp}
           className={railBtn}
-          title={t("fileLibrary.title")}
-          aria-label={t("fileLibrary.title")}
+          title={t("featureMenu.mcpTools")}
+          aria-label={t("featureMenu.mcpTools")}
         >
-          <FolderOpen size={20} />
+          <Server size={20} />
         </button>
         <button
           type="button"
@@ -179,18 +138,6 @@ export function SidebarRail({
         >
           <Clock size={20} />
         </button>
-        {hasMoreMenuItems && (
-          <button
-            type="button"
-            ref={moreMenuBtnRef}
-            onClick={onToggleMoreMenu}
-            className={railBtn}
-            title={t("nav.more", "更多")}
-            aria-label={t("nav.more", "更多")}
-          >
-            <MoreHorizontal size={20} />
-          </button>
-        )}
       </div>
 
       {/* Profile avatar */}
@@ -216,8 +163,8 @@ export function SidebarRail({
                 draggable={false}
               />
             ) : (
-              <div className="flex w-full h-full items-center justify-center bg-gradient-to-br from-amber-400 to-orange-500 rounded-full">
-                <span className="text-xs font-semibold text-white font-serif">
+              <div className="flex w-full h-full items-center justify-center rounded-full bg-teal-700">
+                <span className="text-xs font-semibold text-white">
                   {user?.username?.charAt(0).toUpperCase() || "U"}
                 </span>
               </div>

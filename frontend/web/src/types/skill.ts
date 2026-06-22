@@ -98,6 +98,7 @@ export interface SkillsResponse {
   skip: number;
   limit: number;
   available_tags: string[];
+  effective_permissions: string[];
 }
 
 // Skill Create Request (simplified - write individual files via /files/{path})
