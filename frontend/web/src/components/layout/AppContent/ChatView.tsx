@@ -1,4 +1,12 @@
-import { useMemo, useCallback, useState, useEffect, useRef } from "react";
+import {
+  useMemo,
+  useCallback,
+  useState,
+  useEffect,
+  useRef,
+  type ComponentType,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { ListTree } from "lucide-react";
 import toast from "react-hot-toast";
@@ -18,6 +26,7 @@ import {
 } from "../../chat/ChatMessage/items/persistentToolPanelState";
 import { ChatInput } from "../../chat/ChatInput";
 import { WelcomePage } from "../../chat/WelcomePage";
+import { WorkbenchRightPanel } from "../../workbench/WorkbenchRightPanel";
 import { Virtuoso, type ListRange } from "react-virtuoso";
 import { ApprovalPanel } from "../../panels/ApprovalPanel";
 import {
@@ -78,6 +87,7 @@ import type { ExternalNavigationTargetFile } from "./externalNavigationState";
 import { isFileLink } from "../../documents/utils";
 import { sessionApi } from "../../../services/api";
 import { buildFileLinkPreviewRequest } from "../../chat/ChatMessage/items/fileLinkPreview";
+import type { ModelOption } from "../../../services/api/modelPublic";
 
 const FLOATING_SCROLL_BUTTON_OFFSET_CLASS = "bottom-full mb-3";
 
@@ -148,6 +158,9 @@ interface ChatViewProps {
   agents: { id: string; name: string; description: string }[];
   currentAgent: string;
   onSelectAgent: (id: string) => void;
+  availableModels: ModelOption[];
+  currentModelId: string;
+  onSelectModel: (modelId: string, modelValue: string) => void;
   approvals: PendingApproval[];
   onRespondApproval: (
     id: string,
@@ -167,6 +180,11 @@ interface ChatViewProps {
   externalNavigationTargetRunPending?: boolean;
   externalScrollToBottom?: boolean;
   outlineToggleRef?: React.RefObject<(() => void) | null>;
+  WorkbenchShellComponent: ComponentType<{
+    children: ReactNode;
+    composer?: ReactNode;
+    rightPanel?: ReactNode;
+  }>;
 }
 
 export function ChatView({
@@ -218,6 +236,9 @@ export function ChatView({
   agents,
   currentAgent,
   onSelectAgent,
+  availableModels,
+  currentModelId,
+  onSelectModel,
   approvals,
   onRespondApproval,
   approvalLoading,
@@ -231,6 +252,7 @@ export function ChatView({
   externalNavigationTargetRunPending,
   externalScrollToBottom,
   outlineToggleRef,
+  WorkbenchShellComponent,
 }: ChatViewProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -681,15 +703,78 @@ export function ChatView({
     agents,
     currentAgent,
     onSelectAgent,
+    availableModels,
+    currentModelId,
+    onSelectModel,
     attachments,
     onAttachmentsChange,
   };
 
+  const rightPanel = (
+    <WorkbenchRightPanel
+      sessionId={sessionId}
+      currentRunId={currentRunId}
+      messageCount={messages.length}
+    />
+  );
+
+  const composer =
+    messages.length > 0 ? (
+      <div className="relative">
+        {showScrollTop && (
+          <div
+            className={`absolute right-3 sm:right-4 z-50 flex flex-col gap-1.5 ${FLOATING_SCROLL_BUTTON_OFFSET_CLASS}`}
+          >
+            <button
+              onClick={scrollToTop}
+              className="flex items-center p-2 rounded-full bg-white/90 dark:bg-stone-800/90 border border-stone-200/80 dark:border-stone-700/60 shadow-lg  hover:shadow-xl transition-all duration-200 hover:scale-105 active:scale-95"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                className="w-4 h-4 text-stone-500 dark:text-stone-300"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M10 17a.75.75 0 01-.75-.75V5.612l-3.96 4.158a.75.75 0 11-1.08-1.04l5.25-5.5a.75.75 0 011.08 0l5.25 5.5a.75.75 0 11-1.08 1.04l-3.96-4.158V16.25A.75.75 0 0110 17z"
+                  clipRule="evenodd"
+                />
+              </svg>
+            </button>
+          </div>
+        )}
+
+        {!isNearBottom && (
+          <button
+            onClick={scrollToBottom}
+            className={`absolute left-1/2 z-50 flex items-center p-2 rounded-full bg-white/90 dark:bg-stone-800/90 border border-stone-200/80 dark:border-stone-700/60 shadow-lg  hover:shadow-xl transition-all duration-200 hover:scale-105 active:scale-95 ${FLOATING_SCROLL_BUTTON_OFFSET_CLASS} -translate-x-1/2`}
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              className="w-4 h-4 text-stone-500 dark:text-stone-300"
+            >
+              <path
+                fillRule="evenodd"
+                d="M10 3a.75.75 0 01.75.75v10.638l3.96-4.158a.75.75 0 111.08 1.04l-5.25 5.5a.75.75 0 01-1.08 0l-5.25-5.5a.75.75 0 111.08-1.04l3.96 4.158V3.75A.75.75 0 0110 3z"
+                clipRule="evenodd"
+              />
+            </svg>
+          </button>
+        )}
+
+        <ChatInput {...chatInputProps} />
+      </div>
+    ) : null;
+
   return (
     <SessionImageGalleryProvider messages={messages}>
+      <WorkbenchShellComponent composer={composer} rightPanel={rightPanel}>
       <main
         ref={messagesContainerRef}
-        className={`relative flex-1 min-h-0 mt-4 ${
+        className={`relative flex-1 min-h-0 ${
           messages.length > 0 ? "overflow-hidden" : ""
         }`}
       >
@@ -753,58 +838,7 @@ export function ChatView({
       />
       <AttachmentPreviewHost />
       <PersistentToolPanelHost />
-
-      {/* ChatInput at bottom (when messages exist, WelcomePage renders its own) */}
-      {messages.length > 0 && (
-        <div className="relative">
-          {/* Right-side floating button cluster */}
-          {showScrollTop && (
-            <div
-              className={`absolute right-3 sm:right-4 z-50 flex flex-col gap-1.5 ${FLOATING_SCROLL_BUTTON_OFFSET_CLASS}`}
-            >
-              <button
-                onClick={scrollToTop}
-                className="flex items-center p-2 rounded-full bg-white/90 dark:bg-stone-800/90 border border-stone-200/80 dark:border-stone-700/60 shadow-lg  hover:shadow-xl transition-all duration-200 hover:scale-105 active:scale-95"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
-                  className="w-4 h-4 text-stone-500 dark:text-stone-300"
-                >
-                  <path
-                    fillRule="evenodd"
-                    d="M10 17a.75.75 0 01-.75-.75V5.612l-3.96 4.158a.75.75 0 11-1.08-1.04l5.25-5.5a.75.75 0 011.08 0l5.25 5.5a.75.75 0 11-1.08 1.04l-3.96-4.158V16.25A.75.75 0 0110 17z"
-                    clipRule="evenodd"
-                  />
-                </svg>
-              </button>
-            </div>
-          )}
-
-          {!isNearBottom && (
-            <button
-              onClick={scrollToBottom}
-              className={`absolute left-1/2 z-50 flex items-center p-2 rounded-full bg-white/90 dark:bg-stone-800/90 border border-stone-200/80 dark:border-stone-700/60 shadow-lg  hover:shadow-xl transition-all duration-200 hover:scale-105 active:scale-95 ${FLOATING_SCROLL_BUTTON_OFFSET_CLASS} -translate-x-1/2`}
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-                className="w-4 h-4 text-stone-500 dark:text-stone-300"
-              >
-                <path
-                  fillRule="evenodd"
-                  d="M10 3a.75.75 0 01.75.75v10.638l3.96-4.158a.75.75 0 111.08 1.04l-5.25 5.5a.75.75 0 01-1.08 0l-5.25-5.5a.75.75 0 111.08-1.04l3.96 4.158V3.75A.75.75 0 0110 3z"
-                  clipRule="evenodd"
-                />
-              </svg>
-            </button>
-          )}
-
-          <ChatInput {...chatInputProps} />
-        </div>
-      )}
+      </WorkbenchShellComponent>
     </SessionImageGalleryProvider>
   );
 }

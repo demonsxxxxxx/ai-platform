@@ -1,5 +1,11 @@
 import { memo, useMemo, useState, useCallback, useRef } from "react";
-import { RefreshCw, Sparkles, UserRound, ChevronRight } from "lucide-react";
+import {
+  ChevronRight,
+  MessageSquareText,
+  RefreshCw,
+  Sparkles,
+  UserRound,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { ChatInput } from "./ChatInput";
@@ -35,6 +41,13 @@ interface WelcomePageProps {
     preset: PersonaPreset,
   ) => Promise<PersonaPresetSnapshot | null>;
   onClearPersonaPreset?: () => void;
+}
+
+interface ComposerSummaryItem {
+  id: string;
+  label: string;
+  value: string;
+  state?: "default" | "enabled" | "unavailable";
 }
 
 export const WelcomePage = memo(function WelcomePage({
@@ -166,54 +179,146 @@ export const WelcomePage = memo(function WelcomePage({
     personaPresetsLoading,
     displayCards.length,
   );
+  const enabledSkillsCount = chatInputProps.enabledSkillsCount ?? 0;
+  const totalSkillsCount = chatInputProps.totalSkillsCount ?? 0;
+  const enabledToolsCount = chatInputProps.enabledToolsCount ?? 0;
+  const totalToolsCount = chatInputProps.totalToolsCount ?? 0;
+  const attachedFilesCount = chatInputProps.attachments?.length ?? 0;
+  const currentAgentName =
+    chatInputProps.agents?.find(
+      (agent) => agent.id === chatInputProps.currentAgent,
+    )?.name ?? chatInputProps.currentAgent;
+  const selectionSummary = useMemo<ComposerSummaryItem[]>(
+    () => [
+      {
+        id: "skills",
+        label: t("featureMenu.skills", "Skills"),
+        value:
+          totalSkillsCount > 0
+            ? `${enabledSkillsCount}/${totalSkillsCount}`
+            : t("workbench.unavailableShort", "Unavailable"),
+        state: enabledSkillsCount > 0 ? "enabled" : "unavailable",
+      },
+      {
+        id: "mcp",
+        label: t("featureMenu.mcpTools", "MCP tools"),
+        value:
+          totalToolsCount > 0
+            ? `${enabledToolsCount}/${totalToolsCount}`
+            : t("workbench.unavailableShort", "Unavailable"),
+        state: enabledToolsCount > 0 ? "enabled" : "unavailable",
+      },
+      {
+        id: "agent",
+        label: t("featureMenu.agents", "Agents"),
+        value: currentAgentName || t("workbench.defaultAgent", "Default"),
+        state: currentAgentName ? "enabled" : "default",
+      },
+      {
+        id: "model",
+        label: t("featureMenu.model", "Model"),
+        value: chatInputProps.currentModelId || t("workbench.none", "None"),
+        state: chatInputProps.currentModelId ? "enabled" : "default",
+      },
+      {
+        id: "files",
+        label: t("chat.fileReferences", "File references"),
+        value:
+          attachedFilesCount > 0
+            ? String(attachedFilesCount)
+            : t("workbench.none", "None"),
+        state: attachedFilesCount > 0 ? "enabled" : "default",
+      },
+    ],
+    [
+      attachedFilesCount,
+      currentAgentName,
+      enabledSkillsCount,
+      enabledToolsCount,
+      chatInputProps.currentModelId,
+      t,
+      totalSkillsCount,
+      totalToolsCount,
+    ],
+  );
 
   return (
     <div
       ref={rootRef}
-      className="welcome-root relative flex h-full flex-col items-center justify-center px-4"
+      data-workbench-empty-state="chat"
+      className="welcome-root welcome-chat-start relative flex h-full min-h-0 flex-col overflow-y-auto px-4 py-6 sm:px-6"
     >
-      {/* Greeting section */}
-      <div className="welcome-hero relative flex flex-col items-center mb-3 sm:mb-4 md:mb-5 xl:mb-6 2xl:mb-7 w-full max-w-[90vw]">
-        {/* App icon (mobile only) */}
-        <div className="sm:hidden relative mb-3">
-          <img
-            src="/icons/icon.svg"
-            alt="LambChat"
-            className="welcome-icon relative size-10 rounded-full shadow-md ring-1 ring-stone-200/60 dark:ring-stone-700/40"
+      <section
+        data-chat-start-surface
+        className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center py-5"
+      >
+        <div className="mb-5 text-center">
+          <p className="text-xs font-semibold uppercase text-stone-400 dark:text-stone-500">
+            {t("workbench.newConversation", "New conversation")}
+          </p>
+          <h1 className="mt-2 text-2xl font-semibold leading-8 text-stone-950 dark:text-stone-50 sm:text-3xl">
+            {greeting}
+          </h1>
+          <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-stone-500 dark:text-stone-400">
+            {subtitle}
+          </p>
+        </div>
+
+        <div className="welcome-input">
+          <ChatInput
+            {...chatInputProps}
+            onMentionQueryChange={handleMentionQueryChange}
+            pendingInput={pendingInput}
+            onPendingInputConsumed={() => setPendingInput(null)}
+            className="mx-auto w-full px-0"
           />
         </div>
 
-        {/* Greeting */}
-        <h1
-          className="welcome-greeting max-w-[90vw] text-[1.65rem] sm:text-[2rem] md:text-[2.25rem] lg:text-[2.35rem] xl:text-[2.4rem] 2xl:text-[2.5rem] font-semibold tracking-[-0.02em] leading-[1.2] text-center font-serif"
-          style={{ color: "var(--theme-text)" }}
+        <div
+          data-composer-command-dock
+          className="mx-auto mt-3 flex w-full max-w-3xl flex-wrap items-center justify-center gap-1.5 text-xs text-stone-500 dark:text-stone-400"
         >
-          <img
-            src="/icons/icon.svg"
-            alt=""
-            className="welcome-icon hidden sm:inline-block size-10 2xl:size-12 mr-4 align-text-bottom rounded-full"
-          />
-          {greeting}
-        </h1>
-        {/* Subtle subtitle prompt */}
-        <p
-          className="welcome-subtitle mt-2 sm:mt-3 md:mt-3.5 xl:mt-4 2xl:mt-4 text-sm sm:text-base md:text-[17px] xl:text-lg 2xl:text-lg text-center font-serif"
-          style={{ color: "var(--theme-text-secondary)" }}
-        >
-          {subtitle}
-        </p>
-      </div>
+          <span className="font-medium text-stone-700 dark:text-stone-200">
+            {t("workbench.commandDock", "Composer")}
+          </span>
+          {["/", "$", "/mcp", "/model", "/file", "/context"].map((command) => (
+            <span
+              key={command}
+              className="rounded-md border border-stone-200 bg-white px-1.5 py-0.5 font-semibold text-stone-700 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-200"
+            >
+              {command}
+            </span>
+          ))}
+          <span className="min-w-0">
+            {t(
+              "workbench.commandDockHint",
+              "Type commands directly in the input; governed entries become chips.",
+            )}
+          </span>
+        </div>
 
-      {/* ChatInput centered — the focal point */}
-      <div className="welcome-input w-full sm:max-w-[44rem] md:max-w-[46rem] lg:max-w-[48rem] xl:max-w-[50rem] 2xl:max-w-[52rem]">
-        <ChatInput
-          {...chatInputProps}
-          onMentionQueryChange={handleMentionQueryChange}
-          pendingInput={pendingInput}
-          onPendingInputConsumed={() => setPendingInput(null)}
-          className="mx-auto w-full px-2"
-        />
-      </div>
+        <div
+          data-composer-selection-summary
+          className="mx-auto mt-3 flex w-full max-w-3xl flex-wrap justify-center gap-1.5"
+        >
+          {selectionSummary.map((item) => (
+            <span
+              key={item.id}
+              className={`inline-flex max-w-[12rem] items-center gap-1 rounded-md border px-2 py-1 text-[11px] ${
+                item.state === "enabled"
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200"
+                  : item.state === "unavailable"
+                    ? "border-stone-200 bg-stone-50 text-stone-500 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400"
+                    : "border-stone-200 bg-white text-stone-500 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-400"
+              }`}
+              title={`${item.label}: ${item.value}`}
+            >
+              <span className="truncate font-medium">{item.label}</span>
+              <span className="shrink-0 opacity-80">{item.value}</span>
+            </span>
+          ))}
+        </div>
+      </section>
 
       {(showPersonaCards || showStarterPrompts) && (
         <div
@@ -223,7 +328,7 @@ export const WelcomePage = memo(function WelcomePage({
         >
           <div className="welcome-suggestions-header flex items-center justify-between mb-2 sm:mb-3 md:mb-3 xl:mb-4 2xl:mb-4 px-2 sm:px-0">
             <div
-              className="flex items-center gap-1 text-xs sm:text-sm md:text-sm font-medium font-serif"
+              className="flex items-center gap-1 text-xs sm:text-sm md:text-sm font-medium"
               style={{ color: "var(--theme-text-secondary)" }}
             >
               <Sparkles
@@ -241,7 +346,7 @@ export const WelcomePage = memo(function WelcomePage({
               {showPersonaCards && (
                 <button
                   onClick={() => navigate("/persona")}
-                  className="flex items-center gap-0.5 px-2 py-1 rounded-lg text-[11px] sm:text-[12px] md:text-[12px] font-medium transition-all duration-300 cursor-pointer font-serif"
+                  className="flex items-center gap-0.5 px-2 py-1 rounded-lg text-[11px] sm:text-[12px] md:text-[12px] font-medium transition-all duration-300 cursor-pointer"
                   style={{
                     color: "var(--theme-text-secondary)",
                     backgroundColor: "transparent",
@@ -254,7 +359,7 @@ export const WelcomePage = memo(function WelcomePage({
               {selectedPersonaPresetId && onClearPersonaPreset && (
                 <button
                   onClick={handleRefresh}
-                  className="welcome-refresh-btn flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] sm:text-[12px] md:text-[12px] font-medium transition-all duration-300 cursor-pointer font-serif"
+                  className="welcome-refresh-btn flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] sm:text-[12px] md:text-[12px] font-medium transition-all duration-300 cursor-pointer"
                   style={{
                     color: "var(--theme-text-secondary)",
                     backgroundColor: "transparent",
@@ -289,7 +394,7 @@ export const WelcomePage = memo(function WelcomePage({
               Array.from({ length: personaSkeletonCount }).map((_, i) => (
                 <div
                   key={`persona-skeleton-${i}`}
-                  className="welcome-persona-card welcome-persona-skeleton relative min-w-[15.75rem] snap-start rounded-2xl border p-2.5"
+                  className="welcome-persona-card welcome-persona-skeleton relative min-w-[15.75rem] snap-start rounded-lg border p-2.5"
                   style={{
                     backgroundColor: "var(--theme-bg-card)",
                     borderColor: "var(--theme-border)",
@@ -318,11 +423,10 @@ export const WelcomePage = memo(function WelcomePage({
                       animationDelay: `${i * 60}ms`,
                     }}
                   >
-                    <span className="welcome-card-shimmer" aria-hidden="true" />
                     <span className="welcome-persona-header relative flex items-start gap-3">
                       <PersonaAvatarWithLoading
                         preset={preset}
-                        className="welcome-persona-avatar relative flex items-center justify-center size-11 rounded-xl shrink-0 overflow-hidden transition-transform duration-300 group-hover:scale-105"
+                        className="welcome-persona-avatar relative flex items-center justify-center size-11 rounded-lg shrink-0 overflow-hidden transition-transform duration-200 group-hover:scale-[1.02]"
                         imgClassName="h-full w-full object-cover"
                         iconSize={22}
                         fallbackIcon={<UserRound size={22} />}
@@ -334,7 +438,7 @@ export const WelcomePage = memo(function WelcomePage({
                       <span className="welcome-persona-info min-w-0 flex-1 pt-0.5">
                         <span className="welcome-persona-name-row relative flex items-center gap-1.5">
                           <span
-                            className="truncate text-[14px] font-semibold leading-[1.35] transition-colors duration-300 group-hover:text-[var(--theme-text)]"
+                            className="truncate text-[14px] font-semibold leading-[1.35] transition-colors duration-200 group-hover:text-[var(--theme-text)]"
                             style={{ color: "var(--theme-text)" }}
                           >
                             {preset.name}
@@ -382,23 +486,21 @@ export const WelcomePage = memo(function WelcomePage({
                     className={getWelcomeSuggestionButtonClass(i)}
                     style={{
                       backgroundColor: "var(--theme-bg-card)",
-                      borderColor: "var(--theme-border)",
-                      animationDelay: `${i * 60}ms`,
-                    }}
-                  >
-                    {/* Hover shimmer layer */}
-                    <span className="welcome-card-shimmer" aria-hidden="true" />
+                        borderColor: "var(--theme-border)",
+                        animationDelay: `${i * 60}ms`,
+                      }}
+                    >
                     <span
-                      className="relative flex items-center justify-center size-6 sm:size-7 xl:size-8 2xl:size-8 rounded-lg text-[13px] sm:text-[15px] xl:text-lg 2xl:text-lg shrink-0 transition-transform duration-300 group-hover:scale-110"
+                      className="relative flex items-center justify-center size-6 sm:size-7 xl:size-8 2xl:size-8 rounded-lg text-[13px] sm:text-[15px] xl:text-lg 2xl:text-lg shrink-0 transition-transform duration-200 group-hover:scale-[1.02]"
                       style={{
                         backgroundColor: "var(--theme-primary-light)",
                         color: "var(--theme-primary)",
                       }}
                     >
-                      {suggestion.icon || "✨"}
+                      <MessageSquareText size={14} />
                     </span>
                     <span
-                      className="relative text-[12.5px] sm:text-[13.5px] leading-[1.4] sm:leading-[1.45] truncate transition-colors duration-300 group-hover:text-[var(--theme-text)]"
+                      className="relative text-[12.5px] sm:text-[13.5px] leading-[1.4] sm:leading-[1.45] truncate transition-colors duration-200 group-hover:text-[var(--theme-text)]"
                       style={{ color: "var(--theme-text-secondary)" }}
                     >
                       {suggestion.text}

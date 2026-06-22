@@ -21,7 +21,7 @@ import {
 import { groupSessionsByTime } from "../sessionHelpers";
 import { ProjectItem } from "../../sidebar/ProjectItem";
 import { SessionItem } from "../../sidebar/SessionItem";
-import { APP_NAME, GITHUB_URL } from "../../../constants";
+import { APP_HOME_URL, APP_NAME } from "../../../constants";
 import { isSessionFavorite } from "../../sidebar/sessionFavorites";
 import type { Project } from "../../../types";
 import { isSidebarProject } from "./projectFilters";
@@ -136,9 +136,7 @@ export function SessionListContent({
             className="size-6 rounded-full object-cover"
           />
           <a
-            href={GITHUB_URL}
-            target="_blank"
-            rel="noopener noreferrer"
+            href={APP_HOME_URL}
             className="text-lg font-bold leading-none text-stone-800 dark:text-stone-100 hover:text-stone-900 dark:hover:text-stone-50 transition-colors font-serif"
           >
             {APP_NAME}

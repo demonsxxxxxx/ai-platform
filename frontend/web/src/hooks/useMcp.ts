@@ -30,7 +30,11 @@ function buildMCPListUrl(params: MCPListParams = {}): string {
   return `${API_BASE}/${query ? `?${query}` : ""}`;
 }
 
-export function useMCP(options?: { listParams?: MCPListParams }) {
+export function useMCP(options?: {
+  listParams?: MCPListParams;
+  enabled?: boolean;
+}) {
+  const enabled = options?.enabled !== false;
   const listParams = options?.listParams;
   const [servers, setServers] = useState<MCPServerResponse[]>([]);
   const [total, setTotal] = useState(0);
@@ -40,6 +44,7 @@ export function useMCP(options?: { listParams?: MCPListParams }) {
   // Fetch all MCP servers
   const fetchServers = useCallback(
     async (params?: MCPListParams) => {
+      if (!enabled) return;
       setIsLoading(true);
       setError(null);
       try {
@@ -56,12 +61,13 @@ export function useMCP(options?: { listParams?: MCPListParams }) {
         setIsLoading(false);
       }
     },
-    [listParams],
+    [enabled, listParams],
   );
 
   // Get single server
   const getServer = useCallback(
     async (name: string): Promise<MCPServerResponse | null> => {
+      if (!enabled) return null;
       try {
         return await authFetch<MCPServerResponse>(`${API_BASE}/${name}`);
       } catch (err) {
@@ -71,7 +77,7 @@ export function useMCP(options?: { listParams?: MCPListParams }) {
         return null;
       }
     },
-    [],
+    [enabled],
   );
 
   // Create MCP server (auto-selects admin API for system servers)
@@ -80,6 +86,7 @@ export function useMCP(options?: { listParams?: MCPListParams }) {
       server: MCPServerCreate,
       isSystem: boolean = false,
     ): Promise<MCPServerResponse | null> => {
+      if (!enabled) return null;
       setIsLoading(true);
       setError(null);
       try {
@@ -99,7 +106,7 @@ export function useMCP(options?: { listParams?: MCPListParams }) {
         setIsLoading(false);
       }
     },
-    [fetchServers],
+    [enabled, fetchServers],
   );
 
   // Update MCP server (auto-selects admin API for system servers)
@@ -109,6 +116,7 @@ export function useMCP(options?: { listParams?: MCPListParams }) {
       updates: MCPServerUpdate,
       isSystem: boolean = false,
     ): Promise<MCPServerResponse | null> => {
+      if (!enabled) return null;
       setIsLoading(true);
       setError(null);
       try {
@@ -131,12 +139,13 @@ export function useMCP(options?: { listParams?: MCPListParams }) {
         setIsLoading(false);
       }
     },
-    [fetchServers],
+    [enabled, fetchServers],
   );
 
   // Delete MCP server (auto-selects admin API for system servers)
   const deleteServer = useCallback(
     async (name: string, isSystem: boolean = false): Promise<boolean> => {
+      if (!enabled) return false;
       setIsLoading(true);
       setError(null);
       try {
@@ -155,12 +164,13 @@ export function useMCP(options?: { listParams?: MCPListParams }) {
         setIsLoading(false);
       }
     },
-    [fetchServers],
+    [enabled, fetchServers],
   );
 
   // Toggle server enabled status
   const toggleServer = useCallback(
     async (name: string): Promise<MCPServerResponse | null> => {
+      if (!enabled) return null;
       setIsLoading(true);
       setError(null);
       try {
@@ -181,12 +191,13 @@ export function useMCP(options?: { listParams?: MCPListParams }) {
         setIsLoading(false);
       }
     },
-    [fetchServers],
+    [enabled, fetchServers],
   );
 
   // Import servers from JSON
   const importServers = useCallback(
     async (request: MCPImportRequest): Promise<MCPImportResponse | null> => {
+      if (!enabled) return null;
       setIsLoading(true);
       setError(null);
       try {
@@ -205,12 +216,13 @@ export function useMCP(options?: { listParams?: MCPListParams }) {
         setIsLoading(false);
       }
     },
-    [fetchServers],
+    [enabled, fetchServers],
   );
 
   // Export servers to JSON
-  const exportServers =
-    useCallback(async (): Promise<MCPExportResponse | null> => {
+  const exportServers = useCallback(
+    async (): Promise<MCPExportResponse | null> => {
+      if (!enabled) return null;
       setIsLoading(true);
       setError(null);
       try {
@@ -223,7 +235,9 @@ export function useMCP(options?: { listParams?: MCPListParams }) {
       } finally {
         setIsLoading(false);
       }
-    }, []);
+    },
+    [enabled],
+  );
 
   // Promote user server to system server (admin only)
   const promoteServer = useCallback(
@@ -231,6 +245,7 @@ export function useMCP(options?: { listParams?: MCPListParams }) {
       name: string,
       ownerUserId: string,
     ): Promise<MCPServerMoveResponse | null> => {
+      if (!enabled) return null;
       setIsLoading(true);
       setError(null);
       try {
@@ -252,7 +267,7 @@ export function useMCP(options?: { listParams?: MCPListParams }) {
         setIsLoading(false);
       }
     },
-    [fetchServers],
+    [enabled, fetchServers],
   );
 
   // Demote system server to user server (admin only)
@@ -261,6 +276,7 @@ export function useMCP(options?: { listParams?: MCPListParams }) {
       name: string,
       targetUserId: string,
     ): Promise<MCPServerMoveResponse | null> => {
+      if (!enabled) return null;
       setIsLoading(true);
       setError(null);
       try {
@@ -282,13 +298,14 @@ export function useMCP(options?: { listParams?: MCPListParams }) {
         setIsLoading(false);
       }
     },
-    [fetchServers],
+    [enabled, fetchServers],
   );
 
   // Initial load
   useEffect(() => {
+    if (!enabled) return;
     fetchServers(listParams);
-  }, [fetchServers, listParams]);
+  }, [enabled, fetchServers, listParams]);
 
   return {
     servers,

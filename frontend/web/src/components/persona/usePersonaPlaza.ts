@@ -7,6 +7,10 @@ import { useAuth } from "../../hooks/useAuth";
 import { usePersonaPresets } from "../../hooks/usePersonaPresets";
 import { Permission } from "../../types";
 import { translateBackendError } from "../../utils/backendErrors";
+import {
+  readSessionConfigStorage,
+  writeSessionConfigStorage,
+} from "../../utils/sessionConfigStorage";
 import type {
   LocalizedText,
   PersonaPreset,
@@ -15,13 +19,11 @@ import type {
   PersonaPresetSnapshot,
 } from "../../types";
 
-const SESSION_CONFIG_KEY = "lambchat_session_config";
-
 export type ScopeFilter = "all" | "pinned" | "favorite" | "global" | "user";
 
 function readPersonaPresetId(): string | null {
   try {
-    const raw = localStorage.getItem(SESSION_CONFIG_KEY);
+    const raw = readSessionConfigStorage();
     if (!raw) return null;
     return JSON.parse(raw)?.personaPresetId || null;
   } catch {
@@ -162,10 +164,9 @@ export function usePersonaPlaza() {
       if (snapshot) {
         setSelectedPresetId(preset.id);
         try {
-          const raw = localStorage.getItem(SESSION_CONFIG_KEY);
+          const raw = readSessionConfigStorage();
           const existing = raw ? JSON.parse(raw) : {};
-          localStorage.setItem(
-            SESSION_CONFIG_KEY,
+          writeSessionConfigStorage(
             JSON.stringify({
               ...existing,
               personaPresetId: preset.id,
@@ -196,10 +197,9 @@ export function usePersonaPlaza() {
   const handleClear = useCallback(() => {
     setSelectedPresetId(null);
     try {
-      const raw = localStorage.getItem(SESSION_CONFIG_KEY);
+      const raw = readSessionConfigStorage();
       const existing = raw ? JSON.parse(raw) : {};
-      localStorage.setItem(
-        SESSION_CONFIG_KEY,
+      writeSessionConfigStorage(
         JSON.stringify({
           ...existing,
           personaPresetId: null,
@@ -354,7 +354,7 @@ export function usePersonaPlaza() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `lambchat-personas-${new Date()
+    a.download = `ai-platform-personas-${new Date()
       .toISOString()
       .slice(0, 10)}.json`;
     a.click();

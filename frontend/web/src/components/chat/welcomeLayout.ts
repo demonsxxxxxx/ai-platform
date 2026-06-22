@@ -28,13 +28,13 @@ export function getWelcomePersonaCardClass(_index: number): string {
     "snap-start",
     "flex-col",
     "gap-1.5",
-    "rounded-2xl",
+    "rounded-lg",
     "border",
     "p-3",
     "text-left",
     "cursor-pointer",
     "transition-all",
-    "duration-300",
+    "duration-200",
     "overflow-hidden",
     "sm:min-w-0",
   ]
@@ -52,7 +52,7 @@ export function getWelcomePersonaSkeletonCount(
 }
 
 export function getWelcomeSuggestionButtonClass(_index: number): string {
-  return "welcome-card welcome-suggestion-pill group relative flex items-center gap-2 sm:gap-3 md:gap-3 xl:gap-3.5 2xl:gap-3.5 rounded-xl border px-3 py-2 sm:px-4 sm:py-3 text-left cursor-pointer transition-all duration-300 overflow-hidden";
+  return "welcome-card welcome-suggestion-pill group relative flex items-center gap-2 sm:gap-3 md:gap-3 xl:gap-3.5 2xl:gap-3.5 rounded-lg border px-3 py-2 sm:px-4 sm:py-3 text-left cursor-pointer transition-colors duration-200 overflow-hidden";
 }
 
 export function getWelcomeSuggestionsContainerClass(

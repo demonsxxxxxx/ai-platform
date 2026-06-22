@@ -35,6 +35,11 @@ const QuarantinedLegacyPanel = lazy(() =>
     default: m.QuarantinedLegacyPanel,
   })),
 );
+const ChannelImportPanel = lazy(() =>
+  import("../../channels/ChannelImportPanel").then((m) => ({
+    default: m.ChannelImportPanel,
+  })),
+);
 const RevealedFilesPage = lazy(() =>
   import("../../fileLibrary/RevealedFilesPanel").then((m) => ({
     default: m.RevealedFilesPanel,
@@ -73,7 +78,7 @@ const panelMap: Record<
   settings: SettingsPanel,
   mcp: MCPPanel,
   feedback: FeedbackPanel,
-  channels: QuarantinedLegacyPanel,
+  channels: ChannelImportPanel,
   agents: AgentConfigPanel,
   models: QuarantinedLegacyPanel,
   files: RevealedFilesPage,
@@ -100,8 +105,11 @@ export function TabContent({ activeTab }: { activeTab: TabType }) {
   if (!Panel) return null;
 
   return (
-    <main className="flex-1 overflow-hidden">
-      <div className="mx-auto max-w-4xl sm:max-w-5xl lg:max-w-6xl w-full h-full flex flex-col">
+    <main
+      className="flex-1 overflow-hidden"
+      data-authenticated-workbench-page={activeTab}
+    >
+      <div className="flex h-full w-full flex-col">
         <Suspense fallback={<PanelLoader />}>
           <Panel />
         </Suspense>

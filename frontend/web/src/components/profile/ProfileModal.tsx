@@ -14,7 +14,7 @@ import {
 import { useVersion } from "../../hooks/useVersion";
 import { useAuth } from "../../hooks/useAuth";
 
-import { APP_NAME } from "../../constants";
+import { APP_NAME, GITHUB_URL } from "../../constants";
 import { ProfileInfoTab } from "./tabs/ProfileInfoTab";
 import { ProfileNotificationTab } from "./tabs/ProfileNotificationTab";
 import { ProfilePreferencesTab } from "./tabs/ProfilePreferencesTab";
@@ -141,7 +141,7 @@ export function ProfileModal({
       }`}
     >
       <a
-        href="https://github.com/clivia/LambChat"
+        href={GITHUB_URL}
         target="_blank"
         rel="noopener noreferrer"
         onClick={(e) => e.stopPropagation()}
@@ -155,7 +155,7 @@ export function ProfileModal({
         )}
       </a>
       <a
-        href="https://github.com/clivia/LambChat"
+        href={GITHUB_URL}
         target="_blank"
         rel="noopener noreferrer"
         onClick={(e) => e.stopPropagation()}

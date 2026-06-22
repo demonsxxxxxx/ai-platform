@@ -17,8 +17,10 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import type { SessionConfig } from "./useAgent/types";
 import type { PersonaPresetSnapshot } from "../types";
 import { normalizeAgentOptionValues } from "../components/layout/AppContent/useAgentOptions";
-
-const STORAGE_KEY = "lambchat_session_config";
+import {
+  readSessionConfigStorage,
+  writeSessionConfigStorage,
+} from "../utils/sessionConfigStorage";
 
 export interface SessionConfigState {
   // 当前对话禁用的 skills（名称列表）
@@ -44,7 +46,7 @@ function loadPersistedConfig(): Pick<
   "disabledSkills" | "disabledMcpTools" | "personaPresetId" | "personaSnapshot"
 > | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = readSessionConfigStorage();
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (
@@ -75,7 +77,7 @@ function persistConfig(
   >,
 ) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    writeSessionConfigStorage(JSON.stringify(state));
   } catch {
     /* quota exceeded etc. */
   }

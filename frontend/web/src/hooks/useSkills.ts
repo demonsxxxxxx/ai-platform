@@ -130,6 +130,7 @@ export function useSkills(options?: {
   // Fetch single skill — metadata + file paths only (lazy: content loaded on demand)
   const getSkill = useCallback(
     async (name: string): Promise<SkillResponse | null> => {
+      if (!enabled) return null;
       try {
         // Use cached skills list first, then fetch detail
         const cached = skills.find((s) => s.name === name);
@@ -176,12 +177,13 @@ export function useSkills(options?: {
         return null;
       }
     },
-    [skills],
+    [enabled, skills],
   );
 
   // Fetch single skill with ALL file contents (for export etc.)
   const getFullSkill = useCallback(
     async (name: string): Promise<SkillResponse | null> => {
+      if (!enabled) return null;
       try {
         // Use cached skills list first
         const cached = skills.find((s) => s.name === name);
@@ -256,12 +258,13 @@ export function useSkills(options?: {
         return null;
       }
     },
-    [skills],
+    [enabled, skills],
   );
 
   // Create skill
   const createSkill = useCallback(
     async (data: SkillCreate): Promise<boolean> => {
+      if (!enabled) return false;
       setIsCreating(true);
       setError(null);
       try {
@@ -275,7 +278,7 @@ export function useSkills(options?: {
         setIsCreating(false);
       }
     },
-    [fetchSkills],
+    [enabled, fetchSkills],
   );
 
   // Update skill
@@ -290,6 +293,7 @@ export function useSkills(options?: {
         deletedFiles?: string[];
       },
     ): Promise<boolean> => {
+      if (!enabled) return false;
       setIsUpdating(true);
       setError(null);
       try {
@@ -303,12 +307,13 @@ export function useSkills(options?: {
         setIsUpdating(false);
       }
     },
-    [fetchSkills],
+    [enabled, fetchSkills],
   );
 
   // Delete skill
   const deleteSkill = useCallback(
     async (name: string): Promise<boolean> => {
+      if (!enabled) return false;
       setIsDeleting(true);
       setError(null);
       try {
@@ -322,12 +327,13 @@ export function useSkills(options?: {
         setIsDeleting(false);
       }
     },
-    [fetchSkills],
+    [enabled, fetchSkills],
   );
 
   // Toggle skill
   const toggleSkill = useCallback(
     async (name: string): Promise<boolean> => {
+      if (!enabled) return false;
       // 记录期望的 toggle 状态
       const currentSkill = skills.find((s) => s.name === name);
       if (!currentSkill) {
@@ -364,12 +370,13 @@ export function useSkills(options?: {
         pendingTogglesRef.current.delete(name);
       }
     },
-    [skills],
+    [enabled, skills],
   );
 
   // Batch delete skills
   const batchDeleteSkills = useCallback(
     async (names: string[]): Promise<boolean> => {
+      if (!enabled) return false;
       setError(null);
       try {
         const result = await skillApi.batchDelete(names);
@@ -390,20 +397,23 @@ export function useSkills(options?: {
         return false;
       }
     },
-    [fetchSkills],
+    [enabled, fetchSkills],
   );
 
   // Batch toggle skills
   const batchToggleSkills = useCallback(
-    async (names: string[], enabled: boolean): Promise<boolean> => {
+    async (names: string[], nextEnabled: boolean): Promise<boolean> => {
+      if (!enabled) return false;
       // Optimistic update
-      names.forEach((name) => pendingTogglesRef.current.set(name, enabled));
+      names.forEach((name) => pendingTogglesRef.current.set(name, nextEnabled));
       setSkills((prev) =>
-        prev.map((s) => (names.includes(s.name) ? { ...s, enabled } : s)),
+        prev.map((s) =>
+          names.includes(s.name) ? { ...s, enabled: nextEnabled } : s,
+        ),
       );
 
       try {
-        const result = await skillApi.batchToggle(names, enabled);
+        const result = await skillApi.batchToggle(names, nextEnabled);
         // Clear pending for successful ones
         result.updated.forEach((name) =>
           pendingTogglesRef.current.delete(name),
@@ -416,7 +426,7 @@ export function useSkills(options?: {
         names.forEach((name) => pendingTogglesRef.current.delete(name));
         setSkills((prev) =>
           prev.map((s) =>
-            names.includes(s.name) ? { ...s, enabled: !enabled } : s,
+            names.includes(s.name) ? { ...s, enabled: !nextEnabled } : s,
           ),
         );
         setError(
@@ -425,35 +435,37 @@ export function useSkills(options?: {
         return false;
       }
     },
-    [fetchSkills],
+    [enabled, fetchSkills],
   );
 
   // Toggle category (not applicable in new architecture - just toggle all)
   const toggleCategory = useCallback(
-    async (_category: SkillSource, enabled: boolean): Promise<boolean> => {
+    async (_category: SkillSource, nextEnabled: boolean): Promise<boolean> => {
+      if (!enabled) return false;
       const names = skills
-        .filter((s) => s.source === _category && s.enabled !== enabled)
+        .filter((s) => s.source === _category && s.enabled !== nextEnabled)
         .map((s) => s.name);
       if (names.length === 0) {
         return true;
       }
-      return await batchToggleSkills(names, enabled);
+      return await batchToggleSkills(names, nextEnabled);
     },
-    [batchToggleSkills, skills],
+    [batchToggleSkills, enabled, skills],
   );
 
   // Toggle all skills
   const toggleAll = useCallback(
-    async (enabled: boolean): Promise<boolean> => {
+    async (nextEnabled: boolean): Promise<boolean> => {
+      if (!enabled) return false;
       const names = skills
-        .filter((s) => s.enabled !== enabled)
+        .filter((s) => s.enabled !== nextEnabled)
         .map((s) => s.name);
       if (names.length === 0) {
         return true;
       }
-      return await batchToggleSkills(names, enabled);
+      return await batchToggleSkills(names, nextEnabled);
     },
-    [batchToggleSkills, skills],
+    [batchToggleSkills, enabled, skills],
   );
 
   // Get enabled skill names
@@ -490,6 +502,7 @@ export function useSkills(options?: {
       created: Array<{ name: string; file_count: number }>;
       errors: Array<{ name: string; reason: string }>;
     } | null> => {
+      if (!enabled) return null;
       setIsUploading(true);
       setError(null);
       try {
@@ -503,7 +516,7 @@ export function useSkills(options?: {
         setIsUploading(false);
       }
     },
-    [fetchSkills],
+    [enabled, fetchSkills],
   );
 
   // Preview skills from ZIP file
@@ -520,6 +533,7 @@ export function useSkills(options?: {
         already_exists: boolean;
       }>;
     } | null> => {
+      if (!enabled) return null;
       setIsLoading(true);
       setError(null);
       try {
@@ -531,7 +545,7 @@ export function useSkills(options?: {
         setIsLoading(false);
       }
     },
-    [],
+    [enabled],
   );
 
   // Preview skills from GitHub repository
@@ -544,6 +558,7 @@ export function useSkills(options?: {
       branch: string;
       skills: Array<{ name: string; path: string; description: string }>;
     } | null> => {
+      if (!enabled) return null;
       setIsLoading(true);
       setError(null);
       try {
@@ -559,7 +574,7 @@ export function useSkills(options?: {
         setIsLoading(false);
       }
     },
-    [],
+    [enabled],
   );
 
   // Install skills from GitHub repository
@@ -573,6 +588,7 @@ export function useSkills(options?: {
       installed: string[];
       errors: string[];
     } | null> => {
+      if (!enabled) return null;
       setIsLoading(true);
       setError(null);
       try {
@@ -594,7 +610,7 @@ export function useSkills(options?: {
         setIsLoading(false);
       }
     },
-    [fetchSkills],
+    [enabled, fetchSkills],
   );
 
   // Stats
@@ -609,6 +625,7 @@ export function useSkills(options?: {
       name: string,
       data?: PublishToMarketplaceRequest,
     ): Promise<boolean> => {
+      if (!enabled) return false;
       setIsPublishing(true);
       setError(null);
       try {
@@ -624,7 +641,7 @@ export function useSkills(options?: {
         setIsPublishing(false);
       }
     },
-    [fetchSkills],
+    [enabled, fetchSkills],
   );
 
   // Initial load

@@ -15,7 +15,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { SkillBaseCard } from "../../common/SkillBaseCard";
-import { getCategoryIcon, nameToGradient } from "../../common/cardUtils";
+import { getCategoryIcon } from "../../common/cardUtils";
 import type { MarketplaceSkillResponse } from "../../../types";
 import { formatDate } from "../../../utils/datetime";
 
@@ -62,7 +62,6 @@ export function SkillCard({
 }: SkillCardProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const gradient = nameToGradient(skill.skill_name);
   const primaryTag = skill.tags[0];
   const CategoryIcon = primaryTag ? getCategoryIcon(primaryTag) : Sparkles;
 
@@ -70,7 +69,6 @@ export function SkillCard({
     <SkillBaseCard
       title={skill.skill_name}
       description={skill.description || t("marketplace.noDescription")}
-      gradient={gradient}
       icon={<CategoryIcon size={20} className="text-[var(--theme-primary)]" />}
       animated
       animationDelay={index * 60}

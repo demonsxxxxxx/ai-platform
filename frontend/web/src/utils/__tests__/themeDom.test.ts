@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  LEGACY_THEME_STORAGE_KEY,
+  THEME_STORAGE_KEY,
   applyThemeToDocument,
   getInitialThemePreference,
 } from "../themeDom.ts";
@@ -9,12 +11,24 @@ import {
 test("getInitialThemePreference prefers persisted theme over system preference", () => {
   const env = {
     localStorage: {
-      getItem: (key: string) => (key === "lamb-agent-theme" ? "light" : null),
+      getItem: (key: string) => (key === THEME_STORAGE_KEY ? "light" : null),
     },
     matchMedia: () => ({ matches: true }),
   };
 
   assert.equal(getInitialThemePreference(env), "light");
+});
+
+test("getInitialThemePreference can migrate legacy theme preference", () => {
+  const env = {
+    localStorage: {
+      getItem: (key: string) =>
+        key === LEGACY_THEME_STORAGE_KEY ? "dark" : null,
+    },
+    matchMedia: () => ({ matches: false }),
+  };
+
+  assert.equal(getInitialThemePreference(env), "dark");
 });
 
 test("getInitialThemePreference falls back to dark system preference", () => {

@@ -1,7 +1,8 @@
 export type SelectionAction = "ask" | "explain";
 
-export const SELECTION_ACTION_EVENT = "lambchat:selection-action";
-const PENDING_SELECTION_PROMPT_KEY = "lambchat:pending-selection-action-prompt";
+export const SELECTION_ACTION_EVENT = "ai-platform:selection-action";
+const PENDING_SELECTION_PROMPT_KEY =
+  "ai-platform:pending-selection-action-prompt";
 
 export interface SelectionActionEventDetail {
   prompt: string;

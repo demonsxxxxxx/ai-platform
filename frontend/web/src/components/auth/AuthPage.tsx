@@ -16,7 +16,7 @@ import { ContactAdminDialog } from "../common/ContactAdminDialog";
 import { ThemeToggle } from "../common/ThemeToggle";
 import { LanguageToggle } from "../common/LanguageToggle";
 import { authApi } from "../../services/api";
-import { APP_NAME, GITHUB_URL } from "../../constants";
+import { APP_HOME_URL, APP_NAME, GITHUB_URL } from "../../constants";
 import {
   AUTH_REDIRECT_ANIMATION_MS,
   AUTH_REDIRECT_FAILSAFE_MS,
@@ -329,7 +329,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
       {/* Navbar */}
       <nav className="fixed top-0 inset-x-0 z-50 bg-white/90 dark:bg-stone-950/90 border-b border-stone-100/60 dark:border-stone-800/40 transition-shadow duration-300">
         <div className="mx-auto flex h-14 max-w-full items-center justify-between px-4 sm:px-8">
-          <Link to="/" className="flex items-center gap-2.5 group">
+          <a href={APP_HOME_URL} className="flex items-center gap-2.5 group">
             <img
               src="/icons/icon.svg"
               alt={APP_NAME}
@@ -338,7 +338,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
             <span className="text-[15px] sm:text-lg font-bold tracking-tight text-stone-900 dark:text-stone-100 font-serif">
               {APP_NAME}
             </span>
-          </Link>
+          </a>
           <div className="flex items-center gap-1.5">
             <LanguageToggle />
             <ThemeToggle />

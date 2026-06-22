@@ -243,3 +243,12 @@ Push current branch.
 - [ ] **Step 6: Merge PR only when allowed**
 
 Check PR mergeability, checks, and review state. Merge only if branch is mergeable and checks/review requirements are satisfied. If blocked, leave PR updated with evidence and report the blocker precisely.
+
+## Supersession Note
+
+Phase 1 source and deployment evidence proved the static frontend could be built,
+merged, and served through the 211 entry. Product-experience acceptance now moves
+to `docs/superpowers/plans/2026-06-20-ai-platform-frontend-shell-parity.md`,
+which covers brand removal, workbench shell parity, composer chips, governed
+Skills/MCP surfaces, share/channel fail-closed states, browser screenshots, and
+211 smoke.

@@ -22,6 +22,7 @@ import {
   clearRedirectPath,
 } from "../services/api";
 import { DEFAULT_THINKING_LEVEL_STORAGE_KEY } from "../components/layout/AppContent/useAgentOptions";
+import { THEME_STORAGE_KEY } from "../utils/themeDom";
 import { Permission } from "../types";
 import type { User, UserCreate, LoginRequest, AuthState } from "../types";
 import i18n from "../i18n";
@@ -43,7 +44,7 @@ function applyUserMetadata(metadata?: {
   }
 
   if (metadata.theme) {
-    localStorage.setItem("lamb-agent-theme", metadata.theme);
+    localStorage.setItem(THEME_STORAGE_KEY, metadata.theme);
     // Notify ThemeContext to update React state + DOM in sync
     window.dispatchEvent(
       new CustomEvent("theme:external-change", { detail: metadata.theme }),

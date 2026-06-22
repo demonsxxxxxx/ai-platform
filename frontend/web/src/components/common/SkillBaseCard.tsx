@@ -5,7 +5,6 @@ export interface SkillBaseCardProps {
   title: string;
   description?: string;
   descriptionMaxLines?: 2 | 3;
-  gradient?: string[];
   bannerOverlay?: ReactNode;
   icon?: ReactNode;
   statusPills?: ReactNode;
@@ -27,7 +26,6 @@ export function SkillBaseCard({
   title,
   description,
   descriptionMaxLines = 2,
-  gradient,
   bannerOverlay,
   icon,
   statusPills,
@@ -48,7 +46,7 @@ export function SkillBaseCard({
 
   return (
     <div
-      className={`scb group flex h-full flex-col overflow-hidden rounded-2xl bg-[var(--theme-bg-card)] shadow-sm dark:shadow-none dark:border dark:border-[var(--theme-border)] ${
+      className={`scb group flex h-full flex-col overflow-hidden rounded-lg bg-[var(--theme-bg-card)] shadow-sm dark:shadow-none dark:border dark:border-[var(--theme-border)] ${
         muted ? "scb--muted" : ""
       } ${
         selected
@@ -71,38 +69,7 @@ export function SkillBaseCard({
           : onClick
       }
     >
-      {gradient && (
-        <div
-          className="scb__banner relative h-12 shrink-0"
-          style={{
-            background: `linear-gradient(45deg, ${gradient[0]}, ${gradient[1]}, ${gradient[2]})`,
-          }}
-        >
-          <div className="absolute inset-0 flex items-center justify-between px-2 z-[3]">
-            {selectionMode && onSelect && (
-              <div
-                className={`transition-all duration-200 ${
-                  selected
-                    ? "scale-110"
-                    : "sm:scale-90 sm:group-hover:scale-100"
-                }`}
-              >
-                <Checkbox
-                  size="lg"
-                  checked={selected}
-                  onChange={() => onSelect()}
-                  className="shadow-sm sm:opacity-0 sm:group-hover:opacity-100"
-                />
-              </div>
-            )}
-            {bannerOverlay && (
-              <div className="flex gap-1.5 ml-auto">{bannerOverlay}</div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {!gradient && selectionMode && onSelect && (
+      {selectionMode && onSelect && (
         <div
           className={`absolute top-3 right-3 z-10 transition-all duration-200 ${
             selected ? "scale-110" : "sm:scale-90 sm:group-hover:scale-100"
@@ -117,11 +84,7 @@ export function SkillBaseCard({
         </div>
       )}
 
-      <div
-        className={`flex flex-1 flex-col p-4 ${
-          gradient ? "-mt-3 pt-5" : "sm:p-5"
-        }`}
-      >
+      <div className="flex flex-1 flex-col p-4 sm:p-5">
         <div className="flex items-start gap-3">
           {icon && <div className="scb__icon-ring shrink-0">{icon}</div>}
           <div className="min-w-0 flex-1">
@@ -133,6 +96,9 @@ export function SkillBaseCard({
             </h3>
             {statusPills}
           </div>
+          {bannerOverlay && (
+            <div className="ml-auto flex shrink-0 gap-1.5">{bannerOverlay}</div>
+          )}
         </div>
 
         {description && (

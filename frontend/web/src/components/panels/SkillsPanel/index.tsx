@@ -1,5 +1,4 @@
 import { useTranslation } from "react-i18next";
-import { PackageX } from "lucide-react";
 import { useAuth } from "../../../hooks/useAuth";
 import { useSettingsContext } from "../../../contexts/SettingsContext";
 import { Permission } from "../../../types";
@@ -14,9 +13,13 @@ import { PublishDialog } from "./PublishDialog";
 
 interface SkillsPanelProps {
   embedded?: boolean;
+  governedUnavailable?: boolean;
 }
 
-export function SkillsPanel({ embedded = false }: SkillsPanelProps) {
+export function SkillsPanel({
+  embedded = false,
+  governedUnavailable = false,
+}: SkillsPanelProps) {
   const { t } = useTranslation();
   const { enableSkills } = useSettingsContext();
   const { hasAnyPermission } = useAuth();
@@ -24,28 +27,10 @@ export function SkillsPanel({ embedded = false }: SkillsPanelProps) {
   const canRead = hasAnyPermission([Permission.SKILL_READ]);
   const canWrite = hasAnyPermission([Permission.SKILL_WRITE]);
   const canPublish = hasAnyPermission([Permission.MARKETPLACE_PUBLISH]);
+  const isGovernedUnavailable =
+    governedUnavailable || !enableSkills || !canRead;
 
-  const actions = useSkillsActions();
-
-  if (!canRead) {
-    return (
-      <div className="flex h-full items-center justify-center text-stone-500 dark:text-stone-400">
-        {t("skills.noPermission")}
-      </div>
-    );
-  }
-
-  if (!enableSkills) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center text-stone-500 dark:text-stone-400">
-        <PackageX
-          size={48}
-          className="mb-3 text-stone-300 dark:text-stone-600"
-        />
-        <p className="text-center">{t("skills.featureDisabled")}</p>
-      </div>
-    );
-  }
+  const actions = useSkillsActions({ enabled: !isGovernedUnavailable });
 
   return (
     <div className="skill-theme-shell flex h-full min-h-0 flex-col">
@@ -68,15 +53,16 @@ export function SkillsPanel({ embedded = false }: SkillsPanelProps) {
         isLoading={actions.isLoading}
         error={actions.error}
         clearError={actions.clearError}
-        canWrite={canWrite}
-        canPublish={canPublish}
+        canWrite={canWrite && !isGovernedUnavailable}
+        canPublish={canPublish && !isGovernedUnavailable}
+        governedUnavailable={isGovernedUnavailable}
         selectedNames={actions.selectedNames}
         onToggle={actions.handleToggle}
         onEdit={actions.handleEdit}
         onDelete={actions.handleDelete}
         onExportZip={actions.handleExportZip}
         onPublish={
-          canPublish
+          canPublish && !isGovernedUnavailable
             ? (s) => {
                 actions.setPublishConfirm({
                   isOpen: true,

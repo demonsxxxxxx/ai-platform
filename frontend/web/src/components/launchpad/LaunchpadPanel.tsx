@@ -27,6 +27,7 @@ import {
   type LaunchpadGroup,
   type LaunchpadTabKey,
 } from "./catalog";
+import { workbenchSurface } from "../workbench/workbenchSurface";
 
 const groupIcons: Record<string, ComponentType<{ size?: number }>> = {
   "lingxi-RD": FlaskConical,
@@ -79,7 +80,7 @@ export function LaunchpadPanel() {
   };
 
   return (
-    <section className="flex h-full min-h-0 flex-col px-4 pb-4 sm:px-6">
+    <section className="flex h-full min-h-0 flex-col bg-stone-50 px-4 pb-4 dark:bg-stone-950 sm:px-6">
       <div className="shrink-0 border-b border-stone-200/70 pb-4 pt-2 dark:border-stone-800/70">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -89,10 +90,16 @@ export function LaunchpadPanel() {
             <p className="mt-1 text-sm text-stone-500 dark:text-stone-400">
               {t("launchpad.subtitle")}
             </p>
+            <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-500 dark:text-stone-400">
+              {t(
+                "launchpad.boundary",
+                "These entries open existing company systems in a new tab. AI Platform does not replace their login, permissions, workflow, or audit rules.",
+              )}
+            </p>
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <div className="inline-flex rounded-lg border border-stone-200 bg-white p-1 shadow-sm dark:border-stone-800 dark:bg-stone-900">
+            <div className={`inline-flex p-1 ${workbenchSurface.compactPanel}`}>
               {launchpadTabs.map((tab) => (
                 <button
                   key={tab.key}
@@ -151,7 +158,7 @@ export function LaunchpadPanel() {
           </div>
         </aside>
 
-        <div className="min-w-0 flex-1 overflow-y-auto pr-1">
+            <div className="min-w-0 flex-1 overflow-y-auto pr-1">
           <nav
             aria-label={t("launchpad.groupNavigation")}
             className="mb-3 flex gap-2 overflow-x-auto pb-1 lg:hidden"
@@ -192,7 +199,7 @@ export function LaunchpadPanel() {
           </div>
 
           {visibleGroups.length === 0 ? (
-            <div className="flex h-52 items-center justify-center rounded-lg border border-dashed border-stone-200 bg-white text-sm text-stone-500 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400">
+            <div className={`flex h-52 items-center justify-center border-dashed text-sm ${workbenchSurface.compactPanel} ${workbenchSurface.mutedText}`}>
               {t("launchpad.noResults")}
             </div>
           ) : (
@@ -222,7 +229,7 @@ export function LaunchpadPanel() {
                               ? undefined
                               : t("launchpad.openEntry", { name: entry.name })
                           }
-                          className={`group flex min-h-28 flex-col justify-between rounded-lg border bg-white p-4 shadow-[0_4px_12px_rgba(18,38,63,0.03)] transition-[border-color,box-shadow,transform] dark:bg-stone-900 ${
+                          className={`group flex min-h-28 flex-col justify-between p-4 transition-[border-color,box-shadow,transform] ${workbenchSurface.compactPanel} ${
                             disabled
                               ? "border-stone-200 opacity-70 dark:border-stone-800"
                               : "cursor-pointer border-stone-200 hover:-translate-y-0.5 hover:border-stone-300 hover:shadow-[0_8px_18px_rgba(18,38,63,0.08)] dark:border-stone-800 dark:hover:border-stone-700"

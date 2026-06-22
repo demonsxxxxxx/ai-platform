@@ -1,6 +1,14 @@
-import { useState, useRef, useEffect, useCallback, useMemo, memo } from "react";
+import {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  useMemo,
+  useReducer,
+  memo,
+} from "react";
 import toast from "react-hot-toast";
-import { Ban, Paperclip } from "lucide-react";
+import { Ban } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ImageViewer } from "../common";
 import { ConfirmDialog } from "../common/ConfirmDialog";
@@ -17,7 +25,21 @@ import { ChatInputToolbar } from "./ChatInputToolbar";
 import { ChatInputSelectors } from "./ChatInputSelectors";
 import { ChatInputHelpMenu } from "./ChatInputHelpMenu";
 import { ChatInputAttachments } from "./ChatInputAttachments";
-import { resolveCommandPrefixPanel } from "./chatInputCommands";
+import { ComposerCommandHintBar } from "./ComposerCommandHintBar";
+import {
+  parseComposerCommand,
+  resolveComposerCommandDraft,
+  resolveSlashCommandMenu,
+  type ComposerCommandPanel,
+  type SlashCommandMenuItem,
+} from "./chatInputCommands";
+import { ComposerChips } from "./ComposerChips";
+import { SlashCommandMenu } from "./SlashCommandMenu";
+import {
+  composerSelectionReducer,
+  type ComposerSelection,
+  type ComposerSelectionKind,
+} from "./composerSelections";
 import { getMentionPopupFixedPlacement } from "./chatInputViewport";
 import { FILE_CATEGORY_PERMISSIONS } from "./chatInputConstants";
 import {
@@ -30,6 +52,8 @@ import type { FeaturePanel } from "../selectors/FeatureMenu";
 import type { MessageAttachment, PersonaPreset } from "../../types";
 
 export type { ChatInputProps } from "./chatInputTypes";
+
+type ComposerShortcutCommand = "$" | "/skill" | "/mcp" | "/file" | "/context";
 
 export const ChatInput = memo(function ChatInput({
   onSend,
@@ -75,6 +99,9 @@ export const ChatInput = memo(function ChatInput({
   agents = [],
   currentAgent,
   onSelectAgent,
+  availableModels = [],
+  currentModelId,
+  onSelectModel,
   attachments: externalAttachments,
   onAttachmentsChange: externalOnAttachmentsChange,
   onMentionQueryChange,
@@ -101,6 +128,12 @@ export const ChatInput = memo(function ChatInput({
   }, [pendingInput, onPendingInputConsumed]);
 
   const [activePanel, setActivePanel] = useState<FeaturePanel>(null);
+  const [commandSearchSeed, setCommandSearchSeed] = useState<{
+    panel: FeaturePanel;
+    query: string;
+  } | null>(null);
+  const [slashMenuOpen, setSlashMenuOpen] = useState(false);
+  const [slashMenuHighlight, setSlashMenuHighlight] = useState(0);
   const [internalAttachments, setInternalAttachments] = useState<
     MessageAttachment[]
   >([]);
@@ -108,9 +141,14 @@ export const ChatInput = memo(function ChatInput({
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
   const [contactAdminOpen, setContactAdminOpen] = useState(false);
+  const [composerSelections, dispatchComposerSelection] = useReducer(
+    composerSelectionReducer,
+    [],
+  );
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const openFileCommandRef = useRef<(() => void) | null>(null);
   const [cursorPosition, setCursorPosition] = useState(0);
   const [mentionPopupPlacement, setMentionPopupPlacement] =
     useState<ReturnType<typeof getMentionPopupFixedPlacement>>(null);
@@ -296,6 +334,7 @@ export const ChatInput = memo(function ChatInput({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSend) return;
+    if (handleComposerCommandSubmit(input)) return;
     if (input.trim() && !isLoading && !disabled) {
       const trimmed = input.trim();
       onSend(trimmed, agentOptionValues, attachments);
@@ -311,6 +350,39 @@ export const ChatInput = memo(function ChatInput({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (slashMenuOpen) {
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashMenuHighlight((index) =>
+          slashCommandItems.length
+            ? (index - 1 + slashCommandItems.length) % slashCommandItems.length
+            : 0,
+        );
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashMenuHighlight((index) =>
+          slashCommandItems.length
+            ? (index + 1) % slashCommandItems.length
+            : 0,
+        );
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        const item =
+          slashCommandItems[slashMenuHighlight] ?? slashCommandItems[0];
+        if (item) handleSlashCommandSelect(item);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeSlashMenu();
+        return;
+      }
+    }
+
     if (mention.isActive) {
       if (e.key === "ArrowUp") {
         e.preventDefault();
@@ -399,21 +471,542 @@ export const ChatInput = memo(function ChatInput({
         !!onToggleCategory &&
         !!onToggleAll &&
         totalToolsCount > 0,
+      agents: agents.length > 0 && !!onSelectAgent,
+      models: !!availableModels?.length && !!onSelectModel,
+      files: uploadCategories.length > 0,
+      context: true,
     }),
     [
+      agents.length,
+      availableModels?.length,
       enableSkills,
       onToggleAll,
       onToggleAllSkills,
       onToggleCategory,
+      onSelectAgent,
+      onSelectModel,
       onToggleSkill,
       onToggleSkillCategory,
       onToggleTool,
       totalSkillsCount,
       totalToolsCount,
+      uploadCategories.length,
     ],
+  );
+  const shortcutAvailabilityByCommand = useMemo<
+    Record<ComposerShortcutCommand, boolean>
+  >(
+    () => ({
+      $: commandPanelAvailability.skills,
+      "/skill": commandPanelAvailability.skills,
+      "/mcp": commandPanelAvailability.tools,
+      "/file": commandPanelAvailability.files,
+      "/context": commandPanelAvailability.context,
+    }),
+    [commandPanelAvailability],
   );
   const canSubmit =
     hasContent && canSend && !isLoading && !hasUploadingAttachment;
+
+  const upsertUnavailableCommandChip = useCallback(
+    (command: ReturnType<typeof parseComposerCommand>) => {
+      if (!command) return;
+      if (command.panel === "command-menu") return;
+      const selectionKindByPanel: Record<
+        Exclude<ComposerCommandPanel, "command-menu">,
+        ComposerSelectionKind
+      > = {
+        skills: "skill",
+        tools: "mcp",
+        agent: "agent",
+        thinking: "context",
+        persona: "context",
+        model: "model",
+        file: "file",
+        context: "context",
+      };
+      const kind = selectionKindByPanel[command.panel];
+      const label = command.query
+        ? `${command.command}: ${command.query}`
+        : `/${command.command}`;
+      dispatchComposerSelection({
+        type: "upsert",
+        selection: {
+          id: `unavailable:${command.command}`,
+          kind,
+          label,
+          state: "unavailable",
+        description: t(
+          "composerChip.unavailableDescription",
+          "This command is visible in the composer, but your current workspace cannot use it yet.",
+        ),
+      },
+    });
+    },
+    [t],
+  );
+
+  const closeSlashMenu = useCallback(() => {
+    setSlashMenuOpen(false);
+    setSlashMenuHighlight(0);
+  }, []);
+
+  const executeAvailableFileCommand = useCallback(() => {
+    openFileCommandRef.current?.();
+    setActivePanel(null);
+    setCommandSearchSeed(null);
+    closeSlashMenu();
+    setInput("");
+    setCursorPosition(0);
+    requestAnimationFrame(scheduleTextareaResize);
+  }, [closeSlashMenu, scheduleTextareaResize]);
+
+  const upsertContextUnavailableChip = useCallback(() => {
+    dispatchComposerSelection({
+      type: "upsert",
+      selection: {
+        id: "unavailable:context-selector",
+        kind: "context",
+        label: t("composerCommand.contextSelector.chip", "/context"),
+        state: "unavailable",
+        source: "context-selector",
+        description: t(
+          "composerCommand.contextSelector.description",
+          "Context selection is visible in the composer, but your workspace cannot use saved context yet.",
+        ),
+      },
+    });
+  }, [t]);
+
+  const markContextUnavailableCommand = useCallback(() => {
+    upsertContextUnavailableChip();
+    setInput("");
+    setCursorPosition(0);
+    setActivePanel(null);
+    setCommandSearchSeed(null);
+    closeSlashMenu();
+    requestAnimationFrame(scheduleTextareaResize);
+  }, [
+    closeSlashMenu,
+    scheduleTextareaResize,
+    upsertContextUnavailableChip,
+  ]);
+
+  const openCommandPanel = useCallback(
+    (nextValue: string): boolean => {
+      const draft = resolveComposerCommandDraft(
+        nextValue,
+        commandPanelAvailability,
+      );
+      if (!draft) return false;
+      if (draft.command.unavailable) {
+        upsertUnavailableCommandChip(draft.command);
+        setActivePanel(null);
+        setCommandSearchSeed(null);
+        closeSlashMenu();
+        setInput("");
+        setCursorPosition(0);
+        requestAnimationFrame(scheduleTextareaResize);
+        return true;
+      }
+      if (draft.panel === "command-menu") {
+        setSlashMenuOpen(true);
+        setSlashMenuHighlight(0);
+        setActivePanel(null);
+        setCommandSearchSeed(null);
+        return true;
+      }
+      if (draft.panel) {
+        setActivePanel(draft.panel);
+        setCommandSearchSeed({
+          panel: draft.panel,
+          query: draft.selectorQuery,
+        });
+        setSlashMenuOpen(false);
+      }
+      return true;
+    },
+    [
+      closeSlashMenu,
+      commandPanelAvailability,
+      scheduleTextareaResize,
+      upsertUnavailableCommandChip,
+    ],
+  );
+
+  const slashCommandItems = useMemo(
+    () =>
+      slashMenuOpen
+        ? resolveSlashCommandMenu(input, commandPanelAvailability)
+        : [],
+    [commandPanelAvailability, input, slashMenuOpen],
+  );
+
+  useEffect(() => {
+    if (slashMenuHighlight >= slashCommandItems.length) {
+      setSlashMenuHighlight(Math.max(0, slashCommandItems.length - 1));
+    }
+  }, [slashCommandItems.length, slashMenuHighlight]);
+
+  const handleSlashCommandSelect = useCallback(
+    (item: SlashCommandMenuItem) => {
+      const nextInput = `/${item.command}${input.trimStart().slice(1).trim() ? " " : ""}`;
+      closeSlashMenu();
+      if (item.command === "file" && !item.unavailable) {
+        executeAvailableFileCommand();
+        return;
+      }
+      if (item.unavailable) {
+        upsertUnavailableCommandChip({
+          trigger: "/",
+          command: item.command,
+          panel: item.panel,
+          query: "",
+          unavailable: true,
+        });
+        setActivePanel(null);
+        setCommandSearchSeed(null);
+        setInput("");
+        setCursorPosition(0);
+        requestAnimationFrame(scheduleTextareaResize);
+        return;
+      }
+      if (item.panel === "context") {
+        markContextUnavailableCommand();
+        return;
+      }
+      setInput(nextInput);
+      setCursorPosition(nextInput.length);
+      setActivePanel(item.panel);
+      setCommandSearchSeed({
+        panel: item.panel,
+        query: "",
+      });
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.focus();
+        textarea.selectionStart = textarea.selectionEnd = nextInput.length;
+        scheduleTextareaResize();
+      });
+    },
+    [
+      closeSlashMenu,
+      executeAvailableFileCommand,
+      input,
+      markContextUnavailableCommand,
+      scheduleTextareaResize,
+      upsertUnavailableCommandChip,
+    ],
+  );
+
+  const handleComposerCommandSubmit = useCallback(
+    (value: string): boolean => {
+      const draft = resolveComposerCommandDraft(value, commandPanelAvailability);
+      if (!draft) return false;
+      if (draft.panel === "command-menu") {
+        const item = slashCommandItems[slashMenuHighlight] ?? slashCommandItems[0];
+        if (item) {
+          handleSlashCommandSelect(item);
+        }
+        return true;
+      }
+      if (!draft.shouldExecute) {
+        if (draft.panel) {
+          setActivePanel(draft.panel);
+          setCommandSearchSeed({
+            panel: draft.panel,
+            query: draft.selectorQuery,
+          });
+          if (draft.panel === "context") {
+            markContextUnavailableCommand();
+            return true;
+          }
+        }
+        return true;
+      }
+      if (
+        draft.command.command === "file" &&
+        !draft.command.unavailable &&
+        !draft.command.query
+      ) {
+        executeAvailableFileCommand();
+        return true;
+      }
+      upsertUnavailableCommandChip(
+        draft.command.unavailable
+          ? draft.command
+          : { ...draft.command, unavailable: true },
+      );
+      setActivePanel(null);
+      setCommandSearchSeed(null);
+      closeSlashMenu();
+      setInput("");
+      setCursorPosition(0);
+      requestAnimationFrame(scheduleTextareaResize);
+      return true;
+    },
+    [
+      commandPanelAvailability,
+      closeSlashMenu,
+      executeAvailableFileCommand,
+      handleSlashCommandSelect,
+      markContextUnavailableCommand,
+      scheduleTextareaResize,
+      slashCommandItems,
+      slashMenuHighlight,
+      upsertUnavailableCommandChip,
+    ],
+  );
+
+  const handlePanelChange = useCallback(
+    (panel: FeaturePanel) => {
+      setCommandSearchSeed(null);
+      if (panel === "file") {
+        openFileCommandRef.current?.();
+        return;
+      }
+      if (panel === "context") {
+        markContextUnavailableCommand();
+        return;
+      }
+      setActivePanel(panel);
+      closeSlashMenu();
+    },
+    [closeSlashMenu, markContextUnavailableCommand],
+  );
+
+  const handleComposerCommandShortcut = useCallback(
+    (command: ComposerShortcutCommand) => {
+      if (!shortcutAvailabilityByCommand[command]) {
+        const unavailableCommand =
+          command === "$" || command === "/skill"
+            ? ({
+                trigger: command === "$" ? "$" : "/",
+                command: "skill",
+                panel: "skills",
+                query: "",
+                unavailable: true,
+              } as const)
+            : command === "/mcp"
+              ? ({
+                  trigger: "/",
+                  command: "mcp",
+                  panel: "tools",
+                  query: "",
+                  unavailable: true,
+                } as const)
+              : command === "/file"
+                ? ({
+                    trigger: "/",
+                    command: "file",
+                    panel: "file",
+                    query: "",
+                    unavailable: true,
+                  } as const)
+                : ({
+                    trigger: "/",
+                    command: "context",
+                    panel: "context",
+                    query: "",
+                    unavailable: true,
+                  } as const);
+        upsertUnavailableCommandChip(unavailableCommand);
+        setInput("");
+        setCursorPosition(0);
+        setActivePanel(null);
+        setCommandSearchSeed(null);
+        closeSlashMenu();
+        requestAnimationFrame(scheduleTextareaResize);
+        return;
+      }
+      if (command === "/file" && commandPanelAvailability.files) {
+        executeAvailableFileCommand();
+        return;
+      }
+      if (command === "/context") {
+        markContextUnavailableCommand();
+        return;
+      }
+      const nextValue = command === "$" ? "$ " : `${command} `;
+      setInput(nextValue);
+      setCursorPosition(nextValue.length);
+      openCommandPanel(nextValue);
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.focus();
+        textarea.selectionStart = textarea.selectionEnd = nextValue.length;
+        scheduleTextareaResize();
+      });
+    },
+    [
+      commandPanelAvailability.files,
+      closeSlashMenu,
+      executeAvailableFileCommand,
+      markContextUnavailableCommand,
+      openCommandPanel,
+      scheduleTextareaResize,
+      shortcutAvailabilityByCommand,
+      upsertUnavailableCommandChip,
+    ],
+  );
+
+  useEffect(() => {
+    const fileSelections = attachments.map<ComposerSelection>((attachment) => ({
+      id: `file:${attachment.id}`,
+      kind: "file",
+      label: attachment.name,
+      state: attachment.isUploading ? "pending" : "enabled",
+      referenceId: attachment.id,
+      description: t("chat.fileReferenceChip", {
+        name: attachment.name,
+        type: t(`fileUpload.categories.${attachment.type}`),
+      }),
+    }));
+
+    dispatchComposerSelection({ type: "clear-kind", kind: "file" });
+    for (const selection of fileSelections) {
+      dispatchComposerSelection({ type: "upsert", selection });
+    }
+  }, [attachments, t]);
+
+  useEffect(() => {
+    dispatchComposerSelection({ type: "clear-kind", kind: "skill" });
+    for (const skill of skills.filter((item) => item.enabled)) {
+      dispatchComposerSelection({
+        type: "upsert",
+        selection: {
+          id: `skill:${skill.name}`,
+          kind: "skill",
+          label: skill.name,
+          state: "enabled",
+          source: skill.source,
+          description: skill.description,
+          referenceId: skill.name,
+        },
+      });
+    }
+  }, [skills]);
+
+  useEffect(() => {
+    dispatchComposerSelection({ type: "clear-kind", kind: "mcp" });
+    for (const tool of tools.filter((item) => item.enabled)) {
+      dispatchComposerSelection({
+        type: "upsert",
+        selection: {
+          id: `mcp:${tool.name}`,
+          kind: "mcp",
+          label: tool.name,
+          state: tool.system_disabled ? "denied" : "enabled",
+          source: tool.server ?? tool.category,
+          description: tool.description,
+          referenceId: tool.name,
+        },
+      });
+    }
+  }, [tools]);
+
+  useEffect(() => {
+    dispatchComposerSelection({ type: "clear-kind", kind: "agent" });
+    if (!currentAgent) return;
+    const agent = agents.find((item) => item.id === currentAgent);
+    if (!agent) return;
+    dispatchComposerSelection({
+      type: "upsert",
+      selection: {
+        id: `agent:${agent.id}`,
+        kind: "agent",
+        label: t(agent.name),
+        state: "enabled",
+        source: "agent",
+        description: agent.description ? t(agent.description) : undefined,
+        referenceId: agent.id,
+      },
+    });
+  }, [agents, currentAgent, t]);
+
+  useEffect(() => {
+    dispatchComposerSelection({ type: "clear-kind", kind: "model" });
+    if (!currentModelId) return;
+    const selectedModel = availableModels.find(
+      (model) => model.id === currentModelId,
+    );
+    if (!selectedModel) return;
+    dispatchComposerSelection({
+      type: "upsert",
+      selection: {
+        id: `model:${currentModelId}`,
+        kind: "model",
+        label: selectedModel.label,
+        state: "enabled",
+        source: selectedModel.provider ?? "model",
+        description: selectedModel.description ?? selectedModel.value,
+        referenceId: selectedModel.id,
+      },
+    });
+  }, [availableModels, currentModelId]);
+
+  const handleSelectModelChip = useCallback(
+    (modelId: string, modelValue: string) => {
+      onSelectModel?.(modelId, modelValue);
+      dispatchComposerSelection({ type: "remove", id: `unavailable:model` });
+      setInput("");
+      setCursorPosition(0);
+      setActivePanel(null);
+      setCommandSearchSeed(null);
+      closeSlashMenu();
+      requestAnimationFrame(scheduleTextareaResize);
+    },
+    [closeSlashMenu, onSelectModel, scheduleTextareaResize],
+  );
+
+  const handleRemoveComposerSelection = useCallback(
+    (id: string) => {
+      dispatchComposerSelection({ type: "remove", id });
+      if (id.startsWith("file:")) {
+        const attachmentId = id.slice("file:".length);
+        setAttachments((previous) =>
+          previous.filter((attachment) => attachment.id !== attachmentId),
+        );
+        return;
+      }
+      if (id.startsWith("skill:")) {
+        const skillName = id.slice("skill:".length);
+        const skill = skills.find((item) => item.name === skillName);
+        if (skill?.enabled) {
+          onToggleSkill?.(skillName).catch((error) => {
+            console.error("Failed to remove selected skill chip:", error);
+          });
+        }
+        return;
+      }
+      if (id.startsWith("mcp:")) {
+        const toolName = id.slice("mcp:".length);
+        const tool = tools.find((item) => item.name === toolName);
+        if (tool?.enabled) onToggleTool?.(toolName);
+        return;
+      }
+      if (id.startsWith("agent:")) {
+        const fallbackAgent = agents.find((agent) => agent.id !== currentAgent);
+        if (fallbackAgent) onSelectAgent?.(fallbackAgent.id);
+        return;
+      }
+      if (id.startsWith("model:")) {
+        return;
+      }
+    },
+    [
+      agents,
+      currentAgent,
+      onSelectAgent,
+      onToggleSkill,
+      onToggleTool,
+      setAttachments,
+      skills,
+      tools,
+    ],
+  );
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -473,111 +1066,85 @@ export const ChatInput = memo(function ChatInput({
         }
       >
         <div
-          ref={containerRef}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          className={`chat-input-container flex flex-col relative w-full rounded-3xl px-1 border transition-all duration-300 ${
-            isDraggingOver ? "border-dashed shadow-lg border-2" : ""
-          }`}
-          data-mention-active={mention.isActive || undefined}
-          style={{
-            backgroundColor: "var(--theme-bg-card)",
-            borderColor: isDraggingOver
-              ? "var(--theme-primary)"
-              : "var(--theme-border)",
-            boxShadow: isDraggingOver
-              ? undefined
-              : "0 2px 12px rgba(0,0,0,0.06)",
-          }}
+          className="relative"
+          data-composer-command-menu-anchor
         >
-          {mention.isActive && !onMentionQueryChange && (
-            <MentionPopup
-              presets={mentionSearch.presets}
-              highlightedIndex={mention.highlightedIndex}
-              selectedPresetId={selectedPersonaPresetId}
-              isLoading={mentionSearch.isLoading}
-              isLoadingMore={mentionSearch.isLoadingMore}
-              hasMore={mentionSearch.hasMore}
-              onSelect={applyMentionSelection}
-              onHover={setMentionHighlight}
-              onClose={dismissMention}
-              onLoadMore={mentionSearch.loadMore}
-              placement={mentionPopupPlacement ?? undefined}
+          {slashMenuOpen && (
+            <SlashCommandMenu
+              items={slashCommandItems}
+              highlightedIndex={slashMenuHighlight}
+              onHighlight={setSlashMenuHighlight}
+              onSelect={handleSlashCommandSelect}
+              onClose={closeSlashMenu}
             />
           )}
+          <div
+            ref={containerRef}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            className={`chat-input-container flex flex-col relative w-full rounded-lg px-1 border transition-all duration-300 ${
+              isDraggingOver ? "border-dashed shadow-lg border-2" : ""
+            }`}
+            data-mention-active={mention.isActive || undefined}
+            style={{
+              backgroundColor: "var(--theme-bg-card)",
+              borderColor: isDraggingOver
+                ? "var(--theme-primary)"
+                : "var(--theme-border)",
+              boxShadow: isDraggingOver
+                ? undefined
+                : "0 1px 2px rgba(15,23,42,0.04)",
+            }}
+          >
+            {mention.isActive && !onMentionQueryChange && (
+              <MentionPopup
+                presets={mentionSearch.presets}
+                highlightedIndex={mention.highlightedIndex}
+                selectedPresetId={selectedPersonaPresetId}
+                isLoading={mentionSearch.isLoading}
+                isLoadingMore={mentionSearch.isLoadingMore}
+                hasMore={mentionSearch.hasMore}
+                onSelect={applyMentionSelection}
+                onHover={setMentionHighlight}
+                onClose={dismissMention}
+                onLoadMore={mentionSearch.loadMore}
+                placement={mentionPopupPlacement ?? undefined}
+              />
+            )}
 
-          <ChatInputAttachments
-            attachments={attachments}
-            onAttachmentsChange={setAttachments}
-            onCancelUpload={cancelUpload}
-            onImageViewerOpen={(url) => setImageViewerSrc(url)}
-          />
+            <ChatInputAttachments
+              attachments={attachments}
+              onAttachmentsChange={setAttachments}
+              onCancelUpload={cancelUpload}
+              onImageViewerOpen={(url) => setImageViewerSrc(url)}
+            />
 
-          {attachments.length > 0 && (
-            <div
-              className="mx-3 mt-2 flex flex-wrap items-center gap-1.5 text-xs"
-              aria-label={t("chat.fileReferences")}
-            >
-              <span
-                className="font-medium"
-                style={{ color: "var(--theme-text-secondary)" }}
-              >
-                {t("chat.fileReferences")}
-              </span>
-              {attachments.map((attachment) => {
-                const typeLabel = t(`fileUpload.categories.${attachment.type}`);
-                return (
-                  <span
-                    key={`file-ref-${attachment.id}`}
-                    title={t("chat.fileReferenceChip", {
-                      name: attachment.name,
-                      type: typeLabel,
-                    })}
-                    className="inline-flex max-w-[180px] items-center gap-1 rounded-full border px-2 py-1"
-                    style={{
-                      borderColor: "var(--theme-border)",
-                      background:
-                        "color-mix(in srgb, var(--theme-primary) 8%, transparent)",
-                      color: "var(--theme-text)",
-                    }}
-                  >
-                    <Paperclip size={12} className="shrink-0" />
-                    <span className="truncate">{attachment.name}</span>
-                    {attachment.isUploading && (
-                      <span
-                        className="shrink-0"
-                        style={{ color: "var(--theme-text-secondary)" }}
-                      >
-                        {t("fileUpload.uploading", "uploading")}
-                      </span>
-                    )}
-                  </span>
-                );
-              })}
-            </div>
-          )}
+            <ComposerChips
+              selections={composerSelections}
+              onRemove={handleRemoveComposerSelection}
+            />
 
-          <div className="px-2.5 pt-1">
-            <div className="relative">
-              <textarea
-                ref={textareaRef}
-                value={input}
+            <ComposerCommandHintBar
+              onCommand={handleComposerCommandShortcut}
+              skillsAvailable={commandPanelAvailability.skills}
+              mcpAvailable={commandPanelAvailability.tools}
+              filesAvailable={commandPanelAvailability.files}
+              contextAvailable={commandPanelAvailability.context}
+            />
+
+            <div className="px-2.5 pt-1">
+              <div className="relative">
+                <textarea
+                  ref={textareaRef}
+                  value={input}
                 onChange={(e) => {
                   const nextValue = e.target.value;
-                  const commandPanel = resolveCommandPrefixPanel(
-                    nextValue,
-                    commandPanelAvailability,
-                  );
-                  if (commandPanel) {
-                    setActivePanel(commandPanel);
-                    setInput("");
-                    setCursorPosition(0);
-                    requestAnimationFrame(scheduleTextareaResize);
-                    return;
-                  }
                   setInput(nextValue);
                   setCursorPosition(e.target.selectionStart);
+                  if (!openCommandPanel(nextValue)) {
+                    closeSlashMenu();
+                  }
                 }}
                 onFocus={scheduleTextareaResize}
                 onKeyDown={handleKeyDown}
@@ -592,49 +1159,54 @@ export const ChatInput = memo(function ChatInput({
                   paddingLeft: 4,
                 }}
                 rows={1}
-              />
+                />
+              </div>
             </div>
-          </div>
 
-          <ChatInputToolbar
-            activePanel={activePanel}
-            onActivePanelChange={setActivePanel}
-            canSend={canSend}
-            isLoading={isLoading}
-            canSubmit={canSubmit}
-            hasUploadingAttachment={hasUploadingAttachment}
-            enabledToolsCount={enabledToolsCount}
-            totalToolsCount={totalToolsCount}
-            enabledSkillsCount={enabledSkillsCount}
-            totalSkillsCount={totalSkillsCount}
-            hasPersonaSelector={!!onUsePersonaPreset}
-            personaName={selectedPersonaName}
-            hasAgentSelector={agents.length > 1 && !!onSelectAgent}
-            agentName={agents.find((a) => a.id === currentAgent)?.name}
-            hasThinkingOption={
-              !!(
-                agentOptions &&
-                onToggleAgentOption &&
-                Object.keys(agentOptions).length > 0
-              )
-            }
-            thinkingLabel={thinkingLabel}
-            thinkingLevel={thinkingLevel}
-            uploadCategories={uploadCategories}
-            uploadLimits={uploadLimits}
-            uploadFiles={uploadFiles}
-            selectedPersonaName={selectedPersonaName}
-            personaAvatar={personaAvatar}
-            onClearPersonaPreset={onClearPersonaPreset}
-            onStopClick={() => setStopConfirmOpen(true)}
-            onNoPermissionClick={() => setContactAdminOpen(true)}
-          />
+            <ChatInputToolbar
+              activePanel={activePanel}
+              onActivePanelChange={handlePanelChange}
+              canSend={canSend}
+              isLoading={isLoading}
+              canSubmit={canSubmit}
+              hasUploadingAttachment={hasUploadingAttachment}
+              enabledToolsCount={enabledToolsCount}
+              totalToolsCount={totalToolsCount}
+              enabledSkillsCount={enabledSkillsCount}
+              totalSkillsCount={totalSkillsCount}
+              hasPersonaSelector={!!onUsePersonaPreset}
+              personaName={selectedPersonaName}
+              hasAgentSelector={agents.length > 1 && !!onSelectAgent}
+              agentName={agents.find((a) => a.id === currentAgent)?.name}
+              hasThinkingOption={
+                !!(
+                  agentOptions &&
+                  onToggleAgentOption &&
+                  Object.keys(agentOptions).length > 0
+                )
+              }
+              thinkingLabel={thinkingLabel}
+              thinkingLevel={thinkingLevel}
+              uploadCategories={uploadCategories}
+              uploadLimits={uploadLimits}
+              uploadFiles={uploadFiles}
+              onFileCommandReady={(openFileCommand) => {
+                openFileCommandRef.current = openFileCommand;
+              }}
+              selectedPersonaName={selectedPersonaName}
+              personaAvatar={personaAvatar}
+              onClearPersonaPreset={onClearPersonaPreset}
+              onStopClick={() => setStopConfirmOpen(true)}
+              onNoPermissionClick={() => setContactAdminOpen(true)}
+            />
+          </div>
         </div>
       </form>
 
       <ChatInputSelectors
         activePanel={activePanel}
-        onActivePanelChange={setActivePanel}
+        onActivePanelChange={handlePanelChange}
+        commandSearchSeed={commandSearchSeed}
         tools={tools}
         onToggleTool={onToggleTool}
         onToggleCategory={onToggleCategory}
@@ -668,6 +1240,9 @@ export const ChatInput = memo(function ChatInput({
         agents={agents}
         currentAgent={currentAgent}
         onSelectAgent={onSelectAgent}
+        availableModels={availableModels}
+        currentModelId={currentModelId}
+        onSelectModel={handleSelectModelChip}
         agentOptions={agentOptions}
         agentOptionValues={agentOptionValues}
         onToggleAgentOption={onToggleAgentOption}

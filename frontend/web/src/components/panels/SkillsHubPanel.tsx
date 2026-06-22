@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Package, PackageX, ShoppingBag, Sparkles } from "lucide-react";
+import { Package, ShoppingBag, Sparkles, TerminalSquare } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useSettingsContext } from "../../contexts/SettingsContext";
@@ -9,6 +9,9 @@ import { PanelHeader } from "../common/PanelHeader";
 import { MarketplacePanel } from "./MarketplacePanel";
 import { SkillsPanel } from "./SkillsPanel";
 import { resolveSkillsHubTab, type SkillsHubTab } from "./SkillsHubPanel/state";
+import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
+import { resolveGroupAvailability } from "../governance/groupAvailability";
+import { GroupAvailabilityToggleRow } from "../governance/GroupAvailabilityToggleRow";
 
 const TAB_PATHS: Record<SkillsHubTab, string> = {
   skills: "/skills",
@@ -30,8 +33,15 @@ export function SkillsHubPanel() {
     requestedTab,
     canReadSkills,
     canReadMarketplace,
-  );
-  const showTabSwitcher = canReadSkills && canReadMarketplace;
+  ) ?? requestedTab;
+  const hasDiscoveryPermission = canReadSkills || canReadMarketplace;
+  const showTabSwitcher = true;
+  const skillsGloballyDisabled = !enableSkills;
+  const permissionAvailability = resolveGroupAvailability({
+    backed: enableSkills,
+    enabled: enableSkills && hasDiscoveryPermission,
+    adminOnly: enableSkills && !hasDiscoveryPermission,
+  });
 
   useEffect(() => {
     if (!visibleTab) return;
@@ -41,28 +51,11 @@ export function SkillsHubPanel() {
     }
   }, [location.pathname, navigate, visibleTab]);
 
-  if (!enableSkills) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center text-stone-500 dark:text-stone-400">
-        <PackageX
-          size={48}
-          className="mb-3 text-stone-300 dark:text-stone-600"
-        />
-        <p className="text-center">{t("skills.featureDisabled")}</p>
-      </div>
-    );
-  }
-
-  if (!visibleTab) {
-    return (
-      <div className="flex h-full items-center justify-center text-stone-500 dark:text-stone-400">
-        {t("skills.noPermission")}
-      </div>
-    );
-  }
-
   return (
-    <div className="skill-theme-shell flex h-full min-h-0 flex-col">
+    <div
+      data-phase1c-surface="skills-hub"
+      className="flex h-full min-h-0 flex-col bg-slate-50 text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+    >
       <PanelHeader
         className="skill-panel-header"
         title={t("skillsHub.title")}
@@ -110,12 +103,76 @@ export function SkillsHubPanel() {
         }
       />
 
+      <div className="px-4 pb-3">
+        <section className="grid gap-3 lg:grid-cols-2">
+          <div className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                {skillsGloballyDisabled
+                  ? t("skillsHub.featureDisabled.title")
+                  : t("skillsHub.permissionLimited.title")}
+              </h3>
+              <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                {skillsGloballyDisabled
+                  ? t("skillsHub.featureDisabled.description")
+                  : t("skillsHub.permissionLimited.description")}
+              </p>
+            </div>
+            <GovernanceAvailabilityBadge
+              state={permissionAvailability.state}
+              labelKey={permissionAvailability.labelKey}
+            />
+          </div>
+          <div className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <TerminalSquare size={16} className="text-stone-500 dark:text-stone-400" />
+                <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                  {t("skillsHub.composerEntry.title")}
+                </h3>
+              </div>
+              <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                {t("skillsHub.composerEntry.description")}
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-1 rounded-lg border border-stone-200 bg-stone-50 p-1 text-[11px] font-semibold text-stone-600 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-300">
+              <span className="rounded-md bg-white px-2 py-1 shadow-sm dark:bg-stone-900">
+                /
+              </span>
+              <span className="rounded-md bg-white px-2 py-1 shadow-sm dark:bg-stone-900">
+                $
+              </span>
+            </div>
+          </div>
+          <div data-fail-closed-surface="department-skill-policy">
+            <GroupAvailabilityToggleRow
+              label={t("skills.marketplace.departmentAvailability")}
+              description={t("skills.marketplace.groupToggleUnavailable")}
+              state="unavailable"
+              backed={false}
+            />
+          </div>
+        </section>
+      </div>
+
       {/* Child panel handles its own padding via skill-panel-header + skill-content-area */}
       <div className="min-h-0 flex-1 overflow-hidden">
         {visibleTab === "skills" ? (
-          <SkillsPanel embedded />
+          <div data-skill-catalog-shell className="h-full min-h-0">
+            <SkillsPanel
+              embedded
+              governedUnavailable={skillsGloballyDisabled || !canReadSkills}
+            />
+          </div>
         ) : (
-          <MarketplacePanel embedded />
+          <div data-marketplace-catalog-shell className="h-full min-h-0">
+            <MarketplacePanel
+              embedded
+              governedUnavailable={
+                skillsGloballyDisabled || !canReadMarketplace
+              }
+            />
+          </div>
         )}
       </div>
     </div>

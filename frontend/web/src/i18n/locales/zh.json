@@ -9,7 +9,7 @@
     "currentVersion": "当前版本",
     "gitTag": "Git 标签",
     "latestVersion": "最新版本",
-    "title": "关于 LambChat",
+    "title": "关于 AI Platform",
     "upToDate": "已是最新版本！",
     "updateAvailable": "发现新版本！",
     "viewOnGitHub": "在 GitHub 上查看",
@@ -45,7 +45,9 @@
   },
   "agent": {
     "selectMode": "选择模式",
-    "selectModeDesc": "切换助手模式"
+    "selectModeDesc": "切换助手模式",
+    "searchPlaceholder": "搜索智能体",
+    "noMatchingAgents": "没有匹配的智能体"
   },
   "agentConfig": {
     "addFirstModel": "添加第一个模型",
@@ -192,7 +194,7 @@
       "name": "Search Agent"
     }
   },
-  "appName": "LambChat",
+  "appName": "AI Platform",
   "runPlayback": {
     "artifacts": "产物",
     "context": {
@@ -485,7 +487,7 @@
     "deleteError": "删除配置失败",
     "deleteSuccess": "配置已删除",
     "deleteTitle": "删除渠道实例",
-    "description": "连接您喜欢的聊天平台到 LambChat",
+    "description": "将受治理的公司频道接入 AI Platform",
     "disconnected": "未连接",
     "enabled": "启用渠道",
     "enabledDesc": "启用或禁用此渠道",
@@ -512,6 +514,14 @@
     "testSuccess": "连接成功",
     "title": "渠道管理"
   },
+  "channelImport": {
+    "redaction": "脱敏",
+    "retention": "保留策略",
+    "unavailable": {
+      "description": "当前工作区尚未启用频道导入。管理员启用前不会展示频道详情。",
+      "title": "频道导入暂不可用"
+    }
+  },
   "chat": {
     "assistant": "助手",
     "attachFile": "附件",
@@ -519,7 +529,7 @@
     "dropFilesHere": "拖放文件到此处上传",
     "enterToSend": "发送",
     "errorPrefix": "错误：{{error}}",
-    "commandTrigger": "打开命令：/ 选择技能，$ 选择 MCP 工具",
+    "commandTrigger": "打开命令：/ 或 $ 选择 Skills，/mcp 选择 MCP 工具",
     "featureMenu": {
       "enhance": "增强",
       "persona": "角色",
@@ -608,9 +618,9 @@
     "noPermission": "没有发送消息的权限",
     "noPermissionHint": "您没有发送消息的权限",
     "outline": "大纲",
-    "placeholder": "@ 选择角色，或输入消息...",
-    "placeholderWithHintCtrl": "@ 选择角色，或输入消息…  Enter 换行，Ctrl+Enter 发送",
-    "placeholderWithHintShift": "@ 选择角色，或输入消息…  Enter 发送，Shift+Enter 换行",
+    "placeholder": "输入 / 选择命令，输入 $ 选择 Skills，或直接描述任务...",
+    "placeholderWithHintCtrl": "输入 / 选择命令，输入 $ 选择 Skills…  Enter 换行，Ctrl+Enter 发送",
+    "placeholderWithHintShift": "输入 / 选择命令，输入 $ 选择 Skills…  Enter 发送，Shift+Enter 换行",
     "queueFull": "排队已满，请稍后再试",
     "queueStart": "任务开始处理",
     "queued": "排队中 (第 {{position}} 位)...",
@@ -685,7 +695,7 @@
     "noResults": "未找到结果",
     "page": "第 {{page}} 页",
     "permissionRequired": "需要权限",
-    "poweredBy": "由 Clivia 驱动",
+    "poweredBy": "公司 AI Platform",
     "prev": "上一页",
     "previous": "上一页",
     "readMode": "只读模式",
@@ -868,7 +878,9 @@
     "persona": "角色",
     "settings": "设置",
     "skillsMarketplace": "技能市场",
-    "upload": "上传"
+    "upload": "上传",
+    "model": "模型",
+    "context": "上下文"
   },
   "feedback": {
     "addComment": "添加评论",
@@ -1162,6 +1174,10 @@
     "confirmInstallMessage": "确定要安装此技能吗？",
     "confirmUpdate": "更新技能",
     "confirmUpdateMessage": "将从技能商店重新下载此技能，你的本地修改将被覆盖。确定要继续吗？",
+    "catalogUnavailable": {
+      "title": "技能市场等待管理员启用",
+      "description": "你现在可以看到技能市场入口。安装、发布和部门可用范围需要管理员为当前工作区启用后才可操作。"
+    },
     "createAndPublish": "发布技能",
     "createHint": "要发布技能到技能商店，请先在「我的技能」面板中创建，然后点击发布按钮。",
     "createTitle": "发布技能到技能商店",
@@ -1199,7 +1215,19 @@
     "update": "更新",
     "updateFailed": "更新技能失败",
     "updateSuccess": "技能更新成功",
-    "viewInMySkills": "去我的技能查看"
+    "viewInMySkills": "去我的技能查看",
+    "emptyDepartmentCatalog": {
+      "title": "部门 Skills",
+      "description": "管理员为你的部门启用后，可用 Skills 会出现在这里。"
+    },
+    "approvedCatalog": {
+      "title": "已批准工具包",
+      "description": "公司批准的 Skills 和 MCP 工作流会在适合当前角色时显示在这里。"
+    },
+    "requestAccess": {
+      "title": "申请使用",
+      "description": "如需安装某个 Skill，请联系部门管理员为你的团队启用。"
+    }
   },
   "mcp": {
     "addFirst": "添加您的第一个 MCP 服务器",
@@ -1220,6 +1248,7 @@
       "headersCount": "{{count}} 个头",
       "noTools": "未发现工具",
       "roleCount": "{{count}} 个角色",
+      "roleQuotaCount": "角色配额",
       "system": "系统",
       "systemDisabled": "系统禁用",
       "toolToggleFailed": "切换工具失败",
@@ -1300,6 +1329,14 @@
     "noPermission": "您没有权限查看 MCP 服务器。",
     "noServers": "未配置 MCP 服务器",
     "operationFailed": "操作失败",
+    "permissionLimited": {
+      "description": "MCP 工具已经在工作台展示。管理员为当前工作区启用已批准工具后，你的角色即可使用。",
+      "title": "MCP 工具受治理"
+    },
+    "catalogUnavailable": {
+      "description": "MCP 工具目录会保持可见用于发现。凭证、生命周期控制和工具选择在管理员启用前保持锁定。",
+      "title": "MCP 工具目录受治理"
+    },
     "overwriteExisting": "覆盖同名服务器",
     "promoteFailed": "升级 MCP 服务器失败",
     "promoteSuccess": "MCP 服务器已升级为系统服务器",
@@ -1309,7 +1346,14 @@
     "title": "MCP 服务器",
     "updateFailed": "更新 MCP 服务器失败",
     "updateSuccess": "MCP 服务器更新成功",
-    "userServerVisible": "用户服务器（仅对自己可见）"
+    "userServerVisible": "用户服务器（仅对自己可见）",
+    "permissionMode": "权限模式",
+    "addToComposer": "在聊天输入框使用 /mcp 搜索受治理的工具，并把已启用工具加入 composer。",
+    "lifecycleUnavailable": "运行时生命周期控制",
+    "lifecycleUnavailableDescription": "启动、停止、重启和原始凭证控制对普通用户保持锁定。",
+    "credentialsUnavailable": "凭证分配和密钥轮换在第一阶段保持不可用。",
+    "noMatchingTools": "没有匹配的工具",
+    "toolsSearchPlaceholder": "搜索工具"
   },
   "memory": {
     "accesses": "次访问",
@@ -1379,6 +1423,7 @@
   "launchpad": {
     "clearSearch": "清除搜索",
     "currentCategory": "当前分类",
+    "boundary": "这些入口会在新标签页打开现有公司系统。AI Platform 不替代目标系统的登录、权限、流程或审计规则。",
     "entriesCount": "{{count}} 个入口",
     "groupNavigation": "应用分类导航",
     "noResults": "没有找到匹配的入口",
@@ -1736,8 +1781,8 @@
       "title": "文件库"
     },
     "landing": {
-      "description": "LambChat 是一个可插拔的多租户 AI 对话平台，由 Skills + MCP 双引擎驱动。支持 Claude、GPT、Gemini 等多种模型，实时 SSE 流式输出，多智能体协作与模块化技能系统。",
-      "title": "LambChat - AI 智能体平台"
+      "description": "AI Platform 是公司内部受治理的 AI 工作台，覆盖对话、Skills、MCP 工具、文件、产物与工作流。",
+      "title": "AI Platform - 企业 AI 工作台"
     },
     "marketplace": {
       "description": "发现并安装社区构建的 AI 技能。浏览、评分和部署预构建能力，扩展 AI 智能体功能。",
@@ -1784,7 +1829,7 @@
     "ACCESS_TOKEN_EXPIRE_HOURS": "访问令牌过期时间（小时）",
     "ADMIN_CONTACT_EMAIL": "在关于对话框中显示给用户的管理员联系邮箱",
     "ADMIN_CONTACT_URL": "管理员联系/支持 URL（如帮助台、反馈表单），显示在关于对话框中",
-    "APP_BASE_URL": "文件下载/上传的公共基础 URL（如 https://lambchat.com）。在反向代理导致 request.base_url 不正确时需要配置。",
+    "APP_BASE_URL": "文件下载/上传的公共基础 URL（如 http://10.56.0.211:18001）。在反向代理导致 request.base_url 不正确时需要配置。",
     "AUDIO_TRANSCRIPTION_API_KEY": "音频转写服务的 API 密钥。支持 OpenAI 兼容端点，例如 OpenAI、SiliconFlow。",
     "AUDIO_TRANSCRIPTION_BASE_URL": "音频转写服务的 Base URL，例如 https://api.openai.com/v1 或 https://api.siliconflow.cn/v1。留空则使用默认 OpenAI 端点。",
     "AUDIO_TRANSCRIPTION_MODEL": "audio_transcribe 工具使用的默认转写模型，例如 gpt-4o-mini-transcribe 或 FunAudioLLM/SenseVoiceSmall。",
@@ -1954,7 +1999,8 @@
     "resetSuccess": "设置已重置",
     "saved": "设置已保存",
     "searchPlaceholder": "搜索设置...",
-    "title": "设置"
+    "title": "设置",
+    "APP_BASE_URL": "文件下载/上传的公共基础 URL（如 http://10.56.0.211:18001）。在反向代理导致 request.base_url 不正确时需要配置。"
   },
   "share": {
     "agent": "智能体",
@@ -2006,6 +2052,24 @@
     "taskPending": "等待中",
     "taskRunning": "运行中",
     "title": "分享会话",
+    "unavailable": {
+      "denied": {
+        "description": "当前账号无权查看这个会话分享。",
+        "title": "无权访问分享"
+      },
+      "expired": {
+        "description": "这个分享已过期，不展示任何会话元数据。",
+        "title": "分享已过期"
+      },
+      "revoked": {
+        "description": "这个分享已撤销，不展示任何会话元数据。",
+        "title": "分享已撤销"
+      },
+      "unavailable": {
+        "description": "当前账号权限无法加载该分享。",
+        "title": "分享暂不可用"
+      }
+    },
     "userMessage": "（用户消息：{{message}}）",
     "visibility": "访问权限"
   },
@@ -2153,6 +2217,10 @@
     "exportToJSON": "导出为 JSON",
     "exportZip": "导出 ZIP",
     "featureDisabled": "技能功能已禁用，请联系管理员启用。",
+    "catalogUnavailable": {
+      "description": "Skills 目录会保持可见用于发现。创建、导入、发布和启用动作需要管理员启用 Skill 访问后开放。",
+      "title": "Skills 目录受治理"
+    },
     "form": {
       "addFile": "添加文件",
       "content": "内容（支持 Markdown 和可选的 YAML frontmatter）",
@@ -2241,9 +2309,25 @@
     "upload": "上传",
     "uploadZipTitle": "上传技能 ZIP",
     "uploading": "上传中...",
-    "userSkillVisible": "用户技能（仅对自己可见）"
+    "userSkillVisible": "用户技能（仅对自己可见）",
+    "marketplace": {
+      "departmentAvailability": "部门可用范围",
+      "groupToggleUnavailable": "部门与群组开关会展示给管理员查看；当前工作区启用部门 Skills 前保持只读。"
+    }
   },
   "skillsHub": {
+    "composerEntry": {
+      "description": "在聊天里用 / 打开命令，用 $ 选择 Skills；不可用能力会变成 chip，不会静默消失。",
+      "title": "输入框优先入口"
+    },
+    "featureDisabled": {
+      "description": "Skills 当前在平台级关闭。工作台仍保留这个受治理入口，但需要管理员启用 Skill 发现与部门访问后才能使用。",
+      "title": "Skills 等待管理员启用"
+    },
+    "permissionLimited": {
+      "description": "Skills 与技能市场已经作为工作台入口展示。管理员为你的部门启用 Skill 访问前，页面保持只读。",
+      "title": "Skills 访问受治理"
+    },
     "subtitle": "管理本地技能并浏览技能商店",
     "title": "技能"
   },
@@ -2318,6 +2402,7 @@
     "done": "完成",
     "loadFailed": "加载工具失败",
     "noDescription": "无描述",
+    "noMatchingTools": "没有匹配的工具",
     "noTools": "暂无可用工具",
     "parameters": "参数",
     "selectAll": "全选",
@@ -2329,6 +2414,7 @@
       "type": "类型"
     },
     "title": "工具",
+    "searchPlaceholder": "搜索工具",
     "toolsEnabled": "个工具已启用"
   },
   "users": {
@@ -2378,5 +2464,87 @@
       "enterUsername": "请输入用户名",
       "passwordMinLength": "密码至少需要6个字符"
     }
+  },
+  "composerChip": {
+    "unavailableDescription": "该命令已在输入框展示，但当前工作区还不能使用。",
+    "status": {
+      "enabled": "已启用",
+      "disabled": "已停用",
+      "pending": "处理中",
+      "denied": "已拒绝",
+      "uploading": "上传中",
+      "unavailable": "不可用",
+      "admin-only": "仅管理员"
+    }
+  },
+  "composerCommand": {
+    "agent": {
+      "description": "选择平台批准的智能体或应用模式。",
+      "label": "智能体"
+    },
+    "context": {
+      "description": "在当前工作区启用后挂载会话、记忆或频道上下文。",
+      "label": "上下文"
+    },
+    "file": {
+      "description": "从输入框引用允许使用的文件和产物。",
+      "label": "文件"
+    },
+    "mcp": {
+      "description": "搜索受治理的 MCP 工具，并将允许的工具加入 chip。",
+      "label": "MCP 工具"
+    },
+    "menuLabel": "输入框命令菜单",
+    "model": {
+      "description": "为当前对话选择已批准的模型。",
+      "label": "模型"
+    },
+    "modelSelector": {
+      "description": "为当前会话选择 ai-platform 已批准的模型。",
+      "empty": "没有匹配的模型",
+      "searchPlaceholder": "搜索模型",
+      "title": "选择模型"
+    },
+    "skill": {
+      "description": "搜索允许的 Skills，并加入持久 Skill chip。",
+      "label": "Skill"
+    },
+    "shortcut": {
+      "context": "/context 上下文",
+      "file": "/file 文件",
+      "label": "输入框快捷入口",
+      "mcp": "/mcp MCP",
+      "skills": "$ Skills",
+      "unavailable": "已展示，但当前工作区尚未启用"
+    },
+    "contextSelector": {
+      "chip": "/context",
+      "description": "上下文选择器已在输入框展示，但当前工作区还不能使用保存的上下文。",
+      "title": "上下文选择器暂不可用"
+    },
+    "unavailable": {
+      "failClosed": "Fail-closed surface",
+      "subtitle": "已在输入框展示，但当前工作区尚未启用。"
+    }
+  },
+  "workbench": {
+    "cockpit": "Workbench",
+    "commandDock": "输入框",
+    "commandDockHint": "直接在输入框输入命令；受治理但暂不可用的能力会转成 chip。",
+    "commandFirstTitle": "从提示词、Skill、MCP 工具、文件或上下文开始。",
+    "defaultAgent": "默认",
+    "newConversation": "新对话",
+    "none": "无",
+    "selectionState": "已选能力",
+    "unavailableShort": "不可用",
+    "phase2Unavailable": "产物、已选上下文和运行详情在当前工作区启用前保持只读。"
+  },
+  "governance": {
+    "adminOnly": "仅管理员",
+    "disabled": "已禁用",
+    "enabled": "已启用",
+    "inherited": "继承",
+    "toggleBacked": "由 ai-platform 策略支撑",
+    "unavailable": "不可用"
   }
 }

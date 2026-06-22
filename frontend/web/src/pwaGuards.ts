@@ -3,7 +3,8 @@ export interface PwaRegistrationSupport {
   hasServiceWorker: boolean;
 }
 
-export const PWA_UPDATE_AVAILABLE_EVENT = "lambchat:pwa-update-available";
+export const PWA_UPDATE_AVAILABLE_EVENT =
+  "ai-platform:pwa-update-available";
 export const PWA_SKIP_WAITING_MESSAGE = "SKIP_WAITING";
 
 export function shouldRegisterPwa({

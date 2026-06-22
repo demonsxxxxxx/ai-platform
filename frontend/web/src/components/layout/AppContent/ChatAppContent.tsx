@@ -37,9 +37,11 @@ import { getRestoredModelSelection } from "./sessionState";
 import { buildEffectiveSkills, countEnabledSkills } from "./skillAvailability";
 import { AppShell } from "./AppShell";
 import { ChatView } from "./ChatView";
+import { WorkbenchShell } from "../../workbench/WorkbenchShell";
 import { shouldShowMessageOutline } from "./messageOutline";
 import { RunPlaybackPanel } from "./RunPlaybackPanel";
 import { openPersistentToolPanel } from "../../chat/ChatMessage/items/persistentToolPanelState";
+import { readSessionConfigStorage } from "../../../utils/sessionConfigStorage";
 
 export interface ChatAppContentProps {
   showProfileModal: boolean;
@@ -269,7 +271,7 @@ export function ChatAppContent({
       return;
     }
     try {
-      const raw = localStorage.getItem("lambchat_session_config");
+      const raw = readSessionConfigStorage();
       if (!raw) return;
       const parsed = JSON.parse(raw);
       if (parsed.personaPresetId === personaId && parsed.personaSnapshot) {
@@ -803,6 +805,9 @@ export function ChatAppContent({
           agents={agents}
           currentAgent={currentAgent}
           onSelectAgent={switchAgent}
+          availableModels={filteredModels ?? []}
+          currentModelId={currentModelId}
+          onSelectModel={handleSelectModel}
           approvals={approvals}
           onRespondApproval={respondToApproval}
           approvalLoading={approvalLoading}
@@ -818,6 +823,7 @@ export function ChatAppContent({
           }
           externalScrollToBottom={externalScrollToBottom}
           outlineToggleRef={outlineToggleRef}
+          WorkbenchShellComponent={WorkbenchShell}
         />
         <BlockPreviewPortal />
       </>

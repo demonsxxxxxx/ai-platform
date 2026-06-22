@@ -4,15 +4,12 @@
  */
 
 import { useEffect, useState, useMemo, useRef, useCallback } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import {
-  AlertCircle,
   MessageSquare,
   Sun,
   Moon,
-  ExternalLink,
-  Lock,
   Languages,
   MessageCircle,
   Check,
@@ -20,7 +17,6 @@ import {
   XCircle,
 } from "lucide-react";
 
-import { BackIcon } from "../common/BackIcon";
 import { shareApi } from "../../services/api/share";
 import type { SharedContentResponse } from "../../types";
 import { ChatMessage } from "../chat/ChatMessage";
@@ -42,14 +38,19 @@ import {
   type RevealPreviewOpenSource,
 } from "../chat/ChatMessage/items/revealPreviewState";
 import { reconstructMessagesFromEvents } from "../../hooks/useAgent/historyLoader";
-import { APP_NAME, GITHUB_URL } from "../../constants";
+import { APP_HOME_URL, APP_NAME, GITHUB_URL } from "../../constants";
 import { formatDate, formatDateTimeShort } from "../../utils/datetime";
+import {
+  LEGACY_THEME_STORAGE_KEY,
+  THEME_STORAGE_KEY,
+} from "../../utils/themeDom";
 import { getModelIconUrl, isMonochromeIcon } from "../agent/modelIcon";
 import { ScrollButtons } from "../landing/components/ScrollButtons";
 import {
   PersonaAvatarImage,
   PersonaAvatarIcon,
 } from "../persona/PersonaAvatarIcon";
+import { ShareUnavailableState } from "./ShareUnavailableState";
 
 const LANGUAGES = [
   { code: "en", nativeName: "English" },
@@ -128,7 +129,9 @@ function SharedPageLanguageToggle() {
 function useSharedPageTheme() {
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     if (typeof window !== "undefined") {
-      const stored = localStorage.getItem("lamb-agent-theme");
+      const stored =
+        localStorage.getItem(THEME_STORAGE_KEY) ||
+        localStorage.getItem(LEGACY_THEME_STORAGE_KEY);
       if (stored === "light" || stored === "dark") {
         return stored;
       }
@@ -146,7 +149,7 @@ function useSharedPageTheme() {
     } else {
       root.classList.remove("dark");
     }
-    localStorage.setItem("lamb-agent-theme", theme);
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
 
   const toggleTheme = () => {
@@ -220,6 +223,22 @@ export function SharedPage() {
         if (err instanceof Error) {
           if (err.message.includes("401") || err.message.includes("需要登录")) {
             setError("auth_required");
+          } else if (
+            err.message.includes("403") ||
+            err.message.includes("无权") ||
+            err.message.includes("forbidden")
+          ) {
+            setError("denied");
+          } else if (
+            err.message.includes("expired") ||
+            err.message.includes("过期")
+          ) {
+            setError("expired");
+          } else if (
+            err.message.includes("revoked") ||
+            err.message.includes("撤销")
+          ) {
+            setError("revoked");
           } else if (
             err.message.includes("404") ||
             err.message.includes("不存在")
@@ -433,9 +452,9 @@ export function SharedPage() {
     setTwitter("twitter:description", description);
 
     return () => {
-      document.title = `${APP_NAME} - AI Agent Platform`;
+      document.title = `${APP_NAME} - Enterprise AI Workbench`;
       setDescription(
-        "LambChat is a pluggable, multi-tenant AI conversation platform. Skills + MCP dual-engine driven, supporting Claude, GPT, Gemini and more.",
+        "AI Platform is a company-internal governed AI workbench for chat, Skills, MCP tools, files, artifacts, and workflows.",
       );
     };
   }, [data, messages, t]);
@@ -463,68 +482,24 @@ export function SharedPage() {
 
   // Auth required error
   if (error === "auth_required") {
-    return (
-      <div className="min-h-dvh bg-[#faf9f7] dark:bg-[#0f0e0d] flex items-center justify-center p-4">
-        <div className="max-w-md w-full animate-in fade-in slide-in-from-bottom-4 duration-500">
-          <div className="bg-white dark:bg-stone-900 rounded-2xl shadow-xl shadow-stone-900/5 dark:shadow-black/30 border border-stone-200/60 dark:border-stone-800/60 overflow-hidden">
-            <div className="p-8 text-center">
-              <div className="w-16 h-16 mx-auto mb-6 rounded-2xl bg-amber-50 dark:bg-amber-900/20 flex items-center justify-center">
-                <Lock
-                  size={28}
-                  className="text-amber-500 dark:text-amber-400"
-                />
-              </div>
-              <h1 className="text-xl font-semibold text-stone-900 dark:text-stone-100 font-serif mb-2 font-serif tracking-tight">
-                {t("share.loginRequired")}
-              </h1>
-              <p className="text-stone-500 dark:text-stone-400 mb-8 leading-relaxed">
-                {t("share.loginRequiredDesc")}
-              </p>
-              <Link
-                to="/auth/login"
-                className="inline-flex items-center gap-2 px-6 py-3 bg-stone-900 dark:bg-stone-100 hover:bg-stone-800 dark:hover:bg-stone-200 text-white dark:text-stone-900 rounded-xl font-medium transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]"
-              >
-                {t("auth.loginNow")}
-                <ExternalLink size={16} />
-              </Link>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
+    return <ShareUnavailableState reason="denied" />;
+  }
+
+  if (error === "denied") {
+    return <ShareUnavailableState reason="denied" />;
+  }
+
+  if (error === "expired") {
+    return <ShareUnavailableState reason="expired" />;
+  }
+
+  if (error === "revoked") {
+    return <ShareUnavailableState reason="revoked" />;
   }
 
   // Not found error
   if (error === "not_found" || !data) {
-    return (
-      <div className="min-h-dvh bg-[#faf9f7] dark:bg-[#0f0e0d] flex items-center justify-center p-4">
-        <div className="max-w-md w-full animate-in fade-in slide-in-from-bottom-4 duration-500">
-          <div className="bg-white dark:bg-stone-900 rounded-2xl shadow-xl shadow-stone-900/5 dark:shadow-black/30 border border-stone-200/60 dark:border-stone-800/60 overflow-hidden">
-            <div className="p-8 text-center">
-              <div className="w-16 h-16 mx-auto mb-6 rounded-2xl bg-red-50 dark:bg-red-900/20 flex items-center justify-center">
-                <AlertCircle
-                  size={28}
-                  className="text-red-500 dark:text-red-400"
-                />
-              </div>
-              <h1 className="text-xl font-semibold text-stone-900 dark:text-stone-100 font-serif mb-2 font-serif tracking-tight">
-                {t("share.notFound")}
-              </h1>
-              <p className="text-stone-500 dark:text-stone-400 mb-8 leading-relaxed">
-                {t("share.notFoundDesc")}
-              </p>
-              <Link
-                to="/"
-                className="inline-flex items-center gap-2 px-6 py-3 bg-stone-900 dark:bg-stone-100 hover:bg-stone-800 dark:hover:bg-stone-200 text-white dark:text-stone-900 rounded-xl font-medium transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]"
-              >
-                {t("errors.backToHome")}
-                <BackIcon size={16} />
-              </Link>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
+    return <ShareUnavailableState reason="unavailable" />;
   }
 
   // Main content — editorial blog layout
@@ -542,8 +517,8 @@ export function SharedPage() {
         />
         <div className="max-w-6xl mx-auto px-4 sm:px-8 h-14 flex items-center justify-between">
           {/* Left: Brand */}
-          <Link
-            to="/"
+          <a
+            href={APP_HOME_URL}
             className="flex items-center gap-2.5 cursor-pointer group"
           >
             <img
@@ -554,18 +529,18 @@ export function SharedPage() {
             <span className="text-md sm:text-lg font-bold tracking-tight text-stone-900 dark:text-stone-100 font-serif">
               {APP_NAME}
             </span>
-          </Link>
+          </a>
 
           {/* Right: Controls */}
           <div className="flex items-center gap-1.5 flex-shrink-0">
-            <Link
-              to="/"
+            <a
+              href={APP_HOME_URL}
               className="flex items-center justify-center w-9 h-9 rounded-xl bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-600 dark:text-stone-300 transition-all duration-200 hover:scale-105 active:scale-95"
               title={t("share.goToChat")}
               aria-label={t("share.goToChat")}
             >
               <MessageCircle size={18} />
-            </Link>
+            </a>
             <SharedPageLanguageToggle />
             <button
               onClick={toggleTheme}
@@ -797,8 +772,8 @@ export function SharedPage() {
               </div>
 
               {/* Button */}
-              <Link
-                to="/"
+              <a
+                href={APP_HOME_URL}
                 className="group flex-shrink-0 inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-[13px] font-semibold text-white bg-stone-900 dark:bg-stone-100 dark:text-stone-900 hover:bg-stone-800 dark:hover:bg-stone-200 active:scale-[0.97] transition-all duration-200 shadow-sm hover:shadow-md font-serif"
               >
                 <img src="/icons/icon.svg" alt="" className="w-4 h-4 rounded" />
@@ -817,7 +792,7 @@ export function SharedPage() {
                   <path d="M5 12h14" />
                   <path d="m12 5 7 7-7 7" />
                 </svg>
-              </Link>
+              </a>
             </div>
           </div>
 

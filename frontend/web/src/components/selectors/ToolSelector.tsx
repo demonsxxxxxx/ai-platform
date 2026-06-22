@@ -28,6 +28,7 @@ interface ToolSelectorProps {
   totalCount: number;
   isOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
+  searchSeed?: string;
 }
 
 const categoryIcons: Record<ToolCategory, typeof Bot> = {
@@ -47,6 +48,7 @@ export function ToolSelector({
   totalCount,
   isOpen: externalIsOpen,
   onOpenChange: externalOnOpenChange,
+  searchSeed,
 }: ToolSelectorProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -57,6 +59,7 @@ export function ToolSelector({
   const [expandedCategories, setExpandedCategories] = useState<
     Set<ToolCategory>
   >(new Set(["mcp"]));
+  const [searchQuery, setSearchQuery] = useState("");
   const swipeRef = useSwipeToClose({
     onClose: () => setIsOpen(false),
     enabled: isOpen,
@@ -74,10 +77,27 @@ export function ToolSelector({
     };
   }, [isOpen]);
 
+  useEffect(() => {
+    if (!isOpen || searchSeed === undefined) return;
+    setSearchQuery(searchSeed);
+  }, [isOpen, searchSeed]);
+
   // 按类别分组，每组内按工具名称排序 - 使用 useMemo 缓存计算结果
+  const filteredTools = useMemo(() => {
+    const normalized = searchQuery.trim().toLowerCase();
+    if (!normalized) return tools;
+    return tools.filter(
+      (tool) =>
+        tool.name.toLowerCase().includes(normalized) ||
+        tool.description.toLowerCase().includes(normalized) ||
+        tool.category.toLowerCase().includes(normalized) ||
+        (tool.server ?? "").toLowerCase().includes(normalized),
+    );
+  }, [searchQuery, tools]);
+
   const groupedTools = useMemo(
     () =>
-      tools.reduce(
+      filteredTools.reduce(
         (acc, tool) => {
           if (!acc[tool.category]) {
             acc[tool.category] = [];
@@ -87,7 +107,7 @@ export function ToolSelector({
         },
         {} as Record<ToolCategory, ToolState[]>,
       ),
-    [tools],
+    [filteredTools],
   );
 
   // Sort tools within each category by name
@@ -124,6 +144,11 @@ export function ToolSelector({
       }
       return newSet;
     });
+  };
+
+  const handleToolToggle = (tool: ToolState) => {
+    if (tool.system_disabled) return;
+    onToggleTool(tool.name);
   };
 
   const ModalContent = () => (
@@ -196,6 +221,16 @@ export function ToolSelector({
         </button>
       </div>
 
+      <div className="border-b border-stone-200/80 bg-white/80 px-4 py-3 dark:border-stone-700/80 dark:bg-stone-800/60 sm:px-5">
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder={t("tools.searchPlaceholder", "Search tools")}
+          className="w-full rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-700 outline-none transition-colors focus:border-[var(--theme-primary)] focus:bg-white dark:border-stone-700 dark:bg-stone-900/60 dark:text-stone-100 dark:focus:bg-stone-900"
+        />
+      </div>
+
       {/* Categories */}
       <div className="flex-1 overflow-y-auto p-2.5 sm:p-3 space-y-1.5">
         {Object.entries(sortedGroupedTools).map(
@@ -258,11 +293,14 @@ export function ToolSelector({
                             {/* Tool Row */}
                             <div
                               className={`flex items-center gap-1.5 sm:gap-2 px-2 sm:px-2.5 py-2 sm:py-2 rounded-lg cursor-pointer transition-all duration-150 ${
-                                tool.enabled
+                                tool.system_disabled
+                                  ? "cursor-not-allowed bg-red-50/60 opacity-70 dark:bg-red-500/10"
+                                  : tool.enabled
                                   ? "hover:bg-stone-50 dark:hover:bg-stone-700/30 active:bg-stone-100/80 dark:active:bg-stone-600/40"
                                   : "bg-[var(--theme-primary)]/[0.06] dark:bg-[var(--theme-primary)]/[0.08] hover:bg-[var(--theme-primary)]/[0.12] dark:hover:bg-[var(--theme-primary)]/[0.14] active:bg-[var(--theme-primary)]/[0.18] dark:active:bg-[var(--theme-primary)]/[0.20]"
                               }`}
-                              onClick={() => onToggleTool(tool.name)}
+                              onClick={() => handleToolToggle(tool)}
+                              aria-disabled={tool.system_disabled || undefined}
                             >
                               {/* Expand button for tools with params */}
                               <button
@@ -313,7 +351,7 @@ export function ToolSelector({
                               </div>
                               <Checkbox
                                 checked={tool.enabled}
-                                onChange={() => onToggleTool(tool.name)}
+                                onChange={() => handleToolToggle(tool)}
                                 disabled={tool.system_disabled}
                               />
                             </div>
@@ -393,6 +431,11 @@ export function ToolSelector({
               </div>
             );
           },
+        )}
+        {filteredTools.length === 0 && (
+          <div className="rounded-xl border border-dashed border-stone-200 bg-stone-50/70 px-4 py-6 text-center text-sm text-stone-500 dark:border-stone-700 dark:bg-stone-800/40 dark:text-stone-400">
+            {t("tools.noMatchingTools", "No matching tools")}
+          </div>
         )}
       </div>
 

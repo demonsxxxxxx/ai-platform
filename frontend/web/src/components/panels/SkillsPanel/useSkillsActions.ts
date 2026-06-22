@@ -21,10 +21,11 @@ export interface ZipSkillPreview {
   already_exists: boolean;
 }
 
-export function useSkillsActions() {
+export function useSkillsActions(options?: { enabled?: boolean }) {
   const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
+  const enabled = options?.enabled !== false;
   // Search & filter
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
@@ -63,7 +64,7 @@ export function useSkillsActions() {
     installGitHubSkills,
     publishToMarketplace,
     clearError,
-  } = useSkills({ listParams });
+  } = useSkills({ enabled, listParams });
   const filteredSkills = skills;
 
   useEffect(() => {

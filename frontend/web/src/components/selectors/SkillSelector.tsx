@@ -33,6 +33,7 @@ interface SkillSelectorProps {
   controlledByPersonaName?: string | null;
   isOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
+  searchSeed?: string;
 }
 
 const sourceIcons: Record<SkillSource, typeof FileCode> = {
@@ -57,6 +58,7 @@ export function SkillSelector({
   controlledByPersonaName,
   isOpen: externalIsOpen,
   onOpenChange: externalOnOpenChange,
+  searchSeed,
 }: SkillSelectorProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -84,6 +86,12 @@ export function SkillSelector({
       document.body.style.overflow = "";
     };
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || searchSeed === undefined) return;
+    setSearchQuery(searchSeed);
+    setSelectedTags([]);
+  }, [isOpen, searchSeed]);
 
   // 按来源分组 - 使用 useMemo 缓存计算结果
   const filteredSkills = useMemo(

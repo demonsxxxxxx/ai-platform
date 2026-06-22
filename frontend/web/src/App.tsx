@@ -372,15 +372,7 @@ function App() {
             <Route
               path="/skills"
               element={
-                <ProtectedRoute
-                  permissions={[
-                    Permission.SKILL_READ,
-                    Permission.MARKETPLACE_READ,
-                  ]}
-                  redirectTo="/chat"
-                  showToast
-                  toastMessage={t("errors.noPermission")}
-                >
+                <ProtectedRoute>
                   <SkillsPage />
                 </ProtectedRoute>
               }
@@ -388,15 +380,7 @@ function App() {
             <Route
               path="/marketplace"
               element={
-                <ProtectedRoute
-                  permissions={[
-                    Permission.SKILL_READ,
-                    Permission.MARKETPLACE_READ,
-                  ]}
-                  redirectTo="/chat"
-                  showToast
-                  toastMessage={t("errors.noPermission")}
-                >
+                <ProtectedRoute>
                   <MarketplacePage />
                 </ProtectedRoute>
               }
@@ -404,12 +388,7 @@ function App() {
             <Route
               path="/mcp"
               element={
-                <ProtectedRoute
-                  permissions={[Permission.MCP_READ]}
-                  redirectTo="/chat"
-                  showToast
-                  toastMessage={t("errors.noPermission")}
-                >
+                <ProtectedRoute>
                   <MCPPage />
                 </ProtectedRoute>
               }
@@ -469,12 +448,7 @@ function App() {
             <Route
               path="/channels/:channelType?/:instanceId?"
               element={
-                <ProtectedRoute
-                  permissions={[Permission.CHANNEL_READ]}
-                  redirectTo="/chat"
-                  showToast
-                  toastMessage={t("errors.noPermission")}
-                >
+                <ProtectedRoute>
                   <ChannelsPage />
                 </ProtectedRoute>
               }

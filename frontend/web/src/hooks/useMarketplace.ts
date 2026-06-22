@@ -12,7 +12,8 @@ interface BinaryFileInfo {
   size: number;
 }
 
-export function useMarketplace() {
+export function useMarketplace(options?: { enabled?: boolean }) {
+  const enabled = options?.enabled !== false;
   const [skills, setSkills] = useState<MarketplaceSkillResponse[]>([]);
   const [tags, setTags] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -47,6 +48,7 @@ export function useMarketplace() {
 
   // Fetch marketplace skills
   const fetchSkills = useCallback(async () => {
+    if (!enabled) return;
     setIsLoading(true);
     setError(null);
     try {
@@ -66,21 +68,23 @@ export function useMarketplace() {
     } finally {
       setIsLoading(false);
     }
-  }, [selectedTags, debouncedSearch]);
+  }, [debouncedSearch, enabled, selectedTags]);
 
   // Fetch all tags
   const fetchTags = useCallback(async () => {
+    if (!enabled) return;
     try {
       const data = await marketplaceApi.getTags();
       setTags(data.tags ?? []);
     } catch (err) {
       console.error("Failed to fetch tags:", err);
     }
-  }, []);
+  }, [enabled]);
 
   // Install a skill
   const installSkill = useCallback(
     async (skillName: string): Promise<boolean> => {
+      if (!enabled) return false;
       try {
         await marketplaceApi.install(skillName);
         return true;
@@ -91,12 +95,13 @@ export function useMarketplace() {
         return false;
       }
     },
-    [],
+    [enabled],
   );
 
   // Update a skill from marketplace
   const updateSkill = useCallback(
     async (skillName: string): Promise<boolean> => {
+      if (!enabled) return false;
       try {
         await marketplaceApi.update(skillName);
         return true;
@@ -105,11 +110,12 @@ export function useMarketplace() {
         return false;
       }
     },
-    [],
+    [enabled],
   );
 
   // Preview skill detail
   const openPreview = useCallback(async (skill: MarketplaceSkillResponse) => {
+    if (!enabled) return;
     setPreviewSkill(skill);
     setPreviewFiles(null);
     setPreviewFileContent({});
@@ -123,11 +129,12 @@ export function useMarketplace() {
     } finally {
       setPreviewLoading(false);
     }
-  }, []);
+  }, [enabled]);
 
   // Read preview file content
   const readPreviewFile = useCallback(
     async (skillName: string, filePath: string) => {
+      if (!enabled) return;
       setPreviewFileLoading(filePath);
       try {
         const resp = await marketplaceApi.getFile(skillName, filePath);
@@ -151,7 +158,7 @@ export function useMarketplace() {
         setPreviewFileLoading(null);
       }
     },
-    [],
+    [enabled],
   );
 
   const closePreview = useCallback(() => {
@@ -178,6 +185,7 @@ export function useMarketplace() {
   // Create and publish skill directly in marketplace
   const createAndPublish = useCallback(
     async (data: MarketplaceCreateRequest): Promise<boolean> => {
+      if (!enabled) return false;
       setIsLoading(true);
       setError(null);
       try {
@@ -192,7 +200,7 @@ export function useMarketplace() {
         setIsLoading(false);
       }
     },
-    [fetchSkills, fetchTags],
+    [enabled, fetchSkills, fetchTags],
   );
 
   // Update marketplace skill directly (creator only)
@@ -201,6 +209,7 @@ export function useMarketplace() {
       skillName: string,
       data: MarketplaceCreateRequest,
     ): Promise<boolean> => {
+      if (!enabled) return false;
       setIsLoading(true);
       setError(null);
       try {
@@ -214,12 +223,13 @@ export function useMarketplace() {
         setIsLoading(false);
       }
     },
-    [fetchSkills],
+    [enabled, fetchSkills],
   );
 
   // Admin: activate/deactivate skill
   const activateSkill = useCallback(
     async (skillName: string, isActive: boolean): Promise<boolean> => {
+      if (!enabled) return false;
       setError(null);
       try {
         await marketplaceApi.activate(skillName, isActive);
@@ -230,12 +240,13 @@ export function useMarketplace() {
         return false;
       }
     },
-    [fetchSkills],
+    [enabled, fetchSkills],
   );
 
   // Admin: delete skill from marketplace
   const deleteSkill = useCallback(
     async (skillName: string): Promise<boolean> => {
+      if (!enabled) return false;
       setError(null);
       try {
         await marketplaceApi.deleteSkill(skillName);
@@ -246,11 +257,12 @@ export function useMarketplace() {
         return false;
       }
     },
-    [fetchSkills],
+    [enabled, fetchSkills],
   );
 
   // Load marketplace skill for editing (without local copy)
   const loadMarketplaceSkillForEdit = useCallback(async (skillName: string) => {
+    if (!enabled) return null;
     try {
       const [filesResp, skillDetail] = await Promise.all([
         marketplaceApi.listFiles(skillName),
@@ -284,17 +296,19 @@ export function useMarketplace() {
       );
       return null;
     }
-  }, []);
+  }, [enabled]);
 
   // Initial load
   useEffect(() => {
+    if (!enabled) return;
     fetchSkills();
-  }, [fetchSkills]);
+  }, [enabled, fetchSkills]);
 
   // Load tags on mount
   useEffect(() => {
+    if (!enabled) return;
     fetchTags();
-  }, [fetchTags]);
+  }, [enabled, fetchTags]);
 
   return {
     skills,

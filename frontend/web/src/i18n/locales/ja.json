@@ -9,7 +9,7 @@
     "currentVersion": "現在のバージョン",
     "gitTag": "Git タグ",
     "latestVersion": "最新バージョン",
-    "title": "LambChat について",
+    "title": "AI Platform について",
     "upToDate": "最新バージョンをお使いです！",
     "updateAvailable": "新しいバージョンが利用可能です！",
     "viewOnGitHub": "GitHub で見る",
@@ -192,7 +192,7 @@
       "name": "Search Agent"
     }
   },
-  "appName": "LambChat",
+  "appName": "AI Platform",
   "runPlayback": {
     "artifacts": "成果物",
     "download": "ダウンロード",
@@ -470,7 +470,7 @@
     "deleteError": "設定の削除に失敗しました",
     "deleteSuccess": "設定を削除しました",
     "deleteTitle": "チャンネルインスタンスを削除",
-    "description": "お気に入りのチャットプラットフォームをLambChatに接続",
+    "description": "管理された会社チャンネルを AI Platform に接続します",
     "disconnected": "未接続",
     "enabled": "チャンネルを有効化",
     "enabledDesc": "このチャンネルを有効化または無効化",
@@ -590,9 +590,9 @@
     "noPermission": "メッセージを送信する権限がありません",
     "noPermissionHint": "メッセージを送信する権限がありません",
     "outline": "アウトライン",
-    "placeholder": "@ でペルソナを選択、またはメッセージを入力...",
-    "placeholderWithHintCtrl": "@ でペルソナを選択、またはメッセージを入力…  Enter で改行、Ctrl+Enter で送信",
-    "placeholderWithHintShift": "@ でペルソナを選択、またはメッセージを入力…  Enter で送信、Shift+Enter で改行",
+    "placeholder": "/ でコマンド、$ で Skills、またはタスクを入力...",
+    "placeholderWithHintCtrl": "/ でコマンド、$ で Skills…  Enter で改行、Ctrl+Enter で送信",
+    "placeholderWithHintShift": "/ でコマンド、$ で Skills…  Enter で送信、Shift+Enter で改行",
     "queueFull": "待ち行列が満杯です。しばらくしてからお試しください",
     "queueStart": "タスクの処理を開始しました",
     "queued": "順番待ち中 ({{position}}番目)...",
@@ -667,7 +667,7 @@
     "noResults": "結果が見つかりません",
     "page": "{{page}}ページ",
     "permissionRequired": "権限が必要です",
-    "poweredBy": "Clivia 搭載",
+    "poweredBy": "Company AI Platform",
     "prev": "前へ",
     "previous": "前へ",
     "readMode": "読み取り専用",
@@ -1279,6 +1279,10 @@
     "noPermission": "MCPサーバーを表示する権限がありません。",
     "noServers": "MCPサーバーが設定されていません",
     "operationFailed": "操作に失敗しました",
+    "permissionLimited": {
+      "description": "MCP はワークベンチに表示されていますが、現在のロールで利用できる管理済みツールは、ai-platform の許可済みツール投影が公開された後に選択できます。",
+      "title": "MCP ツールはガバナンス対象です"
+    },
     "overwriteExisting": "同名の既存サーバーを上書き",
     "promoteFailed": "MCPサーバーの昇格に失敗しました",
     "promoteSuccess": "MCPサーバーがシステムサーバーに昇格しました",
@@ -1686,8 +1690,8 @@
       "title": "ファイルライブラリ"
     },
     "landing": {
-      "description": "LambChatはSkills + MCPデュアルエンジン駆動のプラガブルなマルチテナントAI対話プラットフォーム。Claude、GPT、Geminiなど複数モデルに対応し、リアルタイムSSEストリーミング、マルチエージェントオーケストレーション、モジュラースキルシステムを提供。",
-      "title": "LambChat - AIエージェントプラットフォーム"
+      "description": "AI Platform は、チャット、Skills、MCP ツール、ファイル、成果物、ワークフローを扱う社内向けの管理された AI ワークベンチです。",
+      "title": "AI Platform - エンタープライズ AI ワークベンチ"
     },
     "marketplace": {
       "description": "コミュニティ構築のAIスキルを発見・インストール。評価・デプロイでAIエージェントの機能を拡張。",
@@ -1734,7 +1738,7 @@
     "ACCESS_TOKEN_EXPIRE_HOURS": "アクセストークン有効期限（時間）",
     "ADMIN_CONTACT_EMAIL": "Aboutダイアログに表示される管理者の連絡先メール",
     "ADMIN_CONTACT_URL": "管理者の連絡先/サポートURL（ヘルプデスク、フィードバックフォーム等）、Aboutダイアログに表示",
-    "APP_BASE_URL": "ファイルダウンロード/アップロードの公開ベースURL（例：https://lambchat.com）。リバースプロキシ環境でrequest.base_urlが不正確な場合に必要。",
+    "APP_BASE_URL": "ファイルダウンロード/アップロードの公開ベースURL（例：http://10.56.0.211:18001）。リバースプロキシ環境でrequest.base_urlが不正確な場合に必要。",
     "AUDIO_TRANSCRIPTION_API_KEY": "音声文字起こしプロバイダーの API キー。OpenAI や SiliconFlow などの OpenAI 互換エンドポイントに対応します。",
     "AUDIO_TRANSCRIPTION_BASE_URL": "音声文字起こしプロバイダーの Base URL（例: https://api.openai.com/v1 または https://api.siliconflow.cn/v1）。空欄の場合は既定の OpenAI エンドポイントを使います。",
     "AUDIO_TRANSCRIPTION_MODEL": "audio_transcribe ツールで使う既定の文字起こしモデル名。例: gpt-4o-mini-transcribe や FunAudioLLM/SenseVoiceSmall。",
@@ -1904,7 +1908,8 @@
     "resetSuccess": "設定をリセットしました",
     "saved": "設定を保存しました",
     "searchPlaceholder": "設定を検索...",
-    "title": "設定"
+    "title": "設定",
+    "APP_BASE_URL": "ファイルダウンロード/アップロードの公開ベースURL（例：http://10.56.0.211:18001）。リバースプロキシ環境でrequest.base_urlが不正確な場合に必要。"
   },
   "share": {
     "agent": "エージェント",
@@ -2194,6 +2199,14 @@
     "userSkillVisible": "ユーザースキル（自分のみに表示）"
   },
   "skillsHub": {
+    "featureDisabled": {
+      "description": "Skills はプラットフォームレベルで無効です。ワークベンチには管理対象の入口を表示しますが、Skill 探索と部門アクセスは管理者が有効化した後に利用できます。",
+      "title": "Skills は管理者の有効化待ちです"
+    },
+    "permissionLimited": {
+      "description": "Skills とマーケットプレイス探索はこのワークベンチの一部です。現在のロールには読み取り可能な Skill 投影がないため、管理者が部門アクセスを有効にするまでページは読み取り専用です。",
+      "title": "Skills アクセスはガバナンス対象です"
+    },
     "subtitle": "ローカルスキルを管理し、マーケットプレイスを探索",
     "title": "スキル"
   },
