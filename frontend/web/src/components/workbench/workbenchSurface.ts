@@ -20,7 +20,7 @@ export const workbenchSurface = {
     "dark:border-stone-800 dark:bg-stone-950",
   ),
   context: clsx(
-    "hidden min-h-0 w-80 shrink-0 flex-col border-l border-slate-200/70 bg-[var(--theme-bg)]",
+    "hidden min-h-0 w-80 shrink-0 flex-col border-l border-slate-200/70 bg-[var(--theme-bg-sidebar)]",
     "dark:border-stone-800 dark:bg-stone-950 xl:flex",
   ),
   panel: clsx(
@@ -28,8 +28,8 @@ export const workbenchSurface = {
     "dark:border-stone-800 dark:bg-stone-900",
   ),
   secondaryPanel: clsx(
-    "rounded-lg border border-slate-200/70 bg-[var(--theme-bg-card)] shadow-[0_4px_12px_rgba(18,38,63,0.02)]",
-    "dark:border-stone-800 dark:bg-stone-900/80",
+    "rounded-lg border border-slate-200/70 bg-[var(--theme-bg-sidebar)] shadow-none",
+    "dark:border-stone-800 dark:bg-stone-950/80",
   ),
   compactPanel: clsx(
     "rounded-lg border border-slate-200/80 bg-[var(--theme-bg-card)] shadow-[0_4px_12px_rgba(18,38,63,0.03)]",
@@ -40,12 +40,12 @@ export const workbenchSurface = {
     "dark:border-stone-800 dark:bg-stone-900",
   ),
   unavailable: clsx(
-    "rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 text-sm leading-6 text-slate-600",
-    "dark:border-stone-700 dark:bg-stone-950 dark:text-stone-300",
+    "rounded-lg border border-dashed border-slate-300 bg-[var(--theme-bg-card)] p-4 text-sm leading-6 text-slate-600",
+    "dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300",
   ),
   statusTile: clsx(
-    "rounded-md bg-slate-100/70 p-3",
-    "dark:bg-stone-950/70",
+    "rounded-md border border-slate-200/70 bg-[var(--theme-bg-card)] p-3",
+    "dark:border-stone-800 dark:bg-stone-900",
   ),
   mutedText: "text-slate-500 dark:text-stone-400",
   label:

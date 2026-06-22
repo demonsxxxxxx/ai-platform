@@ -111,9 +111,12 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
   assert.match(surface, /root:[\s\S]*bg-\[var\(--theme-bg\)\]/);
   assert.match(surface, /thread:[\s\S]*bg-\[var\(--theme-bg\)\]/);
   assert.match(surface, /composer:[\s\S]*bg-\[var\(--theme-bg\)\]/);
-  assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-bg\)\]/);
+  assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-bg-sidebar\)\]/);
   assert.match(surface, /panel:[\s\S]*bg-\[var\(--theme-bg-card\)\]/);
-  assert.match(surface, /secondaryPanel:[\s\S]*bg-\[var\(--theme-bg-card\)\]/);
+  assert.match(
+    surface,
+    /secondaryPanel:[\s\S]*bg-\[var\(--theme-bg-sidebar\)\]/,
+  );
   assert.match(surface, /secondaryPanel:/);
   assert.match(rightPanel, /workbenchSurface\.secondaryPanel/);
   assert.match(theme, /--theme-bg:\s*#f3f5f8;/);

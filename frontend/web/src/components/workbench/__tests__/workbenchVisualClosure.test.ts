@@ -40,6 +40,15 @@ test("authenticated workbench source avoids marketing and nested-card patterns",
   assert.match(tabContent, /data-authenticated-workbench-page/);
 });
 
+test("workbench right context shares the sidebar surface layer", () => {
+  const surface = read("src/components/workbench/workbenchSurface.ts");
+  const rightPanel = read("src/components/workbench/WorkbenchRightPanel.tsx");
+
+  assert.match(surface, /bg-\[var\(--theme-bg-sidebar\)\]/);
+  assert.match(rightPanel, /bg-\[var\(--theme-bg-sidebar\)\]/);
+  assert.match(rightPanel, /workbenchSurface\.secondaryPanel/);
+});
+
 test("composer and command surfaces use stable dimensions", () => {
   const css = read("src/styles/chat.css");
   assert.match(css, /\.chat-input-container/);
