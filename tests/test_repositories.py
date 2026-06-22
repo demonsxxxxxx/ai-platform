@@ -78,6 +78,59 @@ async def test_count_active_runs_for_user_counts_queued_and_running_only():
 
 
 @pytest.mark.asyncio
+async def test_list_public_skill_catalog_projects_public_source_without_internal_dependencies():
+    class CatalogCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "skill_id": "qa-file-reviewer",
+                    "name": "QA Word Review",
+                    "version": "hash-a",
+                    "description": "Review Word documents.",
+                    "status": "active",
+                    "visible_to_user": True,
+                    "source_json": {
+                        "kind": "builtin",
+                        "tags": ["document"],
+                        "files": [{"relative_path": "SKILL.md", "content_base64": "IyBRQQ=="}],
+                    },
+                    "dependency_ids": ["minimax-docx"],
+                    "created_by": "dev-admin",
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            ]
+
+    class CatalogConnection:
+        def __init__(self):
+            self.sql = ""
+            self.params = None
+
+        async def execute(self, sql, params):
+            self.sql = sql
+            self.params = params
+            return CatalogCursor()
+
+    conn = CatalogConnection()
+
+    rows = await repositories.list_public_skill_catalog(
+        conn,
+        tenant_id="default",
+        include_disabled=True,
+    )
+
+    assert rows[0]["source"]["tags"] == ["document"]
+    assert rows[0]["source"]["files"][0]["relative_path"] == "SKILL.md"
+    assert rows[0]["dependency_ids"] == ["minimax-docx"]
+    assert "skills.id = any(%s)" in conn.sql
+    assert "skills.status = 'active'" in conn.sql
+    assert conn.params[0:2] == ("default", "default")
+    assert "qa-file-reviewer" in conn.params[2]
+    assert "minimax-docx" not in conn.params[2]
+    assert conn.params[3] is True
+
+
+@pytest.mark.asyncio
 async def test_enforce_user_active_run_admission_locks_before_counting():
     class CountCursor:
         async def fetchone(self):

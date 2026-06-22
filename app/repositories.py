@@ -23,7 +23,7 @@ from app.control_plane_contracts import (
 from app.error_taxonomy import summarize_error_categories
 from app.memory_redaction import normalize_memory_redaction_mode, redact_memory_metadata, redact_memory_text
 from app.projection_redaction import sanitize_user_control_input
-from app.skills.dependencies import is_workbench_skill_public
+from app.skills.dependencies import PUBLIC_WORKBENCH_SKILL_IDS, is_workbench_skill_public
 from app.skills.release_policy import resolve_rollout_skill_decision
 from app.tool_policy import max_risk
 
@@ -440,6 +440,76 @@ async def set_workbench_skill_status(
     if row is None:
         raise RepositoryNotFoundError("skill_not_found")
     return row
+
+
+async def list_public_skill_catalog(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    include_disabled: bool = False,
+) -> list[dict[str, Any]]:
+    """Return tenant-visible public Skills/Marketplace catalog rows."""
+
+    cursor = await conn.execute(
+        """
+        select
+          skills.id as skill_id,
+          skills.name,
+          coalesce(skill_release_policies.current_version, skills.version) as version,
+          coalesce(skill_versions.description, skills.description) as description,
+          coalesce(tenant_workbench_skills.status, skills.status) as status,
+          coalesce(tenant_workbench_skills.visible_to_user, true) as visible_to_user,
+          coalesce(skill_versions.source_json, '{}'::jsonb) as source_json,
+          coalesce(skill_versions.dependency_ids, '[]'::jsonb) as dependency_ids,
+          skill_versions.created_by,
+          skill_versions.created_at,
+          skills.created_at as updated_at
+        from skills
+        left join tenant_workbench_skills
+          on tenant_workbench_skills.tenant_id = %s
+         and tenant_workbench_skills.skill_id = skills.id
+        left join skill_release_policies
+          on skill_release_policies.tenant_id = %s
+         and skill_release_policies.skill_id = skills.id
+         and skill_release_policies.channel = 'stable'
+         and skill_release_policies.status = 'active'
+        left join skill_versions
+          on skill_versions.skill_id = skills.id
+         and skill_versions.version = coalesce(skill_release_policies.current_version, skills.version)
+        where skills.id = any(%s)
+          and skills.status = 'active'
+          and coalesce(tenant_workbench_skills.visible_to_user, true)
+          and (%s or coalesce(tenant_workbench_skills.status, skills.status) = 'active')
+        order by skills.name asc, skills.id asc
+        """,
+        (tenant_id, tenant_id, sorted(PUBLIC_WORKBENCH_SKILL_IDS), include_disabled),
+    )
+    rows = []
+    for row in list(await cursor.fetchall()):
+        projected = dict(row)
+        projected["source"] = _json_dict(projected.pop("source_json", {}))
+        projected["dependency_ids"] = _json_list(projected.get("dependency_ids"))
+        rows.append(projected)
+    return rows
+
+
+async def set_public_skill_enabled(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    skill_id: str,
+    status: str,
+) -> dict[str, Any]:
+    """Set tenant availability for a user-facing public skill."""
+
+    if status not in {"active", "disabled"}:
+        raise RepositoryConflictError("invalid_skill_status")
+    return await set_workbench_skill_status(
+        conn,
+        tenant_id=tenant_id,
+        skill_id=skill_id,
+        status=status,
+    )
 
 
 async def list_workbench_mcp_tools(conn: AsyncConnection, *, tenant_id: str, include_disabled: bool = True) -> list[dict[str, Any]]:

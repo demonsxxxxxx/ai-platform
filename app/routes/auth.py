@@ -17,6 +17,8 @@ AI_USER_PERMISSIONS = [
     "chat:write",
     "session:read",
     "session:write",
+    "skill:read",
+    "marketplace:read",
     "artifact:download",
     "file:upload",
     "file:upload:document",
@@ -27,6 +29,11 @@ AI_ADMIN_PERMISSIONS = [
     "model:admin",
     "settings:manage",
     "admin:status",
+    "skill:write",
+    "skill:delete",
+    "skill:admin",
+    "marketplace:publish",
+    "marketplace:admin",
 ]
 
 

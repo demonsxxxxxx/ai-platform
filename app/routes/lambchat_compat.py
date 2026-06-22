@@ -206,6 +206,13 @@ UI_PERMISSIONS = [
     "session:write",
     "file:upload",
     "file:upload:document",
+    "skill:read",
+    "skill:write",
+    "skill:delete",
+    "skill:admin",
+    "marketplace:read",
+    "marketplace:publish",
+    "marketplace:admin",
 ]
 
 CHAT_STREAM_REPLAY_SKIP_EVENT_TYPES = {"assistant_delta"}
