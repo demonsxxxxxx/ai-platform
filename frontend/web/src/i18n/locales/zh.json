@@ -1593,7 +1593,7 @@
     "tagsAndSkills": "标签与技能",
     "tagsInput": "标签",
     "tagsInputPlaceholder": "用逗号分隔，如：写作, 翻译, 代码",
-    "title": "角色广场",
+    "title": "角色",
     "tryOtherFilters": "试试其他搜索条件",
     "updateFailed": "更新角色预设失败",
     "updateSuccess": "角色「{{name}}」已更新",

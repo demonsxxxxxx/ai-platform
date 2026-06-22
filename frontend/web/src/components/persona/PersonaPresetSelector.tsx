@@ -161,7 +161,7 @@ export function PersonaPresetSelector({
                 className="text-base font-semibold"
                 style={{ color: "var(--theme-text)" }}
               >
-                {t("personaPresets.title", "角色广场")}
+                {t("personaPresets.title", "角色")}
               </h2>
               <p
                 className="text-xs"

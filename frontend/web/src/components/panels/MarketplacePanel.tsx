@@ -383,7 +383,7 @@ export function MarketplacePanel({
     <div
       data-phase1c-surface="marketplace"
       data-marketplace-catalog-shell
-      className="flex h-full min-h-0 flex-col bg-slate-50 text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
     >
       {embedded && (
         <div className="skill-panel-header">
@@ -453,7 +453,7 @@ export function MarketplacePanel({
 
       <div
         data-marketplace-filter-shell
-        className="mx-4 mt-3 flex flex-col gap-2 rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-600 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900 dark:text-stone-300 sm:flex-row sm:items-center sm:justify-between"
+        className="mx-4 mt-3 flex flex-col gap-2 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 text-xs text-slate-600 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900 dark:text-stone-300 sm:flex-row sm:items-center sm:justify-between"
       >
         <div className="flex min-w-0 items-center gap-2">
           <Building2 size={16} className="shrink-0 text-slate-500" />
@@ -474,7 +474,7 @@ export function MarketplacePanel({
           ].map((label) => (
             <span
               key={label}
-              className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 font-medium text-slate-500 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-400"
+              className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-2 py-1 font-medium text-slate-500 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-400"
             >
               {label}
             </span>
@@ -488,7 +488,7 @@ export function MarketplacePanel({
           <div data-marketplace-unavailable-shell className="space-y-4">
             <div
               data-marketplace-ordinary-user-copy
-              className="rounded-lg border border-dashed border-slate-300 bg-white p-4 text-sm leading-6 text-slate-600 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300"
+              className="rounded-lg border border-dashed border-slate-300 bg-[var(--theme-bg-card)] p-4 text-sm leading-6 text-slate-600 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300"
             >
               <p className="font-semibold text-slate-900 dark:text-stone-100">
                 {t("marketplace.catalogUnavailable.title")}
@@ -504,7 +504,7 @@ export function MarketplacePanel({
               {marketplacePlaceholderItems.map((item) => (
                 <article
                   key={item.id}
-                  className="rounded-lg border border-slate-200 bg-white p-4 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900"
+                  className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-4 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900"
                 >
                   <div className="flex items-center gap-2">
                     <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-500 dark:bg-stone-800 dark:text-stone-300">

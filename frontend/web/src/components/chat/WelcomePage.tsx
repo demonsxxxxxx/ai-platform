@@ -1,13 +1,6 @@
 import { memo, useMemo, useState, useCallback, useRef } from "react";
-import {
-  ChevronRight,
-  MessageSquareText,
-  RefreshCw,
-  Sparkles,
-  UserRound,
-} from "lucide-react";
+import { MessageSquareText, RefreshCw, Sparkles, UserRound } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useNavigate } from "react-router-dom";
 import { ChatInput } from "./ChatInput";
 import type { ChatInputProps } from "./ChatInput";
 import { ContactAdminDialog } from "../common/ContactAdminDialog";
@@ -68,7 +61,6 @@ export const WelcomePage = memo(function WelcomePage({
   onClearPersonaPreset,
 }: WelcomePageProps) {
   const { i18n, t } = useTranslation();
-  const navigate = useNavigate();
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [animKey, setAnimKey] = useState(0);
   const [contactAdminOpen, setContactAdminOpen] = useState(false);
@@ -343,19 +335,6 @@ export const WelcomePage = memo(function WelcomePage({
               </span>
             </div>
             <div className="flex items-center gap-2">
-              {showPersonaCards && (
-                <button
-                  onClick={() => navigate("/persona")}
-                  className="flex items-center gap-0.5 px-2 py-1 rounded-lg text-[11px] sm:text-[12px] md:text-[12px] font-medium transition-all duration-300 cursor-pointer"
-                  style={{
-                    color: "var(--theme-text-secondary)",
-                    backgroundColor: "transparent",
-                  }}
-                >
-                  <span>{t("common.manage", "管理")}</span>
-                  <ChevronRight size={12} />
-                </button>
-              )}
               {selectedPersonaPresetId && onClearPersonaPreset && (
                 <button
                   onClick={handleRefresh}

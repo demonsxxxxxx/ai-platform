@@ -149,6 +149,64 @@ test("authenticated shell chrome avoids legacy playful branding accents", () => 
   assert.match(chrome, /bg-teal-700/);
 });
 
+test("legacy persona plaza and more-menu pages are removed from the authenticated app graph", () => {
+  const app = readFileSync(join(root, "src/App.tsx"), "utf8");
+  const tabs = readFileSync(
+    join(root, "src/components/layout/AppContent/TabContent.tsx"),
+    "utf8",
+  );
+  const sidebarParts = readFileSync(
+    join(root, "src/components/panels/SidebarParts/index.ts"),
+    "utf8",
+  );
+  const welcome = readFileSync(
+    join(root, "src/components/chat/WelcomePage.tsx"),
+    "utf8",
+  );
+  const inputSelectors = readFileSync(
+    join(root, "src/components/chat/ChatInputSelectors.tsx"),
+    "utf8",
+  );
+  const activeGraph = [app, tabs, sidebarParts, welcome, inputSelectors].join("\n");
+  const personaSelector = readFileSync(
+    join(root, "src/components/persona/PersonaPresetSelector.tsx"),
+    "utf8",
+  );
+  const zhLocale = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
+
+  assert.match(app, /path="\/persona"[\s\S]{0,180}<Navigate to="\/marketplace" replace \/>/);
+  assert.doesNotMatch(activeGraph, /navigate\("\/persona"\)/);
+  assert.doesNotMatch(activeGraph, /PersonaPlazaPanel|persona:\s*PersonaPlazaPanel/);
+  assert.doesNotMatch(activeGraph, /MobileMoreMenuSheet|DesktopMoreMenu/);
+  assert.doesNotMatch(personaSelector, /角色广场/);
+  assert.doesNotMatch(zhLocale, /角色广场/);
+});
+
+test("authenticated marketplace pages share the workbench surface tokens", () => {
+  const skillsHub = readFileSync(
+    join(root, "src/components/panels/SkillsHubPanel.tsx"),
+    "utf8",
+  );
+  const marketplace = readFileSync(
+    join(root, "src/components/panels/MarketplacePanel.tsx"),
+    "utf8",
+  );
+
+  assert.match(skillsHub, /bg-\[var\(--theme-bg\)\]/);
+  assert.match(marketplace, /bg-\[var\(--theme-bg\)\]/);
+  assert.doesNotMatch(skillsHub, /bg-slate-50/);
+  assert.doesNotMatch(marketplace, /bg-slate-50/);
+  assert.doesNotMatch(marketplace, /border-slate-200 bg-white/);
+});
+
+test("production pwa updates auto-activate so old authenticated bundles cannot persist", () => {
+  const pwa = readFileSync(join(root, "src/pwa.ts"), "utf8");
+
+  assert.match(pwa, /activateWaitingAiPlatformPwaUpdate\(registration\)/);
+  assert.match(pwa, /registration\.addEventListener\("updatefound"/);
+  assert.match(pwa, /navigator\.serviceWorker\.addEventListener\("controllerchange"/);
+});
+
 test("legacy brand authority is absent from active browser entry", () => {
   const index = readFileSync(join(root, "index.html"), "utf8");
   assert.doesNotMatch(index, /\bLambChat\b|lambchat\.com/i);

@@ -55,7 +55,7 @@ export function SkillsHubPanel() {
   return (
     <div
       data-phase1c-surface="skills-hub"
-      className="flex h-full min-h-0 flex-col bg-slate-50 text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
     >
       <PanelHeader
         className="skill-panel-header"
@@ -108,7 +108,7 @@ export function SkillsHubPanel() {
 
       <div className="px-4 pb-3">
         <section className="grid gap-3 lg:grid-cols-2">
-          <div className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-[var(--theme-bg-card)] p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-3 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
                 {skillsGloballyDisabled
@@ -126,7 +126,7 @@ export function SkillsHubPanel() {
               labelKey={permissionAvailability.labelKey}
             />
           </div>
-          <div className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-[var(--theme-bg-card)] p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-3 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <TerminalSquare size={16} className="text-stone-500 dark:text-stone-400" />

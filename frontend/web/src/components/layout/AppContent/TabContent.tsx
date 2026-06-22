@@ -60,11 +60,6 @@ const LaunchpadPanel = lazy(() =>
     default: m.LaunchpadPanel,
   })),
 );
-const PersonaPlazaPanel = lazy(() =>
-  import("../../persona/PersonaPlazaPanel").then((m) => ({
-    default: m.PersonaPlazaPanel,
-  })),
-);
 
 const panelMap: Record<
   string,
@@ -82,7 +77,6 @@ const panelMap: Record<
   agents: AgentConfigPanel,
   models: QuarantinedLegacyPanel,
   files: RevealedFilesPage,
-  persona: PersonaPlazaPanel,
   notifications: NotificationPanel,
   memory: MemoryPanel,
 };
