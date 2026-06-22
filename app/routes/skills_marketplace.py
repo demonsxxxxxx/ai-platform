@@ -271,6 +271,14 @@ def _file_response(row: dict[str, Any], *, file_path: str) -> PublicSkillFileRes
     raise HTTPException(status_code=404, detail="skill_file_not_found")
 
 
+def _repository_http_exception(exc: Exception) -> HTTPException:
+    if isinstance(exc, repositories.RepositoryNotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, repositories.RepositoryConflictError):
+        return HTTPException(status_code=409, detail=str(exc))
+    return HTTPException(status_code=500, detail="repository_error")
+
+
 @router.get("/skills/", response_model=PublicSkillsResponse)
 async def list_skills(
     skip: int = Query(default=0, ge=0),
@@ -365,22 +373,25 @@ async def toggle_skill(
     safe_skill_name = _safe_skill_name(skill_name)
     enabled = True if request.enabled is None else request.enabled
     status = "active" if enabled else "disabled"
-    async with transaction() as conn:
-        await repositories.set_public_skill_enabled(
-            conn,
-            tenant_id=principal.tenant_id,
-            skill_id=safe_skill_name,
-            status=status,
-        )
-        await repositories.append_audit_log(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            action="skill.public.toggle",
-            target_type="skill",
-            target_id=safe_skill_name,
-            payload_json={"enabled": enabled, "department_id": principal.department_id},
-        )
+    try:
+        async with transaction() as conn:
+            await repositories.set_public_skill_enabled(
+                conn,
+                tenant_id=principal.tenant_id,
+                skill_id=safe_skill_name,
+                status=status,
+            )
+            await repositories.append_audit_log(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                action="skill.public.toggle",
+                target_type="skill",
+                target_id=safe_skill_name,
+                payload_json={"enabled": enabled, "department_id": principal.department_id},
+            )
+    except (repositories.RepositoryNotFoundError, repositories.RepositoryConflictError) as exc:
+        raise _repository_http_exception(exc) from exc
     return PublicSkillToggleResponse(
         skill_name=safe_skill_name,
         enabled=enabled,
@@ -397,22 +408,25 @@ async def delete_skill(
 
     _require_permission(principal, "skill:delete")
     safe_skill_name = _safe_skill_name(skill_name)
-    async with transaction() as conn:
-        await repositories.set_public_skill_enabled(
-            conn,
-            tenant_id=principal.tenant_id,
-            skill_id=safe_skill_name,
-            status="disabled",
-        )
-        await repositories.append_audit_log(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            action="skill.public.delete",
-            target_type="skill",
-            target_id=safe_skill_name,
-            payload_json={"department_id": principal.department_id},
-        )
+    try:
+        async with transaction() as conn:
+            await repositories.set_public_skill_enabled(
+                conn,
+                tenant_id=principal.tenant_id,
+                skill_id=safe_skill_name,
+                status="disabled",
+            )
+            await repositories.append_audit_log(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                action="skill.public.delete",
+                target_type="skill",
+                target_id=safe_skill_name,
+                payload_json={"department_id": principal.department_id},
+            )
+    except (repositories.RepositoryNotFoundError, repositories.RepositoryConflictError) as exc:
+        raise _repository_http_exception(exc) from exc
     return {"message": "Skill removed"}
 
 
@@ -533,22 +547,25 @@ async def _install_or_update_marketplace_skill(
     safe_skill_name = _safe_skill_name(skill_name)
     rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=True)
     row = _find_row(rows, skill_name=safe_skill_name)
-    async with transaction() as conn:
-        await repositories.set_public_skill_enabled(
-            conn,
-            tenant_id=principal.tenant_id,
-            skill_id=safe_skill_name,
-            status="active",
-        )
-        await repositories.append_audit_log(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            action=audit_action,
-            target_type="skill",
-            target_id=safe_skill_name,
-            payload_json={"department_id": principal.department_id},
-        )
+    try:
+        async with transaction() as conn:
+            await repositories.set_public_skill_enabled(
+                conn,
+                tenant_id=principal.tenant_id,
+                skill_id=safe_skill_name,
+                status="active",
+            )
+            await repositories.append_audit_log(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                action=audit_action,
+                target_type="skill",
+                target_id=safe_skill_name,
+                payload_json={"department_id": principal.department_id},
+            )
+    except (repositories.RepositoryNotFoundError, repositories.RepositoryConflictError) as exc:
+        raise _repository_http_exception(exc) from exc
     return MarketplaceInstallResponse(
         message=message,
         skill_name=safe_skill_name,

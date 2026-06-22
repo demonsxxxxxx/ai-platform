@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from app.repositories import RepositoryNotFoundError
 from app.settings import Settings
 
 
@@ -229,3 +230,64 @@ def test_skill_toggle_and_marketplace_install_update_tenant_availability(monkeyp
         {"tenant_id": "default", "skill_id": "qa-file-reviewer", "status": "active"},
         {"tenant_id": "default", "skill_id": "qa-file-reviewer", "status": "active"},
     ]
+
+
+def test_public_skill_write_routes_map_missing_skill_to_stable_json_404(monkeypatch):
+    install_route_fakes(monkeypatch)
+
+    async def missing_skill(conn, *, tenant_id, skill_id, status):
+        raise RepositoryNotFoundError("workbench_skill_not_found")
+
+    monkeypatch.setattr(
+        "app.routes.skills_marketplace.repositories.set_public_skill_enabled",
+        missing_skill,
+    )
+    client = TestClient(create_app())
+    write_headers = headers("skill:write,skill:delete,marketplace:read")
+
+    toggle_response = client.patch(
+        "/api/skills/unknown-skill/toggle",
+        json={"enabled": False},
+        headers=write_headers,
+    )
+    assert toggle_response.status_code == 404
+    assert toggle_response.json()["detail"] == "workbench_skill_not_found"
+
+    delete_response = client.delete("/api/skills/unknown-skill", headers=write_headers)
+    assert delete_response.status_code == 404
+    assert delete_response.json()["detail"] == "workbench_skill_not_found"
+
+
+def test_public_skill_file_write_routes_are_permission_gated_then_fail_closed_409(monkeypatch):
+    install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+
+    put_denied = client.put(
+        "/api/skills/qa-file-reviewer/files/SKILL.md",
+        json={"content": "updated"},
+        headers=headers("skill:read"),
+    )
+    assert put_denied.status_code == 403
+    assert put_denied.json()["detail"] == "missing_permission:skill:write"
+
+    put_response = client.put(
+        "/api/skills/qa-file-reviewer/files/SKILL.md",
+        json={"content": "updated"},
+        headers=headers("skill:write"),
+    )
+    assert put_response.status_code == 409
+    assert put_response.json()["detail"] == "skill_file_write_contract_not_backed"
+
+    delete_denied = client.delete(
+        "/api/skills/qa-file-reviewer/files/SKILL.md",
+        headers=headers("skill:write"),
+    )
+    assert delete_denied.status_code == 403
+    assert delete_denied.json()["detail"] == "missing_permission:skill:delete"
+
+    delete_response = client.delete(
+        "/api/skills/qa-file-reviewer/files/SKILL.md",
+        headers=headers("skill:delete"),
+    )
+    assert delete_response.status_code == 409
+    assert delete_response.json()["detail"] == "skill_file_delete_contract_not_backed"
