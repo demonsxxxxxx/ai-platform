@@ -34,7 +34,7 @@ export function GroupAvailabilityToggleRow({
     <div
       data-group-toggle-ui
       data-fail-closed-surface="department-skill-policy"
-      className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 bg-white p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900"
+      className="flex items-start justify-between gap-3 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900"
     >
       <div className="min-w-0">
         <div className="flex items-center gap-2">

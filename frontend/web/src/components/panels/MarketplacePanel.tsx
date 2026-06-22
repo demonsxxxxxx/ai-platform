@@ -27,11 +27,13 @@ import { GroupAvailabilityToggleRow } from "../governance/GroupAvailabilityToggl
 interface MarketplacePanelProps {
   embedded?: boolean;
   governedUnavailable?: boolean;
+  settingsStateDegraded?: boolean;
 }
 
 export function MarketplacePanel({
   embedded = false,
   governedUnavailable = false,
+  settingsStateDegraded = false,
 }: MarketplacePanelProps) {
   const { t } = useTranslation();
   const { hasAnyPermission } = useAuth();
@@ -383,6 +385,7 @@ export function MarketplacePanel({
     <div
       data-phase1c-surface="marketplace"
       data-marketplace-catalog-shell
+      data-settings-state-degraded={settingsStateDegraded || undefined}
       className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
     >
       {embedded && (

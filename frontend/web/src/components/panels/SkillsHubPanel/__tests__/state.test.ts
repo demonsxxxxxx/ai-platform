@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { resolveSkillsHubTab } from "../state.ts";
+import { resolveFrontendGovernanceState } from "../../../governance/frontendGovernanceState.ts";
 
 test("keeps the requested tab when both permissions are available", () => {
   assert.equal(resolveSkillsHubTab(undefined, true, true), "skills");
@@ -28,4 +29,15 @@ test("defaults to marketplace when no discovery permissions are available", () =
   assert.equal(resolveSkillsHubTab(undefined, false, false), "marketplace");
   assert.equal(resolveSkillsHubTab("skills", false, false), "skills");
   assert.equal(resolveSkillsHubTab("marketplace", false, false), "marketplace");
+});
+
+test("keeps backend public read permission authoritative when settings are degraded", () => {
+  assert.equal(
+    resolveFrontendGovernanceState({
+      isAuthenticated: true,
+      hasPermission: true,
+      projectionError: "settings projection unavailable",
+    }),
+    "degraded",
+  );
 });

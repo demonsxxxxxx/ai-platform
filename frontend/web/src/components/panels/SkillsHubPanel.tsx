@@ -5,6 +5,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useSettingsContext } from "../../contexts/SettingsContext";
 import { useAuth } from "../../hooks/useAuth";
 import { Permission } from "../../types";
+import { resolveFrontendGovernanceState } from "../governance/frontendGovernanceState";
 import { PanelHeader } from "../common/PanelHeader";
 import { MarketplacePanel } from "./MarketplacePanel";
 import { SkillsPanel } from "./SkillsPanel";
@@ -22,8 +23,13 @@ export function SkillsHubPanel() {
   const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
-  const { hasAnyPermission } = useAuth();
-  const { enableSkills } = useSettingsContext();
+  const { hasAnyPermission, isAuthenticated, isLoading: authLoading } = useAuth();
+  const {
+    enableSkills,
+    settings,
+    isLoading: settingsLoading,
+    error: settingsError,
+  } = useSettingsContext();
 
   const canReadSkills = hasAnyPermission([Permission.SKILL_READ]);
   const canReadMarketplace = hasAnyPermission([Permission.MARKETPLACE_READ]);
@@ -36,12 +42,32 @@ export function SkillsHubPanel() {
   ) ?? requestedTab;
   const isMarketplaceView = visibleTab === "marketplace";
   const hasDiscoveryPermission = canReadSkills || canReadMarketplace;
+  const activeTabCanRead = isMarketplaceView ? canReadMarketplace : canReadSkills;
   const showTabSwitcher = true;
-  const skillsGloballyDisabled = !enableSkills;
+  const settingsProjectionKnown = settings !== null;
+  const skillsProjectionDegraded =
+    Boolean(settingsError) || (settingsProjectionKnown && !enableSkills);
+  const governanceState = resolveFrontendGovernanceState({
+    isAuthenticated,
+    isLoading: authLoading || settingsLoading,
+    hasWorkspace: true,
+    hasPermission: activeTabCanRead,
+    featureEnabled: settingsProjectionKnown ? enableSkills : true,
+    projectionError: settingsError,
+    degraded: skillsProjectionDegraded,
+  });
+  const statusCopyKey =
+    governanceState === "ready"
+      ? "ready"
+      : governanceState === "degraded"
+      ? "degraded"
+      : settingsProjectionKnown && !enableSkills
+      ? "featureDisabled"
+      : "permissionLimited";
   const permissionAvailability = resolveGroupAvailability({
-    backed: enableSkills,
-    enabled: enableSkills && hasDiscoveryPermission,
-    adminOnly: enableSkills && !hasDiscoveryPermission,
+    backed: governanceState !== "degraded",
+    enabled: governanceState === "ready" && hasDiscoveryPermission,
+    adminOnly: governanceState === "forbidden",
   });
 
   useEffect(() => {
@@ -55,6 +81,7 @@ export function SkillsHubPanel() {
   return (
     <div
       data-phase1c-surface="skills-hub"
+      data-frontend-governance-state={governanceState}
       className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
     >
       <PanelHeader
@@ -111,14 +138,10 @@ export function SkillsHubPanel() {
           <div className="flex flex-col gap-3 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
-                {skillsGloballyDisabled
-                  ? t("skillsHub.featureDisabled.title")
-                  : t("skillsHub.permissionLimited.title")}
+                {t(`skillsHub.${statusCopyKey}.title`)}
               </h3>
               <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
-                {skillsGloballyDisabled
-                  ? t("skillsHub.featureDisabled.description")
-                  : t("skillsHub.permissionLimited.description")}
+                {t(`skillsHub.${statusCopyKey}.description`)}
               </p>
             </div>
             <GovernanceAvailabilityBadge
@@ -164,16 +187,16 @@ export function SkillsHubPanel() {
           <div data-skill-catalog-shell className="h-full min-h-0">
             <SkillsPanel
               embedded
-              governedUnavailable={skillsGloballyDisabled || !canReadSkills}
+              governedUnavailable={!canReadSkills}
+              settingsStateDegraded={skillsProjectionDegraded}
             />
           </div>
         ) : (
           <div data-marketplace-catalog-shell className="h-full min-h-0">
             <MarketplacePanel
               embedded
-              governedUnavailable={
-                skillsGloballyDisabled || !canReadMarketplace
-              }
+              governedUnavailable={!canReadMarketplace}
+              settingsStateDegraded={skillsProjectionDegraded}
             />
           </div>
         )}

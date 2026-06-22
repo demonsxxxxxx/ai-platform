@@ -70,7 +70,7 @@ export function MCPPanel() {
     <div
       data-phase1c-surface="mcp"
       data-mcp-directory-shell
-      className="flex h-full min-h-0 flex-col bg-slate-50 text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
     >
       <PanelHeader
         title={t("mcp.title")}
@@ -89,9 +89,9 @@ export function MCPPanel() {
       )}
 
       <div className="px-4 pb-2 pt-3">
-        <section className="rounded-lg border border-stone-200/70 bg-white p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900">
+        <section className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900">
           <div className="grid gap-3 lg:grid-cols-3">
-            <div className="flex items-start justify-between gap-3 rounded-md bg-stone-50/80 p-3 dark:bg-stone-950/40">
+            <div className="flex items-start justify-between gap-3 rounded-md bg-[var(--theme-bg-sidebar)] p-3 dark:bg-stone-950/40">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <ShieldCheck size={16} className="text-stone-500" />
@@ -108,7 +108,7 @@ export function MCPPanel() {
                 labelKey={permissionAvailability.labelKey}
               />
             </div>
-            <div className="flex items-start justify-between gap-3 rounded-md bg-stone-50/80 p-3 dark:bg-stone-950/40">
+            <div className="flex items-start justify-between gap-3 rounded-md bg-[var(--theme-bg-sidebar)] p-3 dark:bg-stone-950/40">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <ShieldCheck size={16} className="text-stone-500" />
@@ -127,7 +127,7 @@ export function MCPPanel() {
             </div>
             <div
               data-fail-closed-surface="mcp-lifecycle"
-              className="flex items-start justify-between gap-3 rounded-md bg-stone-50/80 p-3 dark:bg-stone-950/40"
+              className="flex items-start justify-between gap-3 rounded-md bg-[var(--theme-bg-sidebar)] p-3 dark:bg-stone-950/40"
             >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
@@ -184,7 +184,7 @@ export function MCPPanel() {
               return (
                 <article
                   key={server.name}
-                  className="rounded-lg border border-stone-200 bg-white p-4 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900"
+                  className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-4 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">

@@ -2323,9 +2323,17 @@
       "description": "Skills are disabled at the platform level. The workbench keeps this governed entry visible, but only an administrator can enable Skill discovery and department access.",
       "title": "Skills are waiting for administrator enablement"
     },
+    "degraded": {
+      "description": "The readable Skills catalog is connected, but part of the platform switch state is not confirmed. Browsing remains available; create, import, and publish actions stay permission-gated.",
+      "title": "Skills are readable with degraded controls"
+    },
     "permissionLimited": {
       "description": "Skills and marketplace discovery are part of this workbench. This page stays read-only until an administrator enables Skill access for your department.",
       "title": "Skills access is governed"
+    },
+    "ready": {
+      "description": "Skills and marketplace discovery are available for this account. Write, publish, and department availability controls remain governed by administrator permissions.",
+      "title": "Skills catalog is available"
     },
     "subtitle": "Manage local skills and explore the marketplace",
     "title": "Skills"

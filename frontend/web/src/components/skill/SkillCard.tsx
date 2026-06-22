@@ -24,6 +24,8 @@ interface SkillCardProps {
   onDelete: (name: string) => void;
   onExportZip?: (name: string) => void;
   onPublish?: (skill: SkillResponse) => void;
+  canWrite?: boolean;
+  canDelete?: boolean;
   isPublished?: boolean;
   selected?: boolean;
   onSelect?: (name: string) => void;
@@ -42,6 +44,8 @@ export function SkillCard({
   onDelete,
   onExportZip,
   onPublish,
+  canWrite = true,
+  canDelete = true,
   isPublished,
   selected = false,
   onSelect,
@@ -127,8 +131,11 @@ export function SkillCard({
           <button
             onClick={(e) => {
               e.stopPropagation();
+              if (!canWrite) return;
               onToggle(skill.name);
             }}
+            disabled={!canWrite}
+            aria-disabled={!canWrite}
             className="scb__action-btn scb__action-btn--ghost"
             title={
               skill.enabled ? t("skills.card.disable") : t("skills.card.enable")
@@ -147,8 +154,11 @@ export function SkillCard({
           <button
             onClick={(e) => {
               e.stopPropagation();
+              if (!canWrite) return;
               onEdit(skill);
             }}
+            disabled={!canWrite}
+            aria-disabled={!canWrite}
             className="scb__action-btn scb__action-btn--ghost"
             title={t("skills.card.edit")}
           >
@@ -161,6 +171,7 @@ export function SkillCard({
               <button
                 onClick={(e) => {
                   e.stopPropagation();
+                  if (!onPublish) return;
                   onPublish(skill);
                 }}
                 className="scb__action-btn scb__action-btn--ghost"
@@ -199,8 +210,11 @@ export function SkillCard({
           <button
             onClick={(e) => {
               e.stopPropagation();
+              if (!canDelete) return;
               onDelete(skill.name);
             }}
+            disabled={!canDelete}
+            aria-disabled={!canDelete}
             className="scb__action-btn text-[var(--theme-text-secondary)] transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/30 dark:hover:text-red-400"
             title={t("skills.card.delete")}
           >

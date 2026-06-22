@@ -39,6 +39,7 @@ interface SkillsListProps {
   error: string | null;
   clearError: () => void;
   canWrite: boolean;
+  canDelete: boolean;
   canPublish: boolean;
   selectedNames: Set<string>;
   onToggle: (name: string) => void;
@@ -74,6 +75,7 @@ export function SkillsList({
   error,
   clearError,
   canWrite,
+  canDelete,
   canPublish,
   selectedNames,
   onToggle,
@@ -176,7 +178,11 @@ export function SkillsList({
   const headerActions = (
     <div className="flex items-center gap-2">
       {filteredSkills.length > 0 && (
-        <button onClick={onSelectAll} className="btn-secondary h-10">
+        <button
+          onClick={onSelectAll}
+          disabled={!canWrite && !canDelete}
+          className="btn-secondary h-10"
+        >
           <Check size={16} />
           <span className="hidden sm:inline">
             {selectedNames.size === filteredSkills.length &&
@@ -188,7 +194,7 @@ export function SkillsList({
       )}
       <button
         onClick={onGithubClick}
-        disabled={governedUnavailable}
+        disabled={governedUnavailable || !canWrite}
         className="btn-secondary h-10"
       >
         <Github size={16} />
@@ -196,7 +202,7 @@ export function SkillsList({
       </button>
       <button
         onClick={onZipClick}
-        disabled={governedUnavailable}
+        disabled={governedUnavailable || !canWrite}
         className="btn-secondary h-10"
       >
         <Archive size={16} />
@@ -204,7 +210,7 @@ export function SkillsList({
       </button>
       <button
         onClick={onCreate}
-        disabled={governedUnavailable}
+        disabled={governedUnavailable || !canWrite}
         className="btn-primary h-10"
       >
         <Plus size={16} />
@@ -318,10 +324,12 @@ export function SkillsList({
                 onPublish={
                   canPublish ? (s: SkillResponse) => onPublish?.(s) : undefined
                 }
+                canWrite={canWrite}
+                canDelete={canDelete}
                 isPublished={skill.is_published}
                 selected={selectedNames.has(skill.name)}
                 onSelect={onSelectSkill}
-                selectionMode={true}
+                selectionMode={canWrite || canDelete}
               />
             ))}
           </div>

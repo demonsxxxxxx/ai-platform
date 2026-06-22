@@ -41,7 +41,7 @@ test("skills and marketplace surfaces expose department availability controls", 
   assert.match(marketplace, /data-phase1c-surface="marketplace"/);
   for (const source of [skillsHub, marketplace, mcp]) {
     assert.doesNotMatch(source, /skill-theme-shell|glass-shell/);
-    assert.match(source, /bg-slate-50/);
+    assert.match(source, /bg-\[var\(--theme-bg\)\]/);
   }
 });
 
@@ -52,10 +52,12 @@ test("skills and marketplace remain catalog shells when backend enablement is un
 
   assert.doesNotMatch(skillsHub, /if\s*\(!enableSkills\)\s*{\s*return/);
   assert.doesNotMatch(skillsPanel, /if\s*\(!enableSkills\)\s*{\s*return/);
-  assert.match(skillsHub, /skillsGloballyDisabled/);
+  assert.match(skillsHub, /skillsProjectionDegraded/);
   assert.match(skillsHub, /data-skill-catalog-shell/);
   assert.match(skillsHub, /data-marketplace-catalog-shell/);
+  assert.match(skillsHub, /data-frontend-governance-state/);
   assert.match(skillsPanel, /governedUnavailable/);
+  assert.doesNotMatch(skillsPanel, /!enableSkills/);
   assert.match(marketplace, /governedUnavailable/);
   assert.match(marketplace, /data-marketplace-catalog-shell/);
   assert.match(marketplace, /data-marketplace-unavailable-shell/);
@@ -120,6 +122,8 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
   const marketplaceHook = read("src/hooks/useMarketplace.ts");
   const mcpHook = read("src/hooks/useMcp.ts");
   const skillsHook = read("src/hooks/useSkills.ts");
+  const skillsList = read("src/components/panels/SkillsPanel/SkillsList.tsx");
+  const skillCard = read("src/components/skill/SkillCard.tsx");
 
   for (const apiName of [
     "installSkill",
@@ -191,4 +195,8 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
     /const toggleAll = useCallback\(\s*async \(nextEnabled: boolean\): Promise<boolean> => {\s*if \(!enabled\) return false;/,
     "toggleAll must guard hook-level enabled before using target state",
   );
+  assert.match(skillsHook, /effectivePermissions/);
+  assert.match(skillsList, /disabled=\{governedUnavailable \|\| !canWrite\}/);
+  assert.match(skillCard, /disabled=\{!canWrite\}/);
+  assert.match(skillCard, /disabled=\{!canDelete\}/);
 });
