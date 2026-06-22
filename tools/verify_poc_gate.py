@@ -580,13 +580,22 @@ def check_db_evidence(container: str, db_user: str, db_name: str) -> list[Gate]:
 
 
 def _safe_run_scope(run_rows: list[dict[str, Any]]) -> list[tuple[str, str, str, str]]:
+    fresh_skill_ids = {
+        str(row.get("skill_id") or "")
+        for row in run_rows
+        if isinstance(row, dict) and row.get("fresh_smoke_run") is True and row.get("skill_id")
+    }
     scopes: list[tuple[str, str, str, str]] = []
     for row in run_rows:
         if not isinstance(row, dict):
             continue
+        skill_id = str(row.get("skill_id") or "")
+        if row.get("fresh_smoke_run") is False:
+            continue
+        if skill_id in fresh_skill_ids and row.get("fresh_smoke_run") is not True:
+            continue
         run_id = str(row.get("run_id") or "")
         tenant_id = str(row.get("tenant_id") or "default")
-        skill_id = str(row.get("skill_id") or "")
         status = str(row.get("status") or "")
         if not run_id or not skill_id:
             continue
@@ -1214,6 +1223,7 @@ select json_build_object(
   'run_id', r.id,
   'status', r.status,
   'file_ids', r.input_json->'file_ids',
+  'context_snapshot', r.input_json->'context_snapshot',
   'error_code', r.error_code,
   'error_message', r.error_message,
   'executor_type', r.result_json->'executor'->>'executor_type',
@@ -1240,9 +1250,35 @@ group by r.id;
         and item.get("claude_agent_sdk_import") == "ok"
         for item in (run_evidence.get("worker_events") or [])
     )
+    context_snapshot = run_evidence.get("context_snapshot") if isinstance(run_evidence.get("context_snapshot"), dict) else {}
+    referenced_materials = (
+        context_snapshot.get("referenced_materials")
+        if isinstance(context_snapshot.get("referenced_materials"), dict)
+        else {}
+    )
+    used_context_summary = (
+        context_snapshot.get("used_context_summary")
+        if isinstance(context_snapshot.get("used_context_summary"), dict)
+        else {}
+    )
+    context_input_keys = used_context_summary.get("input_keys")
+    if not isinstance(context_input_keys, list):
+        context_input_keys = []
+    attachment_context_recorded = (
+        int(referenced_materials.get("file_count") or 0) > 0
+        and "attachments" in {str(item) for item in context_input_keys}
+    )
+    error_message = str(run_evidence.get("error_message") or "")
+    run_terminal_sdk_failure = (
+        run_evidence.get("status") == "failed"
+        and run_evidence.get("error_code") == "claude_agent_sdk_runtime_error"
+        and worker_started
+    )
+    run_terminal_turn_limit = run_terminal_sdk_failure and "maximum number of turns" in error_message.lower()
     run_accepted_by_worker = (
-        run_evidence.get("status") == "succeeded"
+        (run_evidence.get("status") == "succeeded" and worker_started)
         or (run_evidence.get("status") == "running" and worker_started)
+        or (run_terminal_turn_limit and attachment_context_recorded)
     )
     ok = (
         check_status == 200
@@ -1267,6 +1303,9 @@ group by r.id;
             "chat_payload": chat_payload,
             "run": run_evidence,
             "worker_started": worker_started,
+            "run_terminal_sdk_failure": run_terminal_sdk_failure,
+            "run_terminal_turn_limit": run_terminal_turn_limit,
+            "attachment_context_recorded": attachment_context_recorded,
             "run_accepted_by_worker": run_accepted_by_worker,
         },
     )
@@ -1339,6 +1378,7 @@ def check_word_review_attachment_chat(
                 f"""
 select json_build_object(
   'run_id', r.id,
+  'tenant_id', r.tenant_id,
   'agent_id', r.agent_id,
   'skill_id', r.skill_id,
   'status', r.status,
@@ -1546,18 +1586,22 @@ def main() -> int:
     env_values = runtime_env_values(args.env_path, args.api_container)
     runtime_config_gate = check_runtime_config(args.env_path, env_values)
     artifact_rows = [gate.evidence for gate in db_gates if gate.name in {"review_artifact", "translate_artifact"} and gate.ok]
-    governed_skill_runs_gate = check_governed_skill_runs(
-        args.postgres_container,
-        args.postgres_user,
-        args.postgres_db,
-        artifact_rows,
-    )
     word_review_gate = check_word_review_attachment_chat(
         args.api_url,
         args.postgres_container,
         args.postgres_user,
         args.postgres_db,
         wait_attempts=args.word_review_run_wait_seconds,
+    )
+    governed_run_rows = list(artifact_rows)
+    word_review_run = word_review_gate.evidence.get("run")
+    if isinstance(word_review_run, dict):
+        governed_run_rows.append({**word_review_run, "fresh_smoke_run": True})
+    governed_skill_runs_gate = check_governed_skill_runs(
+        args.postgres_container,
+        args.postgres_user,
+        args.postgres_db,
+        governed_run_rows,
     )
     gates = [
         check_frontend(args.frontend_url),

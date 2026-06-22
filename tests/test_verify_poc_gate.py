@@ -852,6 +852,66 @@ def test_governed_skill_runs_gate_fails_closed_when_snapshot_version_does_not_ma
     assert gate.evidence["run_skill_snapshots"]["mismatched_pinned_snapshots"] == ["qa-file-reviewer"]
 
 
+def test_governed_skill_runs_gate_prefers_current_word_review_run_and_keeps_translate_history(monkeypatch):
+    def fake_psql_rows(container: str, db_user: str, db_name: str, sql: str):
+        assert "run_review_current" in sql
+        assert "run_review_stale" not in sql
+        assert "run_translate_current" in sql
+        return [
+            {
+                "row_count": 3,
+                "used_count": 2,
+                "used_skill_ids": ["qa-file-reviewer", "baoyu-translate"],
+                "used_skills_sources": ["platform_controlled_runner", "executor_hook"],
+                "pinned_snapshot_count": 2,
+                "missing_pinned_snapshots": [],
+                "mismatched_pinned_snapshots": [],
+            }
+        ]
+
+    monkeypatch.setattr(verify_poc_gate, "psql_rows", fake_psql_rows)
+
+    gate = verify_poc_gate.check_governed_skill_runs(
+        "postgres",
+        "user",
+        "db",
+        [
+            {
+                "run_id": "run_review_current",
+                "tenant_id": "default",
+                "skill_id": "qa-file-reviewer",
+                "status": "succeeded",
+                "fresh_smoke_run": True,
+            },
+            {
+                "run_id": "run_review_stale",
+                "tenant_id": "default",
+                "skill_id": "qa-file-reviewer",
+                "status": "succeeded",
+                "fresh_smoke_run": False,
+            },
+            {
+                "run_id": "run_translate_current",
+                "tenant_id": "default",
+                "skill_id": "baoyu-translate",
+                "status": "succeeded",
+            },
+        ],
+    )
+
+    assert gate.ok is True
+    assert gate.evidence["real_task_statuses"] == {
+        "qa-file-reviewer": "succeeded",
+        "baoyu-translate": "succeeded",
+    }
+    assert gate.evidence["run_skill_snapshots"]["used_count"] == 2
+    assert gate.evidence["run_skill_snapshots"]["used_skill_ids"] == ["qa-file-reviewer", "baoyu-translate"]
+    assert set(gate.evidence["run_skill_snapshots"]["used_skills_source"].split(",")) == {
+        "executor_hook",
+        "platform_controlled_runner",
+    }
+
+
 def test_context_snapshot_public_projection_gate_requires_safe_explainable_summary(monkeypatch):
     calls: list[tuple[str, dict[str, str]]] = []
 
@@ -1631,6 +1691,170 @@ def test_upload_attachment_chat_accepts_worker_started_running_run(monkeypatch):
     assert gate.ok is True
     assert gate.evidence["run"]["status"] == "running"
     assert gate.evidence["run"]["worker_events"][0]["worker_id"] == "worker-current"
+
+
+def test_upload_attachment_chat_accepts_worker_started_terminal_sdk_failure_with_context(monkeypatch):
+    monkeypatch.setattr(verify_poc_gate.time, "sleep", lambda seconds: None)
+
+    def fake_json_post(url: str, payload=None, headers=None, timeout: float = 15.0):
+        if url == "http://api.local/api/upload/check":
+            return 200, {"exists": False}
+        if url == "http://api.local/api/chat/stream?agent_id=general-agent":
+            return 200, {"run_id": "run_upload"}
+        raise AssertionError(url)
+
+    def fake_upload(url: str, **kwargs):
+        return 200, {
+            "key": "file_upload",
+            "file_id": "file_upload",
+            "name": "upload-gate.txt",
+            "mimeType": "text/plain",
+            "size": 18,
+        }
+
+    def fake_psql_rows(container: str, db_user: str, db_name: str, sql: str):
+        assert "worker_events" in sql
+        assert "context_snapshot" in sql
+        return [
+            {
+                "run_id": "run_upload",
+                "status": "failed",
+                "file_ids": ["file_upload"],
+                "error_code": "claude_agent_sdk_runtime_error",
+                "error_message": "Reached maximum number of turns (128)",
+                "executor_type": "claude-agent-worker",
+                "worker_events": [
+                    {
+                        "worker_id": "worker-current",
+                        "executor_type": "claude-agent-worker",
+                        "claude_agent_sdk_enabled": True,
+                        "claude_agent_model": "gpt-5.3-codex-spark",
+                        "claude_agent_sdk_import": "ok",
+                    }
+                ],
+                "context_snapshot": {
+                    "referenced_materials": {"file_count": 1},
+                    "used_context_summary": {
+                        "input_keys": ["attachments", "message"],
+                        "long_term_memory_read": False,
+                    },
+                },
+            }
+        ]
+
+    monkeypatch.setattr(verify_poc_gate, "http_json_post_with_headers", fake_json_post)
+    monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", fake_upload)
+    monkeypatch.setattr(verify_poc_gate, "psql_rows", fake_psql_rows)
+
+    gate = verify_poc_gate.check_upload_attachment_chat("http://api.local", "postgres", "user", "db")
+
+    assert gate.ok is True
+    assert gate.evidence["run_accepted_by_worker"] is True
+    assert gate.evidence["run_terminal_sdk_failure"] is True
+    assert gate.evidence["attachment_context_recorded"] is True
+
+
+def test_upload_attachment_chat_rejects_non_turn_limit_sdk_failure_with_context(monkeypatch):
+    monkeypatch.setattr(verify_poc_gate.time, "sleep", lambda seconds: None)
+
+    def fake_json_post(url: str, payload=None, headers=None, timeout: float = 15.0):
+        if url == "http://api.local/api/upload/check":
+            return 200, {"exists": False}
+        if url == "http://api.local/api/chat/stream?agent_id=general-agent":
+            return 200, {"run_id": "run_upload"}
+        raise AssertionError(url)
+
+    def fake_upload(url: str, **kwargs):
+        return 200, {
+            "key": "file_upload",
+            "file_id": "file_upload",
+            "name": "upload-gate.txt",
+            "mimeType": "text/plain",
+            "size": 18,
+        }
+
+    def fake_psql_rows(container: str, db_user: str, db_name: str, sql: str):
+        return [
+            {
+                "run_id": "run_upload",
+                "status": "failed",
+                "file_ids": ["file_upload"],
+                "error_code": "claude_agent_sdk_runtime_error",
+                "error_message": "Transient model gateway error",
+                "executor_type": "claude-agent-worker",
+                "worker_events": [
+                    {
+                        "worker_id": "worker-current",
+                        "executor_type": "claude-agent-worker",
+                        "claude_agent_sdk_enabled": True,
+                        "claude_agent_model": "gpt-5.3-codex-spark",
+                        "claude_agent_sdk_import": "ok",
+                    }
+                ],
+                "context_snapshot": {
+                    "referenced_materials": {"file_count": 1},
+                    "used_context_summary": {"input_keys": ["attachments", "message"]},
+                },
+            }
+        ]
+
+    monkeypatch.setattr(verify_poc_gate, "http_json_post_with_headers", fake_json_post)
+    monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", fake_upload)
+    monkeypatch.setattr(verify_poc_gate, "psql_rows", fake_psql_rows)
+
+    gate = verify_poc_gate.check_upload_attachment_chat("http://api.local", "postgres", "user", "db")
+
+    assert gate.ok is False
+    assert gate.evidence["run_accepted_by_worker"] is False
+    assert gate.evidence["run_terminal_sdk_failure"] is True
+    assert gate.evidence["attachment_context_recorded"] is True
+
+
+def test_upload_attachment_chat_rejects_success_without_worker_start(monkeypatch):
+    monkeypatch.setattr(verify_poc_gate.time, "sleep", lambda seconds: None)
+
+    def fake_json_post(url: str, payload=None, headers=None, timeout: float = 15.0):
+        if url == "http://api.local/api/upload/check":
+            return 200, {"exists": False}
+        if url == "http://api.local/api/chat/stream?agent_id=general-agent":
+            return 200, {"run_id": "run_upload"}
+        raise AssertionError(url)
+
+    def fake_upload(url: str, **kwargs):
+        return 200, {
+            "key": "file_upload",
+            "file_id": "file_upload",
+            "name": "upload-gate.txt",
+            "mimeType": "text/plain",
+            "size": 18,
+        }
+
+    def fake_psql_rows(container: str, db_user: str, db_name: str, sql: str):
+        return [
+            {
+                "run_id": "run_upload",
+                "status": "succeeded",
+                "file_ids": ["file_upload"],
+                "error_code": None,
+                "error_message": None,
+                "executor_type": "claude-agent-worker",
+                "worker_events": [],
+                "context_snapshot": {
+                    "referenced_materials": {"file_count": 1},
+                    "used_context_summary": {"input_keys": ["attachments", "message"]},
+                },
+            }
+        ]
+
+    monkeypatch.setattr(verify_poc_gate, "http_json_post_with_headers", fake_json_post)
+    monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", fake_upload)
+    monkeypatch.setattr(verify_poc_gate, "psql_rows", fake_psql_rows)
+
+    gate = verify_poc_gate.check_upload_attachment_chat("http://api.local", "postgres", "user", "db")
+
+    assert gate.ok is False
+    assert gate.evidence["worker_started"] is False
+    assert gate.evidence["run_accepted_by_worker"] is False
 
 
 def test_auth_audit_gate_reports_raw_login_diagnostics(monkeypatch):
