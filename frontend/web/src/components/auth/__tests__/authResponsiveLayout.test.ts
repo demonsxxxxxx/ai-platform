@@ -23,15 +23,3 @@ test("auth pages use safe centered mobile layout classes", () => {
   assert.equal(authPage.includes("auth-crosshatch"), true);
   assert.equal(authPage.includes("min-h-[100dvh]"), true);
 });
-
-test("login page hides self-service account and GitHub footer links", () => {
-  const authPage = readAuthSource("AuthPage.tsx");
-
-  assert.equal(authPage.includes("switchMode"), false);
-  assert.equal(authPage.includes("auth.registrationDisabled"), false);
-  assert.equal(authPage.includes("auth.registerNow"), false);
-  assert.equal(authPage.includes("auth.forgotPassword"), false);
-  assert.equal(authPage.includes("/auth/reset-request"), false);
-  assert.equal(authPage.includes("GITHUB_URL"), false);
-  assert.equal(authPage.includes("<span>GitHub</span>"), false);
-});

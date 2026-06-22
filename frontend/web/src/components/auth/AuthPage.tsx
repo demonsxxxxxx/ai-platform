@@ -3,6 +3,7 @@
  */
 
 import { useState, useEffect, useRef, Fragment } from "react";
+import { Link } from "react-router-dom";
 import { User, Mail, AlertCircle, AtSign } from "lucide-react";
 import { PasswordInput } from "./PasswordInput";
 import toast from "react-hot-toast";
@@ -15,7 +16,7 @@ import { ContactAdminDialog } from "../common/ContactAdminDialog";
 import { ThemeToggle } from "../common/ThemeToggle";
 import { LanguageToggle } from "../common/LanguageToggle";
 import { authApi } from "../../services/api";
-import { APP_HOME_URL, APP_NAME } from "../../constants";
+import { APP_HOME_URL, APP_NAME, GITHUB_URL } from "../../constants";
 import {
   AUTH_REDIRECT_ANIMATION_MS,
   AUTH_REDIRECT_FAILSAFE_MS,
@@ -73,6 +74,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
   const [oauthProviders, setOauthProviders] = useState<
     { id: string; name: string }[]
   >([]);
+  const [registrationEnabled, setRegistrationEnabled] = useState(true);
   const [turnstileConfig, setTurnstileConfig] = useState<TurnstileConfig>({
     enabled: false,
     site_key: "",
@@ -108,6 +110,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
         const result = await authApi.getOAuthProviders();
         if (!mounted) return;
         setOauthProviders(result.providers);
+        setRegistrationEnabled(result.registration_enabled);
         // 设置 Turnstile 配置
         if (result.turnstile) {
           setTurnstileConfig(result.turnstile);
@@ -286,6 +289,17 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
         setIsSubmitting(false);
       }
     }
+  };
+
+  const switchMode = () => {
+    // 如果注册已禁用，不允许切换到注册模式
+    if (mode === "login" && !registrationEnabled) {
+      return;
+    }
+    setMode(mode === "login" ? "register" : "login");
+    setError(null);
+    setEmail("");
+    setConfirmPassword("");
   };
 
   if (isRedirecting) {
@@ -567,6 +581,44 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
               </button>
             </form>
 
+            {/* Switch mode */}
+            <div className="mt-5 flex flex-wrap items-center justify-center gap-1 text-xs text-stone-500 dark:text-stone-400 sm:text-sm">
+              {registrationEnabled ? (
+                <>
+                  <span>
+                    {mode === "login"
+                      ? t("auth.noAccount")
+                      : t("auth.hasAccount")}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={switchMode}
+                    className="font-medium text-stone-900 underline-offset-2 transition-all hover:text-stone-700 hover:underline dark:text-white dark:hover:text-stone-200"
+                  >
+                    {mode === "login"
+                      ? t("auth.registerNow")
+                      : t("auth.loginNow")}
+                  </button>
+                </>
+              ) : (
+                mode === "login" && (
+                  <span>{t("auth.registrationDisabled")}</span>
+                )
+              )}
+            </div>
+
+            {/* Forgot password */}
+            {mode === "login" && (
+              <div className="mt-2 text-center">
+                <Link
+                  to="/auth/reset-request"
+                  className="text-xs text-stone-500 transition-colors hover:text-stone-700 dark:text-stone-400 dark:hover:text-stone-200 sm:text-sm"
+                >
+                  {t("auth.forgotPassword")}
+                </Link>
+              </div>
+            )}
+
             {/* Terms */}
             <p className="mt-3 text-center text-[10px] text-stone-400 dark:text-stone-500 sm:text-xs">
               {t("auth.termsHint")}
@@ -575,7 +627,33 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
 
           {/* Footer */}
           <div className="mt-4 flex flex-wrap items-center justify-center gap-x-2 text-[10px] text-stone-400 dark:text-stone-500 sm:gap-x-3 sm:text-xs lg:mt-6">
-            <span>Powered by {APP_NAME}</span>
+            <a
+              href={GITHUB_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 transition-colors hover:text-stone-600 dark:hover:text-stone-300 sm:gap-1.5"
+            >
+              <svg
+                className="h-3 w-3 sm:h-3.5 sm:w-3.5"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+              >
+                <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
+              </svg>
+              <span>GitHub</span>
+            </a>
+            <span className="text-stone-300 dark:text-stone-600">·</span>
+            <span>
+              Powered by{" "}
+              <a
+                href={GITHUB_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-serif text-stone-600 hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-200"
+              >
+                {APP_NAME}
+              </a>
+            </span>
             <span className="text-stone-300 dark:text-stone-600">·</span>
             <span>{new Date().getFullYear()}</span>
           </div>

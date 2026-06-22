@@ -80,25 +80,22 @@ export function LaunchpadPanel() {
   };
 
   return (
-    <section className="flex h-full min-h-0 flex-col bg-stone-50 px-4 pb-4 dark:bg-stone-950 sm:px-6">
-      <div className="shrink-0 border-b border-stone-200/70 pb-4 pt-2 dark:border-stone-800/70">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <h1 className="text-xl font-semibold text-stone-900 dark:text-stone-100">
+    <section
+      data-launchpad-workbench
+      className="flex h-full min-h-0 flex-col bg-slate-50 px-3 pb-3 dark:bg-stone-950 sm:px-4"
+    >
+      <div className="shrink-0 border-b border-slate-200/80 py-3 dark:border-stone-800">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0">
+            <h1 className="truncate text-lg font-semibold text-slate-900 dark:text-stone-100">
               {t("launchpad.title")}
             </h1>
-            <p className="mt-1 text-sm text-stone-500 dark:text-stone-400">
+            <p className="mt-0.5 text-xs text-slate-500 dark:text-stone-400">
               {t("launchpad.subtitle")}
-            </p>
-            <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-500 dark:text-stone-400">
-              {t(
-                "launchpad.boundary",
-                "These entries open existing company systems in a new tab. AI Platform does not replace their login, permissions, workflow, or audit rules.",
-              )}
             </p>
           </div>
 
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <div className={`inline-flex p-1 ${workbenchSurface.compactPanel}`}>
               {launchpadTabs.map((tab) => (
                 <button
@@ -110,8 +107,8 @@ export function LaunchpadPanel() {
                   }}
                   className={`h-9 rounded-md px-4 text-sm font-medium transition-colors ${
                     activeTab === tab.key
-                      ? "bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900"
-                      : "text-stone-600 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-800"
+                      ? "bg-slate-900 text-white dark:bg-stone-100 dark:text-stone-900"
+                      : "text-slate-600 hover:bg-slate-100 dark:text-stone-300 dark:hover:bg-stone-800"
                   }`}
                 >
                   {t(`launchpad.tabs.${tab.key}`, tab.label)}
@@ -127,7 +124,7 @@ export function LaunchpadPanel() {
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                className="h-10 w-full rounded-lg border border-stone-200 bg-white pl-10 pr-3 text-sm text-stone-800 outline-none transition-colors placeholder:text-stone-400 focus:border-stone-400 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-100 dark:focus:border-stone-600"
+                className="h-10 w-full rounded-lg border border-slate-200 bg-white pl-10 pr-3 text-sm text-slate-800 outline-none transition-colors placeholder:text-slate-400 focus:border-slate-400 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-100 dark:focus:border-stone-600"
                 placeholder={t("launchpad.searchPlaceholder")}
                 type="search"
               />
@@ -145,7 +142,7 @@ export function LaunchpadPanel() {
                 <a
                   key={group.id}
                   href={`#${group.id}`}
-                  className="flex min-h-11 items-center gap-2 rounded-lg px-3 py-2 text-sm text-stone-600 transition-colors hover:bg-stone-100 hover:text-stone-900 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-stone-100"
+                  className="flex min-h-10 items-center gap-2 rounded-lg px-3 py-2 text-sm text-slate-600 transition-colors hover:bg-white hover:text-slate-900 dark:text-stone-300 dark:hover:bg-stone-900 dark:hover:text-stone-100"
                 >
                   <Icon size={17} />
                   <span className="min-w-0 flex-1 truncate">{group.name}</span>
@@ -158,7 +155,7 @@ export function LaunchpadPanel() {
           </div>
         </aside>
 
-            <div className="min-w-0 flex-1 overflow-y-auto pr-1">
+        <div className="min-w-0 flex-1 overflow-y-auto pr-1">
           <nav
             aria-label={t("launchpad.groupNavigation")}
             className="mb-3 flex gap-2 overflow-x-auto pb-1 lg:hidden"
@@ -167,7 +164,7 @@ export function LaunchpadPanel() {
               <a
                 key={group.id}
                 href={`#${group.id}`}
-                className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-stone-200 bg-white px-3 text-sm text-stone-600 shadow-sm transition-colors hover:border-stone-300 hover:text-stone-900 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-300 dark:hover:border-stone-700 dark:hover:text-stone-100"
+                className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-600 shadow-sm transition-colors hover:border-slate-300 hover:text-slate-900 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-300 dark:hover:border-stone-700 dark:hover:text-stone-100"
               >
                 <span className="max-w-28 truncate">{group.name}</span>
                 <span className="text-xs text-stone-400">
@@ -177,7 +174,10 @@ export function LaunchpadPanel() {
             ))}
           </nav>
 
-          <div className="mb-3 flex items-center justify-between text-xs text-stone-500 dark:text-stone-400">
+          <div
+            data-launchpad-results
+            className="mb-3 flex items-center justify-between text-xs text-slate-500 dark:text-stone-400"
+          >
             <span>
               {query
                 ? t("launchpad.searchResults")
@@ -190,7 +190,7 @@ export function LaunchpadPanel() {
             {query && (
               <button
                 type="button"
-                className="rounded-md px-2 py-1 hover:bg-stone-100 dark:hover:bg-stone-800"
+                className="rounded-md px-2 py-1 hover:bg-white dark:hover:bg-stone-900"
                 onClick={() => setQuery("")}
               >
                 {t("launchpad.clearSearch")}
@@ -199,18 +199,20 @@ export function LaunchpadPanel() {
           </div>
 
           {visibleGroups.length === 0 ? (
-            <div className={`flex h-52 items-center justify-center border-dashed text-sm ${workbenchSurface.compactPanel} ${workbenchSurface.mutedText}`}>
+            <div
+              className={`flex h-52 items-center justify-center border-dashed text-sm ${workbenchSurface.compactPanel} ${workbenchSurface.mutedText}`}
+            >
               {t("launchpad.noResults")}
             </div>
           ) : (
-            <div className="space-y-6">
+            <div className="space-y-5">
               {visibleGroups.map((group) => (
                 <section id={group.id} key={group.id} className="scroll-mt-4">
-                  <div className="mb-3 flex items-center gap-2">
-                    <h2 className="text-base font-semibold text-stone-800 dark:text-stone-100">
+                  <div className="mb-2 flex items-center gap-2">
+                    <h2 className="text-sm font-semibold text-slate-800 dark:text-stone-100">
                       {group.name}
                     </h2>
-                    <span className="rounded-md bg-stone-100 px-2 py-0.5 text-xs text-stone-500 dark:bg-stone-800 dark:text-stone-300">
+                    <span className="rounded-md bg-white px-2 py-0.5 text-xs text-slate-500 ring-1 ring-slate-200 dark:bg-stone-900 dark:text-stone-300 dark:ring-stone-800">
                       {group.entries.length}
                     </span>
                   </div>
@@ -229,10 +231,10 @@ export function LaunchpadPanel() {
                               ? undefined
                               : t("launchpad.openEntry", { name: entry.name })
                           }
-                          className={`group flex min-h-28 flex-col justify-between p-4 transition-[border-color,box-shadow,transform] ${workbenchSurface.compactPanel} ${
+                          className={`group flex min-h-24 flex-col justify-between p-3 transition-[border-color,box-shadow,transform] ${workbenchSurface.compactPanel} ${
                             disabled
-                              ? "border-stone-200 opacity-70 dark:border-stone-800"
-                              : "cursor-pointer border-stone-200 hover:-translate-y-0.5 hover:border-stone-300 hover:shadow-[0_8px_18px_rgba(18,38,63,0.08)] dark:border-stone-800 dark:hover:border-stone-700"
+                              ? "border-slate-200 opacity-70 dark:border-stone-800"
+                              : "cursor-pointer border-slate-200 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-[0_8px_18px_rgba(18,38,63,0.08)] dark:border-stone-800 dark:hover:border-stone-700"
                           }`}
                           onClick={() => {
                             if (!disabled) handleOpen(entry);
@@ -250,32 +252,32 @@ export function LaunchpadPanel() {
                         >
                           <div className="flex items-start gap-3">
                             <div
-                              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg"
+                              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
                               style={{
                                 backgroundColor: entry.color
-                                  ? `${entry.color}18`
-                                  : "rgba(59, 130, 246, 0.1)",
-                                color: entry.color || "#2563eb",
+                                  ? `${entry.color}14`
+                                  : "rgba(37, 99, 235, 0.08)",
+                                color: entry.color || "#1d4ed8",
                               }}
                             >
-                              <Icon size={21} />
+                              <Icon size={18} />
                             </div>
                             <div className="min-w-0 flex-1">
-                              <h3 className="truncate text-sm font-semibold text-stone-900 dark:text-stone-100">
+                              <h3 className="truncate text-sm font-semibold text-slate-900 dark:text-stone-100">
                                 {entry.name}
                               </h3>
-                              <p className="mt-1 line-clamp-2 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                              <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-500 dark:text-stone-400">
                                 {entry.description || entry.groupName}
                               </p>
                             </div>
                           </div>
 
-                          <div className="mt-4 flex items-center justify-between gap-3">
-                            <span className="truncate text-xs text-stone-400">
+                          <div className="mt-3 flex items-center justify-between gap-3">
+                            <span className="truncate text-xs text-slate-400">
                               {entry.systemKey || entry.url || entry.groupName}
                             </span>
                             {disabled ? (
-                              <span className="rounded-md bg-stone-100 px-2 py-1 text-xs text-stone-500 dark:bg-stone-800 dark:text-stone-400">
+                              <span className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-500 dark:bg-stone-800 dark:text-stone-400">
                                 {destination.reason ||
                                   t("launchpad.unavailable")}
                               </span>
@@ -285,7 +287,7 @@ export function LaunchpadPanel() {
                                 target="_blank"
                                 rel="noreferrer"
                                 onClick={(event) => event.stopPropagation()}
-                                className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-stone-600 transition-colors hover:bg-stone-100 hover:text-stone-900 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-stone-100"
+                                className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-stone-100"
                               >
                                 {t("launchpad.open")}
                                 {entry.tab === "common" ? (
