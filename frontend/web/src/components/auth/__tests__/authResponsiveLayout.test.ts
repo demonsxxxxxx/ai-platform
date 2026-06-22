@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 const currentDir = dirname(fileURLToPath(import.meta.url));
 
 function readAuthSource(fileName: string): string {
-  return readFileSync(join(currentDir, fileName), "utf8");
+  return readFileSync(join(currentDir, "..", fileName), "utf8");
 }
 
 test("auth pages use safe centered mobile layout classes", () => {

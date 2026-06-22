@@ -1,5 +1,11 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { Routes, Route, useParams, useNavigate } from "react-router-dom";
+import {
+  Routes,
+  Route,
+  useParams,
+  useNavigate,
+  Navigate,
+} from "react-router-dom";
 import { Toaster } from "react-hot-toast";
 import { useTranslation } from "react-i18next";
 import { ProtectedRoute } from "./components/auth/ProtectedRoute";
@@ -15,6 +21,7 @@ import {
   listenSessionTitleUpdated,
 } from "./utils/sessionTitleEvents";
 import { APP_TOASTER_CLASS_NAME } from "./components/layout/AppContent/appToastLayout";
+import { useAuth } from "./hooks/useAuth";
 
 const SharedPage = lazy(() =>
   import("./components/share/SharedPage").then((m) => ({
@@ -44,11 +51,6 @@ const VerifyEmail = lazy(() =>
 const RegistrationPending = lazy(() =>
   import("./components/auth/RegistrationPending").then((m) => ({
     default: m.RegistrationPending,
-  })),
-);
-const LandingPage = lazy(() =>
-  import("./components/landing/LandingPage").then((m) => ({
-    default: m.LandingPage,
   })),
 );
 const AuthPage = lazy(() =>
@@ -147,6 +149,20 @@ function ChatPage() {
       <ChatPageSEO />
       <AppContent key="chat" activeTab="chat" />
     </>
+  );
+}
+
+function RootRedirect() {
+  const { isAuthenticated, isLoading } = useAuth();
+
+  if (isLoading) {
+    return <ChatPageSkeleton />;
+  }
+
+  return isAuthenticated ? (
+    <Navigate to="/chat" replace />
+  ) : (
+    <Navigate to="/auth/login" replace />
   );
 }
 
@@ -286,7 +302,7 @@ function MemoryPage() {
   return <AppContent key="memory" activeTab="memory" />;
 }
 
-// Auth page wrapper - redirects to the company launchpad after successful login/register
+// Auth page wrapper - redirects to the chat-first workbench after successful login/register
 function AuthPageWrapper({
   initialMode,
 }: {
@@ -302,7 +318,7 @@ function AuthPageWrapper({
     <AuthPage
       initialMode={initialMode}
       onSuccess={(redirectPath) =>
-        navigate(redirectPath ?? "/apps", { replace: true })
+        navigate(redirectPath ?? "/chat", { replace: true })
       }
     />
   );
@@ -346,7 +362,7 @@ function App() {
         <SelectionActionPopover />
         <Suspense fallback={<ChatPageSkeleton />}>
           <Routes>
-            <Route path="/" element={<LandingPage />} />
+            <Route path="/" element={<RootRedirect />} />
             {/* Auth routes */}
             <Route path="/auth/login" element={<AuthPageWrapper />} />
             <Route

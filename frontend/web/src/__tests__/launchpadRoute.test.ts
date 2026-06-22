@@ -45,9 +45,17 @@ test("launchpad tab is registered in layout and sidebar", () => {
   assert.match(sidebarSource, /nav\.apps/);
 });
 
-test("company launchpad is the default authenticated landing destination", () => {
-  assert.match(authRedirectSource, /return redirectPath \|\| "\/apps"/);
-  assert.match(appSource, /navigate\(redirectPath \?\? "\/apps"/);
-  assert.match(oauthCallbackSource, /getRedirectPath\(\) \|\| "\/apps"/);
+test("chat workbench is the default authenticated landing destination", () => {
+  assert.match(authRedirectSource, /return redirectPath \|\| "\/chat"/);
+  assert.match(appSource, /navigate\(redirectPath \?\? "\/chat"/);
+  assert.match(oauthCallbackSource, /getRedirectPath\(\) \|\| "\/chat"/);
   assert.match(landingSource, /navigate\("\/apps", \{ replace: true \}\)/);
+});
+
+test("root path routes by auth state instead of rendering the marketing landing page", () => {
+  assert.doesNotMatch(appSource, /LandingPage/);
+  assert.match(appSource, /function RootRedirect\(\)/);
+  assert.match(appSource, /<Navigate to="\/chat" replace \/>/);
+  assert.match(appSource, /<Navigate to="\/auth\/login" replace \/>/);
+  assert.match(appSource, /path="\/"\s+element=\{<RootRedirect \/>}/);
 });

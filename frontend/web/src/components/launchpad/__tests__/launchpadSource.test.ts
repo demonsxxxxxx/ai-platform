@@ -27,6 +27,14 @@ test("launchpad panel localizes page chrome and has mobile group navigation", ()
   assert.match(panelSource, /aria-label=\{t\("launchpad\.groupNavigation"\)\}/);
 });
 
+test("launchpad renders as a compact authenticated workbench page", () => {
+  assert.match(panelSource, /data-launchpad-workbench/);
+  assert.match(panelSource, /data-launchpad-results/);
+  assert.doesNotMatch(panelSource, /launchpad\.boundary/);
+  assert.doesNotMatch(panelSource, /AI Platform is the home entry/);
+  assert.doesNotMatch(panelSource, /作为首页入口/);
+});
+
 test("launchpad search filters the whole company catalog", () => {
   assert.match(panelSource, /query\.trim\(\) \? launchpadGroups : activeGroups/);
   assert.match(panelSource, /filterLaunchpadGroups\(searchGroups, query\)/);
