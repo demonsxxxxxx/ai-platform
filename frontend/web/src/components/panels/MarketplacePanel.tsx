@@ -7,6 +7,7 @@ import {
   Search,
   Tag,
   ChevronDown,
+  Building2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
@@ -262,6 +263,32 @@ export function MarketplacePanel({
   };
 
   const hasActiveFilters = selectedTags.length > 0 || searchQuery.length > 0;
+  const marketplacePlaceholderItems = [
+    {
+      id: "department-skills",
+      title: t("marketplace.placeholder.departmentSkills.title", "Department Skills"),
+      description: t(
+        "marketplace.placeholder.departmentSkills.description",
+        "Department-scoped Skills will appear here after ai-platform exposes the governed marketplace projection.",
+      ),
+    },
+    {
+      id: "approved-tools",
+      title: t("marketplace.placeholder.approvedTools.title", "Approved toolkits"),
+      description: t(
+        "marketplace.placeholder.approvedTools.description",
+        "Approved Skills and MCP-backed workflows remain visible as policy placeholders, but cannot be installed without backend authority.",
+      ),
+    },
+    {
+      id: "request-flow",
+      title: t("marketplace.placeholder.requestFlow.title", "Request access"),
+      description: t(
+        "marketplace.placeholder.requestFlow.description",
+        "The request and group-toggle workflow stays fail-closed until department policy APIs are available.",
+      ),
+    },
+  ];
 
   const filterMenu = tags.length > 0 && (
     <div className="relative shrink-0" data-filter-menu>
@@ -424,9 +451,82 @@ export function MarketplacePanel({
         />
       </div>
 
+      <div
+        data-marketplace-filter-shell
+        className="mx-4 mt-3 flex flex-col gap-2 rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-600 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900 dark:text-stone-300 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <Building2 size={16} className="shrink-0 text-slate-500" />
+          <span className="font-medium text-slate-900 dark:text-stone-100">
+            {t("skills.marketplace.departmentAvailability")}
+          </span>
+          <span className="truncate text-slate-500 dark:text-stone-400">
+            {governedUnavailable
+              ? t("marketplace.catalogUnavailable.description")
+              : t("marketplace.subtitle")}
+          </span>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {[
+            t("marketplace.filter.availableToMe", "Available to me"),
+            t("marketplace.filter.department", "Department"),
+            t("marketplace.filter.approved", "Approved"),
+          ].map((label) => (
+            <span
+              key={label}
+              className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 font-medium text-slate-500 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-400"
+            >
+              {label}
+            </span>
+          ))}
+        </div>
+      </div>
+
       {/* Skills List */}
       <div className="skill-content-area flex-1 overflow-y-auto py-2 sm:py-4 px-4 sm:p-6">
-        {skills.length === 0 ? (
+        {governedUnavailable ? (
+          <div data-marketplace-unavailable-shell className="space-y-4">
+            <div className="rounded-lg border border-dashed border-slate-300 bg-white p-4 text-sm leading-6 text-slate-600 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300">
+              <p className="font-semibold text-slate-900 dark:text-stone-100">
+                {t("marketplace.catalogUnavailable.title")}
+              </p>
+              <p className="mt-1">
+                {t("marketplace.catalogUnavailable.description")}
+              </p>
+            </div>
+            <div
+              data-marketplace-placeholder-list
+              className="grid gap-3 md:grid-cols-3"
+            >
+              {marketplacePlaceholderItems.map((item) => (
+                <article
+                  key={item.id}
+                  className="rounded-lg border border-slate-200 bg-white p-4 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-500 dark:bg-stone-800 dark:text-stone-300">
+                      <ShoppingBag size={16} />
+                    </span>
+                    <h3 className="text-sm font-semibold text-slate-900 dark:text-stone-100">
+                      {item.title}
+                    </h3>
+                  </div>
+                  <p className="mt-3 text-xs leading-5 text-slate-500 dark:text-stone-400">
+                    {item.description}
+                  </p>
+                  <button
+                    type="button"
+                    disabled
+                    aria-disabled
+                    className="mt-4 rounded-md border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-400 dark:border-stone-800 dark:text-stone-500"
+                  >
+                    {t("composerChip.status.unavailable", "unavailable")}
+                  </button>
+                </article>
+              ))}
+            </div>
+          </div>
+        ) : skills.length === 0 ? (
           <div className="skill-empty-state">
             <div className="skill-empty-state__icon">
               <ShoppingBag size={28} />

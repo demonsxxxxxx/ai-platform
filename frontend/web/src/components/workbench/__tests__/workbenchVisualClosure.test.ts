@@ -53,9 +53,15 @@ test("empty chat keeps the command dock compact and composer-first", () => {
   const welcome = read("src/components/chat/WelcomePage.tsx");
   const welcomeLayout = read("src/components/chat/welcomeLayout.ts");
 
+  assert.match(welcome, /welcome-chat-start/);
+  assert.match(welcome, /data-chat-start-surface/);
   assert.match(welcome, /data-composer-command-dock/);
+  assert.match(welcome, /data-composer-selection-summary/);
   assert.match(welcome, /workbench\.commandDock/);
   assert.match(welcome, /workbench\.commandDockHint/);
+  assert.doesNotMatch(welcome, /welcome-workbench-cockpit/);
+  assert.doesNotMatch(welcome, /WorkbenchQueueList/);
+  assert.doesNotMatch(welcome, /workbenchSurface\.cockpit/);
   assert.doesNotMatch(welcome, /sm:grid-cols-3/);
   assert.doesNotMatch(welcome, /workbench\.slashSkillsHint/);
   assert.doesNotMatch(welcome, /workbench\.slashMcpHint/);

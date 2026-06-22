@@ -9,10 +9,6 @@ export const workbenchSurface = {
     "grid min-h-0 w-full flex-1 grid-cols-1",
     "xl:grid-cols-[minmax(0,1fr)_20rem]",
   ),
-  cockpit: clsx(
-    "grid min-h-0 grid-cols-1 gap-3",
-    "xl:grid-cols-[minmax(220px,280px)_minmax(0,1fr)]",
-  ),
   thread: clsx(
     "workbench-thread-frame flex min-w-0 flex-1 flex-col",
     "border-r border-slate-200/80 bg-white",

@@ -58,6 +58,10 @@ test("skills and marketplace remain catalog shells when backend enablement is un
   assert.match(skillsPanel, /governedUnavailable/);
   assert.match(marketplace, /governedUnavailable/);
   assert.match(marketplace, /data-marketplace-catalog-shell/);
+  assert.match(marketplace, /data-marketplace-unavailable-shell/);
+  assert.match(marketplace, /data-marketplace-filter-shell/);
+  assert.match(marketplace, /data-marketplace-placeholder-list/);
+  assert.doesNotMatch(marketplace, /return\s*<WorkbenchUnavailableState/);
 });
 
 test("skills marketplace cards use restrained workbench tiles instead of gradient cards", () => {

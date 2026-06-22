@@ -1,14 +1,10 @@
 import { memo, useMemo, useState, useCallback, useRef } from "react";
 import {
-  Bot,
   ChevronRight,
-  FileText,
   MessageSquareText,
   RefreshCw,
-  ShieldCheck,
   Sparkles,
   UserRound,
-  Wrench,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
@@ -26,8 +22,6 @@ import {
 import { PersonaAvatarWithLoading } from "../persona/PersonaAvatarWithLoading";
 import { useSettingsContext } from "../../contexts/SettingsContext";
 import type { PersonaPreset, PersonaPresetSnapshot } from "../../types";
-import { APP_NAME } from "../../constants";
-import { workbenchSurface } from "../workbench/workbenchSurface";
 
 interface WelcomePageProps {
   greeting: string;
@@ -49,48 +43,11 @@ interface WelcomePageProps {
   onClearPersonaPreset?: () => void;
 }
 
-interface WorkbenchQueueItem {
+interface ComposerSummaryItem {
   id: string;
-  icon: typeof Sparkles;
   label: string;
   value: string;
-  tone?: "default" | "enabled" | "blocked";
-}
-
-function WorkbenchQueueList({ items }: { items: WorkbenchQueueItem[] }) {
-  return (
-    <div className="space-y-2">
-      {items.map((item) => {
-        const Icon = item.icon;
-        return (
-          <div
-            key={item.id}
-            className="flex min-h-11 items-center justify-between gap-3 rounded-lg border border-stone-200 bg-white px-3 py-2 text-xs shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900"
-          >
-            <span className="flex min-w-0 items-center gap-2">
-              <span
-                className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${
-                  item.tone === "enabled"
-                    ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
-                    : item.tone === "blocked"
-                      ? "bg-slate-100 text-slate-500 dark:bg-stone-800 dark:text-stone-400"
-                      : "bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-300"
-                }`}
-              >
-                <Icon size={14} />
-              </span>
-              <span className="truncate font-medium text-stone-700 dark:text-stone-200">
-                {item.label}
-              </span>
-            </span>
-            <span className="shrink-0 rounded-md bg-stone-100 px-2 py-1 font-medium text-stone-600 dark:bg-stone-800 dark:text-stone-300">
-              {item.value}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
+  state?: "default" | "enabled" | "unavailable";
 }
 
 export const WelcomePage = memo(function WelcomePage({
@@ -231,50 +188,46 @@ export const WelcomePage = memo(function WelcomePage({
     chatInputProps.agents?.find(
       (agent) => agent.id === chatInputProps.currentAgent,
     )?.name ?? chatInputProps.currentAgent;
-  const queueItems = useMemo<WorkbenchQueueItem[]>(
+  const selectionSummary = useMemo<ComposerSummaryItem[]>(
     () => [
       {
         id: "skills",
-        icon: Sparkles,
         label: t("featureMenu.skills", "Skills"),
         value:
           totalSkillsCount > 0
             ? `${enabledSkillsCount}/${totalSkillsCount}`
             : t("workbench.unavailableShort", "Unavailable"),
-        tone: enabledSkillsCount > 0 ? "enabled" : "blocked",
+        state: enabledSkillsCount > 0 ? "enabled" : "unavailable",
       },
       {
         id: "mcp",
-        icon: Wrench,
         label: t("featureMenu.mcpTools", "MCP tools"),
         value:
           totalToolsCount > 0
             ? `${enabledToolsCount}/${totalToolsCount}`
             : t("workbench.unavailableShort", "Unavailable"),
-        tone: enabledToolsCount > 0 ? "enabled" : "blocked",
+        state: enabledToolsCount > 0 ? "enabled" : "unavailable",
       },
       {
         id: "agent",
-        icon: Bot,
         label: t("featureMenu.agents", "Agents"),
         value: currentAgentName || t("workbench.defaultAgent", "Default"),
-        tone: currentAgentName ? "enabled" : "default",
+        state: currentAgentName ? "enabled" : "default",
       },
       {
         id: "model",
-        icon: Sparkles,
         label: t("featureMenu.model", "Model"),
         value: chatInputProps.currentModelId || t("workbench.none", "None"),
-        tone: chatInputProps.currentModelId ? "enabled" : "default",
+        state: chatInputProps.currentModelId ? "enabled" : "default",
       },
       {
         id: "files",
-        icon: FileText,
         label: t("chat.fileReferences", "File references"),
         value:
           attachedFilesCount > 0
             ? String(attachedFilesCount)
             : t("workbench.none", "None"),
+        state: attachedFilesCount > 0 ? "enabled" : "default",
       },
     ],
     [
@@ -293,91 +246,79 @@ export const WelcomePage = memo(function WelcomePage({
     <div
       ref={rootRef}
       data-workbench-empty-state="chat"
-      className="welcome-root welcome-workbench-cockpit relative flex h-full min-h-0 flex-col overflow-y-auto px-3 py-3 sm:px-4"
+      className="welcome-root welcome-chat-start relative flex h-full min-h-0 flex-col overflow-y-auto px-4 py-6 sm:px-6"
     >
-      <div className={workbenchSurface.cockpit}>
-        <aside className="space-y-3">
-          <section className={`${workbenchSurface.compactPanel} p-4`}>
-            <div className="flex items-center gap-3">
-              <img
-                src="/icons/icon.svg"
-                alt={APP_NAME}
-                className="h-9 w-9 rounded-lg ring-1 ring-stone-200 dark:ring-stone-800"
-              />
-              <div className="min-w-0">
-                <p className={workbenchSurface.label}>
-                  {t("workbench.cockpit", "Workbench")}
-                </p>
-                <h1 className="truncate text-base font-semibold text-stone-900 dark:text-stone-50">
-                  {greeting}
-                </h1>
-              </div>
-            </div>
-            <p className="mt-3 text-sm leading-6 text-stone-600 dark:text-stone-300">
-              {subtitle}
-            </p>
-          </section>
+      <section
+        data-chat-start-surface
+        className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center py-5"
+      >
+        <div className="mb-5 text-center">
+          <p className="text-xs font-semibold uppercase text-stone-400 dark:text-stone-500">
+            {t("workbench.newConversation", "New conversation")}
+          </p>
+          <h1 className="mt-2 text-2xl font-semibold leading-8 text-stone-950 dark:text-stone-50 sm:text-3xl">
+            {greeting}
+          </h1>
+          <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-stone-500 dark:text-stone-400">
+            {subtitle}
+          </p>
+        </div>
 
-          <section className={`${workbenchSurface.compactPanel} p-3`}>
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <p className={workbenchSurface.label}>
-                {t("workbench.selectionState", "Selection state")}
-              </p>
-              <ShieldCheck size={15} className="text-stone-400" />
-            </div>
-            <WorkbenchQueueList items={queueItems} />
-          </section>
-        </aside>
+        <div className="welcome-input">
+          <ChatInput
+            {...chatInputProps}
+            onMentionQueryChange={handleMentionQueryChange}
+            pendingInput={pendingInput}
+            onPendingInputConsumed={() => setPendingInput(null)}
+            className="mx-auto w-full px-0"
+          />
+        </div>
 
-        <section className={`${workbenchSurface.compactPanel} min-w-0 p-3 sm:p-4`}>
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-            <div className="min-w-0">
-              <p className={workbenchSurface.label}>
-                {t("workbench.newConversation", "New conversation")}
-              </p>
-              <h2 className="mt-1 text-xl font-semibold leading-7 text-stone-900 dark:text-stone-50">
-                {t(
-                  "workbench.commandFirstTitle",
-                  "Start with a prompt, Skill, MCP tool, file, or context.",
-                )}
-              </h2>
-            </div>
-          </div>
-
-          <div
-            data-composer-command-dock
-            className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-xs text-stone-600 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-300"
-          >
-            <span className="font-medium text-stone-800 dark:text-stone-100">
-              {t("workbench.commandDock", "Composer")}
+        <div
+          data-composer-command-dock
+          className="mx-auto mt-3 flex w-full max-w-3xl flex-wrap items-center justify-center gap-1.5 text-xs text-stone-500 dark:text-stone-400"
+        >
+          <span className="font-medium text-stone-700 dark:text-stone-200">
+            {t("workbench.commandDock", "Composer")}
+          </span>
+          {["/", "$", "/mcp", "/model", "/file", "/context"].map((command) => (
+            <span
+              key={command}
+              className="rounded-md border border-stone-200 bg-white px-1.5 py-0.5 font-semibold text-stone-700 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-200"
+            >
+              {command}
             </span>
-            {["/", "$", "/mcp", "/model", "/file", "/context"].map((command) => (
-              <span
-                key={command}
-                className="rounded-md bg-white px-2 py-1 font-semibold shadow-sm dark:bg-stone-900"
-              >
-                {command}
-              </span>
-            ))}
-            <span className="min-w-0 text-stone-500 dark:text-stone-400">
-              {t(
-                "workbench.commandDockHint",
-                "Type commands directly in the input; governed entries become chips.",
-              )}
-            </span>
-          </div>
+          ))}
+          <span className="min-w-0">
+            {t(
+              "workbench.commandDockHint",
+              "Type commands directly in the input; governed entries become chips.",
+            )}
+          </span>
+        </div>
 
-          <div className="welcome-input mt-3">
-            <ChatInput
-              {...chatInputProps}
-              onMentionQueryChange={handleMentionQueryChange}
-              pendingInput={pendingInput}
-              onPendingInputConsumed={() => setPendingInput(null)}
-              className="mx-auto w-full px-0"
-            />
-          </div>
-        </section>
-      </div>
+        <div
+          data-composer-selection-summary
+          className="mx-auto mt-3 flex w-full max-w-3xl flex-wrap justify-center gap-1.5"
+        >
+          {selectionSummary.map((item) => (
+            <span
+              key={item.id}
+              className={`inline-flex max-w-[12rem] items-center gap-1 rounded-md border px-2 py-1 text-[11px] ${
+                item.state === "enabled"
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200"
+                  : item.state === "unavailable"
+                    ? "border-stone-200 bg-stone-50 text-stone-500 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400"
+                    : "border-stone-200 bg-white text-stone-500 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-400"
+              }`}
+              title={`${item.label}: ${item.value}`}
+            >
+              <span className="truncate font-medium">{item.label}</span>
+              <span className="shrink-0 opacity-80">{item.value}</span>
+            </span>
+          ))}
+        </div>
+      </section>
 
       {(showPersonaCards || showStarterPrompts) && (
         <div

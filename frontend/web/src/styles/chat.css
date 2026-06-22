@@ -11,6 +11,7 @@
   min-height: 44px;
   max-height: min(52dvh, 420px);
   overflow: hidden;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 /* Chat input focus glow effect */
@@ -18,7 +19,7 @@
   border-color: var(--theme-ring);
   box-shadow:
     0 0 0 3px color-mix(in srgb, var(--theme-ring) 12%, transparent),
-    0 8px 22px rgba(15, 23, 42, 0.08);
+    0 3px 10px rgba(15, 23, 42, 0.06);
 }
 
 .composer-command-surface {

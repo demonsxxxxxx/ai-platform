@@ -68,7 +68,7 @@ test("launchpad and rail use the same workbench language", () => {
   assert.match(rail, /workbench-rail/);
 });
 
-test("empty chat starts as a dense workbench cockpit instead of a centered hero", () => {
+test("empty chat starts as a LibreChat-style chat-first surface", () => {
   const welcome = readFileSync(
     join(root, "src/components/chat/WelcomePage.tsx"),
     "utf8",
@@ -78,10 +78,16 @@ test("empty chat starts as a dense workbench cockpit instead of a centered hero"
     "utf8",
   );
 
-  assert.match(welcome, /welcome-workbench-cockpit/);
-  assert.match(welcome, /WorkbenchQueueList/);
+  assert.match(welcome, /welcome-chat-start/);
+  assert.match(welcome, /data-chat-start-surface/);
+  assert.match(welcome, /data-composer-selection-summary/);
   assert.match(welcome, /data-workbench-empty-state="chat"/);
+  assert.doesNotMatch(welcome, /welcome-workbench-cockpit/);
+  assert.doesNotMatch(welcome, /WorkbenchQueueList/);
+  assert.doesNotMatch(welcome, /workbenchSurface\.cockpit/);
+  assert.doesNotMatch(welcome, /workbench\.selectionState/);
   assert.doesNotMatch(welcome, /font-serif/);
-  assert.match(surface, /grid-cols-\[minmax\(220px,280px\)_minmax\(0,1fr\)\]/);
+  assert.doesNotMatch(surface, /cockpit:/);
+  assert.doesNotMatch(surface, /grid-cols-\[minmax\(220px,280px\)_minmax\(0,1fr\)\]/);
   assert.match(surface, /workbench-thread-frame/);
 });
