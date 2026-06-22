@@ -206,6 +206,13 @@ UI_PERMISSIONS = [
     "session:write",
     "file:upload",
     "file:upload:document",
+    "skill:read",
+    "skill:write",
+    "skill:delete",
+    "skill:admin",
+    "marketplace:read",
+    "marketplace:publish",
+    "marketplace:admin",
 ]
 
 CHAT_STREAM_REPLAY_SKIP_EVENT_TYPES = {"assistant_delta"}
@@ -222,7 +229,7 @@ def _profile_payload(principal: AuthPrincipal, metadata: dict[str, Any] | None =
         "email": "",
         "avatar_url": None,
         "roles": principal.roles,
-        "permissions": principal.permissions or UI_PERMISSIONS,
+        "permissions": principal.permissions,
         "is_active": True,
         "metadata": merged_metadata,
         "created_at": "",
