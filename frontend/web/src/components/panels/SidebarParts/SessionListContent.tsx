@@ -4,8 +4,11 @@ import {
   Search,
   FolderPlus,
   FolderOpen,
+  LayoutGrid,
   MessageSquarePlus,
   MoreHorizontal,
+  Server,
+  Sparkles,
   UserRound,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -58,6 +61,8 @@ interface SessionListContentProps {
   onNewSession: () => void;
   onOpenSearch: () => void;
   onShowProfile: () => void;
+  showSkills: boolean;
+  showMcp: boolean;
   hasMoreMenuItems: boolean;
   onToggleMoreMenu: () => void;
   expandedMoreMenuBtnRef: React.RefObject<HTMLButtonElement | null>;
@@ -92,6 +97,8 @@ export function SessionListContent({
   onNewSession,
   onOpenSearch,
   onShowProfile,
+  showSkills,
+  showMcp,
   hasMoreMenuItems,
   onToggleMoreMenu,
   expandedMoreMenuBtnRef,
@@ -191,6 +198,34 @@ export function SessionListContent({
             ⌘K
           </kbd>
         </button>
+
+        <button
+          onClick={() => navigate("/apps")}
+          className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+        >
+          <LayoutGrid size={20} />
+          <span>{t("nav.apps")}</span>
+        </button>
+
+        {showSkills && (
+          <button
+            onClick={() => navigate("/skills")}
+            className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+          >
+            <Sparkles size={20} />
+            <span>{t("nav.skills")}</span>
+          </button>
+        )}
+
+        {showMcp && (
+          <button
+            onClick={() => navigate("/mcp")}
+            className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+          >
+            <Server size={20} />
+            <span>{t("nav.mcp")}</span>
+          </button>
+        )}
 
         <button
           onClick={() => navigate("/persona")}

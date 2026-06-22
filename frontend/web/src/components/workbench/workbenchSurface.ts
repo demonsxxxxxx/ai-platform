@@ -7,7 +7,6 @@ export const workbenchSurface = {
   ),
   workspace: clsx(
     "grid min-h-0 w-full flex-1 grid-cols-1",
-    "xl:grid-cols-[minmax(0,1fr)_20rem]",
   ),
   thread: clsx(
     "workbench-thread-frame flex min-w-0 flex-1 flex-col",
@@ -18,10 +17,6 @@ export const workbenchSurface = {
   composer: clsx(
     "shrink-0 border-t border-slate-200/80 bg-white px-3 py-2.5",
     "dark:border-stone-800 dark:bg-stone-950",
-  ),
-  context: clsx(
-    "hidden min-h-0 w-80 shrink-0 flex-col bg-slate-50",
-    "dark:bg-stone-950 xl:flex",
   ),
   panel: clsx(
     "rounded-lg border border-slate-200 bg-white shadow-[0_4px_12px_rgba(18,38,63,0.03)]",

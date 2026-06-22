@@ -9,17 +9,18 @@ function read(path: string): string {
   return readFileSync(join(root, path), "utf8");
 }
 
-test("workbench shell exposes dense chat regions", () => {
+test("workbench shell keeps chat as the primary single-column surface", () => {
   const shell = read("src/components/workbench/WorkbenchShell.tsx");
   const surface = read("src/components/workbench/workbenchSurface.ts");
 
   assert.match(shell, /data-workbench-region="thread"/);
   assert.match(shell, /data-workbench-region="composer"/);
-  assert.match(shell, /data-workbench-region="context"/);
+  assert.doesNotMatch(shell, /data-workbench-region="context"/);
   assert.match(surface, /workspace:/);
   assert.match(surface, /thread:/);
   assert.match(surface, /composer:/);
-  assert.match(surface, /context:/);
+  assert.doesNotMatch(surface, /xl:grid-cols/);
+  assert.doesNotMatch(surface, /context:/);
   assert.match(surface, /commandSurface:/);
   assert.match(surface, /unavailable:/);
 });
@@ -55,10 +56,10 @@ test("empty chat keeps the command dock compact and composer-first", () => {
 
   assert.match(welcome, /welcome-chat-start/);
   assert.match(welcome, /data-chat-start-surface/);
-  assert.match(welcome, /data-composer-command-dock/);
-  assert.match(welcome, /data-composer-selection-summary/);
-  assert.match(welcome, /workbench\.commandDock/);
-  assert.match(welcome, /workbench\.commandDockHint/);
+  assert.doesNotMatch(welcome, /data-composer-command-dock/);
+  assert.doesNotMatch(welcome, /data-composer-selection-summary/);
+  assert.doesNotMatch(welcome, /workbench\.commandDock/);
+  assert.doesNotMatch(welcome, /workbench\.commandDockHint/);
   assert.doesNotMatch(welcome, /welcome-workbench-cockpit/);
   assert.doesNotMatch(welcome, /WorkbenchQueueList/);
   assert.doesNotMatch(welcome, /workbenchSurface\.cockpit/);
@@ -70,4 +71,19 @@ test("empty chat keeps the command dock compact and composer-first", () => {
   assert.doesNotMatch(welcome, /rounded-2xl/);
   assert.doesNotMatch(welcomeLayout, /rounded-2xl/);
   assert.match(welcomeLayout, /rounded-lg/);
+});
+
+test("expanded sidebar absorbs app workbench entries into primary navigation", () => {
+  const sidebar = read(
+    "src/components/panels/SidebarParts/SessionListContent.tsx",
+  );
+
+  assert.match(sidebar, /LayoutGrid/);
+  assert.match(sidebar, /Sparkles/);
+  assert.match(sidebar, /Server/);
+  assert.match(sidebar, /navigate\("\/apps"\)/);
+  assert.match(sidebar, /navigate\("\/skills"\)/);
+  assert.match(sidebar, /navigate\("\/mcp"\)/);
+  assert.match(sidebar, /showSkills/);
+  assert.match(sidebar, /showMcp/);
 });

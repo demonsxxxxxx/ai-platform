@@ -23,11 +23,8 @@ import {
   Star,
   Bell,
   Settings,
-  Server,
   Brain,
-  LayoutGrid,
   MessageCircle,
-  Sparkles,
 } from "lucide-react";
 import { sessionApi, type BackendSession } from "../../services/api";
 import { useAuth } from "../../hooks/useAuth";
@@ -143,24 +140,6 @@ export const SessionSidebar = forwardRef<
   const canReadMemory = enableMemory;
   const canReadSkills = hasAnyPermission([Permission.SKILL_READ]);
   const moreMenuFeatureItems = [
-    {
-      path: "/apps",
-      label: t("nav.apps"),
-      icon: LayoutGrid,
-      show: true,
-    },
-    {
-      path: "/skills",
-      label: t("nav.skills"),
-      icon: Sparkles,
-      show: canReadSkills,
-    },
-    {
-      path: "/mcp",
-      label: t("nav.mcp"),
-      icon: Server,
-      show: canReadMCP,
-    },
     {
       path: "/channels",
       label: t("nav.channels"),
@@ -704,6 +683,8 @@ export const SessionSidebar = forwardRef<
             onNewSession={onNewSession}
             onOpenSearch={() => setIsSearchOpen(true)}
             onShowProfile={onShowProfile!}
+            showSkills={canReadSkills}
+            showMcp={canReadMCP}
             hasMoreMenuItems={hasMoreMenuItems}
             onToggleMoreMenu={() => setIsMoreMenuOpen((prev) => !prev)}
             expandedMoreMenuBtnRef={expandedMoreMenuBtnRef}
@@ -768,6 +749,8 @@ export const SessionSidebar = forwardRef<
               onNewSession={onNewSession}
               onOpenSearch={() => setIsSearchOpen(true)}
               onShowProfile={onShowProfile!}
+              showSkills={canReadSkills}
+              showMcp={canReadMCP}
               hasMoreMenuItems={hasMoreMenuItems}
               onToggleMoreMenu={() => setIsMoreMenuOpen((prev) => !prev)}
               expandedMoreMenuBtnRef={expandedMoreMenuBtnRef}

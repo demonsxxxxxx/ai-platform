@@ -5,7 +5,7 @@ import test from "node:test";
 
 const root = process.cwd();
 
-test("workbench shell exposes the required enterprise regions", () => {
+test("workbench shell exposes the required chat-first regions", () => {
   const shell = readFileSync(
     join(root, "src/components/workbench/WorkbenchShell.tsx"),
     "utf8",
@@ -13,8 +13,8 @@ test("workbench shell exposes the required enterprise regions", () => {
 
   assert.match(shell, /data-workbench-region="thread"/);
   assert.match(shell, /data-workbench-region="composer"/);
-  assert.match(shell, /data-workbench-region="context"/);
-  assert.match(shell, /rightPanel/);
+  assert.doesNotMatch(shell, /data-workbench-region="context"/);
+  assert.doesNotMatch(shell, /rightPanel/);
 });
 
 test("workbench shell does not duplicate the primary sidebar rail", () => {
@@ -28,14 +28,15 @@ test("workbench shell does not duplicate the primary sidebar rail", () => {
   assert.doesNotMatch(shell, /workbenchSurface\.railButton/);
 });
 
-test("workbench context drawer is visible on normal desktop widths", () => {
+test("workbench shell keeps the chat canvas single-column on desktop", () => {
   const surface = readFileSync(
     join(root, "src/components/workbench/workbenchSurface.ts"),
     "utf8",
   );
 
-  assert.match(surface, /xl:grid-cols-\[minmax\(0,1fr\)_20rem\]/);
-  assert.match(surface, /xl:flex/);
+  assert.match(surface, /grid-cols-1/);
+  assert.doesNotMatch(surface, /xl:grid-cols-\[minmax\(0,1fr\)_20rem\]/);
+  assert.doesNotMatch(surface, /xl:flex/);
   assert.doesNotMatch(surface, /2xl:grid-cols-\[minmax\(0,1fr\)_20rem\]/);
   assert.doesNotMatch(surface, /2xl:flex/);
 });
@@ -51,7 +52,7 @@ test("chat app uses the workbench shell instead of old mixed layout ownership", 
   );
 
   assert.match(chatApp, /WorkbenchShell/);
-  assert.match(chatView, /WorkbenchRightPanel/);
+  assert.doesNotMatch(chatView, /WorkbenchRightPanel/);
 });
 
 test("launchpad and rail use the same workbench language", () => {
@@ -80,7 +81,8 @@ test("empty chat starts as a LibreChat-style chat-first surface", () => {
 
   assert.match(welcome, /welcome-chat-start/);
   assert.match(welcome, /data-chat-start-surface/);
-  assert.match(welcome, /data-composer-selection-summary/);
+  assert.doesNotMatch(welcome, /data-composer-selection-summary/);
+  assert.doesNotMatch(welcome, /data-composer-command-dock/);
   assert.match(welcome, /data-workbench-empty-state="chat"/);
   assert.doesNotMatch(welcome, /welcome-workbench-cockpit/);
   assert.doesNotMatch(welcome, /WorkbenchQueueList/);

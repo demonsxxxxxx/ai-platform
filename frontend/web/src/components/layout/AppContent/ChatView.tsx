@@ -26,7 +26,6 @@ import {
 } from "../../chat/ChatMessage/items/persistentToolPanelState";
 import { ChatInput } from "../../chat/ChatInput";
 import { WelcomePage } from "../../chat/WelcomePage";
-import { WorkbenchRightPanel } from "../../workbench/WorkbenchRightPanel";
 import { Virtuoso, type ListRange } from "react-virtuoso";
 import { ApprovalPanel } from "../../panels/ApprovalPanel";
 import {
@@ -183,7 +182,6 @@ interface ChatViewProps {
   WorkbenchShellComponent: ComponentType<{
     children: ReactNode;
     composer?: ReactNode;
-    rightPanel?: ReactNode;
   }>;
 }
 
@@ -710,14 +708,6 @@ export function ChatView({
     onAttachmentsChange,
   };
 
-  const rightPanel = (
-    <WorkbenchRightPanel
-      sessionId={sessionId}
-      currentRunId={currentRunId}
-      messageCount={messages.length}
-    />
-  );
-
   const composer =
     messages.length > 0 ? (
       <div className="relative">
@@ -771,7 +761,7 @@ export function ChatView({
 
   return (
     <SessionImageGalleryProvider messages={messages}>
-      <WorkbenchShellComponent composer={composer} rightPanel={rightPanel}>
+      <WorkbenchShellComponent composer={composer}>
       <main
         ref={messagesContainerRef}
         className={`relative flex-1 min-h-0 ${
