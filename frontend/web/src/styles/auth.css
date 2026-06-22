@@ -37,12 +37,12 @@ html.dark .auth-shell {
 
 html,
 body {
-  background: #ffffff;
+  background: var(--theme-bg);
 }
 
 html.dark,
 html.dark body {
-  background: #0c0a09;
+  background: var(--theme-bg);
 }
 
 /* Auth crosshatch background (dark mode only; light mode stays clean) */

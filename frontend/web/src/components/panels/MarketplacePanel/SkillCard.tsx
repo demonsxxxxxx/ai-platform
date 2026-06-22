@@ -64,6 +64,8 @@ export function SkillCard({
   const navigate = useNavigate();
   const primaryTag = skill.tags[0];
   const CategoryIcon = primaryTag ? getCategoryIcon(primaryTag) : Sparkles;
+  const versionLabel =
+    skill.version.length > 14 ? `${skill.version.slice(0, 12)}...` : skill.version;
 
   return (
     <SkillBaseCard
@@ -161,7 +163,9 @@ export function SkillCard({
               {skill.file_count}
             </span>
             <span className="inline-block h-1 w-1 rounded-full bg-[var(--theme-border)]" />
-            <span>v{skill.version}</span>
+            <span className="max-w-28 truncate" title={`v${skill.version}`}>
+              v{versionLabel}
+            </span>
           </div>
           <div className="flex items-center gap-1.5">
             <button

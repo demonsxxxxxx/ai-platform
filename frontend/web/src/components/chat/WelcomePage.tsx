@@ -242,7 +242,7 @@ export const WelcomePage = memo(function WelcomePage({
     >
       <section
         data-chat-start-surface
-        className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center py-5"
+        className="chat-start-surface mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center py-5"
       >
         <div className="mb-5 text-center">
           <p className="text-xs font-semibold uppercase text-stone-400 dark:text-stone-500">
@@ -276,7 +276,7 @@ export const WelcomePage = memo(function WelcomePage({
           {["/", "$", "/mcp", "/model", "/file", "/context"].map((command) => (
             <span
               key={command}
-              className="rounded-md border border-stone-200 bg-white px-1.5 py-0.5 font-semibold text-stone-700 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-200"
+              className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-1.5 py-0.5 font-semibold text-stone-700 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-200"
             >
               {command}
             </span>
@@ -301,7 +301,7 @@ export const WelcomePage = memo(function WelcomePage({
                   ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200"
                   : item.state === "unavailable"
                     ? "border-stone-200 bg-stone-50 text-stone-500 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400"
-                    : "border-stone-200 bg-white text-stone-500 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-400"
+                    : "border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-stone-500 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-400"
               }`}
               title={`${item.label}: ${item.value}`}
             >

@@ -125,7 +125,7 @@ export function TabContent({
 
   return (
     <main
-      className="flex-1 overflow-hidden"
+      className="flex-1 overflow-hidden bg-[var(--theme-bg)]"
       data-authenticated-workbench-page={activeTab}
     >
       <div className="flex h-full w-full flex-col">

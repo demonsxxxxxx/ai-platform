@@ -111,6 +111,7 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
     "utf8",
   );
   const theme = readFileSync(join(root, "src/styles/base.css"), "utf8");
+  const authTheme = readFileSync(join(root, "src/styles/auth.css"), "utf8");
 
   assert.match(surface, /root:[\s\S]*bg-\[var\(--theme-bg\)\]/);
   assert.match(surface, /thread:[\s\S]*bg-\[var\(--theme-bg\)\]/);
@@ -123,9 +124,11 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
   );
   assert.match(surface, /secondaryPanel:/);
   assert.match(rightPanel, /workbenchSurface\.secondaryPanel/);
-  assert.match(theme, /--theme-bg:\s*#f3f5f8;/);
-  assert.match(theme, /--theme-bg-sidebar:\s*#f3f5f8;/);
-  assert.match(theme, /--theme-bg-card:\s*#f8fafc;/);
+  assert.match(theme, /--theme-bg:\s*#eef2f6;/);
+  assert.match(theme, /--theme-bg-sidebar:\s*#e8edf3;/);
+  assert.match(theme, /--theme-bg-card:\s*#ffffff;/);
+  assert.match(authTheme, /html,\s*body\s*\{\s*background:\s*var\(--theme-bg\);/);
+  assert.doesNotMatch(authTheme, /html,\s*body\s*\{\s*background:\s*#ffffff;/);
   assert.doesNotMatch(surface, /thread:[\s\S]{0,180}bg-white/);
   assert.doesNotMatch(surface, /context:[\s\S]{0,180}bg-white/);
 });
@@ -150,6 +153,8 @@ test("authenticated shell chrome avoids legacy playful branding accents", () => 
 
   assert.doesNotMatch(chrome, /font-serif|from-amber-400|to-orange-500/);
   assert.doesNotMatch(chrome, /icons\/icon\.svg/);
+  assert.match(chrome, /data-workbench-header/);
+  assert.match(chrome, /bg-\[var\(--theme-bg\)\]/);
   assert.match(chrome, /bg-teal-700/);
 });
 
@@ -195,9 +200,20 @@ test("authenticated marketplace pages share the workbench surface tokens", () =>
     join(root, "src/components/panels/MarketplacePanel.tsx"),
     "utf8",
   );
+  const groupAvailability = readFileSync(
+    join(root, "src/components/governance/GroupAvailabilityToggleRow.tsx"),
+    "utf8",
+  );
+  const marketplaceCard = readFileSync(
+    join(root, "src/components/panels/MarketplacePanel/SkillCard.tsx"),
+    "utf8",
+  );
 
   assert.match(skillsHub, /bg-\[var\(--theme-bg\)\]/);
   assert.match(marketplace, /bg-\[var\(--theme-bg\)\]/);
+  assert.match(groupAvailability, /flex flex-col[\s\S]*sm:flex-row/);
+  assert.match(marketplaceCard, /versionLabel/);
+  assert.match(marketplaceCard, /max-w-28 truncate/);
   assert.doesNotMatch(skillsHub, /bg-slate-50/);
   assert.doesNotMatch(marketplace, /bg-slate-50/);
   assert.doesNotMatch(marketplace, /border-slate-200 bg-white/);

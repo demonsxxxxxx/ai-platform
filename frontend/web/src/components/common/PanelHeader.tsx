@@ -55,7 +55,7 @@ export function PanelHeader({
               {title}
             </h1>
             {subtitle && (
-              <p className="mt-0.5 truncate text-sm leading-snug text-slate-500 dark:text-stone-400">
+              <p className="mt-0.5 line-clamp-2 text-sm leading-snug text-slate-500 dark:text-stone-400 sm:truncate">
                 {subtitle}
               </p>
             )}

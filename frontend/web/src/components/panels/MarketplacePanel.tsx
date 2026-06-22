@@ -454,6 +454,7 @@ export function MarketplacePanel({
         </div>
       )}
 
+      {!embedded && (
       <div className="px-4 pt-3">
         <GroupAvailabilityToggleRow
           label={t("skills.marketplace.departmentAvailability")}
@@ -462,37 +463,40 @@ export function MarketplacePanel({
           backed={false}
         />
       </div>
+      )}
 
-      <div
-        data-marketplace-filter-shell
-        className="mx-4 mt-3 flex flex-col gap-2 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 text-xs text-slate-600 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900 dark:text-stone-300 sm:flex-row sm:items-center sm:justify-between"
-      >
-        <div className="flex min-w-0 items-center gap-2">
-          <Building2 size={16} className="shrink-0 text-slate-500" />
-          <span className="font-medium text-slate-900 dark:text-stone-100">
-            {t("skills.marketplace.departmentAvailability")}
-          </span>
-          <span className="truncate text-slate-500 dark:text-stone-400">
-            {governedUnavailable
-              ? t("marketplace.catalogUnavailable.description")
-              : t("marketplace.subtitle")}
-          </span>
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          {[
-            t("marketplace.filter.availableToMe", "Available to me"),
-            t("marketplace.filter.department", "Department"),
-            t("marketplace.filter.approved", "Approved"),
-          ].map((label) => (
-            <span
-              key={label}
-              className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-2 py-1 font-medium text-slate-500 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-400"
-            >
-              {label}
+      {!embedded && (
+        <div
+          data-marketplace-filter-shell
+          className="mx-4 mt-3 flex flex-col gap-2 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 text-xs text-slate-600 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900 dark:text-stone-300 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            <Building2 size={16} className="shrink-0 text-slate-500" />
+            <span className="font-medium text-slate-900 dark:text-stone-100">
+              {t("skills.marketplace.departmentAvailability")}
             </span>
-          ))}
+            <span className="truncate text-slate-500 dark:text-stone-400">
+              {governedUnavailable
+                ? t("marketplace.catalogUnavailable.description")
+                : t("marketplace.subtitle")}
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {[
+              t("marketplace.filter.availableToMe", "Available to me"),
+              t("marketplace.filter.department", "Department"),
+              t("marketplace.filter.approved", "Approved"),
+            ].map((label) => (
+              <span
+                key={label}
+                className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-2 py-1 font-medium text-slate-500 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-400"
+              >
+                {label}
+              </span>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Skills List */}
       <div className="skill-content-area flex-1 overflow-y-auto py-2 sm:py-4 px-4 sm:p-6">

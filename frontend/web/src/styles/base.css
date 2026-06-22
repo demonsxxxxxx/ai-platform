@@ -117,13 +117,13 @@ select:-webkit-autofill:active {
   /* Enterprise workbench tokens */
   --theme-primary: #0f766e;
   --theme-primary-hover: #115e59;
-  --theme-primary-light: #eef2f7;
+  --theme-primary-light: #e6edf3;
   --theme-ring: #0f766e;
-  --theme-bg: #f3f5f8;
-  --theme-bg-card: #f8fafc;
-  --theme-bg-sidebar: #f3f5f8;
+  --theme-bg: #eef2f6;
+  --theme-bg-card: #ffffff;
+  --theme-bg-sidebar: #e8edf3;
   --theme-border: #e2e8f0;
-  --theme-text: #111827;
+  --theme-text: #0f172a;
   --theme-text-secondary: #64748b;
   --theme-overlay: rgba(0, 0, 0, 0.4);
   --theme-overlay-strong: rgba(0, 0, 0, 0.5);
@@ -146,7 +146,7 @@ select:-webkit-autofill:active {
   --theme-bg-card: #1c1917; /* stone-900 */
   --theme-bg-sidebar: #171412; /* stone-950 variant */
   --theme-border: #44403c; /* stone-700 */
-  --theme-text: #ffffff; /* pure white */
+  --theme-text: #f8fafc;
   --theme-text-secondary: #d6d3d1; /* stone-300 */
   --theme-overlay: rgba(0, 0, 0, 0.6);
   --theme-overlay-strong: rgba(0, 0, 0, 0.7);

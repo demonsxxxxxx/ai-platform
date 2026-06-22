@@ -135,7 +135,8 @@ export function Header({
   return (
     <>
       <header
-        className="relative z-50 flex items-center px-3 sm:px-5 pb-1"
+        data-workbench-header
+        className="relative z-50 flex min-h-[2.75rem] items-center border-b border-[var(--theme-border)] bg-[var(--theme-bg)] px-3 pb-2 sm:px-5"
         style={{ paddingTop: "max(0.75rem, env(safe-area-inset-top))" }}
       >
         {/* Left */}
