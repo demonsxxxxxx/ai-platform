@@ -1,7 +1,7 @@
 {
-  "note": "Issue #138 211 runtime-only rollout evidence for 4039e4b. The live API/worker containers use ai-platform:4039e4b-issue138-runtime-only-v1 with matching source/runtime labels; configured 211 source path remained dirty and untouched, and compose still carries the external env-file label caveat.",
+  "note": "Issue #164 211 runtime-only rollout evidence for dab7dbc after PR #171. The live API/worker containers use ai-platform:dab7dbc-b0-smoke-verifier-v2 with matching source/runtime labels; compose still carries the external env-file label caveat and the image used a runtime-only marker rebase workaround.",
   "runtime_affecting_changes_since_runtime_subject": [],
-  "runtime_subject_commit_sha": "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
+  "runtime_subject_commit_sha": "dab7dbc30a43725d58a8a6b2ddb8e52888f303b5",
   "schema_version": "ai-platform.source-runtime-relation-manifest.v1",
-  "source_tree_commit_sha": "4039e4bd870d99201da4fc0f002f76f2b5c4a892"
+  "source_tree_commit_sha": "dab7dbc30a43725d58a8a6b2ddb8e52888f303b5"
 }

@@ -17,6 +17,15 @@ LEGACY_CONCURRENCY_EVIDENCE_DIR = (
 )
 
 
+def read_json_fixture(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        extended_path = "\\\\?\\" + str(path.resolve())
+        with open(extended_path, encoding="utf-8") as handle:
+            return json.load(handle)
+
+
 def complete_evidence(**overrides):
     payload = {
         "schema_version": FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA,
@@ -179,8 +188,8 @@ def test_foundation_runtime_concurrency_rejects_legacy_context_count_only_eviden
 def test_committed_legacy_concurrency_readiness_matches_current_validator():
     evidence_path = LEGACY_CONCURRENCY_EVIDENCE_DIR / "foundation-runtime-concurrency-evidence-211-20260614-013347.json"
     readiness_path = LEGACY_CONCURRENCY_EVIDENCE_DIR / "foundation-runtime-concurrency-readiness-211-20260614-013347.json"
-    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-    committed_readiness = json.loads(readiness_path.read_text(encoding="utf-8"))
+    evidence = read_json_fixture(evidence_path)
+    committed_readiness = read_json_fixture(readiness_path)
 
     current_readiness = build_foundation_runtime_concurrency_readiness(evidence)
 

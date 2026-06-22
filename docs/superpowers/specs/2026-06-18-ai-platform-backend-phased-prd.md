@@ -96,23 +96,23 @@ This section is a planning pointer for the 2026-06-20 backend route. The live
 status source remains `docs/operations/ai-platform-gate-status.md`, release
 evidence, and the current readiness CLI output.
 
-Issue #138 refreshes B0 latest-main runtime-relevant evidence for current
-`main` `4039e4bd870d99201da4fc0f002f76f2b5c4a892` after PR #137. The narrow
-B0 runtime-relevant scope has `211 verified` evidence for source/runtime/image
-labels, API/worker health, Foundation Runtime concurrency, redaction, and
-runtime export/trace acceptance. It does not close full G0 source authority
-because the configured 211 source path remains dirty and untouched, the rollout
-used an isolated archive snapshot plus runtime-only rebase workaround, the
-compose env-file label still points to the external env-file path, production
-auth rollout remains separate, and future runtime-affecting source changes
-reopen B0 until fresh source, runtime, image, health, concurrency, redaction,
-and review evidence is recorded. This does not close B1/B2/B3 product gates,
-raise production concurrency defaults, claim Docker sandbox hardening, or enable
-ordinary-user multi-agent exposure.
+Issue #164 records B0 runtime-subject evidence for
+`dab7dbc30a43725d58a8a6b2ddb8e52888f303b5` after PR #171. Source/runtime/image
+labels, API/worker health, Foundation Runtime concurrency, redaction, runtime
+POC smoke, and runtime export/trace acceptance are recorded for that named
+runtime subject. This is not `gate closable`, does not prove current-source
+runtime verification for later `main` commits, and does not close full G0 source
+authority because the configured 211 source path remains dirty, the rollout used
+a runtime-only marker rebase workaround, the compose env-file label still points
+to an external env-file path, production auth rollout remains separate, and
+future runtime-affecting source changes reopen B0 until fresh source, runtime,
+image, health, concurrency, redaction, and review evidence is recorded. This
+does not close B1/B2/B3 product gates, raise production concurrency defaults,
+claim Docker sandbox hardening, or enable ordinary-user multi-agent exposure.
 
 | Stage | Current planning status | Active next boundary |
 | --- | --- | --- |
-| B0 | `211 verified` for the narrow #138 runtime-relevant source scope on `4039e4b`; not `gate closable` because G0 source-authority caveats remain. | Reopen when readiness reports runtime rollout, source/runtime drift, or a runtime-affecting merge. Reconcile the configured dirty 211 source and env-file label before any full G0 closure claim. |
+| B0 | Reviewed runtime-subject evidence exists for `dab7dbc`; not `gate closable`, and not current-source verified after later runtime-affecting `main` changes. | Reopen when readiness reports runtime rollout, source/runtime drift, or a runtime-affecting merge. Reconcile the configured dirty 211 source and env-file label before any full G0 closure claim. |
 | B1 | `local partial`; source contracts and named runtime evidence exist, but the stage is not `gate closable`. | Choose one governed document workflow and prove memory/context through `live_worker_run_payload` plus rollback and deny paths. |
 | B2 | `local partial`; fake provider remains local/test-only and controlled probes do not prove governed SDK Skill execution. | Prove Docker/equivalent sandbox through a governed Skill run with lease, callback, resource, egress, artifact, cancel, cleanup, and redaction evidence. |
 | B3 | `local partial`; source contract only for `b3_10x4_sdk_subagents`; production defaults stay unchanged. | Record an operator-reviewed capacity snapshot for 10 sessions x peak 4 SDK subagents/session, including model-gateway, sandbox, token/cost, event/artifact, and cleanup pressure. |
@@ -837,13 +837,13 @@ provenance, run dependency/security review, and pass the elevated intake above.
 ## 8. Immediate Issue Chain
 
 The next backend work should stay evidence-first. B0 is now a freshness watch
-item after #138; do not spend the next active implementation slice on B0 unless
+item after #164; do not spend the next active implementation slice on B0 unless
 readiness reports runtime rollout, source/runtime drift, or a runtime-affecting
 merge.
 
 | Order | Issue theme | First PR goal | Why first |
 | --- | --- | --- | --- |
-| 0 | B0 freshness watch | Re-run B0 only when readiness reports runtime rollout, source/runtime drift, or a runtime-affecting merge. | Keeps #138 latest-main evidence from being reused after it becomes stale. |
+| 0 | B0 freshness watch | Re-run B0 only when readiness reports runtime rollout, source/runtime drift, or a runtime-affecting merge. | Keeps #164 runtime-subject evidence from being reused after it becomes stale. |
 | 1 | B1 governed document context-pack workflow | Select one document workflow and prove session/workspace context-pack policy, provenance, redaction, export/delete boundary, and rollback with `live_worker_run_payload` evidence. | Memory becomes useful only when tied to a workflow and deny paths; long-term memory remains fail-closed. |
 | 2 | B2 real sandbox smoke through SDK Skill path | Turn sandbox contracts into Docker/equivalent `controlled_live_probe` and then `live_worker_run_payload` evidence for a governed Skill path. | `fake` and standalone verifier success remain the most visible blockers to real tool/Skill execution credibility. |
 | 3 | B3 capacity profile | Produce an `operator_reviewed_recorded_snapshot` for 10 sessions x peak 4 SDK subagents/session without raising defaults. | SDK subagent capability exists; load, gateway, sandbox, event/artifact, and cost pressure remain unproven. |

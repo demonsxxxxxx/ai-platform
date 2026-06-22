@@ -26,24 +26,24 @@ RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_RUNTIME_RELATION_MANIFEST = (
     ROOT / "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json"
 )
-ACTIVE_RUNTIME_SUBJECT_SHA = "4039e4bd870d99201da4fc0f002f76f2b5c4a892"
-ACTIVE_SOURCE_TREE_SHA = "4039e4bd870d99201da4fc0f002f76f2b5c4a892"
+ACTIVE_RUNTIME_SUBJECT_SHA = "dab7dbc30a43725d58a8a6b2ddb8e52888f303b5"
+ACTIVE_SOURCE_TREE_SHA = "dab7dbc30a43725d58a8a6b2ddb8e52888f303b5"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_SUBJECT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
 ACTIVE_CLOSURE_SOURCE_TREE_SHA = "3c06c5351517028111c18a365ff9a24ed22ffa33"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE = "ai-platform:380de6b-merged-main-runtime"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE_ID = "sha256:e36e4dfad072cdd12b841019db3ccbcdef4b63ccf5262869c994757fef5663f9"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:4039e4b-issue138-runtime-only-v1"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:1ce0b329f89d8d85affd309c1df6b0a5953eae0f3c74e8c05084e039cc619c5c"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-20-211-foundation-alpha-poc-4039e4b-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-20-211-foundation-alpha-poc-4039e4b-auth-rbac-smoke"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:dab7dbc-b0-smoke-verifier-v2"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:da92722aaa60775958c1939c53068a88fed52fac9d934d5f6d4fc67c6774f0d6"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-22-211-foundation-alpha-poc-dab7dbc-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-22-211-foundation-alpha-poc-dab7dbc-auth-rbac-smoke"
 ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID = (
-    "2026-06-20-211-foundation-alpha-poc-4039e4b-governance-runtime-smoke"
+    "2026-06-22-211-foundation-alpha-poc-dab7dbc-governance-runtime-smoke"
 )
 ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-20-211-foundation-alpha-poc-4039e4b-release-evidence-runtime-acceptance"
+    "2026-06-22-211-foundation-alpha-poc-dab7dbc-release-evidence-runtime-acceptance"
 )
 ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-20-211-foundation-alpha-poc-4039e4b-alert-trace-export-runtime-acceptance"
+    "2026-06-22-211-foundation-alpha-poc-dab7dbc-alert-trace-export-runtime-acceptance"
 )
 CBBFAFF_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
 CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
@@ -203,9 +203,11 @@ def test_backend_prd_records_b3_operator_snapshot_and_reference_boundaries():
 
     for expected in (
         "Current Backend Productization State",
-        "#138",
-        "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
-        "211 verified` for the narrow #138 runtime-relevant source scope",
+        "#164",
+        "dab7dbc30a43725d58a8a6b2ddb8e52888f303b5",
+        "Reviewed runtime-subject evidence exists for `dab7dbc`",
+        "not `gate closable`",
+        "not current-source verified after later runtime-affecting `main` changes",
         "Reopen when readiness reports runtime rollout, source/runtime drift, or a runtime-affecting merge.",
         "Near-term backend execution order is therefore B1/B2/B3/B4",
         "B0 freshness watch",
@@ -257,7 +259,7 @@ def test_backend_prd_records_b3_operator_snapshot_and_reference_boundaries():
         "External projects are references only. ai-platform owns identity, tenancy, RBAC, audit, source authority, release evidence, and gate closure.",
         "Reading a project does not authorize copying code, adding dependencies, or changing runtime architecture.",
         "Repositories with GitHub license posture `Other`, AGPL/LGPL/copyleft terms, or unknown license posture are concept-only references by default.",
-        "It does not close full G0 source authority because the configured 211 source path remains dirty and untouched, the rollout used an isolated archive snapshot plus runtime-only rebase workaround, the compose env-file label still points to the external env-file path, production auth rollout remains separate, and future runtime-affecting source changes reopen B0",
+        "This is not `gate closable`, does not prove current-source runtime verification for later `main` commits, and does not close full G0 source authority because the configured 211 source path remains dirty, the rollout used a runtime-only marker rebase workaround, the compose env-file label still points to an external env-file path, production auth rollout remains separate, and future runtime-affecting source changes reopen B0",
         "Code adaptation still requires a focused issue with repository, commit/tag, license, tests, and runtime evidence where applicable.",
     ):
         assert boundary in compact_backend_prd_text
@@ -1150,37 +1152,41 @@ def test_gate_status_does_not_overstate_superseded_evidence_as_current():
     gate_status_text = read(GATE_STATUS_DOC)
     compact_text = " ".join(gate_status_text.split())
 
-    assert "4039e4b source-runtime relation manifest and #138 evidence" in gate_status_text
+    assert "4039e4b source-runtime relation manifest and #138 evidence" not in gate_status_text
     assert (
-        "The #138 runtime-relevant evidence scope"
+        "The #164 runtime-subject evidence scope"
         in compact_text
     )
     assert (
-        "87528bf, 75ab69b, and #112/#124 evidence are retained as superseded reviewed history"
+        "4039e4b, 87528bf, 75ab69b, and #112/#124/#138 evidence are retained as superseded reviewed history"
         in compact_text
     )
     assert "`380de6b` evidence above is the historical Foundation Alpha baseline" in compact_text
-    assert "the `4039e4b` / #138 evidence is the active B0 latest-main reference" in gate_status_text
     assert "active B0 latest-main reference is `87528bf` / #124" not in gate_status_text
     assert "e8e8a0a` runtime still lacks a passing runtime POC smoke" in gate_status_text
     assert "readiness must keep reporting" in gate_status_text
+    assert "after the `dab7dbc` source-runtime relation manifest and #164 evidence" in compact_text
+    assert "runtime rollout requirement such as `source_synced_runtime_pending`" in gate_status_text
+    assert "the `dab7dbc` / #164 evidence is the active B0 latest-main reference" not in gate_status_text
+    assert "the `dab7dbc` / #164 evidence is the current reviewed runtime-subject reference" in compact_text
     assert "the `e8e8a0a` / #164 evidence is the active B0 latest-main reference" not in gate_status_text
+    assert "the `4039e4b` / #138 evidence is the active B0 latest-main reference" not in gate_status_text
     assert "when it consumes the 87528bf source-runtime relation manifest and #124 evidence" not in compact_text
     assert "when it consumes the 75ab69b source-runtime relation manifest and #112 evidence" not in compact_text
     assert "the `380de6b` evidence above is the active Foundation Alpha POC reference" not in gate_status_text
 
 
-def test_gate_status_records_issue138_b0_runtime_refresh_with_source_caveats():
+def test_gate_status_records_issue164_b0_runtime_refresh_with_source_caveats():
     gate_status_text = read(GATE_STATUS_DOC)
     backend_prd_text = read(BACKEND_PRD)
     combined_text = f"{gate_status_text}\n{backend_prd_text}"
     compact_text = " ".join(combined_text.split())
 
     for expected in (
-        "#138",
-        "4039e4bd870d99201da4fc0f002f76f2b5c4a892",
-        "4039e4b-issue138-runtime-only-v1",
-        "runtime_current_for_runtime_relevant_source",
+        "#164",
+        "dab7dbc30a43725d58a8a6b2ddb8e52888f303b5",
+        "dab7dbc-b0-smoke-verifier-v2",
+        "source_synced_runtime_pending",
         "Foundation Runtime concurrency rerun",
         "current-subject `foundation_runtime_concurrency_evidence`",
         "dirty 211 source",
@@ -1188,9 +1194,11 @@ def test_gate_status_records_issue138_b0_runtime_refresh_with_source_caveats():
         "external env-file caveat",
     ):
         assert expected in combined_text
+    assert "does not prove current-source runtime verification for later `main` commits" in compact_text
 
     for boundary in (
-        "This is `211 verified` only for the narrow #138 B0 runtime-relevant evidence scope",
+        "This records reviewed 211 runtime-subject evidence for #164",
+        "does not make #164 `gate closable`",
         "does not close G0 source authority",
         "does not close B1/B2/B3 product gates",
         "does not raise production concurrency defaults",
