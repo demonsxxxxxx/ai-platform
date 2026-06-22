@@ -196,9 +196,51 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
     "toggleAll must guard hook-level enabled before using target state",
   );
   assert.match(skillsHook, /effectivePermissions/);
-  assert.match(skillsList, /disabled=\{governedUnavailable \|\| !canWrite\}/);
-  assert.match(skillCard, /disabled=\{!canWrite\}/);
-  assert.match(skillCard, /disabled=\{!canDelete\}/);
+  assert.match(skillsList, /canImportSkills/);
+  assert.match(skillsList, /canManageSkills/);
+  assert.match(skillCard, /hasWriteActions/);
+  assert.doesNotMatch(
+    skillsList,
+    /disabled=\{governedUnavailable \|\| !canWrite\}/,
+  );
+  assert.doesNotMatch(skillCard, /disabled=\{!canWrite\}/);
+  assert.doesNotMatch(skillCard, /disabled=\{!canDelete\}/);
+});
+
+test("read-only skills catalog removes write controls instead of showing disabled placeholders", () => {
+  const skillsList = read("src/components/panels/SkillsPanel/SkillsList.tsx");
+  const skillCard = read("src/components/skill/SkillCard.tsx");
+  const batchActionBar = read(
+    "src/components/panels/SkillsPanel/BatchActionBar.tsx",
+  );
+  const skillsPanel = read("src/components/panels/SkillsPanel/index.tsx");
+
+  assert.match(skillsList, /canImportSkills/);
+  assert.match(skillsList, /canManageSkills/);
+  assert.match(skillsList, /\{canManageSkills && filteredSkills\.length > 0 &&/);
+  assert.match(skillsList, /\{canImportSkills && \(/);
+  assert.match(skillsList, /\{canCreateSkills && \(/);
+  assert.doesNotMatch(
+    skillsList,
+    /disabled=\{governedUnavailable \|\| !canWrite\}/,
+  );
+
+  assert.match(skillCard, /hasWriteActions/);
+  assert.match(skillCard, /footer=\{\s*hasWriteActions/);
+  assert.match(skillCard, /\{canWrite && \(/);
+  assert.match(skillCard, /\{canDelete && \(/);
+  assert.doesNotMatch(skillCard, /disabled=\{!canWrite\}/);
+  assert.doesNotMatch(skillCard, /disabled=\{!canDelete\}/);
+
+  assert.match(batchActionBar, /canWrite: boolean/);
+  assert.match(batchActionBar, /canDelete: boolean/);
+  assert.match(batchActionBar, /\{canWrite && \(/);
+  assert.match(batchActionBar, /\{canDelete && \(/);
+  assert.match(skillsPanel, /canWrite=\{canWrite && !isGovernedUnavailable\}/);
+  assert.match(
+    skillsPanel,
+    /canDelete=\{canDeleteSkill && !isGovernedUnavailable\}/,
+  );
 });
 
 test("marketplace hides direct write governance until backend contracts exist", () => {

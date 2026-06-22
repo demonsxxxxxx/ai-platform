@@ -147,6 +147,8 @@ export function SkillsPanel({
         <BatchActionBar
           selectedCount={actions.selectedNames.size}
           batchLoading={actions.batchLoading}
+          canWrite={canWrite && !isGovernedUnavailable}
+          canDelete={canDeleteSkill && !isGovernedUnavailable}
           onBatchToggle={actions.handleBatchToggle}
           onBatchDelete={actions.handleBatchDelete}
           onClearSelection={actions.clearSelection}
