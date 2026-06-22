@@ -347,6 +347,59 @@ test("composer shortcut hints fail closed when a governed surface is unavailable
   assert.match(chatInput, /upsertUnavailableCommandChip/);
 });
 
+test("slash command menu is anchored outside the clipped textarea region", () => {
+  const chatInput = readFileSync(
+    join(root, "src/components/chat/ChatInput.tsx"),
+    "utf8",
+  );
+  const slashMenu = readFileSync(
+    join(root, "src/components/chat/SlashCommandMenu.tsx"),
+    "utf8",
+  );
+
+  assert.match(chatInput, /data-composer-command-menu-anchor/);
+  assert.match(chatInput, /<SlashCommandMenu/);
+  assert.match(slashMenu, /composer-command-surface/);
+  assert.match(slashMenu, /composer-command-list/);
+  assert.doesNotMatch(
+    chatInput,
+    /<div className="px-2\.5 pt-1">[\s\S]*?<SlashCommandMenu[\s\S]*?<\/div>[\s\S]*?<textarea/,
+  );
+});
+
+test("composer user-facing copy avoids backend implementation jargon", () => {
+  const chatInput = readFileSync(
+    join(root, "src/components/chat/ChatInput.tsx"),
+    "utf8",
+  );
+  const shortcutBar = readFileSync(
+    join(root, "src/components/chat/ComposerCommandHintBar.tsx"),
+    "utf8",
+  );
+  const zh = JSON.parse(
+    readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8"),
+  );
+  const en = JSON.parse(
+    readFileSync(join(root, "src/i18n/locales/en.json"), "utf8"),
+  );
+
+  for (const source of [
+    chatInput,
+    shortcutBar,
+    JSON.stringify(zh.composerChip),
+    JSON.stringify(zh.composerCommand),
+    JSON.stringify(zh.workbench),
+    JSON.stringify(en.composerChip),
+    JSON.stringify(en.composerCommand),
+    JSON.stringify(en.workbench),
+  ]) {
+    assert.doesNotMatch(source, /backend contract/i);
+    assert.doesNotMatch(source, /projection/i);
+    assert.doesNotMatch(source, /投影/);
+    assert.doesNotMatch(source, /后端合约/);
+  }
+});
+
 test("all supported placeholders are slash and dollar skills first", () => {
   for (const locale of ["en", "zh", "ja", "ko", "ru"]) {
     const source = readFileSync(

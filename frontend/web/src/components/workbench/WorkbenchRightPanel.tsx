@@ -101,7 +101,7 @@ export function WorkbenchRightPanel({
         <div className={`mt-auto ${workbenchSurface.unavailable}`}>
           {t(
             "workbench.phase2Unavailable",
-            "Artifact playback, selected context, and provenance drawer stay read-only until backed by ai-platform projections.",
+            "Artifacts, selected context, and run details stay read-only until your workspace enables them.",
           )}
         </div>
       </section>

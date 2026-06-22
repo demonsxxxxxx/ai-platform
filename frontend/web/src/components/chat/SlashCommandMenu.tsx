@@ -43,7 +43,7 @@ export function SlashCommandMenu({
 
   return (
     <div
-      className="absolute bottom-full left-2 right-2 z-40 mb-2 overflow-hidden rounded-lg border border-stone-200 bg-white shadow-[0_12px_32px_rgba(15,23,42,0.16)] dark:border-stone-800 dark:bg-stone-900"
+      className="composer-command-surface absolute bottom-full left-2 right-2 z-40 mb-2 border border-stone-200 bg-white shadow-[0_12px_32px_rgba(15,23,42,0.16)] dark:border-stone-800 dark:bg-stone-900"
       role="listbox"
       data-composer-command-menu
       aria-label={t("composerCommand.menuLabel", "Composer command menu")}
@@ -51,7 +51,7 @@ export function SlashCommandMenu({
       <div className="border-b border-stone-100 px-3 py-2 text-[11px] font-semibold uppercase text-stone-400 dark:border-stone-800 dark:text-stone-500">
         {t("composerCommand.menuLabel", "Composer command menu")}
       </div>
-      <div className="max-h-72 overflow-y-auto p-1.5">
+      <div className="composer-command-list p-1.5">
         {items.map((item, index) => {
           const Icon = commandIcons[item.command];
           const active = index === highlightedIndex;

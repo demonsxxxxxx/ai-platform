@@ -266,26 +266,26 @@ export function MarketplacePanel({
   const marketplacePlaceholderItems = [
     {
       id: "department-skills",
-      title: t("marketplace.placeholder.departmentSkills.title", "Department Skills"),
+      title: t("marketplace.emptyDepartmentCatalog.title", "Department Skills"),
       description: t(
-        "marketplace.placeholder.departmentSkills.description",
-        "Department-scoped Skills will appear here after ai-platform exposes the governed marketplace projection.",
+        "marketplace.emptyDepartmentCatalog.description",
+        "Skills approved for your department will appear here after an administrator enables them.",
       ),
     },
     {
       id: "approved-tools",
-      title: t("marketplace.placeholder.approvedTools.title", "Approved toolkits"),
+      title: t("marketplace.approvedCatalog.title", "Approved toolkits"),
       description: t(
-        "marketplace.placeholder.approvedTools.description",
-        "Approved Skills and MCP-backed workflows remain visible as policy placeholders, but cannot be installed without backend authority.",
+        "marketplace.approvedCatalog.description",
+        "Company-approved Skills and MCP-backed workflows stay listed here when they are ready for your role.",
       ),
     },
     {
       id: "request-flow",
-      title: t("marketplace.placeholder.requestFlow.title", "Request access"),
+      title: t("marketplace.requestAccess.title", "Request access"),
       description: t(
-        "marketplace.placeholder.requestFlow.description",
-        "The request and group-toggle workflow stays fail-closed until department policy APIs are available.",
+        "marketplace.requestAccess.description",
+        "Ask your department administrator to enable a Skill for your team before installation is available.",
       ),
     },
   ];
@@ -486,7 +486,10 @@ export function MarketplacePanel({
       <div className="skill-content-area flex-1 overflow-y-auto py-2 sm:py-4 px-4 sm:p-6">
         {governedUnavailable ? (
           <div data-marketplace-unavailable-shell className="space-y-4">
-            <div className="rounded-lg border border-dashed border-slate-300 bg-white p-4 text-sm leading-6 text-slate-600 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300">
+            <div
+              data-marketplace-ordinary-user-copy
+              className="rounded-lg border border-dashed border-slate-300 bg-white p-4 text-sm leading-6 text-slate-600 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300"
+            >
               <p className="font-semibold text-slate-900 dark:text-stone-100">
                 {t("marketplace.catalogUnavailable.title")}
               </p>

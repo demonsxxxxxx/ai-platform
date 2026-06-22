@@ -85,7 +85,7 @@ export function ComposerCommandHintBar({
                 ? t(item.labelKey, item.fallback)
                 : t(
                     "composerCommand.shortcut.unavailable",
-                    "Visible but waiting for a governed backend contract",
+                    "Visible, but not enabled for your workspace yet",
                   )
             }
           >

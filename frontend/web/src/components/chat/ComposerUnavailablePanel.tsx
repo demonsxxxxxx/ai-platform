@@ -51,7 +51,7 @@ export function ComposerUnavailablePanel({
                 <p className="text-xs text-slate-500 dark:text-stone-400">
                   {t(
                     "composerCommand.unavailable.subtitle",
-                    "Visible by design, disabled until ai-platform exposes the governed contract.",
+                    "Visible in the composer, but not enabled for your workspace yet.",
                   )}
                 </p>
               </div>

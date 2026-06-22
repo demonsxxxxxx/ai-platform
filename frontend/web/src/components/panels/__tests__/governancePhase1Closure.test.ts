@@ -64,6 +64,31 @@ test("skills and marketplace remain catalog shells when backend enablement is un
   assert.doesNotMatch(marketplace, /return\s*<WorkbenchUnavailableState/);
 });
 
+test("marketplace fail-closed copy is written for ordinary company users", () => {
+  const marketplace = read("src/components/panels/MarketplacePanel.tsx");
+  const zh = JSON.parse(read("src/i18n/locales/zh.json"));
+  const en = JSON.parse(read("src/i18n/locales/en.json"));
+
+  assert.match(marketplace, /data-marketplace-ordinary-user-copy/);
+  assert.match(marketplace, /marketplace\.emptyDepartmentCatalog/);
+  assert.match(marketplace, /marketplace\.requestAccess/);
+  for (const source of [
+    marketplace,
+    JSON.stringify(zh.marketplace),
+    JSON.stringify(zh.skillsHub),
+    JSON.stringify(zh.skills.marketplace),
+    JSON.stringify(en.marketplace),
+    JSON.stringify(en.skillsHub),
+    JSON.stringify(en.skills.marketplace),
+  ]) {
+    assert.doesNotMatch(source, /backend authority/i);
+    assert.doesNotMatch(source, /policy placeholders/i);
+    assert.doesNotMatch(source, /projection/i);
+    assert.doesNotMatch(source, /投影/);
+    assert.doesNotMatch(source, /后端合约/);
+  }
+});
+
 test("skills marketplace cards use restrained workbench tiles instead of gradient cards", () => {
   const baseCard = read("src/components/common/SkillBaseCard.tsx");
   const marketplaceCard = read(

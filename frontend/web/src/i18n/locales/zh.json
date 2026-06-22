@@ -518,7 +518,7 @@
     "redaction": "脱敏",
     "retention": "保留策略",
     "unavailable": {
-      "description": "频道导入需要 ai-platform 的频道 ACL 投影。相关 API 可用前不会展示频道元数据。",
+      "description": "当前工作区尚未启用频道导入。管理员启用前不会展示频道详情。",
       "title": "频道导入暂不可用"
     }
   },
@@ -1175,8 +1175,8 @@
     "confirmUpdate": "更新技能",
     "confirmUpdateMessage": "将从技能商店重新下载此技能，你的本地修改将被覆盖。确定要继续吗？",
     "catalogUnavailable": {
-      "description": "技能市场目录壳会保持可见，但安装、发布和部门可用范围动作要等 ai-platform 暴露受治理的 Skill 投影后才启用。",
-      "title": "技能市场目录受治理"
+      "title": "技能市场等待管理员启用",
+      "description": "你现在可以看到技能市场入口。安装、发布和部门可用范围需要管理员为当前工作区启用后才可操作。"
     },
     "createAndPublish": "发布技能",
     "createHint": "要发布技能到技能商店，请先在「我的技能」面板中创建，然后点击发布按钮。",
@@ -1215,7 +1215,19 @@
     "update": "更新",
     "updateFailed": "更新技能失败",
     "updateSuccess": "技能更新成功",
-    "viewInMySkills": "去我的技能查看"
+    "viewInMySkills": "去我的技能查看",
+    "emptyDepartmentCatalog": {
+      "title": "部门 Skills",
+      "description": "管理员为你的部门启用后，可用 Skills 会出现在这里。"
+    },
+    "approvedCatalog": {
+      "title": "已批准工具包",
+      "description": "公司批准的 Skills 和 MCP 工作流会在适合当前角色时显示在这里。"
+    },
+    "requestAccess": {
+      "title": "申请使用",
+      "description": "如需安装某个 Skill，请联系部门管理员为你的团队启用。"
+    }
   },
   "mcp": {
     "addFirst": "添加您的第一个 MCP 服务器",
@@ -1318,11 +1330,11 @@
     "noServers": "未配置 MCP 服务器",
     "operationFailed": "操作失败",
     "permissionLimited": {
-      "description": "MCP 已作为工作台能力展示，但当前角色需要等待 ai-platform 发布允许使用的工具投影后，才能选择受治理工具。",
+      "description": "MCP 工具已经在工作台展示。管理员为当前工作区启用已批准工具后，你的角色即可使用。",
       "title": "MCP 工具受治理"
     },
     "catalogUnavailable": {
-      "description": "MCP 工具目录会保持可见，服务器凭证、生命周期控制和工具选择需要等待 ai-platform 的受治理投影。",
+      "description": "MCP 工具目录会保持可见用于发现。凭证、生命周期控制和工具选择在管理员启用前保持锁定。",
       "title": "MCP 工具目录受治理"
     },
     "overwriteExisting": "覆盖同名服务器",
@@ -1338,7 +1350,7 @@
     "permissionMode": "权限模式",
     "addToComposer": "在聊天输入框使用 /mcp 搜索受治理的工具，并把已启用工具加入 composer。",
     "lifecycleUnavailable": "运行时生命周期控制",
-    "lifecycleUnavailableDescription": "启动、停止、重启和原始凭证控制在 ai-platform 暴露受治理运行时契约前保持服务端收口。",
+    "lifecycleUnavailableDescription": "启动、停止、重启和原始凭证控制对普通用户保持锁定。",
     "credentialsUnavailable": "凭证分配和密钥轮换在第一阶段保持不可用。",
     "noMatchingTools": "没有匹配的工具",
     "toolsSearchPlaceholder": "搜索工具"
@@ -2054,7 +2066,7 @@
         "title": "分享已撤销"
       },
       "unavailable": {
-        "description": "无法通过授权的 ai-platform 投影加载该分享。",
+        "description": "当前账号权限无法加载该分享。",
         "title": "分享暂不可用"
       }
     },
@@ -2206,7 +2218,7 @@
     "exportZip": "导出 ZIP",
     "featureDisabled": "技能功能已禁用，请联系管理员启用。",
     "catalogUnavailable": {
-      "description": "Skills 目录会保持可见用于发现。创建、导入、发布和启用动作需要等 ai-platform 授权可读取的 Skill 投影后开放。",
+      "description": "Skills 目录会保持可见用于发现。创建、导入、发布和启用动作需要管理员启用 Skill 访问后开放。",
       "title": "Skills 目录受治理"
     },
     "form": {
@@ -2300,7 +2312,7 @@
     "userSkillVisible": "用户技能（仅对自己可见）",
     "marketplace": {
       "departmentAvailability": "部门可用范围",
-      "groupToggleUnavailable": "部门与群组开关需要下一阶段 ai-platform 治理契约支持，当前页面按失败关闭展示。"
+      "groupToggleUnavailable": "部门与群组开关会展示给管理员查看；当前工作区启用部门 Skills 前保持只读。"
     }
   },
   "skillsHub": {
@@ -2313,7 +2325,7 @@
       "title": "Skills 等待管理员启用"
     },
     "permissionLimited": {
-      "description": "Skills 与技能市场已经作为工作台入口展示。当前角色还没有可读取的 Skill 投影，管理员为部门启用前页面保持只读。",
+      "description": "Skills 与技能市场已经作为工作台入口展示。管理员为你的部门启用 Skill 访问前，页面保持只读。",
       "title": "Skills 访问受治理"
     },
     "subtitle": "管理本地技能并浏览技能商店",
@@ -2454,7 +2466,7 @@
     }
   },
   "composerChip": {
-    "unavailableDescription": "该命令已按前端体验展示，但还没有受 ai-platform 治理的后端合约支撑。",
+    "unavailableDescription": "该命令已在输入框展示，但当前工作区还不能使用。",
     "status": {
       "enabled": "已启用",
       "disabled": "已停用",
@@ -2471,11 +2483,11 @@
       "label": "智能体"
     },
     "context": {
-      "description": "在有后端支撑时挂载会话、记忆或频道上下文。",
+      "description": "在当前工作区启用后挂载会话、记忆或频道上下文。",
       "label": "上下文"
     },
     "file": {
-      "description": "在文件 ACL 投影可用时引用受治理文件和产物。",
+      "description": "从输入框引用允许使用的文件和产物。",
       "label": "文件"
     },
     "mcp": {
@@ -2484,7 +2496,7 @@
     },
     "menuLabel": "输入框命令菜单",
     "model": {
-      "description": "在模型投影存在时选择允许使用的模型。",
+      "description": "为当前对话选择已批准的模型。",
       "label": "模型"
     },
     "modelSelector": {
@@ -2503,16 +2515,16 @@
       "label": "输入框快捷入口",
       "mcp": "/mcp MCP",
       "skills": "$ Skills",
-      "unavailable": "已展示，等待受治理后端合约"
+      "unavailable": "已展示，但当前工作区尚未启用"
     },
     "contextSelector": {
       "chip": "/context",
-      "description": "上下文选择器已在第一阶段展示，但需要 ai-platform 发布受治理的上下文投影后才能启用。",
+      "description": "上下文选择器已在输入框展示，但当前工作区还不能使用保存的上下文。",
       "title": "上下文选择器暂不可用"
     },
     "unavailable": {
       "failClosed": "Fail-closed surface",
-      "subtitle": "按产品设计展示，但在 ai-platform 暴露受治理合约前保持禁用。"
+      "subtitle": "已在输入框展示，但当前工作区尚未启用。"
     }
   },
   "workbench": {
@@ -2524,7 +2536,8 @@
     "newConversation": "新对话",
     "none": "无",
     "selectionState": "已选能力",
-    "unavailableShort": "不可用"
+    "unavailableShort": "不可用",
+    "phase2Unavailable": "产物、已选上下文和运行详情在当前工作区启用前保持只读。"
   },
   "governance": {
     "adminOnly": "仅管理员",

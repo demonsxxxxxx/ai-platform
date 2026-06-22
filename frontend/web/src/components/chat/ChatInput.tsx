@@ -536,12 +536,12 @@ export const ChatInput = memo(function ChatInput({
           kind,
           label,
           state: "unavailable",
-          description: t(
-            "composerChip.unavailableDescription",
-            "This command is visible for parity but is not backed by a governed ai-platform contract yet.",
-          ),
-        },
-      });
+        description: t(
+          "composerChip.unavailableDescription",
+          "This command is visible in the composer, but your current workspace cannot use it yet.",
+        ),
+      },
+    });
     },
     [t],
   );
@@ -572,7 +572,7 @@ export const ChatInput = memo(function ChatInput({
         source: "context-selector",
         description: t(
           "composerCommand.contextSelector.description",
-          "Context selection is visible in Phase 1 but remains disabled until ai-platform exposes governed context projections.",
+          "Context selection is visible in the composer, but your workspace cannot use saved context yet.",
         ),
       },
     });
@@ -1049,74 +1049,78 @@ export const ChatInput = memo(function ChatInput({
         }
       >
         <div
-          ref={containerRef}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          className={`chat-input-container flex flex-col relative w-full rounded-lg px-1 border transition-all duration-300 ${
-            isDraggingOver ? "border-dashed shadow-lg border-2" : ""
-          }`}
-          data-mention-active={mention.isActive || undefined}
-          style={{
-            backgroundColor: "var(--theme-bg-card)",
-            borderColor: isDraggingOver
-              ? "var(--theme-primary)"
-              : "var(--theme-border)",
-            boxShadow: isDraggingOver
-              ? undefined
-              : "0 1px 2px rgba(15,23,42,0.04)",
-          }}
+          className="relative"
+          data-composer-command-menu-anchor
         >
-          {mention.isActive && !onMentionQueryChange && (
-            <MentionPopup
-              presets={mentionSearch.presets}
-              highlightedIndex={mention.highlightedIndex}
-              selectedPresetId={selectedPersonaPresetId}
-              isLoading={mentionSearch.isLoading}
-              isLoadingMore={mentionSearch.isLoadingMore}
-              hasMore={mentionSearch.hasMore}
-              onSelect={applyMentionSelection}
-              onHover={setMentionHighlight}
-              onClose={dismissMention}
-              onLoadMore={mentionSearch.loadMore}
-              placement={mentionPopupPlacement ?? undefined}
+          {slashMenuOpen && (
+            <SlashCommandMenu
+              items={slashCommandItems}
+              highlightedIndex={slashMenuHighlight}
+              onHighlight={setSlashMenuHighlight}
+              onSelect={handleSlashCommandSelect}
+              onClose={closeSlashMenu}
             />
           )}
+          <div
+            ref={containerRef}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            className={`chat-input-container flex flex-col relative w-full rounded-lg px-1 border transition-all duration-300 ${
+              isDraggingOver ? "border-dashed shadow-lg border-2" : ""
+            }`}
+            data-mention-active={mention.isActive || undefined}
+            style={{
+              backgroundColor: "var(--theme-bg-card)",
+              borderColor: isDraggingOver
+                ? "var(--theme-primary)"
+                : "var(--theme-border)",
+              boxShadow: isDraggingOver
+                ? undefined
+                : "0 1px 2px rgba(15,23,42,0.04)",
+            }}
+          >
+            {mention.isActive && !onMentionQueryChange && (
+              <MentionPopup
+                presets={mentionSearch.presets}
+                highlightedIndex={mention.highlightedIndex}
+                selectedPresetId={selectedPersonaPresetId}
+                isLoading={mentionSearch.isLoading}
+                isLoadingMore={mentionSearch.isLoadingMore}
+                hasMore={mentionSearch.hasMore}
+                onSelect={applyMentionSelection}
+                onHover={setMentionHighlight}
+                onClose={dismissMention}
+                onLoadMore={mentionSearch.loadMore}
+                placement={mentionPopupPlacement ?? undefined}
+              />
+            )}
 
-          <ChatInputAttachments
-            attachments={attachments}
-            onAttachmentsChange={setAttachments}
-            onCancelUpload={cancelUpload}
-            onImageViewerOpen={(url) => setImageViewerSrc(url)}
-          />
+            <ChatInputAttachments
+              attachments={attachments}
+              onAttachmentsChange={setAttachments}
+              onCancelUpload={cancelUpload}
+              onImageViewerOpen={(url) => setImageViewerSrc(url)}
+            />
 
-          <ComposerChips
-            selections={composerSelections}
-            onRemove={handleRemoveComposerSelection}
-          />
+            <ComposerChips
+              selections={composerSelections}
+              onRemove={handleRemoveComposerSelection}
+            />
 
-          <ComposerCommandHintBar
-            onCommand={handleComposerCommandShortcut}
-            skillsAvailable={commandPanelAvailability.skills}
-            mcpAvailable={commandPanelAvailability.tools}
-            filesAvailable={commandPanelAvailability.files}
-            contextAvailable={commandPanelAvailability.context}
-          />
+            <ComposerCommandHintBar
+              onCommand={handleComposerCommandShortcut}
+              skillsAvailable={commandPanelAvailability.skills}
+              mcpAvailable={commandPanelAvailability.tools}
+              filesAvailable={commandPanelAvailability.files}
+              contextAvailable={commandPanelAvailability.context}
+            />
 
-          <div className="px-2.5 pt-1">
-            <div className="relative">
-              {slashMenuOpen && (
-                <SlashCommandMenu
-                  items={slashCommandItems}
-                  highlightedIndex={slashMenuHighlight}
-                  onHighlight={setSlashMenuHighlight}
-                  onSelect={handleSlashCommandSelect}
-                  onClose={closeSlashMenu}
-                />
-              )}
-              <textarea
-                ref={textareaRef}
-                value={input}
+            <div className="px-2.5 pt-1">
+              <div className="relative">
+                <textarea
+                  ref={textareaRef}
+                  value={input}
                 onChange={(e) => {
                   const nextValue = e.target.value;
                   setInput(nextValue);
@@ -1138,46 +1142,47 @@ export const ChatInput = memo(function ChatInput({
                   paddingLeft: 4,
                 }}
                 rows={1}
-              />
+                />
+              </div>
             </div>
-          </div>
 
-          <ChatInputToolbar
-            activePanel={activePanel}
-            onActivePanelChange={handlePanelChange}
-            canSend={canSend}
-            isLoading={isLoading}
-            canSubmit={canSubmit}
-            hasUploadingAttachment={hasUploadingAttachment}
-            enabledToolsCount={enabledToolsCount}
-            totalToolsCount={totalToolsCount}
-            enabledSkillsCount={enabledSkillsCount}
-            totalSkillsCount={totalSkillsCount}
-            hasPersonaSelector={!!onUsePersonaPreset}
-            personaName={selectedPersonaName}
-            hasAgentSelector={agents.length > 1 && !!onSelectAgent}
-            agentName={agents.find((a) => a.id === currentAgent)?.name}
-            hasThinkingOption={
-              !!(
-                agentOptions &&
-                onToggleAgentOption &&
-                Object.keys(agentOptions).length > 0
-              )
-            }
-            thinkingLabel={thinkingLabel}
-            thinkingLevel={thinkingLevel}
-            uploadCategories={uploadCategories}
-            uploadLimits={uploadLimits}
-            uploadFiles={uploadFiles}
-            onFileCommandReady={(openFileCommand) => {
-              openFileCommandRef.current = openFileCommand;
-            }}
-            selectedPersonaName={selectedPersonaName}
-            personaAvatar={personaAvatar}
-            onClearPersonaPreset={onClearPersonaPreset}
-            onStopClick={() => setStopConfirmOpen(true)}
-            onNoPermissionClick={() => setContactAdminOpen(true)}
-          />
+            <ChatInputToolbar
+              activePanel={activePanel}
+              onActivePanelChange={handlePanelChange}
+              canSend={canSend}
+              isLoading={isLoading}
+              canSubmit={canSubmit}
+              hasUploadingAttachment={hasUploadingAttachment}
+              enabledToolsCount={enabledToolsCount}
+              totalToolsCount={totalToolsCount}
+              enabledSkillsCount={enabledSkillsCount}
+              totalSkillsCount={totalSkillsCount}
+              hasPersonaSelector={!!onUsePersonaPreset}
+              personaName={selectedPersonaName}
+              hasAgentSelector={agents.length > 1 && !!onSelectAgent}
+              agentName={agents.find((a) => a.id === currentAgent)?.name}
+              hasThinkingOption={
+                !!(
+                  agentOptions &&
+                  onToggleAgentOption &&
+                  Object.keys(agentOptions).length > 0
+                )
+              }
+              thinkingLabel={thinkingLabel}
+              thinkingLevel={thinkingLevel}
+              uploadCategories={uploadCategories}
+              uploadLimits={uploadLimits}
+              uploadFiles={uploadFiles}
+              onFileCommandReady={(openFileCommand) => {
+                openFileCommandRef.current = openFileCommand;
+              }}
+              selectedPersonaName={selectedPersonaName}
+              personaAvatar={personaAvatar}
+              onClearPersonaPreset={onClearPersonaPreset}
+              onStopClick={() => setStopConfirmOpen(true)}
+              onNoPermissionClick={() => setContactAdminOpen(true)}
+            />
+          </div>
         </div>
       </form>
 
