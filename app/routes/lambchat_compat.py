@@ -229,7 +229,7 @@ def _profile_payload(principal: AuthPrincipal, metadata: dict[str, Any] | None =
         "email": "",
         "avatar_url": None,
         "roles": principal.roles,
-        "permissions": principal.permissions or UI_PERMISSIONS,
+        "permissions": principal.permissions,
         "is_active": True,
         "metadata": merged_metadata,
         "created_at": "",

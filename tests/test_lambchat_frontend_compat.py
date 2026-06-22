@@ -349,6 +349,19 @@ def test_lambchat_profile_endpoint_returns_principal_and_metadata(monkeypatch):
     assert payload["metadata"]["pinned_model_ids"] == ["deepseek-v4-flash"]
 
 
+def test_lambchat_profile_keeps_empty_principal_permissions(monkeypatch):
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    client = TestClient(create_app())
+
+    me_response = client.get("/api/auth/me", headers=auth_headers())
+    profile_response = client.get("/api/auth/profile", headers=auth_headers())
+
+    assert me_response.status_code == 200
+    assert profile_response.status_code == 200
+    assert me_response.json()["permissions"] == []
+    assert profile_response.json()["permissions"] == []
+
+
 def test_lambchat_sse_stream_emits_finished_run_answer(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         assert user_id == "user-a"

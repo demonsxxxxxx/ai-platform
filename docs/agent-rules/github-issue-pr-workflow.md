@@ -106,10 +106,15 @@ Otherwise link the issue without auto-closing language.
   result on GitHub before using it as review evidence. The comment should name
   the reviewer role, scope, findings, fixes or rejections, and verification
   evidence.
+- When the repository does not have an available GitHub review robot or formal
+  GitHub reviewer, a sub-agent review recorded on the PR is the accepted
+  independent review substitute. Before merge, run a follow-up sub-agent
+  re-review after fixes and verify that no Critical or Important findings remain
+  unhandled.
 - If GitHub `reviewDecision` is empty, do not call the PR formally approved.
-  Label the state explicitly, such as `user-authorized review substitute` or
-  `inherited-configuration review`, and keep that separate from a GitHub formal
-  review decision.
+  Label the state explicitly, such as `sub-agent review substitute`,
+  `user-authorized review substitute`, or `inherited-configuration review`, and
+  keep that separate from a GitHub formal review decision.
 - Validate review findings against current PRD, roadmap, guardrails, code,
   tests, and 211 evidence before changing code.
 - Every review finding must be handled in one of three ways: fixed with tests,

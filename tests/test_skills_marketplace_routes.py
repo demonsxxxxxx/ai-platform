@@ -167,6 +167,13 @@ def test_skill_and_marketplace_write_contracts_fail_closed_without_permissions(m
     install_route_fakes(monkeypatch)
     client = TestClient(create_app())
 
+    bodyless_toggle_response = client.patch(
+        "/api/skills/qa-file-reviewer/toggle",
+        headers=headers("skill:read,marketplace:read"),
+    )
+    assert bodyless_toggle_response.status_code == 403
+    assert bodyless_toggle_response.json()["detail"] == "missing_permission:skill:write"
+
     toggle_response = client.patch(
         "/api/skills/qa-file-reviewer/toggle",
         json={"enabled": False},
@@ -174,6 +181,13 @@ def test_skill_and_marketplace_write_contracts_fail_closed_without_permissions(m
     )
     assert toggle_response.status_code == 403
     assert toggle_response.json()["detail"] == "missing_permission:skill:write"
+
+    bodyless_publish_response = client.post(
+        "/api/skills/qa-file-reviewer/publish",
+        headers=headers("skill:read,marketplace:read"),
+    )
+    assert bodyless_publish_response.status_code == 403
+    assert bodyless_publish_response.json()["detail"] == "missing_permission:marketplace:publish"
 
     publish_response = client.post(
         "/api/skills/qa-file-reviewer/publish",
@@ -261,6 +275,13 @@ def test_public_skill_write_routes_map_missing_skill_to_stable_json_404(monkeypa
 def test_public_skill_file_write_routes_are_permission_gated_then_fail_closed_409(monkeypatch):
     install_route_fakes(monkeypatch)
     client = TestClient(create_app())
+
+    bodyless_put_denied = client.put(
+        "/api/skills/qa-file-reviewer/files/SKILL.md",
+        headers=headers("skill:read"),
+    )
+    assert bodyless_put_denied.status_code == 403
+    assert bodyless_put_denied.json()["detail"] == "missing_permission:skill:write"
 
     put_denied = client.put(
         "/api/skills/qa-file-reviewer/files/SKILL.md",

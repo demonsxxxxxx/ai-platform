@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import ValidationError
 
 from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
@@ -76,6 +77,13 @@ def _effective_permission_set(principal: AuthPrincipal) -> set[str]:
     if "marketplace:admin" in granted:
         granted.update(MARKETPLACE_PERMISSIONS)
     return granted
+
+
+def _request_model(model_type: type[Any], payload: Any) -> Any:
+    try:
+        return model_type.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
 
 def _effective_permissions(principal: AuthPrincipal) -> list[str]:
@@ -334,14 +342,17 @@ async def get_skill_file(
 async def update_skill_file(
     skill_name: str,
     file_path: str,
-    request: PublicSkillFileUpdateRequest,
     principal: AuthPrincipal = Depends(require_principal),
+    payload: Any = Body(default=None),
 ) -> dict[str, str]:
     """Fail closed for file writes until user skill storage is backed."""
 
     _require_permission(principal, "skill:write")
     _safe_skill_name(skill_name)
     _safe_file_path(file_path)
+    if payload is None:
+        raise HTTPException(status_code=400, detail="skill_file_content_required")
+    request = _request_model(PublicSkillFileUpdateRequest, payload)
     if request.content is None:
         raise HTTPException(status_code=400, detail="skill_file_content_required")
     raise HTTPException(status_code=409, detail="skill_file_write_contract_not_backed")
@@ -364,12 +375,13 @@ async def delete_skill_file(
 @router.patch("/skills/{skill_name}/toggle", response_model=PublicSkillToggleResponse)
 async def toggle_skill(
     skill_name: str,
-    request: PublicSkillToggleRequest,
     principal: AuthPrincipal = Depends(require_principal),
+    payload: Any = Body(default=None),
 ) -> PublicSkillToggleResponse:
     """Enable or disable tenant availability for a public skill."""
 
     _require_permission(principal, "skill:write")
+    request = _request_model(PublicSkillToggleRequest, payload or {})
     safe_skill_name = _safe_skill_name(skill_name)
     enabled = True if request.enabled is None else request.enabled
     status = "active" if enabled else "disabled"
@@ -433,12 +445,13 @@ async def delete_skill(
 @router.post("/skills/{skill_name}/publish", response_model=MarketplaceSkillResponse)
 async def publish_skill(
     skill_name: str,
-    request: PublishToMarketplaceRequest,
     principal: AuthPrincipal = Depends(require_principal),
+    payload: Any = Body(default=None),
 ) -> MarketplaceSkillResponse:
     """Expose a user-facing publish contract without invoking admin release APIs."""
 
     _require_permission(principal, "marketplace:publish")
+    request = _request_model(PublishToMarketplaceRequest, payload or {})
     safe_skill_name = _safe_skill_name(skill_name)
     rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=True)
     row = dict(_find_row(rows, skill_name=safe_skill_name))
