@@ -26,7 +26,7 @@ interface SkillCardProps {
   hasLocalManualConflict: boolean;
   isOwner: boolean;
   canManage: boolean;
-  canWrite: boolean;
+  canInstall: boolean;
   installingSkill: string | null;
   userSkillsLoading: boolean;
   selectedTags: string[];
@@ -47,7 +47,7 @@ export function SkillCard({
   hasLocalManualConflict,
   isOwner,
   canManage,
-  canWrite,
+  canInstall,
   installingSkill,
   userSkillsLoading,
   selectedTags,
@@ -174,7 +174,7 @@ export function SkillCard({
             >
               <Eye size={16} />
             </button>
-            {canWrite &&
+            {canInstall &&
               (installingSkill === skill.skill_name ? (
                 <button
                   disabled

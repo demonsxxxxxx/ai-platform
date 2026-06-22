@@ -74,9 +74,18 @@ export function MarketplacePanel({
     isLoading: userSkillsLoading,
     getSkill,
   } = useSkills({ enabled: !governedUnavailable });
-  const canWrite =
-    hasAnyPermission([Permission.MARKETPLACE_PUBLISH]) && !governedUnavailable;
-  const canAdmin = hasAnyPermission([Permission.MARKETPLACE_ADMIN]);
+  const marketplaceDirectWriteBacked = false;
+  const canInstall =
+    hasAnyPermission([Permission.SKILL_WRITE]) &&
+    hasAnyPermission([Permission.MARKETPLACE_READ]) &&
+    !governedUnavailable;
+  const canCreateInMarketplace =
+    marketplaceDirectWriteBacked &&
+    hasAnyPermission([Permission.MARKETPLACE_PUBLISH]) &&
+    !governedUnavailable;
+  const canAdmin =
+    marketplaceDirectWriteBacked &&
+    hasAnyPermission([Permission.MARKETPLACE_ADMIN]);
 
   const installedMarketplaceNames = new Set(
     userSkills
@@ -352,7 +361,7 @@ export function MarketplacePanel({
 
   const headerActions = (
     <>
-      {canWrite && (
+      {canCreateInMarketplace && (
         <button onClick={handleCreate} className="btn-primary h-10">
           <Plus size={16} />
           <span className="hidden sm:inline">
@@ -569,8 +578,12 @@ export function MarketplacePanel({
                   skill.skill_name,
                 )}
                 isOwner={skill.is_owner}
-                canManage={!governedUnavailable && (skill.is_owner || canAdmin)}
-                canWrite={canWrite}
+                canManage={
+                  marketplaceDirectWriteBacked &&
+                  !governedUnavailable &&
+                  (skill.is_owner || canAdmin)
+                }
+                canInstall={canInstall}
                 installingSkill={installingSkill}
                 userSkillsLoading={userSkillsLoading}
                 selectedTags={selectedTags}

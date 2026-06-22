@@ -200,3 +200,22 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
   assert.match(skillCard, /disabled=\{!canWrite\}/);
   assert.match(skillCard, /disabled=\{!canDelete\}/);
 });
+
+test("marketplace hides direct write governance until backend contracts exist", () => {
+  const marketplace = read("src/components/panels/MarketplacePanel.tsx");
+  const marketplaceCard = read(
+    "src/components/panels/MarketplacePanel/SkillCard.tsx",
+  );
+
+  assert.match(marketplace, /marketplaceDirectWriteBacked = false/);
+  assert.match(marketplace, /canCreateInMarketplace/);
+  assert.match(marketplace, /canInstall/);
+  assert.match(marketplace, /Permission\.SKILL_WRITE/);
+  assert.match(marketplace, /Permission\.MARKETPLACE_READ/);
+  assert.doesNotMatch(
+    marketplace,
+    /const canWrite =\s*hasAnyPermission\(\[Permission\.MARKETPLACE_PUBLISH\]\)/,
+  );
+  assert.match(marketplaceCard, /canInstall/);
+  assert.doesNotMatch(marketplaceCard, /canWrite/);
+});
