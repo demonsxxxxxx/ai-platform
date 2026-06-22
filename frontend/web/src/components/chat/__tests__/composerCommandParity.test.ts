@@ -385,6 +385,21 @@ test("typed unavailable commands fail closed before opening missing selectors", 
   assert.match(chatInput, /setInput\(""\)/);
 });
 
+test("slash menu unavailable commands clear stale selector state", () => {
+  const chatInput = readFileSync(
+    join(root, "src/components/chat/ChatInput.tsx"),
+    "utf8",
+  );
+  const unavailableBranch = chatInput.match(
+    /if \(item\.unavailable\) \{[\s\S]*?return;\n\s*\}/,
+  )?.[0];
+
+  assert.ok(unavailableBranch);
+  assert.match(unavailableBranch, /upsertUnavailableCommandChip/);
+  assert.match(unavailableBranch, /setActivePanel\(null\)/);
+  assert.match(unavailableBranch, /setCommandSearchSeed\(null\)/);
+});
+
 test("slash command menu is anchored outside the clipped textarea region", () => {
   const chatInput = readFileSync(
     join(root, "src/components/chat/ChatInput.tsx"),

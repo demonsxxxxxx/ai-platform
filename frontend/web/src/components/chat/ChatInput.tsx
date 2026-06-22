@@ -664,6 +664,8 @@ export const ChatInput = memo(function ChatInput({
           query: "",
           unavailable: true,
         });
+        setActivePanel(null);
+        setCommandSearchSeed(null);
         setInput("");
         setCursorPosition(0);
         requestAnimationFrame(scheduleTextareaResize);
