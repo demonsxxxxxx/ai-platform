@@ -28,7 +28,7 @@ interface UserMenuProps {
 export function UserMenu({ onShowProfile }: UserMenuProps) {
   const { t } = useTranslation();
   const { logout, hasAnyPermission, user } = useAuth();
-  const { enableSkills, enableMemory } = useSettingsContext();
+  const { enableMemory } = useSettingsContext();
   const navigate = useNavigate();
   const [showMenu, setShowMenu] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ top: 0, right: 0 });
@@ -44,11 +44,6 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
     enabled: showMenu && isMobile,
   });
 
-  const canReadSkills =
-    hasAnyPermission([Permission.SKILL_READ]) && enableSkills;
-  const canReadMarketplace =
-    hasAnyPermission([Permission.MARKETPLACE_READ]) && enableSkills;
-  const canReadAnySkills = canReadSkills || canReadMarketplace;
   const canReadMCP = hasAnyPermission([Permission.MCP_READ]);
   const canReadChannels = hasAnyPermission([Permission.CHANNEL_READ]);
   const canManageSettings = hasAnyPermission([Permission.SETTINGS_MANAGE]);
@@ -120,10 +115,10 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
   const navItems = [
     { path: "/chat", label: t("nav.chat"), icon: MessageSquare, show: true },
     {
-      path: "/skills",
-      label: t("nav.skills"),
+      path: "/marketplace",
+      label: t("nav.marketplace"),
       icon: Sparkles,
-      show: canReadAnySkills,
+      show: true,
       matchPaths: ["/skills", "/marketplace"],
     },
     { path: "/mcp", label: t("nav.mcp"), icon: Server, show: canReadMCP },

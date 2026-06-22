@@ -19,13 +19,13 @@ test("resolves to marketplace when only marketplace is available", () => {
   assert.equal(resolveSkillsHubTab("marketplace", false, true), "marketplace");
 });
 
-test("falls back to the accessible tab when the requested tab is inaccessible", () => {
-  assert.equal(resolveSkillsHubTab("marketplace", true, false), "skills");
-  assert.equal(resolveSkillsHubTab("skills", false, true), "marketplace");
+test("keeps explicitly requested discovery tabs for fail-closed page bodies", () => {
+  assert.equal(resolveSkillsHubTab("marketplace", true, false), "marketplace");
+  assert.equal(resolveSkillsHubTab("skills", false, true), "skills");
 });
 
-test("returns null when neither tab is accessible", () => {
-  assert.equal(resolveSkillsHubTab(undefined, false, false), null);
-  assert.equal(resolveSkillsHubTab("skills", false, false), null);
-  assert.equal(resolveSkillsHubTab("marketplace", false, false), null);
+test("defaults to marketplace when no discovery permissions are available", () => {
+  assert.equal(resolveSkillsHubTab(undefined, false, false), "marketplace");
+  assert.equal(resolveSkillsHubTab("skills", false, false), "skills");
+  assert.equal(resolveSkillsHubTab("marketplace", false, false), "marketplace");
 });

@@ -275,15 +275,6 @@ function FilesPage() {
   return <AppContent key="files" activeTab="files" />;
 }
 
-function PersonaPage() {
-  useSEO({
-    title: "seo.persona.title",
-    description: "seo.persona.description",
-    path: "/persona",
-  });
-  return <AppContent key="persona" activeTab="persona" />;
-}
-
 function NotificationsPage() {
   useSEO({
     title: "seo.notifications.title",
@@ -493,17 +484,8 @@ function App() {
             <Route
               path="/persona"
               element={
-                <ProtectedRoute
-                  permissions={[
-                    Permission.PERSONA_PRESET_READ,
-                    Permission.PERSONA_PRESET_WRITE,
-                    Permission.PERSONA_PRESET_ADMIN,
-                  ]}
-                  redirectTo="/chat"
-                  showToast
-                  toastMessage={t("errors.noPermission")}
-                >
-                  <PersonaPage />
+                <ProtectedRoute>
+                  <Navigate to="/marketplace" replace />
                 </ProtectedRoute>
               }
             />

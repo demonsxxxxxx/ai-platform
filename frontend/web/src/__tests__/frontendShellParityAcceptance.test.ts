@@ -108,15 +108,19 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
   );
   const theme = readFileSync(join(root, "src/styles/base.css"), "utf8");
 
-  assert.match(surface, /root:\s*clsx\(\s*"flex min-h-0 flex-1 bg-slate-100/);
-  assert.match(surface, /thread:[\s\S]*bg-slate-100/);
-  assert.match(surface, /composer:[\s\S]*bg-slate-100/);
-  assert.match(surface, /context:[\s\S]*bg-slate-100/);
+  assert.match(surface, /root:[\s\S]*bg-\[var\(--theme-bg\)\]/);
+  assert.match(surface, /thread:[\s\S]*bg-\[var\(--theme-bg\)\]/);
+  assert.match(surface, /composer:[\s\S]*bg-\[var\(--theme-bg\)\]/);
+  assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-bg\)\]/);
+  assert.match(surface, /panel:[\s\S]*bg-\[var\(--theme-bg-card\)\]/);
+  assert.match(surface, /secondaryPanel:[\s\S]*bg-\[var\(--theme-bg-card\)\]/);
   assert.match(surface, /secondaryPanel:/);
   assert.match(rightPanel, /workbenchSurface\.secondaryPanel/);
   assert.match(theme, /--theme-bg:\s*#f3f5f8;/);
   assert.match(theme, /--theme-bg-sidebar:\s*#f3f5f8;/);
+  assert.match(theme, /--theme-bg-card:\s*#f8fafc;/);
   assert.doesNotMatch(surface, /thread:[\s\S]{0,180}bg-white/);
+  assert.doesNotMatch(surface, /context:[\s\S]{0,180}bg-white/);
 });
 
 test("authenticated shell chrome avoids legacy playful branding accents", () => {
@@ -125,6 +129,7 @@ test("authenticated shell chrome avoids legacy playful branding accents", () => 
       join(root, "src/components/layout/AppContent/Header.tsx"),
       "utf8",
     ),
+    readFileSync(join(root, "src/components/common/PanelHeader.tsx"), "utf8"),
     readFileSync(join(root, "src/components/layout/UserMenu.tsx"), "utf8"),
     readFileSync(
       join(root, "src/components/panels/SidebarParts/SessionListContent.tsx"),

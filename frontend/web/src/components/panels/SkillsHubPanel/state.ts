@@ -5,8 +5,12 @@ export function resolveSkillsHubTab(
   canReadSkills: boolean,
   canReadMarketplace: boolean,
 ): SkillsHubTab | null {
+  if (requestedTab) {
+    return requestedTab;
+  }
+
   if (canReadSkills && canReadMarketplace) {
-    return requestedTab ?? "skills";
+    return "skills";
   }
 
   if (canReadSkills) {
@@ -17,5 +21,5 @@ export function resolveSkillsHubTab(
     return "marketplace";
   }
 
-  return null;
+  return "marketplace";
 }
