@@ -46,11 +46,6 @@ const RegistrationPending = lazy(() =>
     default: m.RegistrationPending,
   })),
 );
-const LandingPage = lazy(() =>
-  import("./components/landing/LandingPage").then((m) => ({
-    default: m.LandingPage,
-  })),
-);
 const AuthPage = lazy(() =>
   import("./components/auth/AuthPage").then((m) => ({ default: m.AuthPage })),
 );
@@ -346,7 +341,7 @@ function App() {
         <SelectionActionPopover />
         <Suspense fallback={<ChatPageSkeleton />}>
           <Routes>
-            <Route path="/" element={<LandingPage />} />
+            <Route path="/" element={<AuthPageWrapper />} />
             {/* Auth routes */}
             <Route path="/auth/login" element={<AuthPageWrapper />} />
             <Route

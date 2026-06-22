@@ -51,3 +51,8 @@ test("company launchpad is the default authenticated landing destination", () =>
   assert.match(oauthCallbackSource, /getRedirectPath\(\) \|\| "\/apps"/);
   assert.match(landingSource, /navigate\("\/apps", \{ replace: true \}\)/);
 });
+
+test("root path no longer renders the marketing landing page", () => {
+  assert.doesNotMatch(appSource, /LandingPage/);
+  assert.match(appSource, /path="\/"\s+element=\{<AuthPageWrapper \/>}/);
+});
