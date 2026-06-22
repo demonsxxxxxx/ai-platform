@@ -94,6 +94,33 @@ test("dollar command is Skills-first and never maps to tools", () => {
   assert.equal(resolveCommandPrefixPanel("$", allAvailable), "skills");
 });
 
+test("dollar command fails closed as a Skill chip when Skills are unavailable", () => {
+  const unavailableSkills = {
+    ...allAvailable,
+    skills: false,
+  };
+
+  assert.deepEqual(parseComposerCommand("$", unavailableSkills), {
+    trigger: "$",
+    command: "skill",
+    panel: "skills",
+    query: "",
+    unavailable: true,
+  });
+  assert.deepEqual(resolveComposerCommandDraft("$", unavailableSkills), {
+    command: {
+      trigger: "$",
+      command: "skill",
+      panel: "skills",
+      query: "",
+      unavailable: true,
+    },
+    panel: "skills",
+    selectorQuery: "",
+    shouldExecute: true,
+  });
+});
+
 test("composer command drafts preserve multi-character typing and seed selector queries", () => {
   assert.deepEqual(resolveComposerCommandDraft("/", allAvailable), {
     command: {
@@ -345,6 +372,17 @@ test("composer shortcut hints fail closed when a governed surface is unavailable
   assert.match(chatInput, /shortcutAvailabilityByCommand/);
   assert.match(chatInput, /if \(!shortcutAvailabilityByCommand\[command\]\) \{/);
   assert.match(chatInput, /upsertUnavailableCommandChip/);
+});
+
+test("typed unavailable commands fail closed before opening missing selectors", () => {
+  const chatInput = readFileSync(
+    join(root, "src/components/chat/ChatInput.tsx"),
+    "utf8",
+  );
+
+  assert.match(chatInput, /draft\.command\.unavailable/);
+  assert.match(chatInput, /upsertUnavailableCommandChip\(draft\.command\)/);
+  assert.match(chatInput, /setInput\(""\)/);
 });
 
 test("slash command menu is anchored outside the clipped textarea region", () => {

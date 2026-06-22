@@ -599,6 +599,16 @@ export const ChatInput = memo(function ChatInput({
         commandPanelAvailability,
       );
       if (!draft) return false;
+      if (draft.command.unavailable) {
+        upsertUnavailableCommandChip(draft.command);
+        setActivePanel(null);
+        setCommandSearchSeed(null);
+        closeSlashMenu();
+        setInput("");
+        setCursorPosition(0);
+        requestAnimationFrame(scheduleTextareaResize);
+        return true;
+      }
       if (draft.panel === "command-menu") {
         setSlashMenuOpen(true);
         setSlashMenuHighlight(0);
@@ -616,7 +626,12 @@ export const ChatInput = memo(function ChatInput({
       }
       return true;
     },
-    [commandPanelAvailability],
+    [
+      closeSlashMenu,
+      commandPanelAvailability,
+      scheduleTextareaResize,
+      upsertUnavailableCommandChip,
+    ],
   );
 
   const slashCommandItems = useMemo(
