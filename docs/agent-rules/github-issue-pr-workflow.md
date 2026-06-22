@@ -102,6 +102,19 @@ Otherwise link the issue without auto-closing language.
 
 - High-risk or stage-gate work requires independent review when the available
   delegation path is suitable.
+- SDK / worker diagnostics must be layered when a PR changes Claude Agent SDK,
+  skill execution, worker launch, terminal execution, or user-facing runtime
+  errors. Trace the fault through:
+  `tool registration -> runner selection -> subprocess/terminal -> SDK event -> user-facing error`.
+  Each such PR must leave at least one minimal reproduction and one observable
+  log or event evidence item on the PR or linked issue. Generic `sdk_error`,
+  empty Bash input loops, terminal run failures, missing native skill evidence,
+  and platform-controlled runner selection must be classified at the layer where
+  they are observed. Local diagnostic evidence by itself is `local partial` or
+  `PR ready` evidence only; it is not `reviewed`, `211 verified`, or
+  `gate closable`, and it does not close #164 or any other stage/gate issue
+  unless the normal review, deployed-runtime, and issue-closure gates below also
+  pass.
 - When review is performed by sub-agents or other local assistants, record the
   result on GitHub before using it as review evidence. The comment should name
   the reviewer role, scope, findings, fixes or rejections, and verification
