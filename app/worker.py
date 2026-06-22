@@ -227,7 +227,7 @@ FORBIDDEN_ARTIFACT_KEYS = {
     "executable_path",
     "cwd",
 }
-NATIVE_USED_SKILL_SOURCES = {"executor_hook", "executor_native"}
+NATIVE_USED_SKILL_SOURCES = {"executor_hook", "executor_native", "platform_controlled_runner"}
 RAGFLOW_AUDIT_PAYLOAD_KEYS = {"dataset_ids", "reference_ids"}
 
 

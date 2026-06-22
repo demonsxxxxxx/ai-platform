@@ -38,6 +38,8 @@ RUNTIME_ENV_ALLOWLIST = frozenset(
     {
         "CLAUDE_AGENT_SDK_ENABLED",
         "CLAUDE_AGENT_MODEL",
+        "DEFAULT_MODEL_ID",
+        "MODEL_CATALOG_JSON",
         "OPENAI_MODEL",
         "ANTHROPIC_MODEL",
         "CLAUDE_AGENT_SDK_SKILLS",
@@ -381,7 +383,7 @@ def check_frontend_dist_api_boundary(frontend_dist: str) -> Gate:
     )
 
 
-def check_api_compat(api_url: str) -> Gate:
+def check_api_compat(api_url: str, *, expected_default_model_id: str = "") -> Gate:
     paths = [
         "/api/ai/health",
         "/api/auth/oauth/providers",
@@ -403,6 +405,8 @@ def check_api_compat(api_url: str) -> Gate:
     oauth = payloads.get("/api/auth/oauth/providers") if isinstance(payloads.get("/api/auth/oauth/providers"), dict) else {}
     model = payloads.get("/api/agent/models/available") if isinstance(payloads.get("/api/agent/models/available"), dict) else {}
     permissions_payload = payloads.get("/api/auth/permissions") if isinstance(payloads.get("/api/auth/permissions"), dict) else {}
+    available_model_ids = _model_ids_from_catalog_payload(model.get("models"))
+    default_model_id = str(model.get("default_model_id") or "")
     permission_values = {
         str(item.get("value"))
         for item in permissions_payload.get("all_permissions", [])
@@ -412,7 +416,9 @@ def check_api_compat(api_url: str) -> Gate:
     ok = (
         all(status == 200 for status in statuses.values())
         and oauth.get("registration_enabled") is False
-        and model.get("default_model_id") == "deepseek-v4-flash"
+        and bool(default_model_id)
+        and default_model_id in available_model_ids
+        and (not expected_default_model_id or default_model_id == expected_default_model_id)
         and not missing_permissions
     )
     return Gate(
@@ -421,20 +427,65 @@ def check_api_compat(api_url: str) -> Gate:
         {
             "statuses": statuses,
             "registration_enabled": oauth.get("registration_enabled"),
-            "default_model_id": model.get("default_model_id"),
+            "default_model_id": default_model_id,
+            "expected_default_model_id": expected_default_model_id,
+            "default_model_matches_expected": not expected_default_model_id or default_model_id == expected_default_model_id,
+            "available_model_ids": available_model_ids,
             "missing_permissions": missing_permissions,
         },
     )
 
 
+def _model_ids_from_catalog_payload(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    model_ids = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("id") or item.get("value") or "")
+        if model_id:
+            model_ids.append(model_id)
+    return sorted(set(model_ids))
+
+
+def _model_ids_from_catalog_json(raw: str) -> tuple[str, list[str]]:
+    if not raw.strip():
+        return "absent", []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return "invalid_json", []
+    if not isinstance(parsed, list):
+        return "invalid_shape", []
+    model_ids = _model_ids_from_catalog_payload(parsed)
+    if not model_ids:
+        return "empty", []
+    return "present", model_ids
+
+
 def check_runtime_config(env_path: str, values: dict[str, str] | None = None) -> Gate:
     values = dict(values) if values is not None else read_env(env_path)
     skills = {item.strip() for item in values.get("CLAUDE_AGENT_SDK_SKILLS", "").split(",") if item.strip()}
+    configured_models = {
+        values.get("CLAUDE_AGENT_MODEL"),
+        values.get("OPENAI_MODEL"),
+        values.get("ANTHROPIC_MODEL"),
+    }
+    configured_models = {item for item in configured_models if item}
+    configured_model_id = next(iter(configured_models)) if len(configured_models) == 1 else ""
+    default_model_id = values.get("DEFAULT_MODEL_ID") or configured_model_id
+    catalog_status, catalog_model_ids = _model_ids_from_catalog_json(values.get("MODEL_CATALOG_JSON", ""))
+    catalog_contains_configured_model = (
+        catalog_status == "absent"
+        or (bool(configured_model_id) and configured_model_id in catalog_model_ids)
+    )
+    catalog_valid = catalog_status in {"absent", "present"} and catalog_contains_configured_model
     ok = (
         values.get("CLAUDE_AGENT_SDK_ENABLED", "").lower() == "true"
-        and values.get("CLAUDE_AGENT_MODEL") == "deepseek-v4-flash"
-        and values.get("OPENAI_MODEL") == "deepseek-v4-flash"
-        and values.get("ANTHROPIC_MODEL") == "deepseek-v4-flash"
+        and bool(configured_model_id)
+        and default_model_id == configured_model_id
+        and catalog_valid
         and {"general-chat", "qa-file-reviewer", "baoyu-translate"}.issubset(skills)
     )
     return Gate(
@@ -446,6 +497,11 @@ def check_runtime_config(env_path: str, values: dict[str, str] | None = None) ->
             "claude_agent_model": values.get("CLAUDE_AGENT_MODEL"),
             "openai_model": values.get("OPENAI_MODEL"),
             "anthropic_model": values.get("ANTHROPIC_MODEL"),
+            "configured_model_id": configured_model_id,
+            "default_model_id": default_model_id,
+            "model_catalog_status": catalog_status,
+            "available_model_ids": catalog_model_ids,
+            "model_catalog_contains_configured_model": catalog_contains_configured_model,
             "skills_present": sorted(skills.intersection({"general-chat", "qa-file-reviewer", "baoyu-translate"})),
         },
     )
@@ -1105,6 +1161,8 @@ def check_upload_attachment_chat(
     container: str,
     db_user: str,
     db_name: str,
+    *,
+    wait_attempts: int = 45,
 ) -> Gate:
     headers = principal_headers("upload-gate-user-a", "Upload Gate User")
     check_status, check_payload = http_json_post_with_headers(
@@ -1146,7 +1204,7 @@ def check_upload_attachment_chat(
     run_evidence: dict[str, Any] = {}
     if run_id:
         run_id = assert_safe_id(str(run_id), "run_id")
-        for _ in range(45):
+        for _ in range(max(1, wait_attempts)):
             rows = psql_rows(
                 container,
                 db_user,
@@ -1175,6 +1233,17 @@ group by r.id;
             if run_evidence.get("status") in {"succeeded", "failed"}:
                 break
             time.sleep(1)
+    worker_started = any(
+        isinstance(item, dict)
+        and item.get("executor_type") == "claude-agent-worker"
+        and item.get("claude_agent_sdk_enabled") is True
+        and item.get("claude_agent_sdk_import") == "ok"
+        for item in (run_evidence.get("worker_events") or [])
+    )
+    run_accepted_by_worker = (
+        run_evidence.get("status") == "succeeded"
+        or (run_evidence.get("status") == "running" and worker_started)
+    )
     ok = (
         check_status == 200
         and isinstance(check_payload, dict)
@@ -1183,7 +1252,7 @@ group by r.id;
         and isinstance(upload_payload, dict)
         and str(upload_payload.get("key") or "").startswith("file_")
         and chat_status == 200
-        and run_evidence.get("status") == "succeeded"
+        and run_accepted_by_worker
         and file_id in (run_evidence.get("file_ids") or [])
     )
     return Gate(
@@ -1197,6 +1266,8 @@ group by r.id;
             "chat_status": chat_status,
             "chat_payload": chat_payload,
             "run": run_evidence,
+            "worker_started": worker_started,
+            "run_accepted_by_worker": run_accepted_by_worker,
         },
     )
 
@@ -1218,6 +1289,8 @@ def check_word_review_attachment_chat(
     container: str,
     db_user: str,
     db_name: str,
+    *,
+    wait_attempts: int = 90,
 ) -> Gate:
     sample = sample_docx_bytes()
     if sample is None:
@@ -1258,7 +1331,7 @@ def check_word_review_attachment_chat(
     run_evidence: dict[str, Any] = {}
     if run_id:
         run_id = assert_safe_id(str(run_id), "run_id")
-        for _ in range(90):
+        for _ in range(max(1, wait_attempts)):
             rows = psql_rows(
                 container,
                 db_user,
@@ -1465,10 +1538,13 @@ def main() -> int:
     parser.add_argument("--postgres-user", default=DEFAULT_POSTGRES_USER)
     parser.add_argument("--postgres-db", default=DEFAULT_POSTGRES_DB)
     parser.add_argument("--allow-missing-auth-audit", action="store_true")
+    parser.add_argument("--upload-run-wait-seconds", type=int, default=45)
+    parser.add_argument("--word-review-run-wait-seconds", type=int, default=90)
     args = parser.parse_args()
 
     db_gates = check_db_evidence(args.postgres_container, args.postgres_user, args.postgres_db)
     env_values = runtime_env_values(args.env_path, args.api_container)
+    runtime_config_gate = check_runtime_config(args.env_path, env_values)
     artifact_rows = [gate.evidence for gate in db_gates if gate.name in {"review_artifact", "translate_artifact"} and gate.ok]
     governed_skill_runs_gate = check_governed_skill_runs(
         args.postgres_container,
@@ -1476,19 +1552,34 @@ def main() -> int:
         args.postgres_db,
         artifact_rows,
     )
-    word_review_gate = check_word_review_attachment_chat(args.api_url, args.postgres_container, args.postgres_user, args.postgres_db)
+    word_review_gate = check_word_review_attachment_chat(
+        args.api_url,
+        args.postgres_container,
+        args.postgres_user,
+        args.postgres_db,
+        wait_attempts=args.word_review_run_wait_seconds,
+    )
     gates = [
         check_frontend(args.frontend_url),
         check_frontend_dist_api_boundary(args.frontend_dist),
         check_frontend_origin_api(args.frontend_url),
-        check_api_compat(args.api_url),
-        check_runtime_config(args.env_path, env_values),
+        check_api_compat(
+            args.api_url,
+            expected_default_model_id=str(runtime_config_gate.evidence.get("default_model_id") or ""),
+        ),
+        runtime_config_gate,
         check_company_auth_bridge(env_values.get("EXISTING_AUTH_BASE_URL", "")),
         *db_gates,
         governed_skill_runs_gate,
         check_artifact_download_isolation(args.api_url, artifact_rows),
         check_artifact_preview_isolation(args.api_url, artifact_rows),
-        check_upload_attachment_chat(args.api_url, args.postgres_container, args.postgres_user, args.postgres_db),
+        check_upload_attachment_chat(
+            args.api_url,
+            args.postgres_container,
+            args.postgres_user,
+            args.postgres_db,
+            wait_attempts=args.upload_run_wait_seconds,
+        ),
         word_review_gate,
         Gate(
             "context_snapshot_public_projection",
