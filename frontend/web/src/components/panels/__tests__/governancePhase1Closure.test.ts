@@ -447,6 +447,17 @@ test("marketplace exposes direct write governance only through permission gates"
   assert.match(marketplace, /canInstall/);
   assert.match(marketplace, /Permission\.SKILL_WRITE/);
   assert.match(marketplace, /Permission\.MARKETPLACE_READ/);
+  assert.match(marketplace, /effectivePermissions/);
+  assert.match(marketplace, /hasEffectiveSkillWrite/);
+  assert.match(marketplace, /hasEffectiveMarketplaceRead/);
+  assert.match(
+    marketplace,
+    /hasAnyPermission\(\[Permission\.SKILL_WRITE\]\)\s*\|\|\s*effectivePermissions\.has\(Permission\.SKILL_WRITE\)/,
+  );
+  assert.match(
+    marketplace,
+    /hasAnyPermission\(\[Permission\.MARKETPLACE_READ\]\)\s*\|\|\s*effectivePermissions\.has\(Permission\.MARKETPLACE_READ\)/,
+  );
   assert.doesNotMatch(
     marketplace,
     /const canWrite =\s*hasAnyPermission\(\[Permission\.MARKETPLACE_PUBLISH\]\)/,
