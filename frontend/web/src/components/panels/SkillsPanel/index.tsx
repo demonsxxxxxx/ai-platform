@@ -28,8 +28,8 @@ export function SkillsPanel({
   const canDelete = hasAnyPermission([Permission.SKILL_DELETE]);
   const canPublishByAuth = hasAnyPermission([Permission.MARKETPLACE_PUBLISH]);
   const isGovernedUnavailable = governedUnavailable || !canRead;
-  const skillFileWriteBacked = false;
-  const skillImportBacked = false;
+  const skillFileWriteBacked = true;
+  const skillImportBacked = true;
   const skillBatchWriteBacked = true;
 
   const actions = useSkillsActions({ enabled: !isGovernedUnavailable });
@@ -45,7 +45,7 @@ export function SkillsPanel({
     !isGovernedUnavailable &&
     (canPublishByAuth || effectivePermissions.has(Permission.MARKETPLACE_PUBLISH));
   const canEditSkills = skillFileWriteBacked && canWrite;
-  const canCreateSkills = skillFileWriteBacked && canWrite;
+  const canCreateSkills = false;
   const canImportSkills = skillImportBacked && canWrite;
   const canBatchSkills =
     skillBatchWriteBacked && (canWrite || canDeleteSkill);

@@ -201,7 +201,7 @@ function UsersPage() {
     description: "seo.users.description",
     path: "/users",
   });
-  return <AppContent key="users" activeTab="users" />;
+  return <PhaseTwoWorkbenchPage activeTab="users" />;
 }
 
 function RolesPage() {
@@ -219,7 +219,7 @@ function SettingsPage() {
     description: "seo.settings.description",
     path: "/settings",
   });
-  return <AppContent key="settings" activeTab="settings" />;
+  return <PhaseTwoWorkbenchPage activeTab="settings" />;
 }
 
 function MCPPage() {
@@ -237,7 +237,7 @@ function FeedbackPage() {
     description: "seo.feedback.description",
     path: "/feedback",
   });
-  return <AppContent key="feedback" activeTab="feedback" />;
+  return <PhaseTwoWorkbenchPage activeTab="feedback" />;
 }
 
 function ChannelsPage() {
@@ -255,7 +255,7 @@ function AgentsPage() {
     description: "seo.agents.description",
     path: "/agents",
   });
-  return <AppContent key="agents" activeTab="agents" />;
+  return <PhaseTwoWorkbenchPage activeTab="agents" />;
 }
 
 function ModelsPage() {
@@ -282,7 +282,7 @@ function NotificationsPage() {
     description: "seo.notifications.description",
     path: "/notifications",
   });
-  return <AppContent key="notifications" activeTab="notifications" />;
+  return <PhaseTwoWorkbenchPage activeTab="notifications" />;
 }
 
 function MemoryPage() {
@@ -316,6 +316,29 @@ function WorkbenchForbiddenPage({
           permission: permissionLabel,
         }),
         surface: `${activeTab}-route-permission`,
+      }}
+    />
+  );
+}
+
+function PhaseTwoWorkbenchPage({
+  activeTab,
+}: {
+  activeTab: Exclude<TabType, "chat">;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <AppContent
+      key={`${activeTab}-phase2`}
+      activeTab={activeTab}
+      routeUnavailable={{
+        state: "degraded",
+        title: t("workbench.phaseTwo.title", {
+          page: t(`nav.${activeTab}`),
+        }),
+        description: t("workbench.phaseTwo.description"),
+        surface: `${activeTab}-phase2-backend-projection`,
       }}
     />
   );
@@ -430,15 +453,7 @@ function App() {
             <Route
               path="/users"
               element={
-                <ProtectedRoute
-                  permissions={[Permission.USER_READ]}
-                  fallbackComponent={
-                    <WorkbenchForbiddenPage
-                      activeTab="users"
-                      permissionLabel={Permission.USER_READ}
-                    />
-                  }
-                >
+                <ProtectedRoute>
                   <UsersPage />
                 </ProtectedRoute>
               }
@@ -467,15 +482,7 @@ function App() {
             <Route
               path="/settings"
               element={
-                <ProtectedRoute
-                  permissions={[Permission.SETTINGS_MANAGE]}
-                  fallbackComponent={
-                    <WorkbenchForbiddenPage
-                      activeTab="settings"
-                      permissionLabel={Permission.SETTINGS_MANAGE}
-                    />
-                  }
-                >
+                <ProtectedRoute>
                   <SettingsPage />
                 </ProtectedRoute>
               }
@@ -483,15 +490,7 @@ function App() {
             <Route
               path="/feedback"
               element={
-                <ProtectedRoute
-                  permissions={[Permission.FEEDBACK_READ]}
-                  fallbackComponent={
-                    <WorkbenchForbiddenPage
-                      activeTab="feedback"
-                      permissionLabel={Permission.FEEDBACK_READ}
-                    />
-                  }
-                >
+                <ProtectedRoute>
                   <FeedbackPage />
                 </ProtectedRoute>
               }
@@ -507,15 +506,7 @@ function App() {
             <Route
               path="/agents"
               element={
-                <ProtectedRoute
-                  permissions={[Permission.AGENT_ADMIN]}
-                  fallbackComponent={
-                    <WorkbenchForbiddenPage
-                      activeTab="agents"
-                      permissionLabel={Permission.AGENT_ADMIN}
-                    />
-                  }
-                >
+                <ProtectedRoute>
                   <AgentsPage />
                 </ProtectedRoute>
               }
@@ -547,15 +538,7 @@ function App() {
             <Route
               path="/notifications"
               element={
-                <ProtectedRoute
-                  permissions={[Permission.NOTIFICATION_MANAGE]}
-                  fallbackComponent={
-                    <WorkbenchForbiddenPage
-                      activeTab="notifications"
-                      permissionLabel={Permission.NOTIFICATION_MANAGE}
-                    />
-                  }
-                >
+                <ProtectedRoute>
                   <NotificationsPage />
                 </ProtectedRoute>
               }

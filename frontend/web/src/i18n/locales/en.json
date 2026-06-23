@@ -2370,6 +2370,7 @@
     "republishSuccess": "Skill updated in marketplace",
     "republishTitle": "Update \"{{name}}\" in Marketplace",
     "searchPlaceholder": "Search skills...",
+    "selectBackedZipSkills": "Select published skills to overlay",
     "selectSkillsToInstall": "Select skills to install",
     "selectZipFile": "Select ZIP file",
     "sourceLocal": "Local",
@@ -2384,6 +2385,9 @@
     "uploadZipTitle": "Upload Skill ZIP",
     "uploading": "Uploading...",
     "userSkillVisible": "User Skill (only visible to you)",
+    "publicCatalogSkill": "Public catalog",
+    "newSkillImportUnsupported": "New Skill not backed",
+    "zipImportBackedHint": "ZIP import now writes to your own Skill file overlay and only targets existing public Skills. New Skill creation remains a Phase 2 governed backend flow.",
     "marketplace": {
       "departmentAvailability": "Department availability",
       "groupToggleUnavailable": "Department and group switches are visible for administrators. They stay read-only until your workspace enables department Skill access."
@@ -2641,6 +2645,10 @@
     "forbidden": {
       "description": "This page remains visible in the workbench, but your account is missing {{permission}}. Ask an administrator to grant access before using its controls.",
       "title": "{{page}} is governed"
+    },
+    "phaseTwo": {
+      "description": "This entry stays in the workbench, but company users, system settings, feedback, notifications, and agent administration still need backend public/admin projections. The frontend will not load legacy admin pages or surface unbacked 404 responses.",
+      "title": "{{page}} is waiting for backend management projections"
     },
     "newConversation": "New conversation",
     "none": "None",

@@ -71,23 +71,43 @@ test("phase 1C discovery routes are login reachable and fail closed inside pages
     );
   }
 
+  const rolesRoutePattern = new RegExp(
+    `path="/roles"[\\s\\S]{0,760}<ProtectedRoute[\\s\\S]{0,220}permissions=\\{\\[[\\s\\S]{0,360}fallbackComponent=\\{[\\s\\S]{0,220}<WorkbenchForbiddenPage[\\s\\S]{0,360}<RolesPage \\/>`,
+  );
+  assert.match(
+    app,
+    rolesRoutePattern,
+    "RolesPage should stay route-gated but render a workbench forbidden state instead of redirecting to chat",
+  );
+
   for (const [route, page] of [
     ["/users", "UsersPage"],
-    ["/roles", "RolesPage"],
     ["/settings", "SettingsPage"],
+    ["/feedback", "FeedbackPage"],
+    ["/agents", "AgentsPage"],
+    ["/notifications", "NotificationsPage"],
   ]) {
-    const adminRoutePattern = new RegExp(
-      `path="${route}"[\\s\\S]{0,760}<ProtectedRoute[\\s\\S]{0,220}permissions=\\{\\[[\\s\\S]{0,360}fallbackComponent=\\{[\\s\\S]{0,220}<WorkbenchForbiddenPage[\\s\\S]{0,360}<${page} \\/>`,
+    const phaseTwoRoutePattern = new RegExp(
+      `path="${route}"[\\s\\S]{0,260}<ProtectedRoute>[\\s\\S]{0,220}<${page} \\/>[\\s\\S]{0,120}<\\/ProtectedRoute>`,
+    );
+    const phaseTwoPagePattern = new RegExp(
+      `function ${page}\\(\\)[\\s\\S]{0,420}<PhaseTwoWorkbenchPage[\\s\\S]{0,180}activeTab="${route.slice(1)}"`,
     );
     assert.match(
       app,
-      adminRoutePattern,
-      `${page} should stay route-gated but render a workbench forbidden state instead of redirecting to chat`,
+      phaseTwoRoutePattern,
+      `${page} should remain login reachable without route-level business permission redirects`,
+    );
+    assert.match(
+      app,
+      phaseTwoPagePattern,
+      `${page} should render the shared degraded Phase 2 workbench state instead of loading the legacy panel`,
     );
   }
 
   assert.doesNotMatch(app, /redirectTo="\/chat"/);
   assert.match(app, /function WorkbenchForbiddenPage/);
+  assert.match(app, /function PhaseTwoWorkbenchPage/);
   assert.match(app, /routeUnavailable=\{\{/);
 });
 

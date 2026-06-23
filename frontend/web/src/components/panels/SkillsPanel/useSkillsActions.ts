@@ -374,7 +374,7 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
       if (result && result.skills) {
         setZipSkills(result.skills);
         setSelectedZipSkills(
-          result.skills.filter((s) => !s.already_exists).map((s) => s.name),
+          result.skills.filter((s) => s.already_exists).map((s) => s.name),
         );
       }
     } finally {

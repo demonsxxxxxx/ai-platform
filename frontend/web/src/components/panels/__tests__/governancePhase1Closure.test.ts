@@ -352,9 +352,10 @@ test("read-only skills catalog removes write controls instead of showing disable
   assert.match(batchActionBar, /canDelete: boolean/);
   assert.match(batchActionBar, /\{canWrite && \(/);
   assert.match(batchActionBar, /\{canDelete && \(/);
-  assert.match(skillsPanel, /skillFileWriteBacked = false/);
-  assert.match(skillsPanel, /skillImportBacked = false/);
+  assert.match(skillsPanel, /skillFileWriteBacked = true/);
+  assert.match(skillsPanel, /skillImportBacked = true/);
   assert.match(skillsPanel, /skillBatchWriteBacked = true/);
+  assert.match(skillsPanel, /canCreateSkills = false/);
   assert.match(skillsPanel, /canWrite=\{canWrite && !isGovernedUnavailable\}/);
   assert.match(
     skillsPanel,
@@ -378,10 +379,16 @@ test("read-only skills catalog removes write controls instead of showing disable
   );
 });
 
-test("skills phase one backed operations match PR177 public contracts", () => {
+test("skills phase one backed operations match current public contracts", () => {
   const skillsPanel = read("src/components/panels/SkillsPanel/index.tsx");
   const skillApi = read("src/services/api/skill.ts");
   const skillsList = read("src/components/panels/SkillsPanel/SkillsList.tsx");
+  const skillsActions = read(
+    "src/components/panels/SkillsPanel/useSkillsActions.ts",
+  );
+  const zipUploadModal = read(
+    "src/components/panels/SkillsPanel/ZipUploadModal.tsx",
+  );
 
   assert.match(skillApi, /async batchToggle/);
   assert.match(skillApi, /\/batch\/toggle/);
@@ -389,8 +396,22 @@ test("skills phase one backed operations match PR177 public contracts", () => {
   assert.match(skillApi, /\/batch\/delete/);
   assert.match(skillApi, /async toggle/);
   assert.match(skillApi, /\/toggle/);
+  assert.match(skillApi, /async updateFile/);
+  assert.match(skillApi, /async uploadZip/);
+  assert.match(skillApi, /async previewGitHub/);
+  assert.match(skillApi, /async installGitHub/);
+  assert.match(skillsPanel, /skillFileWriteBacked = true/);
+  assert.match(skillsPanel, /skillImportBacked = true/);
+  assert.match(skillsPanel, /canCreateSkills = false/);
   assert.match(skillsPanel, /skillBatchWriteBacked = true/);
   assert.match(skillsList, /\{canBatchSkills && filteredSkills\.length > 0 &&/);
+  assert.match(
+    skillsActions,
+    /result\.skills\.filter\(\(s\) => s\.already_exists\)\.map\(\(s\) => s\.name\)/,
+  );
+  assert.match(zipUploadModal, /const backedCount = zipSkills\.filter\(\(s\) => s\.already_exists\)\.length/);
+  assert.match(zipUploadModal, /skill\.already_exists && onZipSkillToggle\(skill\.name\)/);
+  assert.match(zipUploadModal, /!skill\.already_exists\s*\?\s*"cursor-not-allowed opacity-40"/);
   assert.doesNotMatch(skillsPanel, /skillBatchWriteBacked = false/);
 });
 
