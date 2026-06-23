@@ -1,7 +1,7 @@
 {
-  "note": "Issue #164 211 runtime-only rollout evidence for the 0a9e70a runtime subject after PR #196. The live API/worker containers use ai-platform:0a9e70a-issue164-b0-label-fix-runtime-only-v1 with matching runtime subject, runtime source marker, OCI revision, and hyphen/underscore source-revision labels. Compose still carries the external env-file label caveat. Later runtime-affecting source changes must trigger a fresh rollout/readiness check before any current-source verification claim.",
+  "note": "Issue #164 211 runtime-only rollout evidence for the 17dc3ae runtime subject after PR #199. The live API/worker containers use ai-platform:17dc3ae-issue164-post-pr199-runtime-only-v1 with matching runtime subject, runtime source marker, OCI revision, and hyphen/underscore source-revision labels. Compose still carries the external env-file label caveat. Later runtime-affecting source changes must trigger a fresh rollout/readiness check before any current-source verification claim.",
   "runtime_affecting_changes_since_runtime_subject": [],
-  "runtime_subject_commit_sha": "0a9e70a41f2e86afce2be2294b21d2f5651d448d",
+  "runtime_subject_commit_sha": "17dc3ae111cd1538fcf1412558d9d19b93f5b918",
   "schema_version": "ai-platform.source-runtime-relation-manifest.v1",
-  "source_tree_commit_sha": "0a9e70a41f2e86afce2be2294b21d2f5651d448d"
+  "source_tree_commit_sha": "17dc3ae111cd1538fcf1412558d9d19b93f5b918"
 }
