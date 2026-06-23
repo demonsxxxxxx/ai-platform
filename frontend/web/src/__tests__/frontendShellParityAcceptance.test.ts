@@ -73,12 +73,12 @@ test("phase 1C discovery routes are login reachable and fail closed inside pages
   }
 
   const rolesRoutePattern = new RegExp(
-    `path="/roles"[\\s\\S]{0,260}<ProtectedRoute>[\\s\\S]{0,180}<RolesPage \\/>[\\s\\S]{0,120}<\\/ProtectedRoute>`,
+    `path="/roles"[\\s\\S]{0,260}<ProtectedRoute[\\s\\S]{0,220}Permission\\.ROLE_MANAGE[\\s\\S]{0,220}<WorkbenchForbiddenPage[\\s\\S]{0,240}<RolesPage \\/>[\\s\\S]{0,120}<\\/ProtectedRoute>`,
   );
   assert.match(
     app,
     rolesRoutePattern,
-    "RolesPage should be login reachable while writes remain permission-gated inside the page",
+    "RolesPage should remain login reachable while the legacy roles projection is role:manage gated",
   );
 
   for (const [route, page] of [
@@ -112,7 +112,7 @@ test("phase 1C discovery routes are login reachable and fail closed inside pages
   assert.match(app, /routeUnavailable=\{\{/);
 });
 
-test("roles route is login reachable without broadening role writes", () => {
+test("roles route gates legacy role projection without broadening role writes", () => {
   const app = readFileSync(join(root, "src/App.tsx"), "utf8");
   const authTypes = readFileSync(join(root, "src/types/auth.ts"), "utf8");
   const rolesPanel = readFileSync(
@@ -121,8 +121,9 @@ test("roles route is login reachable without broadening role writes", () => {
   );
 
   const rolesRoute = app.match(/path="\/roles"[\s\S]{0,320}<RolesPage \/>/)?.[0] ?? "";
-  assert.doesNotMatch(rolesRoute, /permissions=\{\[/);
-  assert.doesNotMatch(rolesRoute, /fallbackComponent=\{/);
+  assert.match(rolesRoute, /permissions=\{\[Permission\.ROLE_MANAGE\]\}/);
+  assert.match(rolesRoute, /fallbackComponent=\{/);
+  assert.match(rolesRoute, /permissionLabel=\{Permission\.ROLE_MANAGE\}/);
   assert.match(authTypes, /ADMIN_STATUS = "admin:status"/);
   assert.match(rolesPanel, /const canManage = hasPermission\(Permission\.ROLE_MANAGE\);/);
   assert.doesNotMatch(
