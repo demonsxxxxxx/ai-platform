@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from pydantic import ValidationError
 
 from app import repositories
@@ -20,6 +20,8 @@ from app.models import (
     PublicSkillFileResponse,
     PublicSkillFileMutationResponse,
     PublicSkillFileUpdateRequest,
+    PublicSkillImportPreviewResponse,
+    PublicSkillImportUploadResponse,
     PublicSkillResponse,
     PublicSkillsResponse,
     PublicSkillToggleRequest,
@@ -27,9 +29,11 @@ from app.models import (
     PublishToMarketplaceRequest,
 )
 from app.settings import get_settings
+from app.skills.packages import MAX_SKILL_PACKAGE_TOTAL_BYTES, ParsedSkillPackage, parse_skill_package_zip
 from app.validation import assert_safe_id
 
 router = APIRouter()
+UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
 
 SKILL_PERMISSIONS = ("skill:read", "skill:write", "skill:delete", "skill:admin")
 MARKETPLACE_PERMISSIONS = ("marketplace:read", "marketplace:publish", "marketplace:admin")
@@ -380,6 +384,43 @@ def _skill_import_not_backed() -> None:
     raise HTTPException(status_code=409, detail="skill_import_contract_not_backed")
 
 
+async def _read_skill_package_upload(file: UploadFile) -> bytes:
+    chunks: list[bytes] = []
+    total_bytes = 0
+    while True:
+        chunk = await file.read(UPLOAD_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        total_bytes += len(chunk)
+        if total_bytes > MAX_SKILL_PACKAGE_TOTAL_BYTES:
+            raise HTTPException(status_code=400, detail="skill_package_too_large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _parse_public_skill_package(content: bytes) -> ParsedSkillPackage:
+    try:
+        return parse_skill_package_zip(content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _preview_import_package(parsed: ParsedSkillPackage, rows: list[dict[str, Any]]) -> dict[str, object]:
+    return {
+        "name": parsed.skill_id,
+        "description": parsed.description,
+        "file_count": len(parsed.files),
+        "files": [str(item.get("relative_path") or "") for item in parsed.files],
+        "already_exists": any(str(row.get("skill_id") or "") == parsed.skill_id for row in rows),
+    }
+
+
+async def _read_and_parse_public_import(file: UploadFile | None) -> ParsedSkillPackage:
+    if file is None:
+        raise HTTPException(status_code=400, detail="skill_package_required")
+    return _parse_public_skill_package(await _read_skill_package_upload(file))
+
+
 @router.get("/skills/", response_model=PublicSkillsResponse)
 async def list_skills(
     skip: int = Query(default=0, ge=0),
@@ -404,24 +445,82 @@ async def list_skills(
     )
 
 
-@router.post("/skills/upload/preview")
+@router.post("/skills/upload/preview", response_model=PublicSkillImportPreviewResponse)
 async def preview_skill_upload(
+    file: UploadFile | None = File(default=None),
     principal: AuthPrincipal = Depends(require_principal),
-) -> dict[str, object]:
-    """Expose the legacy ZIP preview contract as permission-gated but not backed."""
+) -> PublicSkillImportPreviewResponse:
+    """Preview a ZIP Skill package without persisting current-user overlays."""
 
     _require_permission(principal, "skill:write")
-    _skill_import_not_backed()
+    parsed = await _read_and_parse_public_import(file)
+    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=True)
+    return PublicSkillImportPreviewResponse(
+        skill_count=1,
+        skills=[_preview_import_package(parsed, rows)],
+    )
 
 
-@router.post("/skills/upload")
+@router.post("/skills/upload", response_model=PublicSkillImportUploadResponse)
 async def upload_skills(
+    file: UploadFile | None = File(default=None),
     principal: AuthPrincipal = Depends(require_principal),
-) -> dict[str, object]:
-    """Fail closed for ZIP import until durable user skill storage exists."""
+) -> PublicSkillImportUploadResponse:
+    """Import a ZIP Skill package as current-user public Skill file overlays."""
 
     _require_permission(principal, "skill:write")
-    _skill_import_not_backed()
+    parsed = await _read_and_parse_public_import(file)
+    async with transaction() as conn:
+        rows = await repositories.list_public_skill_catalog(
+            conn,
+            tenant_id=principal.tenant_id,
+            include_disabled=True,
+        )
+        _find_row(rows, skill_name=parsed.skill_id)
+        await repositories.ensure_user(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            display_name=principal.display_name,
+        )
+        for item in parsed.files:
+            file_path = _safe_file_path(str(item.get("relative_path") or ""))
+            await repositories.upsert_user_skill_file(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                skill_id=parsed.skill_id,
+                file_path=file_path,
+                content_base64=str(item.get("content_base64") or ""),
+                size_bytes=int(item.get("size_bytes") or 0),
+            )
+        await repositories.set_public_skill_enabled(
+            conn,
+            tenant_id=principal.tenant_id,
+            skill_id=parsed.skill_id,
+            status="active",
+        )
+        await repositories.append_audit_log(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            action="skill.public.zip_imported",
+            target_type="skill",
+            target_id=parsed.skill_id,
+            payload_json={
+                "skill_id": parsed.skill_id,
+                "content_hash": parsed.content_hash,
+                "file_count": len(parsed.files),
+                "size_bytes": parsed.size_bytes,
+                "department_id": principal.department_id,
+            },
+        )
+    return PublicSkillImportUploadResponse(
+        message="Skills imported",
+        created=[{"name": parsed.skill_id, "file_count": len(parsed.files)}],
+        errors=[],
+        skill_count=1,
+    )
 
 
 @router.post("/skills/batch/delete")

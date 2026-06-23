@@ -10,6 +10,7 @@ from typing import Any
 
 from app.skills.pinning import MAX_SKILL_SNAPSHOT_FILE_BYTES, MAX_SKILL_SNAPSHOT_TOTAL_BYTES
 from app.skills.registry import parse_skill_markdown_front_matter
+from app.validation import assert_safe_id
 
 MAX_SKILL_PACKAGE_FILE_BYTES = MAX_SKILL_SNAPSHOT_FILE_BYTES
 MAX_SKILL_PACKAGE_TOTAL_BYTES = MAX_SKILL_SNAPSHOT_TOTAL_BYTES
@@ -45,7 +46,7 @@ def _content_hash(files: list[tuple[str, bytes]]) -> str:
     return digest.hexdigest()
 
 
-def parse_skill_package_zip(content: bytes, *, expected_skill_id: str) -> ParsedSkillPackage:
+def parse_skill_package_zip(content: bytes, *, expected_skill_id: str | None = None) -> ParsedSkillPackage:
     if not content:
         raise ValueError("skill_package_empty")
     if len(content) > MAX_SKILL_PACKAGE_TOTAL_BYTES:
@@ -90,7 +91,11 @@ def parse_skill_package_zip(content: bytes, *, expected_skill_id: str) -> Parsed
         raise ValueError("skill_package_invalid_utf8") from exc
     metadata = parse_skill_markdown_front_matter(skill_md_text)
     skill_id = metadata.get("name") or ""
-    if skill_id != expected_skill_id:
+    try:
+        assert_safe_id(skill_id, "skill_id")
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+    if expected_skill_id is not None and skill_id != expected_skill_id:
         raise ValueError("skill_package_name_mismatch")
     description = metadata.get("description") or ""
     if not description:

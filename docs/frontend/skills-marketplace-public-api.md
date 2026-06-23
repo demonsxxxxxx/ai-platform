@@ -30,6 +30,8 @@ Backed routes:
 - `GET /api/skills/{skill_name}/files/{file_path}`
 - `PUT /api/skills/{skill_name}/files/{file_path}`
 - `DELETE /api/skills/{skill_name}/files/{file_path}`
+- `POST /api/skills/upload/preview`
+- `POST /api/skills/upload`
 - `PATCH /api/skills/{skill_name}/toggle`
 - `DELETE /api/skills/{skill_name}`
 - `POST /api/skills/batch/delete`
@@ -50,14 +52,22 @@ DELETE `/api/skills/{skill_name}/files/{file_path}` stores a tenant/user-scoped 
 
 Marketplace file previews continue to read released Skill snapshots and do not include tenant/user file overlays.
 
+`POST /api/skills/upload/preview` accepts a multipart ZIP package in field
+`file`, validates the package `SKILL.md`, and returns package metadata without
+persistence. It only supports one Skill package per ZIP in this backend slice.
+
+`POST /api/skills/upload` accepts the same package shape for an existing public
+Skill and persists the package files as tenant/user-scoped public Skill file
+overlays after `skill:write` passes. It enables tenant availability and writes
+audit evidence. It does not create a global built-in Skill, direct Marketplace
+entry, admin Skill version, or release-policy promotion.
+
 Explicitly fail-closed routes:
 
-- `POST /api/skills/upload/preview` returns `409 skill_import_contract_not_backed` after `skill:write` passes.
-- `POST /api/skills/upload` returns `409 skill_import_contract_not_backed` after `skill:write` passes.
 - `POST /api/github/preview` returns `409 skill_import_contract_not_backed` after `skill:write` passes.
 - `POST /api/github/install` returns `409 skill_import_contract_not_backed` after `skill:write` passes.
 
-Those import routes are present so the frontend gets an authenticated contract instead of `404`; ZIP/GitHub import storage remains a later backend slice.
+Those GitHub import routes are present so the frontend gets an authenticated contract instead of `404`; GitHub network import storage remains a later backend slice.
 
 ## Marketplace Routes
 
