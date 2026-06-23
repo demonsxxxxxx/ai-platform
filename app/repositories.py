@@ -2477,6 +2477,48 @@ async def get_tool_permission_request(
     return await cursor.fetchone()
 
 
+async def get_tool_permission_request_by_id(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    request_id: str,
+) -> dict[str, Any] | None:
+    """Fetch one current-user permission request without requiring run context."""
+    cursor = await conn.execute(
+        """
+        select *
+        from run_tool_permission_requests
+        where tenant_id = %s and user_id = %s and id = %s
+        """,
+        (tenant_id, user_id, request_id),
+    )
+    return await cursor.fetchone()
+
+
+async def list_tool_permission_inbox(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    status: str = "pending",
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """List current-user permission requests for the standalone approval inbox."""
+    cursor = await conn.execute(
+        """
+        select *
+        from run_tool_permission_requests
+        where tenant_id = %s and user_id = %s
+          and (%s = 'all' or status = %s)
+        order by created_at desc, id desc
+        limit %s
+        """,
+        (tenant_id, user_id, status, status, int(limit)),
+    )
+    return list(await cursor.fetchall())
+
+
 async def decide_tool_permission_request(
     conn: AsyncConnection,
     *,

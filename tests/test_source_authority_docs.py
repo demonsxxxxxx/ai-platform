@@ -27,24 +27,24 @@ RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_RUNTIME_RELATION_MANIFEST = (
     ROOT / "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json"
 )
-ACTIVE_RUNTIME_SUBJECT_SHA = "df85a9fb3266aab92a2ca4122db06d4ec7a00175"
-ACTIVE_SOURCE_TREE_SHA = "df85a9fb3266aab92a2ca4122db06d4ec7a00175"
+ACTIVE_RUNTIME_SUBJECT_SHA = "0a9e70a41f2e86afce2be2294b21d2f5651d448d"
+ACTIVE_SOURCE_TREE_SHA = "0a9e70a41f2e86afce2be2294b21d2f5651d448d"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_SUBJECT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
 ACTIVE_CLOSURE_SOURCE_TREE_SHA = "3c06c5351517028111c18a365ff9a24ed22ffa33"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE = "ai-platform:380de6b-merged-main-runtime"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE_ID = "sha256:e36e4dfad072cdd12b841019db3ccbcdef4b63ccf5262869c994757fef5663f9"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:df85a9f-issue183-contracts-runtime-only-v1"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:11a7caf1dedf9342cbfe52e66e4f739456767bd08402b18822835237d669c913"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-23-211-foundation-alpha-poc-df85a9f-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-23-211-foundation-alpha-poc-df85a9f-auth-rbac-smoke"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:0a9e70a-issue164-b0-label-fix-runtime-only-v1"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:1aa734e4b316c0653257de4ed5e44132ea1a941d9b26851de161ff451d256bc1"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-23-211-foundation-alpha-poc-0a9e70a-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-23-211-foundation-alpha-poc-0a9e70a-auth-rbac-smoke"
 ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID = (
-    "2026-06-23-211-foundation-alpha-poc-df85a9f-governance-runtime-smoke"
+    "2026-06-23-211-foundation-alpha-poc-0a9e70a-governance-runtime-smoke"
 )
 ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-23-211-foundation-alpha-poc-df85a9f-release-evidence-runtime-acceptance"
+    "2026-06-23-211-foundation-alpha-poc-0a9e70a-release-evidence-runtime-acceptance"
 )
 ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-23-211-foundation-alpha-poc-df85a9f-alert-trace-export-runtime-acceptance"
+    "2026-06-23-211-foundation-alpha-poc-0a9e70a-alert-trace-export-runtime-acceptance"
 )
 CBBFAFF_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
 CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
@@ -646,9 +646,10 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     smoke_followups = "\n".join(payload["open_followups"])
     assert "alert_delivery_and_trace_export_211_acceptance" not in smoke_followups
     assert "Foundation Runtime concurrency evidence is blocked" not in smoke_followups
-    assert "capacity_upgrade_evidence_gate" in smoke_followups
-    assert "g7_docker_sandbox_hardening" in smoke_followups
-    assert "g8_ordinary_user_multi_agent_exposure" in smoke_followups
+    assert "production_readiness_not_claimed" in smoke_followups
+    assert "docker_sandbox_hardening_not_claimed" in smoke_followups
+    assert "ordinary_user_multi_agent_exposure_not_claimed" in smoke_followups
+    assert "production_concurrency_increase_allowed" not in evidence_text
 
     release_evidence_index = read(RELEASE_EVIDENCE_INDEX)
     gate_status_text = read(GATE_STATUS_DOC)
@@ -1208,12 +1209,13 @@ def test_gate_status_does_not_overstate_superseded_evidence_as_current():
     assert "active B0 latest-main reference is `87528bf` / #124" not in gate_status_text
     assert "e8e8a0a` runtime still lacks a passing runtime POC smoke" in gate_status_text
     assert "readiness must keep reporting" in gate_status_text
-    assert "after the `df85a9f` source-runtime relation manifest and #164 evidence" in compact_text
+    assert "after the `0a9e70a` source-runtime relation manifest and #164 evidence" in compact_text
     assert "runtime rollout requirement such as `source_synced_runtime_pending`" in gate_status_text
     assert "the `dab7dbc` / #164 evidence is the active B0 latest-main reference" not in gate_status_text
     assert "the `dab7dbc` / #164 evidence is the current reviewed runtime-subject reference" not in compact_text
     assert "the `d94d274` / #164 evidence is the current reviewed runtime-subject reference" not in compact_text
-    assert "the `df85a9f` / #164 evidence is the latest reviewed runtime-subject reference" in compact_text
+    assert "the `0a9e70a` / #164 evidence is the latest reviewed runtime-subject reference" in compact_text
+    assert "the `df85a9f` / #164 evidence is the latest reviewed runtime-subject reference" not in compact_text
     assert "the `a4bded0` / #164 evidence is the latest reviewed runtime-subject reference" not in compact_text
     assert "the `e8e8a0a` / #164 evidence is the active B0 latest-main reference" not in gate_status_text
     assert "the `4039e4b` / #138 evidence is the active B0 latest-main reference" not in gate_status_text
@@ -1230,15 +1232,15 @@ def test_gate_status_records_issue164_b0_runtime_refresh_with_source_caveats():
 
     for expected in (
         "#164",
-        "df85a9fb3266aab92a2ca4122db06d4ec7a00175",
-        "df85a9f-issue183-contracts-runtime-only-v1",
+        "0a9e70a41f2e86afce2be2294b21d2f5651d448d",
+        "0a9e70a-issue164-b0-label-fix-runtime-only-v1",
         "runtime_rollout_required",
         "Foundation Runtime concurrency refresh",
         "external env-file caveat",
     ):
         assert expected in combined_text
-    assert "Foundation Runtime concurrency refresh for the same `df85a9f` runtime subject verified 12 concurrent" in compact_text
-    assert "This removes the `foundation_runtime_concurrency_evidence` blocker for the named `df85a9f` runtime subject only" in compact_text
+    assert "Foundation Runtime concurrency refresh for the same `0a9e70a` runtime subject verified 12 concurrent" in compact_text
+    assert "This removes the `foundation_runtime_concurrency_evidence` blocker for the named `0a9e70a` runtime subject only" in compact_text
     assert "G0 source-authority closure remains blocked by the external env-file label caveat" in compact_text
     assert "ordinary_user_acceptance_for_quarantined_legacy_routes" in compact_text
     assert "Later runtime-affecting source changes require a fresh rollout before any current-source verification claim" in compact_text

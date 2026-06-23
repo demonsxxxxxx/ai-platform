@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app import repositories
 from app.auth import AuthPrincipal, require_principal
-from app.control_plane_contracts import standard_trace_id
+from app.control_plane_contracts import sanitize_public_text, standard_trace_id
 from app.db import transaction
 from app.models import ToolPermissionDecisionRequest, ToolPermissionRequest
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
@@ -14,6 +16,68 @@ router = APIRouter()
 
 def _event_timestamp(value: object) -> object:
     return value.isoformat() if hasattr(value, "isoformat") else value
+
+
+def _inbox_decision_endpoint(request_id: str) -> str:
+    return f"/api/ai/tool-permissions/inbox/{request_id}/decision"
+
+
+def _permission_response_for_inbox(row: dict[str, object]) -> dict[str, object]:
+    return permission_response(row, decision_endpoint=_inbox_decision_endpoint(str(row["id"])))
+
+
+async def _append_decision_event_and_audit(
+    conn: object,
+    *,
+    principal: AuthPrincipal,
+    existing: dict[str, object],
+    row: dict[str, object],
+    decision: str,
+    reason: str,
+) -> None:
+    run_id = str(row.get("run_id") or existing.get("run_id"))
+    request_id = str(row.get("id") or existing.get("id"))
+    trace_id = str(row.get("trace_id") or existing.get("trace_id") or standard_trace_id(run_id))
+    safe_reason = sanitize_public_text(reason)
+    event_payload = {
+        "visible_to_user": True,
+        "permission_request_id": request_id,
+        "tool_id": row.get("tool_id"),
+        "tool_call_id": row.get("tool_call_id"),
+        "action": row.get("action") or existing.get("action") or "execute",
+        "risk_level": row.get("risk_level") or existing.get("risk_level") or "low",
+        "write_capable": bool(row.get("write_capable") if row.get("write_capable") is not None else existing.get("write_capable")),
+        "decision": decision,
+        "reason": safe_reason,
+        "status": row.get("status") or "decided",
+    }
+    if row.get("expires_at") is not None:
+        event_payload["expires_at"] = _event_timestamp(row.get("expires_at"))
+    await repositories.append_event(
+        conn,
+        tenant_id=principal.tenant_id,
+        run_id=run_id,
+        trace_id=trace_id,
+        event_type="tool_permission_decided",
+        stage="tool_policy",
+        message="工具权限已决策",
+        payload=event_payload,
+    )
+    await repositories.append_audit_log(
+        conn,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        action="tool.permission.decision",
+        target_type="tool_permission_request",
+        target_id=request_id,
+        trace_id=trace_id,
+        payload_json={
+            "run_id": run_id,
+            "tool_id": row.get("tool_id"),
+            "tool_call_id": row.get("tool_call_id"),
+            "decision": decision,
+        },
+    )
 
 
 @router.post("/runs/{run_id}/tool-permissions/request")
@@ -72,7 +136,7 @@ async def request_tool_permission(
                     "action": request.action,
                     "risk_level": risk_level,
                     "write_capable": write_capable,
-                    "reason": request.reason,
+                    "reason": sanitize_public_text(request.reason),
                     "status": "pending",
                 },
             )
@@ -81,6 +145,29 @@ async def request_tool_permission(
     except RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"permission_request": permission_response(row)}
+
+
+@router.get("/tool-permissions/inbox")
+async def list_tool_permission_inbox(
+    status: Literal["pending", "decided", "all"] = "pending",
+    limit: int = Query(default=50, ge=1, le=200),
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    """Return current-user tool permission requests across runs."""
+    async with transaction() as conn:
+        rows = await repositories.list_tool_permission_inbox(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            status=status,
+            limit=limit,
+        )
+    return {
+        "permission_requests": [_permission_response_for_inbox(row) for row in rows],
+        "total": len(rows),
+        "status": status,
+        "limit": limit,
+    }
 
 
 @router.get("/runs/{run_id}/tool-permissions/{request_id}")
@@ -132,44 +219,53 @@ async def decide_tool_permission(
         )
         if row is None:
             raise HTTPException(status_code=409, detail="tool_permission_request_not_pending")
-        trace_id = str(row.get("trace_id") or existing.get("trace_id") or standard_trace_id(run_id))
-        event_payload = {
-            "visible_to_user": True,
-            "permission_request_id": request_id,
-            "tool_id": row.get("tool_id"),
-            "tool_call_id": row.get("tool_call_id"),
-            "action": row.get("action") or existing.get("action") or "execute",
-            "risk_level": row.get("risk_level") or existing.get("risk_level") or "low",
-            "write_capable": bool(row.get("write_capable") if row.get("write_capable") is not None else existing.get("write_capable")),
-            "decision": request.decision,
-            "reason": request.reason,
-            "status": row.get("status") or "decided",
-        }
-        if row.get("expires_at") is not None:
-            event_payload["expires_at"] = _event_timestamp(row.get("expires_at"))
-        await repositories.append_event(
+        await _append_decision_event_and_audit(
             conn,
-            tenant_id=principal.tenant_id,
-            run_id=run_id,
-            trace_id=trace_id,
-            event_type="tool_permission_decided",
-            stage="tool_policy",
-            message="工具权限已决策",
-            payload=event_payload,
+            principal=principal,
+            existing=existing,
+            row=row,
+            decision=request.decision,
+            reason=request.reason,
         )
-        await repositories.append_audit_log(
+    return {"permission_request": permission_response(row)}
+
+
+@router.post("/tool-permissions/inbox/{request_id}/decision")
+async def decide_tool_permission_from_inbox(
+    request_id: str,
+    request: ToolPermissionDecisionRequest,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    """Decide a current-user tool permission request from the standalone inbox."""
+    async with transaction() as conn:
+        existing = await repositories.get_tool_permission_request_by_id(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
-            action="tool.permission.decision",
-            target_type="tool_permission_request",
-            target_id=request_id,
-            trace_id=trace_id,
-            payload_json={
-                "run_id": run_id,
-                "tool_id": row.get("tool_id"),
-                "tool_call_id": row.get("tool_call_id"),
-                "decision": request.decision,
-            },
+            request_id=request_id,
         )
-    return {"permission_request": permission_response(row)}
+        if existing is None:
+            raise HTTPException(status_code=404, detail="tool_permission_request_not_found")
+        run_id = str(existing["run_id"])
+        row = await repositories.decide_tool_permission_request(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            run_id=run_id,
+            request_id=request_id,
+            decision=request.decision,
+            reason=request.reason,
+            decision_payload_json=request.decision_payload,
+            expires_in_seconds=request.expires_in_seconds,
+        )
+        if row is None:
+            raise HTTPException(status_code=409, detail="tool_permission_request_not_pending")
+        await _append_decision_event_and_audit(
+            conn,
+            principal=principal,
+            existing=existing,
+            row=row,
+            decision=request.decision,
+            reason=request.reason,
+        )
+    return {"permission_request": _permission_response_for_inbox(row)}
