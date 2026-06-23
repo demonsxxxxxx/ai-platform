@@ -115,6 +115,9 @@ test("mcp lifecycle governance remains visible but not writable", () => {
   assert.match(mcp, /lifecycleAvailability/);
   assert.match(mcp, /mcp\.credentialsUnavailable/);
   assert.match(mcp, /data-mcp-directory-shell/);
+  assert.match(mcp, /isPermissionError\(error\)/);
+  assert.match(mcp, /enabled: !permissionDenied/);
+  assert.doesNotMatch(mcp, /hasAnyPermission\(\[Permission\.MCP_READ\]\)/);
   assert.doesNotMatch(mcp, /deleteServer\(|createServer\(|updateCredentials\(/);
 });
 

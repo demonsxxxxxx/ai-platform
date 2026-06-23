@@ -160,6 +160,30 @@ test("authenticated sidebar uses governed workbench entries instead of old plaza
   assert.doesNotMatch(sidebar, /font-serif|icons\/icon\.svg/);
 });
 
+test("post-login navigation keeps governed MCP entry discoverable without stale local permissions", () => {
+  const userMenu = readFileSync(
+    join(root, "src/components/layout/UserMenu.tsx"),
+    "utf8",
+  );
+  const chatAppContent = readFileSync(
+    join(root, "src/components/layout/AppContent/ChatAppContent.tsx"),
+    "utf8",
+  );
+  const chatInput = readFileSync(
+    join(root, "src/components/chat/ChatInput.tsx"),
+    "utf8",
+  );
+
+  assert.match(userMenu, /path:\s*"\/mcp"[\s\S]{0,120}show:\s*true/);
+  assert.doesNotMatch(userMenu, /Permission\.MCP_READ/);
+  assert.match(chatAppContent, /useTools\(\{ enabled: true \}\)/);
+  assert.doesNotMatch(chatAppContent, /const canReadMcpTools = hasPermission\(Permission\.MCP_READ\);/);
+  assert.match(chatInput, /toolsAvailable/);
+  assert.match(chatInput, /skillsAvailable/);
+  assert.doesNotMatch(chatInput, /totalToolsCount > 0/);
+  assert.doesNotMatch(chatInput, /totalSkillsCount > 0/);
+});
+
 test("authenticated chat workspace keeps one enterprise surface instead of split white canvas", () => {
   const surface = readFileSync(
     join(root, "src/components/workbench/workbenchSurface.ts"),
