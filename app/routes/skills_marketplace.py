@@ -18,6 +18,7 @@ from app.models import (
     MarketplaceTagsResponse,
     PublicSkillDetailResponse,
     PublicSkillFileResponse,
+    PublicSkillFileMutationResponse,
     PublicSkillFileUpdateRequest,
     PublicSkillResponse,
     PublicSkillsResponse,
@@ -25,6 +26,7 @@ from app.models import (
     PublicSkillToggleResponse,
     PublishToMarketplaceRequest,
 )
+from app.settings import get_settings
 from app.validation import assert_safe_id
 
 router = APIRouter()
@@ -122,6 +124,13 @@ def _fallback_skill_markdown(row: dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+def _decode_skill_file_content(encoded: str, *, invalid_detail: str) -> bytes:
+    try:
+        return base64.b64decode(encoded.encode("ascii"), validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=invalid_detail) from exc
+
+
 def _project_files(row: dict[str, Any]) -> list[SkillFileProjection]:
     source = row.get("source") if isinstance(row.get("source"), dict) else {}
     raw_files = source.get("files") if isinstance(source, dict) else None
@@ -134,10 +143,7 @@ def _project_files(row: dict[str, Any]) -> list[SkillFileProjection]:
             encoded = str(item.get("content_base64") or "")
             if not encoded:
                 continue
-            try:
-                content = base64.b64decode(encoded.encode("ascii"), validate=True)
-            except Exception as exc:
-                raise HTTPException(status_code=409, detail="skill_file_snapshot_invalid") from exc
+            content = _decode_skill_file_content(encoded, invalid_detail="skill_file_snapshot_invalid")
             projected.append(
                 SkillFileProjection(
                     path=relative_path,
@@ -145,9 +151,35 @@ def _project_files(row: dict[str, Any]) -> list[SkillFileProjection]:
                     size=int(item.get("size_bytes") or len(content)),
                 )
             )
+
     if not projected:
         content = _fallback_skill_markdown(row)
         projected.append(SkillFileProjection(path="SKILL.md", content=content, size=len(content)))
+
+    raw_overlays = row.get("user_file_overlays")
+    overlays = raw_overlays if isinstance(raw_overlays, list) else []
+    if overlays:
+        by_path = {item.path: item for item in projected}
+        for overlay in overlays:
+            if not isinstance(overlay, dict):
+                continue
+            relative_path = _safe_file_path(str(overlay.get("file_path") or ""))
+            status = str(overlay.get("status") or "active")
+            if status == "deleted":
+                by_path.pop(relative_path, None)
+                continue
+            if status != "active":
+                continue
+            content = _decode_skill_file_content(
+                str(overlay.get("content_base64") or ""),
+                invalid_detail="skill_file_overlay_invalid",
+            )
+            by_path[relative_path] = SkillFileProjection(
+                path=relative_path,
+                content=content,
+                size=int(overlay.get("size_bytes") or len(content)),
+            )
+        projected = list(by_path.values())
     return sorted(projected, key=lambda item: item.path)
 
 
@@ -251,6 +283,45 @@ async def _catalog_rows(*, tenant_id: str, include_disabled: bool) -> list[dict[
         )
 
 
+def _attach_user_file_overlays(
+    rows: list[dict[str, Any]],
+    overlays: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    by_skill: dict[str, list[dict[str, Any]]] = {}
+    for overlay in overlays:
+        skill_id = str(overlay.get("skill_id") or "")
+        if skill_id:
+            by_skill.setdefault(skill_id, []).append(dict(overlay))
+    projected: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["user_file_overlays"] = by_skill.get(str(item.get("skill_id") or ""), [])
+        projected.append(item)
+    return projected
+
+
+async def _public_catalog_rows(
+    *,
+    principal: AuthPrincipal,
+    include_disabled: bool,
+    include_file_overlay_content: bool = False,
+) -> list[dict[str, Any]]:
+    async with transaction() as conn:
+        rows = await repositories.list_public_skill_catalog(
+            conn,
+            tenant_id=principal.tenant_id,
+            include_disabled=include_disabled,
+        )
+        overlays = await repositories.list_user_skill_file_overlays(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            skill_ids=[str(row.get("skill_id") or "") for row in rows],
+            include_content=include_file_overlay_content,
+        )
+    return _attach_user_file_overlays(rows, overlays)
+
+
 def _find_row(rows: list[dict[str, Any]], *, skill_name: str) -> dict[str, Any]:
     for row in rows:
         if str(row.get("skill_id") or "") == skill_name:
@@ -320,7 +391,7 @@ async def list_skills(
     """List tenant-visible Skills for the authenticated frontend shell."""
 
     _require_permission(principal, "skill:read")
-    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=True)
+    rows = await _public_catalog_rows(principal=principal, include_disabled=True)
     filtered = _filter_rows(rows, query=q, tags=tags)
     page = filtered[skip : skip + limit]
     return PublicSkillsResponse(
@@ -436,7 +507,7 @@ async def get_skill(
 
     _require_permission(principal, "skill:read")
     safe_skill_name = _safe_skill_name(skill_name)
-    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=True)
+    rows = await _public_catalog_rows(principal=principal, include_disabled=True)
     return _skill_detail(_find_row(rows, skill_name=safe_skill_name))
 
 
@@ -450,42 +521,125 @@ async def get_skill_file(
 
     _require_permission(principal, "skill:read")
     safe_skill_name = _safe_skill_name(skill_name)
-    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=True)
+    rows = await _public_catalog_rows(
+        principal=principal,
+        include_disabled=True,
+        include_file_overlay_content=True,
+    )
     return _file_response(_find_row(rows, skill_name=safe_skill_name), file_path=file_path)
 
 
-@router.put("/skills/{skill_name}/files/{file_path:path}")
+@router.put("/skills/{skill_name}/files/{file_path:path}", response_model=PublicSkillFileMutationResponse)
 async def update_skill_file(
     skill_name: str,
     file_path: str,
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
-) -> dict[str, str]:
-    """Fail closed for file writes until user skill storage is backed."""
+) -> PublicSkillFileMutationResponse:
+    """Persist a tenant/user scoped public Skill file overlay."""
 
     _require_permission(principal, "skill:write")
-    _safe_skill_name(skill_name)
-    _safe_file_path(file_path)
+    safe_skill_name = _safe_skill_name(skill_name)
+    safe_file_path = _safe_file_path(file_path)
     if payload is None:
         raise HTTPException(status_code=400, detail="skill_file_content_required")
     request = _request_model(PublicSkillFileUpdateRequest, payload)
     if request.content is None:
         raise HTTPException(status_code=400, detail="skill_file_content_required")
-    raise HTTPException(status_code=409, detail="skill_file_write_contract_not_backed")
+    content = request.content.encode("utf-8")
+    max_bytes = int(get_settings().public_skill_file_overlay_max_bytes)
+    if max_bytes > 0 and len(content) > max_bytes:
+        raise HTTPException(status_code=413, detail="skill_file_too_large")
+    encoded = base64.b64encode(content).decode("ascii")
+    async with transaction() as conn:
+        rows = await repositories.list_public_skill_catalog(
+            conn,
+            tenant_id=principal.tenant_id,
+            include_disabled=True,
+        )
+        _find_row(rows, skill_name=safe_skill_name)
+        await repositories.ensure_user(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            display_name=principal.display_name,
+        )
+        saved = await repositories.upsert_user_skill_file(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            skill_id=safe_skill_name,
+            file_path=safe_file_path,
+            content_base64=encoded,
+            size_bytes=len(content),
+        )
+        await repositories.append_audit_log(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            action="skill.public.file_upsert",
+            target_type="skill",
+            target_id=safe_skill_name,
+            payload_json={
+                "file_path": safe_file_path,
+                "size_bytes": int(saved.get("size_bytes") or len(content)),
+                "department_id": principal.department_id,
+            },
+        )
+    return PublicSkillFileMutationResponse(
+        skill_name=safe_skill_name,
+        file_path=safe_file_path,
+        message="Skill file saved",
+        size=int(saved.get("size_bytes") or len(content)),
+    )
 
 
-@router.delete("/skills/{skill_name}/files/{file_path:path}")
+@router.delete("/skills/{skill_name}/files/{file_path:path}", response_model=PublicSkillFileMutationResponse)
 async def delete_skill_file(
     skill_name: str,
     file_path: str,
     principal: AuthPrincipal = Depends(require_principal),
-) -> dict[str, str]:
-    """Fail closed for file deletes until user skill storage is backed."""
+) -> PublicSkillFileMutationResponse:
+    """Persist a tenant/user scoped public Skill file deletion tombstone."""
 
     _require_permission(principal, "skill:delete")
-    _safe_skill_name(skill_name)
-    _safe_file_path(file_path)
-    raise HTTPException(status_code=409, detail="skill_file_delete_contract_not_backed")
+    safe_skill_name = _safe_skill_name(skill_name)
+    safe_file_path = _safe_file_path(file_path)
+    async with transaction() as conn:
+        rows = await repositories.list_public_skill_catalog(
+            conn,
+            tenant_id=principal.tenant_id,
+            include_disabled=True,
+        )
+        _find_row(rows, skill_name=safe_skill_name)
+        await repositories.ensure_user(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            display_name=principal.display_name,
+        )
+        await repositories.delete_user_skill_file(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            skill_id=safe_skill_name,
+            file_path=safe_file_path,
+        )
+        await repositories.append_audit_log(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            action="skill.public.file_delete",
+            target_type="skill",
+            target_id=safe_skill_name,
+            payload_json={"file_path": safe_file_path, "department_id": principal.department_id},
+        )
+    return PublicSkillFileMutationResponse(
+        skill_name=safe_skill_name,
+        file_path=safe_file_path,
+        message="Skill file deleted",
+        size=None,
+    )
 
 
 @router.patch("/skills/{skill_name}/toggle", response_model=PublicSkillToggleResponse)
