@@ -15,6 +15,7 @@ from app.routes.context import router as context_router
 from app.routes.files import router as files_router
 from app.routes.health import router as health_router
 from app.routes.lambchat_compat import router as lambchat_compat_router
+from app.routes.mcp import router as mcp_router
 from app.routes.runtime_callbacks import router as runtime_callbacks_router
 from app.routes.runs import router as runs_router
 from app.routes.sandbox_leases import router as sandbox_leases_router
@@ -67,5 +68,6 @@ def create_app() -> FastAPI:
     app.include_router(admin_tool_policies_router, prefix="/api/ai")
     app.include_router(lambchat_compat_router, prefix="/api")
     app.include_router(skills_marketplace_router, prefix="/api")
+    app.include_router(mcp_router, prefix="/api")
     app.include_router(chat_router, prefix="/api")
     return app
