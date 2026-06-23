@@ -1,4 +1,5 @@
 import type { FrontendGovernanceState } from "../../governance/frontendGovernanceState";
+import type { GovernanceAvailabilityState } from "../../governance/groupAvailability";
 
 export type TabType =
   | "chat"
@@ -22,4 +23,10 @@ export interface RouteUnavailableConfig {
   description: string;
   surface: string;
   details?: string[];
+  capabilities?: Array<{
+    title: string;
+    description: string;
+    state: GovernanceAvailabilityState;
+    labelKey?: string;
+  }>;
 }

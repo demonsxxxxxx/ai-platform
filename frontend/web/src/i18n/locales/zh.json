@@ -2639,6 +2639,32 @@
     "subtitle": "查看当前工作台可用模型，管理写操作按治理策略保持关闭。",
     "title": "模型"
   },
+  "agentDirectory": {
+    "adminGovernance": "管理配置",
+    "adminGovernanceDescription": "角色分配、提示词编辑、模型绑定和工具治理需要后端管理员投影补齐后再开放。",
+    "directoryStats": "目录状态",
+    "directoryStatsDescription": "已发布 {{count}} 个 Agent。默认：{{defaultAgent}}。模型范围：{{models}}。",
+    "emptyDescription": "这里只展示后端公开投影返回的 Agent。管理员配置继续保持关闭。",
+    "forbidden": "Agent 目录受权限治理",
+    "forbiddenDescription": "当前账号还不能读取公开 Agent 投影。",
+    "loadFailed": "Agent 目录暂不可用",
+    "loading": "正在加载 Agent 目录",
+    "loadingDescription": "正在确认当前工作区的公开 Agent 投影。",
+    "modelScopeAll": "全部已批准模型",
+    "noAgents": "暂无已发布 Agent",
+    "noDescription": "未发布描述",
+    "noMatchingAgents": "没有匹配的 Agent",
+    "optionCount": "已发布 {{count}} 项",
+    "options": "选项",
+    "publicProjection": "公开投影",
+    "publicProjectionDescription": "本页面只读取 /api/agents，不暴露提示词、工具、角色分配或旧配置接口。",
+    "searchPlaceholder": "搜索 Agent",
+    "subtitle": "浏览公开投影中的已批准 Agent；配置写操作继续受治理。",
+    "title": "Agent",
+    "unavailable": "Agent 目录暂不可用",
+    "unavailableDescription": "公开 Agent 投影没有返回可用数据。聊天页会继续使用当前默认 Agent，管理控制保持关闭。",
+    "version": "版本"
+  },
   "workbench": {
     "cockpit": "Workbench",
     "commandDock": "输入框",
@@ -2678,45 +2704,90 @@
     "phaseTwo": {
       "users": {
         "capabilities": {
-          "audit": "用户审计、导入和停用流程需要后端提供可追溯的管理员投影。",
-          "directory": "公司用户目录会保留入口；当前不加载旧用户管理接口。",
-          "lifecycle": "创建、禁用、角色分配等写操作等待后端 RBAC 管理合同。"
+          "audit": {
+            "description": "用户审计、导入和停用流程需要后端提供可追溯的管理员投影。",
+            "title": "审计与导入"
+          },
+          "directory": {
+            "description": "公司用户目录会保留入口；当前不加载旧用户管理接口。",
+            "title": "公司用户目录"
+          },
+          "lifecycle": {
+            "description": "创建、禁用、角色分配等写操作等待后端 RBAC 管理合同。",
+            "title": "生命周期写操作"
+          }
         },
         "description": "用户目录是企业工作台能力，但当前后端尚未开放公司用户管理投影。前端保持入口可见，不暴露旧后台写接口。",
         "title": "公司用户管理尚未开放"
       },
       "settings": {
         "capabilities": {
-          "publicProfile": "个人偏好仍通过个人资料和公开设置读取。",
-          "runtime": "系统级运行配置等待管理员设置投影，不从旧 settings 页面读取。",
-          "secrets": "密钥、网关和环境变量不会在普通前端页面暴露。"
+          "publicProfile": {
+            "description": "个人偏好仍通过个人资料和公开设置读取。",
+            "title": "个人偏好"
+          },
+          "runtime": {
+            "description": "系统级运行配置等待管理员设置投影，不从旧 settings 页面读取。",
+            "title": "运行配置"
+          },
+          "secrets": {
+            "description": "密钥、网关和环境变量不会在普通前端页面暴露。",
+            "title": "密钥与网关"
+          }
         },
         "description": "系统设置需要管理员可审计投影。当前工作台只保留入口和状态，不展示旧管理表单。",
         "title": "系统设置投影尚未开放"
       },
       "feedback": {
         "capabilities": {
-          "audit": "处理记录和状态变更需要后端审计链路。",
-          "capture": "聊天消息级反馈仍保留在对话内；独立反馈台等待后端汇总投影。",
-          "triage": "分派、关闭和标签治理不从旧反馈后台读取。"
+          "audit": {
+            "description": "处理记录和状态变更需要后端审计链路。",
+            "title": "处理审计"
+          },
+          "capture": {
+            "description": "聊天消息级反馈仍保留在对话内；独立反馈台等待后端汇总投影。",
+            "title": "消息反馈采集"
+          },
+          "triage": {
+            "description": "分派、关闭和标签治理不从旧反馈后台读取。",
+            "title": "分派处理"
+          }
         },
         "description": "反馈入口会成为统一处理台；当前后端还没有可用于登录后工作台的汇总与分派合同。",
         "title": "反馈处理台尚未开放"
       },
       "agents": {
         "capabilities": {
-          "adminProjection": "系统提示词、工具和模型绑定写操作等待管理员投影。",
-          "publicSelection": "聊天页仍使用当前可选 Agent；这里不加载旧配置后台。",
-          "roleAssignment": "按角色分配 Agent 的治理能力需要后端 RBAC 合同。"
+          "adminProjection": {
+            "description": "系统提示词、工具和模型绑定写操作等待管理员投影。",
+            "title": "管理员投影"
+          },
+          "publicSelection": {
+            "description": "聊天页仍使用当前可选 Agent；这里不加载旧配置后台。",
+            "title": "公开 Agent 选择"
+          },
+          "roleAssignment": {
+            "description": "按角色分配 Agent 的治理能力需要后端 RBAC 合同。",
+            "title": "角色分配"
+          }
         },
         "description": "Agent 管理需要角色、模型和工具治理联动。当前只保留入口，不展示旧配置页。",
         "title": "Agent 管理尚未开放"
       },
       "notifications": {
         "capabilities": {
-          "admin": "公告创建、定向和失效需要管理员通知投影。",
-          "banner": "运行时通知仍通过当前消息/对话提示展示。",
-          "inbox": "统一通知收件箱等待后端读状态和范围合同。"
+          "admin": {
+            "description": "公告创建、定向和失效需要管理员通知投影。",
+            "title": "公告管理"
+          },
+          "banner": {
+            "description": "运行时通知仍通过当前消息/对话提示展示。",
+            "title": "运行时提示"
+          },
+          "inbox": {
+            "description": "统一通知收件箱等待后端读状态和范围合同。",
+            "title": "统一收件箱"
+          }
         },
         "description": "通知公告需要可审计的发布、范围和已读状态合同。当前工作台保留入口但不加载旧公告后台。",
         "title": "通知公告管理尚未开放"

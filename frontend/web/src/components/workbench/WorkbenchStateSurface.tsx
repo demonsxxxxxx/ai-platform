@@ -9,7 +9,9 @@ import {
   WifiOff,
   Dot,
 } from "lucide-react";
+import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
 import type { FrontendGovernanceState } from "../governance/frontendGovernanceState";
+import type { GovernanceAvailabilityState } from "../governance/groupAvailability";
 import { workbenchSurface } from "./workbenchSurface";
 
 const stateIcons: Record<FrontendGovernanceState, ElementType> = {
@@ -51,6 +53,14 @@ const stateCopyKeys: Record<
   },
 };
 
+const availabilityLabelKeys: Record<GovernanceAvailabilityState, string> = {
+  enabled: "governance.enabled",
+  disabled: "governance.disabled",
+  inherited: "governance.inherited",
+  "admin-only": "governance.adminOnly",
+  unavailable: "governance.unavailable",
+};
+
 export interface WorkbenchStateSurfaceProps {
   state: FrontendGovernanceState;
   title?: string;
@@ -59,6 +69,12 @@ export interface WorkbenchStateSurfaceProps {
   surface: string;
   actions?: ReactNode;
   details?: string[];
+  capabilities?: Array<{
+    title: string;
+    description: string;
+    state: GovernanceAvailabilityState;
+    labelKey?: string;
+  }>;
   className?: string;
 }
 
@@ -70,6 +86,7 @@ export function WorkbenchStateSurface({
   surface,
   actions,
   details,
+  capabilities,
   className = "",
 }: WorkbenchStateSurfaceProps) {
   const { t } = useTranslation();
@@ -110,6 +127,34 @@ export function WorkbenchStateSurface({
                 className="mt-0.5 shrink-0 text-slate-400 dark:text-stone-500"
               />
               <span>{detail}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {capabilities && capabilities.length > 0 ? (
+        <div className="mx-auto mt-5 grid max-w-lg gap-2 text-left">
+          {capabilities.map((capability) => (
+            <div
+              key={capability.title}
+              data-workbench-state-capability
+              className="flex flex-col gap-3 rounded-lg bg-[var(--theme-bg-sidebar)] px-3 py-3 text-xs leading-5 text-slate-600 ring-1 ring-[var(--theme-border)] dark:bg-stone-950/70 dark:text-stone-300 dark:ring-stone-800 sm:flex-row sm:items-start sm:justify-between"
+            >
+              <div className="min-w-0">
+                <h2 className="text-sm font-semibold text-slate-800 dark:text-stone-100">
+                  {capability.title}
+                </h2>
+                <p className="mt-1 leading-5 text-slate-500 dark:text-stone-400">
+                  {capability.description}
+                </p>
+              </div>
+              <div className="shrink-0">
+                <GovernanceAvailabilityBadge
+                  state={capability.state}
+                  labelKey={
+                    capability.labelKey ?? availabilityLabelKeys[capability.state]
+                  }
+                />
+              </div>
             </div>
           ))}
         </div>

@@ -85,7 +85,6 @@ test("phase 1C discovery routes are login reachable and fail closed inside pages
     ["/users", "UsersPage"],
     ["/settings", "SettingsPage"],
     ["/feedback", "FeedbackPage"],
-    ["/agents", "AgentsPage"],
     ["/notifications", "NotificationsPage"],
   ]) {
     const phaseTwoRoutePattern = new RegExp(
@@ -406,22 +405,74 @@ test("model catalog route is a governed public-projection workbench page", () =>
 
 test("phase 2 workbench pages render concrete capability status instead of a thin placeholder", () => {
   const app = readFileSync(join(root, "src/App.tsx"), "utf8");
+  const tabs = readFileSync(
+    join(root, "src/components/layout/AppContent/TabContent.tsx"),
+    "utf8",
+  );
   const stateSurface = readFileSync(
     join(root, "src/components/workbench/WorkbenchStateSurface.tsx"),
     "utf8",
   );
 
   assert.match(app, /const phaseTwoWorkbenchConfigs/);
-  for (const tab of ["users", "settings", "feedback", "agents", "notifications"]) {
+  for (const tab of ["users", "settings", "feedback", "notifications"]) {
     assert.match(app, new RegExp(`${tab}:[\\s\\S]{0,420}capabilities:`));
-    assert.match(app, new RegExp(`activeTab="${tab}"[\\s\\S]{0,220}config=\\{phaseTwoWorkbenchConfigs\\.${tab}\\}`));
+    assert.match(
+      app,
+      new RegExp(
+        `activeTab="${tab}"[\\s\\S]{0,220}config=\\{phaseTwoWorkbenchConfigs\\.${tab}\\}`,
+      ),
+    );
   }
+  assert.match(tabs, /const AgentDirectoryPanel = lazy/);
+  assert.match(tabs, /agents:\s*AgentDirectoryPanel/);
+  assert.doesNotMatch(app, /agents:[\s\S]{0,420}titleKey:\s*"workbench\.phaseTwo\.agents\.title"/);
   assert.match(stateSurface, /details\?:/);
   assert.match(stateSurface, /data-workbench-state-detail/);
+  assert.match(stateSurface, /capabilities\?:/);
+  assert.match(stateSurface, /GovernanceAvailabilityBadge/);
+  assert.match(stateSurface, /data-workbench-state-capability/);
   assert.doesNotMatch(
     app,
     /公司用户、系统设置、反馈、通知和 Agent 管理仍等待对应服务能力开放/,
   );
+});
+
+test("agents route uses a public read-only directory instead of legacy config admin APIs", () => {
+  const app = readFileSync(join(root, "src/App.tsx"), "utf8");
+  const tabs = readFileSync(
+    join(root, "src/components/layout/AppContent/TabContent.tsx"),
+    "utf8",
+  );
+  const directory = readFileSync(
+    join(root, "src/components/panels/AgentDirectoryPanel.tsx"),
+    "utf8",
+  );
+
+  assert.match(
+    app,
+    /path="\/agents"[\s\S]{0,260}<ProtectedRoute>[\s\S]{0,220}<AgentsPage \/>[\s\S]{0,120}<\/ProtectedRoute>/,
+  );
+  assert.match(app, /function AgentsPage\(\)[\s\S]{0,260}<AppContent key="agents" activeTab="agents" \/>/);
+  assert.match(tabs, /agents:\s*AgentDirectoryPanel/);
+  assert.match(directory, /data-agent-directory-shell/);
+  assert.match(directory, /agentApi\.list\(\)/);
+  assert.match(directory, /WorkbenchStateSurface/);
+  assert.match(directory, /data-frontend-governance-state/);
+  assert.doesNotMatch(directory, /agentConfigApi|roleApi|\/api\/agent\/config|Permission\.AGENT_ADMIN/);
+});
+
+test("launchpad navigation is overflow safe on narrow authenticated viewports", () => {
+  const launchpad = readFileSync(
+    join(root, "src/components/launchpad/LaunchpadPanel.tsx"),
+    "utf8",
+  );
+
+  assert.match(launchpad, /data-launchpad-tab-strip/);
+  assert.match(launchpad, /overflow-x-auto/);
+  assert.match(launchpad, /shrink-0/);
+  assert.match(launchpad, /min-w-\[/);
+  assert.doesNotMatch(launchpad, /whitespace-nowrap[\s\S]{0,120}overflow-visible/);
 });
 
 test("frontend governance state machine exposes every authenticated page state", () => {

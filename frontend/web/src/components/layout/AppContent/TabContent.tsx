@@ -33,6 +33,11 @@ const MemoryPanel = lazy(() =>
     default: m.MemoryPanel,
   })),
 );
+const AgentDirectoryPanel = lazy(() =>
+  import("../../panels/AgentDirectoryPanel").then((m) => ({
+    default: m.AgentDirectoryPanel,
+  })),
+);
 const LaunchpadPanel = lazy(() =>
   import("../../launchpad").then((m) => ({
     default: m.LaunchpadPanel,
@@ -49,6 +54,7 @@ const panelMap: Record<
   roles: RolesPanel,
   mcp: MCPPanel,
   channels: ChannelImportPanel,
+  agents: AgentDirectoryPanel,
   models: ModelCatalogPanel,
   memory: MemoryPanel,
 };
@@ -87,6 +93,7 @@ export function TabContent({
             description={routeUnavailable.description}
             surface={routeUnavailable.surface}
             details={routeUnavailable.details}
+            capabilities={routeUnavailable.capabilities}
           />
         </div>
       </main>

@@ -24,6 +24,7 @@ import { APP_TOASTER_CLASS_NAME } from "./components/layout/AppContent/appToastL
 import { useAuth } from "./hooks/useAuth";
 import type { TabType } from "./components/layout/AppContent/types";
 import type { FrontendGovernanceState } from "./components/governance/frontendGovernanceState";
+import type { GovernanceAvailabilityState } from "./components/governance/groupAvailability";
 
 const SharedPage = lazy(() =>
   import("./components/share/SharedPage").then((m) => ({
@@ -69,13 +70,20 @@ const NotFoundPage = lazy(() =>
   })),
 );
 
-type PhaseTwoTab = "users" | "settings" | "feedback" | "agents" | "notifications";
+type PhaseTwoTab = "users" | "settings" | "feedback" | "notifications";
+
+interface PhaseTwoCapabilityConfig {
+  titleKey: string;
+  descriptionKey: string;
+  state: GovernanceAvailabilityState;
+  labelKey?: string;
+}
 
 interface PhaseTwoWorkbenchConfig {
   state: FrontendGovernanceState;
   titleKey: string;
   descriptionKey: string;
-  capabilities: string[];
+  capabilities: PhaseTwoCapabilityConfig[];
 }
 
 const phaseTwoWorkbenchConfigs: Record<PhaseTwoTab, PhaseTwoWorkbenchConfig> = {
@@ -84,9 +92,21 @@ const phaseTwoWorkbenchConfigs: Record<PhaseTwoTab, PhaseTwoWorkbenchConfig> = {
     titleKey: "workbench.phaseTwo.users.title",
     descriptionKey: "workbench.phaseTwo.users.description",
     capabilities: [
-      "workbench.phaseTwo.users.capabilities.directory",
-      "workbench.phaseTwo.users.capabilities.lifecycle",
-      "workbench.phaseTwo.users.capabilities.audit",
+      {
+        titleKey: "workbench.phaseTwo.users.capabilities.directory.title",
+        descriptionKey: "workbench.phaseTwo.users.capabilities.directory.description",
+        state: "unavailable",
+      },
+      {
+        titleKey: "workbench.phaseTwo.users.capabilities.lifecycle.title",
+        descriptionKey: "workbench.phaseTwo.users.capabilities.lifecycle.description",
+        state: "unavailable",
+      },
+      {
+        titleKey: "workbench.phaseTwo.users.capabilities.audit.title",
+        descriptionKey: "workbench.phaseTwo.users.capabilities.audit.description",
+        state: "unavailable",
+      },
     ],
   },
   settings: {
@@ -94,9 +114,22 @@ const phaseTwoWorkbenchConfigs: Record<PhaseTwoTab, PhaseTwoWorkbenchConfig> = {
     titleKey: "workbench.phaseTwo.settings.title",
     descriptionKey: "workbench.phaseTwo.settings.description",
     capabilities: [
-      "workbench.phaseTwo.settings.capabilities.publicProfile",
-      "workbench.phaseTwo.settings.capabilities.runtime",
-      "workbench.phaseTwo.settings.capabilities.secrets",
+      {
+        titleKey: "workbench.phaseTwo.settings.capabilities.publicProfile.title",
+        descriptionKey:
+          "workbench.phaseTwo.settings.capabilities.publicProfile.description",
+        state: "enabled",
+      },
+      {
+        titleKey: "workbench.phaseTwo.settings.capabilities.runtime.title",
+        descriptionKey: "workbench.phaseTwo.settings.capabilities.runtime.description",
+        state: "unavailable",
+      },
+      {
+        titleKey: "workbench.phaseTwo.settings.capabilities.secrets.title",
+        descriptionKey: "workbench.phaseTwo.settings.capabilities.secrets.description",
+        state: "unavailable",
+      },
     ],
   },
   feedback: {
@@ -104,19 +137,21 @@ const phaseTwoWorkbenchConfigs: Record<PhaseTwoTab, PhaseTwoWorkbenchConfig> = {
     titleKey: "workbench.phaseTwo.feedback.title",
     descriptionKey: "workbench.phaseTwo.feedback.description",
     capabilities: [
-      "workbench.phaseTwo.feedback.capabilities.capture",
-      "workbench.phaseTwo.feedback.capabilities.triage",
-      "workbench.phaseTwo.feedback.capabilities.audit",
-    ],
-  },
-  agents: {
-    state: "degraded",
-    titleKey: "workbench.phaseTwo.agents.title",
-    descriptionKey: "workbench.phaseTwo.agents.description",
-    capabilities: [
-      "workbench.phaseTwo.agents.capabilities.publicSelection",
-      "workbench.phaseTwo.agents.capabilities.roleAssignment",
-      "workbench.phaseTwo.agents.capabilities.adminProjection",
+      {
+        titleKey: "workbench.phaseTwo.feedback.capabilities.capture.title",
+        descriptionKey: "workbench.phaseTwo.feedback.capabilities.capture.description",
+        state: "enabled",
+      },
+      {
+        titleKey: "workbench.phaseTwo.feedback.capabilities.triage.title",
+        descriptionKey: "workbench.phaseTwo.feedback.capabilities.triage.description",
+        state: "unavailable",
+      },
+      {
+        titleKey: "workbench.phaseTwo.feedback.capabilities.audit.title",
+        descriptionKey: "workbench.phaseTwo.feedback.capabilities.audit.description",
+        state: "unavailable",
+      },
     ],
   },
   notifications: {
@@ -124,9 +159,24 @@ const phaseTwoWorkbenchConfigs: Record<PhaseTwoTab, PhaseTwoWorkbenchConfig> = {
     titleKey: "workbench.phaseTwo.notifications.title",
     descriptionKey: "workbench.phaseTwo.notifications.description",
     capabilities: [
-      "workbench.phaseTwo.notifications.capabilities.banner",
-      "workbench.phaseTwo.notifications.capabilities.inbox",
-      "workbench.phaseTwo.notifications.capabilities.admin",
+      {
+        titleKey: "workbench.phaseTwo.notifications.capabilities.banner.title",
+        descriptionKey:
+          "workbench.phaseTwo.notifications.capabilities.banner.description",
+        state: "enabled",
+      },
+      {
+        titleKey: "workbench.phaseTwo.notifications.capabilities.inbox.title",
+        descriptionKey:
+          "workbench.phaseTwo.notifications.capabilities.inbox.description",
+        state: "unavailable",
+      },
+      {
+        titleKey: "workbench.phaseTwo.notifications.capabilities.admin.title",
+        descriptionKey:
+          "workbench.phaseTwo.notifications.capabilities.admin.description",
+        state: "unavailable",
+      },
     ],
   },
 };
@@ -333,12 +383,7 @@ function AgentsPage() {
     description: "seo.agents.description",
     path: "/agents",
   });
-  return (
-    <PhaseTwoWorkbenchPage
-      activeTab="agents"
-      config={phaseTwoWorkbenchConfigs.agents}
-    />
-  );
+  return <AppContent key="agents" activeTab="agents" />;
 }
 
 function ModelsPage() {
@@ -418,7 +463,12 @@ function PhaseTwoWorkbenchPage({
         title: t(config.titleKey),
         description: t(config.descriptionKey),
         surface: `${activeTab}-phase2-backend-projection`,
-        details: config.capabilities.map((key) => t(key)),
+        capabilities: config.capabilities.map((capability) => ({
+          title: t(capability.titleKey),
+          description: t(capability.descriptionKey),
+          state: capability.state,
+          labelKey: capability.labelKey,
+        })),
       }}
     />
   );

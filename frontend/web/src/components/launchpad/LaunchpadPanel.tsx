@@ -95,25 +95,32 @@ export function LaunchpadPanel() {
             </p>
           </div>
 
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <div className={`inline-flex p-1 ${workbenchSurface.compactPanel}`}>
-              {launchpadTabs.map((tab) => (
-                <button
-                  key={tab.key}
-                  type="button"
-                  onClick={() => {
-                    setActiveTab(tab.key);
-                    setQuery("");
-                  }}
-                  className={`h-9 rounded-md px-4 text-sm font-medium transition-colors ${
-                    activeTab === tab.key
-                      ? "bg-slate-900 text-white dark:bg-stone-100 dark:text-stone-900"
-                      : "text-slate-600 hover:bg-[var(--theme-bg-sidebar)] dark:text-stone-300 dark:hover:bg-stone-800"
-                  }`}
-                >
-                  {t(`launchpad.tabs.${tab.key}`, tab.label)}
-                </button>
-              ))}
+          <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+            <div
+              data-launchpad-tab-strip
+              className="min-w-0 overflow-x-auto pb-1 sm:pb-0"
+            >
+              <div
+                className={`inline-flex min-w-max p-1 ${workbenchSurface.compactPanel}`}
+              >
+                {launchpadTabs.map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => {
+                      setActiveTab(tab.key);
+                      setQuery("");
+                    }}
+                    className={`h-9 min-w-[6.75rem] shrink-0 rounded-md px-4 text-sm font-medium transition-colors ${
+                      activeTab === tab.key
+                        ? "bg-slate-900 text-white dark:bg-stone-100 dark:text-stone-900"
+                        : "text-slate-600 hover:bg-[var(--theme-bg-sidebar)] dark:text-stone-300 dark:hover:bg-stone-800"
+                    }`}
+                  >
+                    {t(`launchpad.tabs.${tab.key}`, tab.label)}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <label className="relative block w-full sm:w-80">
