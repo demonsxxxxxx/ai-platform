@@ -71,7 +71,7 @@ def github_repo_archive_url(repo_url: str, branch: str) -> tuple[str, str, str]:
         raise GitHubImportError(400, "github_import_repo_url_unsupported")
     safe_branch = _safe_branch_path(branch.strip() or "main")
     normalized_repo_url = f"https://github.com/{owner}/{repo}"
-    archive_url = f"{normalized_repo_url}/archive/refs/heads/{safe_branch}.zip"
+    archive_url = f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/{safe_branch}"
     return normalized_repo_url, archive_url, safe_branch
 
 

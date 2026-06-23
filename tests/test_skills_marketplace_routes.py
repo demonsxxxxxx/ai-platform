@@ -809,7 +809,7 @@ def test_public_skill_github_preview_uses_archive_without_persistence(monkeypatc
             }
         ],
     }
-    assert downloads == ["https://github.com/example/skills/archive/refs/heads/feature-branch.zip"]
+    assert downloads == ["https://codeload.github.com/example/skills/zip/refs/heads/feature-branch"]
     assert not any(name == "upsert_file" for name, _ in calls)
     assert not any(name == "audit" for name, _ in calls)
 
@@ -855,7 +855,7 @@ def test_public_skill_github_preview_falls_back_to_api_when_archive_unavailable(
             }
         ],
     }
-    assert archive_attempts == ["https://github.com/example/skills/archive/refs/heads/feature-branch.zip"]
+    assert archive_attempts == ["https://codeload.github.com/example/skills/zip/refs/heads/feature-branch"]
     assert api_attempts == [("https://github.com/example/skills", "feature-branch")]
     assert not any(name == "upsert_file" for name, _ in calls)
     assert not any(name == "audit" for name, _ in calls)

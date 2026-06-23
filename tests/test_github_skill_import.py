@@ -30,7 +30,7 @@ def test_github_repo_archive_url_accepts_public_repo_and_branch_path():
     repo_url, archive_url, branch = github_repo_archive_url("https://github.com/example/skills", "feature/imports")
 
     assert repo_url == "https://github.com/example/skills"
-    assert archive_url == "https://github.com/example/skills/archive/refs/heads/feature/imports.zip"
+    assert archive_url == "https://codeload.github.com/example/skills/zip/refs/heads/feature/imports"
     assert branch == "feature/imports"
 
 
