@@ -228,6 +228,7 @@ test("shared workbench support surfaces use enterprise tokens instead of legacy 
 test("governed marketplace and MCP hooks fail closed before calling APIs", () => {
   const marketplaceHook = read("src/hooks/useMarketplace.ts");
   const mcpHook = read("src/hooks/useMcp.ts");
+  const toolsHook = read("src/hooks/useTools.ts");
   const skillsHook = read("src/hooks/useSkills.ts");
   const skillsList = read("src/components/panels/SkillsPanel/SkillsList.tsx");
   const skillCard = read("src/components/skill/SkillCard.tsx");
@@ -303,6 +304,16 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
     "toggleAll must guard hook-level enabled before using target state",
   );
   assert.match(skillsHook, /effectivePermissions/);
+  assert.match(toolsHook, /mcpApi\.list\(/);
+  assert.match(toolsHook, /mcpApi\.discoverTools\(/);
+  assert.match(
+    toolsHook,
+    /server\.enabled && !tool\.system_disabled && !tool\.user_disabled/,
+  );
+  assert.doesNotMatch(
+    toolsHook,
+    /void agentIdRef\.current;\s*setTools\(\[\]\);/,
+  );
   assert.match(skillsList, /canImportSkills/);
   assert.match(skillsList, /canEditSkills/);
   assert.match(skillsList, /canCreateSkills/);

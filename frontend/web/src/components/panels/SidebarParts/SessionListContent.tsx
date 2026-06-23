@@ -5,8 +5,9 @@ import {
   FolderPlus,
   MessageSquarePlus,
   LayoutGrid,
+  Package,
+  ShoppingBag,
   Server,
-  Sparkles,
   Bot,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -178,11 +179,19 @@ export function SessionListContent({
         </button>
 
         <button
+          onClick={() => navigate("/skills")}
+          className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+        >
+          <Package size={20} />
+          <span>{t("nav.skills")}</span>
+        </button>
+
+        <button
           onClick={() => navigate("/marketplace")}
           className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
         >
-          <Sparkles size={20} />
-          <span>{t("featureMenu.skillsMarketplace")}</span>
+          <ShoppingBag size={20} />
+          <span>{t("nav.marketplace")}</span>
         </button>
 
         <button

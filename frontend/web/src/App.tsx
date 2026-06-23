@@ -9,7 +9,7 @@ import {
 import { Toaster } from "react-hot-toast";
 import { useTranslation } from "react-i18next";
 import { ProtectedRoute } from "./components/auth/ProtectedRoute";
-import { ChatPageSkeleton, FilesPageSkeleton } from "./components/skeletons";
+import { ChatPageSkeleton } from "./components/skeletons";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { ErrorBoundary } from "./components/common/ErrorBoundary";
 import { SelectionActionPopover } from "./components/common/SelectionActionPopover";
@@ -267,15 +267,6 @@ function ModelsPage() {
   return <AppContent key="models" activeTab="models" />;
 }
 
-function FilesPage() {
-  useSEO({
-    title: "seo.files.title",
-    description: "seo.files.description",
-    path: "/files",
-  });
-  return <AppContent key="files" activeTab="files" />;
-}
-
 function NotificationsPage() {
   useSEO({
     title: "seo.notifications.title",
@@ -530,8 +521,8 @@ function App() {
             <Route
               path="/files"
               element={
-                <ProtectedRoute loadingComponent={<FilesPageSkeleton />}>
-                  <FilesPage />
+                <ProtectedRoute>
+                  <Navigate to="/chat" replace />
                 </ProtectedRoute>
               }
             />

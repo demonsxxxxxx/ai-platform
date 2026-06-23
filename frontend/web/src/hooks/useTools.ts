@@ -1,6 +1,12 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { authenticatedRequest } from "../services/api/authenticatedRequest";
-import type { ToolState, ToolCategory } from "../types";
+import { mcpApi } from "../services/api/mcp";
+import type {
+  MCPServerResponse,
+  MCPToolInfo,
+  ToolState,
+  ToolCategory,
+} from "../types";
 
 const API_BASE = "/api";
 
@@ -10,6 +16,20 @@ export function useTools(options?: { enabled?: boolean }) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const agentIdRef = useRef<string | undefined>(undefined);
+
+  const mapMcpTool = useCallback(
+    (server: MCPServerResponse, tool: MCPToolInfo): ToolState => ({
+      name: `${server.name}:${tool.name}`,
+      description: tool.description,
+      category: "mcp",
+      server: server.name,
+      parameters: tool.parameters,
+      system_disabled: tool.system_disabled,
+      user_disabled: tool.user_disabled,
+      enabled: server.enabled && !tool.system_disabled && !tool.user_disabled,
+    }),
+    [],
+  );
 
   // 切换 MCP 工具的启用状态（调用 MCP API）
   const toggleMcpTool = useCallback(
@@ -49,13 +69,31 @@ export function useTools(options?: { enabled?: boolean }) {
     setError(null);
     try {
       void agentIdRef.current;
+      const serverResponse = await mcpApi.list();
+      const discovered = await Promise.all(
+        (serverResponse.servers ?? []).map(async (server) => {
+          try {
+            const toolResponse = await mcpApi.discoverTools(server.name);
+            return (toolResponse.tools ?? []).map((tool) =>
+              mapMcpTool(server, tool),
+            );
+          } catch (err) {
+            console.warn(
+              `[useTools] Failed to fetch MCP tools for ${server.name}:`,
+              err,
+            );
+            return [];
+          }
+        }),
+      );
+      setTools(discovered.flat());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch tools");
       setTools([]);
-    } catch {
-      setError("Failed to fetch tools");
     } finally {
       setIsLoading(false);
     }
-  }, [hookEnabled]);
+  }, [hookEnabled, mapMcpTool]);
 
   // 切换单个工具
   const toggleTool = useCallback(

@@ -52,6 +52,7 @@ test("phase one composer command names are active source concepts", () => {
 test("backend-missing phase one surfaces are explicit fail-closed states", () => {
   const serialized = [
     source("src/components/panels/SkillsHubPanel.tsx"),
+    source("src/components/panels/MarketplacePanel.tsx"),
     source("src/components/panels/MCPPanel.tsx"),
     source("src/components/channels/ChannelImportPanel.tsx"),
     source("src/components/share/ShareUnavailableState.tsx"),
@@ -71,6 +72,7 @@ test("active phase one source avoids forbidden visual and brand markers", () => 
     "src/components/chat/WelcomePage.tsx",
     "src/components/chat/ChatInput.tsx",
     "src/components/panels/SkillsHubPanel.tsx",
+    "src/components/panels/MarketplacePanel.tsx",
     "src/components/panels/MCPPanel.tsx",
     "src/components/launchpad/LaunchpadPanel.tsx",
   ];

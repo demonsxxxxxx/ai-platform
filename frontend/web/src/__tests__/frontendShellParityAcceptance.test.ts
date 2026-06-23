@@ -145,6 +145,7 @@ test("authenticated sidebar uses governed workbench entries instead of old plaza
     ),
   ].join("\n");
 
+  assert.match(sidebar, /navigate\("\/skills"\)/);
   assert.match(sidebar, /navigate\("\/marketplace"\)/);
   assert.match(sidebar, /navigate\("\/mcp"\)/);
   assert.match(sidebar, /navigate\("\/apps"\)/);
@@ -198,7 +199,7 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
   );
   assert.match(surface, /secondaryPanel:/);
   assert.match(rightPanel, /workbenchSurface\.secondaryPanel/);
-  assert.match(theme, /--theme-bg:\s*#eef2f6;/);
+  assert.match(theme, /--theme-bg:\s*#e8edf3;/);
   assert.match(theme, /--theme-bg-sidebar:\s*#e8edf3;/);
   assert.match(theme, /--theme-bg-card:\s*#ffffff;/);
   assert.match(authTheme, /html,\s*body\s*\{\s*background:\s*var\(--theme-bg\);/);
@@ -274,8 +275,11 @@ test("legacy persona plaza and more-menu pages are removed from the authenticate
   const zhLocale = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
 
   assert.match(app, /path="\/persona"[\s\S]{0,180}<Navigate to="\/marketplace" replace \/>/);
+  assert.match(app, /path="\/files"[\s\S]{0,180}<Navigate to="\/chat" replace \/>/);
   assert.doesNotMatch(activeGraph, /navigate\("\/persona"\)/);
+  assert.doesNotMatch(activeGraph, /navigate\("\/files"\)/);
   assert.doesNotMatch(activeGraph, /PersonaPlazaPanel|persona:\s*PersonaPlazaPanel/);
+  assert.doesNotMatch(tabs, /files:\s*RevealedFilesPage/);
   assert.doesNotMatch(activeGraph, /MobileMoreMenuSheet|DesktopMoreMenu/);
   assert.doesNotMatch(personaSelector, /角色广场/);
   assert.match(personaSelector, /bg-slate-950\/35/);
@@ -308,6 +312,7 @@ test("authenticated marketplace pages share the workbench surface tokens", () =>
 
   assert.match(skillsHub, /bg-\[var\(--theme-bg\)\]/);
   assert.match(marketplace, /bg-\[var\(--theme-bg\)\]/);
+  assert.match(marketplace, /data-marketplace-catalog-shell/);
   assert.match(marketplace, /data-frontend-governance-state/);
   assert.match(marketplace, /effectiveGovernedUnavailable/);
   assert.match(groupAvailability, /flex flex-col[\s\S]*sm:flex-row/);

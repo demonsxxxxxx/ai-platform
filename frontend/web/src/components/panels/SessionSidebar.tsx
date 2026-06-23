@@ -625,7 +625,8 @@ export const SessionSidebar = forwardRef<
             }}
             onOpenRecentChats={() => setIsRecentChatsOpen(true)}
             onOpenLaunchpad={() => navigate("/apps")}
-            onOpenSkills={() => navigate("/marketplace")}
+            onOpenSkills={() => navigate("/skills")}
+            onOpenMarketplace={() => navigate("/marketplace")}
             onOpenMcp={() => navigate("/mcp")}
             recentChatsBtnRef={recentChatsBtnRef}
             onShowProfile={onShowProfile!}

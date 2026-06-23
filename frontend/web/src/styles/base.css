@@ -117,9 +117,9 @@ select:-webkit-autofill:active {
   /* Enterprise workbench tokens */
   --theme-primary: #0f766e;
   --theme-primary-hover: #115e59;
-  --theme-primary-light: #e6edf3;
+  --theme-primary-light: #e1e8f0;
   --theme-ring: #0f766e;
-  --theme-bg: #eef2f6;
+  --theme-bg: #e8edf3;
   --theme-bg-card: #ffffff;
   --theme-bg-sidebar: #e8edf3;
   --theme-border: #e2e8f0;
@@ -294,7 +294,7 @@ html[data-mobile-keyboard="true"] #root {
   color: var(--theme-text-secondary);
 }
 .sidebar-nav-btn:hover {
-  background-color: #e9edf3;
+  background-color: #dde5ee;
   color: var(--theme-text);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
@@ -308,7 +308,7 @@ html[data-mobile-keyboard="true"] #root {
   color: var(--theme-text-secondary);
 }
 .sidebar-rail-btn:hover {
-  background-color: #e9edf3;
+  background-color: #dde5ee;
   color: var(--theme-text);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }

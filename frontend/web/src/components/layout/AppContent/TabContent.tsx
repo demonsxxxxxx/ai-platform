@@ -46,11 +46,6 @@ const ChannelImportPanel = lazy(() =>
     default: m.ChannelImportPanel,
   })),
 );
-const RevealedFilesPage = lazy(() =>
-  import("../../fileLibrary/RevealedFilesPanel").then((m) => ({
-    default: m.RevealedFilesPanel,
-  })),
-);
 const NotificationPanel = lazy(() =>
   import("../../panels/NotificationPanel").then((m) => ({
     default: m.NotificationPanel,
@@ -82,7 +77,6 @@ const panelMap: Record<
   channels: ChannelImportPanel,
   agents: AgentConfigPanel,
   models: ModelCatalogPanel,
-  files: RevealedFilesPage,
   notifications: NotificationPanel,
   memory: MemoryPanel,
 };

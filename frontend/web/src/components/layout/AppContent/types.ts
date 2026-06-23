@@ -13,7 +13,6 @@ export type TabType =
   | "channels"
   | "agents"
   | "models"
-  | "files"
   | "notifications"
   | "memory";
 
