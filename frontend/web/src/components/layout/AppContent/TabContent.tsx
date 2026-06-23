@@ -7,6 +7,11 @@ const SkillsHubPanel = lazy(() =>
     default: m.SkillsHubPanel,
   })),
 );
+const MarketplacePanel = lazy(() =>
+  import("../../panels/MarketplacePanel").then((m) => ({
+    default: m.MarketplacePanel,
+  })),
+);
 const UsersPanel = lazy(() =>
   import("../../panels/UsersPanel").then((m) => ({ default: m.UsersPanel })),
 );
@@ -68,7 +73,7 @@ const panelMap: Record<
 > = {
   apps: LaunchpadPanel,
   skills: SkillsHubPanel,
-  marketplace: SkillsHubPanel,
+  marketplace: MarketplacePanel,
   users: UsersPanel,
   roles: RolesPanel,
   settings: SettingsPanel,

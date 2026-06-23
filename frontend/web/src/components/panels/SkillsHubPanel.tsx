@@ -161,7 +161,7 @@ export function SkillsHubPanel() {
                 {t("skillsHub.composerEntry.description")}
               </p>
             </div>
-            <div className="flex shrink-0 items-center gap-1 rounded-lg border border-stone-200 bg-stone-50 p-1 text-[11px] font-semibold text-stone-600 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-300">
+            <div className="flex shrink-0 items-center gap-1 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] p-1 text-[11px] font-semibold text-stone-600 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-300">
               <span className="rounded-md bg-slate-100 px-2 py-1 shadow-sm dark:bg-stone-900">
                 /
               </span>

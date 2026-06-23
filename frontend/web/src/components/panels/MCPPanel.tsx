@@ -209,7 +209,7 @@ export function MCPPanel() {
                   </div>
 
                   <dl className="mt-4 grid grid-cols-3 gap-2 text-xs">
-                    <div className="rounded-md bg-stone-50 p-2 dark:bg-stone-950/50">
+                    <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2 dark:bg-stone-950/50">
                       <dt className="text-stone-400 dark:text-stone-500">
                         {t("mcp.permissionMode")}
                       </dt>
@@ -219,7 +219,7 @@ export function MCPPanel() {
                           : t("governance.disabled")}
                       </dd>
                     </div>
-                    <div className="rounded-md bg-stone-50 p-2 dark:bg-stone-950/50">
+                    <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2 dark:bg-stone-950/50">
                       <dt className="text-stone-400 dark:text-stone-500">
                         {t("mcp.card.roleCount", { count: roleCount })}
                       </dt>
@@ -227,7 +227,7 @@ export function MCPPanel() {
                         {roleCount || t("mcp.form.allRoles")}
                       </dd>
                     </div>
-                    <div className="rounded-md bg-stone-50 p-2 dark:bg-stone-950/50">
+                    <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2 dark:bg-stone-950/50">
                       <dt className="text-stone-400 dark:text-stone-500">
                         {t("mcp.card.roleQuotaCount")}
                       </dt>

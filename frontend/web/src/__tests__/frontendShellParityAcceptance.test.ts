@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -35,12 +35,21 @@ test("app routes expose PRD phase 1B and 1C surfaces", () => {
 
   assert.match(tabs, /apps:\s*LaunchpadPanel/);
   assert.match(tabs, /skills:\s*SkillsHubPanel/);
-  assert.match(tabs, /marketplace:\s*SkillsHubPanel/);
+  assert.match(tabs, /marketplace:\s*MarketplacePanel/);
   assert.match(tabs, /mcp:\s*MCPPanel/);
   assert.match(tabs, /channels:\s*ChannelImportPanel/);
   assert.match(tabs, /models:\s*ModelCatalogPanel/);
   assert.doesNotMatch(tabs, /models:\s*ModelPanel/);
   assert.doesNotMatch(tabs, /models:\s*QuarantinedLegacyPanel/);
+  assert.equal(
+    existsSync(
+      join(
+        root,
+        "src/components/layout/AppContent/QuarantinedLegacyPanel.tsx",
+      ),
+    ),
+    false,
+  );
 });
 
 test("phase 1C discovery routes are login reachable and fail closed inside pages", () => {
@@ -110,8 +119,28 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
     join(root, "src/components/workbench/workbenchSurface.ts"),
     "utf8",
   );
+  const chatView = readFileSync(
+    join(root, "src/components/layout/AppContent/ChatView.tsx"),
+    "utf8",
+  );
+  const chatAppContent = readFileSync(
+    join(root, "src/components/layout/AppContent/ChatAppContent.tsx"),
+    "utf8",
+  );
+  const runPlayback = readFileSync(
+    join(root, "src/components/layout/AppContent/RunPlaybackPanel.tsx"),
+    "utf8",
+  );
   const rightPanel = readFileSync(
     join(root, "src/components/workbench/WorkbenchRightPanel.tsx"),
+    "utf8",
+  );
+  const skillsHub = readFileSync(
+    join(root, "src/components/panels/SkillsHubPanel.tsx"),
+    "utf8",
+  );
+  const mcpPanel = readFileSync(
+    join(root, "src/components/panels/MCPPanel.tsx"),
     "utf8",
   );
   const theme = readFileSync(join(root, "src/styles/base.css"), "utf8");
@@ -135,6 +164,17 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
   assert.doesNotMatch(authTheme, /html,\s*body\s*\{\s*background:\s*#ffffff;/);
   assert.doesNotMatch(surface, /thread:[\s\S]{0,180}bg-white/);
   assert.doesNotMatch(surface, /context:[\s\S]{0,180}bg-white/);
+  for (const [name, source] of [
+    ["ChatView", chatView],
+    ["ChatAppContent", chatAppContent],
+    ["RunPlaybackPanel", runPlayback],
+    ["SkillsHubPanel", skillsHub],
+    ["MCPPanel", mcpPanel],
+  ] as const) {
+    assert.doesNotMatch(source, /bg-white(?:\/\d+)?/, name);
+    assert.doesNotMatch(source, /bg-stone-50(?!0)(?:\/\d+)?/, name);
+    assert.doesNotMatch(source, /shadow-xl|shadow-2xl/, name);
+  }
 });
 
 test("authenticated shell chrome avoids legacy playful branding accents", () => {
@@ -215,6 +255,8 @@ test("authenticated marketplace pages share the workbench surface tokens", () =>
 
   assert.match(skillsHub, /bg-\[var\(--theme-bg\)\]/);
   assert.match(marketplace, /bg-\[var\(--theme-bg\)\]/);
+  assert.match(marketplace, /data-frontend-governance-state/);
+  assert.match(marketplace, /effectiveGovernedUnavailable/);
   assert.match(groupAvailability, /flex flex-col[\s\S]*sm:flex-row/);
   assert.match(marketplaceCard, /versionLabel/);
   assert.match(marketplaceCard, /max-w-28 truncate/);

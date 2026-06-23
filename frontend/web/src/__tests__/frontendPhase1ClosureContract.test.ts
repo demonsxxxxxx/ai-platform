@@ -29,7 +29,7 @@ test("phase one closure routes are registered in the active app graph", () => {
 
   assert.match(tabs, /apps:\s*LaunchpadPanel/);
   assert.match(tabs, /skills:\s*SkillsHubPanel/);
-  assert.match(tabs, /marketplace:\s*SkillsHubPanel/);
+  assert.match(tabs, /marketplace:\s*MarketplacePanel/);
   assert.match(tabs, /mcp:\s*MCPPanel/);
   assert.match(tabs, /channels:\s*ChannelImportPanel/);
 });
