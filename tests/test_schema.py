@@ -298,6 +298,26 @@ def test_schema_declares_user_skill_files():
     assert "idx_user_skill_files_user_skill" in schema
 
 
+def test_schema_declares_mcp_server_lifecycle_registry_and_credentials():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "create table if not exists mcp_servers" in schema
+    assert "tenant_id text not null references tenants(id)" in schema
+    assert "name text not null" in schema
+    assert "transport text not null default 'streamable_http'" in schema
+    assert "endpoint_redacted text not null default ''" in schema
+    assert "credential_state text not null default 'not_configured'" in schema
+    assert "credential_fingerprint text not null default ''" in schema
+    assert "allowed_roles jsonb not null default '[]'::jsonb" in schema
+    assert "department_ids text[] not null default array[]::text[]" in schema
+    assert "unique(tenant_id, name)" in schema
+    assert "create table if not exists mcp_server_credentials" in schema
+    assert "server_name text not null" in schema
+    assert "metadata_json jsonb not null default '{}'::jsonb" in schema
+    assert "primary key (tenant_id, server_name)" in schema
+    assert "idx_mcp_servers_tenant_status" in schema
+
+
 def test_schema_seeds_builtin_skill_versions_without_exposing_internal_dependencies():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 

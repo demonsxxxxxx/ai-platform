@@ -1343,6 +1343,190 @@ async def test_upsert_admin_tool_policy_raises_for_missing_tool():
 
 
 @pytest.mark.asyncio
+async def test_list_mcp_server_registry_filters_by_tenant_department_and_redacts_private_fields():
+    class RegistryCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "tenant_id": "tenant-a",
+                    "name": "qa-mcp",
+                    "transport": "streamable_http",
+                    "endpoint_redacted": "https://mcp.example/sse",
+                    "status": "active",
+                    "is_system": False,
+                    "allowed_roles": ["qa"],
+                    "role_quotas_json": {"qa": {"daily_limit": 3}},
+                    "department_ids": ["qa"],
+                    "credential_state": "configured",
+                    "credential_metadata_json": {"header_names": ["Authorization"]},
+                    "credential_fingerprint": "secret-fingerprint",
+                    "created_at": "2026-06-23T00:00:00Z",
+                    "updated_at": "2026-06-23T00:00:00Z",
+                }
+            ]
+
+    class RegistryConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return RegistryCursor()
+
+    conn = RegistryConnection()
+
+    rows = await repositories.list_mcp_server_registry(
+        conn,
+        tenant_id="tenant-a",
+        department_id="qa",
+        include_disabled=False,
+    )
+
+    sql, params = conn.calls[0]
+    assert "from mcp_servers" in sql
+    assert "tenant_id = %s" in sql
+    assert "%s = any(department_ids)" in sql
+    assert "credential_fingerprint" not in rows[0]
+    assert "credential_metadata_json" not in rows[0]
+    assert rows == [
+        {
+            "tenant_id": "tenant-a",
+            "name": "qa-mcp",
+            "transport": "streamable_http",
+            "endpoint_redacted": "https://mcp.example/sse",
+            "status": "active",
+            "is_system": False,
+            "allowed_roles": ["qa"],
+            "role_quotas": {"qa": {"daily_limit": 3}},
+            "department_ids": ["qa"],
+            "credential_state": "configured",
+            "credential_metadata": {"header_names": ["Authorization"]},
+            "created_at": "2026-06-23T00:00:00Z",
+            "updated_at": "2026-06-23T00:00:00Z",
+        }
+    ]
+    assert params == ("tenant-a", "qa", False)
+
+
+@pytest.mark.asyncio
+async def test_upsert_mcp_server_registry_persists_only_redacted_endpoint_and_credential_fingerprint():
+    class RegistryCursor:
+        async def fetchone(self):
+            return {
+                "tenant_id": "tenant-a",
+                "name": "qa-mcp",
+                "transport": "streamable_http",
+                "endpoint_redacted": "https://mcp.example/sse",
+                "status": "active",
+                "is_system": False,
+                "allowed_roles": ["qa"],
+                "role_quotas_json": {},
+                "department_ids": ["qa"],
+                "credential_state": "configured",
+                "credential_metadata_json": {"header_names": ["Authorization"]},
+                "created_at": "2026-06-23T00:00:00Z",
+                "updated_at": "2026-06-23T00:00:00Z",
+            }
+
+    class RegistryConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return RegistryCursor()
+
+    conn = RegistryConnection()
+
+    row = await repositories.upsert_mcp_server_registry(
+        conn,
+        tenant_id="tenant-a",
+        name="qa-mcp",
+        transport="streamable_http",
+        enabled=True,
+        is_system=False,
+        endpoint_redacted="https://mcp.example/sse",
+        allowed_roles=["qa"],
+        role_quotas={},
+        department_ids=["qa"],
+        credential_state="configured",
+        credential_metadata={"header_names": ["Authorization"]},
+        credential_fingerprint="credential-sha",
+        updated_by="admin-a",
+    )
+
+    sql, params = conn.calls[0]
+    assert "insert into mcp_servers" in sql
+    assert "existing.is_system <> %s" in sql
+    assert "where mcp_servers.is_system = excluded.is_system returning *" in sql
+    assert "credential_fingerprint" in sql
+    assert "credential-sha" in params
+    assert params[:3] == ("tenant-a", "qa-mcp", False)
+    assert "raw-secret" not in str(params)
+    assert row["name"] == "qa-mcp"
+    assert row["credential_state"] == "configured"
+    assert "credential_fingerprint" not in row
+
+
+@pytest.mark.asyncio
+async def test_list_mcp_server_registry_names_excludes_deleted_registry_overrides():
+    class RegistryNamesCursor:
+        async def fetchall(self):
+            return [{"name": "ragflow"}, {"name": "custom"}]
+
+    class RegistryNamesConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return RegistryNamesCursor()
+
+    conn = RegistryNamesConnection()
+
+    names = await repositories.list_mcp_server_registry_names(conn, tenant_id="tenant-a")
+
+    assert names == ["ragflow", "custom"]
+    sql, params = conn.calls[0]
+    assert "status <> 'deleted'" in sql
+    assert params == ("tenant-a",)
+
+
+@pytest.mark.asyncio
+async def test_record_mcp_server_credential_keeps_hash_not_secret_material():
+    class CredentialConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return FakeCursor()
+
+    conn = CredentialConnection()
+
+    await repositories.record_mcp_server_credential(
+        conn,
+        tenant_id="tenant-a",
+        server_name="qa-mcp",
+        credential_fingerprint="credential-sha",
+        metadata={"header_names": ["Authorization"]},
+        updated_by="admin-a",
+    )
+
+    sql, params = conn.calls[0]
+    assert "insert into mcp_server_credentials" in sql
+    assert "credential_fingerprint" in sql
+    assert params == (
+        "tenant-a",
+        "qa-mcp",
+        "credential-sha",
+        json.dumps({"header_names": ["Authorization"]}, ensure_ascii=False),
+        "admin-a",
+    )
+    assert "raw-secret" not in str(params)
+
+
+@pytest.mark.asyncio
 async def test_create_memory_record_sets_expires_at_from_retention_days():
     class MemoryCursor:
         async def fetchone(self):

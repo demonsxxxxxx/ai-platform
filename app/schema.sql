@@ -101,6 +101,44 @@ create table if not exists tenant_workbench_skills (
   primary key (tenant_id, skill_id)
 );
 
+create table if not exists mcp_servers (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  name text not null,
+  transport text not null default 'streamable_http',
+  endpoint_redacted text not null default '',
+  status text not null default 'active',
+  is_system boolean not null default false,
+  allowed_roles jsonb not null default '[]'::jsonb,
+  role_quotas_json jsonb not null default '{}'::jsonb,
+  department_ids text[] not null default array[]::text[],
+  credential_state text not null default 'not_configured',
+  credential_metadata_json jsonb not null default '{}'::jsonb,
+  credential_fingerprint text not null default '',
+  updated_by text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique(tenant_id, name),
+  check (transport in ('sse', 'streamable_http', 'sandbox')),
+  check (status in ('active', 'disabled', 'deleted')),
+  check (credential_state in ('not_configured', 'configured', 'platform_managed'))
+);
+
+create index if not exists idx_mcp_servers_tenant_status
+  on mcp_servers(tenant_id, status, name);
+
+create table if not exists mcp_server_credentials (
+  tenant_id text not null references tenants(id),
+  server_name text not null,
+  credential_fingerprint text not null default '',
+  metadata_json jsonb not null default '{}'::jsonb,
+  updated_by text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (tenant_id, server_name),
+  foreign key (tenant_id, server_name) references mcp_servers(tenant_id, name)
+);
+
 create table if not exists mcp_tools (
   id text primary key,
   server_id text not null,
