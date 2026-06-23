@@ -7,11 +7,6 @@ const SkillsHubPanel = lazy(() =>
     default: m.SkillsHubPanel,
   })),
 );
-const MarketplacePanel = lazy(() =>
-  import("../../panels/MarketplacePanel").then((m) => ({
-    default: m.MarketplacePanel,
-  })),
-);
 const RolesPanel = lazy(() =>
   import("../../panels/RolesPanel").then((m) => ({ default: m.RolesPanel })),
 );
@@ -33,6 +28,11 @@ const MemoryPanel = lazy(() =>
     default: m.MemoryPanel,
   })),
 );
+const AgentDirectoryPanel = lazy(() =>
+  import("../../panels/AgentDirectoryPanel").then((m) => ({
+    default: m.AgentDirectoryPanel,
+  })),
+);
 const LaunchpadPanel = lazy(() =>
   import("../../launchpad").then((m) => ({
     default: m.LaunchpadPanel,
@@ -45,10 +45,11 @@ const panelMap: Record<
 > = {
   apps: LaunchpadPanel,
   skills: SkillsHubPanel,
-  marketplace: MarketplacePanel,
+  marketplace: SkillsHubPanel,
   roles: RolesPanel,
   mcp: MCPPanel,
   channels: ChannelImportPanel,
+  agents: AgentDirectoryPanel,
   models: ModelCatalogPanel,
   memory: MemoryPanel,
 };
@@ -87,6 +88,7 @@ export function TabContent({
             description={routeUnavailable.description}
             surface={routeUnavailable.surface}
             details={routeUnavailable.details}
+            capabilities={routeUnavailable.capabilities}
           />
         </div>
       </main>
