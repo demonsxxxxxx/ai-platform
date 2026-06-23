@@ -6,9 +6,11 @@ This contract covers the authenticated frontend Skills and Marketplace surfaces.
 
 All routes require an authenticated principal. Missing authentication returns `401`. Missing authorization returns `403` with `detail` formatted as `missing_permission:<permission>`.
 
-MCP lifecycle routes are a role-gated exception in this first backend slice:
-non-admin principals receive `403 not_ai_admin`, and platform admins receive
-`409 mcp_lifecycle_contract_not_backed` until lifecycle governance is backed.
+MCP lifecycle routes are platform-admin gated. Server registry create, update,
+delete, and enablement now persist tenant-scoped lifecycle metadata with
+redacted credential evidence; remaining import, tool-toggle, promote, and
+demote flows still return `409 mcp_lifecycle_contract_not_backed` until their
+governance paths are backed.
 
 Effective permissions are projected from the principal permissions plus admin role expansion:
 
@@ -104,27 +106,41 @@ Package upload, rollback, and low-level release management remain under the admi
 
 ## MCP Routes
 
-Backed read routes:
+Backed read and server lifecycle routes:
 
 - `GET /api/mcp/`
 - `GET /api/mcp/{name}`
 - `GET /api/mcp/{name}/tools`
 - `GET /api/mcp/export`
-
-The MCP read projection is built from platform-registered MCP tools and tenant tool policies. It exposes governed server/tool directory metadata for frontend discovery without raw credentials, server headers, runtime paths, or unmanaged lifecycle controls.
-
-Explicitly fail-closed lifecycle routes:
-
 - `POST /api/mcp/`
 - `PUT /api/mcp/{name}`
 - `DELETE /api/mcp/{name}`
 - `PATCH /api/mcp/{name}/toggle`
-- `POST /api/mcp/import`
-- `PATCH /api/mcp/{name}/tools/{tool_name}`
 - `POST /api/admin/mcp/`
 - `PUT /api/admin/mcp/{name}`
 - `DELETE /api/admin/mcp/{name}`
+
+The MCP read projection is built from the tenant MCP server registry and falls
+back to platform-registered MCP tools plus tenant tool policies for seeded
+tools. It exposes governed server/tool directory metadata for frontend
+discovery without raw credentials, server headers, runtime paths, or unmanaged
+tool execution controls.
+
+Server lifecycle writes require a platform-admin principal. They persist only
+tenant-scoped registry metadata, redacted endpoint shape, allowed roles,
+department enablement, quotas, credential state, credential metadata such as
+header names or env key names, and a credential fingerprint. Raw URL query
+secrets, header values, commands, and credential values are not returned in API
+responses and are not written to audit payloads.
+
+Explicitly fail-closed follow-up routes:
+
+- `POST /api/mcp/import`
+- `PATCH /api/mcp/{name}/tools/{tool_name}`
 - `POST /api/admin/mcp/{name}/promote`
 - `POST /api/admin/mcp/{name}/demote`
 
-Those lifecycle routes require platform admin and then return `409 mcp_lifecycle_contract_not_backed`. Tool policy writes remain under `/api/ai/admin/tool-policies/*`; ordinary users do not gain MCP server CRUD, credential lifecycle, or write-tool bypass authority from this public route set.
+Those follow-up routes require platform admin and then return
+`409 mcp_lifecycle_contract_not_backed`. Tool policy writes remain under
+`/api/ai/admin/tool-policies/*`; ordinary users do not gain MCP server CRUD,
+credential lifecycle, or write-tool bypass authority from this public route set.
