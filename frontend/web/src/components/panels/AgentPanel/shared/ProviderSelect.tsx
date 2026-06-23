@@ -113,7 +113,7 @@ export const ProviderSelect = React.memo(function ProviderSelect({
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="glass-input w-full flex items-center justify-between gap-2 px-3.5 py-2.5 text-sm text-left dark:text-stone-100 cursor-pointer"
+        className="enterprise-form-input flex items-center justify-between gap-2 text-left cursor-pointer"
       >
         <span className="flex items-center gap-2 min-w-0">
           {selected ? (
@@ -141,7 +141,7 @@ export const ProviderSelect = React.memo(function ProviderSelect({
 
       {/* Dropdown */}
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-1.5 w-full rounded-lg bg-white dark:bg-stone-800 shadow-lg border border-[var(--glass-border)] overflow-hidden animate-in fade-in-0 zoom-in-95 duration-150">
+        <div className="absolute left-0 top-full z-50 mt-1.5 w-full overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-[0_12px_28px_rgba(15,23,42,0.12)] animate-in fade-in-0 zoom-in-95 duration-150">
           {/* Search input */}
           <div className="px-3 pt-2.5 pb-2">
             <div className="relative">
@@ -155,7 +155,7 @@ export const ProviderSelect = React.memo(function ProviderSelect({
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search..."
-                className="w-full pl-8 pr-3 py-1.5 text-sm rounded-lg bg-stone-50 dark:bg-stone-700/60 border border-stone-200/60 dark:border-stone-600/40 text-stone-900 dark:text-stone-100 placeholder:text-stone-400 dark:placeholder:text-stone-500 focus:outline-none focus:border-stone-400 dark:focus:border-stone-500"
+                className="enterprise-form-input min-h-8 pl-8 py-1.5"
               />
             </div>
           </div>
@@ -166,8 +166,8 @@ export const ProviderSelect = React.memo(function ProviderSelect({
             <button
               type="button"
               onClick={() => handleSelect("")}
-              className={`w-full flex items-center gap-2.5 px-3.5 py-2 text-sm text-left hover:bg-stone-100/80 dark:hover:bg-stone-700/50 transition-colors ${
-                !value ? "bg-stone-50 dark:bg-stone-700/30" : ""
+              className={`w-full flex items-center gap-2.5 px-3.5 py-2 text-sm text-left hover:bg-[var(--theme-bg-sidebar)] transition-colors ${
+                !value ? "bg-[var(--theme-bg-sidebar)]" : ""
               }`}
             >
               <div className="w-[18px] h-[18px] flex items-center justify-center rounded-full bg-stone-200 dark:bg-stone-600 shrink-0">
@@ -186,8 +186,8 @@ export const ProviderSelect = React.memo(function ProviderSelect({
                   key={slug}
                   type="button"
                   onClick={() => handleSelect(slug)}
-                  className={`w-full flex items-center gap-2.5 px-3.5 py-2 text-sm text-left hover:bg-stone-100/80 dark:hover:bg-stone-700/50 transition-colors ${
-                    value === slug ? "bg-stone-50 dark:bg-stone-700/30" : ""
+                  className={`w-full flex items-center gap-2.5 px-3.5 py-2 text-sm text-left hover:bg-[var(--theme-bg-sidebar)] transition-colors ${
+                    value === slug ? "bg-[var(--theme-bg-sidebar)]" : ""
                   }`}
                 >
                   <ModelIconImg model={slug} provider={slug} size={18} />

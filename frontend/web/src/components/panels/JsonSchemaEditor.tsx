@@ -89,7 +89,7 @@ function FieldInput({
             onChange(e.target.value);
           }
         }}
-        className="w-full rounded-lg border border-[var(--glass-border)] bg-[var(--theme-bg-card)] px-3 py-1.5 text-sm text-stone-900 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:text-stone-100"
+        className="enterprise-form-input disabled:cursor-not-allowed disabled:opacity-60"
       />
     </div>
   );
@@ -148,7 +148,7 @@ function ArrayEditor({
       {value.map((item, index) => (
         <div
           key={index}
-          className="relative rounded-lg border border-[var(--glass-border)] bg-[var(--theme-bg-secondary)] p-3"
+          className="enterprise-subtle-panel relative"
         >
           <div className="mb-2 flex items-center justify-between">
             <span className="text-xs font-medium text-stone-500 dark:text-stone-400">
@@ -186,7 +186,7 @@ function ArrayEditor({
         <button
           type="button"
           onClick={addItem}
-          className="flex items-center gap-1.5 rounded-lg border border-dashed border-[var(--glass-border)] px-3 py-2 text-sm text-stone-500 hover:border-blue-400 hover:text-blue-500 dark:text-stone-400 dark:hover:border-blue-500 dark:hover:text-blue-400"
+          className="btn-secondary border-dashed text-stone-500 hover:border-blue-400 hover:text-blue-500 dark:text-stone-400 dark:hover:border-blue-500 dark:hover:text-blue-400"
         >
           <Plus size={14} />
           {t("settingDesc.JSON_SCHEMA_ADD_ITEM")} {itemLabel}
@@ -225,7 +225,7 @@ function ObjectArrayEditor({
             {(value[key] || []).map((item, index) => (
               <div
                 key={index}
-                className="flex items-end gap-2 rounded-lg border border-[var(--glass-border)] bg-[var(--theme-bg-secondary)] p-2"
+                className="enterprise-subtle-panel flex items-end gap-2 p-2"
               >
                 {schema.fields.map((field) => (
                   <div key={field.name} className="flex-1">
@@ -282,7 +282,7 @@ function ObjectArrayEditor({
                   next[key] = [...(next[key] || []), newItem];
                   onChange(next);
                 }}
-                className="flex items-center gap-1.5 rounded-lg border border-dashed border-[var(--glass-border)] px-3 py-1.5 text-xs text-stone-500 hover:border-blue-400 hover:text-blue-500 dark:text-stone-400 dark:hover:border-blue-500 dark:hover:text-blue-400"
+                className="btn-secondary border-dashed px-3 py-1.5 text-xs text-stone-500 hover:border-blue-400 hover:text-blue-500 dark:text-stone-400 dark:hover:border-blue-500 dark:hover:text-blue-400"
               >
                 <Plus size={12} />
                 {t("settingDesc.JSON_SCHEMA_ADD_ITEM")} {itemLabel}

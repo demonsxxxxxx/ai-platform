@@ -78,7 +78,7 @@ function MetricCard({
   value: string;
 }) {
   return (
-    <div className="flex min-w-0 items-center gap-2.5 rounded-lg bg-[var(--glass-bg-subtle)] px-3 py-2">
+    <div className="flex min-w-0 items-center gap-2.5 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-3 py-2">
       <Icon size={16} className="shrink-0 text-stone-400 dark:text-stone-500" />
       <div className="min-w-0">
         <p className="text-[11px] text-stone-400 dark:text-stone-500">
@@ -107,7 +107,7 @@ function ReasonList({
         {title}
       </h4>
       {items.length === 0 ? (
-        <p className="rounded-lg bg-[var(--glass-bg)] px-3 py-2 text-xs text-stone-500 dark:text-stone-400">
+        <p className="rounded-lg bg-[var(--theme-bg-sidebar)] px-3 py-2 text-xs text-stone-500 dark:text-stone-400">
           {emptyText}
         </p>
       ) : (
@@ -115,7 +115,7 @@ function ReasonList({
           {items.map((item) => (
             <div
               key={item}
-              className="rounded-md bg-[var(--glass-bg)] px-2.5 py-1.5 text-xs font-medium text-stone-600 dark:text-stone-300"
+              className="rounded-md bg-[var(--theme-bg-sidebar)] px-2.5 py-1.5 text-xs font-medium text-stone-600 dark:text-stone-300"
             >
               {item}
             </div>
@@ -204,7 +204,7 @@ export function AdminRuntimeCapacitySection() {
   if (!shouldFetchAdminRuntimeOverview(canView)) return null;
 
   return (
-    <div className="mb-4 rounded-lg border border-[var(--glass-border)] bg-[var(--glass-bg-subtle)]">
+    <div className="panel-card mb-4 p-0">
       <div
         onClick={() => setExpanded(!expanded)}
         className="flex w-full cursor-pointer items-center justify-between px-4 py-3 select-none"
@@ -250,7 +250,7 @@ export function AdminRuntimeCapacitySection() {
               fetchOverview();
             }}
             disabled={isLoading}
-            className="rounded-lg p-1.5 text-stone-400 transition-colors hover:bg-[var(--glass-bg)] hover:text-stone-600 disabled:opacity-50 dark:text-stone-500 dark:hover:text-stone-300"
+            className="enterprise-icon-button disabled:opacity-50"
             aria-label={t("adminRuntime.refresh", "Refresh Admin Runtime")}
           >
             <RefreshCw size={14} className={isLoading ? "animate-spin" : ""} />
@@ -264,7 +264,7 @@ export function AdminRuntimeCapacitySection() {
       </div>
 
       {!expanded && (
-        <div className="border-t border-[var(--glass-border)] px-4 py-2">
+        <div className="border-t border-[var(--theme-border)] px-4 py-2">
           <p className="text-xs text-stone-500 dark:text-stone-400">
             {collapsedSummary}
           </p>
@@ -272,7 +272,7 @@ export function AdminRuntimeCapacitySection() {
       )}
 
       {expanded && (
-        <div className="border-t border-[var(--glass-border)] px-4 py-3">
+        <div className="border-t border-[var(--theme-border)] px-4 py-3">
           {isLoading && !overview && (
             <div className="flex items-center justify-center py-6">
               <LoadingSpinner size="sm" />
@@ -348,7 +348,7 @@ export function AdminRuntimeCapacitySection() {
                 )}
               />
 
-              <div className="rounded-lg bg-[var(--glass-bg)] px-3 py-2">
+              <div className="rounded-lg bg-[var(--theme-bg-sidebar)] px-3 py-2">
                 <div className="flex items-start gap-2">
                   <AlertTriangle
                     size={15}

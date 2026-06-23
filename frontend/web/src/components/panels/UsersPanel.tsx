@@ -469,11 +469,10 @@ export function UsersPanel() {
       {/* 用户列表 */}
       <div className="flex-1 overflow-y-auto py-2 sm:py-4 px-4">
         {users.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center text-center">
-            <Users
-              size={48}
-              className="mb-4 text-theme-text-secondary opacity-40"
-            />
+          <div className="enterprise-empty-state">
+            <div className="enterprise-empty-state-icon mb-4">
+              <Users size={32} className="text-theme-text-secondary" />
+            </div>
             <p className="text-theme-text-secondary">
               {debouncedSearch
                 ? t("users.noMatchingUsers")
@@ -483,9 +482,9 @@ export function UsersPanel() {
         ) : (
           <>
             {/* Desktop table view */}
-            <div className="hidden overflow-x-auto rounded-lg glass-card sm:block">
-              <table className="min-w-full divide-y divide-[var(--glass-border)]">
-                <thead className="bg-[var(--glass-bg-subtle)]">
+            <div className="enterprise-table-surface hidden overflow-x-auto sm:block">
+              <table className="min-w-full divide-y divide-[var(--theme-border)]">
+                <thead className="bg-[var(--theme-bg-sidebar)]">
                   <tr>
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-theme-text-secondary">
                       {t("users.user")}
@@ -509,11 +508,11 @@ export function UsersPanel() {
                     )}
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-[var(--glass-border)]">
+                <tbody className="divide-y divide-[var(--theme-border)]">
                   {users.map((user) => (
                     <tr
                       key={user.id}
-                      className="hover:bg-[var(--glass-bg-subtle)]"
+                      className="hover:bg-[var(--theme-bg-sidebar)]"
                     >
                       <td className="whitespace-nowrap px-6 py-4">
                         <div className="flex items-center gap-3">

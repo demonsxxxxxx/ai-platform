@@ -659,11 +659,10 @@ export function RolesPanel() {
       {/* 角色列表 */}
       <div className="flex-1 overflow-y-auto py-2 sm:py-4 px-4">
         {filteredRoles.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center text-center">
-            <Shield
-              size={48}
-              className="mb-4 text-theme-text-secondary opacity-40"
-            />
+          <div className="enterprise-empty-state">
+            <div className="enterprise-empty-state-icon mb-4">
+              <Shield size={32} className="text-theme-text-secondary" />
+            </div>
             <p className="text-theme-text-secondary">
               {searchQuery ? t("roles.noMatchingRoles") : t("roles.noRoles")}
             </p>
@@ -675,7 +674,7 @@ export function RolesPanel() {
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
-                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--glass-bg-subtle)]">
+                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--theme-bg-sidebar)] ring-1 ring-[var(--theme-border)]">
                         <Lock size={14} className="text-theme-text-secondary" />
                       </div>
                       <div>
@@ -684,7 +683,7 @@ export function RolesPanel() {
                             {role.name}
                           </h3>
                           {role.is_system && (
-                            <span className="rounded bg-[var(--glass-bg-subtle)] px-1.5 py-0.5 text-xs text-theme-text-secondary">
+                            <span className="rounded bg-[var(--theme-bg-sidebar)] px-1.5 py-0.5 text-xs text-theme-text-secondary ring-1 ring-[var(--theme-border)]">
                               {t("roles.systemRole")}
                             </span>
                           )}

@@ -483,7 +483,7 @@ export function SettingsPanel() {
         />
 
         {/* Left Sidebar - Categories (hidden on mobile) */}
-        <div className="hidden w-56 flex-shrink-0 flex-col border-r border-[var(--glass-border)] sm:flex">
+        <div className="hidden w-56 flex-shrink-0 flex-col border-r border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] sm:flex">
           {/* Sidebar Header */}
           <div className="flex items-center gap-2.5 px-5 py-4">
             <div className="[&>svg]:size-[18px] flex size-9 flex-shrink-0 items-center justify-center rounded-lg bg-[var(--theme-bg-sidebar)] text-stone-600 ring-1 ring-[var(--theme-border)] dark:text-stone-300">
@@ -514,8 +514,8 @@ export function SettingsPanel() {
                   onClick={() => setActiveCategory(category)}
                   className={`w-full rounded-lg px-3 py-2 text-left text-sm transition-all duration-150 ${
                     isActive
-                      ? "bg-[var(--glass-bg)] font-semibold text-stone-900 dark:text-stone-100 shadow-sm"
-                      : "font-medium text-stone-500 hover:bg-[var(--glass-bg-subtle)] dark:text-stone-400"
+                      ? "bg-[var(--theme-bg-card)] font-semibold text-stone-900 shadow-sm dark:text-stone-100"
+                      : "font-medium text-stone-500 hover:bg-[var(--theme-bg-card)] dark:text-stone-400"
                   }`}
                 >
                   <span className="flex items-center justify-between">
@@ -530,7 +530,7 @@ export function SettingsPanel() {
           </nav>
 
           {/* Bottom actions */}
-          <div className="flex gap-1.5 border-t border-[var(--glass-border)] px-3 py-2.5">
+          <div className="flex gap-1.5 border-t border-[var(--theme-border)] px-3 py-2.5">
             <button
               onClick={() => setShowAbout(true)}
               className="btn-secondary flex flex-1 items-center justify-center gap-1 py-1.5 text-xs"
@@ -554,7 +554,7 @@ export function SettingsPanel() {
         {/* Right Content */}
         <div className="flex flex-1 flex-col overflow-hidden">
           {/* Header with Category Dropdown (mobile) and Search */}
-          <div className="flex-shrink-0 border-b border-[var(--glass-border)] p-3 sm:p-4">
+          <div className="flex-shrink-0 border-b border-[var(--theme-border)] p-3 sm:p-4">
             {/* Mobile Category Selector */}
             <div className="mb-2 sm:hidden">
               <GlassSelect
@@ -626,7 +626,7 @@ export function SettingsPanel() {
               <button
                 onClick={handleResetAll}
                 disabled={isLoading}
-                className="mt-2 flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-[var(--glass-bg-subtle)] px-2 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 sm:hidden dark:border-red-900/50 dark:text-red-400 dark:hover:bg-red-900/20"
+                className="mt-2 flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-[var(--theme-bg-sidebar)] px-2 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 sm:hidden dark:border-red-900/50 dark:text-red-400 dark:hover:bg-red-900/20"
               >
                 <RotateCcw size={12} />
                 {t("common.resetAll")}
@@ -688,13 +688,13 @@ export function SettingsPanel() {
                       return (
                         <div
                           key={setting.key}
-                          className="rounded-lg glass-card p-4"
+                          className="panel-card p-4"
                         >
                           {/* Key and Type */}
                           <div className="flex items-start justify-between gap-2">
                             <div className="min-w-0 flex-1">
                               <div className="flex flex-wrap items-center gap-2">
-                                <code className="rounded-md bg-[var(--glass-bg-subtle)] px-2 py-0.5 text-xs font-medium text-stone-900 break-all dark:text-stone-100">
+                                <code className="enterprise-code-chip break-all py-0.5 text-xs font-medium text-stone-900 dark:text-stone-100">
                                   {setting.key}
                                 </code>
                                 <span
@@ -798,7 +798,7 @@ export function SettingsPanel() {
                                 }
                                 disabled={!canManage}
                                 rows={8}
-                                className="w-full rounded-lg border border-[var(--glass-border)] bg-[var(--theme-bg-card)] px-3 py-2 text-sm text-stone-900 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:text-stone-100"
+                                className="enterprise-form-textarea disabled:cursor-not-allowed disabled:opacity-60"
                               />
                             )}
                             {isJson && setting.json_schema && (
@@ -833,7 +833,7 @@ export function SettingsPanel() {
                                 }
                                 disabled={!canManage}
                                 rows={20}
-                                className="w-full rounded-lg border border-[var(--glass-border)] bg-[var(--theme-bg-card)] px-3 py-2 font-mono text-xs text-stone-900 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 sm:text-sm dark:text-stone-100"
+                                className="enterprise-form-textarea font-mono text-xs disabled:cursor-not-allowed disabled:opacity-60 sm:text-sm"
                               />
                             )}
                             {!isSelect &&
@@ -854,7 +854,7 @@ export function SettingsPanel() {
                                     )
                                   }
                                   disabled={!canManage}
-                                  className="w-full rounded-lg border border-[var(--glass-border)] bg-[var(--theme-bg-card)] px-3 py-2 text-sm text-stone-900 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:text-stone-100"
+                                  className="enterprise-form-input disabled:cursor-not-allowed disabled:opacity-60"
                                 />
                               )}
                           </div>
@@ -909,7 +909,7 @@ export function SettingsPanel() {
 
                           {/* Read-only notice */}
                           {!canManage && (
-                            <div className="mt-2 rounded-lg bg-[var(--glass-bg-subtle)] px-3 py-1.5 text-xs text-stone-400 dark:text-stone-500">
+                            <div className="mt-2 rounded-lg bg-[var(--theme-bg-sidebar)] px-3 py-1.5 text-xs text-stone-400 dark:text-stone-500">
                               {t("settings.readOnlyNotice")}
                             </div>
                           )}

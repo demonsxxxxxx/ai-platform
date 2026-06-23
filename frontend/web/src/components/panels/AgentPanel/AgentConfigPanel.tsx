@@ -243,9 +243,9 @@ export function AgentConfigPanel() {
               {availableAgents.map((agent) => (
                 <div
                   key={agent.id}
-                  className="flex items-center gap-3.5 glass-card rounded-lg p-4 transition-all duration-200 hover:shadow-[var(--glass-shadow-hover)]"
+                  className="panel-card flex items-center gap-3.5 p-4"
                 >
-                  <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-lg bg-[var(--glass-bg-subtle)] ring-1 ring-[var(--glass-border)] shadow-sm">
+                  <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-lg bg-[var(--theme-bg-sidebar)] ring-1 ring-[var(--theme-border)]">
                     <Bot
                       size={20}
                       className="text-stone-600 dark:text-stone-400"

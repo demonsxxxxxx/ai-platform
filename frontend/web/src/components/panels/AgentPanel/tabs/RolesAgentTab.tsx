@@ -93,7 +93,7 @@ export function RolesAgentTab({
 
       {selectedRole && (
         <>
-          <div className="glass-card rounded-lg p-5">
+          <div className="panel-card p-5">
             <h4 className="mb-4 text-sm font-medium text-stone-900 dark:text-stone-100">
               {t("agentConfig.selectAgentsForRole", {
                 roleName: selectedRoleData?.name,
@@ -103,17 +103,17 @@ export function RolesAgentTab({
               {availableAgents.map((agent) => (
                 <label
                   key={agent.id}
-                  className={`flex cursor-pointer items-center gap-3.5 rounded-lg bg-[var(--glass-bg-subtle)] p-3.5 transition-all duration-150 ${
+                  className={`flex cursor-pointer items-center gap-3.5 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] p-3.5 transition-all duration-150 ${
                     currentRoleAgents.includes(agent.id)
-                      ? "ring-2 ring-stone-500/50 dark:ring-stone-400/50 shadow-sm"
-                      : "hover:bg-[var(--glass-bg)]"
+                      ? "ring-2 ring-stone-500/30 dark:ring-stone-400/30"
+                      : "hover:bg-[var(--theme-bg-card)]"
                   }`}
                 >
                   <input
                     type="checkbox"
                     checked={currentRoleAgents.includes(agent.id)}
                     onChange={() => toggleAgent(agent.id)}
-                    className="h-4.5 w-4.5 rounded border-[var(--glass-border)] text-stone-600 focus:ring-stone-500"
+                    className="h-4.5 w-4.5 rounded border-[var(--theme-border)] text-stone-600 focus:ring-stone-500"
                   />
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium text-stone-900 dark:text-stone-100 truncate">

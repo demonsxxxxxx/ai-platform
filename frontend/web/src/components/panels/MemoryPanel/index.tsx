@@ -77,7 +77,7 @@ function TextInput({
       value={value}
       onChange={(event) => onChange(event.target.value)}
       placeholder={placeholder}
-      className="h-10 w-full rounded-lg border border-[var(--glass-border)] bg-[var(--glass-bg)] px-3 text-sm text-[var(--theme-text)] outline-none transition focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary-light)]"
+      className="enterprise-form-input"
     />
   );
 }
@@ -104,7 +104,7 @@ function StatusPill({
 
 function EmptyState({ children }: { children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-dashed border-[var(--glass-border)] px-4 py-6 text-center text-sm text-[var(--theme-text-secondary)]">
+    <div className="enterprise-empty-state enterprise-empty-state--compact text-sm">
       {children}
     </div>
   );
@@ -121,7 +121,7 @@ function MemoryRecordRow({
 }) {
   const { t } = useTranslation();
   return (
-    <div className="rounded-lg border border-[var(--glass-border)] bg-[var(--glass-bg)] p-3">
+    <div className="enterprise-subtle-panel">
       <div className="flex flex-wrap items-center gap-2">
         <StatusPill active={record.status === "active"}>
           {record.status || "active"}
@@ -449,7 +449,7 @@ export function MemoryPanel() {
         </div>
 
         <div className="grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-          <section className="glass-card rounded-lg p-4 sm:p-5">
+          <section className="panel-card p-4 sm:p-5">
             <div className="mb-4 flex flex-wrap items-center gap-2">
               <ShieldCheck size={18} className="text-[var(--theme-text-secondary)]" />
               <h2 className="text-base font-semibold text-[var(--theme-text)]">
@@ -468,7 +468,7 @@ export function MemoryPanel() {
             </div>
 
             <div className="grid gap-3">
-              <label className="flex items-center justify-between gap-3 rounded-lg border border-[var(--glass-border)] bg-[var(--glass-bg)] px-3 py-3">
+              <label className="flex items-center justify-between gap-3 enterprise-subtle-panel">
                 <span>
                   <span className="block text-sm font-medium text-[var(--theme-text)]">
                     {t("memory.workbench.allowSessionWrites")}
@@ -497,7 +497,7 @@ export function MemoryPanel() {
                       setRetentionDays(Math.max(1, Math.min(3650, next)));
                     }
                   }}
-                  className="h-10 w-full rounded-lg border border-[var(--glass-border)] bg-[var(--glass-bg)] px-3 text-sm text-[var(--theme-text)] outline-none transition focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary-light)]"
+                  className="enterprise-form-input"
                 />
               </FieldLabel>
 
@@ -520,12 +520,12 @@ export function MemoryPanel() {
               </button>
             </div>
 
-            <div className="mt-4 border-t border-[var(--glass-border)] pt-4">
+            <div className="mt-4 border-t border-[var(--theme-border)] pt-4">
               <PolicySummary policy={policy} />
             </div>
           </section>
 
-          <section className="glass-card rounded-lg p-4 sm:p-5">
+          <section className="panel-card p-4 sm:p-5">
             <div className="mb-4 flex flex-wrap items-center gap-2">
               <Database size={18} className="text-[var(--theme-text-secondary)]" />
               <h2 className="text-base font-semibold text-[var(--theme-text)]">
@@ -559,7 +559,7 @@ export function MemoryPanel() {
           </section>
         </div>
 
-        <section className="glass-card mt-4 rounded-lg p-4 sm:p-5">
+        <section className="panel-card mt-4 p-4 sm:p-5">
           <div className="mb-4 flex flex-wrap items-center gap-2">
             <ShieldCheck size={18} className="text-[var(--theme-text-secondary)]" />
             <h2 className="text-base font-semibold text-[var(--theme-text)]">
@@ -599,7 +599,7 @@ export function MemoryPanel() {
                     {adminPolicies.map((item) => (
                       <div
                         key={`${item.workspace_id}:${item.user_id}:${item.agent_id || "all"}`}
-                        className="rounded-lg border border-[var(--glass-border)] bg-[var(--glass-bg)] p-3 text-sm"
+                        className="enterprise-subtle-panel text-sm"
                       >
                         <div className="flex flex-wrap items-center gap-2">
                           <StatusPill active={item.memory_enabled}>

@@ -122,45 +122,39 @@ function DeleteConfirmModal({
 
   return (
     <>
-      {/* Backdrop */}
       <div
-        className="fixed inset-0 z-50 bg-black/50 transition-opacity"
+        className="enterprise-modal-backdrop"
         onClick={onCancel}
       />
-      {/* Modal */}
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="enterprise-modal-layer">
         <div
-          className="w-full max-w-md transform overflow-hidden rounded-lg bg-[var(--theme-bg-card)] p-6 text-left align-middle shadow-xl transition-all"
+          className="enterprise-modal-shell p-5"
           onClick={(e) => e.stopPropagation()}
         >
-          {/* Icon */}
-          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/30">
+          <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-lg border border-red-200 bg-red-50 dark:border-red-900/50 dark:bg-red-950/30">
             <AlertCircle className="text-red-600 dark:text-red-400" size={24} />
           </div>
 
-          {/* Title */}
-          <h3 className="text-xl font-semibold text-stone-900 dark:text-stone-100">
+          <h3 className="text-base font-semibold text-stone-900 dark:text-stone-100">
             {t("notification.deleteConfirm")}
           </h3>
 
-          {/* Description */}
           <div className="mt-2">
             <p className="text-sm text-stone-500 dark:text-stone-400">
               {t("common.confirmAction") || "This action cannot be undone."}
             </p>
           </div>
 
-          {/* Actions */}
           <div className="mt-6 flex gap-3">
             <button
               onClick={onCancel}
-              className="flex-1 rounded-lg border border-[var(--glass-border)] bg-[var(--theme-bg-card)] px-4 py-2.5 text-sm font-medium text-stone-700 transition-colors hover:bg-stone-50 dark:text-stone-300 dark:hover:bg-stone-700"
+              className="btn-secondary flex-1 justify-center"
             >
               {t("notification.cancel")}
             </button>
             <button
               onClick={onConfirm}
-              className="flex-1 rounded-lg bg-red-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700"
+              className="btn-danger flex-1 justify-center border-red-300 bg-red-600 text-white hover:bg-red-700 dark:border-red-700 dark:bg-red-600 dark:text-white dark:hover:bg-red-700"
             >
               {t("notification.delete")}
             </button>
@@ -221,32 +215,28 @@ function NotificationFormModal({
 
   return (
     <>
-      {/* Backdrop */}
       <div
-        className="fixed inset-0 z-50 bg-black/50 transition-opacity"
+        className="enterprise-modal-backdrop"
         onClick={onClose}
       />
-      {/* Modal */}
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="enterprise-modal-layer">
         <div
-          className="flex max-h-[90vh] w-full max-w-2xl transform flex-col overflow-hidden rounded-lg bg-[var(--theme-bg-card)] text-left align-middle shadow-xl transition-all"
+          className="enterprise-modal-shell enterprise-modal-shell--wide enterprise-modal-shell--scroll"
           onClick={(e) => e.stopPropagation()}
         >
-          {/* Header */}
-          <div className="flex items-center justify-between border-b border-[var(--glass-border)] p-6 pb-4">
-            <h3 className="text-xl font-semibold text-stone-900 dark:text-stone-100">
+          <div className="enterprise-modal-header">
+            <h3 className="text-base font-semibold text-stone-900 dark:text-stone-100">
               {isEdit ? t("notification.edit") : t("notification.create")}
             </h3>
             <button
               onClick={onClose}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-600 dark:hover:bg-stone-800 dark:hover:text-stone-300"
+              className="enterprise-icon-button"
             >
               <X size={20} />
             </button>
           </div>
 
-          {/* Body */}
-          <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          <div className="enterprise-modal-body space-y-6">
             {/* Title fields for each language */}
             <div>
               <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-3">
@@ -267,7 +257,7 @@ function NotificationFormModal({
                           [key]: e.target.value,
                         }))
                       }
-                      className="w-full rounded-lg border border-stone-200 bg-stone-50 px-4 py-2.5 text-sm text-stone-900 transition-all focus:border-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500/20 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100"
+                      className="enterprise-form-input"
                       placeholder={`${label} title`}
                     />
                   </div>
@@ -295,7 +285,7 @@ function NotificationFormModal({
                         }))
                       }
                       rows={3}
-                      className="w-full rounded-lg border border-stone-200 bg-stone-50 px-4 py-2.5 text-sm text-stone-900 transition-all focus:border-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500/20 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100 resize-y"
+                      className="enterprise-form-textarea"
                       placeholder={`${label} content`}
                     />
                   </div>
@@ -324,7 +314,7 @@ function NotificationFormModal({
                               : nt === "warning"
                                 ? "border-amber-400 bg-amber-50 text-amber-700 dark:border-amber-500 dark:bg-amber-900/30 dark:text-amber-300"
                                 : "border-orange-400 bg-orange-50 text-orange-700 dark:border-orange-500 dark:bg-orange-900/30 dark:text-orange-300"
-                          : "border-stone-200 bg-stone-50 text-stone-500 hover:border-stone-300 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-400 dark:hover:border-stone-600"
+                          : "border-[var(--theme-border)] bg-[var(--theme-bg)] text-[var(--theme-text-secondary)] hover:border-stone-300 dark:hover:border-stone-600"
                       }`}
                     >
                       {t(
@@ -348,7 +338,7 @@ function NotificationFormModal({
                   type="datetime-local"
                   value={startTime}
                   onChange={(e) => setStartTime(e.target.value)}
-                  className="w-full rounded-lg border border-stone-200 bg-stone-50 px-4 py-2.5 text-sm text-stone-900 transition-all focus:border-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500/20 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100"
+                  className="enterprise-form-input"
                 />
               </div>
               <div>
@@ -359,13 +349,13 @@ function NotificationFormModal({
                   type="datetime-local"
                   value={endTime}
                   onChange={(e) => setEndTime(e.target.value)}
-                  className="w-full rounded-lg border border-stone-200 bg-stone-50 px-4 py-2.5 text-sm text-stone-900 transition-all focus:border-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500/20 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100"
+                  className="enterprise-form-input"
                 />
               </div>
             </div>
 
             {/* Active toggle */}
-            <div className="flex items-center justify-between rounded-lg border border-stone-200 bg-stone-50 p-4 dark:border-stone-700 dark:bg-stone-900">
+            <div className="flex items-center justify-between rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg)] p-4">
               <div>
                 <p className="text-sm font-medium text-stone-700 dark:text-stone-300">
                   {t("notification.isActive")}
@@ -374,7 +364,7 @@ function NotificationFormModal({
               <button
                 type="button"
                 onClick={() => setIsActive(!isActive)}
-                className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-stone-500/20 ${
+                className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--theme-ring)]/20 ${
                   isActive ? "bg-emerald-500" : "bg-stone-300 dark:bg-stone-600"
                 }`}
               >
@@ -388,17 +378,17 @@ function NotificationFormModal({
           </div>
 
           {/* Footer */}
-          <div className="flex gap-3 border-t border-[var(--glass-border)] p-6 pt-4">
+          <div className="enterprise-modal-footer">
             <button
               onClick={onClose}
-              className="flex-1 rounded-lg border border-[var(--glass-border)] bg-[var(--theme-bg-card)] px-4 py-2.5 text-sm font-medium text-stone-700 transition-colors hover:bg-stone-50 dark:text-stone-300 dark:hover:bg-stone-700"
+              className="btn-secondary flex-1 justify-center"
             >
               {t("notification.cancel")}
             </button>
             <button
               onClick={handleSave}
               disabled={isSaving}
-              className="flex-1 rounded-lg bg-stone-900 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-stone-800 disabled:opacity-50 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-stone-200"
+              className="btn-primary flex-1 justify-center"
             >
               {isSaving ? (
                 <span className="inline-flex items-center gap-2">
@@ -582,7 +572,7 @@ export function NotificationPanel() {
         actions={
           <button
             onClick={() => setIsCreating(true)}
-            className="inline-flex items-center gap-2 rounded-lg bg-stone-900 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-stone-800 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-stone-200"
+            className="btn-primary"
           >
             <Plus size={16} />
             {t("notification.create")}
@@ -600,8 +590,8 @@ export function NotificationPanel() {
             </div>
           </div>
         ) : !isLoading && notifications.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center text-center">
-            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-stone-100 dark:bg-stone-800">
+          <div className="enterprise-empty-state">
+            <div className="enterprise-empty-state-icon mb-4">
               <Bell size={32} className="text-stone-400 dark:text-stone-500" />
             </div>
             <p className="text-lg font-medium text-stone-700 dark:text-stone-300">
@@ -620,7 +610,7 @@ export function NotificationPanel() {
               return (
                 <div
                   key={notification.id}
-                  className="rounded-lg glass-card p-4 transition-colors hover:border-stone-300 dark:hover:border-stone-600 sm:p-5"
+                  className="panel-card p-4 transition-colors hover:border-stone-300 dark:hover:border-stone-600 sm:p-5"
                 >
                   <div className="flex items-start justify-between gap-3 sm:gap-4">
                     {/* Info */}
@@ -687,8 +677,8 @@ export function NotificationPanel() {
                           }
                           className={`flex h-9 w-9 items-center justify-center rounded-lg transition-all ${
                             isExpanded
-                              ? "text-stone-600 bg-stone-100 dark:text-stone-300 dark:bg-stone-800"
-                              : "text-stone-400 hover:bg-stone-100 hover:text-stone-600 dark:hover:bg-stone-800 dark:hover:text-stone-300"
+                              ? "bg-[var(--theme-bg-sidebar)] text-stone-600 dark:text-stone-300"
+                              : "enterprise-icon-button"
                           }`}
                           title={
                             isExpanded
@@ -706,14 +696,14 @@ export function NotificationPanel() {
                       )}
                       <button
                         onClick={() => setEditingNotification(notification)}
-                        className="flex h-9 w-9 items-center justify-center rounded-lg text-stone-400 transition-all hover:bg-stone-100 hover:text-stone-600 dark:hover:bg-stone-800 dark:hover:text-stone-300"
+                        className="enterprise-icon-button"
                         title={t("notification.edit")}
                       >
                         <Pencil size={16} />
                       </button>
                       <button
                         onClick={() => setDeleteTarget(notification)}
-                        className="flex h-9 w-9 items-center justify-center rounded-lg text-stone-400 transition-all hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/30 dark:hover:text-red-400"
+                        className="enterprise-danger-icon-button"
                         title={t("notification.delete")}
                       >
                         <Trash2 size={16} />

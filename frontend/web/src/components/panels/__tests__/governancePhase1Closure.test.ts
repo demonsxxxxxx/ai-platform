@@ -118,6 +118,78 @@ test("mcp lifecycle governance remains visible but not writable", () => {
   assert.doesNotMatch(mcp, /deleteServer\(|createServer\(|updateCredentials\(/);
 });
 
+test("admin feedback and notification panels use shared enterprise primitives", () => {
+  const feedback = read("src/components/panels/FeedbackPanel.tsx");
+  const notifications = read("src/components/panels/NotificationPanel.tsx");
+  const componentsCss = read("src/styles/components.css");
+
+  for (const utility of [
+    "enterprise-modal-backdrop",
+    "enterprise-modal-shell",
+    "enterprise-form-input",
+    "enterprise-icon-button",
+    "enterprise-empty-state",
+  ]) {
+    assert.match(componentsCss, new RegExp(`\\.${utility}`));
+  }
+
+  for (const source of [feedback, notifications]) {
+    assert.match(source, /enterprise-modal-backdrop/);
+    assert.match(source, /enterprise-modal-shell/);
+    assert.match(source, /enterprise-empty-state/);
+    assert.doesNotMatch(source, /shadow-xl/);
+    assert.doesNotMatch(source, /fixed inset-0 z-50 bg-black\/50/);
+    assert.doesNotMatch(source, /glass-card/);
+    assert.doesNotMatch(source, /ChatGPT style/i);
+  }
+
+  assert.match(notifications, /enterprise-form-input/);
+  assert.match(notifications, /enterprise-form-textarea/);
+  assert.match(feedback, /enterprise-code-chip/);
+});
+
+test("authenticated admin surfaces avoid legacy glass and heavy modal styling", () => {
+  const activeSurfaceFiles = [
+    "src/components/panels/UsersPanel.tsx",
+    "src/components/panels/RolesPanel.tsx",
+    "src/components/panels/SettingsPanel.tsx",
+    "src/components/panels/JsonSchemaEditor.tsx",
+    "src/components/panels/SystemHealthSection.tsx",
+    "src/components/panels/AdminRuntimeCapacitySection.tsx",
+    "src/components/panels/AgentPanel/AgentConfigPanel.tsx",
+    "src/components/panels/AgentPanel/shared/ProviderSelect.tsx",
+    "src/components/panels/AgentPanel/shared/RoleSelector.tsx",
+    "src/components/panels/AgentPanel/shared/ToggleSwitch.tsx",
+    "src/components/panels/AgentPanel/tabs/GlobalAgentTab.tsx",
+    "src/components/panels/AgentPanel/tabs/RolesAgentTab.tsx",
+    "src/components/panels/MemoryPanel/index.tsx",
+    "src/components/panels/MemoryPanel/MemoryFilter.tsx",
+    "src/components/panels/MemoryPanel/MemoryEditor.tsx",
+    "src/components/common/ConfirmDialog.tsx",
+    "src/components/common/DeleteProjectDialog.tsx",
+    "src/components/common/AboutDialog.tsx",
+    "src/components/common/ContactAdminDialog.tsx",
+    "src/components/common/SelectionActionPopover.tsx",
+    "src/components/panels/NewProjectModal.tsx",
+    "src/components/panels/SessionSidebar.tsx",
+    "src/components/panels/SkillsPanel/BatchActionBar.tsx",
+  ];
+
+  for (const path of activeSurfaceFiles) {
+    const source = read(path);
+    assert.doesNotMatch(source, /glass-card|glass-card-subtle/, path);
+    assert.doesNotMatch(source, /shadow-xl|shadow-2xl/, path);
+    assert.doesNotMatch(source, /bg-black\/(?:40|50)/, path);
+    assert.doesNotMatch(source, /rounded-2xl|rounded-3xl/, path);
+    assert.doesNotMatch(source, /border-\[var\(--glass-border\)\]/, path);
+    assert.doesNotMatch(
+      source,
+      /bg-\[var\(--glass-bg(?:-subtle|-hover)?\)\]/,
+      path,
+    );
+  }
+});
+
 test("governed marketplace and MCP hooks fail closed before calling APIs", () => {
   const marketplaceHook = read("src/hooks/useMarketplace.ts");
   const mcpHook = read("src/hooks/useMcp.ts");

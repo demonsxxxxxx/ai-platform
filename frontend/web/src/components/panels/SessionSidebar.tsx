@@ -495,7 +495,7 @@ export const SessionSidebar = forwardRef<
   return (
     <>
       <div
-        className={`fixed inset-0 z-[60] bg-black/40 sm:hidden transition-opacity duration-300 ease-in-out ${
+        className={`fixed inset-0 z-[60] bg-[var(--theme-overlay-strong)] sm:hidden transition-opacity duration-300 ease-in-out ${
           mobileOpen ? "opacity-100" : "opacity-0 pointer-events-none"
         }`}
         style={{ height: "var(--app-viewport-height, 100dvh)" }}

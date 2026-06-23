@@ -25,8 +25,11 @@ export function NewProjectModal({
       data-yields-sidebar
       className="fixed inset-0 z-[300] flex items-center justify-center"
     >
-      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="relative bg-[var(--theme-bg-card)] rounded-lg border border-[var(--theme-border)] shadow-[0_24px_60px_-32px_rgba(15,23,42,0.45)] p-5 w-[90vw] max-w-md space-y-3">
+      <div
+        className="absolute inset-0 bg-[var(--theme-overlay-strong)]"
+        onClick={onClose}
+      />
+      <div className="enterprise-modal-shell relative w-[90vw] max-w-md p-5 space-y-3">
         <h3 className="text-sm font-semibold text-stone-800 dark:text-stone-100">
           {t("sidebar.newProject")}
         </h3>
@@ -34,7 +37,7 @@ export function NewProjectModal({
           {t("sidebar.projectHint")}
         </p>
 
-        <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg border border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700/50 focus-within:ring-2 focus-within:ring-stone-400/50 focus-within:border-stone-300 dark:focus-within:border-stone-500 transition-all">
+        <div className="flex items-center gap-2 enterprise-subtle-panel focus-within:ring-2 focus-within:ring-stone-400/30 transition-all">
           <input
             type="text"
             value={icon}
@@ -71,7 +74,7 @@ export function NewProjectModal({
               onNameChange("");
               onIconChange("📁");
             }}
-            className="px-4 py-2 text-sm font-medium text-stone-600 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-700 transition-all"
+            className="btn-secondary"
           >
             {t("common.cancel")}
           </button>
@@ -81,7 +84,7 @@ export function NewProjectModal({
               onClose();
             }}
             disabled={!name.trim()}
-            className="px-4 py-2 text-sm font-medium bg-stone-700 dark:bg-stone-200 text-white dark:text-stone-900 rounded-lg hover:bg-stone-800 dark:hover:bg-stone-100 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            className="btn-primary disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {t("common.create")}
           </button>

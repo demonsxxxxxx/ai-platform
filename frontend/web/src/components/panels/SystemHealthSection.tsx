@@ -57,7 +57,7 @@ function MetricCard({
   value: string | number | null;
 }) {
   return (
-    <div className="flex items-center gap-2.5 rounded-lg bg-[var(--glass-bg-subtle)] px-3 py-2">
+    <div className="flex items-center gap-2.5 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-3 py-2">
       <Icon size={16} className="shrink-0 text-stone-400 dark:text-stone-500" />
       <div className="min-w-0">
         <p className="text-[11px] text-stone-400 dark:text-stone-500">
@@ -152,7 +152,7 @@ export function SystemHealthSection() {
   const overview = diagnostics?.overview;
 
   return (
-    <div className="mb-4 rounded-lg border border-[var(--glass-border)] bg-[var(--glass-bg-subtle)]">
+    <div className="panel-card mb-4 p-0">
       {/* Header */}
       <div
         onClick={() => setExpanded(!expanded)}
@@ -188,7 +188,7 @@ export function SystemHealthSection() {
               fetchDiagnostics(true);
             }}
             disabled={isLoading}
-            className="rounded-lg p-1.5 text-stone-400 transition-colors hover:bg-[var(--glass-bg)] hover:text-stone-600 disabled:opacity-50 dark:text-stone-500 dark:hover:text-stone-300"
+            className="enterprise-icon-button disabled:opacity-50"
           >
             <RefreshCw size={14} className={isLoading ? "animate-spin" : ""} />
           </button>
@@ -202,7 +202,7 @@ export function SystemHealthSection() {
 
       {/* Collapsed summary line */}
       {!expanded && overview && (
-        <div className="border-t border-[var(--glass-border)] px-4 py-2">
+        <div className="border-t border-[var(--theme-border)] px-4 py-2">
           <p className="text-xs text-stone-500 dark:text-stone-400">
             RSS: {overview.rss ?? "-"} &middot;{" "}
             {t("systemHealth.threads", "Threads")}: {overview.threads ?? "-"}{" "}
@@ -214,7 +214,7 @@ export function SystemHealthSection() {
 
       {/* Expanded content */}
       {expanded && (
-        <div className="border-t border-[var(--glass-border)] px-4 py-3">
+        <div className="border-t border-[var(--theme-border)] px-4 py-3">
           {isLoading && !diagnostics && (
             <div className="flex items-center justify-center py-6">
               <LoadingSpinner size="sm" />
@@ -280,7 +280,7 @@ export function SystemHealthSection() {
                     {diagnostics.top_growth.map((row, i) => (
                       <div
                         key={i}
-                        className="flex items-center justify-between rounded-md bg-[var(--glass-bg)] px-2.5 py-1.5 text-xs"
+                        className="flex items-center justify-between rounded-md bg-[var(--theme-bg-sidebar)] px-2.5 py-1.5 text-xs"
                       >
                         <code className="max-w-[70%] truncate text-stone-600 dark:text-stone-300">
                           {row.location}
@@ -304,7 +304,7 @@ export function SystemHealthSection() {
                     {diagnostics.top_allocations.map((row, i) => (
                       <div
                         key={i}
-                        className="flex items-center justify-between rounded-md bg-[var(--glass-bg)] px-2.5 py-1.5 text-xs"
+                        className="flex items-center justify-between rounded-md bg-[var(--theme-bg-sidebar)] px-2.5 py-1.5 text-xs"
                       >
                         <code className="max-w-[70%] truncate text-stone-600 dark:text-stone-300">
                           {row.location}
@@ -328,7 +328,7 @@ export function SystemHealthSection() {
                     {diagnostics.top_objects.map((row, i) => (
                       <div
                         key={i}
-                        className="flex items-center justify-between rounded-md bg-[var(--glass-bg)] px-2.5 py-1.5 text-xs"
+                        className="flex items-center justify-between rounded-md bg-[var(--theme-bg-sidebar)] px-2.5 py-1.5 text-xs"
                       >
                         <code className="text-stone-600 dark:text-stone-300">
                           {row.type}

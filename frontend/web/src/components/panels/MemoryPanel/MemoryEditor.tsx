@@ -196,7 +196,7 @@ export function MemoryEditor({
                         ? `${
                             TYPE_STYLES[opt.value]
                           } border-transparent shadow-sm ring-1 ring-[var(--theme-primary)]`
-                        : "border-[var(--glass-border)] bg-[var(--glass-bg-subtle)] text-[var(--theme-text-secondary)] hover:bg-[var(--glass-bg-hover)]"
+                        : "border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-card)]"
                     }`}
                   >
                     <span
@@ -225,7 +225,7 @@ export function MemoryEditor({
                           ? `${
                               SOURCE_STYLES[opt.value]
                             } border-transparent shadow-sm ring-1 ring-[var(--theme-primary)]`
-                          : "border-[var(--glass-border)] bg-[var(--glass-bg-subtle)] text-[var(--theme-text-secondary)] hover:bg-[var(--glass-bg-hover)]"
+                          : "border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-card)]"
                       }`}
                     >
                       <span
@@ -245,7 +245,7 @@ export function MemoryEditor({
         <div className="es-section">
           <label className="es-label">{t("memory.contentLabel")}</label>
           {loadingContent ? (
-            <div className="flex min-h-48 items-center justify-center rounded-lg border border-dashed border-[var(--glass-border)] bg-[var(--glass-bg-subtle)]">
+            <div className="flex min-h-48 items-center justify-center rounded-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)]">
               <svg
                 className="h-5 w-5 animate-spin text-theme-text-secondary"
                 viewBox="0 0 24 24"

@@ -27,7 +27,7 @@ export const ToggleSwitch = React.memo(function ToggleSwitch({
       aria-label={ariaLabel}
     >
       <span
-        className={`absolute top-0.5 left-0.5 h-6 w-6 rounded-full bg-white shadow-lg transition-transform duration-200 ${
+        className={`absolute top-0.5 left-0.5 h-6 w-6 rounded-full bg-white shadow-sm transition-transform duration-200 ${
           enabled ? "translate-x-5" : "translate-x-0"
         }`}
       />

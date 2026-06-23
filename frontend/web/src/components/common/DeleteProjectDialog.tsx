@@ -51,12 +51,12 @@ export function DeleteProjectDialog({
       className="fixed inset-0 z-[300] flex items-center justify-center"
     >
       <div
-        className="absolute inset-0 bg-black/50"
+        className="absolute inset-0 bg-[var(--theme-overlay-strong)]"
         onClick={loading ? undefined : onCancel}
       />
 
       <div
-        className="relative z-10 w-full max-w-md mx-4 rounded-xl shadow-xl border overflow-hidden animate-in fade-in zoom-in-95 duration-200"
+        className="enterprise-modal-shell relative z-10 mx-4 max-w-md animate-in fade-in zoom-in-95 duration-200"
         style={{
           backgroundColor: "var(--theme-bg-card)",
           borderColor: "var(--theme-border)",

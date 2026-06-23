@@ -65,7 +65,7 @@ export function ConfirmDialog({
     danger: {
       icon: "text-red-500 dark:text-red-400",
       confirmButton:
-        "bg-red-500 hover:bg-red-600 dark:bg-red-600 dark:hover:bg-red-700 text-white",
+        "btn-danger border-red-300 bg-red-600 text-white hover:bg-red-700 dark:border-red-700 dark:bg-red-600 dark:text-white dark:hover:bg-red-700",
       confirmIcon: AlertTriangle,
     },
     warning: {
@@ -89,12 +89,12 @@ export function ConfirmDialog({
     >
       {/* Backdrop */}
       <div
-        className="absolute inset-0 bg-black/50"
+        className="absolute inset-0 bg-[var(--theme-overlay-strong)]"
         onClick={loading ? undefined : onCancel}
       />
 
       {/* Dialog */}
-      <div className="relative z-10 w-full max-w-sm mx-4 bg-white dark:bg-stone-800 rounded-xl shadow-xl border border-stone-200 dark:border-stone-700 overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+      <div className="enterprise-modal-shell relative z-10 mx-4 max-w-sm animate-in fade-in zoom-in-95 duration-200">
         {/* Content */}
         <div className="p-5">
           <div className="flex items-start gap-3">
@@ -115,11 +115,11 @@ export function ConfirmDialog({
         </div>
 
         {/* Actions */}
-        <div className="flex items-center justify-end gap-2 px-5 py-3 bg-stone-50 dark:bg-stone-900/50 border-t border-stone-100 dark:border-stone-700">
+        <div className="enterprise-modal-footer justify-end">
           <button
             onClick={onCancel}
             disabled={loading}
-            className="px-4 py-2 text-sm font-medium text-stone-700 dark:text-stone-300 bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-600 rounded-lg hover:bg-stone-50 dark:hover:bg-stone-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="btn-secondary disabled:cursor-not-allowed disabled:opacity-50"
           >
             {cancelLabel}
           </button>
@@ -127,7 +127,7 @@ export function ConfirmDialog({
             ref={confirmButtonRef}
             onClick={onConfirm}
             disabled={loading}
-            className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors inline-flex items-center justify-center gap-2 disabled:opacity-70 ${variantStyles[variant].confirmButton}`}
+            className={`inline-flex items-center justify-center gap-2 disabled:opacity-70 ${variantStyles[variant].confirmButton}`}
           >
             {loading ? (
               <span className="inline-flex h-4 w-4 items-center justify-center">
