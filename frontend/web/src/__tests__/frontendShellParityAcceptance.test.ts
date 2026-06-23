@@ -91,6 +91,27 @@ test("phase 1C discovery routes are login reachable and fail closed inside pages
   assert.match(app, /routeUnavailable=\{\{/);
 });
 
+test("platform admin projections can read the roles route without broadening role writes", () => {
+  const app = readFileSync(join(root, "src/App.tsx"), "utf8");
+  const authTypes = readFileSync(join(root, "src/types/auth.ts"), "utf8");
+  const rolesPanel = readFileSync(
+    join(root, "src/components/panels/RolesPanel.tsx"),
+    "utf8",
+  );
+
+  const rolesRoute = app.match(/path="\/roles"[\s\S]{0,900}<RolesPage \/>/)?.[0] ?? "";
+  assert.match(rolesRoute, /Permission\.ROLE_MANAGE/);
+  assert.match(rolesRoute, /Permission\.SETTINGS_MANAGE/);
+  assert.match(rolesRoute, /Permission\.AGENT_ADMIN/);
+  assert.match(rolesRoute, /Permission\.ADMIN_STATUS/);
+  assert.match(authTypes, /ADMIN_STATUS = "admin:status"/);
+  assert.match(rolesPanel, /const canManage = hasPermission\(Permission\.ROLE_MANAGE\);/);
+  assert.doesNotMatch(
+    rolesPanel,
+    /const canManage = hasAnyPermission\(\[[\s\S]*Permission\.AGENT_ADMIN/,
+  );
+});
+
 test("authenticated sidebar uses governed workbench entries instead of old plaza shortcuts", () => {
   const sidebar = [
     readFileSync(join(root, "src/components/panels/SessionSidebar.tsx"), "utf8"),
