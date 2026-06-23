@@ -312,3 +312,153 @@ def test_public_skill_file_write_routes_are_permission_gated_then_fail_closed_40
     )
     assert delete_response.status_code == 409
     assert delete_response.json()["detail"] == "skill_file_delete_contract_not_backed"
+
+
+def test_public_skill_batch_routes_map_to_tenant_availability(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+    write_headers = headers("skill:write,skill:delete,marketplace:read")
+
+    toggle_response = client.post(
+        "/api/skills/batch/toggle",
+        json={"names": ["qa-file-reviewer"], "enabled": False},
+        headers=write_headers,
+    )
+    assert toggle_response.status_code == 200
+    assert toggle_response.json() == {"updated": ["qa-file-reviewer"], "errors": []}
+
+    delete_response = client.post(
+        "/api/skills/batch/delete",
+        json={"names": ["qa-file-reviewer"]},
+        headers=write_headers,
+    )
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"deleted": ["qa-file-reviewer"], "errors": []}
+
+    status_calls = [payload for name, payload in calls if name == "set_status"]
+    assert status_calls == [
+        {"tenant_id": "default", "skill_id": "qa-file-reviewer", "status": "disabled"},
+        {"tenant_id": "default", "skill_id": "qa-file-reviewer", "status": "disabled"},
+    ]
+
+
+def test_public_skill_import_and_direct_marketplace_routes_are_permission_gated_then_fail_closed(monkeypatch):
+    install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+
+    zip_preview_denied = client.post(
+        "/api/skills/upload/preview",
+        headers=headers("skill:read,marketplace:read"),
+    )
+    assert zip_preview_denied.status_code == 403
+    assert zip_preview_denied.json()["detail"] == "missing_permission:skill:write"
+
+    zip_preview = client.post(
+        "/api/skills/upload/preview",
+        headers=headers("skill:write"),
+    )
+    assert zip_preview.status_code == 409
+    assert zip_preview.json()["detail"] == "skill_import_contract_not_backed"
+
+    zip_upload = client.post(
+        "/api/skills/upload",
+        headers=headers("skill:write"),
+    )
+    assert zip_upload.status_code == 409
+    assert zip_upload.json()["detail"] == "skill_import_contract_not_backed"
+
+    github_preview_denied = client.post(
+        "/api/github/preview",
+        json={"repo_url": "https://github.com/example/skills"},
+        headers=headers("skill:read,marketplace:read"),
+    )
+    assert github_preview_denied.status_code == 403
+    assert github_preview_denied.json()["detail"] == "missing_permission:skill:write"
+
+    github_preview = client.post(
+        "/api/github/preview",
+        json={"repo_url": "https://github.com/example/skills", "branch": "main"},
+        headers=headers("skill:write"),
+    )
+    assert github_preview.status_code == 409
+    assert github_preview.json()["detail"] == "skill_import_contract_not_backed"
+
+    github_install = client.post(
+        "/api/github/install",
+        json={"repo_url": "https://github.com/example/skills", "skill_names": ["qa-file-reviewer"]},
+        headers=headers("skill:write"),
+    )
+    assert github_install.status_code == 409
+    assert github_install.json()["detail"] == "skill_import_contract_not_backed"
+
+    direct_marketplace_denied = client.post(
+        "/api/marketplace/",
+        json={"skill_name": "qa-file-reviewer"},
+        headers=headers("marketplace:read"),
+    )
+    assert direct_marketplace_denied.status_code == 403
+    assert direct_marketplace_denied.json()["detail"] == "missing_permission:marketplace:admin"
+
+    direct_marketplace = client.post(
+        "/api/marketplace/",
+        json={"skill_name": "qa-file-reviewer"},
+        headers=headers("marketplace:admin"),
+    )
+    assert direct_marketplace.status_code == 409
+    assert direct_marketplace.json()["detail"] == "marketplace_direct_write_contract_not_backed"
+
+    for method, path in [
+        ("put", "/api/marketplace/qa-file-reviewer"),
+        ("patch", "/api/marketplace/qa-file-reviewer/activate"),
+        ("delete", "/api/marketplace/qa-file-reviewer"),
+    ]:
+        if method == "delete":
+            response = client.delete(path, headers=headers("marketplace:admin"))
+        else:
+            response = getattr(client, method)(
+                path,
+                json={"skill_name": "qa-file-reviewer"},
+                headers=headers("marketplace:admin"),
+            )
+        assert response.status_code == 409
+        assert response.json()["detail"] == "marketplace_direct_write_contract_not_backed"
+
+
+def test_public_skill_batch_routes_are_permission_gated_and_report_item_errors(monkeypatch):
+    install_route_fakes(monkeypatch)
+
+    async def fail_missing(conn, *, tenant_id, skill_id, status):
+        raise RepositoryNotFoundError(f"{skill_id}_not_found")
+
+    monkeypatch.setattr(
+        "app.routes.skills_marketplace.repositories.set_public_skill_enabled",
+        fail_missing,
+    )
+    client = TestClient(create_app())
+
+    delete_denied = client.post(
+        "/api/skills/batch/delete",
+        json={"names": ["qa-file-reviewer"]},
+        headers=headers("skill:write"),
+    )
+    assert delete_denied.status_code == 403
+    assert delete_denied.json()["detail"] == "missing_permission:skill:delete"
+
+    toggle_denied = client.post(
+        "/api/skills/batch/toggle",
+        json={"names": ["qa-file-reviewer"], "enabled": False},
+        headers=headers("skill:read"),
+    )
+    assert toggle_denied.status_code == 403
+    assert toggle_denied.json()["detail"] == "missing_permission:skill:write"
+
+    toggle_response = client.post(
+        "/api/skills/batch/toggle",
+        json={"names": ["missing-skill"], "enabled": False},
+        headers=headers("skill:write"),
+    )
+    assert toggle_response.status_code == 200
+    assert toggle_response.json() == {
+        "updated": [],
+        "errors": [{"name": "missing-skill", "reason": "missing-skill_not_found"}],
+    }

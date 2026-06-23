@@ -112,7 +112,7 @@ Otherwise link the issue without auto-closing language.
   and platform-controlled runner selection must be classified at the layer where
   they are observed. Local diagnostic evidence by itself is `local partial` or
   `PR ready` evidence only; it is not `reviewed`, `211 verified`, or
-  `gate closable`, and it does not close #164 or any other stage/gate issue
+  `gate closable`, and it carries no #164 or stage/gate closure claim
   unless the normal review, deployed-runtime, and issue-closure gates below also
   pass.
 - When review is performed by sub-agents or other local assistants, record the
