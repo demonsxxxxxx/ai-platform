@@ -30,7 +30,7 @@ export function SkillsPanel({
   const isGovernedUnavailable = governedUnavailable || !canRead;
   const skillFileWriteBacked = false;
   const skillImportBacked = false;
-  const skillBatchWriteBacked = false;
+  const skillBatchWriteBacked = true;
 
   const actions = useSkillsActions({ enabled: !isGovernedUnavailable });
   const effectivePermissions = new Set(actions.effectivePermissions);

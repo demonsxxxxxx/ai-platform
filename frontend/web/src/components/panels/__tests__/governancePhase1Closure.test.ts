@@ -319,7 +319,7 @@ test("read-only skills catalog removes write controls instead of showing disable
   assert.match(batchActionBar, /\{canDelete && \(/);
   assert.match(skillsPanel, /skillFileWriteBacked = false/);
   assert.match(skillsPanel, /skillImportBacked = false/);
-  assert.match(skillsPanel, /skillBatchWriteBacked = false/);
+  assert.match(skillsPanel, /skillBatchWriteBacked = true/);
   assert.match(skillsPanel, /canWrite=\{canWrite && !isGovernedUnavailable\}/);
   assert.match(
     skillsPanel,
@@ -341,6 +341,22 @@ test("read-only skills catalog removes write controls instead of showing disable
     skillsPanel,
     /canDelete=\{canDeleteSkill && !isGovernedUnavailable\}/,
   );
+});
+
+test("skills phase one backed operations match PR177 public contracts", () => {
+  const skillsPanel = read("src/components/panels/SkillsPanel/index.tsx");
+  const skillApi = read("src/services/api/skill.ts");
+  const skillsList = read("src/components/panels/SkillsPanel/SkillsList.tsx");
+
+  assert.match(skillApi, /async batchToggle/);
+  assert.match(skillApi, /\/batch\/toggle/);
+  assert.match(skillApi, /async batchDelete/);
+  assert.match(skillApi, /\/batch\/delete/);
+  assert.match(skillApi, /async toggle/);
+  assert.match(skillApi, /\/toggle/);
+  assert.match(skillsPanel, /skillBatchWriteBacked = true/);
+  assert.match(skillsList, /\{canBatchSkills && filteredSkills\.length > 0 &&/);
+  assert.doesNotMatch(skillsPanel, /skillBatchWriteBacked = false/);
 });
 
 test("marketplace hides direct write governance until backend contracts exist", () => {
