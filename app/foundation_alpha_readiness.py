@@ -178,6 +178,8 @@ def _load_source_runtime_relation_manifest() -> dict[str, Any] | None:
         return None
     if _string_list(payload.get("runtime_affecting_changes_since_runtime_subject")) is None:
         return None
+    if _string_list(payload.get("runtime_affecting_dirty_paths")) is None:
+        return None
     return payload
 
 
@@ -275,6 +277,8 @@ def _source_runtime_relation_manifest_for_source_tree(
     manifest_source_commit = str(payload.get("source_tree_commit_sha") or "")
     manifest_runtime_subject = str(payload.get("runtime_subject_commit_sha") or "")
     if runtime_subject_commit is not None and manifest_runtime_subject != runtime_subject_commit:
+        return None
+    if _string_list(payload.get("runtime_affecting_dirty_paths")) != []:
         return None
     if manifest_source_commit != source_tree_commit:
         runtime_affecting_after_manifest = _resolve_runtime_affecting_changes_between(
@@ -899,7 +903,24 @@ def _commit_ref_covers_runtime_relevant_source(
         evidence_commit,
         source_tree_commit,
     )
-    return runtime_affecting_delta == []
+    if runtime_affecting_delta == []:
+        return True
+    if runtime_affecting_delta is not None:
+        return False
+    marker = _source_snapshot_marker_for_source_tree(source_tree_commit)
+    if (
+        marker is not None
+        and marker.get("runtime_subject_commit_sha") == evidence_commit
+        and _string_list(marker.get("runtime_affecting_changes_since_runtime_subject")) == []
+        and _string_list(marker.get("runtime_affecting_dirty_paths")) == []
+    ):
+        return True
+    manifest = _source_runtime_relation_manifest_for_source_tree(source_tree_commit, evidence_commit)
+    return (
+        manifest is not None
+        and _string_list(manifest.get("runtime_affecting_changes_since_runtime_subject")) == []
+        and _string_list(manifest.get("runtime_affecting_dirty_paths")) == []
+    )
 
 
 def _foundation_runtime_concurrency_evidence_matches_active_subject(
