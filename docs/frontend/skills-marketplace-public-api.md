@@ -85,19 +85,22 @@ Backed routes:
 - `GET /api/marketplace/{skill_name}/files/{file_path}`
 - `POST /api/marketplace/{skill_name}/install`
 - `POST /api/marketplace/{skill_name}/update`
-
-Marketplace list/detail/files are projected only from globally active public workbench skills. Tenant-disabled skills remain visible in the marketplace projection so users with `skill:write` can install/update them back to active. Internal dependencies are not exposed as ordinary marketplace entries.
-
-`install` and `update` enable the selected public skill in tenant availability and write audit evidence. They do not expose package upload, release promote, rollback, MCP lifecycle, or tool execution controls to ordinary users.
-
-Explicitly fail-closed direct marketplace write routes:
-
 - `POST /api/marketplace/`
 - `PUT /api/marketplace/{skill_name}`
 - `PATCH /api/marketplace/{skill_name}/activate`
 - `DELETE /api/marketplace/{skill_name}`
 
-Those direct marketplace lifecycle routes return `409 marketplace_direct_write_contract_not_backed` after `marketplace:admin` passes. The backed public path remains publish-request audit plus admin release management under `/api/ai/admin/skills/*`.
+Marketplace list/detail/files are projected only from globally active public workbench skills. Tenant-disabled skills remain visible in the marketplace projection so users with `skill:write` can install/update them back to active. Internal dependencies are not exposed as ordinary marketplace entries.
+
+`install` and `update` enable the selected public skill in tenant availability and write audit evidence. They do not expose package upload, release promote, rollback, MCP lifecycle, or tool execution controls to ordinary users.
+
+Direct marketplace lifecycle routes are backed for authorized marketplace admins:
+
+- `POST /api/marketplace/` and `PUT /api/marketplace/{skill_name}` materialize tenant-facing Skill metadata as an immutable `skill_versions` snapshot and point the tenant stable release policy at that snapshot. They do not mutate the global `skills` catalog row.
+- `PATCH /api/marketplace/{skill_name}/activate` accepts either `active` or the frontend-compatible `is_active` body field and updates tenant availability.
+- `DELETE /api/marketplace/{skill_name}` disables tenant Marketplace availability without deleting global Skill records.
+
+Package upload, rollback, and low-level release management remain under the admin release-management surface at `/api/ai/admin/skills/*`.
 
 ## MCP Routes
 

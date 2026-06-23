@@ -137,7 +137,6 @@ export interface MarketplaceCreateRequest {
   description?: string;
   tags?: string[];
   version?: string;
-  files: Record<string, string>;
 }
 
 // Marketplace skill files response
