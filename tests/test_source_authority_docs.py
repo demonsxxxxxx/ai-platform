@@ -577,6 +577,7 @@ def test_committed_source_runtime_relation_manifest_keeps_clean_checkout_readine
     assert payload["source_tree_commit_sha"] == ACTIVE_SOURCE_TREE_SHA
     assert payload["runtime_subject_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
     assert payload["runtime_affecting_changes_since_runtime_subject"] == []
+    assert payload["runtime_affecting_dirty_paths"] == []
     assert "C:\\Users" not in json.dumps(payload)
     assert TARGET_211_HOME_ROOT not in json.dumps(payload)
 

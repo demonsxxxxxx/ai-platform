@@ -2190,6 +2190,7 @@ def test_foundation_alpha_readiness_uses_committed_source_runtime_manifest_when_
                 "source_tree_commit_sha": NEWER_SOURCE_SHA,
                 "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
                 "runtime_affecting_changes_since_runtime_subject": [],
+                "runtime_affecting_dirty_paths": [],
                 "note": "committed manifest for clean checkouts without the runtime subject object",
             }
         ),
@@ -2302,6 +2303,7 @@ def test_foundation_alpha_readiness_rejects_stale_source_runtime_manifest_with_r
                 "source_tree_commit_sha": CURRENT_SOURCE_SHA,
                 "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
                 "runtime_affecting_changes_since_runtime_subject": [],
+                "runtime_affecting_dirty_paths": [],
                 "note": "stale manifest must not bless later runtime-affecting code changes",
             }
         ),
@@ -3163,6 +3165,95 @@ def test_foundation_runtime_concurrency_subject_accepts_runtime_neutral_source_d
     )
 
     assert matches is True
+
+
+def test_foundation_runtime_concurrency_subject_uses_archive_source_snapshot_when_git_diff_unavailable(
+    monkeypatch, tmp_path
+):
+    payload = _minimal_foundation_runtime_concurrency_payload(CURRENT_SOURCE_SHA)
+    marker_path = tmp_path / ".ai-platform-source-snapshot.json"
+    marker_path.write_text(
+        json.dumps(
+            {
+                "schema_version": foundation_alpha_readiness.SOURCE_SNAPSHOT_SCHEMA_VERSION,
+                "source_tree_commit_sha": NEWER_SOURCE_SHA,
+                "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
+                "source_tree_dirty": False,
+                "runtime_affecting_changes_since_runtime_subject": [],
+                "runtime_affecting_dirty_paths": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_SOURCE_SNAPSHOT_MARKER", marker_path, raising=False)
+
+    def git_diff_unavailable(base_commit, source_tree_commit):
+        assert base_commit == CURRENT_SOURCE_SHA
+        assert source_tree_commit == NEWER_SOURCE_SHA
+        return None
+
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_changes_between",
+        git_diff_unavailable,
+        raising=False,
+    )
+
+    matches = foundation_alpha_readiness._foundation_runtime_concurrency_evidence_matches_active_subject(
+        payload,
+        source_tree_commit=NEWER_SOURCE_SHA,
+        runtime_subject_commit=ACTIVE_RUNTIME_SUBJECT_SHA,
+    )
+
+    assert matches is True
+
+
+def test_foundation_runtime_concurrency_subject_rejects_manifest_with_dirty_paths_when_git_diff_unavailable(
+    monkeypatch, tmp_path
+):
+    payload = _minimal_foundation_runtime_concurrency_payload(CURRENT_SOURCE_SHA)
+    evidence_root = tmp_path / "docs/release-evidence/foundation-alpha-poc"
+    evidence_root.mkdir(parents=True)
+    manifest_path = evidence_root / "source-runtime-relation-manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": foundation_alpha_readiness.SOURCE_RUNTIME_RELATION_MANIFEST_SCHEMA_VERSION,
+                "source_tree_commit_sha": NEWER_SOURCE_SHA,
+                "runtime_subject_commit_sha": CURRENT_SOURCE_SHA,
+                "runtime_affecting_changes_since_runtime_subject": [],
+                "runtime_affecting_dirty_paths": ["app/worker.py"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_SOURCE_RUNTIME_RELATION_MANIFEST",
+        manifest_path,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_SOURCE_SNAPSHOT_MARKER",
+        tmp_path / ".ai-platform-source-snapshot.json",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_changes_between",
+        lambda _base, _source: None,
+        raising=False,
+    )
+
+    matches = foundation_alpha_readiness._foundation_runtime_concurrency_evidence_matches_active_subject(
+        payload,
+        source_tree_commit=NEWER_SOURCE_SHA,
+        runtime_subject_commit=ACTIVE_RUNTIME_SUBJECT_SHA,
+    )
+
+    assert matches is False
 
 
 def test_foundation_runtime_concurrency_active_subject_rejects_runtime_affecting_source_delta(monkeypatch):
