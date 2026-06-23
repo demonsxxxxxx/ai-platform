@@ -462,6 +462,28 @@ test("agents route uses a public read-only directory instead of legacy config ad
   assert.doesNotMatch(directory, /agentConfigApi|roleApi|\/api\/agent\/config|Permission\.AGENT_ADMIN/);
 });
 
+test("channels route renders a governed workbench instead of a thin unavailable placeholder", () => {
+  const tabs = readFileSync(
+    join(root, "src/components/layout/AppContent/TabContent.tsx"),
+    "utf8",
+  );
+  const channels = readFileSync(
+    join(root, "src/components/channels/ChannelImportPanel.tsx"),
+    "utf8",
+  );
+
+  assert.match(tabs, /channels:\s*ChannelImportPanel/);
+  assert.match(channels, /data-channel-workbench-shell/);
+  assert.match(channels, /data-channel-projection-gap/);
+  assert.match(channels, /PanelHeader/);
+  assert.match(channels, /GovernanceAvailabilityBadge/);
+  assert.match(channels, /channelImport\.capabilities\.publicSources\.title/);
+  assert.match(channels, /channelImport\.backendGap\.title/);
+  assert.doesNotMatch(channels, /const backedSources/);
+  assert.doesNotMatch(channels, /backedSources\.length === 0/);
+  assert.doesNotMatch(channels, /channelApi|\/api\/channels/);
+});
+
 test("launchpad navigation is overflow safe on narrow authenticated viewports", () => {
   const launchpad = readFileSync(
     join(root, "src/components/launchpad/LaunchpadPanel.tsx"),

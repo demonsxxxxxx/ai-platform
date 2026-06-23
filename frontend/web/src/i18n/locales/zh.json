@@ -546,8 +546,40 @@
     "title": "渠道管理"
   },
   "channelImport": {
+    "title": "频道导入",
+    "subtitle": "统一查看公司消息入口、通知入口和外部渠道治理状态。",
     "redaction": "脱敏",
     "retention": "保留策略",
+    "sourcesTitle": "渠道来源",
+    "sourcesDescription": "这些入口会保留在工作台导航中，但在后端投影补齐前不会读取 legacy /api/channels 配置。",
+    "sourceFailClosedDescription": "等待租户级频道投影、脱敏策略和审计状态后开放。",
+    "sources": {
+      "feishu": "飞书",
+      "wechat": "企业微信",
+      "dingtalk": "钉钉",
+      "slack": "Slack"
+    },
+    "capabilities": {
+      "publicSources": {
+        "title": "公共频道投影",
+        "description": "普通用户只应看到已批准的频道目录，不暴露 webhook、密钥或跨租户配置。"
+      },
+      "runtimeNotices": {
+        "title": "运行通知",
+        "description": "聊天和任务运行中的通知仍由当前消息面板承载，频道管理入口保持只读可见。"
+      },
+      "lifecycle": {
+        "title": "生命周期治理",
+        "description": "创建、测试、启停、凭证和保留策略需要后端管理投影后再开放。"
+      }
+    },
+    "backendGap": {
+      "title": "频道投影尚未接入",
+      "description": "前端已保留完整工作台入口，但当前仓库没有可用于普通用户的 ai-platform channel projection。",
+      "publicProjection": "需要 GET /api/channels/catalog 或等价公共投影，返回频道类型、展示名、能力和启用状态。",
+      "adminProjection": "需要受权限保护的管理投影，用于创建、测试、启停实例和维护凭证。",
+      "auditProjection": "需要审计字段覆盖脱敏策略、保留策略、最近连接状态和变更人。"
+    },
     "unavailable": {
       "description": "当前工作区尚未启用频道导入。管理员启用前不会展示频道详情。",
       "title": "频道导入暂不可用"

@@ -546,8 +546,40 @@
     "title": "Channels"
   },
   "channelImport": {
+    "title": "Channels",
+    "subtitle": "Review company message entry points, notification entry points, and external channel governance in one workbench.",
     "redaction": "Redaction",
     "retention": "Retention",
+    "sourcesTitle": "Channel sources",
+    "sourcesDescription": "These entries stay visible in the workbench, but they do not read legacy /api/channels configuration until backend projections exist.",
+    "sourceFailClosedDescription": "Waiting for tenant channel projection, redaction policy, and audit status before opening.",
+    "sources": {
+      "feishu": "Feishu",
+      "wechat": "WeCom",
+      "dingtalk": "DingTalk",
+      "slack": "Slack"
+    },
+    "capabilities": {
+      "publicSources": {
+        "title": "Public channel projection",
+        "description": "Ordinary users should only see approved channel catalog data without webhooks, secrets, or cross-tenant configuration."
+      },
+      "runtimeNotices": {
+        "title": "Runtime notices",
+        "description": "Chat and task runtime notices still flow through the current message surfaces while this management entry stays read-only."
+      },
+      "lifecycle": {
+        "title": "Lifecycle governance",
+        "description": "Create, test, enable, disable, credentials, and retention policy controls need backend admin projections before opening."
+      }
+    },
+    "backendGap": {
+      "title": "Channel projection is not connected yet",
+      "description": "The frontend now keeps the full workbench entry, but this repository does not expose an ai-platform channel projection for ordinary users yet.",
+      "publicProjection": "Need GET /api/channels/catalog or an equivalent public projection with channel type, display name, capabilities, and enabled state.",
+      "adminProjection": "Need a permission-protected admin projection for creating, testing, enabling, disabling instances, and maintaining credentials.",
+      "auditProjection": "Need audit fields covering redaction policy, retention policy, last connection state, and last actor."
+    },
     "unavailable": {
       "description": "Channel import is not enabled for your workspace yet. No channel details are shown until an administrator turns it on.",
       "title": "Channel import is not available yet"
