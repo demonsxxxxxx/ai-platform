@@ -34,7 +34,11 @@ import {
   resolveDefaultModelSelection,
 } from "./modelSelection";
 import { getRestoredModelSelection } from "./sessionState";
-import { buildEffectiveSkills, countEnabledSkills } from "./skillAvailability";
+import {
+  buildEffectiveSkills,
+  countEnabledSkills,
+  resolveComposerSkillsAvailability,
+} from "./skillAvailability";
 import { AppShell } from "./AppShell";
 import { ChatView } from "./ChatView";
 import { WorkbenchShell } from "../../workbench/WorkbenchShell";
@@ -67,10 +71,16 @@ export function ChatAppContent({
   const { t } = useTranslation();
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { enableSkills, availableModels, defaultModel } = useSettingsContext();
+  const { enableSkills, settings, availableModels, defaultModel } =
+    useSettingsContext();
   const { hasPermission, isAuthenticated } = useAuth();
   const canReadSkills = hasPermission(Permission.SKILL_READ);
   const canReadMcpTools = hasPermission(Permission.MCP_READ);
+  const composerSkillsAvailability = resolveComposerSkillsAvailability({
+    canReadSkills,
+    settingsProjectionKnown: settings !== null,
+    enableSkillsSetting: enableSkills,
+  });
 
   const { isPageDragging, pageDragAttachments, setPageDragAttachments } =
     useDragAndDrop();
@@ -97,7 +107,7 @@ export function ChatAppContent({
     pendingSkillNames,
     isMutating: skillsMutating,
     fetchSkills,
-  } = useSkills({ enabled: enableSkills && canReadSkills });
+  } = useSkills({ enabled: composerSkillsAvailability.shouldFetchSkills });
 
   const canReadPersonaPresets = hasPermission(Permission.PERSONA_PRESET_READ);
   const canManagePersonaPresets =
@@ -780,7 +790,7 @@ export function ChatAppContent({
           skillsMutating={skillsMutating}
           enabledSkillsCount={countEnabledSkills(effectiveSkills)}
           totalSkillsCount={effectiveSkills.length}
-          enableSkills={enableSkills}
+          enableSkills={composerSkillsAvailability.enableComposerSkills}
           personaPresets={personaPresets}
           personaPresetsTotal={personaPresetsTotal}
           personaPresetsPage={personaPresetPage}

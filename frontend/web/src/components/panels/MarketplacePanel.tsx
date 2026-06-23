@@ -90,14 +90,14 @@ export function MarketplacePanel({
     isLoading: userSkillsLoading,
     getSkill,
   } = useSkills({ enabled: !effectiveGovernedUnavailable });
-  const marketplaceDirectWriteBacked = false;
+  const marketplaceDirectWriteBacked = true;
   const canInstall =
     hasAnyPermission([Permission.SKILL_WRITE]) &&
     hasAnyPermission([Permission.MARKETPLACE_READ]) &&
     !effectiveGovernedUnavailable;
   const canCreateInMarketplace =
     marketplaceDirectWriteBacked &&
-    hasAnyPermission([Permission.MARKETPLACE_PUBLISH]) &&
+    hasAnyPermission([Permission.MARKETPLACE_ADMIN]) &&
     !effectiveGovernedUnavailable;
   const canAdmin =
     marketplaceDirectWriteBacked &&
@@ -254,7 +254,6 @@ export function MarketplacePanel({
           description: data.description,
           tags: data.tags,
           version: "1.0.0",
-          files: data.files || { "SKILL.md": data.content },
         });
       } else if (editingSkill) {
         success = await updateMarketplaceSkill(editingSkill.name, {
@@ -262,7 +261,6 @@ export function MarketplacePanel({
           description: data.description,
           tags: data.tags,
           version: "1.0.0",
-          files: data.files || { "SKILL.md": data.content },
         });
       }
       if (success) {

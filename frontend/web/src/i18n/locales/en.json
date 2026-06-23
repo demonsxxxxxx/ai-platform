@@ -2647,8 +2647,8 @@
       "title": "{{page}} is governed"
     },
     "phaseTwo": {
-      "description": "This entry stays in the workbench, but company users, system settings, feedback, notifications, and agent administration still need backend public/admin projections. The frontend will not load legacy admin pages or surface unbacked 404 responses.",
-      "title": "{{page}} is waiting for backend management projections"
+      "description": "This entry stays in the workbench, but company users, system settings, feedback, notifications, and agent administration are still waiting for the matching service capability. The frontend will not load legacy admin pages or expose inactive entries.",
+      "title": "{{page}} management is not enabled yet"
     },
     "newConversation": "New conversation",
     "none": "None",

@@ -32,3 +32,24 @@ export function buildEffectiveSkills({
 export function countEnabledSkills(skills: SkillResponse[]): number {
   return skills.filter((skill) => skill.enabled).length;
 }
+
+export function resolveComposerSkillsAvailability({
+  canReadSkills,
+  settingsProjectionKnown,
+  enableSkillsSetting,
+}: {
+  canReadSkills: boolean;
+  settingsProjectionKnown: boolean;
+  enableSkillsSetting: boolean;
+}): {
+  shouldFetchSkills: boolean;
+  enableComposerSkills: boolean;
+} {
+  const settingsAllowsSkills = !settingsProjectionKnown || enableSkillsSetting;
+  const available = canReadSkills && settingsAllowsSkills;
+
+  return {
+    shouldFetchSkills: available,
+    enableComposerSkills: available,
+  };
+}

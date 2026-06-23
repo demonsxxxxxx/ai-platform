@@ -1,9 +1,10 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
 
 import {
   buildEffectiveSkills,
   countEnabledSkills,
+  resolveComposerSkillsAvailability,
 } from "../skillAvailability.ts";
 import type { SkillResponse } from "../../../../types";
 
@@ -55,4 +56,46 @@ test("falls back to disabled-skills mode without a persona whitelist", () => {
     ],
   );
   assert.equal(countEnabledSkills(result), 1);
+});
+
+test("keeps composer Skills usable when settings projection is degraded but skills are readable", () => {
+  assert.deepEqual(
+    resolveComposerSkillsAvailability({
+      canReadSkills: true,
+      settingsProjectionKnown: false,
+      enableSkillsSetting: false,
+    }),
+    {
+      shouldFetchSkills: true,
+      enableComposerSkills: true,
+    },
+  );
+});
+
+test("disables composer Skills only when settings explicitly disable Skills", () => {
+  assert.deepEqual(
+    resolveComposerSkillsAvailability({
+      canReadSkills: true,
+      settingsProjectionKnown: true,
+      enableSkillsSetting: false,
+    }),
+    {
+      shouldFetchSkills: false,
+      enableComposerSkills: false,
+    },
+  );
+});
+
+test("keeps composer Skills fail-closed without skill read permission", () => {
+  assert.deepEqual(
+    resolveComposerSkillsAvailability({
+      canReadSkills: false,
+      settingsProjectionKnown: false,
+      enableSkillsSetting: true,
+    }),
+    {
+      shouldFetchSkills: false,
+      enableComposerSkills: false,
+    },
+  );
 });
