@@ -287,6 +287,28 @@ def _repository_http_exception(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail="repository_error")
 
 
+def _request_names(payload: Any) -> list[str]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="skill_batch_request_required")
+    raw_names = payload.get("names")
+    if not isinstance(raw_names, list) or not raw_names:
+        raise HTTPException(status_code=400, detail="skill_names_required")
+    names = [_safe_skill_name(str(item)) for item in raw_names]
+    if len(names) != len(set(names)):
+        raise HTTPException(status_code=400, detail="duplicate_skill_names")
+    return names
+
+
+def _direct_marketplace_write_not_backed(skill_name: str | None = None) -> None:
+    if skill_name is not None:
+        _safe_skill_name(skill_name)
+    raise HTTPException(status_code=409, detail="marketplace_direct_write_contract_not_backed")
+
+
+def _skill_import_not_backed() -> None:
+    raise HTTPException(status_code=409, detail="skill_import_contract_not_backed")
+
+
 @router.get("/skills/", response_model=PublicSkillsResponse)
 async def list_skills(
     skip: int = Query(default=0, ge=0),
@@ -309,6 +331,100 @@ async def list_skills(
         available_tags=_available_tags(rows),
         effective_permissions=_effective_permissions(principal),
     )
+
+
+@router.post("/skills/upload/preview")
+async def preview_skill_upload(
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    """Expose the legacy ZIP preview contract as permission-gated but not backed."""
+
+    _require_permission(principal, "skill:write")
+    _skill_import_not_backed()
+
+
+@router.post("/skills/upload")
+async def upload_skills(
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    """Fail closed for ZIP import until durable user skill storage exists."""
+
+    _require_permission(principal, "skill:write")
+    _skill_import_not_backed()
+
+
+@router.post("/skills/batch/delete")
+async def batch_delete_skills(
+    principal: AuthPrincipal = Depends(require_principal),
+    payload: Any = Body(default=None),
+) -> dict[str, object]:
+    """Disable multiple tenant-visible skills through the existing availability contract."""
+
+    _require_permission(principal, "skill:delete")
+    names = _request_names(payload)
+    deleted: list[str] = []
+    errors: list[dict[str, str]] = []
+    async with transaction() as conn:
+        for skill_name in names:
+            try:
+                await repositories.set_public_skill_enabled(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    skill_id=skill_name,
+                    status="disabled",
+                )
+                await repositories.append_audit_log(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    action="skill.public.batch_delete",
+                    target_type="skill",
+                    target_id=skill_name,
+                    payload_json={"department_id": principal.department_id},
+                )
+                deleted.append(skill_name)
+            except (repositories.RepositoryNotFoundError, repositories.RepositoryConflictError) as exc:
+                errors.append({"name": skill_name, "reason": str(exc)})
+    return {"deleted": deleted, "errors": errors}
+
+
+@router.post("/skills/batch/toggle")
+async def batch_toggle_skills(
+    principal: AuthPrincipal = Depends(require_principal),
+    payload: Any = Body(default=None),
+) -> dict[str, object]:
+    """Toggle multiple tenant-visible skills through the existing availability contract."""
+
+    _require_permission(principal, "skill:write")
+    names = _request_names(payload)
+    if not isinstance(payload, dict) or not isinstance(payload.get("enabled"), bool):
+        raise HTTPException(status_code=400, detail="skill_batch_enabled_required")
+    enabled = bool(payload["enabled"])
+    status = "active" if enabled else "disabled"
+    updated: list[str] = []
+    errors: list[dict[str, str]] = []
+    async with transaction() as conn:
+        for skill_name in names:
+            try:
+                await repositories.set_public_skill_enabled(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    skill_id=skill_name,
+                    status=status,
+                )
+                await repositories.append_audit_log(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    action="skill.public.batch_toggle",
+                    target_type="skill",
+                    target_id=skill_name,
+                    payload_json={"enabled": enabled, "department_id": principal.department_id},
+                )
+                updated.append(skill_name)
+            except (repositories.RepositoryNotFoundError, repositories.RepositoryConflictError) as exc:
+                errors.append({"name": skill_name, "reason": str(exc)})
+    return {"updated": updated, "errors": errors}
 
 
 @router.get("/skills/{skill_name}", response_model=PublicSkillDetailResponse)
@@ -480,6 +596,28 @@ async def publish_skill(
     return _marketplace_item(row, principal)
 
 
+@router.post("/github/preview")
+async def preview_github_skills(
+    principal: AuthPrincipal = Depends(require_principal),
+    payload: Any = Body(default=None),
+) -> dict[str, object]:
+    """Fail closed for GitHub import preview until backend import is product-backed."""
+
+    _require_permission(principal, "skill:write")
+    _skill_import_not_backed()
+
+
+@router.post("/github/install")
+async def install_github_skills(
+    principal: AuthPrincipal = Depends(require_principal),
+    payload: Any = Body(default=None),
+) -> dict[str, object]:
+    """Fail closed for GitHub import install until backend import is product-backed."""
+
+    _require_permission(principal, "skill:write")
+    _skill_import_not_backed()
+
+
 @router.get("/marketplace/", response_model=list[MarketplaceSkillResponse])
 async def list_marketplace(
     tags: str | None = Query(default=None),
@@ -495,6 +633,17 @@ async def list_marketplace(
     tag_values = [tag.strip() for tag in (tags or "").split(",") if tag.strip()]
     filtered = _filter_rows(rows, query=search, tags=tag_values)
     return [_marketplace_item(row, principal) for row in filtered[skip : skip + limit]]
+
+
+@router.post("/marketplace/")
+async def create_marketplace_skill(
+    principal: AuthPrincipal = Depends(require_principal),
+    payload: Any = Body(default=None),
+) -> dict[str, object]:
+    """Fail closed for direct marketplace lifecycle writes."""
+
+    _require_permission(principal, "marketplace:admin")
+    _direct_marketplace_write_not_backed()
 
 
 @router.get("/marketplace/tags", response_model=MarketplaceTagsResponse)
@@ -519,6 +668,41 @@ async def get_marketplace_skill(
     safe_skill_name = _safe_skill_name(skill_name)
     rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=True)
     return _marketplace_item(_find_row(rows, skill_name=safe_skill_name), principal)
+
+
+@router.put("/marketplace/{skill_name}")
+async def update_marketplace_skill_direct(
+    skill_name: str,
+    principal: AuthPrincipal = Depends(require_principal),
+    payload: Any = Body(default=None),
+) -> dict[str, object]:
+    """Fail closed for direct marketplace edit writes."""
+
+    _require_permission(principal, "marketplace:admin")
+    _direct_marketplace_write_not_backed(skill_name)
+
+
+@router.patch("/marketplace/{skill_name}/activate")
+async def activate_marketplace_skill_direct(
+    skill_name: str,
+    principal: AuthPrincipal = Depends(require_principal),
+    payload: Any = Body(default=None),
+) -> dict[str, object]:
+    """Fail closed for direct marketplace activation writes."""
+
+    _require_permission(principal, "marketplace:admin")
+    _direct_marketplace_write_not_backed(skill_name)
+
+
+@router.delete("/marketplace/{skill_name}")
+async def delete_marketplace_skill_direct(
+    skill_name: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    """Fail closed for direct marketplace delete writes."""
+
+    _require_permission(principal, "marketplace:admin")
+    _direct_marketplace_write_not_backed(skill_name)
 
 
 @router.get("/marketplace/{skill_name}/files", response_model=MarketplaceSkillFilesResponse)
