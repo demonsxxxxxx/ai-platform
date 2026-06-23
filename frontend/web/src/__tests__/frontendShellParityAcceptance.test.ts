@@ -573,6 +573,33 @@ test("skills and marketplace clients use only PR177 public contracts", () => {
   }
 });
 
+test("skills hub gates each public catalog by the active PR177 permission", () => {
+  const skillsHub = readFileSync(
+    join(root, "src/components/panels/SkillsHubPanel.tsx"),
+    "utf8",
+  );
+  const useAuth = readFileSync(join(root, "src/hooks/useAuth.tsx"), "utf8");
+
+  assert.match(
+    skillsHub,
+    /const activeTabHasPermission = isMarketplaceView\s*\?\s*canReadMarketplace\s*:\s*canReadSkills;/,
+  );
+  assert.match(skillsHub, /hasPermission: activeTabHasPermission/);
+  assert.match(
+    skillsHub,
+    /governedUnavailable=\{governanceState === "forbidden"\}/,
+  );
+  assert.match(
+    skillsHub,
+    /data-required-permission=\{[\s\S]{0,120}isMarketplaceView\s*\?\s*Permission\.MARKETPLACE_READ\s*:\s*Permission\.SKILL_READ[\s\S]{0,80}\}/,
+  );
+  assert.doesNotMatch(skillsHub, /hasPermission:\s*true/);
+  assert.doesNotMatch(skillsHub, /governedUnavailable=\{false\}/);
+  assert.match(useAuth, /hasEffectivePermission\(permissions, permission\)/);
+  assert.match(useAuth, /hasAnyEffectivePermission\(permissions, perms\)/);
+  assert.match(useAuth, /hasAllEffectivePermissions\(permissions, perms\)/);
+});
+
 test("production pwa updates auto-activate so old authenticated bundles cannot persist", () => {
   const pwa = readFileSync(join(root, "src/pwa.ts"), "utf8");
 
