@@ -831,6 +831,83 @@ class MarketplaceTagsResponse(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class PublicChannelResponse(BaseModel):
+    """Secret-safe channel catalog item for governed workbench routes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    channel_id: str
+    workspace_id: str = "default"
+    display_name: str
+    channel_type: str
+    enabled: bool = False
+    capabilities: list[str] = Field(default_factory=list)
+    connection_state: str = "not_configured"
+    redaction_policy: str = "secrets_never_projected"
+    retention_policy: str = "tenant_default"
+    last_actor: str | None = None
+    created_at: Any | None = None
+    updated_at: Any | None = None
+
+
+class PublicChannelsResponse(BaseModel):
+    """Tenant-scoped public channel catalog response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str
+    workspace_id: str = "default"
+    channels: list[PublicChannelResponse] = Field(default_factory=list)
+    total: int = 0
+
+
+class ChannelAdminTestRequest(BaseModel):
+    """Admin channel test request without credential material."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dry_run: bool = True
+
+
+class ChannelAdminCreateRequest(BaseModel):
+    """Admin channel creation request without inline credentials."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    channel_id: str
+    enabled: bool = True
+
+
+class ChannelAdminCredentialsRequest(BaseModel):
+    """Credential update request that accepts references but never projects them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    credential_ref: str | None = None
+    webhook_url: str | None = None
+
+
+class ChannelAdminRetentionRequest(BaseModel):
+    """Retention policy update request for channel audit metadata."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    retention_policy: str
+
+
+class ChannelAdminOperationResponse(BaseModel):
+    """Audited admin channel operation projection."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    channel_id: str
+    workspace_id: str = "default"
+    operation: str
+    status: str
+    audit_id: str
+    message: str
+
+
 class AdminSkillVersionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -75,6 +75,11 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         "/api/marketplace",
         "/api/skills",
     }
+    all_safe_routes = {
+        route["route_prefix"]
+        for route in audit["route_inventory"]["safe_public_projection_routes"]
+    }
+    assert "/api/channels" in all_safe_routes
     assert "/api/mcp" in active_policy_routes
     assert "/api/env-vars" not in active_policy_routes
     assert "/api/agent/models" not in active_policy_routes
