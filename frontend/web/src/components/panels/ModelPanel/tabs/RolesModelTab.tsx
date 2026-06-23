@@ -136,7 +136,7 @@ export function RolesModelTab({
 
       {selectedRole && (
         <>
-          <div className="glass-card rounded-xl">
+          <div className="glass-card rounded-lg">
             <div className="px-4 sm:px-5 pt-3.5 sm:pt-4 pb-2.5 sm:pb-3 flex items-center justify-between">
               <h4 className="text-sm font-medium text-stone-900 dark:text-stone-100">
                 {t("agentConfig.selectModelsForRole", {

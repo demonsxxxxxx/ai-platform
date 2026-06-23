@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { PanelHeader } from "../common/PanelHeader";
 import { Pagination } from "../common/Pagination";
+import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { notificationApi } from "../../services/api/notification";
 import { useAuth } from "../../hooks/useAuth";
 import { Permission } from "../../types";
@@ -129,7 +130,7 @@ function DeleteConfirmModal({
       {/* Modal */}
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
         <div
-          className="w-full max-w-md transform overflow-hidden rounded-2xl bg-[var(--theme-bg-card)] p-6 text-left align-middle shadow-xl transition-all"
+          className="w-full max-w-md transform overflow-hidden rounded-lg bg-[var(--theme-bg-card)] p-6 text-left align-middle shadow-xl transition-all"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Icon */}
@@ -138,7 +139,7 @@ function DeleteConfirmModal({
           </div>
 
           {/* Title */}
-          <h3 className="text-xl font-semibold text-stone-900 dark:text-stone-100 font-serif">
+          <h3 className="text-xl font-semibold text-stone-900 dark:text-stone-100">
             {t("notification.deleteConfirm")}
           </h3>
 
@@ -153,13 +154,13 @@ function DeleteConfirmModal({
           <div className="mt-6 flex gap-3">
             <button
               onClick={onCancel}
-              className="flex-1 rounded-xl border border-[var(--glass-border)] bg-[var(--theme-bg-card)] px-4 py-2.5 text-sm font-medium text-stone-700 transition-colors hover:bg-stone-50 dark:text-stone-300 dark:hover:bg-stone-700"
+              className="flex-1 rounded-lg border border-[var(--glass-border)] bg-[var(--theme-bg-card)] px-4 py-2.5 text-sm font-medium text-stone-700 transition-colors hover:bg-stone-50 dark:text-stone-300 dark:hover:bg-stone-700"
             >
               {t("notification.cancel")}
             </button>
             <button
               onClick={onConfirm}
-              className="flex-1 rounded-xl bg-red-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700"
+              className="flex-1 rounded-lg bg-red-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700"
             >
               {t("notification.delete")}
             </button>
@@ -228,12 +229,12 @@ function NotificationFormModal({
       {/* Modal */}
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
         <div
-          className="w-full max-w-2xl max-h-[90vh] transform overflow-hidden rounded-2xl bg-[var(--theme-bg-card)] text-left align-middle shadow-xl transition-all flex flex-col"
+          className="flex max-h-[90vh] w-full max-w-2xl transform flex-col overflow-hidden rounded-lg bg-[var(--theme-bg-card)] text-left align-middle shadow-xl transition-all"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Header */}
           <div className="flex items-center justify-between border-b border-[var(--glass-border)] p-6 pb-4">
-            <h3 className="text-xl font-semibold text-stone-900 dark:text-stone-100 font-serif">
+            <h3 className="text-xl font-semibold text-stone-900 dark:text-stone-100">
               {isEdit ? t("notification.edit") : t("notification.create")}
             </h3>
             <button
@@ -266,7 +267,7 @@ function NotificationFormModal({
                           [key]: e.target.value,
                         }))
                       }
-                      className="w-full rounded-xl border border-stone-200 bg-stone-50 px-4 py-2.5 text-sm text-stone-900 transition-all focus:border-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500/20 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100"
+                      className="w-full rounded-lg border border-stone-200 bg-stone-50 px-4 py-2.5 text-sm text-stone-900 transition-all focus:border-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500/20 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100"
                       placeholder={`${label} title`}
                     />
                   </div>
@@ -294,7 +295,7 @@ function NotificationFormModal({
                         }))
                       }
                       rows={3}
-                      className="w-full rounded-xl border border-stone-200 bg-stone-50 px-4 py-2.5 text-sm text-stone-900 transition-all focus:border-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500/20 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100 resize-y"
+                      className="w-full rounded-lg border border-stone-200 bg-stone-50 px-4 py-2.5 text-sm text-stone-900 transition-all focus:border-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500/20 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100 resize-y"
                       placeholder={`${label} content`}
                     />
                   </div>
@@ -347,7 +348,7 @@ function NotificationFormModal({
                   type="datetime-local"
                   value={startTime}
                   onChange={(e) => setStartTime(e.target.value)}
-                  className="w-full rounded-xl border border-stone-200 bg-stone-50 px-4 py-2.5 text-sm text-stone-900 transition-all focus:border-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500/20 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100"
+                  className="w-full rounded-lg border border-stone-200 bg-stone-50 px-4 py-2.5 text-sm text-stone-900 transition-all focus:border-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500/20 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100"
                 />
               </div>
               <div>
@@ -358,13 +359,13 @@ function NotificationFormModal({
                   type="datetime-local"
                   value={endTime}
                   onChange={(e) => setEndTime(e.target.value)}
-                  className="w-full rounded-xl border border-stone-200 bg-stone-50 px-4 py-2.5 text-sm text-stone-900 transition-all focus:border-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500/20 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100"
+                  className="w-full rounded-lg border border-stone-200 bg-stone-50 px-4 py-2.5 text-sm text-stone-900 transition-all focus:border-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-500/20 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100"
                 />
               </div>
             </div>
 
             {/* Active toggle */}
-            <div className="flex items-center justify-between rounded-xl border border-stone-200 bg-stone-50 p-4 dark:border-stone-700 dark:bg-stone-900">
+            <div className="flex items-center justify-between rounded-lg border border-stone-200 bg-stone-50 p-4 dark:border-stone-700 dark:bg-stone-900">
               <div>
                 <p className="text-sm font-medium text-stone-700 dark:text-stone-300">
                   {t("notification.isActive")}
@@ -390,14 +391,14 @@ function NotificationFormModal({
           <div className="flex gap-3 border-t border-[var(--glass-border)] p-6 pt-4">
             <button
               onClick={onClose}
-              className="flex-1 rounded-xl border border-[var(--glass-border)] bg-[var(--theme-bg-card)] px-4 py-2.5 text-sm font-medium text-stone-700 transition-colors hover:bg-stone-50 dark:text-stone-300 dark:hover:bg-stone-700"
+              className="flex-1 rounded-lg border border-[var(--glass-border)] bg-[var(--theme-bg-card)] px-4 py-2.5 text-sm font-medium text-stone-700 transition-colors hover:bg-stone-50 dark:text-stone-300 dark:hover:bg-stone-700"
             >
               {t("notification.cancel")}
             </button>
             <button
               onClick={handleSave}
               disabled={isSaving}
-              className="flex-1 rounded-xl bg-stone-900 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-stone-800 disabled:opacity-50 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-stone-200"
+              className="flex-1 rounded-lg bg-stone-900 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-stone-800 disabled:opacity-50 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-stone-200"
             >
               {isSaving ? (
                 <span className="inline-flex items-center gap-2">
@@ -558,26 +559,22 @@ export function NotificationPanel() {
   // Permission denied
   if (!canManage) {
     return (
-      <div className="glass-shell flex h-full flex-col items-center justify-center gap-4 p-8">
-        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-stone-100 dark:bg-stone-800">
-          <AlertCircle
-            size={32}
-            className="text-stone-400 dark:text-stone-500"
-          />
-        </div>
-        <p className="text-lg font-medium text-stone-700 dark:text-stone-300">
-          {t("common.accessDenied") || "Access Denied"}
-        </p>
-        <p className="text-sm text-stone-500 dark:text-stone-400">
-          {t("common.permissionRequired") ||
-            "You do not have permission to manage notifications."}
-        </p>
+      <div className="flex h-full items-center justify-center bg-[var(--theme-bg)] p-6">
+        <WorkbenchStateSurface
+          state="forbidden"
+          surface="notifications-route-permission"
+          title={t("common.accessDenied") || "Access Denied"}
+          description={
+            t("common.permissionRequired") ||
+            "You do not have permission to manage notifications."
+          }
+        />
       </div>
     );
   }
 
   return (
-    <div className="glass-shell flex h-full flex-col min-h-0">
+    <div className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100">
       {/* Header */}
       <PanelHeader
         title={t("notification.title")}
@@ -585,7 +582,7 @@ export function NotificationPanel() {
         actions={
           <button
             onClick={() => setIsCreating(true)}
-            className="inline-flex items-center gap-2 rounded-xl bg-stone-900 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-stone-800 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-stone-200"
+            className="inline-flex items-center gap-2 rounded-lg bg-stone-900 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-stone-800 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-stone-200"
           >
             <Plus size={16} />
             {t("notification.create")}
@@ -623,7 +620,7 @@ export function NotificationPanel() {
               return (
                 <div
                   key={notification.id}
-                  className="glass-card rounded-xl p-4 sm:p-5 hover:border-stone-300 dark:hover:border-stone-600 transition-colors"
+                  className="rounded-lg glass-card p-4 transition-colors hover:border-stone-300 dark:hover:border-stone-600 sm:p-5"
                 >
                   <div className="flex items-start justify-between gap-3 sm:gap-4">
                     {/* Info */}

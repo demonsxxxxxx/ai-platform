@@ -472,7 +472,7 @@ export function SettingsPanel() {
 
   return (
     <>
-      <div className="glass-shell flex h-full flex-col sm:flex-row">
+      <div className="flex h-full flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100 sm:flex-row">
         {/* Hidden file input for import */}
         <input
           ref={fileInputRef}
@@ -486,11 +486,11 @@ export function SettingsPanel() {
         <div className="hidden w-56 flex-shrink-0 flex-col border-r border-[var(--glass-border)] sm:flex">
           {/* Sidebar Header */}
           <div className="flex items-center gap-2.5 px-5 py-4">
-            <div className="[&>svg]:size-[18px] flex size-9 flex-shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-stone-100 to-stone-50 text-stone-600 shadow-sm ring-1 ring-stone-200/60 dark:from-stone-800 dark:to-stone-900 dark:text-stone-300 dark:ring-stone-700/50">
+            <div className="[&>svg]:size-[18px] flex size-9 flex-shrink-0 items-center justify-center rounded-lg bg-[var(--theme-bg-sidebar)] text-stone-600 ring-1 ring-[var(--theme-border)] dark:text-stone-300">
               <Settings size={18} />
             </div>
             <div>
-              <h2 className="text-sm font-semibold text-stone-900 dark:text-stone-100 font-serif">
+              <h2 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
                 {t("settings.title")}
               </h2>
               <p className="text-xs text-stone-400 dark:text-stone-500">
@@ -636,7 +636,7 @@ export function SettingsPanel() {
 
           {/* Error */}
           {error && (
-            <div className="mx-3 mt-3 flex items-center justify-between rounded-xl bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/30 dark:text-red-400 sm:mx-4 sm:mt-4">
+            <div className="mx-3 mt-3 flex items-center justify-between rounded-lg bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/30 dark:text-red-400 sm:mx-4 sm:mt-4">
               <span>{error}</span>
               <button
                 onClick={clearError}
@@ -688,7 +688,7 @@ export function SettingsPanel() {
                       return (
                         <div
                           key={setting.key}
-                          className="glass-card rounded-xl p-4"
+                          className="rounded-lg glass-card p-4"
                         >
                           {/* Key and Type */}
                           <div className="flex items-start justify-between gap-2">

@@ -734,7 +734,7 @@ export function ChatAppContent({
       <>
         {isPageDragging && (
           <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-stone-500/5 transition-colors dark:bg-stone-500/10">
-            <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-dashed border-stone-400 bg-white/95 px-16 py-12 shadow-xl transition-colors dark:border-stone-500 dark:bg-stone-800/95">
+            <div className="flex flex-col items-center gap-3 rounded-lg border-2 border-dashed border-stone-400 bg-white/95 px-16 py-12 shadow-xl transition-colors dark:border-stone-500 dark:bg-stone-800/95">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 className="h-12 w-12 text-stone-500 dark:text-stone-400"

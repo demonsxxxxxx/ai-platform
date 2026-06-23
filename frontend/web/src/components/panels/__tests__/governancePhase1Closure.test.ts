@@ -98,12 +98,12 @@ test("skills marketplace cards use restrained workbench tiles instead of gradien
   );
   const marketplace = read("src/components/panels/MarketplacePanel.tsx");
 
-  assert.doesNotMatch(baseCard, /rounded-2xl/);
+  assert.doesNotMatch(baseCard, /rounded-2xl|rounded-3xl/);
   assert.doesNotMatch(baseCard, /linear-gradient/);
   assert.doesNotMatch(baseCard, /scb__banner/);
   assert.doesNotMatch(marketplaceCard, /nameToGradient/);
   assert.doesNotMatch(marketplaceCard, /gradient=\{gradient\}/);
-  assert.doesNotMatch(marketplace, /rounded-2xl/);
+  assert.doesNotMatch(marketplace, /rounded-2xl|rounded-3xl/);
   assert.match(baseCard, /rounded-lg/);
 });
 
@@ -197,8 +197,12 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
   );
   assert.match(skillsHook, /effectivePermissions/);
   assert.match(skillsList, /canImportSkills/);
+  assert.match(skillsList, /canEditSkills/);
+  assert.match(skillsList, /canCreateSkills/);
+  assert.match(skillsList, /canBatchSkills/);
   assert.match(skillsList, /canManageSkills/);
   assert.match(skillCard, /hasWriteActions/);
+  assert.match(skillCard, /canEdit/);
   assert.doesNotMatch(
     skillsList,
     /disabled=\{governedUnavailable \|\| !canWrite\}/,
@@ -216,8 +220,11 @@ test("read-only skills catalog removes write controls instead of showing disable
   const skillsPanel = read("src/components/panels/SkillsPanel/index.tsx");
 
   assert.match(skillsList, /canImportSkills/);
+  assert.match(skillsList, /canEditSkills/);
+  assert.match(skillsList, /canCreateSkills/);
+  assert.match(skillsList, /canBatchSkills/);
   assert.match(skillsList, /canManageSkills/);
-  assert.match(skillsList, /\{canManageSkills && filteredSkills\.length > 0 &&/);
+  assert.match(skillsList, /\{canBatchSkills && filteredSkills\.length > 0 &&/);
   assert.match(skillsList, /\{canImportSkills && \(/);
   assert.match(skillsList, /\{canCreateSkills && \(/);
   assert.doesNotMatch(
@@ -228,15 +235,36 @@ test("read-only skills catalog removes write controls instead of showing disable
   assert.match(skillCard, /hasWriteActions/);
   assert.match(skillCard, /footer=\{\s*hasWriteActions/);
   assert.match(skillCard, /\{canWrite && \(/);
+  assert.match(skillCard, /\{canEdit && \(/);
   assert.match(skillCard, /\{canDelete && \(/);
   assert.doesNotMatch(skillCard, /disabled=\{!canWrite\}/);
+  assert.doesNotMatch(skillCard, /disabled=\{!canEdit\}/);
   assert.doesNotMatch(skillCard, /disabled=\{!canDelete\}/);
 
   assert.match(batchActionBar, /canWrite: boolean/);
   assert.match(batchActionBar, /canDelete: boolean/);
   assert.match(batchActionBar, /\{canWrite && \(/);
   assert.match(batchActionBar, /\{canDelete && \(/);
+  assert.match(skillsPanel, /skillFileWriteBacked = false/);
+  assert.match(skillsPanel, /skillImportBacked = false/);
+  assert.match(skillsPanel, /skillBatchWriteBacked = false/);
   assert.match(skillsPanel, /canWrite=\{canWrite && !isGovernedUnavailable\}/);
+  assert.match(
+    skillsPanel,
+    /canEdit=\{canEditSkills && !isGovernedUnavailable\}/,
+  );
+  assert.match(
+    skillsPanel,
+    /canCreate=\{canCreateSkills && !isGovernedUnavailable\}/,
+  );
+  assert.match(
+    skillsPanel,
+    /canImport=\{canImportSkills && !isGovernedUnavailable\}/,
+  );
+  assert.match(
+    skillsPanel,
+    /canBatch=\{canBatchSkills && !isGovernedUnavailable\}/,
+  );
   assert.match(
     skillsPanel,
     /canDelete=\{canDeleteSkill && !isGovernedUnavailable\}/,

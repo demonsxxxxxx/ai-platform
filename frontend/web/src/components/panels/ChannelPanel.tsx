@@ -403,7 +403,7 @@ export function ChannelPanel({
     <div className="space-y-4">
       {/* Status Card */}
       {hasExistingConfig && status && (
-        <div className="glass-card rounded-xl p-4">
+        <div className="glass-card rounded-lg p-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               {status.connected ? (
@@ -460,7 +460,7 @@ export function ChannelPanel({
       )}
 
       {/* Configuration Card */}
-      <div className="glass-card rounded-xl p-4">
+      <div className="glass-card rounded-lg p-4">
         <h3 className="mb-4 text-sm font-semibold text-stone-900 dark:text-stone-100">
           {t("channel.configuration", "Configuration")}
         </h3>
@@ -532,7 +532,7 @@ export function ChannelPanel({
 
       {/* Help Card */}
       {metadata.setup_guide.length > 0 && (
-        <div className="glass-card-subtle rounded-xl p-4">
+        <div className="glass-card-subtle rounded-lg p-4">
           <div className="flex items-start gap-3">
             <div className="min-w-0 flex-1">
               <p className="text-sm font-semibold text-stone-900 dark:text-stone-100">
@@ -629,7 +629,7 @@ export function ChannelPanel({
   // Full-page mode (backward compatible)
   return (
     <>
-      <div className="glass-shell flex h-full flex-col min-h-0">
+      <div className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100">
         {/* Header */}
         <PanelHeader
           title={metadata.display_name}

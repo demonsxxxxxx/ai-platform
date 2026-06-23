@@ -629,7 +629,7 @@ export function RolesPanel() {
   }
 
   return (
-    <div className="glass-shell flex h-full flex-col min-h-0">
+    <div className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100">
       {/* 头部 */}
       <PanelHeader
         title={t("roles.title")}
@@ -650,7 +650,7 @@ export function RolesPanel() {
 
       {/* 错误提示 */}
       {error && (
-        <div className="mx-4 mt-4 flex items-center gap-2 rounded-xl bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/30 dark:text-red-400 sm:mx-6">
+        <div className="mx-4 mt-4 flex items-center gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/30 dark:text-red-400 sm:mx-6">
           <AlertCircle size={18} />
           <span>{error}</span>
         </div>

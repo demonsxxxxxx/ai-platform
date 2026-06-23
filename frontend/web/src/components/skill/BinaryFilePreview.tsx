@@ -94,11 +94,11 @@ export function BinaryFilePreview({
   }, [fullUrl, fileName]);
 
   return (
-    <div className="flex h-full min-h-[18rem] sm:min-h-[24rem] flex-col rounded-2xl bg-[var(--theme-bg)] overflow-hidden">
+    <div className="flex h-full min-h-[18rem] sm:min-h-[24rem] flex-col rounded-lg bg-[var(--theme-bg)] overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-2.5 px-3 sm:px-4 py-2.5 border-b border-[var(--theme-border)] shrink-0">
         <div
-          className={`flex items-center justify-center w-9 h-9 rounded-xl ${iconBg}`}
+          className={`flex items-center justify-center w-9 h-9 rounded-lg ${iconBg}`}
         >
           <Icon size={18} className={iconColor} />
         </div>
@@ -113,7 +113,7 @@ export function BinaryFilePreview({
         <button
           type="button"
           onClick={handleDownload}
-          className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-card)] transition-colors cursor-pointer"
+          className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-card)] transition-colors cursor-pointer"
           title={t("documents.download")}
         >
           <Download size={14} />
@@ -131,7 +131,7 @@ export function BinaryFilePreview({
           >
             {!imageLoaded && (
               <div className="absolute inset-0 flex items-center justify-center bg-[var(--theme-bg-card)]/50 rounded-lg">
-                <div className="flex items-center gap-2 rounded-xl bg-white/80 px-3 py-2 text-xs text-stone-500 shadow-sm dark:bg-stone-800/80 dark:text-stone-400">
+                <div className="flex items-center gap-2 rounded-lg bg-white/80 px-3 py-2 text-xs text-stone-500 shadow-sm dark:bg-stone-800/80 dark:text-stone-400">
                   <Loader2 size={14} className="animate-spin" />
                   <span>{t("documents.loadingImage")}</span>
                 </div>
@@ -149,10 +149,10 @@ export function BinaryFilePreview({
 
         {/* Video preview */}
         {isVideo(mime_type) && (
-          <div className="relative flex items-center justify-center bg-gradient-to-b from-stone-900 to-stone-950 p-4 sm:p-8 min-h-full">
+          <div className="relative flex items-center justify-center bg-stone-950 p-4 sm:p-8 min-h-full">
             {!videoLoaded && (
               <div className="absolute inset-0 flex items-center justify-center">
-                <div className="flex items-center gap-2 rounded-xl bg-white/10 px-3 py-2 text-xs text-white/60 shadow-sm">
+                <div className="flex items-center gap-2 rounded-lg bg-white/10 px-3 py-2 text-xs text-white/60 shadow-sm">
                   <Loader2 size={14} className="animate-spin" />
                   <span>{t("documents.loadingVideo")}</span>
                 </div>
@@ -165,7 +165,7 @@ export function BinaryFilePreview({
               autoPlay={false}
               onLoadedData={() => setVideoLoaded(true)}
               onError={() => setVideoLoaded(true)}
-              className={`w-full max-w-4xl max-h-[60vh] rounded-xl shadow-2xl ring-1 ring-white/10 transition-opacity duration-300 ${
+              className={`w-full max-w-4xl max-h-[60vh] rounded-lg shadow-2xl ring-1 ring-white/10 transition-opacity duration-300 ${
                 videoLoaded ? "opacity-100" : "opacity-0"
               }`}
             >
@@ -178,7 +178,7 @@ export function BinaryFilePreview({
         {isAudio(mime_type) && (
           <div className="flex flex-col items-center justify-center gap-6 py-12 px-4 min-h-full">
             <div
-              className={`flex items-center justify-center w-20 h-20 rounded-2xl ${iconBg}`}
+              className={`flex items-center justify-center w-20 h-20 rounded-lg ${iconBg}`}
             >
               <Music size={36} className={iconColor} />
             </div>
@@ -202,7 +202,7 @@ export function BinaryFilePreview({
           !isPdf(mime_type) && (
             <div className="flex flex-col items-center justify-center gap-4 py-12 px-4 min-h-full">
               <div
-                className={`flex items-center justify-center w-20 h-20 rounded-2xl ${iconBg}`}
+                className={`flex items-center justify-center w-20 h-20 rounded-lg ${iconBg}`}
               >
                 <Icon size={36} className={iconColor} />
               </div>
@@ -216,7 +216,7 @@ export function BinaryFilePreview({
               </div>
               <button
                 onClick={handleDownload}
-                className="mt-2 inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[var(--theme-primary)] text-white text-sm font-medium hover:opacity-90 transition-all active:scale-95 cursor-pointer"
+                className="mt-2 inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[var(--theme-primary)] text-white text-sm font-medium hover:opacity-90 transition-all active:scale-95 cursor-pointer"
               >
                 <Download size={16} />
                 {t("skills.binaryPreview.download")}

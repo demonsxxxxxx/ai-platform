@@ -26,14 +26,14 @@ export function EmptyState({
       <div className="flex flex-col items-center justify-center h-72 gap-5">
         {/* Illustration */}
         <div className="relative">
-          <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-stone-100 to-stone-50 dark:from-stone-800/60 dark:to-stone-800/30 flex items-center justify-center border border-stone-200/50 dark:border-stone-700/30">
+          <div className="flex h-20 w-20 items-center justify-center rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] dark:border-stone-700/30 dark:bg-stone-900/60">
             <FolderSearch
               size={32}
               strokeWidth={1.5}
               className="text-stone-300 dark:text-stone-600"
             />
           </div>
-          <div className="absolute -bottom-1.5 -right-1.5 w-7 h-7 rounded-lg bg-white dark:bg-stone-700 flex items-center justify-center ring-4 ring-stone-50 dark:ring-stone-950 shadow-sm border border-stone-100 dark:border-stone-600">
+          <div className="absolute -bottom-1.5 -right-1.5 flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-sm ring-4 ring-[var(--theme-bg)] dark:border-stone-600 dark:bg-stone-700 dark:ring-stone-950">
             <Search size={12} className="text-stone-400 dark:text-stone-500" />
           </div>
         </div>

@@ -85,7 +85,7 @@ export function AgentModeSelector({
             >
               <div
                 ref={sheetRef as React.Ref<HTMLDivElement>}
-                className="sm:rounded-2xl rounded-t-2xl shadow-2xl w-full sm:w-[40%] sm:min-w-[600px] min-h-[40vh] sm:max-h-[80vh] max-h-[85vh] max-h-[85dvh] flex flex-col overflow-hidden"
+                className="w-full min-h-[40vh] max-h-[85vh] max-h-[85dvh] flex flex-col overflow-hidden rounded-t-lg border border-[var(--theme-border)] shadow-[0_24px_60px_-32px_rgba(15,23,42,0.45)] sm:w-[40%] sm:min-w-[600px] sm:max-h-[80vh] sm:rounded-lg"
                 style={{ background: "var(--theme-bg-card)" }}
                 onClick={(e) => e.stopPropagation()}
               >
@@ -96,14 +96,14 @@ export function AgentModeSelector({
                 >
                   <div className="absolute left-1/2 -translate-x-1/2 top-2 w-10 h-1 rounded-full bg-stone-300 dark:bg-stone-600 sm:hidden" />
                   <div className="flex items-center gap-3 mt-2 sm:mt-0">
-                    <div className="size-9 sm:size-10 rounded-xl bg-gradient-to-br from-stone-100 to-stone-200 dark:from-amber-500/20 dark:to-orange-500/20 flex items-center justify-center">
+                    <div className="size-9 sm:size-10 rounded-lg bg-[var(--theme-bg-sidebar)] ring-1 ring-[var(--theme-border)] flex items-center justify-center">
                       <Bot
                         size={16}
-                        className="text-stone-500 dark:text-amber-400 sm:w-[18px] sm:h-[18px]"
+                        className="text-stone-500 dark:text-stone-300 sm:w-[18px] sm:h-[18px]"
                       />
                     </div>
                     <div>
-                      <h2 className="text-sm sm:text-base font-semibold text-stone-900 dark:text-stone-100 font-serif">
+                      <h2 className="text-sm sm:text-base font-semibold text-stone-900 dark:text-stone-100">
                         {t("agent.selectMode", "选择模式")}
                       </h2>
                       <p className="text-xs text-stone-500 dark:text-stone-400">
@@ -122,13 +122,13 @@ export function AgentModeSelector({
                   </button>
                 </div>
 
-                <div className="border-b border-stone-200/80 bg-white/80 px-4 py-3 dark:border-stone-700/80 dark:bg-stone-800/60 sm:px-5">
+                <div className="border-b border-[var(--theme-border)] bg-[var(--theme-bg)] px-4 py-3 sm:px-5">
                   <input
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     placeholder={t("agent.searchPlaceholder", "Search agents")}
-                    className="w-full rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-700 outline-none transition-colors focus:border-[var(--theme-primary)] focus:bg-white dark:border-stone-700 dark:bg-stone-900/60 dark:text-stone-100 dark:focus:bg-stone-900"
+                    className="h-10 w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-3 text-sm text-[var(--theme-text)] outline-none transition-colors placeholder:text-[var(--theme-text-secondary)] focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary-light)]"
                   />
                 </div>
 
@@ -140,22 +140,22 @@ export function AgentModeSelector({
                       <button
                         key={agent.id}
                         type="button"
-                        className={`flex w-full items-center gap-3 px-3 sm:px-3.5 py-3 sm:py-3.5 rounded-xl text-left transition-all duration-200 ${
+                        className={`flex w-full items-center gap-3 px-3 sm:px-3.5 py-3 sm:py-3.5 rounded-lg text-left transition-all duration-200 ${
                           isActive
-                            ? "bg-amber-50 dark:bg-amber-500/10 hover:bg-amber-100 dark:hover:bg-amber-500/15"
-                            : "hover:bg-stone-50 dark:hover:bg-stone-700/30 active:bg-stone-100/80 dark:active:bg-stone-600/40"
+                            ? "bg-[var(--theme-primary-light)] text-[var(--theme-text)]"
+                            : "hover:bg-[var(--theme-bg-sidebar)] active:bg-[var(--theme-bg-sidebar)]"
                         }`}
                         onClick={() => {
                           onSelectAgent(agent.id);
                           setOpen(false);
                         }}
                       >
-                        <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center shrink-0 bg-white dark:bg-stone-700 shadow-sm border border-stone-100 dark:border-stone-600">
+                        <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-lg flex items-center justify-center shrink-0 bg-[var(--theme-bg-sidebar)] ring-1 ring-[var(--theme-border)]">
                           <Bot
                             size={17}
                             className={`sm:w-[18px] sm:h-[18px] ${
                               isActive
-                                ? "text-amber-600 dark:text-amber-400"
+                                ? "text-[var(--theme-primary)]"
                                 : "text-stone-500 dark:text-stone-400"
                             }`}
                           />
@@ -164,7 +164,7 @@ export function AgentModeSelector({
                           <span
                             className={`text-[13px] sm:text-sm font-medium truncate block ${
                               isActive
-                                ? "text-amber-700 dark:text-amber-400"
+                                ? "text-[var(--theme-text)]"
                                 : "text-stone-700 dark:text-stone-200"
                             }`}
                           >
@@ -177,7 +177,7 @@ export function AgentModeSelector({
                           )}
                         </div>
                         {isActive && (
-                          <div className="w-5 h-5 rounded-full bg-amber-500 dark:bg-amber-500 flex items-center justify-center shrink-0">
+                          <div className="w-5 h-5 rounded-full bg-[var(--theme-primary)] flex items-center justify-center shrink-0">
                             <svg
                               xmlns="http://www.w3.org/2000/svg"
                               width="12"
@@ -197,7 +197,7 @@ export function AgentModeSelector({
                     );
                   })}
                   {filteredAgents.length === 0 && (
-                    <div className="rounded-xl border border-dashed border-stone-200 bg-stone-50/70 px-4 py-6 text-center text-sm text-stone-500 dark:border-stone-700 dark:bg-stone-800/40 dark:text-stone-400">
+                    <div className="rounded-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-4 py-6 text-center text-sm text-[var(--theme-text-secondary)]">
                       {t("agent.noMatchingAgents", "No matching agents")}
                     </div>
                   )}
@@ -207,7 +207,7 @@ export function AgentModeSelector({
                 <div className="px-4 sm:px-5 py-3 sm:py-3.5 border-t border-stone-200 dark:border-stone-700 bg-stone-50/80 dark:bg-stone-800/50 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
                   <button
                     onClick={handleClose}
-                    className="w-full py-2.5 px-4 bg-stone-900 dark:bg-stone-600 text-white dark:text-stone-100 rounded-xl font-medium text-sm hover:bg-stone-800 dark:hover:bg-stone-500 active:bg-stone-700 dark:active:bg-stone-600 transition-colors"
+                    className="w-full py-2.5 px-4 bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-950 rounded-lg font-medium text-sm hover:bg-stone-800 dark:hover:bg-stone-200 active:bg-stone-700 transition-colors"
                   >
                     {t("common.done", "完成")}
                   </button>
@@ -246,7 +246,7 @@ export function AgentModeSelector({
             >
               <div
                 ref={sheetRef as React.Ref<HTMLDivElement>}
-                className="sm:rounded-2xl rounded-t-2xl shadow-2xl w-full sm:w-[40%] sm:min-w-[600px] min-h-[40vh] sm:max-h-[80vh] max-h-[85vh] max-h-[85dvh] flex flex-col overflow-hidden"
+                className="w-full min-h-[40vh] max-h-[85vh] max-h-[85dvh] flex flex-col overflow-hidden rounded-t-lg border border-[var(--theme-border)] shadow-[0_24px_60px_-32px_rgba(15,23,42,0.45)] sm:w-[40%] sm:min-w-[600px] sm:max-h-[80vh] sm:rounded-lg"
                 style={{ background: "var(--theme-bg-card)" }}
                 onClick={(e) => e.stopPropagation()}
               >
@@ -257,14 +257,14 @@ export function AgentModeSelector({
                 >
                   <div className="absolute left-1/2 -translate-x-1/2 top-2 w-10 h-1 rounded-full bg-stone-300 dark:bg-stone-600 sm:hidden" />
                   <div className="flex items-center gap-3 mt-2 sm:mt-0">
-                    <div className="size-9 sm:size-10 rounded-xl bg-gradient-to-br from-stone-100 to-stone-200 dark:from-amber-500/20 dark:to-orange-500/20 flex items-center justify-center">
+                    <div className="size-9 sm:size-10 rounded-lg bg-[var(--theme-bg-sidebar)] ring-1 ring-[var(--theme-border)] flex items-center justify-center">
                       <Bot
                         size={16}
-                        className="text-stone-500 dark:text-amber-400 sm:w-[18px] sm:h-[18px]"
+                        className="text-stone-500 dark:text-stone-300 sm:w-[18px] sm:h-[18px]"
                       />
                     </div>
                     <div>
-                      <h2 className="text-sm sm:text-base font-semibold text-stone-900 dark:text-stone-100 font-serif">
+                      <h2 className="text-sm sm:text-base font-semibold text-stone-900 dark:text-stone-100">
                         {t("agent.selectMode", "选择模式")}
                       </h2>
                       <p className="text-xs text-stone-500 dark:text-stone-400">
@@ -291,22 +291,22 @@ export function AgentModeSelector({
                       <button
                         key={agent.id}
                         type="button"
-                        className={`flex w-full items-center gap-3 px-3 sm:px-3.5 py-3 sm:py-3.5 rounded-xl text-left transition-all duration-200 ${
+                        className={`flex w-full items-center gap-3 px-3 sm:px-3.5 py-3 sm:py-3.5 rounded-lg text-left transition-all duration-200 ${
                           isActive
-                            ? "bg-amber-50 dark:bg-amber-500/10 hover:bg-amber-100 dark:hover:bg-amber-500/15"
-                            : "hover:bg-stone-50 dark:hover:bg-stone-700/30 active:bg-stone-100/80 dark:active:bg-stone-600/40"
+                            ? "bg-[var(--theme-primary-light)] text-[var(--theme-text)]"
+                            : "hover:bg-[var(--theme-bg-sidebar)] active:bg-[var(--theme-bg-sidebar)]"
                         }`}
                         onClick={() => {
                           onSelectAgent(agent.id);
                           setOpen(false);
                         }}
                       >
-                        <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center shrink-0 bg-white dark:bg-stone-700 shadow-sm border border-stone-100 dark:border-stone-600">
+                        <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-lg flex items-center justify-center shrink-0 bg-[var(--theme-bg-sidebar)] ring-1 ring-[var(--theme-border)]">
                           <Bot
                             size={17}
                             className={`sm:w-[18px] sm:h-[18px] ${
                               isActive
-                                ? "text-amber-600 dark:text-amber-400"
+                                ? "text-[var(--theme-primary)]"
                                 : "text-stone-500 dark:text-stone-400"
                             }`}
                           />
@@ -315,7 +315,7 @@ export function AgentModeSelector({
                           <span
                             className={`text-[13px] sm:text-sm font-medium truncate block ${
                               isActive
-                                ? "text-amber-700 dark:text-amber-400"
+                                ? "text-[var(--theme-text)]"
                                 : "text-stone-700 dark:text-stone-200"
                             }`}
                           >
@@ -328,7 +328,7 @@ export function AgentModeSelector({
                           )}
                         </div>
                         {isActive && (
-                          <div className="w-5 h-5 rounded-full bg-amber-500 dark:bg-amber-500 flex items-center justify-center shrink-0">
+                          <div className="w-5 h-5 rounded-full bg-[var(--theme-primary)] flex items-center justify-center shrink-0">
                             <svg
                               xmlns="http://www.w3.org/2000/svg"
                               width="12"
@@ -353,7 +353,7 @@ export function AgentModeSelector({
                 <div className="px-4 sm:px-5 py-3 sm:py-3.5 border-t border-stone-200 dark:border-stone-700 bg-stone-50/80 dark:bg-stone-800/50 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
                   <button
                     onClick={handleClose}
-                    className="w-full py-2.5 px-4 bg-stone-900 dark:bg-stone-600 text-white dark:text-stone-100 rounded-xl font-medium text-sm hover:bg-stone-800 dark:hover:bg-stone-500 active:bg-stone-700 dark:active:bg-stone-600 transition-colors"
+                    className="w-full py-2.5 px-4 bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-950 rounded-lg font-medium text-sm hover:bg-stone-800 dark:hover:bg-stone-200 active:bg-stone-700 transition-colors"
                   >
                     {t("common.done", "完成")}
                   </button>

@@ -25,6 +25,7 @@ interface SkillCardProps {
   onExportZip?: (name: string) => void;
   onPublish?: (skill: SkillResponse) => void;
   canWrite?: boolean;
+  canEdit?: boolean;
   canDelete?: boolean;
   isPublished?: boolean;
   selected?: boolean;
@@ -45,6 +46,7 @@ export function SkillCard({
   onExportZip,
   onPublish,
   canWrite = true,
+  canEdit = canWrite,
   canDelete = true,
   isPublished,
   selected = false,
@@ -59,7 +61,7 @@ export function SkillCard({
     skill.source === "manual" && isPublished !== undefined && Boolean(onPublish);
   const canExportSkill = Boolean(onExportZip);
   const hasWriteActions =
-    canWrite || canDelete || canPublishSkill || canExportSkill;
+    canWrite || canEdit || canDelete || canPublishSkill || canExportSkill;
 
   return (
     <SkillBaseCard
@@ -135,46 +137,46 @@ export function SkillCard({
         hasWriteActions ? (
           <div className="flex items-center gap-1">
             {canWrite && (
-              <>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggle(skill.name);
-                  }}
-                  className="scb__action-btn scb__action-btn--ghost"
-                  title={
-                    skill.enabled
-                      ? t("skills.card.disable")
-                      : t("skills.card.enable")
-                  }
-                  aria-label={
-                    skill.enabled
-                      ? t("skills.card.disable")
-                      : t("skills.card.enable")
-                  }
-                >
-                  {skill.enabled ? (
-                    <ToggleRight
-                      size={15}
-                      className="text-green-600 dark:text-green-500"
-                    />
-                  ) : (
-                    <ToggleLeft size={15} />
-                  )}
-                </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggle(skill.name);
+                }}
+                className="scb__action-btn scb__action-btn--ghost"
+                title={
+                  skill.enabled
+                    ? t("skills.card.disable")
+                    : t("skills.card.enable")
+                }
+                aria-label={
+                  skill.enabled
+                    ? t("skills.card.disable")
+                    : t("skills.card.enable")
+                }
+              >
+                {skill.enabled ? (
+                  <ToggleRight
+                    size={15}
+                    className="text-green-600 dark:text-green-500"
+                  />
+                ) : (
+                  <ToggleLeft size={15} />
+                )}
+              </button>
+            )}
 
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onEdit(skill);
-                  }}
-                  className="scb__action-btn scb__action-btn--ghost"
-                  title={t("skills.card.edit")}
-                  aria-label={t("skills.card.edit")}
-                >
-                  <Edit3 size={13} />
-                </button>
-              </>
+            {canEdit && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onEdit(skill);
+                }}
+                className="scb__action-btn scb__action-btn--ghost"
+                title={t("skills.card.edit")}
+                aria-label={t("skills.card.edit")}
+              >
+                <Edit3 size={13} />
+              </button>
             )}
 
             {canPublishSkill && onPublish && (

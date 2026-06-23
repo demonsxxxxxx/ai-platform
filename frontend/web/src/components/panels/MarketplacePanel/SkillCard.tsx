@@ -239,7 +239,7 @@ export function SkillCard({
                   <MoreHorizontal size={16} />
                 </button>
                 {openMenuName === skill.skill_name && (
-                  <div className="absolute right-0 bottom-full mb-1 z-10 w-36 rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg-card)] py-1 shadow-lg">
+                  <div className="absolute right-0 bottom-full mb-1 z-10 w-36 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] py-1 shadow-lg">
                     {isOwner && (
                       <button
                         onClick={() => {

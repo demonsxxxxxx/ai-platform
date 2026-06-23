@@ -184,7 +184,7 @@ const ModelCard = React.memo(function ModelCard({
       onDragOver={(e) => onDragOver(index, e)}
       onDragLeave={handleDragLeave}
       onDragEnd={onDragEnd}
-      className={`group glass-card rounded-xl transition-all duration-200 cursor-grab active:cursor-grabbing ${
+      className={`group glass-card rounded-lg transition-all duration-200 cursor-grab active:cursor-grabbing ${
         isDragging
           ? "!border-blue-300/60 !bg-blue-50/40 dark:!border-blue-700/50 dark:!bg-blue-900/20 scale-[1.01] animate-glass-drag"
           : isDragOver

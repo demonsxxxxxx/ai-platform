@@ -49,6 +49,32 @@
     "searchPlaceholder": "Search agents",
     "noMatchingAgents": "No matching agents"
   },
+  "frontendStates": {
+    "logged-out": {
+      "title": "Sign in required",
+      "description": "Sign in with your company account before entering the AI Platform workbench."
+    },
+    "loading": {
+      "title": "Loading workbench",
+      "description": "Checking your account, permissions, and workspace state."
+    },
+    "no-workspace": {
+      "title": "No workspace assigned",
+      "description": "Your account does not have an available workspace yet. Ask an administrator to enable one."
+    },
+    "forbidden": {
+      "title": "Not available for this account",
+      "description": "This capability is governed by company permissions and requires administrator access."
+    },
+    "degraded": {
+      "title": "Readable with limited controls",
+      "description": "You can continue viewing this page, but some actions remain locked in the current state."
+    },
+    "ready": {
+      "title": "Ready",
+      "description": "This page is available for your account."
+    }
+  },
   "agentConfig": {
     "addFirstModel": "Add your first model",
     "addModel": "Add Model",
@@ -1406,6 +1432,50 @@
     "title": "Memory Space",
     "titleLabel": "Title",
     "titlePlaceholder": "Enter memory title...",
+    "workbench": {
+      "activeRecords": "Active records",
+      "adminHidden": "Admin memory inventory is hidden for this role. Backend admin routes remain fail-closed.",
+      "adminProjection": "Admin operational projection",
+      "agent": "Agent",
+      "agentPublicId": "Agent public id",
+      "allAgents": "all agents",
+      "allowSessionWrites": "Allow session memory writes",
+      "allowSessionWritesHint": "Cross-session long-term memory stays fail-closed.",
+      "cleanupDeleted": "Retention cleanup deleted {{count}} records",
+      "days": "{{count}} days",
+      "defaultPolicy": "default",
+      "deleteRecord": "Delete memory record",
+      "deleteRecordConfirm": "Delete this session-bound memory record?",
+      "expires": "expires {{date}}",
+      "loadingAdmin": "Loading admin memory projection...",
+      "loadingRecords": "Loading session memory records...",
+      "longTermClosed": "long-term closed",
+      "noAdminRecords": "No active records in admin projection.",
+      "noPolicy": "No memory policy projection loaded.",
+      "noSessionRecords": "No active memory records are visible for this session.",
+      "noStoredPolicies": "No stored policies for this filter.",
+      "policyMeta": "{{days}}d retention · {{source}} · {{date}}",
+      "policyUpdated": "Memory policy updated",
+      "publicProjectionOnly": "public projection only",
+      "reason": "Reason",
+      "reasonPlaceholder": "Optional public-safe audit reason",
+      "recordDeleted": "Memory record deleted",
+      "retention": "Retention",
+      "retentionCleanup": "Retention cleanup",
+      "retentionDays": "Retention days",
+      "savePolicy": "Save policy",
+      "sessionId": "Session id",
+      "sessionIdPlaceholder": "Required for memory records",
+      "sessionRecords": "Session memory records",
+      "sessionRequired": "Enter a session id to inspect session-bound memory records. Cross-session browsing is intentionally closed.",
+      "source": "Source",
+      "storedPolicies": "Stored policies",
+      "subtitle": "ai-platform public memory policy, session records, and admin projection",
+      "updated": "Updated",
+      "user": "User",
+      "userPolicy": "User memory policy",
+      "workspace": "Workspace"
+    },
     "type": {
       "feedback": "Feedback",
       "project": "Project",

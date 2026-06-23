@@ -26,7 +26,7 @@ export function NewProjectModal({
       className="fixed inset-0 z-[300] flex items-center justify-center"
     >
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="relative bg-white dark:bg-stone-800 rounded-xl shadow-2xl p-5 w-[90vw] max-w-md space-y-3">
+      <div className="relative bg-[var(--theme-bg-card)] rounded-lg border border-[var(--theme-border)] shadow-[0_24px_60px_-32px_rgba(15,23,42,0.45)] p-5 w-[90vw] max-w-md space-y-3">
         <h3 className="text-sm font-semibold text-stone-800 dark:text-stone-100">
           {t("sidebar.newProject")}
         </h3>

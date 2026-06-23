@@ -37,6 +37,8 @@ test("app routes expose PRD phase 1B and 1C surfaces", () => {
   assert.match(tabs, /marketplace:\s*SkillsHubPanel/);
   assert.match(tabs, /mcp:\s*MCPPanel/);
   assert.match(tabs, /channels:\s*ChannelImportPanel/);
+  assert.match(tabs, /models:\s*QuarantinedLegacyPanel/);
+  assert.doesNotMatch(tabs, /models:\s*ModelPanel/);
 });
 
 test("phase 1C discovery routes are login reachable and fail closed inside pages", () => {

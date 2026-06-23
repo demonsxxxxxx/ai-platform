@@ -56,14 +56,14 @@ export function GlobalAgentTab({
         {localAgents.map((agent) => (
           <div
             key={agent.id}
-            className="group flex items-center justify-between glass-card rounded-xl p-4 transition-all duration-200"
+            className="group flex items-center justify-between glass-card rounded-lg p-4 transition-all duration-200"
           >
             <div className="flex items-center gap-3.5 min-w-0 flex-1">
-              <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl bg-[var(--glass-bg-subtle)] ring-1 ring-[var(--glass-border)] shadow-sm">
+              <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-lg bg-[var(--glass-bg-subtle)] ring-1 ring-[var(--glass-border)] shadow-sm">
                 <Bot size={24} className="text-stone-600 dark:text-stone-400" />
               </div>
               <div className="min-w-0 flex-1">
-                <h4 className="text-sm font-semibold text-stone-900 dark:text-stone-100 truncate tracking-tight font-serif">
+                <h4 className="truncate text-sm font-semibold tracking-tight text-stone-900 dark:text-stone-100">
                   {t(agent.name)}
                 </h4>
                 <p className="text-xs text-stone-500 dark:text-stone-400 truncate mt-0.5 hidden sm:block">

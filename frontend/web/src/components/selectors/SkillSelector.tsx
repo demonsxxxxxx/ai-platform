@@ -182,7 +182,7 @@ export function SkillSelector({
   const ModalContent = () => (
     <div
       ref={swipeRef as React.RefObject<HTMLDivElement>}
-      className="sm:rounded-2xl rounded-t-2xl shadow-2xl w-full sm:w-[40%] sm:min-w-[600px] min-h-[40vh] sm:max-h-[80vh] max-h-[85vh] max-h-[85dvh] flex flex-col overflow-hidden"
+      className="w-full min-h-[40vh] max-h-[85vh] max-h-[85dvh] flex flex-col overflow-hidden rounded-t-lg border border-[var(--theme-border)] shadow-[0_24px_60px_-32px_rgba(15,23,42,0.45)] sm:w-[40%] sm:min-w-[600px] sm:max-h-[80vh] sm:rounded-lg"
       style={{ background: "var(--theme-bg-card)" }}
       onClick={(e) => e.stopPropagation()}
     >
@@ -194,14 +194,14 @@ export function SkillSelector({
         {/* Mobile drag handle */}
         <div className="absolute left-1/2 -translate-x-1/2 top-2 w-10 h-1 rounded-full bg-stone-300 dark:bg-stone-600 sm:hidden" />
         <div className="flex items-center gap-3 mt-2 sm:mt-0">
-          <div className="size-9 sm:size-10 rounded-xl bg-gradient-to-br from-stone-100 to-stone-200 dark:from-amber-500/20 dark:to-orange-500/20 flex items-center justify-center">
+          <div className="size-9 sm:size-10 rounded-lg bg-[var(--theme-bg-sidebar)] ring-1 ring-[var(--theme-border)] flex items-center justify-center">
             <Sparkles
               size={16}
-              className="text-stone-500 dark:text-amber-400 sm:w-[18px] sm:h-[18px]"
+              className="text-stone-500 dark:text-stone-300 sm:w-[18px] sm:h-[18px]"
             />
           </div>
           <div>
-            <h2 className="text-sm sm:text-base font-semibold text-stone-900 dark:text-stone-100 font-serif">
+            <h2 className="text-sm sm:text-base font-semibold text-stone-900 dark:text-stone-100">
               {t("skillSelector.title")}
             </h2>
             <p className="text-xs sm:text-xs text-stone-500 dark:text-stone-400">
@@ -257,7 +257,7 @@ export function SkillSelector({
             setIsOpen(false);
             navigate("/skills");
           }}
-          className="flex items-center gap-1 px-3 py-2 sm:py-1.5 text-xs font-medium text-stone-500 dark:text-amber-400 hover:text-stone-700 dark:hover:text-amber-300 hover:bg-stone-100 dark:hover:bg-amber-500/10 active:bg-stone-200 dark:active:bg-amber-500/20 rounded-lg transition-colors"
+          className="flex items-center gap-1 px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-bg-sidebar)] rounded-lg transition-colors"
         >
           <Plus size={14} />
           <span>{t("skillSelector.manage")}</span>
@@ -274,7 +274,7 @@ export function SkillSelector({
         </div>
       )}
 
-      <div className="border-b border-stone-200/80 bg-white/80 px-4 py-3 dark:border-stone-700/80 dark:bg-stone-800/60 sm:px-5">
+      <div className="border-b border-[var(--theme-border)] bg-[var(--theme-bg)] px-4 py-3 sm:px-5">
         <div className="relative">
           <Search
             size={16}
@@ -285,7 +285,7 @@ export function SkillSelector({
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder={t("skills.searchPlaceholder")}
-            className="w-full rounded-xl border border-stone-200 bg-stone-50 py-2 pl-9 pr-3 text-sm text-stone-700 outline-none transition-colors focus:border-[var(--theme-primary)] focus:bg-white dark:border-stone-700 dark:bg-stone-900/60 dark:text-stone-100 dark:focus:bg-stone-900"
+            className="panel-search h-10"
           />
         </div>
         {availableTags.length > 0 && (
@@ -341,7 +341,7 @@ export function SkillSelector({
             return (
               <div
                 key={source}
-                className="rounded-xl border border-stone-200/80 dark:border-stone-700/60 overflow-hidden bg-stone-50/50 dark:bg-stone-800/40"
+                className="rounded-lg border border-[var(--theme-border)] overflow-hidden bg-[var(--theme-bg-card)]"
               >
                 {/* Category Header */}
                 <div
@@ -354,7 +354,7 @@ export function SkillSelector({
                       isExpanded ? "rotate-90" : ""
                     }`}
                   />
-                  <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-white dark:bg-stone-700 flex items-center justify-center shadow-sm border border-stone-100 dark:border-stone-600">
+                  <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-[var(--theme-bg-sidebar)] flex items-center justify-center ring-1 ring-[var(--theme-border)]">
                     <Icon
                       size={13}
                       className={`${sourceColors[cat]} sm:w-[14px] sm:h-[14px]`}
@@ -465,7 +465,7 @@ export function SkillSelector({
           },
         )}
         {filteredSkills.length === 0 && (
-          <div className="rounded-xl border border-dashed border-stone-200 bg-stone-50/70 px-4 py-6 text-center text-sm text-stone-500 dark:border-stone-700 dark:bg-stone-800/40 dark:text-stone-400">
+          <div className="rounded-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-4 py-6 text-center text-sm text-[var(--theme-text-secondary)]">
             {t("skills.noMatchingSkills")}
           </div>
         )}
@@ -475,7 +475,7 @@ export function SkillSelector({
       <div className="px-4 sm:px-5 py-3 sm:py-3.5 border-t border-stone-200 dark:border-stone-700 bg-stone-50/80 dark:bg-stone-800/50 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         <button
           onClick={() => setIsOpen(false)}
-          className="w-full py-2.5 px-4 bg-stone-900 dark:bg-stone-600 text-white dark:text-stone-100 rounded-xl font-medium text-sm hover:bg-stone-800 dark:hover:bg-stone-500 active:bg-stone-700 dark:active:bg-stone-600 transition-colors"
+          className="w-full py-2.5 px-4 bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-950 rounded-lg font-medium text-sm hover:bg-stone-800 dark:hover:bg-stone-200 active:bg-stone-700 transition-colors"
         >
           {t("skillSelector.done")}
         </button>

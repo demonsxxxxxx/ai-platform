@@ -235,7 +235,7 @@ export function Header({
               createPortal(
                 <div
                   ref={mobileMenuPanelRef}
-                  className="fixed z-[301] w-56 rounded-xl shadow-xl border overflow-hidden animate-scale-in"
+                  className="fixed z-[301] w-56 rounded-lg shadow-xl border overflow-hidden animate-scale-in"
                   style={{
                     top: getMenuPosition().top,
                     right: getMenuPosition().right,
@@ -365,7 +365,7 @@ export function Header({
           {langMenuOpen &&
             createPortal(
               <div
-                className="fixed z-[302] w-56 rounded-xl shadow-xl border overflow-hidden animate-scale-in"
+                className="fixed z-[302] w-56 rounded-lg shadow-xl border overflow-hidden animate-scale-in"
                 style={{
                   top: getMenuPosition().top,
                   right: getMenuPosition().right,

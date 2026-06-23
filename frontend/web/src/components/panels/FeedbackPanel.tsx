@@ -42,7 +42,7 @@ function StatsCard({
   value: string | number;
 }) {
   return (
-    <div className="glass-card rounded-xl p-4">
+    <div className="glass-card rounded-lg p-4">
       <div className="flex items-center gap-3">
         <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--glass-bg-subtle)]">
           <Icon size={24} className="text-stone-600 dark:text-stone-400" />
@@ -78,7 +78,7 @@ function DeleteConfirmModal({
       {/* Modal */}
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
         <div
-          className="w-full max-w-md transform overflow-hidden rounded-2xl bg-[var(--theme-bg-card)] p-6 text-left align-middle shadow-xl transition-all"
+          className="w-full max-w-md transform overflow-hidden rounded-lg bg-[var(--theme-bg-card)] p-6 text-left align-middle shadow-xl transition-all"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Icon */}
@@ -87,7 +87,7 @@ function DeleteConfirmModal({
           </div>
 
           {/* Title */}
-          <h3 className="text-xl font-semibold text-stone-900 dark:text-stone-100 font-serif">
+          <h3 className="text-xl font-semibold text-stone-900 dark:text-stone-100">
             {t("feedback.deleteConfirmTitle")}
           </h3>
 
@@ -102,13 +102,13 @@ function DeleteConfirmModal({
           <div className="mt-6 flex gap-3">
             <button
               onClick={onCancel}
-              className="flex-1 rounded-xl border border-[var(--glass-border)] bg-[var(--theme-bg-card)] px-4 py-2.5 text-sm font-medium text-stone-700 transition-colors hover:bg-stone-50 dark:text-stone-300 dark:hover:bg-stone-700"
+              className="flex-1 rounded-lg border border-[var(--glass-border)] bg-[var(--theme-bg-card)] px-4 py-2.5 text-sm font-medium text-stone-700 transition-colors hover:bg-stone-50 dark:text-stone-300 dark:hover:bg-stone-700"
             >
               {t("common.cancel")}
             </button>
             <button
               onClick={onConfirm}
-              className="flex-1 rounded-xl bg-red-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700"
+              className="flex-1 rounded-lg bg-red-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700"
             >
               {t("feedback.delete")}
             </button>
@@ -143,12 +143,12 @@ function FeedbackDetailModal({
       {/* Modal */}
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
         <div
-          className="w-full max-w-lg transform overflow-hidden rounded-2xl bg-[var(--theme-bg-card)] p-6 text-left align-middle shadow-xl transition-all"
+          className="w-full max-w-lg transform overflow-hidden rounded-lg bg-[var(--theme-bg-card)] p-6 text-left align-middle shadow-xl transition-all"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Header */}
           <div className="flex items-center justify-between mb-6">
-            <h3 className="text-xl font-semibold text-stone-900 dark:text-stone-100 font-serif">
+            <h3 className="text-xl font-semibold text-stone-900 dark:text-stone-100">
               {t("feedback.detailTitle") || "Feedback Details"}
             </h3>
             <button
@@ -261,7 +261,7 @@ function FeedbackDetailModal({
               <label className="block text-xs font-medium text-stone-500 dark:text-stone-400 mb-2">
                 {t("feedback.comment") || "Comment"}
               </label>
-              <div className="rounded-xl bg-[var(--glass-bg-subtle)] p-4 text-sm text-stone-700 dark:text-stone-300 whitespace-pre-wrap">
+              <div className="rounded-lg bg-[var(--glass-bg-subtle)] p-4 text-sm text-stone-700 dark:text-stone-300 whitespace-pre-wrap">
                 {feedback.comment}
               </div>
             </div>
@@ -271,7 +271,7 @@ function FeedbackDetailModal({
           <div className="mt-6 flex justify-end">
             <button
               onClick={onClose}
-              className="rounded-xl border border-[var(--glass-border)] bg-[var(--theme-bg-card)] px-4 py-2.5 text-sm font-medium text-stone-700 transition-colors hover:bg-stone-50 dark:text-stone-300 dark:hover:bg-stone-700"
+              className="rounded-lg border border-[var(--glass-border)] bg-[var(--theme-bg-card)] px-4 py-2.5 text-sm font-medium text-stone-700 transition-colors hover:bg-stone-50 dark:text-stone-300 dark:hover:bg-stone-700"
             >
               {t("common.close") || "Close"}
             </button>
@@ -363,7 +363,7 @@ export function FeedbackPanel() {
     formatDateTimeShort(dateString);
 
   return (
-    <div className="glass-shell flex h-full flex-col min-h-0">
+    <div className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100">
       {/* Header */}
       <PanelHeader
         title={t("feedback.title")}
@@ -440,7 +440,7 @@ export function FeedbackPanel() {
                 <button
                   key={feedback.id}
                   onClick={() => setSelectedFeedback(feedback)}
-                  className="group relative w-full text-left overflow-hidden glass-card rounded-xl p-4 hover:border-stone-300 dark:hover:border-stone-600 transition-colors"
+                  className="group relative w-full overflow-hidden rounded-lg text-left glass-card p-4 transition-colors hover:border-stone-300 dark:hover:border-stone-600"
                 >
                   <div className="flex items-start justify-between gap-3">
                     {/* User Info */}
@@ -502,7 +502,7 @@ export function FeedbackPanel() {
                 <button
                   key={feedback.id}
                   onClick={() => setSelectedFeedback(feedback)}
-                  className="group relative w-full text-left overflow-hidden glass-card rounded-xl p-5 hover:border-stone-300 dark:hover:border-stone-600 transition-colors"
+                  className="group relative w-full overflow-hidden rounded-lg text-left glass-card p-5 transition-colors hover:border-stone-300 dark:hover:border-stone-600"
                 >
                   <div className="flex items-start justify-between gap-4">
                     {/* User Info */}
@@ -555,7 +555,7 @@ export function FeedbackPanel() {
 
                   {/* Comment */}
                   {feedback.comment && (
-                    <div className="mt-4 rounded-xl bg-[var(--glass-bg-subtle)] p-4 text-sm text-stone-600 dark:text-stone-300 whitespace-pre-wrap">
+                    <div className="mt-4 rounded-lg bg-[var(--glass-bg-subtle)] p-4 text-sm text-stone-600 dark:text-stone-300 whitespace-pre-wrap">
                       {feedback.comment}
                     </div>
                   )}

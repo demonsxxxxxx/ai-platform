@@ -18,7 +18,7 @@ export function SkillFormNormal(a: SkillFormActions) {
     <>
       <div className="flex flex-1 flex-col gap-4">
         {/* Metadata card */}
-        <div className="skill-form-card rounded-3xl shadow-sm">
+        <div className="skill-form-card rounded-lg shadow-sm">
           <div className="space-y-4 px-4 py-4 sm:px-5">
             {/* Name */}
             <div className="space-y-1.5">
@@ -32,7 +32,7 @@ export function SkillFormNormal(a: SkillFormActions) {
                   disabled={a.isEditing}
                   onChange={(e) => a.setName(e.target.value)}
                   placeholder={t("skills.form.namePlaceholder")}
-                  className="w-full rounded-xl border border-[var(--theme-border)] px-3 py-2 font-mono text-sm text-[var(--theme-text)] placeholder:text-stone-400 dark:placeholder:text-stone-500 transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 bg-[var(--theme-bg)] hover:border-[var(--skill-border-strong)]"
+                  className="w-full rounded-lg border border-[var(--theme-border)] px-3 py-2 font-mono text-sm text-[var(--theme-text)] placeholder:text-stone-400 dark:placeholder:text-stone-500 transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 bg-[var(--theme-bg)] hover:border-[var(--skill-border-strong)]"
                 />
                 {a.isEditing && (
                   <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded-md bg-[var(--theme-bg-card)]/80 p-1">
@@ -80,7 +80,7 @@ export function SkillFormNormal(a: SkillFormActions) {
                 onChange={(e) => a.setDescription(e.target.value)}
                 placeholder={t("skills.form.descriptionPlaceholder")}
                 rows={3}
-                className="w-full resize-none rounded-xl border border-[var(--theme-border)] px-3 py-2 text-sm leading-6 text-[var(--theme-text)] placeholder:text-stone-400 dark:placeholder:text-stone-500 transition-all duration-150 bg-[var(--theme-bg)] hover:border-[var(--skill-border-strong)]"
+                className="w-full resize-none rounded-lg border border-[var(--theme-border)] px-3 py-2 text-sm leading-6 text-[var(--theme-text)] placeholder:text-stone-400 dark:placeholder:text-stone-500 transition-all duration-150 bg-[var(--theme-bg)] hover:border-[var(--skill-border-strong)]"
               />
               {a.errors.description && (
                 <p className="text-xs text-red-500">{a.errors.description}</p>
@@ -92,7 +92,7 @@ export function SkillFormNormal(a: SkillFormActions) {
               <label className="block text-xs font-medium text-[var(--theme-text-secondary)]">
                 {t("adminMarketplace.tags")}
               </label>
-              <div className="skill-tag-editor rounded-2xl bg-[var(--theme-bg)] p-3 shadow-sm">
+              <div className="skill-tag-editor rounded-lg bg-[var(--theme-bg)] p-3 shadow-sm">
                 <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--theme-text-secondary)]/80">
                   <Tag size={12} className="text-[var(--theme-primary)]" />
                   {t("adminMarketplace.tags")}
@@ -105,7 +105,7 @@ export function SkillFormNormal(a: SkillFormActions) {
                   value={a.tagsInput}
                   onChange={(e) => a.setTagsInput(e.target.value)}
                   placeholder={t("adminMarketplace.tagsPlaceholder")}
-                  className="mt-3 w-full rounded-xl border border-[var(--theme-border)] px-3 py-2 text-sm text-[var(--theme-text)] placeholder:text-stone-400 dark:placeholder:text-stone-500 transition-all duration-150 bg-[var(--theme-bg-card)] hover:border-[var(--skill-border-strong)]"
+                  className="mt-3 w-full rounded-lg border border-[var(--theme-border)] px-3 py-2 text-sm text-[var(--theme-text)] placeholder:text-stone-400 dark:placeholder:text-stone-500 transition-all duration-150 bg-[var(--theme-bg-card)] hover:border-[var(--skill-border-strong)]"
                 />
                 <div className="mt-3 flex flex-wrap gap-2">
                   {normalizeTags(a.tagsInput).map((tag) => (
@@ -137,7 +137,7 @@ export function SkillFormNormal(a: SkillFormActions) {
             </div>
 
             {/* Enabled toggle */}
-            <div className="skill-toggle-panel flex items-center justify-between rounded-2xl bg-[var(--theme-bg)] px-3 py-3">
+            <div className="skill-toggle-panel flex items-center justify-between rounded-lg bg-[var(--theme-bg)] px-3 py-3">
               <div className="min-w-0 pr-3">
                 <p className="text-sm font-medium text-[var(--theme-text)]">
                   {t("skills.form.enabled")}
@@ -160,7 +160,7 @@ export function SkillFormNormal(a: SkillFormActions) {
         </div>
 
         {/* Editor area */}
-        <div className="skill-form-editor flex flex-col overflow-hidden rounded-3xl shadow-sm">
+        <div className="skill-form-editor flex flex-col overflow-hidden rounded-lg shadow-sm">
           <div className="shrink-0 px-3 py-3 sm:px-4">
             <div className="flex flex-col gap-3">
               <div className="flex items-center justify-between gap-3">
@@ -171,7 +171,7 @@ export function SkillFormNormal(a: SkillFormActions) {
                   <button
                     type="button"
                     onClick={a.addFile}
-                    className="flex h-9 w-9 items-center justify-center rounded-xl text-stone-400 transition-colors duration-150 hover:bg-[var(--theme-bg-card)] hover:text-[var(--theme-text)]"
+                    className="flex h-9 w-9 items-center justify-center rounded-lg text-stone-400 transition-colors duration-150 hover:bg-[var(--theme-bg-card)] hover:text-[var(--theme-text)]"
                     title={t("skills.form.addFile", "Add file")}
                   >
                     <Plus size={15} />
@@ -179,7 +179,7 @@ export function SkillFormNormal(a: SkillFormActions) {
                   <button
                     type="button"
                     onClick={() => a.toggleFullscreen(true)}
-                    className="flex h-9 w-9 items-center justify-center rounded-xl text-stone-400 transition-colors duration-150 hover:bg-[var(--theme-bg-card)] hover:text-[var(--theme-text)]"
+                    className="flex h-9 w-9 items-center justify-center rounded-lg text-stone-400 transition-colors duration-150 hover:bg-[var(--theme-bg-card)] hover:text-[var(--theme-text)]"
                     title={t("skills.form.fullscreenEditor")}
                   >
                     <Maximize2 size={15} />
@@ -187,7 +187,7 @@ export function SkillFormNormal(a: SkillFormActions) {
                 </div>
               </div>
 
-              <div className="skill-file-tabs min-w-0 overflow-hidden rounded-2xl px-1 py-1">
+              <div className="skill-file-tabs min-w-0 overflow-hidden rounded-lg px-1 py-1">
                 <FileTabs
                   files={a.files}
                   activeFileIndex={a.activeFileIndex}
@@ -197,7 +197,7 @@ export function SkillFormNormal(a: SkillFormActions) {
                 />
               </div>
 
-              <div className="skill-file-path rounded-2xl px-3 py-2.5">
+              <div className="skill-file-path rounded-lg px-3 py-2.5">
                 <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--theme-text-secondary)]/80">
                   {t("skills.form.filePath")}
                 </label>
@@ -223,7 +223,7 @@ export function SkillFormNormal(a: SkillFormActions) {
               // Loading state
               if (a.loadingFilePath === currentPath) {
                 return (
-                  <div className="flex h-full min-h-[18rem] sm:min-h-[24rem] items-center justify-center rounded-2xl bg-[var(--theme-bg)]">
+                  <div className="flex h-full min-h-[18rem] sm:min-h-[24rem] items-center justify-center rounded-lg bg-[var(--theme-bg)]">
                     <div className="flex flex-col items-center gap-3">
                       <svg
                         className="h-6 w-6 animate-spin text-[var(--theme-text-secondary)]"
@@ -264,7 +264,7 @@ export function SkillFormNormal(a: SkillFormActions) {
               }
               return (
                 <div
-                  className={`relative flex flex-col overflow-hidden rounded-2xl bg-[var(--theme-bg)] transition-colors duration-150 ${
+                  className={`relative flex flex-col overflow-hidden rounded-lg bg-[var(--theme-bg)] transition-colors duration-150 ${
                     a.errors.content
                       ? "ring-1 ring-red-300 dark:ring-red-700"
                       : ""
@@ -280,7 +280,6 @@ export function SkillFormNormal(a: SkillFormActions) {
                     filePath={a.files[a.activeFileIndex]?.path}
                     readOnly
                   />
-                  <div className="pointer-events-none absolute inset-x-0 bottom-0 h-14 bg-gradient-to-t from-[var(--theme-bg)] to-transparent" />
                   <button
                     type="button"
                     onClick={() => a.toggleFullscreen(true)}
@@ -307,14 +306,14 @@ export function SkillFormNormal(a: SkillFormActions) {
           type="button"
           onClick={a.onCancel}
           disabled={a.isLoading}
-          className="rounded-xl px-4 py-2 text-sm text-[var(--theme-text)] hover:bg-stone-50 dark:hover:bg-stone-800 disabled:opacity-50 transition-colors duration-150"
+          className="rounded-lg px-4 py-2 text-sm text-[var(--theme-text)] hover:bg-stone-50 dark:hover:bg-stone-800 disabled:opacity-50 transition-colors duration-150"
         >
           {t("common.cancel")}
         </button>
         <button
           type="submit"
           disabled={a.isLoading}
-          className="rounded-xl bg-[var(--theme-primary)] px-5 py-2 text-sm font-medium text-white hover:bg-[var(--theme-primary-hover)] disabled:opacity-50 transition-colors duration-150 dark:text-stone-950 inline-flex items-center gap-2"
+          className="rounded-lg bg-[var(--theme-primary)] px-5 py-2 text-sm font-medium text-white hover:bg-[var(--theme-primary-hover)] disabled:opacity-50 transition-colors duration-150 dark:text-stone-950 inline-flex items-center gap-2"
         >
           <span className="inline-flex h-4 w-4 items-center justify-center">
             {a.isLoading ? <LoadingSpinner size="sm" /> : <Save size={16} />}

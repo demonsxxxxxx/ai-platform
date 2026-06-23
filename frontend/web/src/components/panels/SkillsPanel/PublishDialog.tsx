@@ -35,7 +35,7 @@ export function PublishDialog({
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 sm:items-center sm:p-4 animate-fade-in">
       <div
         ref={swipeRef as React.RefObject<HTMLDivElement>}
-        className="skill-theme-shell w-full max-w-lg rounded-t-[1.75rem] border border-[var(--skill-border)] bg-[var(--skill-surface)] shadow-[0_28px_80px_-36px_rgba(15,23,42,0.55)] sm:rounded-[1.75rem] sm:animate-scale-in max-sm:animate-slide-up-sheet"
+        className="w-full max-w-lg rounded-t-lg border border-[var(--skill-border)] bg-[var(--skill-surface)] shadow-[0_24px_60px_-32px_rgba(15,23,42,0.45)] sm:rounded-lg sm:animate-scale-in max-sm:animate-slide-up-sheet"
       >
         {/* Mobile drag handle */}
         <div className="flex justify-center pt-3 pb-1 sm:hidden">
@@ -43,7 +43,7 @@ export function PublishDialog({
         </div>
         <div className="skill-modal-header">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[var(--skill-border)] bg-[var(--skill-accent-soft)] text-[var(--skill-accent)]">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-[var(--skill-border)] bg-[var(--skill-accent-soft)] text-[var(--skill-accent)]">
               <Sparkles className="h-5 w-5" />
             </div>
             <div>
@@ -91,7 +91,7 @@ export function PublishDialog({
                   error: undefined,
                 })
               }
-              className="w-full rounded-xl border border-[var(--skill-border)] bg-[var(--theme-bg)] px-3.5 py-2.5 text-sm text-[var(--theme-text)] placeholder:text-[var(--theme-text-secondary)]/60 focus:border-[var(--skill-border-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--skill-accent)]/14 transition-[border-color,box-shadow] duration-180"
+              className="w-full rounded-lg border border-[var(--skill-border)] bg-[var(--theme-bg)] px-3.5 py-2.5 text-sm text-[var(--theme-text)] placeholder:text-[var(--theme-text-secondary)]/60 focus:border-[var(--skill-border-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--skill-accent)]/14 transition-[border-color,box-shadow] duration-180"
             />
           </div>
           <div className="space-y-1.5">
@@ -108,7 +108,7 @@ export function PublishDialog({
                 })
               }
               rows={4}
-              className="w-full rounded-xl border border-[var(--skill-border)] bg-[var(--theme-bg)] px-3.5 py-2.5 text-sm text-[var(--theme-text)] placeholder:text-[var(--theme-text-secondary)]/60 focus:border-[var(--skill-border-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--skill-accent)]/14 transition-[border-color,box-shadow] duration-180 resize-none"
+              className="w-full rounded-lg border border-[var(--skill-border)] bg-[var(--theme-bg)] px-3.5 py-2.5 text-sm text-[var(--theme-text)] placeholder:text-[var(--theme-text-secondary)]/60 focus:border-[var(--skill-border-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--skill-accent)]/14 transition-[border-color,box-shadow] duration-180 resize-none"
               placeholder={t("skills.form.descriptionPlaceholder")}
             />
           </div>
@@ -130,7 +130,7 @@ export function PublishDialog({
                   error: undefined,
                 })
               }
-              className="w-full rounded-xl border border-[var(--skill-border)] bg-[var(--theme-bg)] px-3.5 py-2.5 text-sm text-[var(--theme-text)] placeholder:text-[var(--theme-text-secondary)]/60 focus:border-[var(--skill-border-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--skill-accent)]/14 transition-[border-color,box-shadow] duration-180"
+              className="w-full rounded-lg border border-[var(--skill-border)] bg-[var(--theme-bg)] px-3.5 py-2.5 text-sm text-[var(--theme-text)] placeholder:text-[var(--theme-text-secondary)]/60 focus:border-[var(--skill-border-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--skill-accent)]/14 transition-[border-color,box-shadow] duration-180"
               placeholder={t("adminMarketplace.tagsPlaceholder")}
             />
             <div className="mt-3 flex flex-wrap gap-2">
@@ -157,7 +157,7 @@ export function PublishDialog({
             </div>
           </div>
           {publishConfirm.error && (
-            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-600 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-400">
+            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-600 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-400">
               {publishConfirm.error}
             </div>
           )}

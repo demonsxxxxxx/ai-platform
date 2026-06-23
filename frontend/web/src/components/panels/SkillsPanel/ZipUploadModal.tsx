@@ -92,7 +92,7 @@ export function ZipUploadModal({
             e.stopPropagation();
             zipInputRef.current?.click();
           }}
-          className={`group relative flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed px-6 py-10 transition-all duration-200 ${
+          className={`group relative flex cursor-pointer flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed px-6 py-10 transition-all duration-200 ${
             isDragging
               ? "border-[var(--theme-primary)] bg-[var(--theme-primary-light)]/40 scale-[1.01]"
               : "border-[var(--theme-border)] bg-[var(--theme-bg)]/60 hover:border-[var(--theme-primary)]/50 hover:bg-[var(--theme-bg)]/90"
@@ -106,7 +106,7 @@ export function ZipUploadModal({
             className="hidden"
           />
           <div
-            className={`flex h-14 w-14 items-center justify-center rounded-2xl transition-all duration-200 ${
+            className={`flex h-14 w-14 items-center justify-center rounded-lg transition-all duration-200 ${
               isDragging
                 ? "bg-[var(--theme-primary)] text-white shadow-lg shadow-[var(--theme-primary)]/20 scale-110"
                 : "bg-[var(--theme-primary-light)] text-[var(--theme-primary)] group-hover:scale-105"
@@ -125,7 +125,7 @@ export function ZipUploadModal({
             </p>
           </div>
           {zipFile && (
-            <div className="flex items-center gap-2 rounded-xl bg-[var(--theme-primary-light)]/60 px-3 py-1.5">
+            <div className="flex items-center gap-2 rounded-lg bg-[var(--theme-primary-light)]/60 px-3 py-1.5">
               <Archive
                 size={14}
                 className="text-[var(--theme-primary)] shrink-0"
@@ -174,7 +174,7 @@ export function ZipUploadModal({
                   : t("common.selectAll")}
               </button>
             </div>
-            <div className="space-y-1.5 max-h-72 overflow-y-auto rounded-xl p-1">
+            <div className="space-y-1.5 max-h-72 overflow-y-auto rounded-lg p-1">
               {zipSkills.map((skill) => {
                 const selected = selectedZipSkills.includes(skill.name);
                 return (
@@ -183,7 +183,7 @@ export function ZipUploadModal({
                     onClick={() =>
                       !skill.already_exists && onZipSkillToggle(skill.name)
                     }
-                    className={`group flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 transition-all duration-150 ${
+                    className={`group flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 transition-all duration-150 ${
                       skill.already_exists
                         ? "cursor-not-allowed opacity-40"
                         : selected

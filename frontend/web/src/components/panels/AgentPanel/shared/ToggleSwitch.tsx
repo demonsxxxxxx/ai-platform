@@ -21,7 +21,7 @@ export const ToggleSwitch = React.memo(function ToggleSwitch({
       disabled={disabled}
       className={`relative h-7 w-12 flex-shrink-0 rounded-full transition-all duration-200 ease-out ${
         enabled
-          ? "bg-amber-500 dark:bg-amber-500"
+          ? "bg-[var(--theme-primary)]"
           : "bg-stone-300 dark:bg-stone-600"
       }`}
       aria-label={ariaLabel}

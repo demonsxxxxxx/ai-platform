@@ -785,7 +785,7 @@ export function FeishuPanel({
 
   // Full-page mode (backward compatible)
   return (
-    <div className="glass-shell flex h-full flex-col min-h-0">
+    <div className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100">
       <PanelHeader
         title={t("feishu.title", "Feishu/Lark Channel")}
         subtitle={t("feishu.description")}

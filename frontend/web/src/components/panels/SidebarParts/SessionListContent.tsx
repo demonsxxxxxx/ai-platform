@@ -431,7 +431,7 @@ export function SessionListContent({
       <div className="shrink-0 px-2 py-1 border-t border-stone-200/60 dark:border-stone-800/60">
         <div
           onClick={onShowProfile}
-          className="group flex items-center rounded-xl py-3 px-2 w-full hover:bg-stone-100 dark:hover:bg-stone-800/60 transition cursor-pointer"
+          className="group flex items-center rounded-lg py-3 px-2 w-full hover:bg-stone-100 dark:hover:bg-stone-800/60 transition cursor-pointer"
         >
           <div className="shrink-0 w-8 h-8 rounded-full overflow-hidden ring-1 ring-stone-200 dark:ring-stone-700 group-hover:ring-[var(--theme-primary)] transition mr-3">
             {user?.avatar_url && !imgError ? (

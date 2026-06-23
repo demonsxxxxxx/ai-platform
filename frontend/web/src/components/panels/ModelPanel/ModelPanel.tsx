@@ -9,6 +9,7 @@ import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
 import { PanelHeader } from "../../common/PanelHeader";
 import { ModelPanelSkeleton } from "../../skeletons";
+import { WorkbenchStateSurface } from "../../workbench/WorkbenchStateSurface";
 import { agentConfigApi, roleApi, modelApi } from "../../../services/api";
 import type { ModelConfig } from "../../../services/api/model";
 import { useAuth } from "../../../hooks/useAuth";
@@ -154,16 +155,21 @@ export function ModelPanel() {
 
   if (!canManageModels) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <p className="text-stone-500 dark:text-stone-400">
-          {t("agentConfig.noPermission")}
-        </p>
+      <div className="flex h-full items-center justify-center bg-[var(--theme-bg)] p-6">
+        <WorkbenchStateSurface
+          state="forbidden"
+          surface="models-route-permission"
+          title={t("agentConfig.noPermission")}
+          description={t("workbench.forbidden.description", {
+            permission: Permission.MODEL_ADMIN,
+          })}
+        />
       </div>
     );
   }
 
   return (
-    <div className="glass-shell flex h-full flex-col min-h-0">
+    <div className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100">
       {/* 头部 */}
       <PanelHeader
         title={t("agentConfig.modelTitle")}
@@ -185,7 +191,7 @@ export function ModelPanel() {
 
       {/* 错误提示 */}
       {error && (
-        <div className="mx-4 mt-4 flex items-center gap-2 glass-card rounded-xl p-3 text-sm text-red-600 dark:text-red-400 sm:mx-6 !border-red-200/40 dark:!border-red-800/30">
+        <div className="mx-4 mt-4 flex items-center gap-2 glass-card rounded-lg p-3 text-sm text-red-600 dark:text-red-400 sm:mx-6 !border-red-200/40 dark:!border-red-800/30">
           <AlertCircle size={18} />
           <span>{error}</span>
         </div>

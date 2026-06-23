@@ -28,6 +28,9 @@ export function SkillsPanel({
   const canDelete = hasAnyPermission([Permission.SKILL_DELETE]);
   const canPublishByAuth = hasAnyPermission([Permission.MARKETPLACE_PUBLISH]);
   const isGovernedUnavailable = governedUnavailable || !canRead;
+  const skillFileWriteBacked = false;
+  const skillImportBacked = false;
+  const skillBatchWriteBacked = false;
 
   const actions = useSkillsActions({ enabled: !isGovernedUnavailable });
   const effectivePermissions = new Set(actions.effectivePermissions);
@@ -41,10 +44,16 @@ export function SkillsPanel({
   const canPublish =
     !isGovernedUnavailable &&
     (canPublishByAuth || effectivePermissions.has(Permission.MARKETPLACE_PUBLISH));
+  const canEditSkills = skillFileWriteBacked && canWrite;
+  const canCreateSkills = skillFileWriteBacked && canWrite;
+  const canImportSkills = skillImportBacked && canWrite;
+  const canBatchSkills =
+    skillBatchWriteBacked && (canWrite || canDeleteSkill);
 
   return (
     <div
-      className="skill-theme-shell flex h-full min-h-0 flex-col"
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      data-skill-workbench-shell
       data-settings-state-degraded={settingsStateDegraded || undefined}
     >
       <SkillsList
@@ -67,6 +76,10 @@ export function SkillsPanel({
         error={actions.error}
         clearError={actions.clearError}
         canWrite={canWrite && !isGovernedUnavailable}
+        canEdit={canEditSkills && !isGovernedUnavailable}
+        canCreate={canCreateSkills && !isGovernedUnavailable}
+        canImport={canImportSkills && !isGovernedUnavailable}
+        canBatch={canBatchSkills && !isGovernedUnavailable}
         canDelete={canDeleteSkill && !isGovernedUnavailable}
         canPublish={canPublish && !isGovernedUnavailable}
         governedUnavailable={isGovernedUnavailable}
@@ -143,12 +156,12 @@ export function SkillsPanel({
         setSelectedGithubSkills={actions.setSelectedGithubSkills}
       />
 
-      {actions.selectionMode && (
+      {actions.selectionMode && canBatchSkills && (
         <BatchActionBar
           selectedCount={actions.selectedNames.size}
           batchLoading={actions.batchLoading}
-          canWrite={canWrite && !isGovernedUnavailable}
-          canDelete={canDeleteSkill && !isGovernedUnavailable}
+          canWrite={canBatchSkills && canWrite && !isGovernedUnavailable}
+          canDelete={canBatchSkills && canDeleteSkill && !isGovernedUnavailable}
           onBatchToggle={actions.handleBatchToggle}
           onBatchDelete={actions.handleBatchDelete}
           onClearSelection={actions.clearSelection}

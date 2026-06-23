@@ -443,7 +443,7 @@ export function MarketplacePanel({
 
       {/* Error */}
       {error && (
-        <div className="mx-4 mt-4 flex items-center justify-between rounded-xl bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-400">
+        <div className="mx-4 mt-4 flex items-center justify-between rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-400">
           <span>{error}</span>
           <button
             onClick={clearError}

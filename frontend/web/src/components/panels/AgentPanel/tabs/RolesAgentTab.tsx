@@ -93,7 +93,7 @@ export function RolesAgentTab({
 
       {selectedRole && (
         <>
-          <div className="glass-card rounded-xl p-5">
+          <div className="glass-card rounded-lg p-5">
             <h4 className="mb-4 text-sm font-medium text-stone-900 dark:text-stone-100">
               {t("agentConfig.selectAgentsForRole", {
                 roleName: selectedRoleData?.name,

@@ -98,8 +98,8 @@ export function GithubImportModal({
       }
     >
       <div className="es-form">
-        <div className="skill-callout flex items-start gap-3 rounded-2xl border border-[var(--theme-border)] bg-[var(--theme-bg)]/85 px-4 py-4">
-          <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[var(--theme-primary-light)] text-[var(--theme-primary)]">
+        <div className="skill-callout flex items-start gap-3 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg)]/85 px-4 py-4">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--theme-primary-light)] text-[var(--theme-primary)]">
             <Sparkles size={18} />
           </div>
           <div>
@@ -183,14 +183,14 @@ export function GithubImportModal({
                   : t("common.selectAll")}
               </button>
             </div>
-            <div className="space-y-1.5 max-h-60 overflow-y-auto rounded-xl p-1">
+            <div className="space-y-1.5 max-h-60 overflow-y-auto rounded-lg p-1">
               {githubSkills.map((skill) => {
                 const selected = selectedGithubSkills.includes(skill.name);
                 return (
                   <div
                     key={skill.name}
                     onClick={() => onGithubSkillToggle(skill.name)}
-                    className={`group flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 transition-all duration-150 ${
+                    className={`group flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 transition-all duration-150 ${
                       selected
                         ? "bg-[var(--theme-primary)]/8"
                         : "hover:bg-[var(--theme-primary)]/4"

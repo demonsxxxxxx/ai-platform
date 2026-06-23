@@ -16,7 +16,7 @@ export function SkillFormFullscreen(a: SkillFormActions) {
       <button
         type="button"
         onClick={() => a.toggleFullscreen(false)}
-        className="fixed top-4 right-4 z-[410] flex items-center justify-center w-11 h-11 rounded-xl bg-black/80 hover:bg-black text-white shadow-xl transition-all duration-200 hover:scale-105 active:scale-95"
+        className="fixed top-4 right-4 z-[410] flex items-center justify-center w-11 h-11 rounded-lg bg-black/80 hover:bg-black text-white shadow-xl transition-all duration-200 hover:scale-105 active:scale-95"
         title={t("skills.form.exitFullscreen")}
       >
         <Shrink size={18} />
@@ -49,7 +49,7 @@ export function SkillFormFullscreen(a: SkillFormActions) {
               <button
                 type="button"
                 onClick={a.addFile}
-                className="w-full flex items-center gap-1.5 rounded-xl px-2 py-1.5 text-sm text-stone-500 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-white/5 transition-colors"
+                className="w-full flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm text-stone-500 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-white/5 transition-colors"
               >
                 <Plus size={13} />
                 {t("skills.form.addFile")}
@@ -73,7 +73,7 @@ export function SkillFormFullscreen(a: SkillFormActions) {
               <button
                 type="button"
                 onClick={a.addFile}
-                className="shrink-0 flex items-center justify-center h-9 w-9 rounded-xl text-stone-400 transition-colors duration-150 hover:bg-[var(--theme-bg-card)] hover:text-[var(--theme-text)]"
+                className="shrink-0 flex items-center justify-center h-9 w-9 rounded-lg text-stone-400 transition-colors duration-150 hover:bg-[var(--theme-bg-card)] hover:text-[var(--theme-text)]"
                 title={t("skills.form.addFile", "Add file")}
               >
                 <Plus size={15} />
@@ -89,7 +89,7 @@ export function SkillFormFullscreen(a: SkillFormActions) {
                 // Loading state
                 if (a.loadingFilePath === currentPath) {
                   return (
-                    <div className="flex h-full items-center justify-center rounded-2xl bg-[var(--theme-bg)]">
+                    <div className="flex h-full items-center justify-center rounded-lg bg-[var(--theme-bg)]">
                       <div className="flex flex-col items-center gap-3">
                         <svg
                           className="h-6 w-6 animate-spin text-[var(--theme-text-secondary)]"
@@ -130,7 +130,7 @@ export function SkillFormFullscreen(a: SkillFormActions) {
                 }
                 return (
                   <div
-                    className={`flex h-full flex-col overflow-hidden rounded-2xl bg-[var(--theme-bg)] transition-colors duration-150 ${
+                    className={`flex h-full flex-col overflow-hidden rounded-lg bg-[var(--theme-bg)] transition-colors duration-150 ${
                       a.errors.content
                         ? "ring-1 ring-red-300 dark:ring-red-700"
                         : ""

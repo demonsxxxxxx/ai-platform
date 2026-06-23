@@ -141,7 +141,7 @@ export const ProviderSelect = React.memo(function ProviderSelect({
 
       {/* Dropdown */}
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-1.5 w-full rounded-xl bg-white dark:bg-stone-800 shadow-lg border border-[var(--glass-border)] overflow-hidden animate-in fade-in-0 zoom-in-95 duration-150">
+        <div className="absolute left-0 top-full z-50 mt-1.5 w-full rounded-lg bg-white dark:bg-stone-800 shadow-lg border border-[var(--glass-border)] overflow-hidden animate-in fade-in-0 zoom-in-95 duration-150">
           {/* Search input */}
           <div className="px-3 pt-2.5 pb-2">
             <div className="relative">

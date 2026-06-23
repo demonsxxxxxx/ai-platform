@@ -365,7 +365,7 @@ export const BatchCreateModal = ({
               {batchRows.map((row, index) => (
                 <div
                   key={row.id}
-                  className="glass-card-subtle rounded-xl p-3 sm:p-4 space-y-2"
+                  className="glass-card-subtle rounded-lg p-3 sm:p-4 space-y-2"
                 >
                   <div className="flex items-center justify-between">
                     <span className="text-[11px] text-theme-text-secondary font-mono">
@@ -521,7 +521,7 @@ export const BatchCreateModal = ({
               ))}
               <button
                 onClick={addBatchRow}
-                className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 text-sm text-theme-text-secondary hover:text-theme-text border border-dashed border-theme-border hover:border-theme-text-secondary rounded-xl transition-colors"
+                className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 text-sm text-theme-text-secondary hover:text-theme-text border border-dashed border-theme-border hover:border-theme-text-secondary rounded-lg transition-colors"
               >
                 <Plus size={16} />
                 {t("agentConfig.batchAddRow")}
@@ -562,7 +562,7 @@ export const BatchCreateModal = ({
               </div>
               {importJson.trim() && (
                 <div
-                  className={`rounded-xl p-3 text-sm flex items-center gap-2 ${
+                  className={`rounded-lg p-3 text-sm flex items-center gap-2 ${
                     importValidation.valid
                       ? "bg-green-50 text-green-700 dark:bg-green-900/30 dark:text-green-400"
                       : "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-400"
@@ -582,7 +582,7 @@ export const BatchCreateModal = ({
               )}
               {importResult && (
                 <div
-                  className={`flex items-center gap-2 rounded-xl p-3 ${
+                  className={`flex items-center gap-2 rounded-lg p-3 ${
                     importResult.success
                       ? "bg-green-50 text-green-700 dark:bg-green-900/30 dark:text-green-400"
                       : "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-400"

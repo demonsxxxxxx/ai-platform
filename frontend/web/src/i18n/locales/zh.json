@@ -49,6 +49,32 @@
     "searchPlaceholder": "搜索智能体",
     "noMatchingAgents": "没有匹配的智能体"
   },
+  "frontendStates": {
+    "logged-out": {
+      "title": "需要登录",
+      "description": "请先登录公司账号，再进入 AI Platform 工作台。"
+    },
+    "loading": {
+      "title": "正在加载工作台",
+      "description": "正在确认账号、权限和工作区状态。"
+    },
+    "no-workspace": {
+      "title": "未分配工作区",
+      "description": "当前账号尚未分配可用工作区，请联系管理员开通。"
+    },
+    "forbidden": {
+      "title": "当前账号不可用",
+      "description": "该能力受公司权限治理，需要管理员授权后才能使用。"
+    },
+    "degraded": {
+      "title": "降级可读",
+      "description": "页面可继续查看，但部分操作在当前状态下保持锁定。"
+    },
+    "ready": {
+      "title": "已就绪",
+      "description": "该页面已经可用于当前账号。"
+    }
+  },
   "agentConfig": {
     "addFirstModel": "添加第一个模型",
     "addModel": "添加模型",
@@ -1407,6 +1433,50 @@
     "title": "记忆空间",
     "titleLabel": "标题",
     "titlePlaceholder": "输入记忆标题...",
+    "workbench": {
+      "activeRecords": "活跃记录",
+      "adminHidden": "当前角色不可查看管理员记忆库存。后端管理员接口保持 fail-closed。",
+      "adminProjection": "管理员运行投影",
+      "agent": "智能体",
+      "agentPublicId": "智能体公开 ID",
+      "allAgents": "全部智能体",
+      "allowSessionWrites": "允许会话记忆写入",
+      "allowSessionWritesHint": "跨会话长期记忆继续保持 fail-closed。",
+      "cleanupDeleted": "保留期清理已删除 {{count}} 条记录",
+      "days": "{{count}} 天",
+      "defaultPolicy": "默认",
+      "deleteRecord": "删除记忆记录",
+      "deleteRecordConfirm": "确认删除这条会话绑定的记忆记录？",
+      "expires": "{{date}} 过期",
+      "loadingAdmin": "正在加载管理员记忆投影...",
+      "loadingRecords": "正在加载会话记忆记录...",
+      "longTermClosed": "长期记忆关闭",
+      "noAdminRecords": "管理员投影中没有活跃记录。",
+      "noPolicy": "尚未加载记忆策略投影。",
+      "noSessionRecords": "该会话下没有可见的活跃记忆记录。",
+      "noStoredPolicies": "当前筛选条件下没有已存储策略。",
+      "policyMeta": "{{days}} 天保留 · {{source}} · {{date}}",
+      "policyUpdated": "记忆策略已更新",
+      "publicProjectionOnly": "仅公开投影",
+      "reason": "原因",
+      "reasonPlaceholder": "可选的公开安全审计原因",
+      "recordDeleted": "记忆记录已删除",
+      "retention": "保留期",
+      "retentionCleanup": "保留期清理",
+      "retentionDays": "保留天数",
+      "savePolicy": "保存策略",
+      "sessionId": "会话 ID",
+      "sessionIdPlaceholder": "查看记忆记录需要会话 ID",
+      "sessionRecords": "会话记忆记录",
+      "sessionRequired": "输入会话 ID 后可查看会话绑定的记忆记录。跨会话浏览按设计关闭。",
+      "source": "来源",
+      "storedPolicies": "已存储策略",
+      "subtitle": "ai-platform 公开记忆策略、会话记录与管理员投影",
+      "updated": "更新时间",
+      "user": "用户",
+      "userPolicy": "用户记忆策略",
+      "workspace": "工作区"
+    },
     "type": {
       "feedback": "反馈",
       "project": "项目",

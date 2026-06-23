@@ -154,7 +154,7 @@ export function AgentConfigPanel() {
   }
 
   return (
-    <div className="glass-shell flex h-full flex-col min-h-0">
+    <div className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100">
       {/* 头部 */}
       <PanelHeader
         title={t("agentConfig.title")}
@@ -176,7 +176,7 @@ export function AgentConfigPanel() {
 
       {/* 错误提示 */}
       {error && (
-        <div className="mx-4 mt-4 flex items-center gap-2 rounded-xl bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/30 dark:text-red-400 sm:mx-6">
+        <div className="mx-4 mt-4 flex items-center gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/30 dark:text-red-400 sm:mx-6">
           <AlertCircle size={18} />
           <span>{error}</span>
         </div>
@@ -243,16 +243,16 @@ export function AgentConfigPanel() {
               {availableAgents.map((agent) => (
                 <div
                   key={agent.id}
-                  className="flex items-center gap-3.5 glass-card rounded-xl p-4 transition-all duration-200 hover:shadow-[var(--glass-shadow-hover)]"
+                  className="flex items-center gap-3.5 glass-card rounded-lg p-4 transition-all duration-200 hover:shadow-[var(--glass-shadow-hover)]"
                 >
-                  <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl bg-[var(--glass-bg-subtle)] ring-1 ring-[var(--glass-border)] shadow-sm">
+                  <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-lg bg-[var(--glass-bg-subtle)] ring-1 ring-[var(--glass-border)] shadow-sm">
                     <Bot
                       size={20}
                       className="text-stone-600 dark:text-stone-400"
                     />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <h4 className="text-sm font-semibold text-stone-900 dark:text-stone-100 truncate tracking-tight font-serif">
+                    <h4 className="truncate text-sm font-semibold tracking-tight text-stone-900 dark:text-stone-100">
                       {t(agent.name)}
                     </h4>
                     <p className="text-xs text-stone-500 dark:text-stone-400 truncate mt-0.5 hidden sm:block">

@@ -63,7 +63,7 @@ export function MemoryFilter({
       </button>
 
       {open && (
-        <div className="absolute right-0 z-10 mt-1 w-44 rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg-card)] py-2 shadow-xl dark:shadow-black/40 animate-in fade-in-0 zoom-in-95 duration-100">
+        <div className="absolute right-0 z-10 mt-1 w-44 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] py-2 shadow-xl dark:shadow-black/40 animate-in fade-in-0 zoom-in-95 duration-100">
           <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--theme-text-secondary)]">
             {t("memory.typeLabel")}
           </div>

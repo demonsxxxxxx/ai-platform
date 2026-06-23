@@ -1,6 +1,6 @@
 /* ===== Enterprise Surface Compatibility Layer ===== */
 
-.glass-shell {
+:root {
   --glass-bg: var(--theme-bg-card);
   --glass-bg-hover: color-mix(in srgb, var(--theme-bg-card) 92%, var(--theme-bg));
   --glass-bg-subtle: color-mix(in srgb, var(--theme-bg-card) 82%, var(--theme-bg));
@@ -16,7 +16,7 @@
   --glass-blur: none;
 }
 
-.dark .glass-shell {
+.dark {
   --glass-bg: var(--theme-bg-card);
   --glass-bg-hover: color-mix(in srgb, var(--theme-bg-card) 86%, var(--theme-bg));
   --glass-bg-subtle: color-mix(in srgb, var(--theme-bg-card) 76%, var(--theme-bg));

@@ -61,7 +61,7 @@ function UserAvatar({ user, size = "sm" }: UserAvatarProps) {
   const initial = user.username.charAt(0).toUpperCase();
   return (
     <div
-      className={`flex items-center justify-center rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 font-medium ${sizeClasses}`}
+      className={`flex items-center justify-center rounded-full bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)] font-medium ${sizeClasses}`}
     >
       {initial}
     </div>
@@ -439,7 +439,7 @@ export function UsersPanel() {
   }
 
   return (
-    <div className="glass-shell flex h-full flex-col min-h-0">
+    <div className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100">
       {/* 头部 */}
       <PanelHeader
         title={t("users.title")}
@@ -460,7 +460,7 @@ export function UsersPanel() {
 
       {/* 错误提示 */}
       {error && (
-        <div className="mx-3 mt-4 flex items-center gap-2 rounded-xl bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/30 dark:text-red-400 sm:mx-6">
+        <div className="mx-3 mt-4 flex items-center gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/30 dark:text-red-400 sm:mx-6">
           <AlertCircle size={18} />
           <span>{error}</span>
         </div>
@@ -483,7 +483,7 @@ export function UsersPanel() {
         ) : (
           <>
             {/* Desktop table view */}
-            <div className="hidden overflow-x-auto glass-card rounded-xl sm:block">
+            <div className="hidden overflow-x-auto rounded-lg glass-card sm:block">
               <table className="min-w-full divide-y divide-[var(--glass-border)]">
                 <thead className="bg-[var(--glass-bg-subtle)]">
                   <tr>
