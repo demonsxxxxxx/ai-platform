@@ -62,12 +62,17 @@ overlays after `skill:write` passes. It enables tenant availability and writes
 audit evidence. It does not create a global built-in Skill, direct Marketplace
 entry, admin Skill version, or release-policy promotion.
 
-Explicitly fail-closed routes:
+`POST /api/github/preview` accepts a public `https://github.com/{owner}/{repo}`
+repository URL and branch, downloads the GitHub ZIP archive, discovers Skill
+packages under directories containing `SKILL.md`, and returns `repo_url`,
+`branch`, and `skills[{name,path,description}]` without persistence.
 
-- `POST /api/github/preview` returns `409 skill_import_contract_not_backed` after `skill:write` passes.
-- `POST /api/github/install` returns `409 skill_import_contract_not_backed` after `skill:write` passes.
-
-Those GitHub import routes are present so the frontend gets an authenticated contract instead of `404`; GitHub network import storage remains a later backend slice.
+`POST /api/github/install` accepts the same public GitHub source plus selected
+`skill_names` and persists matching existing public Skill packages as
+tenant/user-scoped public Skill file overlays. It enables tenant availability
+and writes audit evidence. It does not support private GitHub tokens, arbitrary
+Git hosts, new global built-in Skill creation, direct Marketplace entry
+creation, admin Skill versions, or release-policy promotion.
 
 ## Marketplace Routes
 

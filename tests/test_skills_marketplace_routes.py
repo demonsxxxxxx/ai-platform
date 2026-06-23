@@ -724,33 +724,293 @@ def test_public_skill_zip_upload_rejects_unknown_skill_without_persistence(monke
     assert not any(name == "upsert_file" for name, _ in calls)
 
 
-def test_public_skill_github_import_and_direct_marketplace_routes_are_permission_gated_then_fail_closed(monkeypatch):
+def _github_archive_zip(files: dict[str, str | bytes]) -> bytes:
+    return _package_zip({f"repo-main/{path}": content for path, content in files.items()})
+
+
+def _github_skill_archive(description: str = "Imported from GitHub.") -> bytes:
+    return _github_archive_zip(
+        {
+            "skills/qa-file-reviewer/SKILL.md": (
+                "---\n"
+                "name: qa-file-reviewer\n"
+                f"description: {description}\n"
+                "---\n\n"
+                "# GitHub QA\n"
+            ),
+            "skills/qa-file-reviewer/references/github.md": "GitHub guide",
+        }
+    )
+
+
+def test_public_skill_github_import_validates_permission_before_url(monkeypatch):
     install_route_fakes(monkeypatch)
     client = TestClient(create_app())
 
     github_preview_denied = client.post(
         "/api/github/preview",
-        json={"repo_url": "https://github.com/example/skills"},
+        json={"repo_url": "not-a-url"},
         headers=headers("skill:read,marketplace:read"),
     )
     assert github_preview_denied.status_code == 403
     assert github_preview_denied.json()["detail"] == "missing_permission:skill:write"
 
+    github_install_denied = client.post(
+        "/api/github/install",
+        json={"repo_url": "not-a-url", "skill_names": ["qa-file-reviewer"]},
+        headers=headers("skill:read,marketplace:read"),
+    )
+    assert github_install_denied.status_code == 403
+    assert github_install_denied.json()["detail"] == "missing_permission:skill:write"
+
     github_preview = client.post(
         "/api/github/preview",
-        json={"repo_url": "https://github.com/example/skills", "branch": "main"},
+        json={"repo_url": "https://example.com/example/skills", "branch": "main"},
         headers=headers("skill:write"),
     )
-    assert github_preview.status_code == 409
-    assert github_preview.json()["detail"] == "skill_import_contract_not_backed"
+    assert github_preview.status_code == 400
+    assert github_preview.json()["detail"] == "github_import_repo_url_unsupported"
 
     github_install = client.post(
+        "/api/github/install",
+        json={"repo_url": "https://example.com/example/skills", "skill_names": ["qa-file-reviewer"]},
+        headers=headers("skill:write"),
+    )
+    assert github_install.status_code == 400
+    assert github_install.json()["detail"] == "github_import_repo_url_unsupported"
+
+
+def test_public_skill_github_preview_uses_archive_without_persistence(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+    downloads: list[str] = []
+
+    async def fake_download(url: str) -> bytes:
+        downloads.append(url)
+        return _github_skill_archive()
+
+    monkeypatch.setattr("app.routes.skills_marketplace._download_github_archive", fake_download)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/github/preview",
+        json={"repo_url": "https://github.com/example/skills", "branch": "feature-branch"},
+        headers=headers("skill:write"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "repo_url": "https://github.com/example/skills",
+        "branch": "feature-branch",
+        "skills": [
+            {
+                "name": "qa-file-reviewer",
+                "path": "skills/qa-file-reviewer",
+                "description": "Imported from GitHub.",
+            }
+        ],
+    }
+    assert downloads == ["https://github.com/example/skills/archive/refs/heads/feature-branch.zip"]
+    assert not any(name == "upsert_file" for name, _ in calls)
+    assert not any(name == "audit" for name, _ in calls)
+
+
+def test_public_skill_github_preview_keeps_files_before_skill_md_in_archive(monkeypatch):
+    async def fake_download(url: str) -> bytes:
+        return _github_archive_zip(
+            {
+                "skills/qa-file-reviewer/references/first.md": "first file",
+                "skills/qa-file-reviewer/SKILL.md": (
+                    "---\nname: qa-file-reviewer\ndescription: Ordered package.\n---\n\n# QA\n"
+                ),
+            }
+        )
+
+    monkeypatch.setattr("app.routes.skills_marketplace._download_github_archive", fake_download)
+    install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+
+    response = client.post(
         "/api/github/install",
         json={"repo_url": "https://github.com/example/skills", "skill_names": ["qa-file-reviewer"]},
         headers=headers("skill:write"),
     )
-    assert github_install.status_code == 409
-    assert github_install.json()["detail"] == "skill_import_contract_not_backed"
+    assert response.status_code == 200
+
+    public_file_response = client.get(
+        "/api/skills/qa-file-reviewer/files/references/first.md",
+        headers=headers(),
+    )
+    assert public_file_response.status_code == 200
+    assert public_file_response.json()["content"] == "first file"
+
+
+def test_public_skill_github_preview_does_not_absorb_sibling_prefix_paths(monkeypatch):
+    async def fake_download(url: str) -> bytes:
+        return _github_archive_zip(
+            {
+                "skills/qa-file-reviewer/SKILL.md": (
+                    "---\nname: qa-file-reviewer\ndescription: Primary package.\n---\n\n# QA\n"
+                ),
+                "skills/qa-file-reviewer-extra/private.md": "must not join primary package",
+            }
+        )
+
+    monkeypatch.setattr("app.routes.skills_marketplace._download_github_archive", fake_download)
+    install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/github/install",
+        json={"repo_url": "https://github.com/example/skills", "skill_names": ["qa-file-reviewer"]},
+        headers=headers("skill:write"),
+    )
+    assert response.status_code == 200
+
+    sibling_response = client.get(
+        "/api/skills/qa-file-reviewer/files/-extra/private.md",
+        headers=headers(),
+    )
+    assert sibling_response.status_code == 404
+
+
+def test_public_skill_github_install_persists_selected_existing_skill_overlay(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+
+    async def fake_download(url: str) -> bytes:
+        return _github_skill_archive()
+
+    monkeypatch.setattr("app.routes.skills_marketplace._download_github_archive", fake_download)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/github/install",
+        json={
+            "repo_url": "https://github.com/example/skills",
+            "branch": "main",
+            "skill_names": ["qa-file-reviewer"],
+        },
+        headers=headers("skill:write,marketplace:read"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "message": "Skills installed",
+        "installed": ["qa-file-reviewer"],
+        "errors": [],
+    }
+
+    public_file_response = client.get(
+        "/api/skills/qa-file-reviewer/files/references/github.md",
+        headers=headers(),
+    )
+    assert public_file_response.status_code == 200
+    assert public_file_response.json()["content"] == "GitHub guide"
+
+    marketplace_files_response = client.get("/api/marketplace/qa-file-reviewer/files", headers=headers())
+    assert marketplace_files_response.status_code == 200
+    assert marketplace_files_response.json() == {"files": ["SKILL.md", "references/guide.md"]}
+
+    upsert_paths = [payload["file_path"] for name, payload in calls if name == "upsert_file"]
+    assert upsert_paths == ["SKILL.md", "references/github.md"]
+    assert any(
+        name == "set_status"
+        and payload == {"tenant_id": "default", "skill_id": "qa-file-reviewer", "status": "active"}
+        for name, payload in calls
+    )
+    assert any(
+        name == "audit"
+        and payload["action"] == "skill.public.github_imported"
+        and payload["target_id"] == "qa-file-reviewer"
+        and payload["payload_json"]["repo_url"] == "https://github.com/example/skills"
+        and payload["payload_json"]["branch"] == "main"
+        for name, payload in calls
+    )
+
+
+def test_public_skill_github_install_reports_unknown_selected_skill_without_persistence(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+
+    async def fake_download(url: str) -> bytes:
+        return _github_archive_zip(
+            {
+                "skills/unknown-skill/SKILL.md": (
+                    "---\nname: unknown-skill\ndescription: Unknown GitHub skill.\n---\n\n# Unknown\n"
+                ),
+            }
+        )
+
+    monkeypatch.setattr("app.routes.skills_marketplace._download_github_archive", fake_download)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/github/install",
+        json={
+            "repo_url": "https://github.com/example/skills",
+            "skill_names": ["unknown-skill"],
+        },
+        headers=headers("skill:write"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "message": "Skills installed",
+        "installed": [],
+        "errors": ["unknown-skill:skill_not_found"],
+    }
+    assert not any(name == "upsert_file" for name, _ in calls)
+
+
+def test_public_skill_github_install_rejects_duplicate_selected_names(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+
+    async def fake_download(url: str) -> bytes:
+        return _github_skill_archive()
+
+    monkeypatch.setattr("app.routes.skills_marketplace._download_github_archive", fake_download)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/github/install",
+        json={
+            "repo_url": "https://github.com/example/skills",
+            "skill_names": ["qa-file-reviewer", "qa-file-reviewer"],
+        },
+        headers=headers("skill:write"),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "duplicate_skill_names"
+    assert not any(name == "upsert_file" for name, _ in calls)
+
+
+def test_public_skill_github_preview_rejects_duplicate_discovered_skill_ids(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+
+    async def fake_download(url: str) -> bytes:
+        return _github_archive_zip(
+            {
+                "skills/a/SKILL.md": "---\nname: qa-file-reviewer\ndescription: First.\n---\n\n# First\n",
+                "skills/b/SKILL.md": "---\nname: qa-file-reviewer\ndescription: Second.\n---\n\n# Second\n",
+            }
+        )
+
+    monkeypatch.setattr("app.routes.skills_marketplace._download_github_archive", fake_download)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/github/preview",
+        json={"repo_url": "https://github.com/example/skills"},
+        headers=headers("skill:write"),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "github_import_duplicate_skill_id"
+    assert not any(name == "upsert_file" for name, _ in calls)
+
+
+def test_public_skill_direct_marketplace_routes_are_permission_gated_then_fail_closed(monkeypatch):
+    install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
 
     direct_marketplace_denied = client.post(
         "/api/marketplace/",

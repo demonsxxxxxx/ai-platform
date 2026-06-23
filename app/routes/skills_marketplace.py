@@ -30,6 +30,13 @@ from app.models import (
 )
 from app.settings import get_settings
 from app.skills.packages import MAX_SKILL_PACKAGE_TOTAL_BYTES, ParsedSkillPackage, parse_skill_package_zip
+from app.skills.github_import import (
+    GitHubImportError,
+    GitHubImportPackage,
+    discover_github_skill_packages,
+    download_github_archive,
+    github_repo_archive_url,
+)
 from app.validation import assert_safe_id
 
 router = APIRouter()
@@ -421,6 +428,93 @@ async def _read_and_parse_public_import(file: UploadFile | None) -> ParsedSkillP
     return _parse_public_skill_package(await _read_skill_package_upload(file))
 
 
+def _github_request_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="github_import_request_required")
+    return payload
+
+
+def _github_import_http_exception(exc: GitHubImportError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+
+async def _download_github_archive(url: str) -> bytes:
+    try:
+        return await download_github_archive(url)
+    except GitHubImportError as exc:
+        raise _github_import_http_exception(exc) from exc
+
+
+async def _github_packages_from_payload(payload: Any) -> tuple[str, str, list[GitHubImportPackage]]:
+    request = _github_request_payload(payload)
+    repo_url = str(request.get("repo_url") or "").strip()
+    if not repo_url:
+        raise HTTPException(status_code=400, detail="github_import_repo_url_required")
+    branch = str(request.get("branch") or "main").strip() or "main"
+    try:
+        normalized_repo_url, archive_url, safe_branch = github_repo_archive_url(repo_url, branch)
+        packages = discover_github_skill_packages(await _download_github_archive(archive_url))
+    except GitHubImportError as exc:
+        raise _github_import_http_exception(exc) from exc
+    return normalized_repo_url, safe_branch, packages
+
+
+async def _persist_public_import_package(
+    *,
+    principal: AuthPrincipal,
+    parsed: ParsedSkillPackage,
+    audit_action: str,
+    audit_payload: dict[str, Any],
+) -> None:
+    async with transaction() as conn:
+        rows = await repositories.list_public_skill_catalog(
+            conn,
+            tenant_id=principal.tenant_id,
+            include_disabled=True,
+        )
+        _find_row(rows, skill_name=parsed.skill_id)
+        await repositories.ensure_user(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            display_name=principal.display_name,
+        )
+        for item in parsed.files:
+            file_path = _safe_file_path(str(item.get("relative_path") or ""))
+            await repositories.upsert_user_skill_file(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                skill_id=parsed.skill_id,
+                file_path=file_path,
+                content_base64=str(item.get("content_base64") or ""),
+                size_bytes=int(item.get("size_bytes") or 0),
+            )
+        await repositories.set_public_skill_enabled(
+            conn,
+            tenant_id=principal.tenant_id,
+            skill_id=parsed.skill_id,
+            status="active",
+        )
+        payload_json = {
+            "skill_id": parsed.skill_id,
+            "content_hash": parsed.content_hash,
+            "file_count": len(parsed.files),
+            "size_bytes": parsed.size_bytes,
+            "department_id": principal.department_id,
+        }
+        payload_json.update(audit_payload)
+        await repositories.append_audit_log(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            action=audit_action,
+            target_type="skill",
+            target_id=parsed.skill_id,
+            payload_json=payload_json,
+        )
+
+
 @router.get("/skills/", response_model=PublicSkillsResponse)
 async def list_skills(
     skip: int = Query(default=0, ge=0),
@@ -470,51 +564,12 @@ async def upload_skills(
 
     _require_permission(principal, "skill:write")
     parsed = await _read_and_parse_public_import(file)
-    async with transaction() as conn:
-        rows = await repositories.list_public_skill_catalog(
-            conn,
-            tenant_id=principal.tenant_id,
-            include_disabled=True,
-        )
-        _find_row(rows, skill_name=parsed.skill_id)
-        await repositories.ensure_user(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            display_name=principal.display_name,
-        )
-        for item in parsed.files:
-            file_path = _safe_file_path(str(item.get("relative_path") or ""))
-            await repositories.upsert_user_skill_file(
-                conn,
-                tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
-                skill_id=parsed.skill_id,
-                file_path=file_path,
-                content_base64=str(item.get("content_base64") or ""),
-                size_bytes=int(item.get("size_bytes") or 0),
-            )
-        await repositories.set_public_skill_enabled(
-            conn,
-            tenant_id=principal.tenant_id,
-            skill_id=parsed.skill_id,
-            status="active",
-        )
-        await repositories.append_audit_log(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            action="skill.public.zip_imported",
-            target_type="skill",
-            target_id=parsed.skill_id,
-            payload_json={
-                "skill_id": parsed.skill_id,
-                "content_hash": parsed.content_hash,
-                "file_count": len(parsed.files),
-                "size_bytes": parsed.size_bytes,
-                "department_id": principal.department_id,
-            },
-        )
+    await _persist_public_import_package(
+        principal=principal,
+        parsed=parsed,
+        audit_action="skill.public.zip_imported",
+        audit_payload={},
+    )
     return PublicSkillImportUploadResponse(
         message="Skills imported",
         created=[{"name": parsed.skill_id, "file_count": len(parsed.files)}],
@@ -854,10 +909,22 @@ async def preview_github_skills(
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
 ) -> dict[str, object]:
-    """Fail closed for GitHub import preview until backend import is product-backed."""
+    """Preview public GitHub Skill packages without persistence."""
 
     _require_permission(principal, "skill:write")
-    _skill_import_not_backed()
+    repo_url, branch, packages = await _github_packages_from_payload(payload)
+    return {
+        "repo_url": repo_url,
+        "branch": branch,
+        "skills": [
+            {
+                "name": item.package.skill_id,
+                "path": item.path,
+                "description": item.package.description,
+            }
+            for item in packages
+        ],
+    }
 
 
 @router.post("/github/install")
@@ -865,10 +932,39 @@ async def install_github_skills(
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
 ) -> dict[str, object]:
-    """Fail closed for GitHub import install until backend import is product-backed."""
+    """Import selected public GitHub Skill packages as current-user overlays."""
 
     _require_permission(principal, "skill:write")
-    _skill_import_not_backed()
+    repo_url, branch, packages = await _github_packages_from_payload(payload)
+    request = _github_request_payload(payload)
+    raw_names = request.get("skill_names")
+    if not isinstance(raw_names, list) or not raw_names:
+        raise HTTPException(status_code=400, detail="skill_names_required")
+    selected_names = [_safe_skill_name(str(item)) for item in raw_names]
+    if len(selected_names) != len(set(selected_names)):
+        raise HTTPException(status_code=400, detail="duplicate_skill_names")
+    packages_by_name = {item.package.skill_id: item for item in packages}
+    installed: list[str] = []
+    errors: list[str] = []
+    for skill_name in selected_names:
+        item = packages_by_name.get(skill_name)
+        if item is None:
+            errors.append(f"{skill_name}:skill_package_not_found")
+            continue
+        try:
+            await _persist_public_import_package(
+                principal=principal,
+                parsed=item.package,
+                audit_action="skill.public.github_imported",
+                audit_payload={"repo_url": repo_url, "branch": branch, "path": item.path},
+            )
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                errors.append(f"{skill_name}:{exc.detail}")
+                continue
+            raise
+        installed.append(skill_name)
+    return {"message": "Skills installed", "installed": installed, "errors": errors}
 
 
 @router.get("/marketplace/", response_model=list[MarketplaceSkillResponse])
