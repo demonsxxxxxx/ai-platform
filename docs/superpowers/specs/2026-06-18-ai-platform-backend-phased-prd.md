@@ -97,7 +97,7 @@ status source remains `docs/operations/ai-platform-gate-status.md`, release
 evidence, and the current readiness CLI output.
 
 Issue #164 records B0 runtime-subject evidence for
-`17dc3ae111cd1538fcf1412558d9d19b93f5b918` after PR #199. Source/runtime/image
+`e7558cc6a86a378ee747eb02ae9a4496ca40041a` after PR #202. Source/runtime/image
 labels, API/worker health, Foundation Runtime concurrency, redaction, runtime
 POC smoke, and runtime export/trace acceptance are recorded for that named
 runtime subject. This is not `gate closable`, does not prove current-source
@@ -112,7 +112,7 @@ ordinary-user multi-agent exposure.
 
 | Stage | Current planning status | Active next boundary |
 | --- | --- | --- |
-| B0 | Reviewed runtime-subject evidence exists for `17dc3ae`; not `gate closable`, and not current-source verified after later runtime-affecting `main` changes. | Reopen when readiness reports runtime rollout, source/runtime drift, or a runtime-affecting merge. Reconcile the env-file label caveat before any full G0 closure claim. |
+| B0 | Reviewed runtime-subject evidence exists for `e7558cc`; not `gate closable`, and not current-source verified after later runtime-affecting `main` changes. | Reopen when readiness reports runtime rollout, source/runtime drift, or a runtime-affecting merge. Reconcile the env-file label caveat before any full G0 closure claim. |
 | B1 | `local partial`; source contracts and named runtime evidence exist, but the stage is not `gate closable`. | Choose one governed document workflow and prove memory/context through `live_worker_run_payload` plus rollback and deny paths. |
 | B2 | `local partial`; fake provider remains local/test-only and controlled probes do not prove governed SDK Skill execution. | Prove Docker/equivalent sandbox through a governed Skill run with lease, callback, resource, egress, artifact, cancel, cleanup, and redaction evidence. |
 | B3 | `local partial`; source contract only for `b3_10x4_sdk_subagents`; production defaults stay unchanged. | Record an operator-reviewed capacity snapshot for 10 sessions x peak 4 SDK subagents/session, including model-gateway, sandbox, token/cost, event/artifact, and cleanup pressure. |

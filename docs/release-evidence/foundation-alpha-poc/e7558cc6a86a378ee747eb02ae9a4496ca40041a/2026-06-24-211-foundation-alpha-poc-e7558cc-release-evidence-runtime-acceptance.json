@@ -1,0 +1,127 @@
+{
+  "artifact_kind": "release_evidence_runtime_acceptance",
+  "captured_at": "2026-06-24T03:45:11+08:00",
+  "commit_sha": "e7558cc6a86a378ee747eb02ae9a4496ca40041a",
+  "evidence_id": "2026-06-24-211-foundation-alpha-poc-e7558cc-release-evidence-runtime-acceptance",
+  "evidence_ref": {
+    "command": "python3 tools/verify_release_evidence_runtime_acceptance.py --format json --commit-sha e7558cc6a86a378ee747eb02ae9a4496ca40041a --runtime-subject-commit-sha e7558cc6a86a378ee747eb02ae9a4496ca40041a --image ai-platform:e7558cc-issue164-current-main-runtime-only-v2",
+    "result": "ok:true",
+    "runtime_checks": {
+      "release_evidence_runtime_acceptance": {
+        "checks": {
+          "retention_runtime_acceptance": {
+            "default_retention_days": 180,
+            "delete_only_reviewed_redacted_entries": true,
+            "forbidden_delete_targets_present": true,
+            "minimum_retention_days": 30,
+            "policy_status": "contract_only_not_runtime_enforced",
+            "requires_review_before_delete": true,
+            "schema_version": "ai-platform.release-evidence-retention-policy.v1",
+            "status": "accepted_review_first_policy"
+          },
+          "runtime_export_acceptance": {
+            "blocked_entry_count": 0,
+            "does_not_export_raw_runtime_payloads": true,
+            "excluded_entry_count": 75,
+            "export_policy": "safe_reviewed_index_only_not_runtime_export",
+            "safe_entry_count": 173,
+            "safe_entry_fields_only": true,
+            "status": "ready_for_operator_review"
+          }
+        },
+        "does_not_close_g9": true,
+        "does_not_export_raw_runtime_payloads": true,
+        "ok": true,
+        "open_gaps": [],
+        "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
+        "source": {
+          "commit_sha": "e7558cc6a86a378ee747eb02ae9a4496ca40041a",
+          "evidence_root": "docs/release-evidence",
+          "image": "ai-platform:e7558cc-issue164-current-main-runtime-only-v2",
+          "runtime_subject_commit_sha": "e7558cc6a86a378ee747eb02ae9a4496ca40041a"
+        },
+        "status": "accepted_for_operator_review"
+      }
+    },
+    "runtime_source": {
+      "commit_sha": "e7558cc6a86a378ee747eb02ae9a4496ca40041a",
+      "evidence_root": "docs/release-evidence",
+      "image": "ai-platform:e7558cc-issue164-current-main-runtime-only-v2",
+      "runtime_subject_commit_sha": "e7558cc6a86a378ee747eb02ae9a4496ca40041a"
+    },
+    "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
+    "verifier": "tools/verify_release_evidence_runtime_acceptance.py"
+  },
+  "gate": "G9 Observability / Release Evidence",
+  "issue_refs": [
+    "#164"
+  ],
+  "open_followups": [],
+  "pr_refs": [],
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "e7558cc6a86a378ee747eb02ae9a4496ca40041a",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "api_health": {
+      "status": "ok"
+    },
+    "branch": "main",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_layout_status": "external_env_file_label_present",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "gateway_secret_supplied": false,
+    "image": "ai-platform:e7558cc-issue164-current-main-runtime-only-v2",
+    "image_id": "sha256:f52fd75021ba0cc4ff169f67650bcbfdd95eee5a8c843b15e4862884c166c056",
+    "image_labels": {
+      "ai-platform.build-mode": "runtime-only-rebase",
+      "ai-platform.runtime-rollout": "issue164-current-main-runtime-only-v2",
+      "ai-platform.runtime-subject": "e7558cc6a86a378ee747eb02ae9a4496ca40041a",
+      "ai-platform.runtime_subject": "e7558cc6a86a378ee747eb02ae9a4496ca40041a",
+      "ai-platform.source-branch": "main",
+      "ai-platform.source-note": "issue164-current-main-runtime-only-v2",
+      "ai-platform.source-origin": "local-git-archive",
+      "ai-platform.source-revision": "e7558cc6a86a378ee747eb02ae9a4496ca40041a",
+      "ai-platform.source-tree-commit": "e7558cc6a86a378ee747eb02ae9a4496ca40041a",
+      "ai-platform.source.note": "issue164-b0-label-fix-runtime-only-from-0a9e70a-issue183-approval-inbox",
+      "ai-platform.source_note": "issue164-current-main-runtime-only-v2",
+      "ai-platform.source_revision": "e7558cc6a86a378ee747eb02ae9a4496ca40041a",
+      "ai-platform.source_tree_commit": "e7558cc6a86a378ee747eb02ae9a4496ca40041a",
+      "com.docker.compose.config-hash": "11fc281086ffa42431d270e8c276b6850e5f0b2d478406cc70d80c7fd65ffae1",
+      "com.docker.compose.container-number": "1",
+      "com.docker.compose.depends_on": "redis:service_healthy:false,minio:service_healthy:false,postgres:service_healthy:false",
+      "com.docker.compose.image": "sha256:f52fd75021ba0cc4ff169f67650bcbfdd95eee5a8c843b15e4862884c166c056",
+      "com.docker.compose.oneoff": "False",
+      "com.docker.compose.project": "ai-platform-phaseb",
+      "com.docker.compose.project.config_files": "<redacted-path>",
+      "com.docker.compose.project.environment_file": "<redacted-path>",
+      "com.docker.compose.project.working_dir": "<redacted-path>",
+      "com.docker.compose.replace": "73d03ee1d40be5e363d1cbf053f6c40d7f981ec8947d20ff3d570b229ed18c58",
+      "com.docker.compose.service": "api",
+      "com.docker.compose.version": "2.27.0",
+      "org.opencontainers.image.revision": "e7558cc6a86a378ee747eb02ae9a4496ca40041a"
+    },
+    "repo_local_env_present": false,
+    "runtime_commit": "e7558cc6a86a378ee747eb02ae9a4496ca40041a",
+    "runtime_source_marker": "e7558cc6a86a378ee747eb02ae9a4496ca40041a",
+    "runtime_subject_label_status": "runtime_subject_label_current",
+    "source_revision_alias_label_status": "source_revision_alias_label_current",
+    "source_snapshot": {
+      "note": "211 source and runtime image labels both point to merged main e7558cc; current-main runtime-only rollout v2 refreshed the source snapshot after the initial marker still referenced 17dc3ae.",
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "runtime_subject_commit_sha": "e7558cc6a86a378ee747eb02ae9a4496ca40041a",
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "source_branch": "main",
+      "source_origin": "local-git-archive",
+      "source_revision": "e7558cc6a86a378ee747eb02ae9a4496ca40041a",
+      "source_tree_commit_sha": "e7558cc6a86a378ee747eb02ae9a4496ca40041a",
+      "source_tree_dirty": false,
+      "synced_at_epoch": 1782243586
+    }
+  }
+}
