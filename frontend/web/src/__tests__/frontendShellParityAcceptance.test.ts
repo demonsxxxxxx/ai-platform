@@ -40,16 +40,16 @@ test("app routes expose PRD phase 1B and 1C surfaces", () => {
   assert.match(tabs, /channels:\s*ChannelImportPanel/);
   assert.match(tabs, /models:\s*ModelCatalogPanel/);
   assert.doesNotMatch(tabs, /models:\s*ModelPanel/);
+  assert.doesNotMatch(tabs, /channels:\s*ChannelPanel/);
   assert.doesNotMatch(tabs, /models:\s*QuarantinedLegacyPanel/);
-  assert.equal(
-    existsSync(
-      join(
-        root,
-        "src/components/layout/AppContent/QuarantinedLegacyPanel.tsx",
-      ),
-    ),
-    false,
-  );
+  for (const legacyPath of [
+    "src/components/layout/AppContent/QuarantinedLegacyPanel.tsx",
+    "src/components/panels/ChannelPanel.tsx",
+    "src/components/panels/channel/feishu/FeishuPanel.tsx",
+    "src/components/panels/ModelPanel/ModelPanel.tsx",
+  ]) {
+    assert.equal(existsSync(join(root, legacyPath)), false, legacyPath);
+  }
 });
 
 test("phase 1C discovery routes are login reachable and fail closed inside pages", () => {
@@ -193,10 +193,15 @@ test("authenticated shell chrome avoids legacy playful branding accents", () => 
       join(root, "src/components/panels/SidebarParts/SidebarRail.tsx"),
       "utf8",
     ),
+    readFileSync(join(root, "src/components/panels/SearchDialog.tsx"), "utf8"),
   ].join("\n");
 
   assert.doesNotMatch(chrome, /font-serif|from-amber-400|to-orange-500/);
   assert.doesNotMatch(chrome, /icons\/icon\.svg/);
+  assert.doesNotMatch(chrome, /shadow-xl|shadow-2xl/);
+  assert.doesNotMatch(chrome, /bg-white(?:\/\d+)?/);
+  assert.doesNotMatch(chrome, /rounded-xl|rounded-2xl|rounded-3xl/);
+  assert.doesNotMatch(chrome, /bg-black\/30/);
   assert.match(chrome, /data-workbench-header/);
   assert.match(chrome, /bg-\[var\(--theme-bg\)\]/);
   assert.match(chrome, /bg-teal-700/);
