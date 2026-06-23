@@ -2,7 +2,7 @@
 
 Date: 2026-06-23
 Branch: `codex/frontend-complete-pass-20260623`
-Status: `local partial`
+Status: `PR ready` frontend evidence; backend follow-up remains open
 
 ## Confirmed Backed Contracts
 
@@ -12,15 +12,21 @@ Status: `local partial`
 - Tool permission request/decision contracts are backed under `/api/ai/runs/{run_id}/tool-permissions/...`.
 - Admin tool policy inventory, history, and update contracts are backed under `/api/ai/admin/tool-policies`.
 - Public model catalog reads are backed under `/api/agent/models/available`; this is sufficient for a read-only model catalog surface.
+- PR #187 is merged and adds the first backend contract slice for Skills import/batch routes, direct Marketplace lifecycle routes, MCP read projection, and MCP lifecycle/admin route surfaces. These new contracts are permission-gated and intentionally fail closed where durable storage or lifecycle implementation is still not backed.
 
 ## Remaining Backend Gaps
 
 - Durable public Skill file writes remain intentionally fail-closed. `PUT /api/skills/{skill_name}/files/{file_path}` and `DELETE /api/skills/{skill_name}/files/{file_path}` return `409` until user skill storage is backed.
-- Skills import and batch-management routes are still absent from the actual FastAPI router set: `/api/skills/upload/preview`, `/api/skills/upload`, `/api/github/preview`, `/api/github/install`, `/api/skills/batch/delete`, and `/api/skills/batch/toggle`.
-- Direct Marketplace write/admin routes are absent: `POST /api/marketplace/`, `PUT /api/marketplace/{skill_name}`, `PATCH /api/marketplace/{skill_name}/activate`, and `DELETE /api/marketplace/{skill_name}`.
-- MCP server lifecycle routes are still absent from `app/routes` and `app/main.py`: `/api/mcp/*` and `/api/admin/mcp/*` are referenced by legacy frontend hooks but not served by the current backend.
-- MCP tool governance is partially backed by admin tool policies and run-scoped tool permission decisions, but not by server CRUD, credential lifecycle, department enablement, or a standalone approval inbox.
+- Skills ZIP/GitHub import storage is not durable yet. PR #187 adds stable fail-closed contracts, not actual import storage.
+- Direct Marketplace write/admin lifecycle remains fail-closed behind backend policy until product scope and storage are complete.
+- MCP tool governance is partially backed by admin tool policies, run-scoped tool permission decisions, and PR #187 read projections, but not by real server CRUD, credential lifecycle, department enablement, or a standalone approval inbox.
 - Model provider list projection is absent on 211: `/api/agent/models/providers/list` returned `404` while `/api/agent/models/available` returned `200`. The frontend derives provider counts from the public model catalog and shows only a small degraded provider-projection notice.
+
+## 211 Runtime Notes
+
+- 211 static frontend provenance was refreshed independently from backend runtime deployment.
+- At the time of this evidence update, 211 backend still returned `404` for `/api/skills/upload/preview`, `/api/mcp/`, and `/api/admin/mcp/`. That means PR #187 has merged to GitHub, but the 211 backend runtime had not yet been redeployed with those route contracts.
+- Do not treat #187 as `211 verified` until the backend runtime is deployed and the route smoke is repeated.
 
 ## Frontend Handling
 
