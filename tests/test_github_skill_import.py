@@ -1,9 +1,17 @@
+import base64
 import io
 import zipfile
 
+import httpx
 import pytest
 
-from app.skills.github_import import GitHubImportError, discover_github_skill_packages, github_repo_archive_url
+from app.skills.github_import import (
+    GitHubImportError,
+    discover_github_skill_packages,
+    download_github_archive_from_api,
+    github_repo_archive_url,
+)
+from app.skills.packages import MAX_SKILL_PACKAGE_TOTAL_BYTES
 
 
 def archive_zip(files: dict[str, str | bytes]) -> bytes:
@@ -88,3 +96,167 @@ def test_discover_github_skill_packages_rejects_path_escape():
         discover_github_skill_packages(content)
     assert exc.value.status_code == 400
     assert exc.value.detail == "github_import_archive_path_escape"
+
+
+@pytest.mark.asyncio
+async def test_download_github_archive_from_api_builds_parseable_skill_archive(monkeypatch):
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        if request.url.path == "/repos/example/skills/git/ref/heads/feature-branch":
+            return httpx.Response(200, json={"object": {"sha": "commit-sha"}})
+        if request.url.path == "/repos/example/skills/git/trees/commit-sha":
+            return httpx.Response(
+                200,
+                json={
+                    "truncated": False,
+                    "tree": [
+                        {
+                            "path": "skills/qa-file-reviewer/SKILL.md",
+                            "type": "blob",
+                            "sha": "skill-md-sha",
+                            "size": 70,
+                        },
+                        {
+                            "path": "skills/qa-file-reviewer/references/api.md",
+                            "type": "blob",
+                            "sha": "api-ref-sha",
+                            "size": 9,
+                        },
+                    ],
+                },
+            )
+        if request.url.path == "/repos/example/skills/git/blobs/skill-md-sha":
+            return httpx.Response(
+                200,
+                json={"encoding": "base64", "content": base64.b64encode(skill_md("qa-file-reviewer").encode()).decode()},
+            )
+        if request.url.path == "/repos/example/skills/git/blobs/api-ref-sha":
+            return httpx.Response(
+                200,
+                json={"encoding": "base64", "content": base64.b64encode(b"API guide").decode()},
+            )
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.AsyncClient
+
+    def mock_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", mock_client)
+
+    content = await download_github_archive_from_api("https://github.com/example/skills", "feature-branch")
+    packages = discover_github_skill_packages(content)
+
+    assert [(item.path, item.package.skill_id) for item in packages] == [
+        ("skills/qa-file-reviewer", "qa-file-reviewer")
+    ]
+    assert [item["relative_path"] for item in packages[0].package.files] == ["SKILL.md", "references/api.md"]
+    assert requested == [
+        "https://api.github.com/repos/example/skills/git/ref/heads/feature-branch",
+        "https://api.github.com/repos/example/skills/git/trees/commit-sha?recursive=1",
+        "https://api.github.com/repos/example/skills/git/blobs/skill-md-sha",
+        "https://api.github.com/repos/example/skills/git/blobs/api-ref-sha",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_download_github_archive_from_api_ignores_unrelated_large_tree_files(monkeypatch):
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        if request.url.path == "/repos/example/skills/git/ref/heads/main":
+            return httpx.Response(200, json={"object": {"sha": "commit-sha"}})
+        if request.url.path == "/repos/example/skills/git/trees/commit-sha":
+            return httpx.Response(
+                200,
+                json={
+                    "truncated": False,
+                    "tree": [
+                        {
+                            "path": "docs/large.bin",
+                            "type": "blob",
+                            "sha": "large-sha",
+                            "size": MAX_SKILL_PACKAGE_TOTAL_BYTES + 1,
+                        },
+                        {
+                            "path": "skills/qa-file-reviewer/SKILL.md",
+                            "type": "blob",
+                            "sha": "skill-md-sha",
+                            "size": 70,
+                        },
+                    ],
+                },
+            )
+        if request.url.path == "/repos/example/skills/git/blobs/skill-md-sha":
+            return httpx.Response(
+                200,
+                json={"encoding": "base64", "content": base64.b64encode(skill_md("qa-file-reviewer").encode()).decode()},
+            )
+        if request.url.path == "/repos/example/skills/git/blobs/large-sha":
+            raise AssertionError("unrelated large blob should not be downloaded")
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.AsyncClient
+
+    def mock_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", mock_client)
+
+    content = await download_github_archive_from_api("https://github.com/example/skills", "main")
+    packages = discover_github_skill_packages(content)
+
+    assert [(item.path, item.package.skill_id) for item in packages] == [
+        ("skills/qa-file-reviewer", "qa-file-reviewer")
+    ]
+    assert "https://api.github.com/repos/example/skills/git/blobs/large-sha" not in requested
+
+
+@pytest.mark.asyncio
+async def test_download_github_archive_from_api_accepts_wrapped_base64_blob_content(monkeypatch):
+    wrapped_skill_content = base64.b64encode(skill_md("qa-file-reviewer").encode()).decode() + "\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/repos/example/skills/git/ref/heads/main":
+            return httpx.Response(200, json={"object": {"sha": "commit-sha"}})
+        if request.url.path == "/repos/example/skills/git/trees/commit-sha":
+            return httpx.Response(
+                200,
+                json={
+                    "truncated": False,
+                    "tree": [
+                        {
+                            "path": "skills/qa-file-reviewer/SKILL.md",
+                            "type": "blob",
+                            "sha": "skill-md-sha",
+                            "size": len(skill_md("qa-file-reviewer").encode()),
+                        },
+                    ],
+                },
+            )
+        if request.url.path == "/repos/example/skills/git/blobs/skill-md-sha":
+            return httpx.Response(200, json={"encoding": "base64", "content": wrapped_skill_content})
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.AsyncClient
+
+    def mock_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", mock_client)
+
+    content = await download_github_archive_from_api("https://github.com/example/skills", "main")
+    packages = discover_github_skill_packages(content)
+
+    assert [(item.path, item.package.skill_id) for item in packages] == [
+        ("skills/qa-file-reviewer", "qa-file-reviewer")
+    ]

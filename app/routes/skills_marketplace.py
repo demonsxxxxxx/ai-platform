@@ -35,6 +35,7 @@ from app.skills.github_import import (
     GitHubImportPackage,
     discover_github_skill_packages,
     download_github_archive,
+    download_github_archive_from_api,
     github_repo_archive_url,
 )
 from app.validation import assert_safe_id
@@ -438,9 +439,22 @@ def _github_import_http_exception(exc: GitHubImportError) -> HTTPException:
     return HTTPException(status_code=exc.status_code, detail=exc.detail)
 
 
+def _is_github_archive_unavailable(exc: HTTPException | GitHubImportError) -> bool:
+    status_code = exc.status_code
+    detail = exc.detail
+    return status_code == 502 and detail == "github_import_archive_unavailable"
+
+
 async def _download_github_archive(url: str) -> bytes:
     try:
         return await download_github_archive(url)
+    except GitHubImportError as exc:
+        raise _github_import_http_exception(exc) from exc
+
+
+async def _download_github_archive_from_api(repo_url: str, branch: str) -> bytes:
+    try:
+        return await download_github_archive_from_api(repo_url, branch)
     except GitHubImportError as exc:
         raise _github_import_http_exception(exc) from exc
 
@@ -453,7 +467,13 @@ async def _github_packages_from_payload(payload: Any) -> tuple[str, str, list[Gi
     branch = str(request.get("branch") or "main").strip() or "main"
     try:
         normalized_repo_url, archive_url, safe_branch = github_repo_archive_url(repo_url, branch)
-        packages = discover_github_skill_packages(await _download_github_archive(archive_url))
+        try:
+            archive_content = await _download_github_archive(archive_url)
+        except (GitHubImportError, HTTPException) as exc:
+            if not _is_github_archive_unavailable(exc):
+                raise
+            archive_content = await _download_github_archive_from_api(normalized_repo_url, safe_branch)
+        packages = discover_github_skill_packages(archive_content)
     except GitHubImportError as exc:
         raise _github_import_http_exception(exc) from exc
     return normalized_repo_url, safe_branch, packages

@@ -814,6 +814,85 @@ def test_public_skill_github_preview_uses_archive_without_persistence(monkeypatc
     assert not any(name == "audit" for name, _ in calls)
 
 
+def test_public_skill_github_preview_falls_back_to_api_when_archive_unavailable(monkeypatch):
+    from app.skills.github_import import GitHubImportError
+
+    calls = install_route_fakes(monkeypatch)
+    archive_attempts: list[str] = []
+    api_attempts: list[tuple[str, str]] = []
+
+    async def fake_download(url: str) -> bytes:
+        archive_attempts.append(url)
+        raise GitHubImportError(502, "github_import_archive_unavailable")
+
+    async def fake_api_download(repo_url: str, branch: str) -> bytes:
+        api_attempts.append((repo_url, branch))
+        return _github_skill_archive("Imported through API.")
+
+    monkeypatch.setattr("app.routes.skills_marketplace._download_github_archive", fake_download)
+    monkeypatch.setattr(
+        "app.routes.skills_marketplace._download_github_archive_from_api",
+        fake_api_download,
+        raising=False,
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/github/preview",
+        json={"repo_url": "https://github.com/example/skills", "branch": "feature-branch"},
+        headers=headers("skill:write"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "repo_url": "https://github.com/example/skills",
+        "branch": "feature-branch",
+        "skills": [
+            {
+                "name": "qa-file-reviewer",
+                "path": "skills/qa-file-reviewer",
+                "description": "Imported through API.",
+            }
+        ],
+    }
+    assert archive_attempts == ["https://github.com/example/skills/archive/refs/heads/feature-branch.zip"]
+    assert api_attempts == [("https://github.com/example/skills", "feature-branch")]
+    assert not any(name == "upsert_file" for name, _ in calls)
+    assert not any(name == "audit" for name, _ in calls)
+
+
+def test_public_skill_github_preview_does_not_fallback_when_archive_is_not_found(monkeypatch):
+    from app.skills.github_import import GitHubImportError
+
+    install_route_fakes(monkeypatch)
+    api_attempts: list[tuple[str, str]] = []
+
+    async def fake_download(url: str) -> bytes:
+        raise GitHubImportError(404, "github_import_archive_not_found")
+
+    async def fake_api_download(repo_url: str, branch: str) -> bytes:
+        api_attempts.append((repo_url, branch))
+        return _github_skill_archive()
+
+    monkeypatch.setattr("app.routes.skills_marketplace._download_github_archive", fake_download)
+    monkeypatch.setattr(
+        "app.routes.skills_marketplace._download_github_archive_from_api",
+        fake_api_download,
+        raising=False,
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/github/preview",
+        json={"repo_url": "https://github.com/example/skills", "branch": "missing-branch"},
+        headers=headers("skill:write"),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "github_import_archive_not_found"
+    assert api_attempts == []
+
+
 def test_public_skill_github_preview_keeps_files_before_skill_md_in_archive(monkeypatch):
     async def fake_download(url: str) -> bytes:
         return _github_archive_zip(
