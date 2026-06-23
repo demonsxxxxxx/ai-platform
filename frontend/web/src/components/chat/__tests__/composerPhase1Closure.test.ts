@@ -121,3 +121,40 @@ test("composer model and context labels are localized", () => {
   assert.match(zh, /"unavailable"/);
   assert.match(zh, /"contextSelector"/);
 });
+
+test("composer model selector uses restrained workbench overlay styling", () => {
+  const modelPanel = read("src/components/chat/ComposerModelPanel.tsx");
+
+  assert.match(modelPanel, /data-composer-model-panel/);
+  assert.match(modelPanel, /bg-\[var\(--theme-bg-card\)\]/);
+  assert.match(modelPanel, /bg-\[var\(--theme-bg-sidebar\)\]/);
+  assert.match(modelPanel, /shadow-\[0_8px_24px_rgba\(18,38,63,0\.12\)\]/);
+  assert.doesNotMatch(modelPanel, /shadow-xl|shadow-2xl/);
+  assert.doesNotMatch(modelPanel, /rounded-xl|rounded-2xl|rounded-3xl/);
+  assert.doesNotMatch(modelPanel, /bg-black\/(?:30|40)/);
+  assert.doesNotMatch(modelPanel, /\bbg-white(?:\s|")/);
+});
+
+test("authenticated workbench popovers avoid legacy heavy overlays", () => {
+  const activePopoverFiles = [
+    "src/components/chat/ComposerUnavailablePanel.tsx",
+    "src/components/chat/AgentOptionButton.tsx",
+    "src/components/notification/NotificationDialog.tsx",
+    "src/components/selectors/AgentModeSelector.tsx",
+    "src/components/selectors/SkillSelector.tsx",
+    "src/components/selectors/ToolSelector.tsx",
+  ];
+
+  for (const path of activePopoverFiles) {
+    const source = read(path);
+    assert.match(source, /bg-slate-950\/35/, path);
+    assert.match(
+      source,
+      /shadow-\[0_8px_24px_rgba\(18,38,63,0\.12\)\]/,
+      path,
+    );
+    assert.doesNotMatch(source, /bg-black\/(?:40|50)/, path);
+    assert.doesNotMatch(source, /shadow-xl|shadow-2xl/, path);
+    assert.doesNotMatch(source, /rounded-2xl|rounded-3xl/, path);
+  }
+});

@@ -76,7 +76,7 @@ export function AgentModeSelector({
           <>
             <div
               data-yields-sidebar
-              className="fixed inset-0 z-[300] bg-black/50 animate-fade-in"
+              className="fixed inset-0 z-[300] bg-slate-950/35 animate-fade-in"
               onClick={handleClose}
             />
             <div
@@ -85,7 +85,7 @@ export function AgentModeSelector({
             >
               <div
                 ref={sheetRef as React.Ref<HTMLDivElement>}
-                className="w-full min-h-[40vh] max-h-[85vh] max-h-[85dvh] flex flex-col overflow-hidden rounded-t-lg border border-[var(--theme-border)] shadow-[0_24px_60px_-32px_rgba(15,23,42,0.45)] sm:w-[40%] sm:min-w-[600px] sm:max-h-[80vh] sm:rounded-lg"
+                className="w-full min-h-[40vh] max-h-[85vh] max-h-[85dvh] flex flex-col overflow-hidden rounded-t-lg border border-[var(--theme-border)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] sm:w-[40%] sm:min-w-[600px] sm:max-h-[80vh] sm:rounded-lg"
                 style={{ background: "var(--theme-bg-card)" }}
                 onClick={(e) => e.stopPropagation()}
               >
@@ -236,7 +236,7 @@ export function AgentModeSelector({
           <>
             <div
               data-yields-sidebar
-              className="fixed inset-0 z-[300] bg-black/50 animate-fade-in"
+              className="fixed inset-0 z-[300] bg-slate-950/35 animate-fade-in"
               onClick={handleClose}
             />
 
@@ -246,7 +246,7 @@ export function AgentModeSelector({
             >
               <div
                 ref={sheetRef as React.Ref<HTMLDivElement>}
-                className="w-full min-h-[40vh] max-h-[85vh] max-h-[85dvh] flex flex-col overflow-hidden rounded-t-lg border border-[var(--theme-border)] shadow-[0_24px_60px_-32px_rgba(15,23,42,0.45)] sm:w-[40%] sm:min-w-[600px] sm:max-h-[80vh] sm:rounded-lg"
+                className="w-full min-h-[40vh] max-h-[85vh] max-h-[85dvh] flex flex-col overflow-hidden rounded-t-lg border border-[var(--theme-border)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] sm:w-[40%] sm:min-w-[600px] sm:max-h-[80vh] sm:rounded-lg"
                 style={{ background: "var(--theme-bg-card)" }}
                 onClick={(e) => e.stopPropagation()}
               >

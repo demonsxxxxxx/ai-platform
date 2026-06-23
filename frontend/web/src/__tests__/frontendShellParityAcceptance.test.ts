@@ -237,6 +237,13 @@ test("legacy persona plaza and more-menu pages are removed from the authenticate
   assert.doesNotMatch(activeGraph, /PersonaPlazaPanel|persona:\s*PersonaPlazaPanel/);
   assert.doesNotMatch(activeGraph, /MobileMoreMenuSheet|DesktopMoreMenu/);
   assert.doesNotMatch(personaSelector, /角色广场/);
+  assert.match(personaSelector, /bg-slate-950\/35/);
+  assert.match(personaSelector, /rounded-t-lg/);
+  assert.match(personaSelector, /sm:rounded-lg/);
+  assert.match(personaSelector, /shadow-\[0_8px_24px_rgba\(18,38,63,0\.12\)\]/);
+  assert.doesNotMatch(personaSelector, /shadow-xl|shadow-2xl/);
+  assert.doesNotMatch(personaSelector, /rounded-2xl|rounded-3xl/);
+  assert.doesNotMatch(personaSelector, /bg-black\/30/);
   assert.doesNotMatch(zhLocale, /角色广场/);
 });
 

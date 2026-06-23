@@ -93,11 +93,11 @@ export function NotificationDialog({
   return createPortal(
     <div
       data-yields-sidebar
-      className="fixed inset-0 z-[300] flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4"
+      className="fixed inset-0 z-[300] flex items-end sm:items-center justify-center bg-slate-950/35 p-0 sm:p-4"
       onClick={onClose}
     >
       <div
-        className="w-full h-[60vh] sm:h-[55vh] sm:max-w-2xl flex flex-col rounded-t-2xl sm:rounded-2xl shadow-2xl"
+        className="w-full h-[60vh] sm:h-[55vh] sm:max-w-2xl flex flex-col rounded-t-lg sm:rounded-lg shadow-[0_8px_24px_rgba(18,38,63,0.12)]"
         style={{
           backgroundColor: "var(--theme-bg-card)",
           border: "1px solid var(--theme-border)",

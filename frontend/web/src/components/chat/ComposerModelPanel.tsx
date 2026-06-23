@@ -51,7 +51,7 @@ export function ComposerModelPanel({
     <>
       <div
         data-yields-sidebar
-        className="fixed inset-0 z-[300] bg-black/40 animate-fade-in"
+        className="fixed inset-0 z-[300] bg-slate-950/35 animate-fade-in"
         onClick={() => onOpenChange(false)}
       />
       <div
@@ -60,13 +60,13 @@ export function ComposerModelPanel({
       >
         <section
           data-composer-model-panel
-          className="flex max-h-[85dvh] min-h-[40vh] w-full flex-col overflow-hidden rounded-t-lg border border-slate-200 bg-white shadow-2xl dark:border-stone-800 dark:bg-stone-900 sm:w-[40%] sm:min-w-[600px] sm:rounded-lg"
+          className="flex max-h-[85dvh] min-h-[40vh] w-full flex-col overflow-hidden rounded-t-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] dark:border-stone-800 dark:bg-stone-900 sm:w-[40%] sm:min-w-[600px] sm:rounded-lg"
           onClick={(event) => event.stopPropagation()}
         >
           <header className="relative flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-stone-800 sm:px-5">
             <div className="absolute left-1/2 top-2 h-1 w-10 -translate-x-1/2 rounded-full bg-slate-300 dark:bg-stone-700 sm:hidden" />
             <div className="mt-2 flex items-center gap-3 sm:mt-0">
-              <div className="flex size-9 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 dark:border-stone-700 dark:bg-stone-800">
+              <div className="flex size-9 items-center justify-center rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] dark:border-stone-700 dark:bg-stone-800">
                 <Boxes size={17} className="text-slate-600 dark:text-stone-300" />
               </div>
               <div>
@@ -92,7 +92,7 @@ export function ComposerModelPanel({
             </button>
           </header>
 
-          <div className="border-b border-slate-200 bg-slate-50/80 px-4 py-3 dark:border-stone-800 dark:bg-stone-950/60 sm:px-5">
+          <div className="border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-4 py-3 dark:border-stone-800 dark:bg-stone-950/60 sm:px-5">
             <label className="relative block">
               <Search
                 size={15}
@@ -105,7 +105,7 @@ export function ComposerModelPanel({
                   "composerCommand.modelSelector.searchPlaceholder",
                   "Search models",
                 )}
-                className="h-10 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-800 outline-none transition-colors focus:border-slate-400 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100 dark:focus:border-stone-500"
+                className="h-10 w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] pl-9 pr-3 text-sm text-slate-800 outline-none transition-colors focus:border-slate-400 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100 dark:focus:border-stone-500"
               />
             </label>
           </div>
@@ -120,7 +120,7 @@ export function ComposerModelPanel({
                   className={`flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left transition-colors ${
                     active
                       ? "bg-slate-900 text-white dark:bg-stone-100 dark:text-stone-950"
-                      : "text-slate-800 hover:bg-slate-50 dark:text-stone-100 dark:hover:bg-stone-800"
+                      : "text-slate-800 hover:bg-[var(--theme-bg-sidebar)] dark:text-stone-100 dark:hover:bg-stone-800"
                   }`}
                   onClick={() => {
                     onSelectModel(model.id, model.value);
@@ -131,7 +131,7 @@ export function ComposerModelPanel({
                     className={`flex size-9 shrink-0 items-center justify-center rounded-lg border ${
                       active
                         ? "border-white/20 bg-white/10"
-                        : "border-slate-200 bg-slate-50 dark:border-stone-700 dark:bg-stone-800"
+                        : "border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] dark:border-stone-700 dark:bg-stone-800"
                     }`}
                   >
                     <Boxes size={16} />
@@ -168,7 +168,7 @@ export function ComposerModelPanel({
               );
             })}
             {filteredModels.length === 0 && (
-              <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-400">
+              <div className="rounded-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-4 py-6 text-center text-sm text-slate-500 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-400">
                 {t("composerCommand.modelSelector.empty", "No matching models")}
               </div>
             )}

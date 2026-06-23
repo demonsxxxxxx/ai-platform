@@ -66,7 +66,7 @@ export const AgentOptionButton = memo(function AgentOptionButton({
         ? createPortal(
             <>
               <div
-                className="fixed inset-0 z-[300] bg-black/50 animate-fade-in"
+                className="fixed inset-0 z-[300] bg-slate-950/35 animate-fade-in"
                 onClick={() => setShowDropdown(false)}
               />
               <div
@@ -74,7 +74,7 @@ export const AgentOptionButton = memo(function AgentOptionButton({
                 onClick={() => setShowDropdown(false)}
               >
                 <div
-                  className="sm:rounded-2xl rounded-t-2xl shadow-2xl px-4 pt-3 pb-6 sm:pb-4 animate-in fade-in slide-in-from-bottom-4 sm:scale-in-95 sm:slide-in-from-bottom-0 duration-200 sm:w-[28rem] sm:max-w-[90vw]"
+                  className="rounded-t-lg border border-[var(--theme-border)] px-4 pt-3 pb-6 shadow-[0_8px_24px_rgba(18,38,63,0.12)] animate-in fade-in slide-in-from-bottom-4 duration-200 sm:w-[28rem] sm:max-w-[90vw] sm:rounded-lg sm:pb-4 sm:scale-in-95 sm:slide-in-from-bottom-0"
                   style={{
                     background: "var(--theme-bg-card)",
                     maxHeight: "60vh",
@@ -220,9 +220,9 @@ export const AgentOptionButton = memo(function AgentOptionButton({
                 className="sm:hidden fixed inset-0 z-[9999] flex flex-col justify-end"
                 onClick={() => setShowDropdown(false)}
               >
-                <div className="absolute inset-0 bg-black/40" />
+                <div className="absolute inset-0 bg-slate-950/35" />
                 <div
-                  className="relative rounded-t-2xl px-4 pt-3 pb-6 animate-in fade-in slide-in-from-bottom-4 duration-200"
+                  className="relative rounded-t-lg border border-[var(--theme-border)] px-4 pt-3 pb-6 shadow-[0_8px_24px_rgba(18,38,63,0.12)] animate-in fade-in slide-in-from-bottom-4 duration-200"
                   style={{
                     background: "var(--theme-bg-card)",
                     maxHeight: "60vh",
