@@ -38,6 +38,7 @@ import {
   buildEffectiveSkills,
   countEnabledSkills,
   resolveComposerSkillsAvailability,
+  resolveSettingsBooleanProjection,
 } from "./skillAvailability";
 import { AppShell } from "./AppShell";
 import { ChatView } from "./ChatView";
@@ -76,10 +77,14 @@ export function ChatAppContent({
   const { hasPermission, isAuthenticated } = useAuth();
   const canReadSkills = hasPermission(Permission.SKILL_READ);
   const canReadMcpTools = hasPermission(Permission.MCP_READ);
+  const enableSkillsProjection = resolveSettingsBooleanProjection(
+    settings,
+    "ENABLE_SKILLS",
+  );
   const composerSkillsAvailability = resolveComposerSkillsAvailability({
     canReadSkills,
-    settingsProjectionKnown: settings !== null,
-    enableSkillsSetting: enableSkills,
+    enableSkillsSettingKnown: enableSkillsProjection.known,
+    enableSkillsSetting: enableSkillsProjection.value ?? enableSkills,
   });
 
   const { isPageDragging, pageDragAttachments, setPageDragAttachments } =

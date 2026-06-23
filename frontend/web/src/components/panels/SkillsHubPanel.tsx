@@ -13,6 +13,7 @@ import { resolveSkillsHubTab, type SkillsHubTab } from "./SkillsHubPanel/state";
 import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
 import { resolveGroupAvailability } from "../governance/groupAvailability";
 import { GroupAvailabilityToggleRow } from "../governance/GroupAvailabilityToggleRow";
+import { resolveSettingsBooleanProjection } from "../layout/AppContent/skillAvailability";
 
 const TAB_PATHS: Record<SkillsHubTab, string> = {
   skills: "/skills",
@@ -44,15 +45,20 @@ export function SkillsHubPanel() {
   const hasDiscoveryPermission = canReadSkills || canReadMarketplace;
   const activeTabCanRead = isMarketplaceView ? canReadMarketplace : canReadSkills;
   const showTabSwitcher = true;
-  const settingsProjectionKnown = settings !== null;
+  const enableSkillsProjection = resolveSettingsBooleanProjection(
+    settings,
+    "ENABLE_SKILLS",
+  );
+  const settingsProjectionKnown = enableSkillsProjection.known;
+  const skillsFeatureEnabled = enableSkillsProjection.value ?? enableSkills;
   const skillsProjectionDegraded =
-    Boolean(settingsError) || (settingsProjectionKnown && !enableSkills);
+    Boolean(settingsError) || (settingsProjectionKnown && !skillsFeatureEnabled);
   const governanceState = resolveFrontendGovernanceState({
     isAuthenticated,
     isLoading: authLoading || settingsLoading,
     hasWorkspace: true,
     hasPermission: activeTabCanRead,
-    featureEnabled: settingsProjectionKnown ? enableSkills : true,
+    featureEnabled: settingsProjectionKnown ? skillsFeatureEnabled : true,
     projectionError: settingsError,
     degraded: skillsProjectionDegraded,
   });
@@ -61,7 +67,7 @@ export function SkillsHubPanel() {
       ? "ready"
       : governanceState === "degraded"
       ? "degraded"
-      : settingsProjectionKnown && !enableSkills
+      : settingsProjectionKnown && !skillsFeatureEnabled
       ? "featureDisabled"
       : "permissionLimited";
   const permissionAvailability = resolveGroupAvailability({
