@@ -20,6 +20,10 @@ AI_USER_PERMISSIONS = [
     "skill:read",
     "marketplace:read",
     "channel:read",
+    "user:read",
+    "settings:read",
+    "feedback:read",
+    "notification:read",
     "artifact:download",
     "file:upload",
     "file:upload:document",
@@ -38,6 +42,10 @@ AI_ADMIN_PERMISSIONS = [
     "channel:write",
     "channel:delete",
     "channel:admin",
+    "user:admin",
+    "settings:admin",
+    "feedback:admin",
+    "notification:admin",
 ]
 
 

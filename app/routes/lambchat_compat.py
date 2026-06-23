@@ -217,6 +217,14 @@ UI_PERMISSIONS = [
     "channel:write",
     "channel:delete",
     "channel:admin",
+    "user:read",
+    "user:admin",
+    "settings:read",
+    "settings:admin",
+    "feedback:read",
+    "feedback:admin",
+    "notification:read",
+    "notification:admin",
 ]
 
 CHAT_STREAM_REPLAY_SKIP_EVENT_TYPES = {"assistant_delta"}

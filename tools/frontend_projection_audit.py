@@ -64,6 +64,18 @@ FORBIDDEN_PROJECTION_TERMS = sorted(
     set(FORBIDDEN_PRIVATE_TERMS + FORBIDDEN_SECRET_LIKE_TERMS),
     key=lambda item: (-len(item), item),
 )
+_IDENTIFIER_FORBIDDEN_TERMS = [
+    term for term in FORBIDDEN_PROJECTION_TERMS if re.fullmatch(r"[A-Za-z0-9_]+", term)
+]
+_LITERAL_FORBIDDEN_TERMS = [
+    term for term in FORBIDDEN_PROJECTION_TERMS if term not in _IDENTIFIER_FORBIDDEN_TERMS
+]
+_FORBIDDEN_TERM_SCAN = re.compile(
+    "|".join(
+        [rf"(?<![A-Za-z0-9_]){re.escape(term)}(?![A-Za-z0-9_])" for term in _IDENTIFIER_FORBIDDEN_TERMS]
+        + [re.escape(term) for term in _LITERAL_FORBIDDEN_TERMS]
+    )
+)
 
 REDACTION_GUARD_PATHS = {
     "frontend/web/src/components/documents/documentUrlSafety.ts",
@@ -91,7 +103,13 @@ SAFE_PUBLIC_ROUTE_PREFIXES = [
     "/api/channels",
     "/api/github",
     "/api/marketplace",
+    "/api/notifications/active",
     "/api/skills",
+    "/api/settings",
+    "/api/users",
+]
+SAFE_ADMIN_ROUTE_PREFIXES = [
+    "/api/notifications/admin",
 ]
 ORDINARY_USER_BASELINE_PERMISSION_TOKENS = {
     "AGENT_USE",
@@ -118,11 +136,8 @@ LEGACY_POLICY_REQUIRED_ROUTE_PREFIXES = [
     "/api/env-vars",
     "/api/mcp",
     "/api/memory",
-    "/api/notifications/admin",
     "/api/persona-presets",
     "/api/roles",
-    "/api/settings",
-    "/api/users",
 ]
 LEGACY_ROUTE_POLICY_MAP: dict[str, dict[str, str]] = {
     "/api/admin/": {
@@ -174,13 +189,6 @@ LEGACY_ROUTE_POLICY_MAP: dict[str, dict[str, str]] = {
         "admin_exposure": "same_tenant_admin_memory_projection_only",
         "required_action": "remap_to_ai_platform_public_or_admin_projection",
     },
-    "/api/notifications/admin": {
-        "domain": "admin_notifications",
-        "governance_gate": "G9",
-        "ordinary_user_exposure": "fail_closed",
-        "admin_exposure": "same_tenant_admin_projection_only",
-        "required_action": "remap_to_ai_platform_admin_projection_or_hide",
-    },
     "/api/persona-presets": {
         "domain": "agent_frontend_profile_policy",
         "governance_gate": "G9",
@@ -190,20 +198,6 @@ LEGACY_ROUTE_POLICY_MAP: dict[str, dict[str, str]] = {
     },
     "/api/roles": {
         "domain": "rbac_policy",
-        "governance_gate": "G1",
-        "ordinary_user_exposure": "fail_closed",
-        "admin_exposure": "same_tenant_admin_projection_only",
-        "required_action": "remap_to_ai_platform_admin_projection_or_hide",
-    },
-    "/api/settings": {
-        "domain": "runtime_settings_policy",
-        "governance_gate": "G6",
-        "ordinary_user_exposure": "fail_closed_until_public_projection_exists",
-        "admin_exposure": "same_tenant_admin_masked_projection_only",
-        "required_action": "remap_to_ai_platform_public_or_admin_projection",
-    },
-    "/api/users": {
-        "domain": "rbac_user_directory_policy",
         "governance_gate": "G1",
         "ordinary_user_exposure": "fail_closed",
         "admin_exposure": "same_tenant_admin_projection_only",
@@ -622,6 +616,10 @@ def _line_has_term(line: str, term: str) -> bool:
     return bool(_term_pattern(term).search(line))
 
 
+def _forbidden_terms_in_line(line: str) -> list[str]:
+    return sorted({match.group(0) for match in _FORBIDDEN_TERM_SCAN.finditer(line)}, key=FORBIDDEN_PROJECTION_TERMS.index)
+
+
 def _line_has_forbidden_consumption(line: str, term: str) -> bool:
     escaped = re.escape(term)
     dot_access = re.compile(rf"\.\s*{escaped}(?![A-Za-z0-9_])")
@@ -668,9 +666,7 @@ def _audit_forbidden_private_terms(root: Path, files: list[Path]) -> dict[str, o
         except UnicodeDecodeError:
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         for line_number, line in enumerate(lines, start=1):
-            for term in FORBIDDEN_PROJECTION_TERMS:
-                if not _line_has_term(line, term):
-                    continue
+            for term in _forbidden_terms_in_line(line):
                 if _is_redaction_guard_line(relative, line, term):
                     allowed_redaction_refs.append(
                         _line_refs(
@@ -876,7 +872,7 @@ def _route_inventory(
         root,
         files,
         LEGACY_POLICY_REQUIRED_ROUTE_PREFIXES,
-        excluded_prefixes=SAFE_PUBLIC_ROUTE_PREFIXES,
+        excluded_prefixes=SAFE_PUBLIC_ROUTE_PREFIXES + SAFE_ADMIN_ROUTE_PREFIXES,
         requested_symbols_by_path=requested_symbols_by_path,
     )
     legacy_route_policies = _legacy_route_policies(
@@ -900,6 +896,12 @@ def _route_inventory(
             root,
             files,
             SAFE_PUBLIC_ROUTE_PREFIXES,
+            requested_symbols_by_path=requested_symbols_by_path,
+        ),
+        "safe_admin_projection_routes": _scan_routes(
+            root,
+            files,
+            SAFE_ADMIN_ROUTE_PREFIXES,
             requested_symbols_by_path=requested_symbols_by_path,
         ),
         "same_origin_compat_routes": _scan_routes(

@@ -908,6 +908,267 @@ class ChannelAdminOperationResponse(BaseModel):
     message: str
 
 
+class WorkbenchGovernanceResponse(BaseModel):
+    """Governance metadata shared by post-login workbench projections."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    projection: str
+    tenant_id: str
+    workspace_id: str = "default"
+    degraded: bool = False
+    audit_required: bool = False
+    rollback_available: bool = False
+    secret_material_projected: bool = False
+
+
+class WorkbenchAuditResponse(BaseModel):
+    """Safe audit reference for queued admin workbench operations."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    audit_id: str
+    action: str
+    status: str = "queued"
+
+
+class WorkbenchOperationResponse(BaseModel):
+    """Audited admin workbench operation response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_type: str
+    target_id: str
+    operation: str
+    status: str = "queued"
+    audit_id: str
+    message: str
+
+
+class WorkbenchUserResponse(BaseModel):
+    """Safe company user-directory projection."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    username: str
+    email: str | None = None
+    full_name: str
+    is_active: bool = True
+    is_superuser: bool = False
+    roles: list[str] = Field(default_factory=list)
+    permissions: list[str] = Field(default_factory=list)
+    tenant_id: str
+    department_id: str = ""
+    created_at: Any | None = None
+    updated_at: Any | None = None
+
+
+class WorkbenchUserListResponse(BaseModel):
+    """Paginated safe user-directory response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    users: list[WorkbenchUserResponse] = Field(default_factory=list)
+    items: list[WorkbenchUserResponse] = Field(default_factory=list)
+    total: int = 0
+    skip: int = 0
+    limit: int = 50
+    governance: WorkbenchGovernanceResponse
+
+
+class WorkbenchUserWriteRequest(BaseModel):
+    """User lifecycle request payload with secret-bearing fields forbidden."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    username: str | None = None
+    full_name: str | None = None
+    email: str | None = None
+    roles: list[str] = Field(default_factory=list)
+    permissions: list[str] = Field(default_factory=list)
+    is_active: bool | None = None
+
+
+class WorkbenchSettingItemResponse(BaseModel):
+    """Safe settings projection item."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    value: Any
+    type: str
+    category: str
+    label: str
+    description: str = ""
+    is_public: bool = True
+    is_secret: bool = False
+    audit_required: bool = False
+    rollback_available: bool = False
+    updated_at: Any | None = None
+
+
+class WorkbenchSettingGroupResponse(BaseModel):
+    """Grouped settings projection."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    category: str
+    items: list[WorkbenchSettingItemResponse] = Field(default_factory=list)
+
+
+class WorkbenchSettingsResponse(BaseModel):
+    """Safe personal/system settings split."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    settings: dict[str, WorkbenchSettingGroupResponse]
+    governance: WorkbenchGovernanceResponse
+
+
+class WorkbenchSettingUpdateRequest(BaseModel):
+    """Admin settings update request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: Any
+    rollback_id: str | None = None
+
+
+class WorkbenchSettingWriteResponse(BaseModel):
+    """Masked settings write response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    value: Any
+    status: str = "queued"
+    audit: WorkbenchAuditResponse
+
+
+class WorkbenchSettingResetResponse(BaseModel):
+    """Settings reset operation response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str | None = None
+    status: str = "queued"
+    reset_count: int = 1
+    audit_id: str
+
+
+class WorkbenchFeedbackItemResponse(BaseModel):
+    """Safe aggregate feedback desk item."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    user_id: str
+    username: str
+    session_id: str
+    run_id: str
+    rating: str
+    comment: str | None = None
+    assignment_state: str = "unassigned"
+    assignee_id: str | None = None
+    labels: list[str] = Field(default_factory=list)
+    status: str = "open"
+    audit_history: list[dict[str, Any]] = Field(default_factory=list)
+    created_at: Any | None = None
+
+
+class WorkbenchFeedbackStatsResponse(BaseModel):
+    """Feedback aggregate stats."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    total_count: int = 0
+    up_count: int = 0
+    down_count: int = 0
+    up_percentage: float = 0.0
+
+
+class WorkbenchFeedbackListResponse(BaseModel):
+    """Feedback desk list response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[WorkbenchFeedbackItemResponse] = Field(default_factory=list)
+    total: int = 0
+    stats: WorkbenchFeedbackStatsResponse
+    governance: WorkbenchGovernanceResponse
+
+
+class WorkbenchFeedbackUpdateRequest(BaseModel):
+    """Feedback assignment/closure/label update request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    assignee_id: str | None = None
+    assignment_state: str | None = None
+    status: str | None = None
+    labels: list[str] = Field(default_factory=list)
+
+
+class WorkbenchI18nTextResponse(BaseModel):
+    """Localized notification text."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    en: str = ""
+    zh: str = ""
+    ja: str = ""
+    ko: str = ""
+    ru: str = ""
+
+
+class WorkbenchNotificationResponse(BaseModel):
+    """Safe notification projection."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    title_i18n: WorkbenchI18nTextResponse
+    content_i18n: WorkbenchI18nTextResponse
+    type: str = "info"
+    start_time: Any | None = None
+    end_time: Any | None = None
+    expires_at: Any | None = None
+    is_active: bool = True
+    read_state: str | None = None
+    audience: dict[str, Any] | None = None
+    audit_history: list[dict[str, Any]] = Field(default_factory=list)
+    created_at: Any | None = None
+    updated_at: Any | None = None
+    created_by: str = "system"
+
+
+class WorkbenchNotificationListResponse(BaseModel):
+    """Notification management projection."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[WorkbenchNotificationResponse] = Field(default_factory=list)
+    total: int = 0
+    governance: WorkbenchGovernanceResponse
+
+
+class WorkbenchNotificationWriteRequest(BaseModel):
+    """Notification management write request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title_i18n: dict[str, str] = Field(default_factory=dict)
+    content_i18n: dict[str, str] = Field(default_factory=dict)
+    type: str = "info"
+    start_time: Any | None = None
+    end_time: Any | None = None
+    expires_at: Any | None = None
+    is_active: bool = True
+    audience: dict[str, Any] = Field(default_factory=dict)
+    replay: bool = False
+
+
 class AdminSkillVersionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
