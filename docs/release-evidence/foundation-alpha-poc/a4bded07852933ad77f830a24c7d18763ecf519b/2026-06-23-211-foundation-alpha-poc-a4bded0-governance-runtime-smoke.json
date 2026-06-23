@@ -1,0 +1,164 @@
+{
+  "artifact_kind": "governance_runtime_smoke",
+  "captured_at": "2026-06-23T10:00:24+0800",
+  "commit_sha": "a4bded07852933ad77f830a24c7d18763ecf519b",
+  "evidence_id": "2026-06-23-211-foundation-alpha-poc-a4bded0-governance-runtime-smoke",
+  "evidence_ref": {
+    "command": "python3 tools/verify_governance_runtime_smoke.py --base-url http://127.0.0.1:8020 --commit-sha a4bded0... --runtime-subject-commit-sha a4bded0... --image ai-platform:a4bded0-main-runtime-only-v2",
+    "result": "ok:true",
+    "runtime_checks": {
+      "admin_runtime_governance": {
+        "expected_status": 200,
+        "forbidden_projection_terms_present": false,
+        "governance_schema_version": "ai-platform.governance-readiness.v1",
+        "governance_status": "partial_blocked",
+        "governance_status_allowed": true,
+        "memory_governance": {
+          "context_provenance_present": true,
+          "domain_status": "partial_blocked",
+          "gap_count": 3,
+          "long_term_fail_closed_present": true,
+          "office_context_readiness_present": true
+        },
+        "missing_domains": [],
+        "open_gap_count": 14,
+        "required_domains_present": true,
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "skill_governance": {
+          "dashboard_contract_exposed": false,
+          "dashboard_present": true,
+          "dependency_review_policy_present": true,
+          "domain_status": "partial_blocked",
+          "gap_count": 5,
+          "implemented_snapshot_lock": true,
+          "implemented_version_registry": true,
+          "release_readiness_present": true,
+          "review_manifest_flags_projected": true,
+          "runtime_acceptance_contract_present": true,
+          "runtime_gap_open": true,
+          "skill_inventory_summary_projected": true
+        },
+        "status": 200,
+        "tenant_id": "default",
+        "tenant_matches_requested": true,
+        "tool_permission": {
+          "bulk_review_present": true,
+          "domain_status": "partial_blocked",
+          "gap_count": 3,
+          "implemented_bulk_review_dashboard": true,
+          "implemented_policy_taxonomy": true,
+          "taxonomy_present": true
+        }
+      },
+      "ordinary_admin_runtime": {
+        "detail": "not_ai_admin",
+        "expected_status": 403,
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "status": 403
+      },
+      "skill_dependency_review_policy_runtime_acceptance": {
+        "checks": {
+          "dependency_review_policy_present": true,
+          "executor_private_material_absent": true,
+          "ordinary_user_admin_runtime_denied": true,
+          "raw_skill_package_storage_absent": true,
+          "review_manifest_flags_projected": true,
+          "same_tenant_admin_runtime_projection": true,
+          "sandbox_working_directory_absent": true,
+          "secret_like_values_absent": true,
+          "skill_inventory_summary_projected": true,
+          "skill_release_readiness_present": true
+        },
+        "does_not_close_runtime_acceptance": false,
+        "non_expansion_invariants": {
+          "docker_sandbox_production_hardening_claimed": false,
+          "long_term_cross_session_memory_enabled": false,
+          "ordinary_user_multi_agent_allowed": false,
+          "production_concurrency_defaults_raised": false
+        },
+        "runtime_acceptance_requires_real_admin_runtime_payload": false,
+        "runtime_payload_verified": true,
+        "schema_version": "ai-platform.skill-dependency-review-runtime-acceptance.v1",
+        "status": "verified_runtime_acceptance",
+        "target": "211_api_admin_runtime"
+      },
+      "verifier_checks": [
+        {
+          "name": "check_admin_runtime_governance_projection",
+          "passed": true
+        },
+        {
+          "name": "check_skill_dependency_review_runtime_acceptance",
+          "passed": true
+        },
+        {
+          "name": "check_no_secret_leakage",
+          "passed": true
+        }
+      ]
+    },
+    "runtime_source": {
+      "commit_sha": "a4bded07852933ad77f830a24c7d18763ecf519b",
+      "image": "ai-platform:a4bded0-main-runtime-only-v2",
+      "runtime_subject_commit_sha": "a4bded07852933ad77f830a24c7d18763ecf519b"
+    },
+    "schema_version": "ai-platform.governance-runtime-smoke.v1",
+    "verifier": "tools/verify_governance_runtime_smoke.py"
+  },
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#164"
+  ],
+  "open_followups": [
+    "capacity_upgrade_evidence_gate",
+    "g7_docker_sandbox_hardening",
+    "g8_ordinary_user_multi_agent_exposure",
+    "ordinary_user_acceptance_for_quarantined_legacy_routes"
+  ],
+  "pr_refs": [],
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "a4bded07852933ad77f830a24c7d18763ecf519b",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "api_health": {
+      "status": "ok"
+    },
+    "branch": "main",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_layout_status": "external_env_file_label_present",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "gateway_secret_supplied": false,
+    "image": "ai-platform:a4bded0-main-runtime-only-v2",
+    "image_id": "sha256:543a980f54690b77393088df658c9eeebc7084c7ee59fd013d44a8fc56d99c1d",
+    "image_labels": {
+      "ai-platform.build-mode": "runtime-only-marker-rebase",
+      "ai-platform.runtime-rollout": "issue164-main-a4bded0-runtime-only-v1",
+      "ai-platform.runtime-subject": "a4bded07852933ad77f830a24c7d18763ecf519b",
+      "ai-platform.runtime_subject": "a4bded07852933ad77f830a24c7d18763ecf519b",
+      "ai-platform.source-branch": "main",
+      "ai-platform.source-note": "issue164-main-a4bded0-runtime-only-v1",
+      "ai-platform.source-origin": "local-git-archive",
+      "ai-platform.source-revision": "a4bded07852933ad77f830a24c7d18763ecf519b",
+      "ai-platform.source_revision": "a4bded07852933ad77f830a24c7d18763ecf519b",
+      "ai-platform.source_tree_commit": "a4bded07852933ad77f830a24c7d18763ecf519b",
+      "org.opencontainers.image.revision": "a4bded07852933ad77f830a24c7d18763ecf519b"
+    },
+    "repo_local_env_present": false,
+    "runtime_commit": "a4bded07852933ad77f830a24c7d18763ecf519b",
+    "runtime_source_marker": "a4bded07852933ad77f830a24c7d18763ecf519b",
+    "runtime_subject_label_status": "runtime_subject_label_current",
+    "source_revision_alias_label_status": "source_revision_alias_label_current",
+    "source_snapshot": {
+      "archive_sha256": "5d4d749dc549552d60f7ce335b2f2b15df78387f0429bd4866a71cfa448e6b87",
+      "created_at": "2026-06-23T01:35:45Z",
+      "source_branch": "main",
+      "source_origin": "local-git-archive",
+      "source_revision": "a4bded07852933ad77f830a24c7d18763ecf519b"
+    }
+  }
+}
