@@ -24,9 +24,10 @@ Status: `PR ready` frontend evidence; backend follow-up remains open
 
 ## 211 Runtime Notes
 
-- 211 static frontend provenance was refreshed independently from backend runtime deployment.
-- At the time of this evidence update, 211 backend still returned `404` for `/api/skills/upload/preview`, `/api/mcp/`, and `/api/admin/mcp/`. That means PR #187 has merged to GitHub, but the 211 backend runtime had not yet been redeployed with those route contracts.
-- Do not treat #187 as `211 verified` until the backend runtime is deployed and the route smoke is repeated.
+- 211 static frontend provenance was refreshed after the #187 backend runtime deployment.
+- The 211 backend API/worker currently run `ai-platform:df85a9f-issue183-contracts-runtime-only-v1`, with runtime labels pointing at merged main commit `df85a9fb3266aab92a2ca4122db06d4ec7a00175`.
+- Post-deployment unauthenticated route probes no longer return 404 for the #187 route surfaces: `GET /api/skills/upload/preview` returned `405`, `GET /api/mcp/` returned `401`, and `GET /api/admin/mcp/` returned `405`. The backend issue has a fuller authenticated route smoke comment for the first #183 backend contract slice.
+- Do not treat #183 as `gate closable`: durable user Skill storage, ZIP/GitHub import storage, direct Marketplace lifecycle, and real MCP server CRUD/credential/department/approval governance remain open.
 
 ## Frontend Handling
 
