@@ -35,8 +35,8 @@ test("app routes expose PRD phase 1B and 1C surfaces", () => {
 
   assert.match(tabs, /apps:\s*LaunchpadPanel/);
   assert.match(tabs, /skills:\s*SkillsHubPanel/);
-  assert.match(tabs, /const MarketplacePanel = lazy/);
-  assert.match(tabs, /marketplace:\s*MarketplacePanel/);
+  assert.doesNotMatch(tabs, /const MarketplacePanel = lazy/);
+  assert.match(tabs, /marketplace:\s*SkillsHubPanel/);
   assert.match(tabs, /mcp:\s*MCPPanel/);
   assert.match(tabs, /channels:\s*ChannelImportPanel/);
   assert.match(tabs, /models:\s*ModelCatalogPanel/);
