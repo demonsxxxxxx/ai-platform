@@ -35,6 +35,7 @@ test("app routes expose PRD phase 1B and 1C surfaces", () => {
 
   assert.match(tabs, /apps:\s*LaunchpadPanel/);
   assert.match(tabs, /skills:\s*SkillsHubPanel/);
+  assert.match(tabs, /const MarketplacePanel = lazy/);
   assert.match(tabs, /marketplace:\s*MarketplacePanel/);
   assert.match(tabs, /mcp:\s*MCPPanel/);
   assert.match(tabs, /channels:\s*ChannelImportPanel/);
@@ -72,12 +73,12 @@ test("phase 1C discovery routes are login reachable and fail closed inside pages
   }
 
   const rolesRoutePattern = new RegExp(
-    `path="/roles"[\\s\\S]{0,760}<ProtectedRoute[\\s\\S]{0,220}permissions=\\{\\[[\\s\\S]{0,360}fallbackComponent=\\{[\\s\\S]{0,220}<WorkbenchForbiddenPage[\\s\\S]{0,360}<RolesPage \\/>`,
+    `path="/roles"[\\s\\S]{0,260}<ProtectedRoute>[\\s\\S]{0,180}<RolesPage \\/>[\\s\\S]{0,120}<\\/ProtectedRoute>`,
   );
   assert.match(
     app,
     rolesRoutePattern,
-    "RolesPage should stay route-gated but render a workbench forbidden state instead of redirecting to chat",
+    "RolesPage should be login reachable while writes remain permission-gated inside the page",
   );
 
   for (const [route, page] of [
@@ -111,7 +112,7 @@ test("phase 1C discovery routes are login reachable and fail closed inside pages
   assert.match(app, /routeUnavailable=\{\{/);
 });
 
-test("platform admin projections can read the roles route without broadening role writes", () => {
+test("roles route is login reachable without broadening role writes", () => {
   const app = readFileSync(join(root, "src/App.tsx"), "utf8");
   const authTypes = readFileSync(join(root, "src/types/auth.ts"), "utf8");
   const rolesPanel = readFileSync(
@@ -119,11 +120,9 @@ test("platform admin projections can read the roles route without broadening rol
     "utf8",
   );
 
-  const rolesRoute = app.match(/path="\/roles"[\s\S]{0,900}<RolesPage \/>/)?.[0] ?? "";
-  assert.match(rolesRoute, /Permission\.ROLE_MANAGE/);
-  assert.match(rolesRoute, /Permission\.SETTINGS_MANAGE/);
-  assert.match(rolesRoute, /Permission\.AGENT_ADMIN/);
-  assert.match(rolesRoute, /Permission\.ADMIN_STATUS/);
+  const rolesRoute = app.match(/path="\/roles"[\s\S]{0,320}<RolesPage \/>/)?.[0] ?? "";
+  assert.doesNotMatch(rolesRoute, /permissions=\{\[/);
+  assert.doesNotMatch(rolesRoute, /fallbackComponent=\{/);
   assert.match(authTypes, /ADMIN_STATUS = "admin:status"/);
   assert.match(rolesPanel, /const canManage = hasPermission\(Permission\.ROLE_MANAGE\);/);
   assert.doesNotMatch(
@@ -199,9 +198,10 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
   );
   assert.match(surface, /secondaryPanel:/);
   assert.match(rightPanel, /workbenchSurface\.secondaryPanel/);
-  assert.match(theme, /--theme-bg:\s*#e8edf3;/);
-  assert.match(theme, /--theme-bg-sidebar:\s*#e8edf3;/);
+  assert.match(theme, /--theme-bg:\s*#f4f6f8;/);
+  assert.match(theme, /--theme-bg-sidebar:\s*#edf1f5;/);
   assert.match(theme, /--theme-bg-card:\s*#ffffff;/);
+  assert.doesNotMatch(theme, /--theme-bg:\s*#e8edf3;[\s\S]{0,80}--theme-bg-sidebar:\s*#e8edf3;/);
   assert.match(authTheme, /html,\s*body\s*\{\s*background:\s*var\(--theme-bg\);/);
   assert.doesNotMatch(authTheme, /html,\s*body\s*\{\s*background:\s*#ffffff;/);
   assert.doesNotMatch(surface, /thread:[\s\S]{0,180}bg-white/);
@@ -338,18 +338,37 @@ test("model catalog route is a governed public-projection workbench page", () =>
   assert.match(tabs, /models:\s*ModelCatalogPanel/);
   assert.match(modelCatalog, /data-model-catalog-shell/);
   assert.match(modelCatalog, /modelPublicApi\.listAvailable/);
-  assert.match(modelCatalog, /modelPublicApi\.listProviders/);
   assert.match(modelCatalog, /deriveProviderProjections/);
-  assert.match(modelCatalog, /providersResult\.status === "fulfilled"/);
-  assert.match(modelCatalog, /providerProjectionDegraded/);
   assert.match(modelCatalog, /WorkbenchStateSurface/);
   assert.match(modelCatalog, /data-model-admin-governance/);
   assert.match(modelCatalog, /bg-\[var\(--theme-bg\)\]/);
   assert.ok(JSON.parse(zhLocale).models);
   assert.ok(JSON.parse(enLocale).models);
   assert.doesNotMatch(modelCatalog, /modelApi|agentConfigApi|roleApi/);
+  assert.doesNotMatch(modelCatalog, /listProviders/);
+  assert.doesNotMatch(modelCatalog, /providers\/list/);
   assert.doesNotMatch(modelCatalog, /glass-card|glass-card-subtle|glass-input/);
   assert.doesNotMatch(modelCatalog, /Legacy surface quarantined/);
+});
+
+test("phase 2 workbench pages render concrete capability status instead of a thin placeholder", () => {
+  const app = readFileSync(join(root, "src/App.tsx"), "utf8");
+  const stateSurface = readFileSync(
+    join(root, "src/components/workbench/WorkbenchStateSurface.tsx"),
+    "utf8",
+  );
+
+  assert.match(app, /const phaseTwoWorkbenchConfigs/);
+  for (const tab of ["users", "settings", "feedback", "agents", "notifications"]) {
+    assert.match(app, new RegExp(`${tab}:[\\s\\S]{0,420}capabilities:`));
+    assert.match(app, new RegExp(`activeTab="${tab}"[\\s\\S]{0,220}config=\\{phaseTwoWorkbenchConfigs\\.${tab}\\}`));
+  }
+  assert.match(stateSurface, /details\?:/);
+  assert.match(stateSurface, /data-workbench-state-detail/);
+  assert.doesNotMatch(
+    app,
+    /公司用户、系统设置、反馈、通知和 Agent 管理仍等待对应服务能力开放/,
+  );
 });
 
 test("production pwa updates auto-activate so old authenticated bundles cannot persist", () => {

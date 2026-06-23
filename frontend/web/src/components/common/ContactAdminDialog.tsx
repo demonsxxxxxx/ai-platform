@@ -2,7 +2,6 @@ import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { ShieldCheck, Mail, ExternalLink, ArrowRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useSettings } from "../../hooks/useSettings";
 
 interface ContactAdminDialogProps {
   isOpen: boolean;
@@ -16,11 +15,10 @@ export function ContactAdminDialog({
   reason = "noPermission",
 }: ContactAdminDialogProps) {
   const { t } = useTranslation();
-  const { getSettingValue } = useSettings();
   const closeRef = useRef<HTMLButtonElement>(null);
 
-  const adminEmail = getSettingValue("ADMIN_CONTACT_EMAIL") as string | null;
-  const adminUrl = getSettingValue("ADMIN_CONTACT_URL") as string | null;
+  const adminEmail = null;
+  const adminUrl = null;
 
   useEffect(() => {
     if (isOpen) {

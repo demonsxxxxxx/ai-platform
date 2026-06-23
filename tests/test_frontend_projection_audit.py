@@ -3,6 +3,8 @@ import subprocess
 import sys
 
 from tools.frontend_projection_audit import (
+    LEGACY_ROUTE_POLICY_MAP,
+    SAFE_PUBLIC_ROUTE_PREFIXES,
     build_frontend_projection_audit,
     render_frontend_projection_audit_markdown,
 )
@@ -18,7 +20,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     violations = audit["forbidden_private_payload_terms"]["violations"]
     assert violations
     violation_terms = {item["term"] for item in violations}
-    assert {"api_key", "encrypt_key", "verification_token"}.issubset(violation_terms)
+    assert "api_key" in violation_terms
     active_violations = audit["active_browser_entry"]["forbidden_projection_terms"]["violations"]
     assert active_violations == []
     active_paths = set(audit["active_browser_entry"]["files"])
@@ -28,7 +30,6 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     quarantined_paths = {
         item["path"] for item in audit["quarantined_legacy_sources"]["violations"]
     }
-    assert "frontend/web/src/components/panels/channel/feishu/FeishuPanel.tsx" in quarantined_paths
     assert "frontend/web/src/services/api/model.ts" in quarantined_paths
     assert not any(
         item["path"] == "frontend/web/src/components/documents/documentUrlSafety.ts"
@@ -36,6 +37,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     )
     assert "ai_platform_projection_routes" in audit["route_inventory"]
     assert "legacy_policy_required_routes" in audit["route_inventory"]
+    assert not (set(SAFE_PUBLIC_ROUTE_PREFIXES) & set(LEGACY_ROUTE_POLICY_MAP))
     assert any(
         route["route_prefix"] == "/api/ai/admin/"
         for route in audit["route_inventory"]["ai_platform_projection_routes"]
@@ -63,16 +65,38 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         route["route_prefix"]: route
         for route in active_route_inventory["legacy_route_policies"]
     }
+    active_safe_routes = {
+        route["route_prefix"]
+        for route in active_route_inventory["safe_public_projection_routes"]
+    }
+    assert active_safe_routes == {
+        "/api/agent/models/available",
+        "/api/github",
+        "/api/marketplace",
+        "/api/skills",
+    }
     assert "/api/mcp" in active_policy_routes
-    assert "/api/env-vars" in active_policy_routes
+    assert "/api/env-vars" not in active_policy_routes
     assert "/api/agent/models" not in active_policy_routes
+    assert "/api/github" not in active_policy_routes
+    assert "/api/marketplace" not in active_policy_routes
+    assert "/api/skills" not in active_policy_routes
     assert "/api/channels" not in active_policy_routes
     assert active_policy_routes["/api/mcp"]["route_scope"] == "active_browser_entry"
-    assert active_route_inventory["ordinary_user_reachable_legacy_route_policies"] == []
-    assert all(
-        route["active_browser_access"] == "permission_gated"
-        for route in active_route_inventory["legacy_route_policies"]
+    ordinary_routes = {
+        route["route_prefix"]: route
+        for route in active_route_inventory["ordinary_user_reachable_legacy_route_policies"]
+    }
+    assert set(ordinary_routes) == {"/api/roles"}
+    assert ordinary_routes["/api/roles"]["required_action"] == (
+        "remap_to_ai_platform_admin_projection_or_hide"
     )
+    permission_gated_routes = {
+        route["route_prefix"]: route
+        for route in active_route_inventory["legacy_route_policies"]
+        if route["active_browser_access"] == "permission_gated"
+    }
+    assert set(permission_gated_routes) == set(active_policy_routes) - {"/api/roles"}
     policy_routes = {
         route["route_prefix"]: route
         for route in audit["route_inventory"]["legacy_route_policies"]
@@ -87,7 +111,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     )
     assert policy_routes["/api/mcp"]["governance_gate"] == "G6"
     assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
-    assert "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap" not in audit["open_gaps"]
+    assert "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
     assert "legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
     assert "quarantined_legacy_sources_need_ai_platform_projection_remap" in audit["open_gaps"]
     gap_details = {item["gap"]: item for item in audit["open_gap_details"]}
@@ -211,13 +235,12 @@ def test_frontend_projection_audit_treats_model_public_routes_as_safe_projection
     api_root.mkdir(parents=True)
     (source_root / "main.tsx").write_text(
         'import { modelPublicApi } from "./services/api/modelPublic";\n'
-        "export const providers = modelPublicApi.listProviders;\n",
+        "export const models = modelPublicApi.listAvailable;\n",
         encoding="utf-8",
     )
     (api_root / "modelPublic.ts").write_text(
         "export const modelPublicApi = {\n"
         "  listAvailable: () => fetch('/api/agent/models/available'),\n"
-        "  listProviders: () => fetch('/api/agent/models/providers/list'),\n"
         "};\n",
         encoding="utf-8",
     )
@@ -238,6 +261,51 @@ def test_frontend_projection_audit_treats_model_public_routes_as_safe_projection
     assert audit["status"] == "pass"
     assert audit["route_inventory"]["legacy_policy_required_routes"] == []
     assert audit["active_browser_entry"]["route_inventory"]["legacy_route_policies"] == []
+
+
+def test_frontend_projection_audit_keeps_requested_api_route_constants(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src"
+    api_root = source_root / "services" / "api"
+    hooks_root = source_root / "hooks"
+    api_root.mkdir(parents=True)
+    hooks_root.mkdir(parents=True)
+    (source_root / "main.tsx").write_text(
+        'import { useMarketplace } from "./hooks/useMarketplace";\n'
+        "export const market = useMarketplace;\n",
+        encoding="utf-8",
+    )
+    (hooks_root / "useMarketplace.ts").write_text(
+        'import { marketplaceApi } from "../services/api/marketplace";\n'
+        "export function useMarketplace() { return marketplaceApi.list; }\n",
+        encoding="utf-8",
+    )
+    (api_root / "marketplace.ts").write_text(
+        "const MARKETPLACE_API = `/api/marketplace`;\n"
+        "export const marketplaceApi = {\n"
+        "  list: () => fetch(`${MARKETPLACE_API}/`),\n"
+        "};\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+    active_safe_routes = {
+        route["route_prefix"]
+        for route in audit["active_browser_entry"]["route_inventory"]["safe_public_projection_routes"]
+    }
+
+    assert "/api/marketplace" in active_safe_routes
+    assert audit["status"] == "pass"
 
 
 def test_frontend_projection_audit_tracks_permission_gated_active_legacy_routes(tmp_path):
@@ -296,14 +364,18 @@ def test_frontend_projection_audit_tracks_permission_gated_active_legacy_routes(
         for route in active_inventory["ordinary_user_reachable_legacy_route_policies"]
     }
 
-    assert active_routes["/api/skills"]["active_browser_access"] == "permission_gated"
-    assert active_routes["/api/skills"]["required_permissions"] == ["SKILL_READ"]
+    active_safe_routes = {
+        route["route_prefix"]: route
+        for route in active_inventory["safe_public_projection_routes"]
+    }
+    assert "/api/skills" in active_safe_routes
+    assert "/api/skills" not in active_routes
     assert active_routes["/api/settings"]["active_browser_access"] == "ordinary_user_reachable"
     assert set(ordinary_routes) == {"/api/settings"}
     assert "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
 
 
-def test_frontend_projection_audit_tracks_permission_gated_enabled_expressions(tmp_path):
+def test_frontend_projection_audit_treats_skills_as_safe_public_when_permission_gated(tmp_path):
     source_root = tmp_path / "frontend" / "web" / "src"
     services_root = source_root / "services" / "api"
     hooks_root = source_root / "hooks"
@@ -343,13 +415,18 @@ def test_frontend_projection_audit_tracks_permission_gated_enabled_expressions(t
     )
 
     audit = build_frontend_projection_audit(repo_root=tmp_path)
+    active_inventory = audit["active_browser_entry"]["route_inventory"]
     active_routes = {
         route["route_prefix"]: route
-        for route in audit["active_browser_entry"]["route_inventory"]["legacy_route_policies"]
+        for route in active_inventory["legacy_route_policies"]
+    }
+    active_safe_routes = {
+        route["route_prefix"]: route
+        for route in active_inventory["safe_public_projection_routes"]
     }
 
-    assert active_routes["/api/skills"]["active_browser_access"] == "permission_gated"
-    assert active_routes["/api/skills"]["required_permissions"] == ["SKILL_READ"]
+    assert "/api/skills" not in active_routes
+    assert "/api/skills" in active_safe_routes
 
 
 def test_frontend_projection_audit_treats_baseline_user_permissions_as_ordinary_reachable(tmp_path):

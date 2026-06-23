@@ -10,7 +10,7 @@ import {
   Wrench,
   Check,
 } from "lucide-react";
-import { notificationApi } from "../../services/api/notification";
+import { notificationPublicApi } from "../../services/api/notificationPublic";
 import type { Notification, NotificationType } from "../../types/notification";
 import { formatDateTimeShort } from "../../utils/datetime";
 
@@ -56,7 +56,7 @@ export function NotificationDialog({
   const [dismissingId, setDismissingId] = useState<string | null>(null);
 
   const fetchNotifications = useCallback(() => {
-    notificationApi.getActive().then(setNotifications);
+    notificationPublicApi.getActive().then(setNotifications);
   }, []);
 
   useEffect(() => {
@@ -77,7 +77,7 @@ export function NotificationDialog({
     setDismissingId(id);
     setNotifications((prev) => prev.filter((n) => n.id !== id));
     try {
-      await notificationApi.dismiss(id);
+      await notificationPublicApi.dismiss(id);
     } catch {
       // keep local state removal even if API fails
     }

@@ -299,8 +299,8 @@ export const WelcomePage = memo(function WelcomePage({
               className={`inline-flex max-w-[12rem] items-center gap-1 rounded-md border px-2 py-1 text-[11px] ${
                 item.state === "enabled"
                   ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200"
-                  : item.state === "unavailable"
-                    ? "border-stone-200 bg-stone-50 text-stone-500 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400"
+                : item.state === "unavailable"
+                    ? "border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] text-stone-500 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400"
                     : "border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-stone-500 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-400"
               }`}
               title={`${item.label}: ${item.value}`}

@@ -12,6 +12,7 @@ import {
   AlertCircle,
   Lock,
   ChevronDown,
+  Search,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
@@ -659,12 +660,26 @@ export function RolesPanel() {
       {/* 角色列表 */}
       <div className="flex-1 overflow-y-auto py-2 sm:py-4 px-4">
         {filteredRoles.length === 0 ? (
-          <div className="enterprise-empty-state">
+          <div
+            data-roles-empty-state
+            className="enterprise-empty-state mx-auto max-w-xl px-4"
+          >
             <div className="enterprise-empty-state-icon mb-4">
-              <Shield size={32} className="text-theme-text-secondary" />
+              {searchQuery ? (
+                <Search size={32} className="text-theme-text-secondary" />
+              ) : (
+                <Shield size={32} className="text-theme-text-secondary" />
+              )}
             </div>
-            <p className="text-theme-text-secondary">
+            <p className="text-sm font-semibold text-theme-text">
               {searchQuery ? t("roles.noMatchingRoles") : t("roles.noRoles")}
+            </p>
+            <p className="mt-2 text-sm leading-6 text-theme-text-secondary">
+              {searchQuery
+                ? t("roles.noMatchingRolesDescription")
+                : canManage
+                  ? t("roles.noRolesDescriptionAdmin")
+                  : t("roles.noRolesDescriptionReadOnly")}
             </p>
           </div>
         ) : (

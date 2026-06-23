@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  AlertCircle,
   DatabaseZap,
   Gauge,
   LockKeyhole,
@@ -87,7 +86,7 @@ export function ModelCatalogPanel() {
   const { hasAnyPermission } = useAuth();
   const [searchQuery, setSearchQuery] = useState("");
   const [state, setState] = useState<ModelCatalogState | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   const canAdminModels = hasAnyPermission([Permission.MODEL_ADMIN]);
@@ -106,39 +105,29 @@ export function ModelCatalogPanel() {
 
     async function loadModelCatalog() {
       setIsLoading(true);
-      setError(null);
-      const [modelsResult, providersResult] = await Promise.allSettled([
-        modelPublicApi.listAvailable(),
-        modelPublicApi.listProviders(),
-      ]);
+      setLoadError(null);
+      try {
+        const catalog = await modelPublicApi.listAvailable();
+        if (cancelled) return;
 
-      if (cancelled) return;
-
-      if (modelsResult.status === "rejected") {
+        const models = catalog.models ?? [];
+        setState({
+          models,
+          providers: deriveProviderProjections(models),
+          enabledCount: catalog.enabled_count ?? 0,
+          defaultModelId: catalog.default_model_id,
+        });
+      } catch (err) {
+        if (cancelled) return;
         setState(null);
-        setError(
-          modelsResult.reason instanceof Error
-            ? modelsResult.reason.message
+        setLoadError(
+          err instanceof Error
+            ? err.message
             : t("models.catalogLoadFailed", "模型目录暂不可用"),
         );
-        setIsLoading(false);
-        return;
+      } finally {
+        if (!cancelled) setIsLoading(false);
       }
-
-      const models = modelsResult.value.models ?? [];
-      setState({
-        models,
-        providers:
-          providersResult.status === "fulfilled"
-            ? providersResult.value
-            : deriveProviderProjections(models),
-        enabledCount: modelsResult.value.enabled_count ?? 0,
-        defaultModelId: modelsResult.value.default_model_id,
-      });
-      if (providersResult.status === "rejected") {
-        setError(t("models.providerProjectionDegraded", "供应商投影暂不可用，模型目录仍可浏览。"));
-      }
-      setIsLoading(false);
     }
 
     void loadModelCatalog();
@@ -163,7 +152,7 @@ export function ModelCatalogPanel() {
     );
   }
 
-  if (!state && error) {
+  if (!state && loadError) {
     return (
       <div className="flex h-full min-h-0 items-center justify-center bg-[var(--theme-bg)] px-4">
         <WorkbenchStateSurface
@@ -182,7 +171,9 @@ export function ModelCatalogPanel() {
   return (
     <div
       data-model-catalog-shell
-      data-frontend-governance-state={error ? "degraded" : "ready"}
+      data-frontend-governance-state={
+        state?.models.length ? "ready" : "degraded"
+      }
       className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
     >
       <PanelHeader
@@ -196,13 +187,6 @@ export function ModelCatalogPanel() {
         onSearchChange={setSearchQuery}
         searchPlaceholder={t("models.searchPlaceholder", "搜索模型、供应商或能力")}
       />
-
-      {error && (
-        <div className="mx-4 mt-4 flex items-start gap-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
-          <AlertCircle size={16} className="mt-0.5 shrink-0" />
-          <span>{error}</span>
-        </div>
-      )}
 
       <div className="px-4 pb-2 pt-3">
         <section className="grid gap-3 lg:grid-cols-3">

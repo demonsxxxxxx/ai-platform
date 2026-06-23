@@ -20,7 +20,7 @@ Status: `PR ready` frontend evidence; backend follow-up remains open
 - Skills ZIP/GitHub import storage is not durable yet. PR #187 adds stable fail-closed contracts, not actual import storage.
 - Direct Marketplace write/admin lifecycle remains fail-closed behind backend policy until product scope and storage are complete.
 - MCP tool governance is partially backed by admin tool policies, run-scoped tool permission decisions, and PR #187 read projections, but not by real server CRUD, credential lifecycle, department enablement, or a standalone approval inbox.
-- Model provider list projection is absent on 211: `/api/agent/models/providers/list` returned `404` while `/api/agent/models/available` returned `200`. The frontend derives provider counts from the public model catalog and shows only a small degraded provider-projection notice.
+- Model provider list projection is absent on 211: `/api/agent/models/providers/list` returned `404` while `/api/agent/models/available` returned `200`. The frontend now avoids that missing endpoint and derives provider counts from the public model catalog.
 
 ## 211 Runtime Notes
 
@@ -36,7 +36,7 @@ Status: `PR ready` frontend evidence; backend follow-up remains open
 - Skills catalog keeps read, toggle, delete, publish-request, and export paths visible when authorized.
 - Skills create, edit, ZIP import, GitHub import, and batch actions stay hidden until durable file storage/import/batch routes exist.
 - MCP page stays as a governed directory shell with lifecycle and credential controls shown as fail-closed, not as writable controls.
-- Models page uses `/api/agent/models/available` as the source of truth. If `/api/agent/models/providers/list` is absent, provider summaries are derived from the returned models instead of re-enabling the legacy model admin page.
+- Models page uses `/api/agent/models/available` as the source of truth. Provider summaries are derived from the returned models instead of calling `/api/agent/models/providers/list` or re-enabling the legacy model admin page.
 
 ## Backend Follow-Up Needed
 

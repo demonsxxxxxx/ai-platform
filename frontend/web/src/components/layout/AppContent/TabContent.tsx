@@ -12,29 +12,11 @@ const MarketplacePanel = lazy(() =>
     default: m.MarketplacePanel,
   })),
 );
-const UsersPanel = lazy(() =>
-  import("../../panels/UsersPanel").then((m) => ({ default: m.UsersPanel })),
-);
 const RolesPanel = lazy(() =>
   import("../../panels/RolesPanel").then((m) => ({ default: m.RolesPanel })),
 );
-const SettingsPanel = lazy(() =>
-  import("../../panels/SettingsPanel").then((m) => ({
-    default: m.SettingsPanel,
-  })),
-);
-const AgentConfigPanel = lazy(() =>
-  import("../../panels/AgentPanel").then((m) => ({
-    default: m.AgentConfigPanel,
-  })),
-);
 const MCPPanel = lazy(() =>
   import("../../panels/MCPPanel").then((m) => ({ default: m.MCPPanel })),
-);
-const FeedbackPanel = lazy(() =>
-  import("../../panels/FeedbackPanel").then((m) => ({
-    default: m.FeedbackPanel,
-  })),
 );
 const ModelCatalogPanel = lazy(() =>
   import("../../panels/ModelCatalogPanel").then((m) => ({
@@ -44,11 +26,6 @@ const ModelCatalogPanel = lazy(() =>
 const ChannelImportPanel = lazy(() =>
   import("../../channels/ChannelImportPanel").then((m) => ({
     default: m.ChannelImportPanel,
-  })),
-);
-const NotificationPanel = lazy(() =>
-  import("../../panels/NotificationPanel").then((m) => ({
-    default: m.NotificationPanel,
   })),
 );
 const MemoryPanel = lazy(() =>
@@ -69,15 +46,10 @@ const panelMap: Record<
   apps: LaunchpadPanel,
   skills: SkillsHubPanel,
   marketplace: MarketplacePanel,
-  users: UsersPanel,
   roles: RolesPanel,
-  settings: SettingsPanel,
   mcp: MCPPanel,
-  feedback: FeedbackPanel,
   channels: ChannelImportPanel,
-  agents: AgentConfigPanel,
   models: ModelCatalogPanel,
-  notifications: NotificationPanel,
   memory: MemoryPanel,
 };
 
@@ -114,6 +86,7 @@ export function TabContent({
             title={routeUnavailable.title}
             description={routeUnavailable.description}
             surface={routeUnavailable.surface}
+            details={routeUnavailable.details}
           />
         </div>
       </main>

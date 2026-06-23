@@ -23,7 +23,10 @@ import type { SkillResponse, SkillCreate } from "../../types";
 import { SkillCard } from "./MarketplacePanel/SkillCard";
 import { SkillPreviewModal } from "./MarketplacePanel/SkillPreviewModal";
 import { GroupAvailabilityToggleRow } from "../governance/GroupAvailabilityToggleRow";
-import { resolveFrontendGovernanceState } from "../governance/frontendGovernanceState";
+import {
+  isPermissionError,
+  resolveFrontendGovernanceState,
+} from "../governance/frontendGovernanceState";
 
 interface MarketplacePanelProps {
   embedded?: boolean;
@@ -42,17 +45,6 @@ export function MarketplacePanel({
     isAuthenticated,
     isLoading: authLoading,
   } = useAuth();
-  const canReadMarketplace = hasAnyPermission([Permission.MARKETPLACE_READ]);
-  const effectiveGovernedUnavailable =
-    governedUnavailable || !canReadMarketplace;
-  const governanceState = resolveFrontendGovernanceState({
-    isAuthenticated,
-    isLoading: authLoading,
-    hasWorkspace: true,
-    hasPermission: canReadMarketplace,
-    featureEnabled: true,
-    degraded: settingsStateDegraded,
-  });
   const {
     skills,
     tags,
@@ -82,7 +74,17 @@ export function MarketplacePanel({
     readPreviewFile,
     closePreview,
     setPreviewFileContent,
-  } = useMarketplace({ enabled: !effectiveGovernedUnavailable });
+  } = useMarketplace({ enabled: !governedUnavailable });
+  const permissionDenied = isPermissionError(error);
+  const effectiveGovernedUnavailable = governedUnavailable || permissionDenied;
+  const governanceState = resolveFrontendGovernanceState({
+    isAuthenticated,
+    isLoading: authLoading,
+    hasWorkspace: true,
+    hasPermission: !permissionDenied,
+    featureEnabled: true,
+    degraded: settingsStateDegraded || Boolean(error),
+  });
 
   const {
     skills: userSkills,

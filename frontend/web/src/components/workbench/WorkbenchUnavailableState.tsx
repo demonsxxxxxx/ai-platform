@@ -8,6 +8,7 @@ export interface WorkbenchUnavailableStateProps {
   icon?: ElementType;
   surface: string;
   state?: FrontendGovernanceState;
+  details?: string[];
 }
 
 export function WorkbenchUnavailableState({
@@ -16,6 +17,7 @@ export function WorkbenchUnavailableState({
   icon,
   surface,
   state = "forbidden",
+  details,
 }: WorkbenchUnavailableStateProps) {
   return (
     <div data-workbench-unavailable>
@@ -25,6 +27,7 @@ export function WorkbenchUnavailableState({
         description={description}
         icon={icon}
         surface={surface}
+        details={details}
       />
     </div>
   );

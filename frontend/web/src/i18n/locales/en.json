@@ -1801,7 +1801,10 @@
     "maxUploadSizeImage": "Max Image Size (MB)",
     "maxUploadSizeVideo": "Max Video Size (MB)",
     "noMatchingRoles": "No matching roles found",
+    "noMatchingRolesDescription": "The role projection responded, but no role matches this search. Clear the query or try a different keyword.",
     "noRoles": "No roles yet",
+    "noRolesDescriptionAdmin": "The role management entry is connected to the current backend projection, but the backend returned no role rows. Users with write permission can create roles from here.",
+    "noRolesDescriptionReadOnly": "The role management entry is connected to the current backend projection, but your account has no role write permission and the backend returned no browsable roles.",
     "operationFailed": "Operation failed",
     "permissionCount": "{{count}} permissions",
     "permissions": "Permissions",
@@ -2629,7 +2632,6 @@
     "noMatchingModels": "No matching models",
     "noModels": "No available models",
     "provider": "Provider",
-    "providerProjectionDegraded": "Provider projection is unavailable; the model catalog remains browsable.",
     "publicProjection": "Public model projection",
     "publicProjectionDescription": "Chat and selectors only read approved public models without exposing keys, gateway configuration, or cross-tenant data.",
     "searchPlaceholder": "Search models, providers, or capabilities",
@@ -2647,8 +2649,51 @@
       "title": "{{page}} is governed"
     },
     "phaseTwo": {
-      "description": "This entry stays in the workbench, but company users, system settings, feedback, notifications, and agent administration are still waiting for the matching service capability. The frontend will not load legacy admin pages or expose inactive entries.",
-      "title": "{{page}} management is not enabled yet"
+      "users": {
+        "capabilities": {
+          "audit": "User audit, import, and deactivation need a traceable admin projection.",
+          "directory": "The company directory entry remains visible; legacy user APIs are not loaded.",
+          "lifecycle": "Create, disable, and role-assignment writes are waiting for backend RBAC contracts."
+        },
+        "description": "Company user management belongs in the enterprise workbench, but the backend has not opened the user admin projection yet. The entry stays visible without exposing legacy write APIs.",
+        "title": "Company user management is not enabled yet"
+      },
+      "settings": {
+        "capabilities": {
+          "publicProfile": "Personal preferences continue to read from profile and public settings surfaces.",
+          "runtime": "System runtime configuration is waiting for an audited admin settings projection.",
+          "secrets": "Keys, gateways, and environment variables are not exposed in the ordinary frontend."
+        },
+        "description": "System settings need an audited admin projection. The workbench keeps this entry as a state surface instead of rendering legacy settings forms.",
+        "title": "System settings projection is not enabled yet"
+      },
+      "feedback": {
+        "capabilities": {
+          "audit": "Triage history and status changes need backend audit coverage.",
+          "capture": "Message-level feedback remains in chat; the standalone desk waits for an aggregate projection.",
+          "triage": "Assignment, closure, and label governance are not read from legacy feedback admin APIs."
+        },
+        "description": "Feedback will become a unified triage desk, but the backend does not yet provide the aggregate and assignment contracts for the workbench.",
+        "title": "Feedback triage is not enabled yet"
+      },
+      "agents": {
+        "capabilities": {
+          "adminProjection": "System prompts, tool bindings, and model bindings are waiting for admin projections.",
+          "publicSelection": "Chat still uses the current selectable agents; this page does not load the legacy config panel.",
+          "roleAssignment": "Role-based agent assignment needs backend RBAC governance contracts."
+        },
+        "description": "Agent administration depends on role, model, and tool governance. The entry remains visible without rendering legacy configuration pages.",
+        "title": "Agent administration is not enabled yet"
+      },
+      "notifications": {
+        "capabilities": {
+          "admin": "Announcement creation, targeting, and expiry need an admin notification projection.",
+          "banner": "Runtime notifications still appear through current message and chat surfaces.",
+          "inbox": "A unified inbox is waiting for backend read-state and audience-scope contracts."
+        },
+        "description": "Notifications need audited publishing, audience, and read-state contracts. The workbench keeps the entry visible without loading legacy announcement admin pages.",
+        "title": "Notification management is not enabled yet"
+      }
     },
     "newConversation": "New conversation",
     "none": "None",

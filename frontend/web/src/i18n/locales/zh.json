@@ -1802,7 +1802,10 @@
     "maxUploadSizeImage": "图片大小上限 (MB)",
     "maxUploadSizeVideo": "视频大小上限 (MB)",
     "noMatchingRoles": "没有找到匹配的角色",
+    "noMatchingRolesDescription": "当前角色管理投影已返回，但没有匹配这个搜索词的数据。请清空搜索或调整关键词。",
     "noRoles": "暂无角色",
+    "noRolesDescriptionAdmin": "角色管理入口已接入当前后端投影，但后端没有返回角色数据。你有写权限时可以创建角色；没有数据不再表现为空白页面。",
+    "noRolesDescriptionReadOnly": "角色管理入口已接入当前后端投影，但当前账号没有角色写权限，且后端没有返回可浏览的角色数据。",
     "operationFailed": "操作失败",
     "permissionCount": "{{count}} 个权限",
     "permissions": "权限",
@@ -2630,7 +2633,6 @@
     "noMatchingModels": "没有匹配的模型",
     "noModels": "暂无可用模型",
     "provider": "供应商",
-    "providerProjectionDegraded": "供应商投影暂不可用，模型目录仍可浏览。",
     "publicProjection": "公开模型投影",
     "publicProjectionDescription": "聊天和选择器只读取公开可用模型，不暴露密钥、网关配置或租户外信息。",
     "searchPlaceholder": "搜索模型、供应商或能力",
@@ -2648,8 +2650,51 @@
       "title": "{{page}} 受权限治理"
     },
     "phaseTwo": {
-      "description": "这个入口会保留在工作台里，但公司用户、系统设置、反馈、通知和 Agent 管理仍等待对应服务能力开放。当前不会加载旧管理页，也不会暴露未启用入口。",
-      "title": "{{page}} 管理能力尚未开放"
+      "users": {
+        "capabilities": {
+          "audit": "用户审计、导入和停用流程需要后端提供可追溯的管理员投影。",
+          "directory": "公司用户目录会保留入口；当前不加载旧用户管理接口。",
+          "lifecycle": "创建、禁用、角色分配等写操作等待后端 RBAC 管理合同。"
+        },
+        "description": "用户目录是企业工作台能力，但当前后端尚未开放公司用户管理投影。前端保持入口可见，不暴露旧后台写接口。",
+        "title": "公司用户管理尚未开放"
+      },
+      "settings": {
+        "capabilities": {
+          "publicProfile": "个人偏好仍通过个人资料和公开设置读取。",
+          "runtime": "系统级运行配置等待管理员设置投影，不从旧 settings 页面读取。",
+          "secrets": "密钥、网关和环境变量不会在普通前端页面暴露。"
+        },
+        "description": "系统设置需要管理员可审计投影。当前工作台只保留入口和状态，不展示旧管理表单。",
+        "title": "系统设置投影尚未开放"
+      },
+      "feedback": {
+        "capabilities": {
+          "audit": "处理记录和状态变更需要后端审计链路。",
+          "capture": "聊天消息级反馈仍保留在对话内；独立反馈台等待后端汇总投影。",
+          "triage": "分派、关闭和标签治理不从旧反馈后台读取。"
+        },
+        "description": "反馈入口会成为统一处理台；当前后端还没有可用于登录后工作台的汇总与分派合同。",
+        "title": "反馈处理台尚未开放"
+      },
+      "agents": {
+        "capabilities": {
+          "adminProjection": "系统提示词、工具和模型绑定写操作等待管理员投影。",
+          "publicSelection": "聊天页仍使用当前可选 Agent；这里不加载旧配置后台。",
+          "roleAssignment": "按角色分配 Agent 的治理能力需要后端 RBAC 合同。"
+        },
+        "description": "Agent 管理需要角色、模型和工具治理联动。当前只保留入口，不展示旧配置页。",
+        "title": "Agent 管理尚未开放"
+      },
+      "notifications": {
+        "capabilities": {
+          "admin": "公告创建、定向和失效需要管理员通知投影。",
+          "banner": "运行时通知仍通过当前消息/对话提示展示。",
+          "inbox": "统一通知收件箱等待后端读状态和范围合同。"
+        },
+        "description": "通知公告需要可审计的发布、范围和已读状态合同。当前工作台保留入口但不加载旧公告后台。",
+        "title": "通知公告管理尚未开放"
+      }
     },
     "newConversation": "新对话",
     "none": "无",

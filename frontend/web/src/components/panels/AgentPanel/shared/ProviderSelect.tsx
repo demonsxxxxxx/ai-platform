@@ -53,12 +53,26 @@ export const ProviderSelect = React.memo(function ProviderSelect({
   const containerRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
-  // 从后端拉取 provider 列表（只拉一次）
+  // Derive providers from the public model catalog. The standalone provider
+  // projection is not backed on 211, so this avoids a noisy 404 on activation.
   useEffect(() => {
     modelPublicApi
-      .listProviders()
-      .then((list) => {
-        setProviders(list.map((p) => p.value));
+      .listAvailable()
+      .then((catalog) => {
+        const derived = new Set<string>();
+        for (const model of catalog.models ?? []) {
+          const provider =
+            model.provider ||
+            (model.value.includes("/") ? model.value.split("/")[0] : "");
+          if (provider) derived.add(provider);
+        }
+        setProviders(
+          derived.size > 0
+            ? Array.from(derived).sort((left, right) =>
+                left.localeCompare(right),
+              )
+            : Object.keys(PROVIDER_LABELS),
+        );
         setLoaded(true);
       })
       .catch(() => {

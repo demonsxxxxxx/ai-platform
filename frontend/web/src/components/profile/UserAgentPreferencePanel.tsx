@@ -3,11 +3,14 @@ import { useTranslation } from "react-i18next";
 import { Save, Check, AlertCircle } from "lucide-react";
 import { toast } from "react-hot-toast";
 import { AgentInfo } from "../../types";
-import { agentConfigApi, agentApi } from "../../services/api";
+import { authApi } from "../../services/api/auth";
+import { agentApi } from "../../services/api/agent";
+import { useAuth } from "../../hooks/useAuth";
 import { LoadingSpinner } from "../common/LoadingSpinner";
 
 export function UserAgentPreferencePanel() {
   const { t } = useTranslation();
+  const { user, refreshUser } = useAuth();
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -23,17 +26,16 @@ export function UserAgentPreferencePanel() {
     setError(null);
 
     try {
-      const [agentsRes, preferenceRes] = await Promise.all([
-        agentApi.list(),
-        agentConfigApi
-          .getUserPreference()
-          .catch(() => ({ default_agent_id: null })),
-      ]);
+      const agentsRes = await agentApi.list();
+      const metadataDefaultAgentId =
+        typeof user?.metadata?.defaultAgentId === "string"
+          ? user.metadata.defaultAgentId
+          : localStorage.getItem("defaultAgentId");
 
       setAvailableAgents(agentsRes.agents || []);
-      setCurrentPreference(preferenceRes.default_agent_id);
+      setCurrentPreference(metadataDefaultAgentId || null);
       setSelectedAgent(
-        preferenceRes.default_agent_id || agentsRes.default_agent || "",
+        metadataDefaultAgentId || agentsRes.default_agent || "",
       );
     } catch (err) {
       const errorMsg = (err as Error).message || t("agentConfig.loadFailed");
@@ -41,7 +43,7 @@ export function UserAgentPreferencePanel() {
     } finally {
       setIsLoading(false);
     }
-  }, [t]);
+  }, [t, user?.metadata?.defaultAgentId]);
 
   useEffect(() => {
     loadData();
@@ -52,10 +54,16 @@ export function UserAgentPreferencePanel() {
 
     setIsSaving(true);
     try {
-      await agentConfigApi.setUserPreference(selectedAgent);
+      await authApi.updateMetadata({ defaultAgentId: selectedAgent });
+      localStorage.setItem("defaultAgentId", selectedAgent);
       setCurrentPreference(selectedAgent);
+      void refreshUser();
       toast.success(t("agentConfig.preferenceSaved"));
-      window.dispatchEvent(new CustomEvent("agent-preference-updated"));
+      window.dispatchEvent(
+        new CustomEvent("agent-preference-updated", {
+          detail: { agentId: selectedAgent },
+        }),
+      );
     } catch (err) {
       toast.error((err as Error).message || t("agentConfig.saveFailed"));
     } finally {

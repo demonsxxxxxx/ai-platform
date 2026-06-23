@@ -46,8 +46,6 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
   });
 
   const canReadMCP = hasAnyPermission([Permission.MCP_READ]);
-  const canReadSkills = hasAnyPermission([Permission.SKILL_READ]);
-  const canReadMarketplace = hasAnyPermission([Permission.MARKETPLACE_READ]);
   const canReadChannels = hasAnyPermission([Permission.CHANNEL_READ]);
   const canManageSettings = hasAnyPermission([Permission.SETTINGS_MANAGE]);
 
@@ -121,13 +119,13 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
       path: "/skills",
       label: t("nav.skills"),
       icon: Package,
-      show: canReadSkills,
+      show: true,
     },
     {
       path: "/marketplace",
       label: t("nav.marketplace"),
       icon: ShoppingBag,
-      show: canReadMarketplace,
+      show: true,
     },
     { path: "/mcp", label: t("nav.mcp"), icon: Server, show: canReadMCP },
     {

@@ -35,6 +35,7 @@ function applyUserMetadata(metadata?: {
   theme?: string;
   defaultThinkingLevel?: string;
   sidebarCollapsed?: string;
+  defaultAgentId?: string;
 }) {
   if (!metadata) return;
 
@@ -71,6 +72,15 @@ function applyUserMetadata(metadata?: {
     window.dispatchEvent(
       new CustomEvent("sidebar-collapsed-changed", {
         detail: metadata.sidebarCollapsed === "true",
+      }),
+    );
+  }
+
+  if (metadata.defaultAgentId) {
+    localStorage.setItem("defaultAgentId", metadata.defaultAgentId);
+    window.dispatchEvent(
+      new CustomEvent("agent-preference-updated", {
+        detail: { agentId: metadata.defaultAgentId },
       }),
     );
   }

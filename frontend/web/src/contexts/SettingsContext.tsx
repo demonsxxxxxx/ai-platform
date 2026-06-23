@@ -7,7 +7,6 @@ import {
   useEffect,
   useCallback,
 } from "react";
-import { useSettings } from "../hooks/useSettings";
 import { useAuth } from "../hooks/useAuth";
 import { modelPublicApi } from "../services/api/modelPublic";
 import type { SettingsResponse } from "../types";
@@ -49,21 +48,9 @@ const SettingsContext = createContext<SettingsContextValue | undefined>(
 );
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
-  const {
-    settings,
-    isLoading,
-    error,
-    savingKeys,
-    getBooleanSetting,
-    updateSetting,
-    resetSetting,
-    resetAllSettings,
-    clearError,
-    exportSettings,
-    importSettings,
-  } = useSettings();
-
   const { isAuthenticated } = useAuth();
+  const [error, setError] = useState<string | null>(null);
+  const savingKeys = useMemo(() => new Set<string>(), []);
 
   // 从 DB 的 model_configs 读取可用模型
   const [dbModels, setDbModels] = useState<AvailableModel[] | null>(null);
@@ -150,23 +137,36 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     );
   }, [adminDefaultModelId, availableModels]);
 
+  const unsupportedSettingsMutation = useCallback(async () => {
+    setError("Settings management requires the phase 2 admin projection.");
+    return false;
+  }, []);
+
+  const clearError = useCallback(() => {
+    setError(null);
+  }, []);
+
   const value: SettingsContextValue = {
-    settings,
-    enableSkills: getBooleanSetting("ENABLE_SKILLS"),
-    enableMemory: getBooleanSetting("ENABLE_MEMORY"),
+    settings: null,
+    enableSkills: true,
+    enableMemory: true,
     availableModels,
     defaultModel,
     pinnedModelIds: cleanedPinnedIds,
     togglePinnedModel,
-    isLoading,
+    isLoading: false,
     error,
     savingKeys,
-    updateSetting,
-    resetSetting,
-    resetAllSettings,
+    updateSetting: unsupportedSettingsMutation,
+    resetSetting: unsupportedSettingsMutation,
+    resetAllSettings: unsupportedSettingsMutation,
     clearError,
-    exportSettings,
-    importSettings,
+    exportSettings: () => {},
+    importSettings: async () => ({
+      success: false,
+      updatedCount: 0,
+      errors: ["Settings import requires the phase 2 admin projection."],
+    }),
   };
 
   return (

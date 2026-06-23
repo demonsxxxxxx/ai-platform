@@ -21,4 +21,5 @@ export interface RouteUnavailableConfig {
   title: string;
   description: string;
   surface: string;
+  details?: string[];
 }

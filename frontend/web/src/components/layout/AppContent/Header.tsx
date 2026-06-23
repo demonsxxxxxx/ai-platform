@@ -22,7 +22,7 @@ import { useAuth } from "../../../hooks/useAuth";
 import { useTheme } from "../../../contexts/ThemeContext";
 import { useSettingsContext } from "../../../contexts/SettingsContext";
 import { authApi } from "../../../services/api";
-import { notificationApi } from "../../../services/api/notification";
+import { notificationPublicApi } from "../../../services/api/notificationPublic";
 import { useSessionTitle } from "../../../hooks/useSessionTitle";
 import { NotificationDialog } from "../../notification/NotificationDialog";
 import { Permission } from "../../../types";
@@ -88,7 +88,7 @@ export function Header({
   }, []);
 
   const refreshNotifCount = useCallback(() => {
-    notificationApi
+    notificationPublicApi
       .getActive()
       .then((items) => setActiveNotifCount(items.length));
   }, []);

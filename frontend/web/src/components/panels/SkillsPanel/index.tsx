@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { useAuth } from "../../../hooks/useAuth";
 import { Permission } from "../../../types";
+import { isPermissionError } from "../../governance/frontendGovernanceState";
 import { ConfirmDialog } from "../../common/ConfirmDialog";
 import { useSkillsActions } from "./useSkillsActions";
 import { SkillsList } from "./SkillsList";
@@ -24,15 +25,15 @@ export function SkillsPanel({
   const { t } = useTranslation();
   const { hasAnyPermission } = useAuth();
 
-  const canRead = hasAnyPermission([Permission.SKILL_READ]);
   const canDelete = hasAnyPermission([Permission.SKILL_DELETE]);
   const canPublishByAuth = hasAnyPermission([Permission.MARKETPLACE_PUBLISH]);
-  const isGovernedUnavailable = governedUnavailable || !canRead;
   const skillFileWriteBacked = true;
   const skillImportBacked = true;
   const skillBatchWriteBacked = true;
 
-  const actions = useSkillsActions({ enabled: !isGovernedUnavailable });
+  const actions = useSkillsActions({ enabled: !governedUnavailable });
+  const isGovernedUnavailable =
+    governedUnavailable || isPermissionError(actions.error);
   const effectivePermissions = new Set(actions.effectivePermissions);
   const canWrite =
     !isGovernedUnavailable &&

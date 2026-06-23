@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { Info, CheckCircle, AlertTriangle, Wrench, X } from "lucide-react";
-import { notificationApi } from "../../services/api/notification";
+import { notificationPublicApi } from "../../services/api/notificationPublic";
 import type { Notification, NotificationType } from "../../types/notification";
 
 const TYPE_CONFIG: Record<
@@ -36,13 +36,13 @@ export function NotificationBanner() {
   const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    notificationApi.getActive().then(setNotifications);
+    notificationPublicApi.getActive().then(setNotifications);
   }, []);
 
   const handleDismiss = useCallback(async (id: string) => {
     setDismissedIds((prev) => new Set(prev).add(id));
     try {
-      await notificationApi.dismiss(id);
+      await notificationPublicApi.dismiss(id);
     } catch {
       // silently fail
     }

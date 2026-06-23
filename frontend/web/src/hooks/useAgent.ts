@@ -197,9 +197,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       const availableAgents = data.agents || [];
       setAgents(availableAgents);
       setAllowedModelIds(data.allowed_model_ids ?? null);
+      const metadataDefaultAgentId =
+        localStorage.getItem("defaultAgentId") || undefined;
       const nextAgentId = resolveAvailableAgentId(
         currentAgentRef.current,
-        data.default_agent,
+        metadataDefaultAgentId || data.default_agent,
         availableAgents,
       );
       if (nextAgentId !== currentAgentRef.current) {
@@ -234,7 +236,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
   // Listen for agent preference updates to refresh agents list and apply new default
   useEffect(() => {
-    const handleAgentPreferenceUpdated = async () => {
+    const handleAgentPreferenceUpdated = async (event: Event) => {
       // Fetch fresh agents data
       setAgentsLoading(true);
       try {
@@ -254,9 +256,16 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         // Apply the new default agent if user doesn't have an active session
         // (i.e., no current messages means it's a good time to switch)
         const hasActiveSession = messagesRef.current.length > 0;
+        const eventAgentId =
+          event instanceof CustomEvent &&
+          typeof event.detail?.agentId === "string"
+            ? event.detail.agentId
+            : undefined;
+        const metadataDefaultAgentId =
+          localStorage.getItem("defaultAgentId") || undefined;
         const nextAgentId = resolveAvailableAgentId(
           hasActiveSession ? currentAgentRef.current : "",
-          data.default_agent,
+          eventAgentId || metadataDefaultAgentId || data.default_agent,
           availableAgents,
         );
         if (nextAgentId !== currentAgentRef.current) {

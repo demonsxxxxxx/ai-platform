@@ -23,6 +23,7 @@ import {
 import { APP_TOASTER_CLASS_NAME } from "./components/layout/AppContent/appToastLayout";
 import { useAuth } from "./hooks/useAuth";
 import type { TabType } from "./components/layout/AppContent/types";
+import type { FrontendGovernanceState } from "./components/governance/frontendGovernanceState";
 
 const SharedPage = lazy(() =>
   import("./components/share/SharedPage").then((m) => ({
@@ -67,6 +68,68 @@ const NotFoundPage = lazy(() =>
     default: m.NotFoundPage,
   })),
 );
+
+type PhaseTwoTab = "users" | "settings" | "feedback" | "agents" | "notifications";
+
+interface PhaseTwoWorkbenchConfig {
+  state: FrontendGovernanceState;
+  titleKey: string;
+  descriptionKey: string;
+  capabilities: string[];
+}
+
+const phaseTwoWorkbenchConfigs: Record<PhaseTwoTab, PhaseTwoWorkbenchConfig> = {
+  users: {
+    state: "degraded",
+    titleKey: "workbench.phaseTwo.users.title",
+    descriptionKey: "workbench.phaseTwo.users.description",
+    capabilities: [
+      "workbench.phaseTwo.users.capabilities.directory",
+      "workbench.phaseTwo.users.capabilities.lifecycle",
+      "workbench.phaseTwo.users.capabilities.audit",
+    ],
+  },
+  settings: {
+    state: "degraded",
+    titleKey: "workbench.phaseTwo.settings.title",
+    descriptionKey: "workbench.phaseTwo.settings.description",
+    capabilities: [
+      "workbench.phaseTwo.settings.capabilities.publicProfile",
+      "workbench.phaseTwo.settings.capabilities.runtime",
+      "workbench.phaseTwo.settings.capabilities.secrets",
+    ],
+  },
+  feedback: {
+    state: "degraded",
+    titleKey: "workbench.phaseTwo.feedback.title",
+    descriptionKey: "workbench.phaseTwo.feedback.description",
+    capabilities: [
+      "workbench.phaseTwo.feedback.capabilities.capture",
+      "workbench.phaseTwo.feedback.capabilities.triage",
+      "workbench.phaseTwo.feedback.capabilities.audit",
+    ],
+  },
+  agents: {
+    state: "degraded",
+    titleKey: "workbench.phaseTwo.agents.title",
+    descriptionKey: "workbench.phaseTwo.agents.description",
+    capabilities: [
+      "workbench.phaseTwo.agents.capabilities.publicSelection",
+      "workbench.phaseTwo.agents.capabilities.roleAssignment",
+      "workbench.phaseTwo.agents.capabilities.adminProjection",
+    ],
+  },
+  notifications: {
+    state: "degraded",
+    titleKey: "workbench.phaseTwo.notifications.title",
+    descriptionKey: "workbench.phaseTwo.notifications.description",
+    capabilities: [
+      "workbench.phaseTwo.notifications.capabilities.banner",
+      "workbench.phaseTwo.notifications.capabilities.inbox",
+      "workbench.phaseTwo.notifications.capabilities.admin",
+    ],
+  },
+};
 
 function ChatPageSEO() {
   const { sessionId } = useParams<{ sessionId?: string }>();
@@ -201,7 +264,12 @@ function UsersPage() {
     description: "seo.users.description",
     path: "/users",
   });
-  return <PhaseTwoWorkbenchPage activeTab="users" />;
+  return (
+    <PhaseTwoWorkbenchPage
+      activeTab="users"
+      config={phaseTwoWorkbenchConfigs.users}
+    />
+  );
 }
 
 function RolesPage() {
@@ -219,7 +287,12 @@ function SettingsPage() {
     description: "seo.settings.description",
     path: "/settings",
   });
-  return <PhaseTwoWorkbenchPage activeTab="settings" />;
+  return (
+    <PhaseTwoWorkbenchPage
+      activeTab="settings"
+      config={phaseTwoWorkbenchConfigs.settings}
+    />
+  );
 }
 
 function MCPPage() {
@@ -237,7 +310,12 @@ function FeedbackPage() {
     description: "seo.feedback.description",
     path: "/feedback",
   });
-  return <PhaseTwoWorkbenchPage activeTab="feedback" />;
+  return (
+    <PhaseTwoWorkbenchPage
+      activeTab="feedback"
+      config={phaseTwoWorkbenchConfigs.feedback}
+    />
+  );
 }
 
 function ChannelsPage() {
@@ -255,7 +333,12 @@ function AgentsPage() {
     description: "seo.agents.description",
     path: "/agents",
   });
-  return <PhaseTwoWorkbenchPage activeTab="agents" />;
+  return (
+    <PhaseTwoWorkbenchPage
+      activeTab="agents"
+      config={phaseTwoWorkbenchConfigs.agents}
+    />
+  );
 }
 
 function ModelsPage() {
@@ -273,7 +356,12 @@ function NotificationsPage() {
     description: "seo.notifications.description",
     path: "/notifications",
   });
-  return <PhaseTwoWorkbenchPage activeTab="notifications" />;
+  return (
+    <PhaseTwoWorkbenchPage
+      activeTab="notifications"
+      config={phaseTwoWorkbenchConfigs.notifications}
+    />
+  );
 }
 
 function MemoryPage() {
@@ -314,8 +402,10 @@ function WorkbenchForbiddenPage({
 
 function PhaseTwoWorkbenchPage({
   activeTab,
+  config,
 }: {
-  activeTab: Exclude<TabType, "chat">;
+  activeTab: PhaseTwoTab;
+  config: PhaseTwoWorkbenchConfig;
 }) {
   const { t } = useTranslation();
 
@@ -324,12 +414,11 @@ function PhaseTwoWorkbenchPage({
       key={`${activeTab}-phase2`}
       activeTab={activeTab}
       routeUnavailable={{
-        state: "degraded",
-        title: t("workbench.phaseTwo.title", {
-          page: t(`nav.${activeTab}`),
-        }),
-        description: t("workbench.phaseTwo.description"),
+        state: config.state,
+        title: t(config.titleKey),
+        description: t(config.descriptionKey),
         surface: `${activeTab}-phase2-backend-projection`,
+        details: config.capabilities.map((key) => t(key)),
       }}
     />
   );
@@ -452,20 +541,7 @@ function App() {
             <Route
               path="/roles"
               element={
-                <ProtectedRoute
-                  permissions={[
-                    Permission.ROLE_MANAGE,
-                    Permission.SETTINGS_MANAGE,
-                    Permission.AGENT_ADMIN,
-                    Permission.ADMIN_STATUS,
-                  ]}
-                  fallbackComponent={
-                    <WorkbenchForbiddenPage
-                      activeTab="roles"
-                      permissionLabel={`${Permission.ROLE_MANAGE} / ${Permission.SETTINGS_MANAGE} / ${Permission.AGENT_ADMIN} / ${Permission.ADMIN_STATUS}`}
-                    />
-                  }
-                >
+                <ProtectedRoute>
                   <RolesPage />
                 </ProtectedRoute>
               }

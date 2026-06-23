@@ -35,12 +35,6 @@ export const modelPublicApi = {
     );
   },
 
-  async listProviders(): Promise<
-    { value: string; protocol: string; prefixes: string[] }[]
-  > {
-    return authFetch(`${API_BASE}/api/agent/models/providers/list`);
-  },
-
   async getPinnedModelIds(): Promise<string[]> {
     const user = await authFetch<{
       metadata?: { pinned_model_ids?: string[] };

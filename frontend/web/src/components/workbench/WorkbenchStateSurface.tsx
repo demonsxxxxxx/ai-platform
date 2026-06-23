@@ -7,6 +7,7 @@ import {
   LogIn,
   ShieldAlert,
   WifiOff,
+  Dot,
 } from "lucide-react";
 import type { FrontendGovernanceState } from "../governance/frontendGovernanceState";
 import { workbenchSurface } from "./workbenchSurface";
@@ -27,6 +28,7 @@ export interface WorkbenchStateSurfaceProps {
   icon?: ElementType;
   surface: string;
   actions?: ReactNode;
+  details?: string[];
   className?: string;
 }
 
@@ -37,6 +39,7 @@ export function WorkbenchStateSurface({
   icon,
   surface,
   actions,
+  details,
   className = "",
 }: WorkbenchStateSurfaceProps) {
   const { t } = useTranslation();
@@ -62,6 +65,24 @@ export function WorkbenchStateSurface({
       <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-600 dark:text-stone-300">
         {description ?? t(`frontendStates.${state}.description`)}
       </p>
+      {details && details.length > 0 ? (
+        <div className="mx-auto mt-5 grid max-w-md gap-2 text-left">
+          {details.map((detail) => (
+            <div
+              key={detail}
+              data-workbench-state-detail
+              className="flex items-start gap-2 rounded-lg bg-[var(--theme-bg-sidebar)] px-3 py-2 text-xs leading-5 text-slate-600 ring-1 ring-[var(--theme-border)] dark:bg-stone-950/70 dark:text-stone-300 dark:ring-stone-800"
+            >
+              <Dot
+                size={18}
+                strokeWidth={3}
+                className="mt-0.5 shrink-0 text-slate-400 dark:text-stone-500"
+              />
+              <span>{detail}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
       {actions && <div className="mt-4 flex justify-center">{actions}</div>}
     </section>
   );
