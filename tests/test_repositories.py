@@ -27,8 +27,10 @@ from app.repositories import (
     get_latest_authorized_executor_context_snapshot,
     list_context_share_snapshots_for_target_session,
     get_latest_tool_permission_decision,
+    get_tool_permission_request_by_id,
     get_run_identity,
     list_multi_agent_dispatch_candidate_run_ids,
+    list_tool_permission_inbox,
     list_run_events,
     list_run_artifacts,
     mark_multi_agent_dispatch_enqueue_failed,
@@ -2516,6 +2518,46 @@ async def test_decide_tool_permission_request_sets_decision_expiry():
         "run-a",
         "tpr-a",
     )
+
+
+@pytest.mark.asyncio
+async def test_list_tool_permission_inbox_filters_current_user_and_status():
+    conn = RecordingConnection()
+
+    rows = await list_tool_permission_inbox(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        status="pending",
+        limit=25,
+    )
+
+    sql, params = conn.calls[0]
+    assert "from run_tool_permission_requests" in sql
+    assert "where tenant_id = %s and user_id = %s" in sql
+    assert "(%s = 'all' or status = %s)" in sql
+    assert "order by created_at desc, id desc" in sql
+    assert params == ("tenant-a", "user-a", "pending", "pending", 25)
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_get_tool_permission_request_by_id_scopes_to_user_without_run():
+    conn = RecordingConnection()
+
+    row = await get_tool_permission_request_by_id(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        request_id="tpr-a",
+    )
+
+    sql, params = conn.calls[0]
+    assert "from run_tool_permission_requests" in sql
+    assert "where tenant_id = %s and user_id = %s and id = %s" in sql
+    assert "run_id =" not in sql
+    assert params == ("tenant-a", "user-a", "tpr-a")
+    assert row["id"] == "step-a"
 
 
 @pytest.mark.asyncio

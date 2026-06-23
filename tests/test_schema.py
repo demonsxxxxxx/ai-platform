@@ -318,6 +318,13 @@ def test_schema_declares_mcp_server_lifecycle_registry_and_credentials():
     assert "idx_mcp_servers_tenant_status" in schema
 
 
+def test_schema_declares_tool_permission_inbox_index():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "idx_run_tool_permission_requests_inbox" in schema
+    assert "on run_tool_permission_requests(tenant_id, user_id, status, created_at desc)" in schema
+
+
 def test_schema_seeds_builtin_skill_versions_without_exposing_internal_dependencies():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 

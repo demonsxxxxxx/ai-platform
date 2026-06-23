@@ -670,6 +670,8 @@ create table if not exists run_tool_permission_requests (
 
 create index if not exists idx_run_tool_permission_requests_run
   on run_tool_permission_requests(tenant_id, run_id, created_at desc);
+create index if not exists idx_run_tool_permission_requests_inbox
+  on run_tool_permission_requests(tenant_id, user_id, status, created_at desc);
 
 create table if not exists sandbox_leases (
   id text primary key,
