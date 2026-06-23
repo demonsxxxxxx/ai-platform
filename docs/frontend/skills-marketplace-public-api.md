@@ -144,3 +144,17 @@ Those follow-up routes require platform admin and then return
 `409 mcp_lifecycle_contract_not_backed`. Tool policy writes remain under
 `/api/ai/admin/tool-policies/*`; ordinary users do not gain MCP server CRUD,
 credential lifecycle, or write-tool bypass authority from this public route set.
+
+## Tool Permission Approval Inbox
+
+Backed current-user approval inbox routes:
+
+- `GET /api/ai/tool-permissions/inbox`
+- `POST /api/ai/tool-permissions/inbox/{request_id}/decision`
+
+The inbox is a durable projection of `run_tool_permission_requests` for the
+authenticated tenant/user. `status=pending`, `status=decided`, and `status=all`
+filter the current user's requests across runs without granting access to other
+users, other tenants, or raw executor payloads. Inbox decisions reuse the same
+exact run/request decision writer, event, audit, expiry, and replay-denial
+semantics as `/api/ai/runs/{run_id}/tool-permissions/{request_id}/decision`.
