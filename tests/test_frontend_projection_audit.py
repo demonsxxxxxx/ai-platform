@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+import time
 
 from tools.frontend_projection_audit import (
     LEGACY_ROUTE_POLICY_MAP,
@@ -56,6 +57,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     assert set(active_route_inventory) == {
         "ai_platform_projection_routes",
         "safe_public_projection_routes",
+        "safe_admin_projection_routes",
         "same_origin_compat_routes",
         "legacy_policy_required_routes",
         "legacy_route_policies",
@@ -73,13 +75,27 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         "/api/agent/models/available",
         "/api/github",
         "/api/marketplace",
+        "/api/notifications/active",
         "/api/skills",
     }
+    active_safe_admin_routes = {
+        route["route_prefix"]
+        for route in active_route_inventory["safe_admin_projection_routes"]
+    }
+    assert active_safe_admin_routes == set()
     all_safe_routes = {
         route["route_prefix"]
         for route in audit["route_inventory"]["safe_public_projection_routes"]
     }
     assert "/api/channels" in all_safe_routes
+    assert "/api/notifications/active" in all_safe_routes
+    assert "/api/settings" in all_safe_routes
+    assert "/api/users" in all_safe_routes
+    all_safe_admin_routes = {
+        route["route_prefix"]
+        for route in audit["route_inventory"]["safe_admin_projection_routes"]
+    }
+    assert "/api/notifications/admin" in all_safe_admin_routes
     assert "/api/mcp" in active_policy_routes
     assert "/api/env-vars" not in active_policy_routes
     assert "/api/agent/models" not in active_policy_routes
@@ -87,6 +103,9 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     assert "/api/marketplace" not in active_policy_routes
     assert "/api/skills" not in active_policy_routes
     assert "/api/channels" not in active_policy_routes
+    assert "/api/notifications/admin" not in active_policy_routes
+    assert "/api/settings" not in active_policy_routes
+    assert "/api/users" not in active_policy_routes
     assert active_policy_routes["/api/mcp"]["route_scope"] == "active_browser_entry"
     ordinary_routes = {
         route["route_prefix"]: route
@@ -147,6 +166,15 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     assert "redis_url" not in serialized
     assert "api_key=" not in serialized
     assert ".env" not in serialized
+
+
+def test_frontend_projection_audit_returns_without_scan_timeout():
+    started = time.perf_counter()
+
+    audit = build_frontend_projection_audit()
+
+    assert audit["schema_version"] == "ai-platform.frontend-projection-audit.v1"
+    assert time.perf_counter() - started < 25
 
 
 def test_frontend_projection_audit_detects_private_payload_consumption(tmp_path):
@@ -375,9 +403,10 @@ def test_frontend_projection_audit_tracks_permission_gated_active_legacy_routes(
     }
     assert "/api/skills" in active_safe_routes
     assert "/api/skills" not in active_routes
-    assert active_routes["/api/settings"]["active_browser_access"] == "ordinary_user_reachable"
-    assert set(ordinary_routes) == {"/api/settings"}
-    assert "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
+    assert "/api/settings" in active_safe_routes
+    assert "/api/settings" not in active_routes
+    assert ordinary_routes == {}
+    assert "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap" not in audit["open_gaps"]
 
 
 def test_frontend_projection_audit_treats_skills_as_safe_public_when_permission_gated(tmp_path):
@@ -567,8 +596,12 @@ def test_frontend_projection_audit_tracks_protected_route_lazy_panel_permissions
         for route in audit["active_browser_entry"]["route_inventory"]["legacy_route_policies"]
     }
 
-    assert active_routes["/api/settings"]["active_browser_access"] == "permission_gated"
-    assert active_routes["/api/settings"]["required_permissions"] == ["SETTINGS_MANAGE"]
+    active_safe_routes = {
+        route["route_prefix"]
+        for route in audit["active_browser_entry"]["route_inventory"]["safe_public_projection_routes"]
+    }
+    assert "/api/settings" in active_safe_routes
+    assert "/api/settings" not in active_routes
     assert audit["active_browser_entry"]["route_inventory"]["ordinary_user_reachable_legacy_route_policies"] == []
 
 
@@ -630,8 +663,12 @@ def test_frontend_projection_audit_tracks_protected_active_tab_panel_permissions
         for route in audit["active_browser_entry"]["route_inventory"]["legacy_route_policies"]
     }
 
-    assert active_routes["/api/settings"]["active_browser_access"] == "permission_gated"
-    assert active_routes["/api/settings"]["required_permissions"] == ["SETTINGS_MANAGE"]
+    active_safe_routes = {
+        route["route_prefix"]
+        for route in audit["active_browser_entry"]["route_inventory"]["safe_public_projection_routes"]
+    }
+    assert "/api/settings" in active_safe_routes
+    assert "/api/settings" not in active_routes
     assert audit["active_browser_entry"]["route_inventory"]["ordinary_user_reachable_legacy_route_policies"] == []
 
 
