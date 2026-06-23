@@ -88,27 +88,27 @@ test("phase 1C discovery routes are login reachable and fail closed inside pages
     ["/feedback", "FeedbackPage"],
     ["/notifications", "NotificationsPage"],
   ]) {
-    const phaseTwoRoutePattern = new RegExp(
+    const projectionRoutePattern = new RegExp(
       `path="${route}"[\\s\\S]{0,260}<ProtectedRoute>[\\s\\S]{0,220}<${page} \\/>[\\s\\S]{0,120}<\\/ProtectedRoute>`,
     );
-    const phaseTwoPagePattern = new RegExp(
-      `function ${page}\\(\\)[\\s\\S]{0,420}<PhaseTwoWorkbenchPage[\\s\\S]{0,180}activeTab="${route.slice(1)}"`,
+    const projectionPagePattern = new RegExp(
+      `function ${page}\\(\\)[\\s\\S]{0,260}<AppContent key="${route.slice(1)}" activeTab="${route.slice(1)}" \\/>`,
     );
     assert.match(
       app,
-      phaseTwoRoutePattern,
+      projectionRoutePattern,
       `${page} should remain login reachable without route-level business permission redirects`,
     );
     assert.match(
       app,
-      phaseTwoPagePattern,
-      `${page} should render the shared degraded Phase 2 workbench state instead of loading the legacy panel`,
+      projectionPagePattern,
+      `${page} should render the safe workbench projection panel instead of loading the legacy panel`,
     );
   }
 
   assert.doesNotMatch(app, /redirectTo="\/chat"/);
   assert.match(app, /function WorkbenchForbiddenPage/);
-  assert.match(app, /function PhaseTwoWorkbenchPage/);
+  assert.doesNotMatch(app, /function PhaseTwoWorkbenchPage/);
   assert.match(app, /routeUnavailable=\{\{/);
 });
 
@@ -428,7 +428,7 @@ test("model catalog route is a governed public-projection workbench page", () =>
   assert.doesNotMatch(modelCatalog, /Legacy surface quarantined/);
 });
 
-test("phase 2 workbench pages render concrete capability status instead of a thin placeholder", () => {
+test("workbench pages render concrete projection panels instead of thin placeholders", () => {
   const app = readFileSync(join(root, "src/App.tsx"), "utf8");
   const tabs = readFileSync(
     join(root, "src/components/layout/AppContent/TabContent.tsx"),
@@ -439,23 +439,18 @@ test("phase 2 workbench pages render concrete capability status instead of a thi
     "utf8",
   );
 
-  assert.match(app, /const phaseTwoWorkbenchConfigs/);
+  assert.doesNotMatch(app, /const phaseTwoWorkbenchConfigs/);
+  assert.doesNotMatch(app, /function PhaseTwoWorkbenchPage/);
   for (const tab of ["users", "settings", "feedback", "notifications"]) {
-    const configBlock =
-      app.match(new RegExp(`${tab}: \\{[\\s\\S]*?\\n  \\},`))?.[0] ?? "";
-    assert.match(configBlock, /details:/, `${tab} should publish route details`);
-    assert.match(
-      configBlock,
-      /capabilities:/,
-      `${tab} should publish route capability status`,
-    );
     assert.match(
       app,
-      new RegExp(
-        `activeTab="${tab}"[\\s\\S]{0,220}config=\\{phaseTwoWorkbenchConfigs\\.${tab}\\}`,
-      ),
+      new RegExp(`function ${tab[0].toUpperCase()}${tab.slice(1)}Page\\(\\)[\\s\\S]{0,260}<AppContent key="${tab}" activeTab="${tab}" \\/>`),
     );
   }
+  assert.match(tabs, /users:\s*WorkbenchUsersProjectionPanel/);
+  assert.match(tabs, /settings:\s*WorkbenchSettingsProjectionPanel/);
+  assert.match(tabs, /feedback:\s*WorkbenchFeedbackProjectionPanel/);
+  assert.match(tabs, /notifications:\s*WorkbenchNotificationsProjectionPanel/);
   assert.match(tabs, /const AgentDirectoryPanel = lazy/);
   assert.match(tabs, /agents:\s*AgentDirectoryPanel/);
   assert.doesNotMatch(app, /agents:[\s\S]{0,420}titleKey:\s*"workbench\.phaseTwo\.agents\.title"/);
@@ -488,6 +483,82 @@ test("phase 2 workbench pages render concrete capability status instead of a thi
     app,
     /公司用户、系统设置、反馈、通知和 Agent 管理仍等待对应服务能力开放/,
   );
+});
+
+test("workbench projection pages consume safe backend contracts instead of phase-two placeholders", () => {
+  const app = readFileSync(join(root, "src/App.tsx"), "utf8");
+  const tabs = readFileSync(
+    join(root, "src/components/layout/AppContent/TabContent.tsx"),
+    "utf8",
+  );
+  const projectionPages = readFileSync(
+    join(root, "src/components/workbench/WorkbenchProjectionPages.tsx"),
+    "utf8",
+  );
+  const workbenchApi = readFileSync(
+    join(root, "src/services/api/workbench.ts"),
+    "utf8",
+  );
+  const authTypes = readFileSync(join(root, "src/types/auth.ts"), "utf8");
+
+  for (const [route, page] of [
+    ["/users", "UsersPage"],
+    ["/settings", "SettingsPage"],
+    ["/feedback", "FeedbackPage"],
+    ["/notifications", "NotificationsPage"],
+  ]) {
+    assert.match(
+      app,
+      new RegExp(
+        `path="${route}"[\\s\\S]{0,260}<ProtectedRoute>[\\s\\S]{0,220}<${page} \\/>[\\s\\S]{0,120}<\\/ProtectedRoute>`,
+      ),
+    );
+    assert.match(
+      app,
+      new RegExp(
+        `function ${page}\\(\\)[\\s\\S]{0,260}<AppContent key="${route.slice(1)}" activeTab="${route.slice(1)}" \\/>`,
+      ),
+    );
+    assert.doesNotMatch(
+      app,
+      new RegExp(
+        `function ${page}\\(\\)[\\s\\S]{0,420}<PhaseTwoWorkbenchPage`,
+      ),
+    );
+  }
+
+  assert.match(tabs, /const WorkbenchUsersProjectionPanel = lazy/);
+  assert.match(tabs, /users:\s*WorkbenchUsersProjectionPanel/);
+  assert.match(tabs, /settings:\s*WorkbenchSettingsProjectionPanel/);
+  assert.match(tabs, /feedback:\s*WorkbenchFeedbackProjectionPanel/);
+  assert.match(tabs, /notifications:\s*WorkbenchNotificationsProjectionPanel/);
+
+  assert.match(projectionPages, /data-workbench-projection-page/);
+  assert.match(projectionPages, /resolveFrontendGovernanceState/);
+  assert.match(projectionPages, /WorkbenchStateSurface/);
+  assert.match(projectionPages, /GovernanceAvailabilityBadge/);
+  assert.match(projectionPages, /workbenchSurface/);
+  assert.match(projectionPages, /governance\.secret_material_projected/);
+  assert.match(projectionPages, /state === "degraded"/);
+  assert.match(projectionPages, /state === "forbidden"/);
+  assert.doesNotMatch(projectionPages, /roleApi|settingsApi|NotificationPanel|UsersPanel/);
+
+  for (const endpoint of [
+    "/api/users/",
+    "/api/settings/",
+    "/api/feedback/",
+    "/api/notifications/active",
+    "/api/notifications/admin",
+  ]) {
+    assert.ok(workbenchApi.includes(endpoint), endpoint);
+  }
+  assert.doesNotMatch(workbenchApi, /\/api\/ai\/admin|\/api\/admin\/settings/);
+
+  assert.match(authTypes, /USER_ADMIN = "user:admin"/);
+  assert.match(authTypes, /SETTINGS_READ = "settings:read"/);
+  assert.match(authTypes, /SETTINGS_ADMIN = "settings:admin"/);
+  assert.match(authTypes, /NOTIFICATION_READ = "notification:read"/);
+  assert.match(authTypes, /NOTIFICATION_ADMIN = "notification:admin"/);
 });
 
 test("agents route uses a public read-only directory instead of legacy config admin APIs", () => {

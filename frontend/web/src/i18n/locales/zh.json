@@ -2868,6 +2868,58 @@
         "title": "通知公告管理尚未开放"
       }
     },
+    "projections": {
+      "loading": {
+        "title": "正在加载投影",
+        "description": "正在确认该页面的后端工作台合同。"
+      },
+      "forbidden": {
+        "title": "投影受权限治理",
+        "description": "当前账号缺少 {{permission}}。页面入口保持可见，但后端合同会 fail-closed。"
+      },
+      "degraded": {
+        "title": "投影降级可读",
+        "description": "后端返回了安全投影，但治理元数据要求该页面保持受限模式。"
+      },
+      "governance": {
+        "projection": "投影：{{projection}} · 租户 {{tenant}} · 工作区 {{workspace}}",
+        "secretProjected": "后端报告存在密钥材料投影，前端已将页面降级处理。",
+        "safeReadTitle": "安全读取合同",
+        "safeReadDescription": "只读取该页面的公共工作台投影。",
+        "adminTitle": "管理员控制",
+        "adminDescription": "写操作继续受管理员权限和后端审计操作约束。",
+        "auditTitle": "审计与回滚",
+        "auditBacked": "该投影声明已具备审计或回滚支持。",
+        "auditUnavailable": "当前账号没有可用的写入审计路径。"
+      },
+      "users": {
+        "title": "用户",
+        "subtitle": "安全公司用户目录投影；生命周期变更继续受治理。",
+        "search": "搜索用户",
+        "empty": "当前投影中没有可见用户。"
+      },
+      "settings": {
+        "title": "设置",
+        "subtitle": "来自安全后端投影的个人与系统设置。",
+        "empty": "当前投影中没有可见设置。",
+        "redacted": "[已脱敏]"
+      },
+      "feedback": {
+        "title": "反馈",
+        "subtitle": "来自受治理工作台合同的反馈汇总台。",
+        "empty": "当前投影中没有可见反馈。",
+        "positive": "正向反馈",
+        "negative": "需要跟进",
+        "total": "总数",
+        "up": "正向",
+        "down": "负向"
+      },
+      "notifications": {
+        "title": "通知公告",
+        "subtitle": "运行时通知和受治理的公告投影。",
+        "empty": "当前投影中没有可见通知。"
+      }
+    },
     "governedRoute": {
       "contractDescription": "这里展示当前前端能安全承诺的页面状态、锁定能力和需要后端补齐的投影边界。",
       "contractTitle": "治理合同状态",

@@ -38,6 +38,26 @@ const LaunchpadPanel = lazy(() =>
     default: m.LaunchpadPanel,
   })),
 );
+const WorkbenchUsersProjectionPanel = lazy(() =>
+  import("../../workbench/WorkbenchProjectionPages").then((m) => ({
+    default: m.WorkbenchUsersProjectionPanel,
+  })),
+);
+const WorkbenchSettingsProjectionPanel = lazy(() =>
+  import("../../workbench/WorkbenchProjectionPages").then((m) => ({
+    default: m.WorkbenchSettingsProjectionPanel,
+  })),
+);
+const WorkbenchFeedbackProjectionPanel = lazy(() =>
+  import("../../workbench/WorkbenchProjectionPages").then((m) => ({
+    default: m.WorkbenchFeedbackProjectionPanel,
+  })),
+);
+const WorkbenchNotificationsProjectionPanel = lazy(() =>
+  import("../../workbench/WorkbenchProjectionPages").then((m) => ({
+    default: m.WorkbenchNotificationsProjectionPanel,
+  })),
+);
 
 const panelMap: Record<
   string,
@@ -46,11 +66,15 @@ const panelMap: Record<
   apps: LaunchpadPanel,
   skills: SkillsHubPanel,
   marketplace: SkillsHubPanel,
+  users: WorkbenchUsersProjectionPanel,
   roles: RolesPanel,
+  settings: WorkbenchSettingsProjectionPanel,
   mcp: MCPPanel,
+  feedback: WorkbenchFeedbackProjectionPanel,
   channels: ChannelImportPanel,
   agents: AgentDirectoryPanel,
   models: ModelCatalogPanel,
+  notifications: WorkbenchNotificationsProjectionPanel,
   memory: MemoryPanel,
 };
 

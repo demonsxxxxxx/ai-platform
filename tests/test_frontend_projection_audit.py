@@ -74,16 +74,19 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     assert active_safe_routes == {
         "/api/agent/models/available",
         "/api/channels",
+        "/api/feedback",
         "/api/github",
         "/api/marketplace",
         "/api/notifications/active",
         "/api/skills",
+        "/api/settings",
+        "/api/users",
     }
     active_safe_admin_routes = {
         route["route_prefix"]
         for route in active_route_inventory["safe_admin_projection_routes"]
     }
-    assert active_safe_admin_routes == set()
+    assert active_safe_admin_routes == {"/api/notifications/admin"}
     all_safe_routes = {
         route["route_prefix"]
         for route in audit["route_inventory"]["safe_public_projection_routes"]
