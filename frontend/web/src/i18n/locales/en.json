@@ -2644,6 +2644,32 @@
     "commandDockHint": "Type commands directly in the input; governed entries become chips.",
     "commandFirstTitle": "Start with a prompt, Skill, MCP tool, file, or context.",
     "defaultAgent": "Default",
+    "states": {
+      "logged-out": {
+        "title": "Sign in required",
+        "description": "Sign in with your company account before entering the AI Platform workbench."
+      },
+      "loading": {
+        "title": "Loading workbench",
+        "description": "Checking your account, permissions, and workspace state."
+      },
+      "no-workspace": {
+        "title": "No workspace assigned",
+        "description": "Your account does not have an available workspace yet. Ask an administrator to enable one."
+      },
+      "forbidden": {
+        "title": "Not available for this account",
+        "description": "This capability is governed by company permissions and requires administrator access."
+      },
+      "degraded": {
+        "title": "Readable with limited controls",
+        "description": "You can continue viewing this page, but some actions remain locked in the current state."
+      },
+      "ready": {
+        "title": "Ready",
+        "description": "This page is available for your account."
+      }
+    },
     "forbidden": {
       "description": "This page remains visible in the workbench, but your account is missing {{permission}}. Ask an administrator to grant access before using its controls.",
       "title": "{{page}} is governed"

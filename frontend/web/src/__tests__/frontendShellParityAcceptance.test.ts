@@ -120,10 +120,14 @@ test("roles route gates legacy role projection without broadening role writes", 
     "utf8",
   );
 
-  const rolesRoute = app.match(/path="\/roles"[\s\S]{0,320}<RolesPage \/>/)?.[0] ?? "";
+  const rolesRoute =
+    app.match(
+      /path="\/roles"[\s\S]*?<RolesPage \/>[\s\S]*?<\/ProtectedRoute>/,
+    )?.[0] ?? "";
   assert.match(rolesRoute, /permissions=\{\[Permission\.ROLE_MANAGE\]\}/);
   assert.match(rolesRoute, /fallbackComponent=\{/);
   assert.match(rolesRoute, /permissionLabel=\{Permission\.ROLE_MANAGE\}/);
+  assert.match(rolesRoute, /<WorkbenchForbiddenPage/);
   assert.match(authTypes, /ADMIN_STATUS = "admin:status"/);
   assert.match(rolesPanel, /const canManage = hasPermission\(Permission\.ROLE_MANAGE\);/);
   assert.doesNotMatch(
@@ -199,7 +203,7 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
   );
   assert.match(surface, /secondaryPanel:/);
   assert.match(rightPanel, /workbenchSurface\.secondaryPanel/);
-  assert.match(theme, /--theme-bg:\s*#f4f6f8;/);
+  assert.match(theme, /--theme-bg:\s*#f3f5f8;/);
   assert.match(theme, /--theme-bg-sidebar:\s*#edf1f5;/);
   assert.match(theme, /--theme-bg-card:\s*#ffffff;/);
   assert.doesNotMatch(theme, /--theme-bg:\s*#e8edf3;[\s\S]{0,80}--theme-bg-sidebar:\s*#e8edf3;/);
@@ -218,6 +222,54 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
     assert.doesNotMatch(source, /bg-stone-50(?!0)(?:\/\d+)?/, name);
     assert.doesNotMatch(source, /shadow-xl|shadow-2xl/, name);
   }
+});
+
+test("authenticated workbench adopts one dark-rail enterprise shell", () => {
+  const packageJson = JSON.parse(
+    readFileSync(join(root, "package.json"), "utf8"),
+  ) as { name?: string };
+  const main = readFileSync(join(root, "src/main.tsx"), "utf8");
+  const sidebar = readFileSync(
+    join(root, "src/components/panels/SessionSidebar.tsx"),
+    "utf8",
+  );
+  const sidebarList = readFileSync(
+    join(root, "src/components/panels/SidebarParts/SessionListContent.tsx"),
+    "utf8",
+  );
+  const sidebarRail = readFileSync(
+    join(root, "src/components/panels/SidebarParts/SidebarRail.tsx"),
+    "utf8",
+  );
+  const theme = readFileSync(join(root, "src/styles/base.css"), "utf8");
+  const components = readFileSync(
+    join(root, "src/styles/components.css"),
+    "utf8",
+  );
+  const enterpriseSelect = readFileSync(
+    join(root, "src/components/common/EnterpriseSelect.tsx"),
+    "utf8",
+  );
+  const settingsHook = readFileSync(join(root, "src/hooks/useSettings.ts"), "utf8");
+
+  assert.equal(packageJson.name, "ai-platform-frontend");
+  assert.doesNotMatch(main, /styles\/glass\.css/);
+  assert.match(components, /enterprise-field-control/);
+  assert.match(components, /enterprise-select-dropdown/);
+  assert.doesNotMatch(components, /glass-input|glass-select|--glass-/);
+  assert.match(enterpriseSelect, /function EnterpriseSelect/);
+  assert.doesNotMatch(enterpriseSelect, /GlassSelect|glass-/);
+  assert.match(settingsHook, /ai-platform-settings-\$\{date\}\.json/);
+  assert.doesNotMatch(settingsHook, /lamb-agent-settings/);
+  assert.match(theme, /--theme-sidebar-rail:\s*#111827;/);
+  assert.match(theme, /--theme-sidebar-panel:\s*#f6f8fb;/);
+  assert.match(theme, /--theme-bg:\s*#f3f5f8;/);
+  assert.match(sidebar, /bg-\[var\(--theme-sidebar-panel\)\]/);
+  assert.match(sidebarList, /bg-\[var\(--theme-sidebar-panel\)\]/);
+  assert.match(sidebarRail, /bg-\[var\(--theme-sidebar-rail\)\]/);
+  assert.match(sidebarRail, /text-slate-200/);
+  assert.doesNotMatch(sidebarList, /rounded-\[10px\]/);
+  assert.doesNotMatch(sidebarRail, /style=\{\{[\s\S]{0,160}backgroundColor/);
 });
 
 test("authenticated shell chrome avoids legacy playful branding accents", () => {
@@ -348,7 +400,7 @@ test("model catalog route is a governed public-projection workbench page", () =>
   assert.doesNotMatch(modelCatalog, /modelApi|agentConfigApi|roleApi/);
   assert.doesNotMatch(modelCatalog, /listProviders/);
   assert.doesNotMatch(modelCatalog, /providers\/list/);
-  assert.doesNotMatch(modelCatalog, /glass-card|glass-card-subtle|glass-input/);
+  assert.doesNotMatch(modelCatalog, /glass-card|glass-card-subtle|enterprise-field-control/);
   assert.doesNotMatch(modelCatalog, /Legacy surface quarantined/);
 });
 
@@ -370,6 +422,54 @@ test("phase 2 workbench pages render concrete capability status instead of a thi
     app,
     /公司用户、系统设置、反馈、通知和 Agent 管理仍等待对应服务能力开放/,
   );
+});
+
+test("frontend governance state machine exposes every authenticated page state", () => {
+  const stateMachine = readFileSync(
+    join(root, "src/components/governance/frontendGovernanceState.ts"),
+    "utf8",
+  );
+  const stateSurface = readFileSync(
+    join(root, "src/components/workbench/WorkbenchStateSurface.tsx"),
+    "utf8",
+  );
+
+  for (const state of [
+    "logged-out",
+    "loading",
+    "no-workspace",
+    "forbidden",
+    "degraded",
+    "ready",
+  ]) {
+    assert.match(stateMachine, new RegExp(`"${state}"`));
+    assert.match(stateSurface, new RegExp(`workbench\\.states\\.${state}`));
+  }
+  assert.match(stateMachine, /!isAuthenticated[\s\S]{0,120}"logged-out"/);
+  assert.match(stateMachine, /isLoading[\s\S]{0,120}"loading"/);
+  assert.match(stateMachine, /!hasWorkspace[\s\S]{0,120}"no-workspace"/);
+  assert.match(stateMachine, /!hasPermission[\s\S]{0,120}"forbidden"/);
+});
+
+test("skills and marketplace clients use only PR177 public contracts", () => {
+  const skillApi = readFileSync(join(root, "src/services/api/skill.ts"), "utf8");
+  const marketplaceApi = readFileSync(
+    join(root, "src/services/api/marketplace.ts"),
+    "utf8",
+  );
+
+  assert.match(skillApi, /const SKILLS_API = `\$\{API_BASE\}\/api\/skills`/);
+  assert.match(marketplaceApi, /const MARKETPLACE_API = `\$\{API_BASE\}\/api\/marketplace`/);
+  assert.match(skillApi, /\/batch\/toggle/);
+  assert.match(skillApi, /\/batch\/delete/);
+  assert.match(marketplaceApi, /\/install/);
+  assert.match(marketplaceApi, /\/update/);
+  for (const source of [skillApi, marketplaceApi]) {
+    assert.doesNotMatch(source, /\/api\/ai\/admin/);
+    assert.doesNotMatch(source, /\/api\/admin/);
+    assert.doesNotMatch(source, /\/admin\/skills|\/admin\/marketplace/);
+    assert.doesNotMatch(source, /lambchat/i);
+  }
 });
 
 test("production pwa updates auto-activate so old authenticated bundles cannot persist", () => {

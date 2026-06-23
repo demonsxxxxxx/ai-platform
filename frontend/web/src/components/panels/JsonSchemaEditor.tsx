@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { GlassSelect } from "../common/GlassSelect";
+import { EnterpriseSelect } from "../common/EnterpriseSelect";
 import { Plus, Trash2 } from "lucide-react";
 import type { JsonSchema, JsonSchemaField } from "../../types/settings";
 
@@ -52,7 +52,7 @@ function FieldInput({
         <label className="mb-1 block text-xs font-medium text-stone-600 dark:text-stone-400">
           {label}
         </label>
-        <GlassSelect
+        <EnterpriseSelect
           value={String(value)}
           disabled={disabled}
           onChange={onChange}

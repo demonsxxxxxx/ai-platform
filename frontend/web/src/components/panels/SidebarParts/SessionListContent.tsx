@@ -122,7 +122,7 @@ export function SessionListContent({
   const groupedUncategorized = groupSessionsByTime(uncategorizedSessions, t);
 
   return (
-    <>
+    <div className="flex h-full min-h-0 flex-col bg-[var(--theme-sidebar-panel)] text-slate-900 dark:text-stone-100">
       {/* Header */}
       <div className="flex items-center justify-between px-3 pt-3 pb-1 sm:px-4">
         <div className="flex h-7 items-center gap-2">
@@ -161,7 +161,7 @@ export function SessionListContent({
       <div className="flex flex-col gap-px px-2 py-2 space-y-1">
         <button
           onClick={onNewSession}
-          className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm font-medium focus:outline-none transition-colors group"
+            className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm font-medium focus:outline-none transition-colors group"
         >
           <MessageSquarePlus size={20} />
           <span className="flex-1 text-left">{t("sidebar.newChat")}</span>
@@ -172,7 +172,7 @@ export function SessionListContent({
 
         <button
           onClick={() => navigate("/apps")}
-          className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
         >
           <LayoutGrid size={20} />
           <span>{t("nav.apps")}</span>
@@ -180,7 +180,7 @@ export function SessionListContent({
 
         <button
           onClick={() => navigate("/skills")}
-          className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
         >
           <Package size={20} />
           <span>{t("nav.skills")}</span>
@@ -188,7 +188,7 @@ export function SessionListContent({
 
         <button
           onClick={() => navigate("/marketplace")}
-          className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
         >
           <ShoppingBag size={20} />
           <span>{t("nav.marketplace")}</span>
@@ -196,7 +196,7 @@ export function SessionListContent({
 
         <button
           onClick={() => navigate("/mcp")}
-          className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
         >
           <Server size={20} />
           <span>{t("featureMenu.mcpTools")}</span>
@@ -204,7 +204,7 @@ export function SessionListContent({
 
         <button
           onClick={onOpenSearch}
-          className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors group"
+          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors group"
         >
           <Search size={20} />
           <span className="flex-1 text-left">
@@ -245,7 +245,7 @@ export function SessionListContent({
           {!isProjectsCollapsed && (
             <button
               onClick={projectActions.onOpenNewProjectModal}
-              className="w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm text-stone-500 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800/60 transition-colors cursor-pointer"
+              className="w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm text-stone-500 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800/60 transition-colors cursor-pointer"
             >
               <FolderPlus size={20} />
               <span>{t("sidebar.newProject")}</span>
@@ -352,7 +352,7 @@ export function SessionListContent({
                       {Array.from({ length: 5 }).map((_, i) => (
                         <div
                           key={i}
-                          className="flex items-center gap-2 px-[9px] h-10 rounded-[10px]"
+                          className="flex items-center gap-2 px-[9px] h-10 rounded-lg"
                         >
                           <div
                             className="skeleton-line h-[13px] rounded-md flex-1"
@@ -472,6 +472,6 @@ export function SessionListContent({
           <ChevronsUpDown className="size-4 text-stone-400 shrink-0" />
         </div>
       </div>
-    </>
+    </div>
   );
 }

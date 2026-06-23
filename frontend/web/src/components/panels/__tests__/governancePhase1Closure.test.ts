@@ -122,11 +122,13 @@ test("admin feedback and notification panels use shared enterprise primitives", 
   const feedback = read("src/components/panels/FeedbackPanel.tsx");
   const notifications = read("src/components/panels/NotificationPanel.tsx");
   const componentsCss = read("src/styles/components.css");
+  const enterpriseSelect = read("src/components/common/EnterpriseSelect.tsx");
 
   for (const utility of [
     "enterprise-modal-backdrop",
     "enterprise-modal-shell",
     "enterprise-form-input",
+    "enterprise-field-control",
     "enterprise-icon-button",
     "enterprise-empty-state",
   ]) {
@@ -144,8 +146,11 @@ test("admin feedback and notification panels use shared enterprise primitives", 
   }
 
   assert.match(notifications, /enterprise-form-input/);
+  assert.match(notifications, /enterprise-divider/);
   assert.match(notifications, /enterprise-form-textarea/);
   assert.match(feedback, /enterprise-code-chip/);
+  assert.match(enterpriseSelect, /enterprise-select-dropdown/);
+  assert.doesNotMatch(enterpriseSelect, /GlassSelect|glass-/);
 });
 
 test("authenticated admin surfaces avoid legacy glass and heavy modal styling", () => {

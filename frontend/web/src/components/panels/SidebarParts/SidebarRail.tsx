@@ -11,7 +11,7 @@ import {
 import { useTranslation } from "react-i18next";
 
 const railBtn =
-  "sidebar-rail-btn workbench-rail-btn flex h-11 w-11 items-center justify-center rounded-lg transition-colors mx-1 touch-manipulation";
+  "sidebar-rail-btn workbench-rail-btn flex h-11 w-11 items-center justify-center rounded-lg text-slate-200 transition-colors mx-1 touch-manipulation";
 
 interface SidebarRailProps {
   user: { username?: string; avatar_url?: string } | null;
@@ -48,11 +48,7 @@ export function SidebarRail({
 
   return (
     <nav
-      className="workbench-rail absolute inset-0 flex h-full w-[--sidebar-rail-width] flex-col items-start border-r select-none transition-opacity duration-150 ease-[steps(1,end)] opacity-100 pointer-events-auto"
-      style={{
-        backgroundColor: "var(--theme-bg-sidebar)",
-        borderColor: "var(--theme-border)",
-      }}
+      className="workbench-rail absolute inset-0 flex h-full w-[--sidebar-rail-width] flex-col items-start border-r border-slate-950/20 bg-[var(--theme-sidebar-rail)] text-slate-200 select-none transition-opacity duration-150 ease-[steps(1,end)] opacity-100 pointer-events-auto"
       aria-label={t("sidebarView")}
     >
       {/* Expand button — default: app icon, hover: expand icon */}
@@ -62,7 +58,7 @@ export function SidebarRail({
           className={`${railBtn} group cursor-e-resize rtl:cursor-w-resize`}
           aria-label={t("sidebar.expandSidebar")}
         >
-          <span className="flex size-8 items-center justify-center rounded-lg bg-slate-900 text-white shadow-sm group-hover:hidden dark:bg-stone-100 dark:text-stone-950">
+          <span className="flex size-8 items-center justify-center rounded-lg bg-slate-100/10 text-white shadow-sm ring-1 ring-slate-100/10 group-hover:hidden">
             <Bot size={17} strokeWidth={2.2} aria-hidden="true" />
           </span>
           <svg
@@ -155,7 +151,7 @@ export function SidebarRail({
       {/* Profile avatar */}
       <div
         className="shrink-0 py-4 border-t flex flex-col items-center w-full"
-        style={{ borderColor: "var(--theme-border)" }}
+        style={{ borderColor: "rgba(255,255,255,0.1)" }}
       >
         <button
           onClick={onShowProfile}

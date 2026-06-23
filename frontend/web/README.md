@@ -3,18 +3,18 @@
 Status: source ownership migration for GitHub issue #17.
 
 This directory contains the React/Vite frontend source used as the current
-LambChat thin-shell basis for ai-platform. The 211 entry remains
+ai-platform authenticated workbench. The 211 entry remains
 `http://10.56.0.211:18001/`, served through
-`tools/serve_lambchat_thin_shell.py` with same-origin `/api/*` proxying to the
-ai-platform API. Importing this source into the repository does not create a new
+the repository static frontend service with same-origin `/api/*` proxying to the
+ai-platform API. Keeping this source in the repository does not create a new
 public frontend entry and does not close the full Agent Frontend V1 rollout
 gate by itself.
 
 ## Provenance
 
-The imported source is a snapshot of the 211 LambChat POC frontend source. On
-2026-06-06, these key files matched between the 211 source and the local import
-snapshot:
+The source was originally imported from the historical 211 proof-of-concept
+frontend. On 2026-06-06, these key files matched between that source and the
+local import snapshot:
 
 | File | SHA-256 |
 | --- | --- |
@@ -93,11 +93,10 @@ This import is intentionally source-first:
 
 - Backend scheduling, sandbox, auth/session, DB schema, and compose behavior
   are unchanged by the frontend import.
-- The current 211 thin-shell deployment remains the active runtime entry until
-  a frontend image is explicitly added and verified.
-- Legacy LambChat admin/model/MCP/persona/sandbox panels remain imported source
-  and require ai-platform projection and policy audit before ordinary-user
-  rollout.
+- The current 211 static frontend deployment remains the active runtime entry
+  until a frontend image is explicitly added and verified.
+- Historical admin/model/MCP/persona/sandbox source remains under ai-platform
+  projection and policy audit before ordinary-user rollout.
 - `pnpm run projection:audit` runs the repository-owned static projection audit
   and is the first step in `pnpm run ci:verify`; `pass_with_policy_gaps`
   continues to lint, type-check, and build while preserving G6/G9 rollout

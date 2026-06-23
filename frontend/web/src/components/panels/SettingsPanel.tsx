@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { AboutDialog } from "../common/AboutDialog";
 import { ConfirmDialog } from "../common/ConfirmDialog";
-import { GlassSelect } from "../common/GlassSelect";
+import { EnterpriseSelect } from "../common/EnterpriseSelect";
 import { LoadingSpinner } from "../common/LoadingSpinner";
 import { PanelLoadingState } from "../common/PanelLoadingState";
 import toast from "react-hot-toast";
@@ -557,7 +557,7 @@ export function SettingsPanel() {
           <div className="flex-shrink-0 border-b border-[var(--theme-border)] p-3 sm:p-4">
             {/* Mobile Category Selector */}
             <div className="mb-2 sm:hidden">
-              <GlassSelect
+              <EnterpriseSelect
                 value={activeCategory}
                 onChange={(v) => setActiveCategory(v as SettingCategory)}
                 options={CATEGORY_ORDER.map((category) => ({
@@ -714,7 +714,7 @@ export function SettingsPanel() {
                           {/* Edit Input */}
                           <div className="mt-3">
                             {isSelect && (
-                              <GlassSelect
+                              <EnterpriseSelect
                                 value={getDisplayValue(setting)}
                                 onChange={(v) =>
                                   handleValueChange(

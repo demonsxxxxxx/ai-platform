@@ -119,12 +119,17 @@ select:-webkit-autofill:active {
   --theme-primary-hover: #115e59;
   --theme-primary-light: #e1e8f0;
   --theme-ring: #0f766e;
-  --theme-bg: #f4f6f8;
+  --theme-bg: #f3f5f8;
   --theme-bg-card: #ffffff;
   --theme-bg-sidebar: #edf1f5;
+  --theme-sidebar-rail: #111827;
+  --theme-sidebar-panel: #f6f8fb;
   --theme-border: #e2e8f0;
   --theme-text: #0f172a;
   --theme-text-secondary: #64748b;
+  --theme-text-tertiary: #94a3b8;
+  --theme-text-quaternary: #cbd5e1;
+  --theme-hover: #e6ebf2;
   --theme-overlay: rgba(0, 0, 0, 0.4);
   --theme-overlay-strong: rgba(0, 0, 0, 0.5);
   --theme-shadow-sm: rgba(0, 0, 0, 0.04);
@@ -145,9 +150,14 @@ select:-webkit-autofill:active {
   --theme-bg: #151210; /* closer to sidebar */
   --theme-bg-card: #1c1917; /* stone-900 */
   --theme-bg-sidebar: #171412; /* stone-950 variant */
+  --theme-sidebar-rail: #111827;
+  --theme-sidebar-panel: #171412;
   --theme-border: #44403c; /* stone-700 */
   --theme-text: #f8fafc;
   --theme-text-secondary: #d6d3d1; /* stone-300 */
+  --theme-text-tertiary: #a8a29e;
+  --theme-text-quaternary: #78716c;
+  --theme-hover: #292524;
   --theme-overlay: rgba(0, 0, 0, 0.6);
   --theme-overlay-strong: rgba(0, 0, 0, 0.7);
   --theme-shadow-sm: rgba(0, 0, 0, 0.2);
