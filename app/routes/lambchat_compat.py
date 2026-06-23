@@ -213,6 +213,10 @@ UI_PERMISSIONS = [
     "marketplace:read",
     "marketplace:publish",
     "marketplace:admin",
+    "channel:read",
+    "channel:write",
+    "channel:delete",
+    "channel:admin",
 ]
 
 CHAT_STREAM_REPLAY_SKIP_EVENT_TYPES = {"assistant_delta"}

@@ -19,6 +19,7 @@ AI_USER_PERMISSIONS = [
     "session:write",
     "skill:read",
     "marketplace:read",
+    "channel:read",
     "artifact:download",
     "file:upload",
     "file:upload:document",
@@ -34,6 +35,9 @@ AI_ADMIN_PERMISSIONS = [
     "skill:admin",
     "marketplace:publish",
     "marketplace:admin",
+    "channel:write",
+    "channel:delete",
+    "channel:admin",
 ]
 
 

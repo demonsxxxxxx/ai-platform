@@ -88,6 +88,7 @@ AI_PLATFORM_ROUTE_PREFIXES = [
 ]
 SAFE_PUBLIC_ROUTE_PREFIXES = [
     "/api/agent/models/available",
+    "/api/channels",
     "/api/github",
     "/api/marketplace",
     "/api/skills",
@@ -114,7 +115,6 @@ LEGACY_POLICY_REQUIRED_ROUTE_PREFIXES = [
     "/api/admin/mcp",
     "/api/agent/config",
     "/api/agent/models",
-    "/api/channels",
     "/api/env-vars",
     "/api/mcp",
     "/api/memory",
@@ -148,13 +148,6 @@ LEGACY_ROUTE_POLICY_MAP: dict[str, dict[str, str]] = {
     },
     "/api/agent/models": {
         "domain": "model_gateway_secret_policy",
-        "governance_gate": "G6",
-        "ordinary_user_exposure": "fail_closed",
-        "admin_exposure": "same_tenant_admin_masked_projection_only",
-        "required_action": "remap_to_ai_platform_admin_projection_or_hide",
-    },
-    "/api/channels": {
-        "domain": "channel_secret_policy",
         "governance_gate": "G6",
         "ordinary_user_exposure": "fail_closed",
         "admin_exposure": "same_tenant_admin_masked_projection_only",
