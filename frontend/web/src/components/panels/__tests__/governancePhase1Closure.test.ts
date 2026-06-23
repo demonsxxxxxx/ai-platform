@@ -190,6 +190,41 @@ test("authenticated admin surfaces avoid legacy glass and heavy modal styling", 
   }
 });
 
+test("shared workbench support surfaces use enterprise tokens instead of legacy glass", () => {
+  const sources = new Map([
+    [
+      "PanelSkeletons",
+      read("src/components/skeletons/PanelSkeletons.tsx"),
+    ],
+    ["MemoryPanel", read("src/components/panels/MemoryPanel/index.tsx")],
+    ["ApprovalPanel", read("src/components/panels/ApprovalPanel.tsx")],
+    [
+      "ProviderSelect",
+      read("src/components/panels/AgentPanel/shared/ProviderSelect.tsx"),
+    ],
+  ]);
+
+  const forbiddenPatterns = [
+    /glass-card/,
+    /rounded-xl|rounded-2xl|rounded-3xl/,
+    /var\(--glass-/,
+    /\bbg-white\b/,
+    /\bdark:bg-stone-(?:700|800|900|950)\b/,
+    /\btext-stone-(?:700|800|900)\b/,
+  ];
+
+  for (const [name, source] of sources) {
+    assert.match(
+      source,
+      /panel-card|enterprise-form-input|enterprise-subtle-panel|btn-icon/,
+      `${name} should depend on the shared enterprise workbench vocabulary`,
+    );
+    for (const pattern of forbiddenPatterns) {
+      assert.doesNotMatch(source, pattern, name);
+    }
+  }
+});
+
 test("governed marketplace and MCP hooks fail closed before calling APIs", () => {
   const marketplaceHook = read("src/hooks/useMarketplace.ts");
   const mcpHook = read("src/hooks/useMcp.ts");

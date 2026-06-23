@@ -662,7 +662,7 @@ export function UsersPanel() {
 
       {/* Pagination */}
       {total > pageSize && (
-        <div className="glass-divider px-3 py-3 sm:px-6">
+        <div className="enterprise-divider border-t px-3 py-3 sm:px-6">
           <Pagination
             page={page}
             pageSize={pageSize}

@@ -268,13 +268,13 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
                 className="fixed inset-0 z-[100] sm:hidden"
                 onClick={() => setShowMenu(false)}
               >
-                <div className="fixed inset-0 bg-black/40 animate-fade-in" />
+                <div className="fixed inset-0 bg-slate-950/35 animate-fade-in" />
                 <div
                   ref={(el) => {
                     menuRef.current = el;
                     swipeRef.current = el;
                   }}
-                  className="fixed inset-x-0 bottom-0 z-[101] max-h-[85vh] overflow-y-auto rounded-t-lg shadow-[0_-8px_24px_rgba(18,38,63,0.12)] animate-slide-up-sheet"
+                  className="fixed inset-x-0 bottom-0 z-[101] max-h-[85vh] overflow-y-auto rounded-t-lg shadow-[0_8px_24px_rgba(18,38,63,0.12)] animate-slide-up-sheet"
                   style={{ backgroundColor: "var(--theme-bg-card)" }}
                   onClick={(e) => e.stopPropagation()}
                 >

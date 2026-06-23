@@ -94,7 +94,7 @@ function StatusPill({
       className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${
         active
           ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
-          : "bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-300"
+          : "bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]"
       }`}
     >
       {children}
@@ -402,7 +402,7 @@ export function MemoryPanel() {
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100">
+    <div className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-[var(--theme-text)]">
       <PanelHeader
         title={t("memory.title", "Memory")}
         subtitle={t("memory.workbench.subtitle")}

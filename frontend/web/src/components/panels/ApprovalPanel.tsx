@@ -49,7 +49,7 @@ function FormFieldRenderer({
   onInteract?: () => void;
 }) {
   const cls =
-    "w-full rounded-lg pl-3 pr-3 py-2 text-sm transition-all duration-150 focus:outline-none disabled:opacity-50 approval-input";
+    "enterprise-form-input approval-input disabled:opacity-50";
 
   const interact = () => onInteract?.();
 
@@ -408,7 +408,7 @@ export function ApprovalPanel({
               <button
                 onClick={goToPrev}
                 disabled={currentIndex === 0}
-                className="p-1.5 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] hover:bg-[var(--theme-primary-light)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-150"
+                className="btn-icon disabled:opacity-40 disabled:cursor-not-allowed"
                 style={{ color: "var(--theme-text)" }}
               >
                 <ChevronLeft size={16} />
@@ -416,7 +416,7 @@ export function ApprovalPanel({
               <button
                 onClick={goToNext}
                 disabled={currentIndex === approvals.length - 1}
-                className="p-1.5 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] hover:bg-[var(--theme-primary-light)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-150"
+                className="btn-icon disabled:opacity-40 disabled:cursor-not-allowed"
                 style={{ color: "var(--theme-text)" }}
               >
                 <ChevronRight size={16} />
@@ -426,7 +426,7 @@ export function ApprovalPanel({
         )}
 
         <div
-          className="approval-card animate-glass-enter"
+            className="approval-card panel-card animate-glass-enter"
           key={currentApproval.id}
         >
           {/* Header */}

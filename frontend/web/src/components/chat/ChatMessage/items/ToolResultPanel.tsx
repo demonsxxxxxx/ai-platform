@@ -263,7 +263,7 @@ export function ToolResultPanel({
 
   const content = (
     <div
-      className={`w-full flex flex-col bg-white dark:bg-[#1e1e1e] pointer-events-auto ${
+      className={`w-full flex flex-col bg-[var(--theme-bg-card)] text-[var(--theme-text)] dark:bg-stone-900 pointer-events-auto ${
         panelClass
           ? panelClass
           : isFullscreen
@@ -271,14 +271,14 @@ export function ToolResultPanel({
             : isMobile && mobileFillViewport
               ? "h-full"
               : isMobile
-                ? `max-h-[92vh] rounded-t-2xl overflow-hidden shadow-[0_-8px_40px_-8px_rgba(0,0,0,0.2)] dark:shadow-[0_-8px_40px_-8px_rgba(0,0,0,0.5)] ${
+                ? `max-h-[92vh] rounded-t-lg overflow-hidden shadow-[0_8px_24px_rgba(18,38,63,0.12)] ${
                     animateIn
                       ? "animate-[slide-up-fullscreen_280ms_cubic-bezier(0.16,1,0.3,1)_backwards]"
                       : ""
                   }`
                 : isCenter
-                  ? `overflow-hidden h-full relative transition-all duration-300 ease-out ${"sm:max-w-3xl lg:max-w-4xl xl:max-w-5xl sm:h-[80vh] sm:rounded-2xl sm:my-auto"}`
-                  : `h-full relative shadow-[-4px_0_24px_-4px_rgba(0,0,0,0.12)] dark:shadow-[-4px_0_24px_-4px_rgba(0,0,0,0.4)] ${
+                  ? `overflow-hidden h-full relative transition-all duration-300 ease-out ${"sm:max-w-3xl lg:max-w-4xl xl:max-w-5xl sm:h-[80vh] sm:rounded-lg sm:my-auto sm:border sm:border-[var(--theme-border)] sm:shadow-[0_8px_24px_rgba(18,38,63,0.12)]"}`
+                  : `h-full relative border-l border-[var(--theme-border)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] ${
                       animateIn
                         ? "animate-[slide-in-right_200ms_ease-out_backwards]"
                         : ""
@@ -344,7 +344,7 @@ export function ToolResultPanel({
 
       {/* Header section — sidebar mode always; center mode only when customHeader is provided; mobile always */}
       {(isSidebar || isMobile || (isCenter && hasCustomHeader)) && (
-        <div className="flex flex-col shrink-0 bg-gradient-to-r from-stone-50 to-white dark:from-stone-800 dark:to-[#292524]">
+        <div className="flex flex-col shrink-0 bg-[var(--theme-bg-sidebar)]">
           {/* Mobile drag handle */}
           {isMobile && (
             <div className="flex justify-center pt-2 pb-1">
@@ -366,7 +366,7 @@ export function ToolResultPanel({
                     e.stopPropagation();
                     effectiveOnBack();
                   }}
-                  className="flex items-center justify-center w-8 h-8 rounded-xl hover:bg-stone-100 dark:hover:bg-stone-800 transition-all duration-200 active:scale-95 shrink-0"
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 hover:bg-[var(--theme-bg-card)] active:opacity-90"
                   title={t("common.back", "Back")}
                 >
                   <BackIcon
@@ -378,7 +378,7 @@ export function ToolResultPanel({
 
               {/* Status + Icon */}
               <div
-                className={`flex items-center justify-center size-10 rounded-xl shrink-0 ${cfg.bg}`}
+                className={`flex size-10 shrink-0 items-center justify-center rounded-lg ${cfg.bg}`}
               >
                 {status === "loading" ? (
                   <LoadingSpinner
@@ -399,14 +399,14 @@ export function ToolResultPanel({
               {title && (
                 <div className="flex-1 min-w-0">
                   <h3
-                    className="font-medium text-sm text-stone-900 dark:text-stone-100 truncate"
+                    className="truncate text-sm font-medium text-[var(--theme-text)]"
                     title={title}
                   >
                     {title}
                   </h3>
                   {subtitle && (
                     <p
-                      className="text-xs text-stone-500 dark:text-stone-400 mt-0.5 truncate"
+                      className="mt-0.5 truncate text-xs text-[var(--theme-text-secondary)]"
                       title={subtitle}
                     >
                       {subtitle}
@@ -427,7 +427,7 @@ export function ToolResultPanel({
                       e.stopPropagation();
                       handleToggleViewMode();
                     }}
-                    className="flex items-center justify-center w-8 h-8 rounded-xl hover:bg-stone-100 dark:hover:bg-stone-800 transition-all duration-200 active:scale-95"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors duration-150 hover:bg-[var(--theme-bg-card)] active:opacity-90"
                     title={
                       isSidebar
                         ? t("documents.centerView", "Center view")
@@ -452,7 +452,7 @@ export function ToolResultPanel({
                       e.stopPropagation();
                       handleToggleFullscreen();
                     }}
-                    className="flex items-center justify-center w-8 h-8 rounded-xl hover:bg-stone-100 dark:hover:bg-stone-800 transition-all duration-200 active:scale-95"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors duration-150 hover:bg-[var(--theme-bg-card)] active:opacity-90"
                     title={
                       isFullscreen
                         ? t("documents.exitFullscreen", "退出全屏")
@@ -477,7 +477,7 @@ export function ToolResultPanel({
                       e.stopPropagation();
                       handleUserClose();
                     }}
-                    className="flex items-center justify-center w-8 h-8 rounded-xl hover:bg-stone-100 dark:hover:bg-stone-800 transition-all duration-200 active:scale-95"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors duration-150 hover:bg-[var(--theme-bg-card)] active:opacity-90"
                     aria-label="Close"
                     title={t("common.close", "Close")}
                   >
@@ -495,7 +495,7 @@ export function ToolResultPanel({
                     e.stopPropagation();
                     handleUserClose();
                   }}
-                  className="flex items-center justify-center w-8 h-8 rounded-xl hover:bg-stone-100 dark:hover:bg-stone-800 transition-all duration-200 active:scale-95 shrink-0"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 hover:bg-[var(--theme-bg-card)] active:opacity-90"
                   aria-label="Close"
                   title={t("common.close", "Close")}
                 >
@@ -516,7 +516,7 @@ export function ToolResultPanel({
                 e.stopPropagation();
                 effectiveOnBack();
               }}
-              className="flex items-center justify-center w-10 h-10 rounded-full bg-black/70 hover:bg-black/90 text-white shadow-lg transition-all duration-200 cursor-pointer"
+              className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-[var(--theme-text)] shadow-[0_8px_18px_rgba(18,38,63,0.08)] transition-colors duration-150 hover:bg-[var(--theme-bg-sidebar)]"
               aria-label="Back"
             >
               <BackIcon size={18} />
@@ -527,7 +527,7 @@ export function ToolResultPanel({
               e.stopPropagation();
               handleUserClose();
             }}
-            className="flex items-center justify-center w-10 h-10 rounded-full bg-black/70 hover:bg-black/90 text-white shadow-lg transition-all duration-200 cursor-pointer"
+            className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-[var(--theme-text)] shadow-[0_8px_18px_rgba(18,38,63,0.08)] transition-colors duration-150 hover:bg-[var(--theme-bg-sidebar)]"
             aria-label="Close"
           >
             <X size={18} />
@@ -559,12 +559,12 @@ export function ToolResultPanel({
           : isFullscreen
             ? "bg-transparent pointer-events-none"
             : isMobile && mobileFillViewport
-              ? "bg-black/50"
+              ? "bg-slate-950/35"
               : isMobile
-                ? "bg-black/50 items-end justify-end"
+                ? "bg-slate-950/35 items-end justify-end"
                 : isCenter
-                  ? "sm:items-center sm:justify-center bg-black/70"
-                  : "bg-black/50 sm:bg-transparent sm:pointer-events-none sm:items-end sm:justify-stretch"
+                  ? "sm:items-center sm:justify-center bg-slate-950/35"
+                  : "bg-slate-950/35 sm:bg-transparent sm:pointer-events-none sm:items-end sm:justify-stretch"
       }`}
       onClick={() => {
         if (!isResizing.current && !justResized.current) handleUserClose();

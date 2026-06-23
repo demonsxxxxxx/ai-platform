@@ -156,7 +156,7 @@ export function SkillsList({
         />
       </button>
       {isFilterOpen && (
-        <div className="skill-filter-dropdown absolute right-0 top-[calc(100%+0.5rem)] z-20 w-72 rounded-lg border p-3 shadow-lg">
+        <div className="skill-filter-dropdown absolute right-0 top-[calc(100%+0.5rem)] z-20 w-72 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
           <div className="mb-2 flex items-center justify-between">
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--theme-text-secondary)]">
               {t("adminMarketplace.tags")}
@@ -349,7 +349,7 @@ export function SkillsList({
 
       {/* Pagination */}
       {total > pageSize && (
-        <div className="glass-divider px-3 py-3 sm:px-4">
+        <div className="enterprise-divider border-t px-3 py-3 sm:px-4">
           <Pagination
             page={page}
             pageSize={pageSize}

@@ -184,7 +184,7 @@ export function AgentConfigPanel() {
 
       {/* Tab 切换 */}
       {canManageAgents && (
-        <div className="flex glass-divider px-2">
+        <div className="enterprise-divider flex border-t px-2">
           <button
             onClick={() => setActiveTab("global")}
             className={`px-4 py-3.5 text-sm font-medium transition-all relative ${

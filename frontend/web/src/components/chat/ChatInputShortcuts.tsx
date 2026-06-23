@@ -52,12 +52,9 @@ export function ShortcutDialog({
       className="fixed inset-0 z-[100] flex items-center justify-center"
       onClick={onClose}
     >
+      <div className="absolute inset-0 bg-slate-950/35" />
       <div
-        className="absolute inset-0"
-        style={{ backgroundColor: "rgba(0,0,0,0.4)" }}
-      />
-      <div
-        className="relative w-full max-w-md mx-4 rounded-2xl p-5 shadow-xl"
+        className="relative w-full max-w-md mx-4 rounded-lg p-5 shadow-[0_8px_24px_rgba(18,38,63,0.12)]"
         style={{
           backgroundColor: "var(--theme-bg-card)",
           border: "1px solid var(--theme-border)",

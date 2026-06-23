@@ -104,7 +104,7 @@ export function MessagePartRenderer({
       return (
         <div
           id={toolPartAnchorId}
-          className="scroll-mt-6 rounded-xl transition-[box-shadow] duration-300 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/80 data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(245,158,11,0.25)] dark:data-[external-navigation-highlighted=true]:ring-amber-400/60 dark:data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(251,191,36,0.12)]"
+          className="scroll-mt-6 rounded-lg transition-[box-shadow] duration-300 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/80 data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(245,158,11,0.25)] dark:data-[external-navigation-highlighted=true]:ring-amber-400/60 dark:data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(251,191,36,0.12)]"
         >
           <FileRevealItem
             args={part.args}
@@ -124,7 +124,7 @@ export function MessagePartRenderer({
       return (
         <div
           id={toolPartAnchorId}
-          className="scroll-mt-6 rounded-2xl transition-[box-shadow] duration-300 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/80 data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(245,158,11,0.25)] dark:data-[external-navigation-highlighted=true]:ring-amber-400/60 dark:data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(251,191,36,0.12)]"
+          className="scroll-mt-6 rounded-lg transition-[box-shadow] duration-300 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/80 data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(245,158,11,0.25)] dark:data-[external-navigation-highlighted=true]:ring-amber-400/60 dark:data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(251,191,36,0.12)]"
         >
           <ProjectRevealItem
             args={part.args}
@@ -302,7 +302,7 @@ export function MessagePartRenderer({
     return (
       <div
         className={clsx(
-          "flex items-center gap-2 px-4 py-2.5 rounded-xl",
+          "flex items-center gap-2 px-4 py-2.5 rounded-lg",
           "bg-amber-50 dark:bg-amber-950/40",
           "border border-amber-200/60 dark:border-amber-800/60",
           "text-amber-700 dark:text-amber-400",
@@ -411,10 +411,10 @@ function ArtifactCardItem({
         <FileIcon size={18} className={info.color} />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-medium text-stone-800 dark:text-stone-100">
+        <div className="truncate text-sm font-medium text-[var(--theme-text)]">
           {part.label}
         </div>
-        <div className="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-stone-500 dark:text-stone-400">
+        <div className="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-[var(--theme-text-secondary)]">
           <span className="truncate">{info.label}</span>
           <span className="shrink-0">{sizeText}</span>
         </div>
@@ -426,8 +426,8 @@ function ArtifactCardItem({
     <div
       className={clsx(
         "my-1 flex min-w-0 max-w-xl items-center gap-3 rounded-lg border px-3 py-2.5",
-        "border-stone-200/70 bg-white text-left shadow-sm",
-        "dark:border-stone-700/60 dark:bg-stone-800/50",
+        "border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-left shadow-[0_4px_12px_rgba(18,38,63,0.03)]",
+        "dark:bg-stone-900",
       )}
     >
       {body}
@@ -438,7 +438,7 @@ function ArtifactCardItem({
               type="button"
               onClick={handlePreview}
               aria-label={`${previewLabel} ${part.label}`}
-              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-stone-200 px-2 text-xs font-medium text-stone-600 transition-colors hover:bg-stone-50 dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800"
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--theme-border)] px-2 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
             >
               <Eye size={13} />
               <span>{previewLabel}</span>
@@ -449,7 +449,7 @@ function ArtifactCardItem({
               type="button"
               onClick={handleDownload}
               aria-label={`${t("chat.message.download")} ${part.label}`}
-              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-stone-200 px-2 text-xs font-medium text-stone-600 transition-colors hover:bg-stone-50 dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800"
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--theme-border)] px-2 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
             >
               <Download size={13} />
               <span>{t("chat.message.download")}</span>
@@ -504,7 +504,7 @@ function ToolPermissionCardItem({
   return (
     <div
       className={clsx(
-        "my-1 max-w-xl rounded-lg border px-3 py-3 shadow-sm",
+        "my-1 max-w-xl rounded-lg border px-3 py-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)]",
         "border-amber-200/80 bg-amber-50/80 text-stone-800",
         "dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-stone-100",
       )}
@@ -536,7 +536,7 @@ function ToolPermissionCardItem({
       </div>
 
       {isDecided ? (
-        <div className="mt-3 rounded-md border border-stone-200/70 bg-white/70 px-2.5 py-1.5 text-xs font-medium text-stone-700 dark:border-stone-700/60 dark:bg-stone-900/30 dark:text-stone-200">
+        <div className="mt-3 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2.5 py-1.5 text-xs font-medium text-[var(--theme-text)] dark:bg-stone-900">
           Decision: {formatPermissionDecision(decision)}
         </div>
       ) : (
@@ -593,8 +593,8 @@ function PermissionDecisionButton({
         "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors",
         "disabled:cursor-not-allowed disabled:opacity-60",
         isDeny
-          ? "border-red-200 bg-white text-red-700 hover:bg-red-50 dark:border-red-900/60 dark:bg-stone-900/50 dark:text-red-300 dark:hover:bg-red-950/30"
-          : "border-stone-200 bg-white text-stone-700 hover:bg-stone-50 dark:border-stone-700 dark:bg-stone-900/50 dark:text-stone-200 dark:hover:bg-stone-800",
+          ? "border-red-200 bg-[var(--theme-bg-card)] text-red-700 hover:bg-red-50 dark:border-red-900/60 dark:bg-stone-900 dark:text-red-300 dark:hover:bg-red-950/30"
+          : "border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-[var(--theme-text)] hover:bg-[var(--theme-bg-sidebar)] dark:bg-stone-900",
       )}
     >
       {isDeny ? <XCircle size={14} /> : <CheckCircle size={14} />}

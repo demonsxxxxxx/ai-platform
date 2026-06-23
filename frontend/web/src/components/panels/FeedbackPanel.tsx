@@ -546,7 +546,7 @@ export function FeedbackPanel() {
 
       {/* Pagination */}
       {total > limit && (
-        <div className="glass-divider bg-transparent px-4 py-4 sm:px-6">
+        <div className="enterprise-divider border-t bg-transparent px-4 py-4 sm:px-6">
           <Pagination
             page={Math.floor(skip / limit) + 1}
             pageSize={limit}

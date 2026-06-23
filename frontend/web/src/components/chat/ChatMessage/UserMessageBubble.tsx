@@ -10,7 +10,7 @@ import { getUserMessageActionButtonVisibilityClass } from "./userMessageBubbleSt
 import { copyToClipboard } from "../../../utils/clipboard";
 import { useSessionImageGallery } from "./sessionImageGallery";
 
-// User message bubble component (with copy function, supports markdown rendering) - ChatGPT style
+// User message bubble component (with copy function, supports markdown rendering)
 export function UserMessageBubble({
   content,
   attachments,
@@ -77,10 +77,10 @@ export function UserMessageBubble({
           {/* Message bubble */}
           {hasContent && (
             <div
-              className="rounded-3xl max-w-full px-5 py-2 shadow-sm border"
+              className="max-w-full rounded-lg border px-5 py-2 shadow-[0_4px_12px_rgba(18,38,63,0.03)]"
               style={{
                 background:
-                  "linear-gradient(135deg, var(--theme-primary-light), var(--theme-bg))",
+                  "color-mix(in srgb, var(--theme-primary-light) 42%, var(--theme-bg-card))",
                 borderColor: "var(--theme-border)",
               }}
             >
@@ -101,8 +101,7 @@ export function UserMessageBubble({
                 className={clsx(
                   "p-1.5 rounded-lg transition-colors duration-200",
                   getUserMessageActionButtonVisibilityClass(isLastMessage),
-                  "hover:bg-black/5 dark:hover:bg-white/5",
-                  "text-stone-400 dark:text-stone-500 hover:text-stone-600 dark:hover:text-stone-300",
+                  "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]",
                 )}
                 title={t("chat.message.fork")}
               >
@@ -114,10 +113,10 @@ export function UserMessageBubble({
               className={clsx(
                 "p-1.5 rounded-lg transition-colors duration-200",
                 getUserMessageActionButtonVisibilityClass(isLastMessage),
-                "hover:bg-black/5 dark:hover:bg-white/5",
+                "hover:bg-[var(--theme-bg-sidebar)]",
                 copied
                   ? "text-emerald-500 dark:text-emerald-400"
-                  : "text-stone-400 dark:text-stone-500 hover:text-stone-600 dark:hover:text-stone-300",
+                  : "text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)]",
               )}
               title={copied ? t("chat.message.copied") : t("chat.message.copy")}
             >

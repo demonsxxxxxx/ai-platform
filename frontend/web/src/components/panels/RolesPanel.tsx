@@ -776,7 +776,7 @@ export function RolesPanel() {
 
       {/* Pagination */}
       {total > pageSize && (
-        <div className="glass-divider px-3 py-3 sm:px-4">
+        <div className="enterprise-divider border-t px-3 py-3 sm:px-4">
           <Pagination
             page={page}
             pageSize={pageSize}

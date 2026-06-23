@@ -57,7 +57,7 @@ function UserMessageSkeleton({
           className={`flex flex-col items-stretch max-w-[90%] ${msg.bubble}`}
         >
           <div
-            className="rounded-3xl w-full px-5 py-2 shadow-sm border"
+            className="rounded-lg w-full px-5 py-2 shadow-sm border"
             style={{
               background:
                 "linear-gradient(135deg, var(--theme-primary-light), var(--theme-bg))",
@@ -79,7 +79,7 @@ function UserMessageSkeleton({
 /** Shared assistant message skeleton block */
 function AssistantMessageSkeleton() {
   return (
-    <div className="group w-full animate-[fade-in_0.3s_ease-out] scroll-mt-6 rounded-2xl">
+    <div className="group w-full animate-[fade-in_0.3s_ease-out] scroll-mt-6 rounded-lg">
       <div className="mx-auto flex flex-col max-w-3xl lg:max-w-4xl xl:max-w-5xl px-4 sm:px-6">
         {/* Avatar + name */}
         <div className="mb-3 flex items-center gap-2">
@@ -165,17 +165,17 @@ export function ChatSkeletonMessagesOnly({ count = 3 }: { count?: number }) {
   );
 }
 
-/** Shared ChatInput skeleton — matches real ChatInput rounded-3xl container + toolbar */
+/** Shared ChatInput skeleton — matches real ChatInput container + toolbar */
 function ChatInputSkeleton() {
   return (
     <div className="shrink-0 sm:px-4 pb-3 pt-1">
       <div className="mx-auto max-w-3xl lg:max-w-4xl xl:max-w-5xl px-2">
         <div
-          className="flex flex-col w-full rounded-3xl px-1 border"
+          className="flex flex-col w-full rounded-lg px-1 border"
           style={{
             backgroundColor: "var(--theme-bg-card)",
             borderColor: "var(--theme-border)",
-            boxShadow: "0 2px 12px rgba(0,0,0,0.06)",
+            boxShadow: "0 4px 12px rgba(18,38,63,0.03)",
           }}
         >
           {/* Textarea area */}
@@ -230,11 +230,11 @@ export function WelcomeSkeleton() {
       {/* ChatInput skeleton */}
       <div className="welcome-input w-full sm:max-w-[44rem] md:max-w-[46rem] lg:max-w-[48rem] xl:max-w-[50rem] 2xl:max-w-[52rem]">
         <div
-          className="flex flex-col w-full rounded-3xl px-1 border"
+          className="flex flex-col w-full rounded-lg px-1 border"
           style={{
             backgroundColor: "var(--theme-bg-card)",
             borderColor: "var(--theme-border)",
-            boxShadow: "0 2px 12px rgba(0,0,0,0.06)",
+            boxShadow: "0 4px 12px rgba(18,38,63,0.03)",
           }}
         >
           {/* Textarea area */}

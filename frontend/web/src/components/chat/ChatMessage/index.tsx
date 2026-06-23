@@ -82,7 +82,7 @@ interface ChatMessageProps {
   showFeedbackAndShareActions?: boolean;
 }
 
-// Token usage statistics button component - ChatGPT style
+// Token usage statistics button component
 function TokenDetailsButton({
   tokenUsage,
   duration,
@@ -134,22 +134,21 @@ function TokenDetailsButton({
         className={clsx(
           "p-1.5 rounded-md transition-colors",
           !isLastMessage && "opacity-0 group-hover:opacity-100",
-          "hover:bg-stone-200 dark:hover:bg-stone-700",
-          "text-stone-400 dark:text-stone-500 hover:text-stone-600 dark:hover:text-stone-300",
+          "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]",
         )}
         title={t("chat.message.tokenUsage")}
       >
         <Info size={16} />
       </button>
-      {/* ChatGPT style details popup */}
+      {/* Token details popup */}
       {showDetails && (
         <div
           ref={popupRef}
           className={clsx(
             "absolute bottom-full mb-2 left-0 z-50",
-            "min-w-[150px] w-auto p-3 rounded-lg shadow-lg",
-            "bg-white dark:bg-stone-800",
-            "border border-stone-200 dark:border-stone-700",
+            "min-w-[150px] w-auto p-3 rounded-lg shadow-[0_12px_28px_rgba(15,23,42,0.12)]",
+            "bg-[var(--theme-bg-card)] dark:bg-stone-900",
+            "border border-[var(--theme-border)]",
             "whitespace-nowrap",
           )}
         >
@@ -188,7 +187,7 @@ function TokenDetailsButton({
                     </span>
                   </div>
                 )}
-                <div className="flex justify-between gap-4 border-t border-stone-100 dark:border-stone-700 pt-1.5 mt-1.5 text-amber-600 dark:text-amber-400">
+                <div className="mt-1.5 flex justify-between gap-4 border-t border-[var(--theme-border)] pt-1.5 text-amber-600 dark:text-amber-400">
                   <span className="">{t("chat.message.tokenTotal")}</span>
                   <span className="font-medium">
                     {tokenUsage.total_tokens?.toLocaleString()} tokens
@@ -197,21 +196,21 @@ function TokenDetailsButton({
               </>
             )}
             {duration && (
-              <div className="flex justify-between gap-4 border-t border-stone-100 dark:border-stone-700 pt-1.5 mt-1.5">
-                <span className="text-stone-500 dark:text-stone-400">
+              <div className="mt-1.5 flex justify-between gap-4 border-t border-[var(--theme-border)] pt-1.5">
+                <span className="text-[var(--theme-text-secondary)]">
                   {t("chat.message.duration")}
                 </span>
-                <span className="text-stone-700 dark:text-stone-200 font-medium">
+                <span className="font-medium text-[var(--theme-text)]">
                   {(duration / 1000).toFixed(2)}s
                 </span>
               </div>
             )}
             {modelDetails && (
-              <div className="flex justify-between gap-4 border-t border-stone-100 dark:border-stone-700 pt-1.5 mt-1.5">
-                <span className="text-stone-500 dark:text-stone-400">
+              <div className="mt-1.5 flex justify-between gap-4 border-t border-[var(--theme-border)] pt-1.5">
+                <span className="text-[var(--theme-text-secondary)]">
                   {t("chat.message.model")}
                 </span>
-                <span className="flex items-center gap-1.5 text-stone-700 dark:text-stone-200 font-medium">
+                <span className="flex items-center gap-1.5 font-medium text-[var(--theme-text)]">
                   <ModelIconImg
                     model={modelDetails.value}
                     provider={modelDetails.provider}
@@ -222,11 +221,11 @@ function TokenDetailsButton({
               </div>
             )}
             {timestamp && (
-              <div className="flex justify-between gap-4 border-t border-stone-100 dark:border-stone-700 pt-1.5 mt-1.5">
-                <span className="text-stone-500 dark:text-stone-400">
+              <div className="mt-1.5 flex justify-between gap-4 border-t border-[var(--theme-border)] pt-1.5">
+                <span className="text-[var(--theme-text-secondary)]">
                   {t("chat.message.startTime")}
                 </span>
-                <span className="text-stone-700 dark:text-stone-200 font-medium tabular-nums">
+                <span className="font-medium tabular-nums text-[var(--theme-text)]">
                   {formatDateTime(timestamp)}
                 </span>
               </div>
@@ -271,7 +270,7 @@ export const ChatMessage = memo(function ChatMessage({
         id={createMessageAnchorId(message.id)}
         data-outline-anchor="true"
         data-outline-id={createMessageAnchorId(message.id)}
-        className="scroll-mt-6 rounded-2xl transition-[box-shadow] duration-300 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/75 data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(245,158,11,0.2)] dark:data-[external-navigation-highlighted=true]:ring-amber-400/55 dark:data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(251,191,36,0.1)] space-y-3 sm:space-y-4"
+        className="space-y-3 scroll-mt-6 rounded-lg transition-[box-shadow] duration-300 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/75 data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(245,158,11,0.2)] dark:data-[external-navigation-highlighted=true]:ring-amber-400/55 dark:data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(251,191,36,0.1)] sm:space-y-4"
       >
         <UserMessageBubble
           content={message.content}
@@ -303,7 +302,7 @@ export const ChatMessage = memo(function ChatMessage({
       id={createMessageAnchorId(message.id)}
       data-outline-anchor="true"
       data-outline-id={createMessageAnchorId(message.id)}
-      className="group w-full animate-[fade-in_0.3s_ease-out] scroll-mt-6 rounded-2xl transition-[background-color,box-shadow] duration-300 data-[external-navigation-highlighted=true]:bg-amber-50/85 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/60 dark:data-[external-navigation-highlighted=true]:bg-amber-500/12 dark:data-[external-navigation-highlighted=true]:ring-amber-400/50"
+      className="group w-full animate-[fade-in_0.3s_ease-out] scroll-mt-6 rounded-lg transition-[background-color,box-shadow] duration-300 data-[external-navigation-highlighted=true]:bg-amber-50/85 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/60 dark:data-[external-navigation-highlighted=true]:bg-amber-500/12 dark:data-[external-navigation-highlighted=true]:ring-amber-400/50"
     >
       <div className="mx-auto flex flex-col max-w-3xl lg:max-w-4xl xl:max-w-5xl px-4 sm:px-6">
         {/* Content */}
@@ -424,8 +423,7 @@ export const ChatMessage = memo(function ChatMessage({
               className={clsx(
                 "p-1.5 rounded-md transition-colors",
                 !isLastMessage && "opacity-0 group-hover:opacity-100",
-                "hover:bg-stone-200 dark:hover:bg-stone-700",
-                "text-stone-400 dark:text-stone-500 hover:text-stone-600 dark:hover:text-stone-300",
+                "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]",
               )}
               title={t("chat.message.copy")}
             >
@@ -437,8 +435,7 @@ export const ChatMessage = memo(function ChatMessage({
                 className={clsx(
                   "p-1.5 rounded-md transition-colors",
                   !isLastMessage && "opacity-0 group-hover:opacity-100",
-                  "hover:bg-stone-200 dark:hover:bg-stone-700",
-                  "text-stone-400 dark:text-stone-500 hover:text-stone-600 dark:hover:text-stone-300",
+                  "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]",
                 )}
                 title={t("chat.message.fork")}
               >

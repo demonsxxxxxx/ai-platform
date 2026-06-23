@@ -191,7 +191,7 @@ export const ProviderSelect = React.memo(function ProviderSelect({
                   }`}
                 >
                   <ModelIconImg model={slug} provider={slug} size={18} />
-                  <span className="text-stone-700 dark:text-stone-200">
+                  <span className="text-[var(--theme-text)]">
                     {label(slug)}
                   </span>
                   <span className="text-xs text-stone-400 dark:text-stone-500 ml-auto font-mono">
