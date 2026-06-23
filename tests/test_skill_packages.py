@@ -37,6 +37,21 @@ def test_parse_skill_package_zip_requires_skill_md_and_matching_name():
     assert base64.b64decode(parsed.files[0]["content_base64"]) == skill_md().encode("utf-8")
 
 
+def test_parse_skill_package_zip_can_infer_skill_name():
+    content = package_zip(
+        {
+            "SKILL.md": skill_md(),
+            "references/guide.md": "review guide",
+        }
+    )
+
+    parsed = parse_skill_package_zip(content)
+
+    assert parsed.skill_id == "qa-file-reviewer"
+    assert parsed.description == "Review Word documents."
+    assert [item["relative_path"] for item in parsed.files] == ["SKILL.md", "references/guide.md"]
+
+
 def test_parse_skill_package_zip_rejects_path_escape():
     content = package_zip(
         {

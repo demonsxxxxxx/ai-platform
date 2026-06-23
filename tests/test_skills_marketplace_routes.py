@@ -1,5 +1,7 @@
 import base64
 from contextlib import asynccontextmanager
+import io
+import zipfile
 
 from fastapi.testclient import TestClient
 
@@ -37,6 +39,29 @@ def _source_with_files() -> dict[str, object]:
             },
         ],
     }
+
+
+def _package_zip(files: dict[str, str | bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, content in files.items():
+            archive.writestr(name, content)
+    return buffer.getvalue()
+
+
+def _skill_package_zip(description: str = "Imported review skill.") -> bytes:
+    return _package_zip(
+        {
+            "SKILL.md": (
+                "---\n"
+                "name: qa-file-reviewer\n"
+                f"description: {description}\n"
+                "---\n\n"
+                "# Imported QA\n"
+            ),
+            "references/imported.md": "Imported guide",
+        }
+    )
 
 
 def _catalog_rows() -> list[dict[str, object]]:
@@ -569,30 +594,139 @@ def test_public_skill_batch_routes_map_to_tenant_availability(monkeypatch):
     ]
 
 
-def test_public_skill_import_and_direct_marketplace_routes_are_permission_gated_then_fail_closed(monkeypatch):
+def test_public_skill_zip_preview_projects_package_without_persistence(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+
+    denied = client.post(
+        "/api/skills/upload/preview",
+        files={"file": ("qa-file-reviewer.zip", _skill_package_zip(), "application/zip")},
+        headers=headers("skill:read,marketplace:read"),
+    )
+    assert denied.status_code == 403
+    assert denied.json()["detail"] == "missing_permission:skill:write"
+
+    response = client.post(
+        "/api/skills/upload/preview",
+        files={"file": ("qa-file-reviewer.zip", _skill_package_zip(), "application/zip")},
+        headers=headers("skill:write"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["skill_count"] == 1
+    assert body["skills"] == [
+        {
+            "name": "qa-file-reviewer",
+            "description": "Imported review skill.",
+            "file_count": 2,
+            "files": ["SKILL.md", "references/imported.md"],
+            "already_exists": True,
+        }
+    ]
+    assert not any(name == "upsert_file" for name, _ in calls)
+    assert not any(name == "audit" for name, _ in calls)
+
+
+def test_public_skill_zip_import_checks_permission_before_missing_file_validation(monkeypatch):
     install_route_fakes(monkeypatch)
     client = TestClient(create_app())
 
-    zip_preview_denied = client.post(
+    preview_denied = client.post(
         "/api/skills/upload/preview",
         headers=headers("skill:read,marketplace:read"),
     )
-    assert zip_preview_denied.status_code == 403
-    assert zip_preview_denied.json()["detail"] == "missing_permission:skill:write"
+    assert preview_denied.status_code == 403
+    assert preview_denied.json()["detail"] == "missing_permission:skill:write"
 
-    zip_preview = client.post(
+    upload_denied = client.post(
+        "/api/skills/upload",
+        headers=headers("skill:read,marketplace:read"),
+    )
+    assert upload_denied.status_code == 403
+    assert upload_denied.json()["detail"] == "missing_permission:skill:write"
+
+    preview_missing = client.post(
         "/api/skills/upload/preview",
         headers=headers("skill:write"),
     )
-    assert zip_preview.status_code == 409
-    assert zip_preview.json()["detail"] == "skill_import_contract_not_backed"
+    assert preview_missing.status_code == 400
+    assert preview_missing.json()["detail"] == "skill_package_required"
 
-    zip_upload = client.post(
+    upload_missing = client.post(
         "/api/skills/upload",
         headers=headers("skill:write"),
     )
-    assert zip_upload.status_code == 409
-    assert zip_upload.json()["detail"] == "skill_import_contract_not_backed"
+    assert upload_missing.status_code == 400
+    assert upload_missing.json()["detail"] == "skill_package_required"
+
+
+def test_public_skill_zip_upload_persists_package_as_user_overlay(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/skills/upload",
+        files={"file": ("qa-file-reviewer.zip", _skill_package_zip(), "application/zip")},
+        headers=headers("skill:write,marketplace:read"),
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "message": "Skills imported",
+        "created": [{"name": "qa-file-reviewer", "file_count": 2}],
+        "errors": [],
+        "skill_count": 1,
+    }
+
+    public_file_response = client.get(
+        "/api/skills/qa-file-reviewer/files/references/imported.md",
+        headers=headers(),
+    )
+    assert public_file_response.status_code == 200
+    assert public_file_response.json()["content"] == "Imported guide"
+
+    marketplace_files_response = client.get("/api/marketplace/qa-file-reviewer/files", headers=headers())
+    assert marketplace_files_response.status_code == 200
+    assert marketplace_files_response.json() == {"files": ["SKILL.md", "references/guide.md"]}
+
+    upsert_paths = [payload["file_path"] for name, payload in calls if name == "upsert_file"]
+    assert upsert_paths == ["SKILL.md", "references/imported.md"]
+    assert any(
+        name == "set_status"
+        and payload == {"tenant_id": "default", "skill_id": "qa-file-reviewer", "status": "active"}
+        for name, payload in calls
+    )
+    assert any(
+        name == "audit"
+        and payload["action"] == "skill.public.zip_imported"
+        and payload["target_id"] == "qa-file-reviewer"
+        and payload["payload_json"]["file_count"] == 2
+        for name, payload in calls
+    )
+
+
+def test_public_skill_zip_upload_rejects_unknown_skill_without_persistence(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+
+    unknown_package = _package_zip(
+        {
+            "SKILL.md": "---\nname: unknown-skill\ndescription: Unknown skill.\n---\n\n# Unknown\n",
+        }
+    )
+
+    response = client.post(
+        "/api/skills/upload",
+        files={"file": ("unknown-skill.zip", unknown_package, "application/zip")},
+        headers=headers("skill:write"),
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "skill_not_found"
+    assert not any(name == "upsert_file" for name, _ in calls)
+
+
+def test_public_skill_github_import_and_direct_marketplace_routes_are_permission_gated_then_fail_closed(monkeypatch):
+    install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
 
     github_preview_denied = client.post(
         "/api/github/preview",
