@@ -1,5 +1,7 @@
 import base64
 from contextlib import asynccontextmanager
+import io
+import zipfile
 
 from fastapi.testclient import TestClient
 
@@ -39,6 +41,29 @@ def _source_with_files() -> dict[str, object]:
     }
 
 
+def _package_zip(files: dict[str, str | bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, content in files.items():
+            archive.writestr(name, content)
+    return buffer.getvalue()
+
+
+def _skill_package_zip(description: str = "Imported review skill.") -> bytes:
+    return _package_zip(
+        {
+            "SKILL.md": (
+                "---\n"
+                "name: qa-file-reviewer\n"
+                f"description: {description}\n"
+                "---\n\n"
+                "# Imported QA\n"
+            ),
+            "references/imported.md": "Imported guide",
+        }
+    )
+
+
 def _catalog_rows() -> list[dict[str, object]]:
     return [
         {
@@ -68,6 +93,7 @@ def install_route_fakes(monkeypatch) -> list[tuple[str, dict[str, object]]]:
         yield FakeConnection()
 
     calls: list[tuple[str, dict[str, object]]] = []
+    overlays: dict[tuple[str, str, str, str], dict[str, object]] = {}
 
     async def fake_list(conn, *, tenant_id, include_disabled=False):
         calls.append(
@@ -82,11 +108,87 @@ def install_route_fakes(monkeypatch) -> list[tuple[str, dict[str, object]]]:
         )
         return _catalog_rows()
 
+    async def fake_list_overlays(conn, *, tenant_id, user_id, skill_ids, include_content=False):
+        calls.append(
+            (
+                "list_overlays",
+                {
+                    "tenant_id": tenant_id,
+                    "user_id": user_id,
+                    "skill_ids": list(skill_ids),
+                    "include_content": include_content,
+                },
+            )
+        )
+        return [
+            dict(row)
+            for (row_tenant, row_user, skill_id, _), row in overlays.items()
+            if row_tenant == tenant_id and row_user == user_id and skill_id in set(skill_ids)
+        ]
+
+    async def fake_upsert_file(conn, *, tenant_id, user_id, skill_id, file_path, content_base64, size_bytes):
+        calls.append(
+            (
+                "upsert_file",
+                {
+                    "tenant_id": tenant_id,
+                    "user_id": user_id,
+                    "skill_id": skill_id,
+                    "file_path": file_path,
+                    "content_base64": content_base64,
+                    "size_bytes": size_bytes,
+                },
+            )
+        )
+        row = {
+            "skill_id": skill_id,
+            "file_path": file_path,
+            "content_base64": content_base64,
+            "size_bytes": size_bytes,
+            "status": "active",
+        }
+        overlays[(tenant_id, user_id, skill_id, file_path)] = row
+        return dict(row)
+
+    async def fake_delete_file(conn, *, tenant_id, user_id, skill_id, file_path):
+        calls.append(
+            (
+                "delete_file",
+                {
+                    "tenant_id": tenant_id,
+                    "user_id": user_id,
+                    "skill_id": skill_id,
+                    "file_path": file_path,
+                },
+            )
+        )
+        row = {
+            "skill_id": skill_id,
+            "file_path": file_path,
+            "content_base64": "",
+            "size_bytes": 0,
+            "status": "deleted",
+        }
+        overlays[(tenant_id, user_id, skill_id, file_path)] = row
+        return dict(row)
+
     async def fake_set_status(conn, *, tenant_id, skill_id, status):
         calls.append(("set_status", {"tenant_id": tenant_id, "skill_id": skill_id, "status": status}))
         row = dict(_catalog_rows()[0])
         row["status"] = status
         return row
+
+    async def fake_ensure_user(conn, *, tenant_id, user_id, display_name=None):
+        calls.append(
+            (
+                "ensure_user",
+                {
+                    "tenant_id": tenant_id,
+                    "user_id": user_id,
+                    "display_name": display_name,
+                },
+            )
+        )
 
     async def fake_audit(conn, **kwargs):
         calls.append(("audit", kwargs))
@@ -95,7 +197,11 @@ def install_route_fakes(monkeypatch) -> list[tuple[str, dict[str, object]]]:
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr(skills_marketplace, "transaction", fake_transaction)
     monkeypatch.setattr(skills_marketplace.repositories, "list_public_skill_catalog", fake_list)
+    monkeypatch.setattr(skills_marketplace.repositories, "list_user_skill_file_overlays", fake_list_overlays)
+    monkeypatch.setattr(skills_marketplace.repositories, "upsert_user_skill_file", fake_upsert_file)
+    monkeypatch.setattr(skills_marketplace.repositories, "delete_user_skill_file", fake_delete_file)
     monkeypatch.setattr(skills_marketplace.repositories, "set_public_skill_enabled", fake_set_status)
+    monkeypatch.setattr(skills_marketplace.repositories, "ensure_user", fake_ensure_user)
     monkeypatch.setattr(skills_marketplace.repositories, "append_audit_log", fake_audit)
     return calls
 
@@ -272,8 +378,8 @@ def test_public_skill_write_routes_map_missing_skill_to_stable_json_404(monkeypa
     assert delete_response.json()["detail"] == "workbench_skill_not_found"
 
 
-def test_public_skill_file_write_routes_are_permission_gated_then_fail_closed_409(monkeypatch):
-    install_route_fakes(monkeypatch)
+def test_public_skill_file_write_routes_persist_user_overlay(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
     client = TestClient(create_app())
 
     bodyless_put_denied = client.put(
@@ -296,8 +402,43 @@ def test_public_skill_file_write_routes_are_permission_gated_then_fail_closed_40
         json={"content": "updated"},
         headers=headers("skill:write"),
     )
-    assert put_response.status_code == 409
-    assert put_response.json()["detail"] == "skill_file_write_contract_not_backed"
+    assert put_response.status_code == 200
+    assert put_response.json() == {
+        "skill_name": "qa-file-reviewer",
+        "file_path": "SKILL.md",
+        "message": "Skill file saved",
+        "size": len("updated"),
+    }
+
+    public_file_response = client.get(
+        "/api/skills/qa-file-reviewer/files/SKILL.md",
+        headers=headers(),
+    )
+    assert public_file_response.status_code == 200
+    assert public_file_response.json()["content"] == "updated"
+
+    marketplace_file_response = client.get(
+        "/api/marketplace/qa-file-reviewer/files/SKILL.md",
+        headers=headers(),
+    )
+    assert marketplace_file_response.status_code == 200
+    assert "Review Word documents." in marketplace_file_response.json()["content"]
+
+    assert any(name == "upsert_file" and payload["file_path"] == "SKILL.md" for name, payload in calls)
+    assert calls.index(next(call for call in calls if call[0] == "ensure_user")) < calls.index(
+        next(call for call in calls if call[0] == "upsert_file")
+    )
+    list_overlay_calls = [payload for name, payload in calls if name == "list_overlays"]
+    assert any(payload["include_content"] is True for payload in list_overlay_calls)
+    assert any(
+        name == "audit" and payload["action"] == "skill.public.file_upsert" and payload["target_id"] == "qa-file-reviewer"
+        for name, payload in calls
+    )
+
+
+def test_public_skill_file_delete_marks_user_overlay_deleted(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
 
     delete_denied = client.delete(
         "/api/skills/qa-file-reviewer/files/SKILL.md",
@@ -306,12 +447,123 @@ def test_public_skill_file_write_routes_are_permission_gated_then_fail_closed_40
     assert delete_denied.status_code == 403
     assert delete_denied.json()["detail"] == "missing_permission:skill:delete"
 
-    delete_response = client.delete(
-        "/api/skills/qa-file-reviewer/files/SKILL.md",
-        headers=headers("skill:delete"),
+    delete_response = client.delete("/api/skills/qa-file-reviewer/files/SKILL.md", headers=headers("skill:delete"))
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {
+        "skill_name": "qa-file-reviewer",
+        "file_path": "SKILL.md",
+        "message": "Skill file deleted",
+        "size": None,
+    }
+
+    detail_response = client.get("/api/skills/qa-file-reviewer", headers=headers())
+    assert detail_response.status_code == 200
+    assert detail_response.json()["files"] == ["references/guide.md"]
+
+    public_file_response = client.get("/api/skills/qa-file-reviewer/files/SKILL.md", headers=headers())
+    assert public_file_response.status_code == 404
+    assert public_file_response.json()["detail"] == "skill_file_not_found"
+
+    marketplace_file_response = client.get(
+        "/api/marketplace/qa-file-reviewer/files/SKILL.md",
+        headers=headers(),
     )
-    assert delete_response.status_code == 409
-    assert delete_response.json()["detail"] == "skill_file_delete_contract_not_backed"
+    assert marketplace_file_response.status_code == 200
+    assert "Review Word documents." in marketplace_file_response.json()["content"]
+
+    assert any(name == "delete_file" and payload["file_path"] == "SKILL.md" for name, payload in calls)
+    assert calls.index(next(call for call in calls if call[0] == "ensure_user")) < calls.index(
+        next(call for call in calls if call[0] == "delete_file")
+    )
+    assert any(
+        name == "audit" and payload["action"] == "skill.public.file_delete" and payload["target_id"] == "qa-file-reviewer"
+        for name, payload in calls
+    )
+
+
+def test_public_skill_overlay_is_scoped_to_principal_user_and_tenant(monkeypatch):
+    install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+
+    write_response = client.put(
+        "/api/skills/qa-file-reviewer/files/SKILL.md",
+        json={"content": "user a overlay"},
+        headers=headers("skill:write"),
+    )
+    assert write_response.status_code == 200
+
+    same_user_response = client.get("/api/skills/qa-file-reviewer/files/SKILL.md", headers=headers())
+    assert same_user_response.status_code == 200
+    assert same_user_response.json()["content"] == "user a overlay"
+
+    other_user_headers = {
+        **headers(),
+        "X-AI-User-ID": "other-user",
+    }
+    other_user_response = client.get("/api/skills/qa-file-reviewer/files/SKILL.md", headers=other_user_headers)
+    assert other_user_response.status_code == 200
+    assert "Review Word documents." in other_user_response.json()["content"]
+
+    other_tenant_headers = {
+        **headers(),
+        "X-AI-Tenant-ID": "tenant-b",
+    }
+    other_tenant_response = client.get("/api/skills/qa-file-reviewer/files/SKILL.md", headers=other_tenant_headers)
+    assert other_tenant_response.status_code == 200
+    assert "Review Word documents." in other_tenant_response.json()["content"]
+
+
+def test_public_skill_overlay_keeps_fallback_skill_md_when_snapshot_has_no_files(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+
+    async def fake_list_without_files(conn, *, tenant_id, include_disabled=False):
+        calls.append(("list_without_files", {"tenant_id": tenant_id, "include_disabled": include_disabled}))
+        row = dict(_catalog_rows()[0])
+        row["source"] = {"kind": "builtin", "tags": ["document"]}
+        return [row]
+
+    monkeypatch.setattr(
+        "app.routes.skills_marketplace.repositories.list_public_skill_catalog",
+        fake_list_without_files,
+    )
+    client = TestClient(create_app())
+
+    put_response = client.put(
+        "/api/skills/qa-file-reviewer/files/notes.md",
+        json={"content": "user notes"},
+        headers=headers("skill:write"),
+    )
+    assert put_response.status_code == 200
+
+    detail_response = client.get("/api/skills/qa-file-reviewer", headers=headers())
+    assert detail_response.status_code == 200
+    assert detail_response.json()["files"] == ["SKILL.md", "notes.md"]
+
+    fallback_response = client.get("/api/skills/qa-file-reviewer/files/SKILL.md", headers=headers())
+    assert fallback_response.status_code == 200
+    assert "# qa-file-reviewer" in fallback_response.json()["content"]
+
+
+def test_public_skill_file_write_rejects_oversized_overlay_before_persistence(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+    from app.routes import skills_marketplace
+
+    monkeypatch.setattr(
+        skills_marketplace,
+        "get_settings",
+        lambda: Settings(frontend_poc_auth_enabled=True, public_skill_file_overlay_max_bytes=4),
+    )
+    client = TestClient(create_app())
+
+    response = client.put(
+        "/api/skills/qa-file-reviewer/files/SKILL.md",
+        json={"content": "too-large"},
+        headers=headers("skill:write"),
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"] == "skill_file_too_large"
+    assert not any(name == "upsert_file" for name, _ in calls)
 
 
 def test_public_skill_batch_routes_map_to_tenant_availability(monkeypatch):
@@ -342,30 +594,139 @@ def test_public_skill_batch_routes_map_to_tenant_availability(monkeypatch):
     ]
 
 
-def test_public_skill_import_and_direct_marketplace_routes_are_permission_gated_then_fail_closed(monkeypatch):
+def test_public_skill_zip_preview_projects_package_without_persistence(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+
+    denied = client.post(
+        "/api/skills/upload/preview",
+        files={"file": ("qa-file-reviewer.zip", _skill_package_zip(), "application/zip")},
+        headers=headers("skill:read,marketplace:read"),
+    )
+    assert denied.status_code == 403
+    assert denied.json()["detail"] == "missing_permission:skill:write"
+
+    response = client.post(
+        "/api/skills/upload/preview",
+        files={"file": ("qa-file-reviewer.zip", _skill_package_zip(), "application/zip")},
+        headers=headers("skill:write"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["skill_count"] == 1
+    assert body["skills"] == [
+        {
+            "name": "qa-file-reviewer",
+            "description": "Imported review skill.",
+            "file_count": 2,
+            "files": ["SKILL.md", "references/imported.md"],
+            "already_exists": True,
+        }
+    ]
+    assert not any(name == "upsert_file" for name, _ in calls)
+    assert not any(name == "audit" for name, _ in calls)
+
+
+def test_public_skill_zip_import_checks_permission_before_missing_file_validation(monkeypatch):
     install_route_fakes(monkeypatch)
     client = TestClient(create_app())
 
-    zip_preview_denied = client.post(
+    preview_denied = client.post(
         "/api/skills/upload/preview",
         headers=headers("skill:read,marketplace:read"),
     )
-    assert zip_preview_denied.status_code == 403
-    assert zip_preview_denied.json()["detail"] == "missing_permission:skill:write"
+    assert preview_denied.status_code == 403
+    assert preview_denied.json()["detail"] == "missing_permission:skill:write"
 
-    zip_preview = client.post(
+    upload_denied = client.post(
+        "/api/skills/upload",
+        headers=headers("skill:read,marketplace:read"),
+    )
+    assert upload_denied.status_code == 403
+    assert upload_denied.json()["detail"] == "missing_permission:skill:write"
+
+    preview_missing = client.post(
         "/api/skills/upload/preview",
         headers=headers("skill:write"),
     )
-    assert zip_preview.status_code == 409
-    assert zip_preview.json()["detail"] == "skill_import_contract_not_backed"
+    assert preview_missing.status_code == 400
+    assert preview_missing.json()["detail"] == "skill_package_required"
 
-    zip_upload = client.post(
+    upload_missing = client.post(
         "/api/skills/upload",
         headers=headers("skill:write"),
     )
-    assert zip_upload.status_code == 409
-    assert zip_upload.json()["detail"] == "skill_import_contract_not_backed"
+    assert upload_missing.status_code == 400
+    assert upload_missing.json()["detail"] == "skill_package_required"
+
+
+def test_public_skill_zip_upload_persists_package_as_user_overlay(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/skills/upload",
+        files={"file": ("qa-file-reviewer.zip", _skill_package_zip(), "application/zip")},
+        headers=headers("skill:write,marketplace:read"),
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "message": "Skills imported",
+        "created": [{"name": "qa-file-reviewer", "file_count": 2}],
+        "errors": [],
+        "skill_count": 1,
+    }
+
+    public_file_response = client.get(
+        "/api/skills/qa-file-reviewer/files/references/imported.md",
+        headers=headers(),
+    )
+    assert public_file_response.status_code == 200
+    assert public_file_response.json()["content"] == "Imported guide"
+
+    marketplace_files_response = client.get("/api/marketplace/qa-file-reviewer/files", headers=headers())
+    assert marketplace_files_response.status_code == 200
+    assert marketplace_files_response.json() == {"files": ["SKILL.md", "references/guide.md"]}
+
+    upsert_paths = [payload["file_path"] for name, payload in calls if name == "upsert_file"]
+    assert upsert_paths == ["SKILL.md", "references/imported.md"]
+    assert any(
+        name == "set_status"
+        and payload == {"tenant_id": "default", "skill_id": "qa-file-reviewer", "status": "active"}
+        for name, payload in calls
+    )
+    assert any(
+        name == "audit"
+        and payload["action"] == "skill.public.zip_imported"
+        and payload["target_id"] == "qa-file-reviewer"
+        and payload["payload_json"]["file_count"] == 2
+        for name, payload in calls
+    )
+
+
+def test_public_skill_zip_upload_rejects_unknown_skill_without_persistence(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+
+    unknown_package = _package_zip(
+        {
+            "SKILL.md": "---\nname: unknown-skill\ndescription: Unknown skill.\n---\n\n# Unknown\n",
+        }
+    )
+
+    response = client.post(
+        "/api/skills/upload",
+        files={"file": ("unknown-skill.zip", unknown_package, "application/zip")},
+        headers=headers("skill:write"),
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "skill_not_found"
+    assert not any(name == "upsert_file" for name, _ in calls)
+
+
+def test_public_skill_github_import_and_direct_marketplace_routes_are_permission_gated_then_fail_closed(monkeypatch):
+    install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
 
     github_preview_denied = client.post(
         "/api/github/preview",

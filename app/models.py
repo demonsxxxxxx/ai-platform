@@ -715,6 +715,67 @@ class PublicSkillFileUpdateRequest(BaseModel):
     content: str
 
 
+class PublicSkillFileMutationResponse(BaseModel):
+    """Result for tenant/user scoped public Skill file mutations."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill_name: str
+    file_path: str
+    message: str
+    size: int | None = None
+
+
+class PublicSkillImportPreviewItem(BaseModel):
+    """Preview of one Skill package before user-scoped import persistence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    description: str
+    file_count: int
+    files: list[str] = Field(default_factory=list)
+    already_exists: bool = False
+
+
+class PublicSkillImportPreviewResponse(BaseModel):
+    """ZIP Skill import preview response for the public Skills surface."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill_count: int
+    skills: list[PublicSkillImportPreviewItem] = Field(default_factory=list)
+
+
+class PublicSkillImportCreatedItem(BaseModel):
+    """One successfully imported public Skill package."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    file_count: int
+
+
+class PublicSkillImportErrorItem(BaseModel):
+    """One rejected public Skill package import item."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    reason: str
+
+
+class PublicSkillImportUploadResponse(BaseModel):
+    """ZIP Skill import result for current user overlays."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str
+    created: list[PublicSkillImportCreatedItem] = Field(default_factory=list)
+    errors: list[PublicSkillImportErrorItem] = Field(default_factory=list)
+    skill_count: int
+
+
 class PublishToMarketplaceRequest(BaseModel):
     """User-facing publish request accepted by the public Skills contract."""
 
