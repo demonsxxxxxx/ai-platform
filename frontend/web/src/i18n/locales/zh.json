@@ -551,8 +551,27 @@
     "redaction": "脱敏",
     "retention": "保留策略",
     "sourcesTitle": "渠道来源",
-    "sourcesDescription": "这些入口会保留在工作台导航中，但在后端投影补齐前不会读取 legacy /api/channels 配置。",
+    "sourcesDescription": "读取 ai-platform 受治理的频道目录，只展示租户、工作区、能力、脱敏和保留策略等安全投影。",
+    "loading": "正在加载频道目录",
+    "testDryRun": "测试",
+    "adminTestQueued": "频道测试已进入审计队列",
+    "adminTestFailed": "频道测试提交失败",
     "sourceFailClosedDescription": "等待租户级频道投影、脱敏策略和审计状态后开放。",
+    "catalogItem": {
+      "description": "{{workspace}} 工作区的 {{type}} 入口"
+    },
+    "catalogReady": {
+      "title": "频道目录已接入",
+      "description": "{{workspace}} 工作区共有 {{count}} 个频道，{{enabled}} 个已启用。管理操作只在具备 channel:admin 权限时开放。",
+      "publicProjection": "公共目录投影",
+      "publicProjectionDescription": "普通用户可见频道名称、类型、能力、连接状态和治理策略，不投影 webhook、token 或密钥。",
+      "adminProjection": "管理员生命周期",
+      "adminProjectionDescription": "创建、测试、启停、凭证和保留策略通过 /api/admin/channels 审计入口处理。"
+    },
+    "empty": {
+      "title": "暂无频道",
+      "description": "当前工作区没有可见频道。管理员创建或启用频道后会显示在这里。"
+    },
     "sources": {
       "feishu": "飞书",
       "wechat": "企业微信",

@@ -551,8 +551,27 @@
     "redaction": "Redaction",
     "retention": "Retention",
     "sourcesTitle": "Channel sources",
-    "sourcesDescription": "These entries stay visible in the workbench, but they do not read legacy /api/channels configuration until backend projections exist.",
+    "sourcesDescription": "Reads the governed ai-platform channel catalog and only shows safe tenant, workspace, capability, redaction, and retention projections.",
+    "loading": "Loading channel catalog",
+    "testDryRun": "Test",
+    "adminTestQueued": "Channel test queued for audited execution",
+    "adminTestFailed": "Failed to queue channel test",
     "sourceFailClosedDescription": "Waiting for tenant channel projection, redaction policy, and audit status before opening.",
+    "catalogItem": {
+      "description": "{{type}} entry in workspace {{workspace}}"
+    },
+    "catalogReady": {
+      "title": "Channel catalog connected",
+      "description": "{{workspace}} has {{count}} channels, {{enabled}} enabled. Management actions only open with channel:admin permission.",
+      "publicProjection": "Public catalog projection",
+      "publicProjectionDescription": "Ordinary users can see channel name, type, capabilities, connection state, and governance policy without webhooks, tokens, or secrets.",
+      "adminProjection": "Admin lifecycle",
+      "adminProjectionDescription": "Create, test, enable, disable, credential, and retention requests go through audited /api/admin/channels endpoints."
+    },
+    "empty": {
+      "title": "No channels yet",
+      "description": "This workspace has no visible channels. Channels appear here after an administrator creates or enables them."
+    },
     "sources": {
       "feishu": "Feishu",
       "wechat": "WeCom",

@@ -526,14 +526,17 @@ test("channels route renders a governed workbench instead of a thin unavailable 
 
   assert.match(tabs, /channels:\s*ChannelImportPanel/);
   assert.match(channels, /data-channel-workbench-shell/);
-  assert.match(channels, /data-channel-projection-gap/);
+  assert.match(channels, /channelApi\.listCatalog/);
+  assert.match(channels, /data-channel-catalog-list/);
+  assert.match(channels, /data-channel-admin-governance/);
   assert.match(channels, /PanelHeader/);
   assert.match(channels, /GovernanceAvailabilityBadge/);
   assert.match(channels, /channelImport\.capabilities\.publicSources\.title/);
-  assert.match(channels, /channelImport\.backendGap\.title/);
+  assert.match(channels, /channelImport\.catalogReady\.title/);
   assert.doesNotMatch(channels, /const backedSources/);
   assert.doesNotMatch(channels, /backedSources\.length === 0/);
-  assert.doesNotMatch(channels, /channelApi|\/api\/channels/);
+  assert.doesNotMatch(channels, /supportedChannelTypes/);
+  assert.doesNotMatch(channels, /channelImport\.backendGap/);
 });
 
 test("launchpad navigation is overflow safe on narrow authenticated viewports", () => {
@@ -594,6 +597,44 @@ test("skills and marketplace clients use only PR177 public contracts", () => {
     assert.doesNotMatch(source, /\/api\/admin/);
     assert.doesNotMatch(source, /\/admin\/skills|\/admin\/marketplace/);
     assert.doesNotMatch(source, /lambchat/i);
+  }
+});
+
+test("channels client uses only PR177 governed channel contracts", () => {
+  const channelApi = readFileSync(
+    join(root, "src/services/api/channel.ts"),
+    "utf8",
+  );
+  const channelAdminHook = readFileSync(
+    join(root, "src/hooks/useChannelAdminOperations.ts"),
+    "utf8",
+  );
+  const channelPanel = readFileSync(
+    join(root, "src/components/channels/ChannelImportPanel.tsx"),
+    "utf8",
+  );
+  const channelTypes = readFileSync(join(root, "src/types/channel.ts"), "utf8");
+  const authTypes = readFileSync(join(root, "src/types/auth.ts"), "utf8");
+
+  assert.match(channelApi, /\/api\/channels\/catalog/);
+  assert.match(channelApi, /\/api\/admin\/channels/);
+  assert.match(channelApi, /listCatalog/);
+  assert.match(channelApi, /channelAdminApi/);
+  assert.match(channelApi, /testAdminChannel/);
+  assert.match(channelAdminHook, /enabled/);
+  assert.match(channelAdminHook, /missing_permission:channel:admin/);
+  assert.match(channelPanel, /useChannelAdminOperations\(\{\s*enabled:\s*canAdminChannels/);
+  assert.match(channelTypes, /PublicChannelResponse/);
+  assert.match(channelTypes, /ChannelAdminOperationResponse/);
+  assert.match(authTypes, /CHANNEL_ADMIN = "channel:admin"/);
+  for (const legacyEndpoint of [
+    "/api/channels/types",
+    "/api/channels/${channelType}",
+    "/api/channels/${channelType}/${instanceId}",
+    "/api/channels/${channelType}/${instanceId}/status",
+    "/api/channels/${channelType}/${instanceId}/test",
+  ]) {
+    assert.ok(!channelApi.includes(legacyEndpoint), legacyEndpoint);
   }
 });
 

@@ -22,7 +22,7 @@ export const PHASE1_FAIL_CLOSED_SURFACES = [
   "department-skill-policy",
   "mcp-lifecycle",
   "share-acl-create",
-  "channel-import-projection",
+  "channel-admin-governance",
   "context-selector",
 ] as const;
 
