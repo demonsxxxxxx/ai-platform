@@ -94,6 +94,7 @@ class Settings(BaseSettings):
     claude_agent_sdk_skills: str = Field(default="")
     platform_skills_root: str = Field(default="skills")
     skill_staging_subdir: str = Field(default=".claude/skills")
+    public_skill_file_overlay_max_bytes: int = Field(default=262144)
     enable_legacy_runtime211_fallback: bool = Field(default=False)
 
     ragflow_api_url: str = Field(default="")

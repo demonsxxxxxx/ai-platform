@@ -280,6 +280,24 @@ def test_schema_declares_skill_release_policies():
     assert "idx_skill_release_policies_skill" in schema
 
 
+def test_schema_declares_user_skill_files():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "create table if not exists user_skill_files" in schema
+    assert "tenant_id text not null references tenants(id)" in schema
+    assert "user_id text not null references users(id)" in schema
+    assert "skill_id text not null references skills(id)" in schema
+    assert "file_path text not null" in schema
+    assert "content_base64 text not null default ''" in schema
+    assert "size_bytes integer not null default 0" in schema
+    assert "status text not null default 'active'" in schema
+    assert "check (file_path <> '')" in schema
+    assert "check (size_bytes >= 0)" in schema
+    assert "check (status in ('active', 'deleted'))" in schema
+    assert "unique(tenant_id, user_id, skill_id, file_path)" in schema
+    assert "idx_user_skill_files_user_skill" in schema
+
+
 def test_schema_seeds_builtin_skill_versions_without_exposing_internal_dependencies():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 

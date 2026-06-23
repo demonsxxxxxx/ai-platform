@@ -72,6 +72,26 @@ create table if not exists skill_release_policies (
 
 create index if not exists idx_skill_release_policies_skill on skill_release_policies(skill_id, channel, status);
 
+create table if not exists user_skill_files (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  user_id text not null references users(id),
+  skill_id text not null references skills(id),
+  file_path text not null,
+  content_base64 text not null default '',
+  size_bytes integer not null default 0,
+  status text not null default 'active',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (file_path <> ''),
+  check (size_bytes >= 0),
+  check (status in ('active', 'deleted')),
+  unique(tenant_id, user_id, skill_id, file_path)
+);
+
+create index if not exists idx_user_skill_files_user_skill
+  on user_skill_files(tenant_id, user_id, skill_id, status, file_path);
+
 create table if not exists tenant_workbench_skills (
   tenant_id text not null references tenants(id),
   skill_id text not null references skills(id),

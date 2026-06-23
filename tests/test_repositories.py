@@ -3570,6 +3570,131 @@ async def test_update_skill_catalog_version_updates_current_skill_pointer():
 
 
 @pytest.mark.asyncio
+async def test_user_skill_file_overlay_repository_contracts():
+    class OverlayCursor:
+        def __init__(self, *, row=None, rows=None):
+            self.row = row or {
+                "skill_id": "qa-file-reviewer",
+                "file_path": "SKILL.md",
+                "content_base64": "dXBkYXRlZA==",
+                "size_bytes": 7,
+                "status": "active",
+            }
+            self.rows = rows or [self.row]
+
+        async def fetchone(self):
+            return self.row
+
+        async def fetchall(self):
+            return self.rows
+
+    class OverlayConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            compact = " ".join(sql.split())
+            self.calls.append((compact, params))
+            return OverlayCursor()
+
+    conn = OverlayConnection()
+
+    overlays = await repositories.list_user_skill_file_overlays(
+        conn,
+        tenant_id="default",
+        user_id="ordinary",
+        skill_ids=["qa-file-reviewer"],
+        include_content=True,
+    )
+    upserted = await repositories.upsert_user_skill_file(
+        conn,
+        tenant_id="default",
+        user_id="ordinary",
+        skill_id="qa-file-reviewer",
+        file_path="SKILL.md",
+        content_base64="dXBkYXRlZA==",
+        size_bytes=7,
+    )
+    deleted = await repositories.delete_user_skill_file(
+        conn,
+        tenant_id="default",
+        user_id="ordinary",
+        skill_id="qa-file-reviewer",
+        file_path="SKILL.md",
+    )
+
+    list_sql, list_params = conn.calls[0]
+    assert "from user_skill_files" in list_sql
+    assert "content_base64" in list_sql
+    assert "skill_id = any(%s)" in list_sql
+    assert "status in ('active', 'deleted')" in list_sql
+    assert list_params == ("default", "ordinary", ["qa-file-reviewer"])
+    assert overlays[0]["file_path"] == "SKILL.md"
+
+    upsert_sql, upsert_params = conn.calls[1]
+    assert "insert into user_skill_files" in upsert_sql
+    assert "on conflict (tenant_id, user_id, skill_id, file_path)" in upsert_sql
+    assert "status = 'active'" in upsert_sql
+    assert upsert_params[0].startswith("usf_")
+    assert upsert_params[1:7] == (
+        "default",
+        "ordinary",
+        "qa-file-reviewer",
+        "SKILL.md",
+        "dXBkYXRlZA==",
+        7,
+    )
+    assert upserted["status"] == "active"
+
+    delete_sql, delete_params = conn.calls[2]
+    assert "insert into user_skill_files" in delete_sql
+    assert "status = 'deleted'" in delete_sql
+    assert "content_base64 = ''" in delete_sql
+    assert delete_params[0].startswith("usf_")
+    assert delete_params[1:5] == ("default", "ordinary", "qa-file-reviewer", "SKILL.md")
+    assert deleted["file_path"] == "SKILL.md"
+
+
+@pytest.mark.asyncio
+async def test_user_skill_file_overlay_list_can_omit_content_for_catalog_projection():
+    class OverlayCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "skill_id": "qa-file-reviewer",
+                    "file_path": "SKILL.md",
+                    "content_base64": "",
+                    "size_bytes": 7,
+                    "status": "active",
+                }
+            ]
+
+    class OverlayConnection:
+        def __init__(self):
+            self.sql = ""
+            self.params = None
+
+        async def execute(self, sql, params):
+            self.sql = " ".join(sql.split())
+            self.params = params
+            return OverlayCursor()
+
+    conn = OverlayConnection()
+
+    overlays = await repositories.list_user_skill_file_overlays(
+        conn,
+        tenant_id="default",
+        user_id="ordinary",
+        skill_ids=["qa-file-reviewer"],
+    )
+
+    assert "'' as content_base64" in conn.sql
+    assert "content_base64," not in conn.sql
+    assert conn.params == ("default", "ordinary", ["qa-file-reviewer"])
+    assert overlays[0]["content_base64"] == ""
+
+
+@pytest.mark.asyncio
 async def test_backfill_builtin_skill_version_snapshot_only_updates_incomplete_builtin_rows():
     conn = RecordingConnection()
 

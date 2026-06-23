@@ -17,6 +17,7 @@ GITIGNORE = ROOT / ".gitignore"
 FRONTEND_WEB = ROOT / "frontend/web"
 FRONTEND_README = FRONTEND_WEB / "README.md"
 FRONTEND_MIGRATION_DOC = ROOT / "docs/frontend/ai-platform-frontend-migration.md"
+SKILLS_MARKETPLACE_PUBLIC_API = ROOT / "docs/frontend/skills-marketplace-public-api.md"
 CAPACITY_BASELINE_DOC = ROOT / "docs/operations/ai-platform-capacity-baseline.md"
 OBSERVABILITY_READINESS_DOC = ROOT / "docs/operations/ai-platform-observability-readiness.md"
 GOVERNANCE_READINESS_DOC = ROOT / "docs/operations/ai-platform-governance-readiness.md"
@@ -902,6 +903,7 @@ def test_env_template_satisfies_required_runtime_defaults_without_real_secrets()
     assert "SANDBOX_CALLBACK_TOKEN=change_me_sandbox_callback_token" in env_text
     assert "EXISTING_AUTH_BASE_URL=http://10.56.0.25:7263" in env_text
     assert "EXISTING_USER_INFO_BASE_URL=http://10.56.0.25:5166" in env_text
+    assert "PUBLIC_SKILL_FILE_OVERLAY_MAX_BYTES=262144" in env_text
     assert "CLAUDE_AGENT_SDK_MAX_TURNS=128" in env_text
     assert "CLAUDE_AGENT_SDK_EFFORT=xhigh" in env_text
     assert "CLAUDE_AGENT_SDK_MAX_THINKING_TOKENS=16384" in env_text
@@ -946,6 +948,17 @@ def test_compose_forwards_claude_agent_sdk_max_turns_to_api_and_worker():
     assert (
         compose_text.count(
             "CLAUDE_AGENT_SDK_MAX_THINKING_TOKENS: ${CLAUDE_AGENT_SDK_MAX_THINKING_TOKENS:-16384}"
+        )
+        == 2
+    )
+
+
+def test_compose_forwards_public_skill_file_overlay_limit_to_api_and_worker():
+    compose_text = read(COMPOSE)
+
+    assert (
+        compose_text.count(
+            "PUBLIC_SKILL_FILE_OVERLAY_MAX_BYTES: ${PUBLIC_SKILL_FILE_OVERLAY_MAX_BYTES:-262144}"
         )
         == 2
     )
@@ -1500,3 +1513,15 @@ def test_prd_records_claude_sdk_execution_boundary_without_second_runtime():
     assert "C:\\Users" not in prd_text
     assert "C:\\Users" not in tech_text
     assert "C:\\Users" not in roadmap_text
+
+
+def test_skills_marketplace_public_api_documents_backed_file_overlay_contract():
+    contract = read(SKILLS_MARKETPLACE_PUBLIC_API)
+
+    assert "PUT `/api/skills/{skill_name}/files/{file_path}` stores a tenant/user-scoped UTF-8 text file overlay" in contract
+    assert "Binary/base64 asset overlays remain out of scope" in contract
+    assert "DELETE `/api/skills/{skill_name}/files/{file_path}` stores a tenant/user-scoped tombstone" in contract
+    assert "Marketplace file previews continue to read released Skill snapshots" in contract
+    assert "skill_file_write_contract_not_backed" not in contract
+    assert "skill_file_delete_contract_not_backed" not in contract
+    assert "durable per-user skill file storage" not in contract

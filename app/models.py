@@ -715,6 +715,17 @@ class PublicSkillFileUpdateRequest(BaseModel):
     content: str
 
 
+class PublicSkillFileMutationResponse(BaseModel):
+    """Result for tenant/user scoped public Skill file mutations."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill_name: str
+    file_path: str
+    message: str
+    size: int | None = None
+
+
 class PublishToMarketplaceRequest(BaseModel):
     """User-facing publish request accepted by the public Skills contract."""
 
