@@ -191,7 +191,7 @@ def test_github_workflow_records_sdk_worker_diagnostic_layers():
         in compact_workflow_text
     )
     assert "not `reviewed`, `211 verified`, or `gate closable`" in compact_workflow_text
-    assert "does not close #164 or any other stage/gate issue" in compact_workflow_text
+    assert "carries no #164 or stage/gate closure claim" in compact_workflow_text
 
 
 def test_technical_acceptance_summarizes_backend_p0_productization_bundles():
