@@ -83,6 +83,7 @@ interface PhaseTwoWorkbenchConfig {
   state: FrontendGovernanceState;
   titleKey: string;
   descriptionKey: string;
+  details: string[];
   capabilities: PhaseTwoCapabilityConfig[];
 }
 
@@ -91,6 +92,12 @@ const phaseTwoWorkbenchConfigs: Record<PhaseTwoTab, PhaseTwoWorkbenchConfig> = {
     state: "degraded",
     titleKey: "workbench.phaseTwo.users.title",
     descriptionKey: "workbench.phaseTwo.users.description",
+    details: [
+      "workbench.phaseTwo.users.details.publicProjection",
+      "workbench.phaseTwo.users.details.adminProjection",
+      "workbench.phaseTwo.users.details.auditProjection",
+      "workbench.phaseTwo.users.details.nextContract",
+    ],
     capabilities: [
       {
         titleKey: "workbench.phaseTwo.users.capabilities.directory.title",
@@ -113,6 +120,12 @@ const phaseTwoWorkbenchConfigs: Record<PhaseTwoTab, PhaseTwoWorkbenchConfig> = {
     state: "degraded",
     titleKey: "workbench.phaseTwo.settings.title",
     descriptionKey: "workbench.phaseTwo.settings.description",
+    details: [
+      "workbench.phaseTwo.settings.details.publicProjection",
+      "workbench.phaseTwo.settings.details.adminProjection",
+      "workbench.phaseTwo.settings.details.auditProjection",
+      "workbench.phaseTwo.settings.details.nextContract",
+    ],
     capabilities: [
       {
         titleKey: "workbench.phaseTwo.settings.capabilities.publicProfile.title",
@@ -136,6 +149,12 @@ const phaseTwoWorkbenchConfigs: Record<PhaseTwoTab, PhaseTwoWorkbenchConfig> = {
     state: "degraded",
     titleKey: "workbench.phaseTwo.feedback.title",
     descriptionKey: "workbench.phaseTwo.feedback.description",
+    details: [
+      "workbench.phaseTwo.feedback.details.publicProjection",
+      "workbench.phaseTwo.feedback.details.adminProjection",
+      "workbench.phaseTwo.feedback.details.auditProjection",
+      "workbench.phaseTwo.feedback.details.nextContract",
+    ],
     capabilities: [
       {
         titleKey: "workbench.phaseTwo.feedback.capabilities.capture.title",
@@ -158,6 +177,12 @@ const phaseTwoWorkbenchConfigs: Record<PhaseTwoTab, PhaseTwoWorkbenchConfig> = {
     state: "degraded",
     titleKey: "workbench.phaseTwo.notifications.title",
     descriptionKey: "workbench.phaseTwo.notifications.description",
+    details: [
+      "workbench.phaseTwo.notifications.details.publicProjection",
+      "workbench.phaseTwo.notifications.details.adminProjection",
+      "workbench.phaseTwo.notifications.details.auditProjection",
+      "workbench.phaseTwo.notifications.details.nextContract",
+    ],
     capabilities: [
       {
         titleKey: "workbench.phaseTwo.notifications.capabilities.banner.title",
@@ -463,6 +488,7 @@ function PhaseTwoWorkbenchPage({
         title: t(config.titleKey),
         description: t(config.descriptionKey),
         surface: `${activeTab}-phase2-backend-projection`,
+        details: config.details.map((detailKey) => t(detailKey)),
         capabilities: config.capabilities.map((capability) => ({
           title: t(capability.titleKey),
           description: t(capability.descriptionKey),

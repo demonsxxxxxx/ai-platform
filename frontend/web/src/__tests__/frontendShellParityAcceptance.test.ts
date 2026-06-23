@@ -11,6 +11,7 @@ test("frontend shell parity components are registered", () => {
     "src/components/workbench/WorkbenchRightPanel.tsx",
     "src/components/chat/ComposerChips.tsx",
     "src/components/governance/GovernanceAvailabilityBadge.tsx",
+    "src/components/workbench/GovernedRouteWorkbench.tsx",
     "src/components/channels/ChannelImportPanel.tsx",
     "src/components/panels/ModelCatalogPanel.tsx",
     "src/components/share/ShareUnavailableState.tsx",
@@ -409,14 +410,21 @@ test("phase 2 workbench pages render concrete capability status instead of a thi
     join(root, "src/components/layout/AppContent/TabContent.tsx"),
     "utf8",
   );
-  const stateSurface = readFileSync(
-    join(root, "src/components/workbench/WorkbenchStateSurface.tsx"),
+  const governedRouteWorkbench = readFileSync(
+    join(root, "src/components/workbench/GovernedRouteWorkbench.tsx"),
     "utf8",
   );
 
   assert.match(app, /const phaseTwoWorkbenchConfigs/);
   for (const tab of ["users", "settings", "feedback", "notifications"]) {
-    assert.match(app, new RegExp(`${tab}:[\\s\\S]{0,420}capabilities:`));
+    const configBlock =
+      app.match(new RegExp(`${tab}: \\{[\\s\\S]*?\\n  \\},`))?.[0] ?? "";
+    assert.match(configBlock, /details:/, `${tab} should publish route details`);
+    assert.match(
+      configBlock,
+      /capabilities:/,
+      `${tab} should publish route capability status`,
+    );
     assert.match(
       app,
       new RegExp(
@@ -427,11 +435,31 @@ test("phase 2 workbench pages render concrete capability status instead of a thi
   assert.match(tabs, /const AgentDirectoryPanel = lazy/);
   assert.match(tabs, /agents:\s*AgentDirectoryPanel/);
   assert.doesNotMatch(app, /agents:[\s\S]{0,420}titleKey:\s*"workbench\.phaseTwo\.agents\.title"/);
-  assert.match(stateSurface, /details\?:/);
-  assert.match(stateSurface, /data-workbench-state-detail/);
-  assert.match(stateSurface, /capabilities\?:/);
-  assert.match(stateSurface, /GovernanceAvailabilityBadge/);
-  assert.match(stateSurface, /data-workbench-state-capability/);
+  assert.match(tabs, /import \{ GovernedRouteWorkbench \}/);
+  assert.match(tabs, /<GovernedRouteWorkbench/);
+  assert.doesNotMatch(
+    tabs,
+    /if \(routeUnavailable\)[\s\S]{0,360}items-center justify-center/,
+  );
+  assert.match(governedRouteWorkbench, /data-governed-route-workbench/);
+  assert.match(governedRouteWorkbench, /data-governed-route-summary/);
+  assert.match(governedRouteWorkbench, /data-governed-route-contract/);
+  assert.match(governedRouteWorkbench, /data-governed-route-detail/);
+  assert.doesNotMatch(
+    governedRouteWorkbench,
+    /data-governed-route-contract[\s\S]{0,220}bg-\[var\(--theme-bg-sidebar\)\]/,
+  );
+  assert.match(
+    governedRouteWorkbench,
+    /data-governed-route-contract[\s\S]{0,220}xl:border-l/,
+  );
+  assert.match(governedRouteWorkbench, /PanelHeader/);
+  assert.match(governedRouteWorkbench, /GovernanceAvailabilityBadge/);
+  assert.match(governedRouteWorkbench, /data-governed-route-capability/);
+  assert.match(governedRouteWorkbench, /stateLabel/);
+  assert.match(governedRouteWorkbench, /surfaceLabel/);
+  assert.doesNotMatch(governedRouteWorkbench, /WorkbenchStateSurface/);
+  assert.doesNotMatch(governedRouteWorkbench, /data-governed-route-gap/);
   assert.doesNotMatch(
     app,
     /公司用户、系统设置、反馈、通知和 Agent 管理仍等待对应服务能力开放/,

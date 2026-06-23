@@ -2748,6 +2748,12 @@
             "title": "Lifecycle writes"
           }
         },
+        "details": {
+          "adminProjection": "Admin projection gap: user creation, account disablement, and role assignment must not connect directly to legacy /api/users admin APIs.",
+          "auditProjection": "Audit gap: imports, deactivation, and permission changes need traceable backend events before opening.",
+          "nextContract": "Next contract: backend should provide layered public and admin projections for directory, lifecycle writes, and permission audit.",
+          "publicProjection": "Current state: the entry stays in the authenticated workbench; ordinary users only see governed status and trigger no legacy write APIs."
+        },
         "description": "Company user management belongs in the enterprise workbench, but the backend has not opened the user admin projection yet. The entry stays visible without exposing legacy write APIs.",
         "title": "Company user management is not enabled yet"
       },
@@ -2766,6 +2772,12 @@
             "title": "Keys and gateways"
           }
         },
+        "details": {
+          "adminProjection": "Admin projection gap: runtime configuration, tenant switches, and platform parameters need an audited settings contract.",
+          "auditProjection": "Audit gap: settings changes need actor, time, source, and rollback hints; the frontend cannot just render the old form.",
+          "nextContract": "Next contract: backend should split personal preferences, system configuration, and key or gateway permissions.",
+          "publicProjection": "Current state: personal preferences remain available through profile surfaces; system settings stay as a read-only governed entry."
+        },
         "description": "System settings need an audited admin projection. The workbench keeps this entry as a state surface instead of rendering legacy settings forms.",
         "title": "System settings projection is not enabled yet"
       },
@@ -2783,6 +2795,12 @@
             "description": "Assignment, closure, and label governance are not read from legacy feedback admin APIs.",
             "title": "Assignment workflow"
           }
+        },
+        "details": {
+          "adminProjection": "Admin projection gap: feedback aggregation, assignment, closure, and label governance are not open as workbench contracts.",
+          "auditProjection": "Audit gap: state and owner changes need backend event history; legacy feedback admin reads are not a substitute.",
+          "nextContract": "Next contract: backend should provide layered user and admin projections for aggregate feedback, assignment state, and triage history.",
+          "publicProjection": "Current state: message-level chat feedback remains available; the standalone desk shows governed status and pending capabilities."
         },
         "description": "Feedback will become a unified triage desk, but the backend does not yet provide the aggregate and assignment contracts for the workbench.",
         "title": "Feedback triage is not enabled yet"
@@ -2820,9 +2838,22 @@
             "title": "Unified inbox"
           }
         },
+        "details": {
+          "adminProjection": "Admin projection gap: announcement creation, targeting, expiry, and replay need a new notification management contract.",
+          "auditProjection": "Audit gap: publish, revoke, and read-scope changes need backend records; the old notification admin panel is not wired here.",
+          "nextContract": "Next contract: backend should expose layered projections for runtime notices, a unified inbox, and announcement management.",
+          "publicProjection": "Current state: the top-bar notification entry keeps reading runtime notices; the management route stays visible and fail-closed."
+        },
         "description": "Notifications need audited publishing, audience, and read-state contracts. The workbench keeps the entry visible without loading legacy announcement admin pages.",
         "title": "Notification management is not enabled yet"
       }
+    },
+    "governedRoute": {
+      "contractDescription": "This page shows the frontend-safe state, locked capabilities, and backend projection boundary still needed.",
+      "contractTitle": "Governance contract status",
+      "empty": "No capability projection is available for this page yet.",
+      "stateLabel": "Page state",
+      "surfaceLabel": "Governed boundary"
     },
     "newConversation": "New conversation",
     "none": "None",
