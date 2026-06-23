@@ -243,14 +243,19 @@ test("read-only skills catalog removes write controls instead of showing disable
   );
 });
 
-test("marketplace hides direct write governance until backend contracts exist", () => {
+test("marketplace exposes direct write governance only through permission gates", () => {
   const marketplace = read("src/components/panels/MarketplacePanel.tsx");
   const marketplaceCard = read(
     "src/components/panels/MarketplacePanel/SkillCard.tsx",
   );
 
-  assert.match(marketplace, /marketplaceDirectWriteBacked = false/);
+  assert.match(marketplace, /marketplaceDirectWriteBacked = true/);
   assert.match(marketplace, /canCreateInMarketplace/);
+  assert.doesNotMatch(
+    marketplace,
+    /canCreateInMarketplace =[\s\S]*?Permission\.MARKETPLACE_PUBLISH/,
+  );
+  assert.match(marketplace, /Permission\.MARKETPLACE_ADMIN/);
   assert.match(marketplace, /canInstall/);
   assert.match(marketplace, /Permission\.SKILL_WRITE/);
   assert.match(marketplace, /Permission\.MARKETPLACE_READ/);
