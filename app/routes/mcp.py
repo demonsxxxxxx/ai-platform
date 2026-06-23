@@ -1,15 +1,81 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
+from app.control_plane_contracts import sanitize_public_payload, standard_trace_id
 from app.db import transaction
 from app.validation import assert_safe_id
 
 router = APIRouter()
+
+MCP_LIFECYCLE_CONTRACT_VERSION = "ai-platform.mcp-lifecycle.v1"
+
+
+class McpRoleQuota(BaseModel):
+    """Per-role MCP quota limits accepted by lifecycle registry writes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    daily_limit: int | None = Field(default=None, ge=0)
+    weekly_limit: int | None = Field(default=None, ge=0)
+
+
+class McpServerLifecycleRequest(BaseModel):
+    """Validated MCP server lifecycle write payload without raw credential echo."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    transport: str = "streamable_http"
+    enabled: bool = True
+    url: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+    command: str | None = None
+    env_keys: list[str] = Field(default_factory=list)
+    allowed_roles: list[str] = Field(default_factory=list)
+    role_quotas: dict[str, McpRoleQuota] = Field(default_factory=dict)
+    department_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("name")
+    @classmethod
+    def validate_optional_name(cls, value: str | None):
+        return assert_safe_id(value, "mcp_server_name") if value else value
+
+    @field_validator("transport")
+    @classmethod
+    def validate_transport(cls, value: str):
+        if value not in {"sse", "streamable_http", "sandbox"}:
+            raise ValueError("mcp_transport unsupported")
+        return value
+
+    @field_validator("allowed_roles", "department_ids", "env_keys")
+    @classmethod
+    def validate_safe_lists(cls, value: list[str], info):
+        return [assert_safe_id(str(item), info.field_name) for item in value]
+
+
+class McpServerToggleRequest(BaseModel):
+    """Accept frontend toggle aliases for MCP server enablement changes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    active: bool | None = None
+    is_active: bool | None = None
+
+    def requested_enabled(self) -> bool | None:
+        if self.enabled is not None:
+            return self.enabled
+        if self.active is not None:
+            return self.active
+        return self.is_active
 
 
 def _require_admin(principal: AuthPrincipal) -> None:
@@ -26,6 +92,134 @@ def _safe_name(name: str, field_name: str = "mcp_server_name") -> str:
 
 def _lifecycle_not_backed() -> None:
     raise HTTPException(status_code=409, detail="mcp_lifecycle_contract_not_backed")
+
+
+def _request_model(model_type: type[BaseModel], payload: Any) -> BaseModel:
+    try:
+        return model_type.model_validate(payload or {})
+    except ValidationError as exc:
+        safe_errors = []
+        for error in exc.errors(include_input=False):
+            safe_loc = []
+            for index, item in enumerate(error.get("loc") or []):
+                if index > 0 and safe_loc and safe_loc[0] == "headers":
+                    safe_loc.append("[redacted-header]")
+                else:
+                    safe_loc.append(item)
+            safe_errors.append(
+                {
+                    key: safe_loc if key == "loc" else value
+                    for key, value in error.items()
+                    if key in {"type", "loc", "msg", "url"}
+                }
+            )
+        raise HTTPException(status_code=422, detail=safe_errors) from exc
+
+
+def _redacted_endpoint(raw_url: str | None) -> str:
+    if not raw_url:
+        return ""
+    parsed = urlsplit(raw_url)
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    hostname = parsed.hostname or ""
+    if not hostname:
+        return ""
+    netloc = hostname
+    if parsed.port is not None:
+        netloc = f"{netloc}:{parsed.port}"
+    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+
+
+def _credential_metadata(request: McpServerLifecycleRequest) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    if request.headers:
+        metadata["header_names"] = sorted(str(key) for key in request.headers)
+    if request.env_keys:
+        metadata["env_keys"] = sorted(request.env_keys)
+    if request.command:
+        metadata["command_configured"] = True
+    if request.url:
+        metadata["endpoint_configured"] = True
+    return metadata
+
+
+def _credential_fingerprint(request: McpServerLifecycleRequest) -> str:
+    raw_parts: list[str] = []
+    if request.url:
+        raw_parts.append(request.url)
+    if request.command:
+        raw_parts.append(request.command)
+    for key in sorted(request.headers):
+        raw_parts.append(f"header:{key}={request.headers[key]}")
+    for key in sorted(request.env_keys):
+        raw_parts.append(f"env:{key}")
+    if not raw_parts:
+        return ""
+    serialized = "\n".join(raw_parts)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _role_quotas_payload(role_quotas: dict[str, McpRoleQuota]) -> dict[str, Any]:
+    return {role: quota.model_dump(exclude_none=True) for role, quota in role_quotas.items()}
+
+
+def _server_response(row: dict[str, Any], *, can_edit: bool = False) -> dict[str, Any]:
+    enabled = str(row.get("status") or "disabled") == "active"
+    return {
+        "name": str(row.get("name") or ""),
+        "transport": str(row.get("transport") or "streamable_http"),
+        "enabled": enabled,
+        "is_system": bool(row.get("is_system")),
+        "can_edit": can_edit,
+        "allowed_roles": list(row.get("allowed_roles") or []),
+        "allowed_departments": list(row.get("department_ids") or []),
+        "role_quotas": row.get("role_quotas") if isinstance(row.get("role_quotas"), dict) else {},
+        "credential_state": str(row.get("credential_state") or "not_configured"),
+        "credential_metadata": row.get("credential_metadata") if isinstance(row.get("credential_metadata"), dict) else {},
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "contract_version": MCP_LIFECYCLE_CONTRACT_VERSION,
+    }
+
+
+def _legacy_server_response(name: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    updated_at = next((row.get("updated_at") for row in rows if row.get("updated_at") is not None), None)
+    return {
+        "name": name,
+        "transport": "streamable_http",
+        "enabled": _server_enabled(rows),
+        "is_system": True,
+        "can_edit": False,
+        "allowed_roles": ["user"],
+        "allowed_departments": [],
+        "role_quotas": {},
+        "credential_state": "platform_managed",
+        "credential_metadata": {},
+        "created_at": None,
+        "updated_at": updated_at,
+        "contract_version": MCP_LIFECYCLE_CONTRACT_VERSION,
+    }
+
+
+async def _server_rows(principal: AuthPrincipal, *, include_disabled: bool = True) -> list[dict[str, Any]]:
+    async with transaction() as conn:
+        rows = await repositories.list_mcp_server_registry(
+            conn,
+            tenant_id=principal.tenant_id,
+            department_id=principal.department_id,
+            include_disabled=include_disabled,
+        )
+    return [dict(row) for row in rows]
+
+
+async def _server_names(principal: AuthPrincipal) -> set[str]:
+    async with transaction() as conn:
+        names = await repositories.list_mcp_server_registry_names(
+            conn,
+            tenant_id=principal.tenant_id,
+        )
+    return {str(name) for name in names if str(name)}
 
 
 async def _tool_rows(principal: AuthPrincipal, *, include_disabled: bool = True) -> list[dict[str, Any]]:
@@ -46,21 +240,6 @@ def _server_enabled(rows: list[dict[str, Any]]) -> bool:
     return any(str(row.get("effective_status") or row.get("status") or "") == "active" for row in rows)
 
 
-def _server_response(name: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
-    updated_at = next((row.get("updated_at") for row in rows if row.get("updated_at") is not None), None)
-    return {
-        "name": name,
-        "transport": "streamable_http",
-        "enabled": _server_enabled(rows),
-        "is_system": True,
-        "can_edit": False,
-        "allowed_roles": ["user"],
-        "role_quotas": {},
-        "created_at": None,
-        "updated_at": updated_at,
-    }
-
-
 def _group_by_server(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
@@ -79,6 +258,101 @@ def _find_server(rows: list[dict[str, Any]], *, name: str) -> list[dict[str, Any
     return server_rows
 
 
+def _find_registry_server(rows: list[dict[str, Any]], *, name: str) -> dict[str, Any]:
+    for row in rows:
+        if row.get("name") == name:
+            return row
+    raise HTTPException(status_code=404, detail="mcp_server_not_found")
+
+
+async def _legacy_projected_servers(principal: AuthPrincipal) -> list[dict[str, Any]]:
+    rows = await _tool_rows(principal, include_disabled=True)
+    grouped = _group_by_server(rows)
+    return [_legacy_server_response(name, grouped[name]) for name in sorted(grouped)]
+
+
+async def _combined_projected_servers(principal: AuthPrincipal) -> list[dict[str, Any]]:
+    registry_rows = await _server_rows(principal, include_disabled=True)
+    projected = [_server_response(row, can_edit=is_ai_admin(principal)) for row in registry_rows]
+    seen_names = await _server_names(principal)
+    for legacy_server in await _legacy_projected_servers(principal):
+        if legacy_server["name"] not in seen_names:
+            projected.append(legacy_server)
+    return projected
+
+
+async def _write_server(
+    principal: AuthPrincipal,
+    request: McpServerLifecycleRequest,
+    *,
+    name: str,
+    is_system: bool,
+    action: str,
+) -> dict[str, Any]:
+    fingerprint = _credential_fingerprint(request)
+    metadata = _credential_metadata(request)
+    credential_state = "configured" if fingerprint else "not_configured"
+    endpoint = _redacted_endpoint(request.url)
+    try:
+        async with transaction() as conn:
+            await repositories.ensure_user(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                display_name=principal.display_name or principal.user_id,
+            )
+            row = await repositories.upsert_mcp_server_registry(
+                conn,
+                tenant_id=principal.tenant_id,
+                name=name,
+                transport=request.transport,
+                enabled=request.enabled,
+                is_system=is_system,
+                endpoint_redacted=endpoint,
+                allowed_roles=request.allowed_roles,
+                role_quotas=_role_quotas_payload(request.role_quotas),
+                department_ids=request.department_ids,
+                credential_state=credential_state,
+                credential_metadata=metadata,
+                credential_fingerprint=fingerprint,
+                updated_by=principal.user_id,
+            )
+            await repositories.record_mcp_server_credential(
+                conn,
+                tenant_id=principal.tenant_id,
+                server_name=name,
+                credential_fingerprint=fingerprint,
+                metadata=metadata,
+                updated_by=principal.user_id,
+            )
+            await repositories.append_audit_log(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                action=action,
+                target_type="mcp_server",
+                target_id=name,
+                trace_id=standard_trace_id(name),
+                payload_json=sanitize_public_payload(
+                    {
+                        "name": name,
+                        "transport": request.transport,
+                        "enabled": request.enabled,
+                        "is_system": is_system,
+                        "allowed_roles": request.allowed_roles,
+                        "department_ids": request.department_ids,
+                        "credential_state": credential_state,
+                        "credential_metadata": metadata,
+                    }
+                ),
+            )
+    except repositories.RepositoryConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except repositories.RepositoryNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _server_response(row, can_edit=True)
+
+
 @router.get("/mcp/")
 @router.get("/mcp")
 async def list_mcp_servers(
@@ -89,16 +363,14 @@ async def list_mcp_servers(
 ) -> dict[str, Any]:
     """Return governed MCP tool servers without exposing unmanaged lifecycle controls."""
 
-    rows = await _tool_rows(principal, include_disabled=True)
-    grouped = _group_by_server(rows)
     normalized_query = (q or "").strip().lower()
-    server_names = sorted(grouped)
+    projected = await _combined_projected_servers(principal)
     if normalized_query:
-        server_names = [name for name in server_names if normalized_query in name.lower()]
-    page_names = server_names[skip : skip + limit]
+        projected = [server for server in projected if normalized_query in str(server.get("name") or "").lower()]
+    page_servers = projected[skip : skip + limit]
     return {
-        "servers": [_server_response(name, grouped[name]) for name in page_names],
-        "total": len(server_names),
+        "servers": page_servers,
+        "total": len(projected),
         "skip": skip,
         "limit": limit,
     }
@@ -110,10 +382,19 @@ async def create_mcp_server(
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
 ) -> dict[str, Any]:
-    """Fail closed for MCP server creation until lifecycle governance is backed."""
+    """Create a tenant-scoped MCP server registry entry without exposing credentials."""
 
     _require_admin(principal)
-    _lifecycle_not_backed()
+    request = _request_model(McpServerLifecycleRequest, payload)
+    if not request.name:
+        raise HTTPException(status_code=422, detail="mcp_server_name_required")
+    return await _write_server(
+        principal,
+        request,  # type: ignore[arg-type]
+        name=request.name,
+        is_system=False,
+        action="mcp.server.created",
+    )
 
 
 @router.post("/mcp/import")
@@ -133,12 +414,15 @@ async def export_mcp_servers(
 ) -> dict[str, Any]:
     """Export a redacted read-only MCP directory projection."""
 
-    rows = await _tool_rows(principal, include_disabled=True)
-    grouped = _group_by_server(rows)
+    projected = await _combined_projected_servers(principal)
     return {
         "servers": {
-            name: _server_response(name, server_rows)
-            for name, server_rows in sorted(grouped.items(), key=lambda item: item[0])
+            str(server.get("name")): {
+                key: value
+                for key, value in server.items()
+                if key not in {"credential_metadata"}
+            }
+            for server in projected
         }
     }
 
@@ -151,8 +435,16 @@ async def get_mcp_server(
     """Return a single governed MCP server projection."""
 
     safe_name = _safe_name(name)
+    registry_rows = await _server_rows(principal, include_disabled=True)
+    try:
+        return _server_response(_find_registry_server(registry_rows, name=safe_name), can_edit=is_ai_admin(principal))
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        if safe_name in await _server_names(principal):
+            raise
     rows = await _tool_rows(principal, include_disabled=True)
-    return _server_response(safe_name, _find_server(rows, name=safe_name))
+    return _legacy_server_response(safe_name, _find_server(rows, name=safe_name))
 
 
 @router.put("/mcp/{name}")
@@ -161,11 +453,18 @@ async def update_mcp_server(
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
 ) -> dict[str, Any]:
-    """Fail closed for user-scoped MCP server updates."""
+    """Update a tenant-scoped MCP server registry entry without exposing credentials."""
 
     _require_admin(principal)
-    _safe_name(name)
-    _lifecycle_not_backed()
+    safe_name = _safe_name(name)
+    request = _request_model(McpServerLifecycleRequest, payload)
+    return await _write_server(
+        principal,
+        request,  # type: ignore[arg-type]
+        name=safe_name,
+        is_system=False,
+        action="mcp.server.updated",
+    )
 
 
 @router.delete("/mcp/{name}")
@@ -173,23 +472,67 @@ async def delete_mcp_server(
     name: str,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, Any]:
-    """Fail closed for user-scoped MCP server deletes."""
+    """Soft-delete a tenant-scoped MCP server registry entry."""
 
     _require_admin(principal)
-    _safe_name(name)
-    _lifecycle_not_backed()
+    safe_name = _safe_name(name)
+    try:
+        async with transaction() as conn:
+            row = await repositories.delete_mcp_server_registry(
+                conn,
+                tenant_id=principal.tenant_id,
+                name=safe_name,
+                updated_by=principal.user_id,
+            )
+            await repositories.append_audit_log(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                action="mcp.server.deleted",
+                target_type="mcp_server",
+                target_id=safe_name,
+                trace_id=standard_trace_id(safe_name),
+                payload_json={"name": safe_name, "status": "deleted"},
+            )
+    except repositories.RepositoryNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _server_response(row, can_edit=True)
 
 
 @router.patch("/mcp/{name}/toggle")
 async def toggle_mcp_server(
     name: str,
     principal: AuthPrincipal = Depends(require_principal),
+    payload: Any = Body(default=None),
 ) -> dict[str, Any]:
-    """Fail closed for MCP server availability toggles."""
+    """Toggle a tenant-scoped MCP server registry entry."""
 
     _require_admin(principal)
-    _safe_name(name)
-    _lifecycle_not_backed()
+    safe_name = _safe_name(name)
+    request = _request_model(McpServerToggleRequest, payload)
+    try:
+        async with transaction() as conn:
+            row = await repositories.toggle_mcp_server_registry(
+                conn,
+                tenant_id=principal.tenant_id,
+                name=safe_name,
+                enabled=request.requested_enabled(),  # type: ignore[attr-defined]
+                updated_by=principal.user_id,
+            )
+            await repositories.append_audit_log(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                action="mcp.server.toggled",
+                target_type="mcp_server",
+                target_id=safe_name,
+                trace_id=standard_trace_id(safe_name),
+                payload_json={"name": safe_name, "enabled": row.get("status") == "active"},
+            )
+    except repositories.RepositoryNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    server = _server_response(row, can_edit=True)
+    return {"server": server, "message": "mcp_server_toggled"}
 
 
 @router.get("/mcp/{name}/tools")
@@ -200,6 +543,14 @@ async def discover_mcp_tools(
     """Return governed tool discovery from the platform registry projection."""
 
     safe_name = _safe_name(name)
+    registry_rows = await _server_rows(principal, include_disabled=True)
+    try:
+        _find_registry_server(registry_rows, name=safe_name)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        if safe_name in await _server_names(principal):
+            raise
     rows = await _tool_rows(principal, include_disabled=True)
     server_rows = _find_server(rows, name=safe_name)
     tools = []
@@ -238,10 +589,19 @@ async def create_admin_mcp_server(
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
 ) -> dict[str, Any]:
-    """Fail closed for admin MCP server creation until lifecycle governance exists."""
+    """Create a platform-admin managed MCP server registry entry."""
 
     _require_admin(principal)
-    _lifecycle_not_backed()
+    request = _request_model(McpServerLifecycleRequest, payload)
+    if not request.name:
+        raise HTTPException(status_code=422, detail="mcp_server_name_required")
+    return await _write_server(
+        principal,
+        request,  # type: ignore[arg-type]
+        name=request.name,
+        is_system=True,
+        action="admin.mcp.server.created",
+    )
 
 
 @router.put("/admin/mcp/{name}")
@@ -250,11 +610,18 @@ async def update_admin_mcp_server(
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
 ) -> dict[str, Any]:
-    """Fail closed for admin MCP server updates until lifecycle governance exists."""
+    """Update a platform-admin managed MCP server registry entry."""
 
     _require_admin(principal)
-    _safe_name(name)
-    _lifecycle_not_backed()
+    safe_name = _safe_name(name)
+    request = _request_model(McpServerLifecycleRequest, payload)
+    return await _write_server(
+        principal,
+        request,  # type: ignore[arg-type]
+        name=safe_name,
+        is_system=True,
+        action="admin.mcp.server.updated",
+    )
 
 
 @router.delete("/admin/mcp/{name}")
@@ -262,11 +629,31 @@ async def delete_admin_mcp_server(
     name: str,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, Any]:
-    """Fail closed for admin MCP server deletes until lifecycle governance exists."""
+    """Soft-delete a platform-admin managed MCP server registry entry."""
 
     _require_admin(principal)
-    _safe_name(name)
-    _lifecycle_not_backed()
+    safe_name = _safe_name(name)
+    try:
+        async with transaction() as conn:
+            row = await repositories.delete_mcp_server_registry(
+                conn,
+                tenant_id=principal.tenant_id,
+                name=safe_name,
+                updated_by=principal.user_id,
+            )
+            await repositories.append_audit_log(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                action="admin.mcp.server.deleted",
+                target_type="mcp_server",
+                target_id=safe_name,
+                trace_id=standard_trace_id(safe_name),
+                payload_json={"name": safe_name, "status": "deleted"},
+            )
+    except repositories.RepositoryNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _server_response(row, can_edit=True)
 
 
 @router.post("/admin/mcp/{name}/promote")
