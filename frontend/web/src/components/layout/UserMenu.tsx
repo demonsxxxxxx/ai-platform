@@ -4,7 +4,8 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import {
   MessageSquare,
-  Sparkles,
+  Package,
+  ShoppingBag,
   LogOut,
   Settings,
   Server,
@@ -115,11 +116,16 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
   const navItems = [
     { path: "/chat", label: t("nav.chat"), icon: MessageSquare, show: true },
     {
+      path: "/skills",
+      label: t("nav.skills"),
+      icon: Package,
+      show: true,
+    },
+    {
       path: "/marketplace",
       label: t("nav.marketplace"),
-      icon: Sparkles,
+      icon: ShoppingBag,
       show: true,
-      matchPaths: ["/skills", "/marketplace"],
     },
     { path: "/mcp", label: t("nav.mcp"), icon: Server, show: canReadMCP },
     {
@@ -268,13 +274,13 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
                 className="fixed inset-0 z-[100] sm:hidden"
                 onClick={() => setShowMenu(false)}
               >
-                <div className="fixed inset-0 bg-black/40 animate-fade-in" />
+                <div className="fixed inset-0 bg-slate-950/35 animate-fade-in" />
                 <div
                   ref={(el) => {
                     menuRef.current = el;
                     swipeRef.current = el;
                   }}
-                  className="fixed inset-x-0 bottom-0 z-[101] rounded-t-2xl shadow-2xl max-h-[85vh] overflow-y-auto animate-slide-up-sheet"
+                  className="fixed inset-x-0 bottom-0 z-[101] max-h-[85vh] overflow-y-auto rounded-t-lg shadow-[0_8px_24px_rgba(18,38,63,0.12)] animate-slide-up-sheet"
                   style={{ backgroundColor: "var(--theme-bg-card)" }}
                   onClick={(e) => e.stopPropagation()}
                 >
@@ -296,7 +302,7 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
                 />
                 <div
                   ref={menuRef}
-                  className="fixed z-[301] w-52 rounded-xl shadow-xl border overflow-hidden animate-scale-in"
+                  className="fixed z-[301] w-52 overflow-hidden rounded-lg border shadow-[0_8px_18px_rgba(18,38,63,0.08)] animate-scale-in"
                   style={{
                     top: `${menuPosition.top}px`,
                     right: `${menuPosition.right}px`,

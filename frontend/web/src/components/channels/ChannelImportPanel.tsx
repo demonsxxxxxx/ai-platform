@@ -24,6 +24,7 @@ export function ChannelImportPanel() {
         className="flex h-full min-h-0 items-center justify-center p-6"
       >
         <WorkbenchUnavailableState
+          state="degraded"
           surface="channel-import-projection"
           title={t("channelImport.unavailable.title")}
           description={t("channelImport.unavailable.description")}

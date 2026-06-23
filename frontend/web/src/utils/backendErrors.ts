@@ -9,6 +9,15 @@ const BACKEND_ERROR_KEYS: Record<string, string> = {
   model_not_found: "errors.modelNotFound",
   model_disabled: "errors.modelDisabled",
   model_not_allowed: "errors.modelNotAllowed",
+  skill_file_write_contract_not_backed:
+    "backendErrors.skillFileWriteNotBacked",
+  skill_file_delete_contract_not_backed:
+    "backendErrors.skillFileDeleteNotBacked",
+  skill_import_contract_not_backed: "backendErrors.skillImportNotBacked",
+  marketplace_direct_write_contract_not_backed:
+    "backendErrors.marketplaceDirectWriteNotBacked",
+  mcp_lifecycle_contract_not_backed:
+    "backendErrors.mcpLifecycleNotBacked",
 
   // Stable HTTPException detail strings
   未提供认证信息: "backendErrors.authMissing",

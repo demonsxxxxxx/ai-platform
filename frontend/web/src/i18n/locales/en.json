@@ -49,6 +49,32 @@
     "searchPlaceholder": "Search agents",
     "noMatchingAgents": "No matching agents"
   },
+  "frontendStates": {
+    "logged-out": {
+      "title": "Sign in required",
+      "description": "Sign in with your company account before entering the AI Platform workbench."
+    },
+    "loading": {
+      "title": "Loading workbench",
+      "description": "Checking your account, permissions, and workspace state."
+    },
+    "no-workspace": {
+      "title": "No workspace assigned",
+      "description": "Your account does not have an available workspace yet. Ask an administrator to enable one."
+    },
+    "forbidden": {
+      "title": "Not available for this account",
+      "description": "This capability is governed by company permissions and requires administrator access."
+    },
+    "degraded": {
+      "title": "Readable with limited controls",
+      "description": "You can continue viewing this page, but some actions remain locked in the current state."
+    },
+    "ready": {
+      "title": "Ready",
+      "description": "This page is available for your account."
+    }
+  },
   "agentConfig": {
     "addFirstModel": "Add your first model",
     "addModel": "Add Model",
@@ -396,6 +422,8 @@
     "marketplaceSkillNoFiles": "Marketplace skill has no files.",
     "marketplaceSyncFailed": "Failed to sync files to marketplace.",
     "marketplaceSyncRolledBack": "Failed to sync files. Marketplace entry was rolled back.",
+    "marketplaceDirectWriteNotBacked": "Direct marketplace writes are not available yet. You can browse, preview, install, and update approved Skills; publishing governance still runs through administrators.",
+    "mcpLifecycleNotBacked": "MCP lifecycle management is not available yet. You can browse governed MCP tools; server, credential, and promotion changes stay fail-closed.",
     "memoryBackendUnavailable": "Memory backend is not available.",
     "memoryDeleteLimit": "Cannot delete more than 100 memories at once.",
     "memoryIdsRequired": "memory_ids must be a non-empty list.",
@@ -433,7 +461,10 @@
     "shareSourceMissing": "The original session no longer exists.",
     "shareViewOwnOnly": "You can only view shares from your own sessions.",
     "skillDeactivated": "This skill has been deactivated.",
+    "skillFileDeleteNotBacked": "Skill file deletion is not available yet. You can read and export approved Skills; file changes need the next storage slice.",
+    "skillFileWriteNotBacked": "Skill file editing is not available yet. You can read and export approved Skills; file changes need the next storage slice.",
     "skillFileRequired": "Skill must have at least one file.",
+    "skillImportNotBacked": "Skill import is not available yet. Use approved Marketplace Skills for now; ZIP and GitHub import need the next storage slice.",
     "skillNotFound": "Skill not found.",
     "targetOwnerRequired": "A new owner must be specified.",
     "targetUserRequired": "Target user is required.",
@@ -1406,6 +1437,50 @@
     "title": "Memory Space",
     "titleLabel": "Title",
     "titlePlaceholder": "Enter memory title...",
+    "workbench": {
+      "activeRecords": "Active records",
+      "adminHidden": "Admin memory inventory is hidden for this role. Backend admin routes remain fail-closed.",
+      "adminProjection": "Admin operational projection",
+      "agent": "Agent",
+      "agentPublicId": "Agent public id",
+      "allAgents": "all agents",
+      "allowSessionWrites": "Allow session memory writes",
+      "allowSessionWritesHint": "Cross-session long-term memory stays fail-closed.",
+      "cleanupDeleted": "Retention cleanup deleted {{count}} records",
+      "days": "{{count}} days",
+      "defaultPolicy": "default",
+      "deleteRecord": "Delete memory record",
+      "deleteRecordConfirm": "Delete this session-bound memory record?",
+      "expires": "expires {{date}}",
+      "loadingAdmin": "Loading admin memory projection...",
+      "loadingRecords": "Loading session memory records...",
+      "longTermClosed": "long-term closed",
+      "noAdminRecords": "No active records in admin projection.",
+      "noPolicy": "No memory policy projection loaded.",
+      "noSessionRecords": "No active memory records are visible for this session.",
+      "noStoredPolicies": "No stored policies for this filter.",
+      "policyMeta": "{{days}}d retention · {{source}} · {{date}}",
+      "policyUpdated": "Memory policy updated",
+      "publicProjectionOnly": "public projection only",
+      "reason": "Reason",
+      "reasonPlaceholder": "Optional public-safe audit reason",
+      "recordDeleted": "Memory record deleted",
+      "retention": "Retention",
+      "retentionCleanup": "Retention cleanup",
+      "retentionDays": "Retention days",
+      "savePolicy": "Save policy",
+      "sessionId": "Session id",
+      "sessionIdPlaceholder": "Required for memory records",
+      "sessionRecords": "Session memory records",
+      "sessionRequired": "Enter a session id to inspect session-bound memory records. Cross-session browsing is intentionally closed.",
+      "source": "Source",
+      "storedPolicies": "Stored policies",
+      "subtitle": "ai-platform public memory policy, session records, and admin projection",
+      "updated": "Updated",
+      "user": "User",
+      "userPolicy": "User memory policy",
+      "workspace": "Workspace"
+    },
     "type": {
       "feedback": "Feedback",
       "project": "Project",
@@ -1726,7 +1801,10 @@
     "maxUploadSizeImage": "Max Image Size (MB)",
     "maxUploadSizeVideo": "Max Video Size (MB)",
     "noMatchingRoles": "No matching roles found",
+    "noMatchingRolesDescription": "The role projection responded, but no role matches this search. Clear the query or try a different keyword.",
     "noRoles": "No roles yet",
+    "noRolesDescriptionAdmin": "The role management entry is connected to the current backend projection, but the backend returned no role rows. Users with write permission can create roles from here.",
+    "noRolesDescriptionReadOnly": "The role management entry is connected to the current backend projection, but your account has no role write permission and the backend returned no browsable roles.",
     "operationFailed": "Operation failed",
     "permissionCount": "{{count}} permissions",
     "permissions": "Permissions",
@@ -2295,6 +2373,7 @@
     "republishSuccess": "Skill updated in marketplace",
     "republishTitle": "Update \"{{name}}\" in Marketplace",
     "searchPlaceholder": "Search skills...",
+    "selectBackedZipSkills": "Select published skills to overlay",
     "selectSkillsToInstall": "Select skills to install",
     "selectZipFile": "Select ZIP file",
     "sourceLocal": "Local",
@@ -2309,6 +2388,9 @@
     "uploadZipTitle": "Upload Skill ZIP",
     "uploading": "Uploading...",
     "userSkillVisible": "User Skill (only visible to you)",
+    "publicCatalogSkill": "Public catalog",
+    "newSkillImportUnsupported": "New Skill not backed",
+    "zipImportBackedHint": "ZIP import now writes to your own Skill file overlay and only targets existing public Skills. New Skill creation remains a Phase 2 governed backend flow.",
     "marketplace": {
       "departmentAvailability": "Department availability",
       "groupToggleUnavailable": "Department and group switches are visible for administrators. They stay read-only until your workspace enables department Skill access."
@@ -2534,6 +2616,28 @@
       "subtitle": "Visible in the composer, but not enabled for your workspace yet."
     }
   },
+  "models": {
+    "adminGovernance": "Admin writes",
+    "adminGovernanceDescription": "Create, order, key, and gateway settings stay locked until ai-platform admin projections are backed.",
+    "catalogLoadFailed": "Model catalog is unavailable",
+    "catalogStats": "Catalog status",
+    "catalogStatsDescription": "{{enabled}} / {{total}} models enabled across {{providers}} providers.",
+    "catalogUnavailable": "Model catalog is unavailable",
+    "catalogUnavailableDescription": "The public model projection did not return usable data. Chat keeps using cached or default models while admin writes stay locked.",
+    "contextWindow": "Context",
+    "contextWindowUnknown": "Not published",
+    "defaultModel": "Default",
+    "emptyDescription": "This catalog comes from the public model projection. If it is empty, chat fails closed to default configuration or waits for backend coverage.",
+    "loading": "Loading model catalog",
+    "noMatchingModels": "No matching models",
+    "noModels": "No available models",
+    "provider": "Provider",
+    "publicProjection": "Public model projection",
+    "publicProjectionDescription": "Chat and selectors only read approved public models without exposing keys, gateway configuration, or cross-tenant data.",
+    "searchPlaceholder": "Search models, providers, or capabilities",
+    "subtitle": "View models available to this workbench. Admin writes stay locked by governance policy.",
+    "title": "Models"
+  },
   "workbench": {
     "cockpit": "Workbench",
     "commandDock": "Composer",
@@ -2543,6 +2647,53 @@
     "forbidden": {
       "description": "This page remains visible in the workbench, but your account is missing {{permission}}. Ask an administrator to grant access before using its controls.",
       "title": "{{page}} is governed"
+    },
+    "phaseTwo": {
+      "users": {
+        "capabilities": {
+          "audit": "User audit, import, and deactivation need a traceable admin projection.",
+          "directory": "The company directory entry remains visible; legacy user APIs are not loaded.",
+          "lifecycle": "Create, disable, and role-assignment writes are waiting for backend RBAC contracts."
+        },
+        "description": "Company user management belongs in the enterprise workbench, but the backend has not opened the user admin projection yet. The entry stays visible without exposing legacy write APIs.",
+        "title": "Company user management is not enabled yet"
+      },
+      "settings": {
+        "capabilities": {
+          "publicProfile": "Personal preferences continue to read from profile and public settings surfaces.",
+          "runtime": "System runtime configuration is waiting for an audited admin settings projection.",
+          "secrets": "Keys, gateways, and environment variables are not exposed in the ordinary frontend."
+        },
+        "description": "System settings need an audited admin projection. The workbench keeps this entry as a state surface instead of rendering legacy settings forms.",
+        "title": "System settings projection is not enabled yet"
+      },
+      "feedback": {
+        "capabilities": {
+          "audit": "Triage history and status changes need backend audit coverage.",
+          "capture": "Message-level feedback remains in chat; the standalone desk waits for an aggregate projection.",
+          "triage": "Assignment, closure, and label governance are not read from legacy feedback admin APIs."
+        },
+        "description": "Feedback will become a unified triage desk, but the backend does not yet provide the aggregate and assignment contracts for the workbench.",
+        "title": "Feedback triage is not enabled yet"
+      },
+      "agents": {
+        "capabilities": {
+          "adminProjection": "System prompts, tool bindings, and model bindings are waiting for admin projections.",
+          "publicSelection": "Chat still uses the current selectable agents; this page does not load the legacy config panel.",
+          "roleAssignment": "Role-based agent assignment needs backend RBAC governance contracts."
+        },
+        "description": "Agent administration depends on role, model, and tool governance. The entry remains visible without rendering legacy configuration pages.",
+        "title": "Agent administration is not enabled yet"
+      },
+      "notifications": {
+        "capabilities": {
+          "admin": "Announcement creation, targeting, and expiry need an admin notification projection.",
+          "banner": "Runtime notifications still appear through current message and chat surfaces.",
+          "inbox": "A unified inbox is waiting for backend read-state and audience-scope contracts."
+        },
+        "description": "Notifications need audited publishing, audience, and read-state contracts. The workbench keeps the entry visible without loading legacy announcement admin pages.",
+        "title": "Notification management is not enabled yet"
+      }
     },
     "newConversation": "New conversation",
     "none": "None",

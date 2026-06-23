@@ -52,6 +52,8 @@ export enum Permission {
   // Agent
   AGENT_READ = "agent:read",
   AGENT_ADMIN = "agent:admin",
+  // Platform admin status
+  ADMIN_STATUS = "admin:status",
   // Model
   MODEL_ADMIN = "model:admin",
   // Marketplace

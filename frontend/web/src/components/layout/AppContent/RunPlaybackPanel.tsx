@@ -86,7 +86,7 @@ export function RunPlaybackPanel({ runId, panelKey }: RunPlaybackPanelProps) {
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-white text-[var(--theme-text)] dark:bg-[#1e1e1e]">
+    <div className="flex h-full min-h-0 flex-col bg-[var(--theme-bg-card)] text-[var(--theme-text)] dark:bg-stone-900">
       <SummaryBlock summary={viewModel.summary} />
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4">
@@ -128,7 +128,7 @@ function SummaryBlock({ summary }: { summary: RunPlaybackPanelSummary }) {
   ];
 
   return (
-    <div className="shrink-0 border-b border-stone-200 bg-stone-50/80 px-3 py-3 dark:border-stone-800 dark:bg-stone-900/40 sm:px-4">
+    <div className="shrink-0 border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-3 py-3 dark:border-stone-800 dark:bg-stone-950/50 sm:px-4">
       <div className="grid grid-cols-2 gap-x-3 gap-y-2">
         {fields.map((field) => (
           <div key={field.label} className="min-w-0">
@@ -195,7 +195,7 @@ function ContextProvenanceSection({
         contextProvenance.inputKeys.length
       }
     >
-      <div className="rounded-md border border-stone-200 bg-white px-2.5 py-2 dark:border-stone-800 dark:bg-stone-900/30">
+      <div className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2.5 py-2 dark:border-stone-800 dark:bg-stone-900">
         {detailFields.length > 0 && (
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {detailFields.map((field) => (
@@ -222,7 +222,7 @@ function ContextProvenanceSection({
               {contextProvenance.referencedMaterials.map((item) => (
                 <span
                   key={item.label}
-                  className="inline-flex items-center gap-1 rounded-md border border-stone-200 bg-stone-50 px-2 py-1 text-[11px] text-stone-600 dark:border-stone-800 dark:bg-stone-900/40 dark:text-stone-300"
+                  className="inline-flex items-center gap-1 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-2 py-1 text-[11px] text-stone-600 dark:border-stone-800 dark:bg-stone-950/50 dark:text-stone-300"
                 >
                   <span>{t(`runPlayback.context.counts.${item.label}`)}</span>
                   <span className="font-semibold tabular-nums">{item.value}</span>
@@ -240,7 +240,7 @@ function ContextProvenanceSection({
               {contextProvenance.inputKeys.map((key) => (
                 <span
                   key={key}
-                  className="rounded-md bg-stone-100 px-1.5 py-0.5 text-[10px] font-medium text-stone-600 dark:bg-stone-800 dark:text-stone-300"
+                  className="rounded-md bg-[var(--theme-bg-sidebar)] px-1.5 py-0.5 text-[10px] font-medium text-stone-600 dark:bg-stone-800 dark:text-stone-300"
                 >
                   {key}
                 </span>
@@ -256,7 +256,7 @@ function ContextProvenanceSection({
 function LoadingBlock() {
   const { t } = useTranslation();
   return (
-    <div className="flex items-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-500 dark:border-stone-800 dark:bg-stone-900/40 dark:text-stone-400">
+    <div className="flex items-center gap-2 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-3 py-2 text-sm text-stone-500 dark:border-stone-800 dark:bg-stone-950/50 dark:text-stone-400">
       <LoadingSpinner size="sm" />
       <span>{t("runPlayback.loading")}</span>
     </div>
@@ -290,7 +290,7 @@ function ErrorBlock({
       <button
         type="button"
         onClick={onRetry}
-        className="mt-3 inline-flex h-8 items-center gap-2 rounded-md border border-red-200 bg-white px-2.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-50 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-300 dark:hover:bg-red-950/40"
+        className="mt-3 inline-flex h-8 items-center gap-2 rounded-md border border-red-200 bg-[var(--theme-bg-card)] px-2.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-50 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-300 dark:hover:bg-red-950/40"
       >
         <RefreshCw size={13} />
         {t("runPlayback.retry")}
@@ -302,7 +302,7 @@ function ErrorBlock({
 function EmptyBlock() {
   const { t } = useTranslation();
   return (
-    <div className="rounded-md border border-stone-200 bg-stone-50 px-3 py-4 text-center text-sm text-stone-500 dark:border-stone-800 dark:bg-stone-900/40 dark:text-stone-400">
+    <div className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-3 py-4 text-center text-sm text-stone-500 dark:border-stone-800 dark:bg-stone-950/50 dark:text-stone-400">
       {t("runPlayback.empty")}
     </div>
   );
@@ -331,7 +331,7 @@ function TimelineSection({ items }: { items: RunPlaybackTimelineItem[] }) {
 
 function TimelineRow({ item }: { item: RunPlaybackTimelineItem }) {
   return (
-    <div className="flex gap-2 rounded-md border border-stone-200 bg-white px-2.5 py-2 dark:border-stone-800 dark:bg-stone-900/30">
+    <div className="flex gap-2 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2.5 py-2 dark:border-stone-800 dark:bg-stone-900">
       <StatusIcon status={item.status} kind={item.kind} />
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
@@ -389,7 +389,7 @@ function ArtifactRow({ artifact }: { artifact: RunPlaybackArtifactItem }) {
   };
 
   return (
-    <div className="rounded-md border border-stone-200 bg-white px-2.5 py-2 dark:border-stone-800 dark:bg-stone-900/30">
+    <div className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2.5 py-2 dark:border-stone-800 dark:bg-stone-900">
       <div className="flex min-w-0 items-start gap-2">
         <FileText
           size={15}
@@ -416,7 +416,7 @@ function ArtifactRow({ artifact }: { artifact: RunPlaybackArtifactItem }) {
               type="button"
               onClick={handlePreview}
               aria-label={`${t("runPlayback.preview")} ${artifact.label}`}
-              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-stone-200 px-2 text-[11px] font-medium text-stone-600 transition-colors hover:bg-stone-50 dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800"
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--theme-border)] px-2 text-[11px] font-medium text-stone-600 transition-colors hover:bg-[var(--theme-bg-sidebar)] dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800"
             >
               <ExternalLink size={12} />
               {t("runPlayback.preview")}
@@ -427,7 +427,7 @@ function ArtifactRow({ artifact }: { artifact: RunPlaybackArtifactItem }) {
               type="button"
               onClick={handleDownload}
               aria-label={`${t("runPlayback.download")} ${artifact.label}`}
-              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-stone-200 px-2 text-[11px] font-medium text-stone-600 transition-colors hover:bg-stone-50 dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800"
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--theme-border)] px-2 text-[11px] font-medium text-stone-600 transition-colors hover:bg-[var(--theme-bg-sidebar)] dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800"
             >
               <Download size={12} />
               {t("runPlayback.download")}
@@ -458,7 +458,7 @@ function MultiAgentSection({
           {counts.map((count) => (
             <span
               key={count.label}
-              className="inline-flex items-center gap-1 rounded-md border border-stone-200 bg-stone-50 px-2 py-1 text-[11px] text-stone-600 dark:border-stone-800 dark:bg-stone-900/40 dark:text-stone-300"
+              className="inline-flex items-center gap-1 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-2 py-1 text-[11px] text-stone-600 dark:border-stone-800 dark:bg-stone-950/50 dark:text-stone-300"
             >
               <span>{translateStatus(t, count.label)}</span>
               <span className="font-semibold tabular-nums">{count.value}</span>
@@ -481,7 +481,7 @@ function MultiAgentSection({
 
 function StepRow({ step }: { step: RunPlaybackStepItem }) {
   return (
-    <div className="flex gap-2 rounded-md border border-stone-200 bg-white px-2.5 py-2 dark:border-stone-800 dark:bg-stone-900/30">
+    <div className="flex gap-2 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2.5 py-2 dark:border-stone-800 dark:bg-stone-900">
       <StatusIcon status={step.status} kind="step" />
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
@@ -517,7 +517,7 @@ function PanelSection({
       <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-stone-700 dark:text-stone-200">
         <span className="text-stone-400 dark:text-stone-500">{icon}</span>
         <span>{title}</span>
-        <span className="ml-auto rounded-md bg-stone-100 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-stone-500 dark:bg-stone-800 dark:text-stone-400">
+        <span className="ml-auto rounded-md bg-[var(--theme-bg-sidebar)] px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-stone-500 dark:bg-stone-800 dark:text-stone-400">
           {count}
         </span>
       </div>
@@ -611,7 +611,7 @@ function getStatusBadgeClass(status: RunPlaybackDisplayStatus): string {
   if (status === "cancelled" || status === "blocked") {
     return "bg-stone-100 text-stone-700 dark:bg-stone-800 dark:text-stone-300";
   }
-  return "bg-stone-50 text-stone-500 dark:bg-stone-900 dark:text-stone-400";
+  return "bg-[var(--theme-bg-sidebar)] text-stone-500 dark:bg-stone-900 dark:text-stone-400";
 }
 
 function getStatusIconClass(status: RunPlaybackDisplayStatus): string {

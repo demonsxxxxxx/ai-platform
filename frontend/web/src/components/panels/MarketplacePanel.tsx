@@ -23,6 +23,10 @@ import type { SkillResponse, SkillCreate } from "../../types";
 import { SkillCard } from "./MarketplacePanel/SkillCard";
 import { SkillPreviewModal } from "./MarketplacePanel/SkillPreviewModal";
 import { GroupAvailabilityToggleRow } from "../governance/GroupAvailabilityToggleRow";
+import {
+  isPermissionError,
+  resolveFrontendGovernanceState,
+} from "../governance/frontendGovernanceState";
 
 interface MarketplacePanelProps {
   embedded?: boolean;
@@ -36,7 +40,11 @@ export function MarketplacePanel({
   settingsStateDegraded = false,
 }: MarketplacePanelProps) {
   const { t } = useTranslation();
-  const { hasAnyPermission } = useAuth();
+  const {
+    hasAnyPermission,
+    isAuthenticated,
+    isLoading: authLoading,
+  } = useAuth();
   const {
     skills,
     tags,
@@ -67,22 +75,32 @@ export function MarketplacePanel({
     closePreview,
     setPreviewFileContent,
   } = useMarketplace({ enabled: !governedUnavailable });
+  const permissionDenied = isPermissionError(error);
+  const effectiveGovernedUnavailable = governedUnavailable || permissionDenied;
+  const governanceState = resolveFrontendGovernanceState({
+    isAuthenticated,
+    isLoading: authLoading,
+    hasWorkspace: true,
+    hasPermission: !permissionDenied,
+    featureEnabled: true,
+    degraded: settingsStateDegraded || Boolean(error),
+  });
 
   const {
     skills: userSkills,
     fetchSkills: fetchUserSkills,
     isLoading: userSkillsLoading,
     getSkill,
-  } = useSkills({ enabled: !governedUnavailable });
+  } = useSkills({ enabled: !effectiveGovernedUnavailable });
   const marketplaceDirectWriteBacked = true;
   const canInstall =
     hasAnyPermission([Permission.SKILL_WRITE]) &&
     hasAnyPermission([Permission.MARKETPLACE_READ]) &&
-    !governedUnavailable;
+    !effectiveGovernedUnavailable;
   const canCreateInMarketplace =
     marketplaceDirectWriteBacked &&
     hasAnyPermission([Permission.MARKETPLACE_ADMIN]) &&
-    !governedUnavailable;
+    !effectiveGovernedUnavailable;
   const canAdmin =
     marketplaceDirectWriteBacked &&
     hasAnyPermission([Permission.MARKETPLACE_ADMIN]);
@@ -369,7 +387,7 @@ export function MarketplacePanel({
       )}
       <button
         onClick={() => fetchSkills()}
-        disabled={governedUnavailable}
+        disabled={effectiveGovernedUnavailable}
         className="btn-secondary h-10"
         title={t("common.refresh")}
       >
@@ -391,6 +409,7 @@ export function MarketplacePanel({
   return (
     <div
       data-phase1c-surface="marketplace"
+      data-frontend-governance-state={governanceState}
       data-marketplace-catalog-shell
       data-settings-state-degraded={settingsStateDegraded || undefined}
       className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
@@ -441,7 +460,7 @@ export function MarketplacePanel({
 
       {/* Error */}
       {error && (
-        <div className="mx-4 mt-4 flex items-center justify-between rounded-xl bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-400">
+        <div className="mx-4 mt-4 flex items-center justify-between rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-400">
           <span>{error}</span>
           <button
             onClick={clearError}
@@ -474,7 +493,7 @@ export function MarketplacePanel({
               {t("skills.marketplace.departmentAvailability")}
             </span>
             <span className="truncate text-slate-500 dark:text-stone-400">
-              {governedUnavailable
+              {effectiveGovernedUnavailable
                 ? t("marketplace.catalogUnavailable.description")
                 : t("marketplace.subtitle")}
             </span>
@@ -498,7 +517,7 @@ export function MarketplacePanel({
 
       {/* Skills List */}
       <div className="skill-content-area flex-1 overflow-y-auto py-2 sm:py-4 px-4 sm:p-6">
-        {governedUnavailable ? (
+        {effectiveGovernedUnavailable ? (
           <div data-marketplace-unavailable-shell className="space-y-4">
             <div
               data-marketplace-ordinary-user-copy
@@ -549,14 +568,14 @@ export function MarketplacePanel({
               <ShoppingBag size={28} />
             </div>
             <p className="skill-empty-state__title">
-              {governedUnavailable
+              {effectiveGovernedUnavailable
                 ? t("marketplace.catalogUnavailable.title")
                 : searchQuery || selectedTags.length > 0
                 ? t("marketplace.noMatchingSkills")
                 : t("marketplace.noSkills")}
             </p>
             <p className="skill-empty-state__description">
-              {governedUnavailable
+              {effectiveGovernedUnavailable
                 ? t("marketplace.catalogUnavailable.description")
                 : searchQuery || selectedTags.length > 0
                 ? t("marketplace.subtitle")
@@ -582,7 +601,7 @@ export function MarketplacePanel({
                 isOwner={skill.is_owner}
                 canManage={
                   marketplaceDirectWriteBacked &&
-                  !governedUnavailable &&
+                  !effectiveGovernedUnavailable &&
                   (skill.is_owner || canAdmin)
                 }
                 canInstall={canInstall}

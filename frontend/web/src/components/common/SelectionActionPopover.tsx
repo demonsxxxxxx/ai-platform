@@ -153,10 +153,10 @@ export function SelectionActionPopover() {
       className="fixed rounded-lg text-xs z-[9999]"
       style={{ left: popover.left, top: popover.top }}
     >
-      <div className="flex flex-row gap-0.5 shrink-0 p-1 bg-white text-stone-700 dark:bg-stone-800 dark:text-stone-100 text-medium rounded-lg shadow-xl border border-stone-100 dark:border-stone-700">
+      <div className="flex flex-row gap-0.5 shrink-0 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-1 text-medium text-[var(--theme-text)] shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
         <button
           type="button"
-          className="px-1.5 py-1 hover:bg-stone-50 dark:hover:bg-stone-700 rounded flex items-center gap-1 min-w-fit transition-colors"
+          className="px-1.5 py-1 hover:bg-[var(--theme-bg-sidebar)] rounded flex items-center gap-1 min-w-fit transition-colors"
           title={t("selectionActions.ask")}
           aria-label={t("selectionActions.ask")}
           onMouseDown={(event) => event.preventDefault()}
@@ -167,7 +167,7 @@ export function SelectionActionPopover() {
         </button>
         <button
           type="button"
-          className="px-1.5 py-1 hover:bg-stone-50 dark:hover:bg-stone-700 rounded flex items-center gap-1 min-w-fit transition-colors"
+          className="px-1.5 py-1 hover:bg-[var(--theme-bg-sidebar)] rounded flex items-center gap-1 min-w-fit transition-colors"
           title={t("selectionActions.explain")}
           aria-label={t("selectionActions.explain")}
           onMouseDown={(event) => event.preventDefault()}

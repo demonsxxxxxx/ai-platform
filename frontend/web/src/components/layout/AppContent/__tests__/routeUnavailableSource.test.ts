@@ -22,7 +22,8 @@ test("route-level forbidden state keeps the workbench shell without loading gate
 
   assert.match(tabContent, /if \(routeUnavailable\)/);
   assert.match(tabContent, /data-frontend-governance-state=\{routeUnavailable\.state\}/);
-  assert.match(tabContent, /<WorkbenchUnavailableState/);
+  assert.match(tabContent, /<WorkbenchStateSurface/);
+  assert.match(tabContent, /state=\{routeUnavailable\.state\}/);
   assert.match(appContent, /routeUnavailable=\{routeUnavailable\}/);
   assert.match(nonChat, /routeUnavailable=\{routeUnavailable\}/);
   assert.match(app, /fallbackComponent=\{/);

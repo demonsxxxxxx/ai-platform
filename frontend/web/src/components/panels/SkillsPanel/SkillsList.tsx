@@ -39,6 +39,10 @@ interface SkillsListProps {
   error: string | null;
   clearError: () => void;
   canWrite: boolean;
+  canEdit: boolean;
+  canCreate: boolean;
+  canImport: boolean;
+  canBatch: boolean;
   canDelete: boolean;
   canPublish: boolean;
   selectedNames: Set<string>;
@@ -75,6 +79,10 @@ export function SkillsList({
   error,
   clearError,
   canWrite,
+  canEdit,
+  canCreate,
+  canImport,
+  canBatch,
   canDelete,
   canPublish,
   selectedNames,
@@ -116,9 +124,13 @@ export function SkillsList({
 
   const hasActiveFilters =
     searchQuery.trim().length > 0 || selectedTags.length > 0;
-  const canCreateSkills = canWrite && !governedUnavailable;
-  const canImportSkills = canWrite && !governedUnavailable;
-  const canManageSkills = (canWrite || canDelete) && !governedUnavailable;
+  const canToggleSkills = canWrite && !governedUnavailable;
+  const canEditSkills = canEdit && !governedUnavailable;
+  const canCreateSkills = canCreate && !governedUnavailable;
+  const canImportSkills = canImport && !governedUnavailable;
+  const canBatchSkills = canBatch && !governedUnavailable;
+  const canManageSkills =
+    canBatchSkills || canImportSkills || canCreateSkills;
 
   const filterMenu = availableTags.length > 0 && (
     <div className="relative shrink-0" ref={filterRef}>
@@ -144,7 +156,7 @@ export function SkillsList({
         />
       </button>
       {isFilterOpen && (
-        <div className="skill-filter-dropdown absolute right-0 top-[calc(100%+0.5rem)] z-20 w-72 rounded-2xl border  p-3 shadow-lg">
+        <div className="skill-filter-dropdown absolute right-0 top-[calc(100%+0.5rem)] z-20 w-72 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
           <div className="mb-2 flex items-center justify-between">
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--theme-text-secondary)]">
               {t("adminMarketplace.tags")}
@@ -180,7 +192,7 @@ export function SkillsList({
 
   const headerActions = canManageSkills ? (
     <div className="flex items-center gap-2">
-      {canManageSkills && filteredSkills.length > 0 && (
+      {canBatchSkills && filteredSkills.length > 0 && (
         <button
           onClick={onSelectAll}
           className="btn-secondary h-10"
@@ -261,7 +273,7 @@ export function SkillsList({
 
       {/* Error */}
       {error && (
-        <div className="mx-4 mt-4 flex items-center justify-between rounded-xl bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-400">
+        <div className="mx-4 mt-4 flex items-center justify-between rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-400">
           <span>{error}</span>
           <button
             onClick={clearError}
@@ -318,16 +330,17 @@ export function SkillsList({
                 onToggle={onToggle}
                 onEdit={onEdit}
                 onDelete={onDelete}
-                onExportZip={canImportSkills ? onExportZip : undefined}
+                onExportZip={governedUnavailable ? undefined : onExportZip}
                 onPublish={
                   canPublish ? (s: SkillResponse) => onPublish?.(s) : undefined
                 }
-                canWrite={canWrite}
+                canWrite={canToggleSkills}
+                canEdit={canEditSkills}
                 canDelete={canDelete}
                 isPublished={skill.is_published}
                 selected={selectedNames.has(skill.name)}
-                onSelect={onSelectSkill}
-                selectionMode={canWrite || canDelete}
+                onSelect={canBatchSkills ? onSelectSkill : undefined}
+                selectionMode={canBatchSkills}
               />
             ))}
           </div>
@@ -336,7 +349,7 @@ export function SkillsList({
 
       {/* Pagination */}
       {total > pageSize && (
-        <div className="glass-divider px-3 py-3 sm:px-4">
+        <div className="enterprise-divider border-t px-3 py-3 sm:px-4">
           <Pagination
             page={page}
             pageSize={pageSize}

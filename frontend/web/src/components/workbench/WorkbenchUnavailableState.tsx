@@ -1,33 +1,34 @@
 import type { ElementType } from "react";
-import { ShieldAlert } from "lucide-react";
-import { workbenchSurface } from "./workbenchSurface";
+import type { FrontendGovernanceState } from "../governance/frontendGovernanceState";
+import { WorkbenchStateSurface } from "./WorkbenchStateSurface";
 
 export interface WorkbenchUnavailableStateProps {
   title: string;
   description: string;
   icon?: ElementType;
   surface: string;
+  state?: FrontendGovernanceState;
+  details?: string[];
 }
 
 export function WorkbenchUnavailableState({
   title,
   description,
-  icon: Icon = ShieldAlert,
+  icon,
   surface,
+  state = "forbidden",
+  details,
 }: WorkbenchUnavailableStateProps) {
   return (
-    <section
-      data-workbench-unavailable
-      data-fail-closed-surface={surface}
-      className={`${workbenchSurface.compactPanel} mx-auto w-full max-w-xl p-5 text-center`}
-    >
-      <Icon className="mx-auto text-slate-500 dark:text-stone-300" size={32} />
-      <h1 className="mt-4 text-base font-semibold text-slate-900 dark:text-stone-100">
-        {title}
-      </h1>
-      <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-stone-300">
-        {description}
-      </p>
-    </section>
+    <div data-workbench-unavailable>
+      <WorkbenchStateSurface
+        state={state}
+        title={title}
+        description={description}
+        icon={icon}
+        surface={surface}
+        details={details}
+      />
+    </div>
   );
 }

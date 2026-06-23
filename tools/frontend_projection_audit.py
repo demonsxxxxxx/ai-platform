@@ -88,7 +88,9 @@ AI_PLATFORM_ROUTE_PREFIXES = [
 ]
 SAFE_PUBLIC_ROUTE_PREFIXES = [
     "/api/agent/models/available",
-    "/api/agent/models/providers/list",
+    "/api/github",
+    "/api/marketplace",
+    "/api/skills",
 ]
 ORDINARY_USER_BASELINE_PERMISSION_TOKENS = {
     "AGENT_USE",
@@ -114,15 +116,12 @@ LEGACY_POLICY_REQUIRED_ROUTE_PREFIXES = [
     "/api/agent/models",
     "/api/channels",
     "/api/env-vars",
-    "/api/github",
-    "/api/marketplace",
     "/api/mcp",
     "/api/memory",
     "/api/notifications/admin",
     "/api/persona-presets",
     "/api/roles",
     "/api/settings",
-    "/api/skills",
     "/api/users",
 ]
 LEGACY_ROUTE_POLICY_MAP: dict[str, dict[str, str]] = {
@@ -168,20 +167,6 @@ LEGACY_ROUTE_POLICY_MAP: dict[str, dict[str, str]] = {
         "admin_exposure": "same_tenant_admin_masked_projection_only",
         "required_action": "remap_to_ai_platform_admin_projection_or_hide",
     },
-    "/api/github": {
-        "domain": "skill_package_source_policy",
-        "governance_gate": "G6",
-        "ordinary_user_exposure": "fail_closed",
-        "admin_exposure": "same_tenant_admin_projection_only",
-        "required_action": "remap_to_ai_platform_admin_projection_or_hide",
-    },
-    "/api/marketplace": {
-        "domain": "skill_catalog_policy",
-        "governance_gate": "G6",
-        "ordinary_user_exposure": "fail_closed_until_public_projection_exists",
-        "admin_exposure": "same_tenant_admin_projection_only",
-        "required_action": "remap_to_ai_platform_public_or_admin_projection",
-    },
     "/api/mcp": {
         "domain": "mcp_tool_governance",
         "governance_gate": "G6",
@@ -222,13 +207,6 @@ LEGACY_ROUTE_POLICY_MAP: dict[str, dict[str, str]] = {
         "governance_gate": "G6",
         "ordinary_user_exposure": "fail_closed_until_public_projection_exists",
         "admin_exposure": "same_tenant_admin_masked_projection_only",
-        "required_action": "remap_to_ai_platform_public_or_admin_projection",
-    },
-    "/api/skills": {
-        "domain": "skill_governance",
-        "governance_gate": "G6",
-        "ordinary_user_exposure": "fail_closed_until_public_catalog_projection_exists",
-        "admin_exposure": "same_tenant_admin_skill_projection_only",
         "required_action": "remap_to_ai_platform_public_or_admin_projection",
     },
     "/api/users": {
@@ -753,11 +731,13 @@ def _requested_lines(lines: list[str], requested: set[str] | None) -> set[int] |
     if requested is None:
         return None
     spans: set[int] = set()
+    requested_spans: list[tuple[int, int]] = []
     for index, line in enumerate(lines, start=1):
         for symbol in requested:
             if re.search(rf"""\b(?:export\s+)?(?:async\s+)?(?:function|const|let|var)\s+{re.escape(symbol)}\b""", line):
                 balance = line.count("{") - line.count("}")
                 spans.add(index)
+                start = index
                 cursor = index + 1
                 while cursor <= len(lines):
                     spans.add(cursor)
@@ -765,6 +745,21 @@ def _requested_lines(lines: list[str], requested: set[str] | None) -> set[int] |
                     if balance <= 0:
                         break
                     cursor += 1
+                requested_spans.append((start, cursor))
+    if requested_spans:
+        for index, line in enumerate(lines, start=1):
+            if not re.search(r"""\bconst\s+[A-Z0-9_]*API[A-Z0-9_]*\s*=""", line):
+                continue
+            name_match = re.search(r"""\bconst\s+(?P<name>[A-Z0-9_]*API[A-Z0-9_]*)\s*=""", line)
+            if not name_match:
+                continue
+            name = name_match.group("name")
+            if any(
+                name in requested_line
+                for start, end in requested_spans
+                for requested_line in lines[start - 1 : end]
+            ):
+                spans.add(index)
     return spans
 
 

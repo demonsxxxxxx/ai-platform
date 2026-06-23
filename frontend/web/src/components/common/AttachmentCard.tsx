@@ -69,6 +69,8 @@ export const AttachmentCard = memo(function AttachmentCard({
     useSafeAttachmentImageSrc(attachment.url, attachment.mimeType) ?? undefined;
   const isImage = Boolean(imageSrc);
   const isCompact = size === "compact";
+  const removeButtonClass =
+    "shrink-0 flex size-6 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] opacity-100 transition-colors duration-150 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-500/10 dark:hover:text-red-300";
 
   const handleClick = () => {
     onClick?.(imageSrc);
@@ -86,14 +88,12 @@ export const AttachmentCard = memo(function AttachmentCard({
         onClick={handleClick}
         className={clsx(
           "group relative flex items-center gap-2.5 px-3 py-2",
-          "rounded-xl border border-stone-200/60 dark:border-stone-700/60",
-          "bg-gradient-to-br from-white to-stone-50/80 dark:from-stone-800 dark:to-stone-900",
-          "shadow-sm cursor-pointer select-none",
-          "transition-all duration-200 ease-out",
-          "hover:shadow-md hover:shadow-stone-200/40 dark:hover:shadow-stone-900/40",
-          "hover:border-stone-300/70 dark:hover:border-stone-600/70",
-          "hover:-translate-y-0.5",
-          "active:scale-[0.98]",
+          "rounded-lg border border-[var(--theme-border)]",
+          "bg-[var(--theme-bg-card)] dark:bg-stone-900",
+          "shadow-[0_4px_12px_rgba(18,38,63,0.03)] cursor-pointer select-none",
+          "transition-colors duration-150 ease-out",
+          "hover:bg-[var(--theme-bg-sidebar)]",
+          "active:opacity-90",
           isUploading && !onCancel && "pointer-events-none",
         )}
       >
@@ -121,10 +121,10 @@ export const AttachmentCard = memo(function AttachmentCard({
 
         {/* 文件信息 */}
         <div className="flex flex-col min-w-0 flex-1">
-          <span className="text-[13px] font-medium text-stone-800 dark:text-stone-100 truncate max-w-[120px] sm:max-w-[160px] leading-tight">
+          <span className="max-w-[120px] truncate text-[13px] font-medium leading-tight text-[var(--theme-text)] sm:max-w-[160px]">
             {attachment.name}
           </span>
-          <span className="text-xs text-stone-400 dark:text-stone-500 mt-0.5">
+          <span className="mt-0.5 text-xs text-[var(--theme-text-secondary)]">
             {isUploading
               ? `${attachment.uploadProgress ?? 0}%`
               : formatFileSize(attachment.size)}
@@ -140,14 +140,7 @@ export const AttachmentCard = memo(function AttachmentCard({
                 e.stopPropagation();
                 onCancel();
               }}
-              className={clsx(
-                "shrink-0 size-6 rounded-full flex items-center justify-center",
-                "bg-red-100/80 dark:bg-red-900/30",
-                "text-red-500 dark:text-red-400",
-                "opacity-100",
-                "transition-all duration-200",
-                "hover:bg-red-200 dark:hover:bg-red-900/50",
-              )}
+              className={removeButtonClass}
               title={t("fileUpload.cancelUpload")}
             >
               <X size={12} />
@@ -158,13 +151,8 @@ export const AttachmentCard = memo(function AttachmentCard({
                 type="button"
                 onClick={handleRemove}
                 className={clsx(
-                  "shrink-0 size-6 rounded-full flex items-center justify-center",
-                  "bg-stone-100/80 dark:bg-stone-700/80",
-                  "text-stone-400 dark:text-stone-500",
-                  "opacity-100 sm:opacity-0 sm:group-hover:opacity-100",
-                  "transition-all duration-200",
-                  "hover:bg-red-100 dark:hover:bg-red-900/30",
-                  "hover:text-red-500 dark:hover:text-red-400",
+                  removeButtonClass,
+                  "sm:opacity-0 sm:group-hover:opacity-100",
                 )}
               >
                 <X size={12} />
@@ -182,17 +170,12 @@ export const AttachmentCard = memo(function AttachmentCard({
       className={clsx(
         "group relative flex items-center overflow-hidden",
         "h-12 sm:h-14 min-w-[200px] max-w-[280px] sm:min-w-[240px] sm:max-w-[320px]",
-        "bg-gradient-to-br from-white to-stone-50/80",
-        "dark:from-stone-800 dark:to-stone-900",
-        "rounded-2xl sm:rounded-xl",
-        "border border-stone-200/60 dark:border-stone-700/60",
-        "shadow-sm",
+        "rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] dark:bg-stone-900",
+        "shadow-[0_4px_12px_rgba(18,38,63,0.03)]",
         "text-left cursor-pointer select-none",
-        "transition-all duration-300 ease-out",
-        "hover:shadow-lg hover:shadow-stone-200/50 dark:hover:shadow-stone-900/50",
-        "hover:border-stone-300/80 dark:hover:border-stone-600/80",
-        "hover:-translate-y-0.5 hover:scale-[1.02]",
-        "active:scale-[0.98] active:shadow-sm",
+        "transition-colors duration-150 ease-out",
+        "hover:bg-[var(--theme-bg-sidebar)]",
+        "active:opacity-90",
         isUploading && "pointer-events-none",
       )}
       type="button"
@@ -204,8 +187,8 @@ export const AttachmentCard = memo(function AttachmentCard({
           "transition-transform duration-300",
           !isUploading && "group-hover:scale-105",
           isImage
-            ? "size-12 sm:size-14 rounded-l-2xl sm:rounded-l-xl overflow-hidden"
-            : clsx("size-12 sm:size-14 rounded-l-2xl sm:rounded-l-xl", bgColor),
+            ? "size-12 overflow-hidden rounded-l-lg sm:size-14"
+            : clsx("size-12 rounded-l-lg sm:size-14", bgColor),
         )}
       >
         {isUploading ? (
@@ -232,10 +215,10 @@ export const AttachmentCard = memo(function AttachmentCard({
 
       {/* 文件信息 */}
       <div className="flex flex-col justify-center px-3 sm:px-3.5 py-2 min-w-0 flex-1">
-        <div className="text-[13px] sm:text-sm font-medium truncate text-stone-800 dark:text-stone-100 leading-tight">
+        <div className="truncate text-[13px] font-medium leading-tight text-[var(--theme-text)] sm:text-sm">
           {attachment.name}
         </div>
-        <div className="flex items-center justify-between mt-0.5 sm:mt-1 text-[11px] sm:text-xs text-stone-400 dark:text-stone-500">
+        <div className="mt-0.5 flex items-center justify-between text-[11px] text-[var(--theme-text-secondary)] sm:mt-1 sm:text-xs">
           <span className="capitalize truncate">{label}</span>
           <span className="shrink-0 ml-2">
             {isUploading

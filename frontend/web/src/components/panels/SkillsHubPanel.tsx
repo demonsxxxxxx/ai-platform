@@ -9,10 +9,11 @@ import { resolveFrontendGovernanceState } from "../governance/frontendGovernance
 import { PanelHeader } from "../common/PanelHeader";
 import { MarketplacePanel } from "./MarketplacePanel";
 import { SkillsPanel } from "./SkillsPanel";
-import { resolveSkillsHubTab, type SkillsHubTab } from "./SkillsHubPanel/state";
+import type { SkillsHubTab } from "./SkillsHubPanel/state";
 import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
 import { resolveGroupAvailability } from "../governance/groupAvailability";
 import { GroupAvailabilityToggleRow } from "../governance/GroupAvailabilityToggleRow";
+import { resolveSettingsBooleanProjection } from "../layout/AppContent/skillAvailability";
 
 const TAB_PATHS: Record<SkillsHubTab, string> = {
   skills: "/skills",
@@ -35,24 +36,24 @@ export function SkillsHubPanel() {
   const canReadMarketplace = hasAnyPermission([Permission.MARKETPLACE_READ]);
   const requestedTab: SkillsHubTab =
     location.pathname === "/marketplace" ? "marketplace" : "skills";
-  const visibleTab = resolveSkillsHubTab(
-    requestedTab,
-    canReadSkills,
-    canReadMarketplace,
-  ) ?? requestedTab;
+  const visibleTab = requestedTab;
   const isMarketplaceView = visibleTab === "marketplace";
   const hasDiscoveryPermission = canReadSkills || canReadMarketplace;
-  const activeTabCanRead = isMarketplaceView ? canReadMarketplace : canReadSkills;
   const showTabSwitcher = true;
-  const settingsProjectionKnown = settings !== null;
+  const enableSkillsProjection = resolveSettingsBooleanProjection(
+    settings,
+    "ENABLE_SKILLS",
+  );
+  const settingsProjectionKnown = enableSkillsProjection.known;
+  const skillsFeatureEnabled = enableSkillsProjection.value ?? enableSkills;
   const skillsProjectionDegraded =
-    Boolean(settingsError) || (settingsProjectionKnown && !enableSkills);
+    Boolean(settingsError) || (settingsProjectionKnown && !skillsFeatureEnabled);
   const governanceState = resolveFrontendGovernanceState({
     isAuthenticated,
     isLoading: authLoading || settingsLoading,
     hasWorkspace: true,
-    hasPermission: activeTabCanRead,
-    featureEnabled: settingsProjectionKnown ? enableSkills : true,
+    hasPermission: true,
+    featureEnabled: settingsProjectionKnown ? skillsFeatureEnabled : true,
     projectionError: settingsError,
     degraded: skillsProjectionDegraded,
   });
@@ -61,7 +62,7 @@ export function SkillsHubPanel() {
       ? "ready"
       : governanceState === "degraded"
       ? "degraded"
-      : settingsProjectionKnown && !enableSkills
+      : settingsProjectionKnown && !skillsFeatureEnabled
       ? "featureDisabled"
       : "permissionLimited";
   const permissionAvailability = resolveGroupAvailability({
@@ -161,7 +162,7 @@ export function SkillsHubPanel() {
                 {t("skillsHub.composerEntry.description")}
               </p>
             </div>
-            <div className="flex shrink-0 items-center gap-1 rounded-lg border border-stone-200 bg-stone-50 p-1 text-[11px] font-semibold text-stone-600 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-300">
+            <div className="flex shrink-0 items-center gap-1 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] p-1 text-[11px] font-semibold text-stone-600 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-300">
               <span className="rounded-md bg-slate-100 px-2 py-1 shadow-sm dark:bg-stone-900">
                 /
               </span>
@@ -187,7 +188,7 @@ export function SkillsHubPanel() {
           <div data-skill-catalog-shell className="h-full min-h-0">
             <SkillsPanel
               embedded
-              governedUnavailable={!canReadSkills}
+              governedUnavailable={false}
               settingsStateDegraded={skillsProjectionDegraded}
             />
           </div>
@@ -195,7 +196,7 @@ export function SkillsHubPanel() {
           <div data-marketplace-catalog-shell className="h-full min-h-0">
             <MarketplacePanel
               embedded
-              governedUnavailable={!canReadMarketplace}
+              governedUnavailable={false}
               settingsStateDegraded={skillsProjectionDegraded}
             />
           </div>

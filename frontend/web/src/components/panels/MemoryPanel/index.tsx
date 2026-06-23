@@ -77,7 +77,7 @@ function TextInput({
       value={value}
       onChange={(event) => onChange(event.target.value)}
       placeholder={placeholder}
-      className="h-10 w-full rounded-lg border border-[var(--glass-border)] bg-[var(--glass-bg)] px-3 text-sm text-[var(--theme-text)] outline-none transition focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary-light)]"
+      className="enterprise-form-input"
     />
   );
 }
@@ -94,7 +94,7 @@ function StatusPill({
       className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${
         active
           ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
-          : "bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-300"
+          : "bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]"
       }`}
     >
       {children}
@@ -104,7 +104,7 @@ function StatusPill({
 
 function EmptyState({ children }: { children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-dashed border-[var(--glass-border)] px-4 py-6 text-center text-sm text-[var(--theme-text-secondary)]">
+    <div className="enterprise-empty-state enterprise-empty-state--compact text-sm">
       {children}
     </div>
   );
@@ -119,8 +119,9 @@ function MemoryRecordRow({
   canDelete?: boolean;
   onDelete?: (recordId: string) => void;
 }) {
+  const { t } = useTranslation();
   return (
-    <div className="rounded-lg border border-[var(--glass-border)] bg-[var(--glass-bg)] p-3">
+    <div className="enterprise-subtle-panel">
       <div className="flex flex-wrap items-center gap-2">
         <StatusPill active={record.status === "active"}>
           {record.status || "active"}
@@ -137,10 +138,10 @@ function MemoryRecordRow({
         {canDelete && onDelete && (
           <button
             type="button"
-            aria-label="Delete memory record"
+            aria-label={t("memory.workbench.deleteRecord")}
             className="btn-icon inline-flex h-9 w-9 items-center justify-center rounded-lg text-red-500 transition hover:bg-red-50 dark:hover:bg-red-500/10"
             onClick={() => onDelete(record.memory_record_id)}
-            title="Delete"
+            title={t("common.delete")}
           >
             <Trash2 size={15} />
           </button>
@@ -155,7 +156,11 @@ function MemoryRecordRow({
         <span className="es-chip">{record.memory_record_id}</span>
         {record.session_id && <span className="es-chip">{record.session_id}</span>}
         {record.expires_at && (
-          <span className="es-chip">expires {formatDateTimeShort(record.expires_at)}</span>
+          <span className="es-chip">
+            {t("memory.workbench.expires", {
+              date: formatDateTimeShort(record.expires_at),
+            })}
+          </span>
         )}
       </div>
     </div>
@@ -163,34 +168,49 @@ function MemoryRecordRow({
 }
 
 function PolicySummary({ policy }: { policy: MemoryPolicy | null }) {
+  const { t } = useTranslation();
   if (!policy) {
-    return <EmptyState>No memory policy projection loaded.</EmptyState>;
+    return <EmptyState>{t("memory.workbench.noPolicy")}</EmptyState>;
   }
   return (
     <div className="grid gap-2 text-sm text-[var(--theme-text-secondary)] sm:grid-cols-2">
       <div>
-        <span className="font-medium text-[var(--theme-text)]">User</span>{" "}
+        <span className="font-medium text-[var(--theme-text)]">
+          {t("memory.workbench.user")}
+        </span>{" "}
         {policy.user_id}
       </div>
       <div>
-        <span className="font-medium text-[var(--theme-text)]">Agent</span>{" "}
-        {policy.agent_id || "all"}
+        <span className="font-medium text-[var(--theme-text)]">
+          {t("memory.workbench.agent")}
+        </span>{" "}
+        {policy.agent_id || t("memory.workbench.allAgents")}
       </div>
       <div>
-        <span className="font-medium text-[var(--theme-text)]">Retention</span>{" "}
-        {policy.retention_days} days
+        <span className="font-medium text-[var(--theme-text)]">
+          {t("memory.workbench.retention")}
+        </span>{" "}
+        {t("memory.workbench.days", { count: policy.retention_days })}
       </div>
       <div>
-        <span className="font-medium text-[var(--theme-text)]">Source</span>{" "}
+        <span className="font-medium text-[var(--theme-text)]">
+          {t("memory.workbench.source")}
+        </span>{" "}
         {policy.source}
       </div>
       <div className="sm:col-span-2">
-        <span className="font-medium text-[var(--theme-text)]">Updated</span>{" "}
-        {policy.updated_at ? formatDateTimeShort(policy.updated_at) : "default"}
+        <span className="font-medium text-[var(--theme-text)]">
+          {t("memory.workbench.updated")}
+        </span>{" "}
+        {policy.updated_at
+          ? formatDateTimeShort(policy.updated_at)
+          : t("memory.workbench.defaultPolicy")}
       </div>
       {policy.reason && (
         <div className="sm:col-span-2">
-          <span className="font-medium text-[var(--theme-text)]">Reason</span>{" "}
+          <span className="font-medium text-[var(--theme-text)]">
+            {t("memory.workbench.reason")}
+          </span>{" "}
           {policy.reason}
         </div>
       )}
@@ -335,7 +355,7 @@ export function MemoryPanel() {
         reason,
       });
       setPolicy(response.memory_policy);
-      toast.success("Memory policy updated");
+      toast.success(t("memory.workbench.policyUpdated"));
       await Promise.all([loadRecords(), loadAdminProjection()]);
     } catch (error) {
       toast.error(errorMessage(error));
@@ -346,7 +366,7 @@ export function MemoryPanel() {
 
   const removeRecord = async (recordId: string) => {
     if (!normalizedSessionId) return;
-    if (!window.confirm("Delete this session-bound memory record?")) return;
+    if (!window.confirm(t("memory.workbench.deleteRecordConfirm"))) return;
     try {
       await deleteMemoryRecord(recordId, {
         workspace_id: normalizedWorkspaceId,
@@ -354,7 +374,7 @@ export function MemoryPanel() {
         session_id: normalizedSessionId,
         reason: "user deleted from Memory panel",
       });
-      toast.success("Memory record deleted");
+      toast.success(t("memory.workbench.recordDeleted"));
       await Promise.all([loadRecords(), loadAdminProjection()]);
     } catch (error) {
       toast.error(errorMessage(error));
@@ -368,7 +388,11 @@ export function MemoryPanel() {
         workspace_id: normalizedWorkspaceId,
         limit: 200,
       });
-      toast.success(`Retention cleanup deleted ${response.deleted_count} records`);
+      toast.success(
+        t("memory.workbench.cleanupDeleted", {
+          count: response.deleted_count,
+        }),
+      );
       await loadAdminProjection();
     } catch (error) {
       toast.error(errorMessage(error));
@@ -378,10 +402,10 @@ export function MemoryPanel() {
   };
 
   return (
-    <div className="glass-shell flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-[var(--theme-text)]">
       <PanelHeader
         title={t("memory.title", "Memory")}
-        subtitle="ai-platform public memory policy, session records, and admin projection"
+        subtitle={t("memory.workbench.subtitle")}
         icon={<Brain size={20} />}
         actions={
           <button
@@ -405,48 +429,52 @@ export function MemoryPanel() {
 
       <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-6">
         <div className="mb-4 grid gap-3 lg:grid-cols-3">
-          <FieldLabel label="Workspace">
+          <FieldLabel label={t("memory.workbench.workspace")}>
             <TextInput value={workspaceId} onChange={setWorkspaceId} />
           </FieldLabel>
-          <FieldLabel label="Agent public id">
+          <FieldLabel label={t("memory.workbench.agentPublicId")}>
             <TextInput
               value={agentId}
               onChange={setAgentId}
               placeholder="document-review"
             />
           </FieldLabel>
-          <FieldLabel label="Session id">
+          <FieldLabel label={t("memory.workbench.sessionId")}>
             <TextInput
               value={sessionId}
               onChange={setSessionId}
-              placeholder="Required for memory records"
+              placeholder={t("memory.workbench.sessionIdPlaceholder")}
             />
           </FieldLabel>
         </div>
 
         <div className="grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-          <section className="glass-card rounded-xl p-4 sm:p-5">
+          <section className="panel-card p-4 sm:p-5">
             <div className="mb-4 flex flex-wrap items-center gap-2">
               <ShieldCheck size={18} className="text-[var(--theme-text-secondary)]" />
               <h2 className="text-base font-semibold text-[var(--theme-text)]">
-                User Memory Policy
+                {t("memory.workbench.userPolicy")}
               </h2>
               <div className="ml-auto flex flex-wrap gap-2">
                 <StatusPill active={memoryEnabled}>
-                  {memoryEnabled ? "enabled" : "disabled"}
+                  {memoryEnabled
+                    ? t("governance.enabled")
+                    : t("governance.disabled")}
                 </StatusPill>
-                <StatusPill active={false}>long-term closed</StatusPill>
+                <StatusPill active={false}>
+                  {t("memory.workbench.longTermClosed")}
+                </StatusPill>
               </div>
             </div>
 
             <div className="grid gap-3">
-              <label className="flex items-center justify-between gap-3 rounded-lg border border-[var(--glass-border)] bg-[var(--glass-bg)] px-3 py-3">
+              <label className="flex items-center justify-between gap-3 enterprise-subtle-panel">
                 <span>
                   <span className="block text-sm font-medium text-[var(--theme-text)]">
-                    Allow session memory writes
+                    {t("memory.workbench.allowSessionWrites")}
                   </span>
                   <span className="block text-xs text-[var(--theme-text-secondary)]">
-                    Cross-session long-term memory stays fail-closed.
+                    {t("memory.workbench.allowSessionWritesHint")}
                   </span>
                 </span>
                 <input
@@ -457,7 +485,7 @@ export function MemoryPanel() {
                 />
               </label>
 
-              <FieldLabel label="Retention days">
+              <FieldLabel label={t("memory.workbench.retentionDays")}>
                 <input
                   type="number"
                   min={1}
@@ -469,15 +497,15 @@ export function MemoryPanel() {
                       setRetentionDays(Math.max(1, Math.min(3650, next)));
                     }
                   }}
-                  className="h-10 w-full rounded-lg border border-[var(--glass-border)] bg-[var(--glass-bg)] px-3 text-sm text-[var(--theme-text)] outline-none transition focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary-light)]"
+                  className="enterprise-form-input"
                 />
               </FieldLabel>
 
-              <FieldLabel label="Reason">
+              <FieldLabel label={t("memory.workbench.reason")}>
                 <TextInput
                   value={reason}
                   onChange={setReason}
-                  placeholder="Optional public-safe audit reason"
+                  placeholder={t("memory.workbench.reasonPlaceholder")}
                 />
               </FieldLabel>
 
@@ -488,35 +516,34 @@ export function MemoryPanel() {
                 disabled={policyLoading}
               >
                 <Save size={15} />
-                Save Policy
+                {t("memory.workbench.savePolicy")}
               </button>
             </div>
 
-            <div className="mt-4 border-t border-[var(--glass-border)] pt-4">
+            <div className="mt-4 border-t border-[var(--theme-border)] pt-4">
               <PolicySummary policy={policy} />
             </div>
           </section>
 
-          <section className="glass-card rounded-xl p-4 sm:p-5">
+          <section className="panel-card p-4 sm:p-5">
             <div className="mb-4 flex flex-wrap items-center gap-2">
               <Database size={18} className="text-[var(--theme-text-secondary)]" />
               <h2 className="text-base font-semibold text-[var(--theme-text)]">
-                Session Memory Records
+                {t("memory.workbench.sessionRecords")}
               </h2>
               <span className="ml-auto text-xs text-[var(--theme-text-secondary)]">
-                public projection only
+                {t("memory.workbench.publicProjectionOnly")}
               </span>
             </div>
 
             {!normalizedSessionId ? (
               <EmptyState>
-                Enter a session id to inspect session-bound memory records.
-                Cross-session browsing is intentionally closed.
+                {t("memory.workbench.sessionRequired")}
               </EmptyState>
             ) : recordsLoading ? (
-              <EmptyState>Loading session memory records...</EmptyState>
+              <EmptyState>{t("memory.workbench.loadingRecords")}</EmptyState>
             ) : records.length === 0 ? (
-              <EmptyState>No active memory records are visible for this session.</EmptyState>
+              <EmptyState>{t("memory.workbench.noSessionRecords")}</EmptyState>
             ) : (
               <div className="grid gap-3">
                 {records.map((record) => (
@@ -532,11 +559,11 @@ export function MemoryPanel() {
           </section>
         </div>
 
-        <section className="glass-card mt-4 rounded-xl p-4 sm:p-5">
+        <section className="panel-card mt-4 p-4 sm:p-5">
           <div className="mb-4 flex flex-wrap items-center gap-2">
             <ShieldCheck size={18} className="text-[var(--theme-text-secondary)]" />
             <h2 className="text-base font-semibold text-[var(--theme-text)]">
-              Admin Operational Projection
+              {t("memory.workbench.adminProjection")}
             </h2>
             {canUseAdminMemory && (
               <button
@@ -546,51 +573,55 @@ export function MemoryPanel() {
                 disabled={cleanupLoading}
               >
                 <Trash2 size={15} />
-                <span>Retention Cleanup</span>
+                <span>{t("memory.workbench.retentionCleanup")}</span>
               </button>
             )}
           </div>
 
           {!canUseAdminMemory ? (
             <EmptyState>
-              Admin memory inventory is hidden for this role. Backend admin
-              routes remain fail-closed.
+              {t("memory.workbench.adminHidden")}
             </EmptyState>
           ) : adminError ? (
             <EmptyState>{adminError}</EmptyState>
           ) : adminLoading ? (
-            <EmptyState>Loading admin memory projection...</EmptyState>
+            <EmptyState>{t("memory.workbench.loadingAdmin")}</EmptyState>
           ) : (
             <div className="grid gap-4 xl:grid-cols-2">
               <div>
                 <h3 className="mb-2 text-sm font-semibold text-[var(--theme-text)]">
-                  Stored Policies
+                  {t("memory.workbench.storedPolicies")}
                 </h3>
                 {adminPolicies.length === 0 ? (
-                  <EmptyState>No stored policies for this filter.</EmptyState>
+                  <EmptyState>{t("memory.workbench.noStoredPolicies")}</EmptyState>
                 ) : (
                   <div className="grid gap-2">
                     {adminPolicies.map((item) => (
                       <div
                         key={`${item.workspace_id}:${item.user_id}:${item.agent_id || "all"}`}
-                        className="rounded-lg border border-[var(--glass-border)] bg-[var(--glass-bg)] p-3 text-sm"
+                        className="enterprise-subtle-panel text-sm"
                       >
                         <div className="flex flex-wrap items-center gap-2">
                           <StatusPill active={item.memory_enabled}>
-                            {item.memory_enabled ? "enabled" : "disabled"}
+                            {item.memory_enabled
+                              ? t("governance.enabled")
+                              : t("governance.disabled")}
                           </StatusPill>
                           <span className="font-medium text-[var(--theme-text)]">
                             {item.user_id}
                           </span>
                           <span className="text-[var(--theme-text-secondary)]">
-                            {item.agent_id || "all agents"}
+                            {item.agent_id || t("memory.workbench.allAgents")}
                           </span>
                         </div>
                         <div className="mt-2 text-xs text-[var(--theme-text-secondary)]">
-                          {item.retention_days}d retention · {item.source} ·{" "}
-                          {item.updated_at
-                            ? formatDateTimeShort(item.updated_at)
-                            : "default"}
+                          {t("memory.workbench.policyMeta", {
+                            days: item.retention_days,
+                            source: item.source,
+                            date: item.updated_at
+                              ? formatDateTimeShort(item.updated_at)
+                              : t("memory.workbench.defaultPolicy"),
+                          })}
                         </div>
                       </div>
                     ))}
@@ -600,10 +631,10 @@ export function MemoryPanel() {
 
               <div>
                 <h3 className="mb-2 text-sm font-semibold text-[var(--theme-text)]">
-                  Active Records
+                  {t("memory.workbench.activeRecords")}
                 </h3>
                 {adminRecords.length === 0 ? (
-                  <EmptyState>No active records in admin projection.</EmptyState>
+                  <EmptyState>{t("memory.workbench.noAdminRecords")}</EmptyState>
                 ) : (
                   <div className="grid gap-2">
                     {adminRecords.map((record) => (

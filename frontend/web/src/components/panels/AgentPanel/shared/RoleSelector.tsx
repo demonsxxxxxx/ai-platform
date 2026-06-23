@@ -46,7 +46,7 @@ export const RoleSelector = React.memo(function RoleSelector({
           onClick={() => setDropdownOpen(!dropdownOpen)}
           aria-expanded={dropdownOpen}
           aria-haspopup="listbox"
-          className="flex w-full items-center justify-between rounded-lg border border-stone-300 bg-white px-4 py-3 text-sm font-medium text-stone-900 dark:border-stone-600 dark:bg-stone-800 dark:text-stone-100"
+          className="flex w-full items-center justify-between rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-4 py-3 text-sm font-medium text-[var(--theme-text)]"
         >
           <span className="flex items-center gap-2">
             <Settings size={16} className="text-stone-500" />
@@ -62,7 +62,7 @@ export const RoleSelector = React.memo(function RoleSelector({
 
         {dropdownOpen && (
           <div
-            className="absolute z-10 mt-1 w-full rounded-lg border border-stone-200 bg-white shadow-lg dark:border-stone-700 dark:bg-stone-800"
+            className="absolute z-10 mt-1 w-full overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-[0_12px_28px_rgba(15,23,42,0.12)]"
             role="listbox"
           >
             {roles.map((role) => (
@@ -76,8 +76,8 @@ export const RoleSelector = React.memo(function RoleSelector({
                 }}
                 className={`flex w-full items-center justify-between px-4 py-3 text-sm transition-colors first:rounded-t-lg last:rounded-b-lg ${
                   selectedRoleId === role.id
-                    ? "bg-stone-100 text-stone-900 dark:bg-stone-700 dark:text-stone-100"
-                    : "text-stone-700 hover:bg-stone-50 dark:text-stone-300 dark:hover:bg-stone-700/50"
+                    ? "bg-[var(--theme-bg-sidebar)] text-[var(--theme-text)]"
+                    : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
                 }`}
               >
                 <span>{role.name}</span>

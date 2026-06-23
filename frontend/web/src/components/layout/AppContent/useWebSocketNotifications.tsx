@@ -135,7 +135,7 @@ export function useWebSocketNotifications({
       toast.custom(
         (visible) => (
           <div
-            className={`group relative pointer-events-auto cursor-pointer select-none max-w-[min(92vw,24rem)] w-full rounded-3xl border border-stone-100 bg-white px-4 py-3.5 text-black shadow-2xl transition-all dark:border-stone-800 dark:bg-stone-900 dark:text-white ${
+            className={`group relative pointer-events-auto cursor-pointer select-none max-w-[min(92vw,24rem)] w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-4 py-3.5 text-[var(--theme-text)] shadow-[0_16px_40px_-28px_rgba(15,23,42,0.45)] transition-all ${
               visible
                 ? "translate-y-0 opacity-100"
                 : "translate-y-1.5 opacity-0"

@@ -25,7 +25,7 @@ export function ComposerUnavailablePanel({
     <>
       <div
         data-yields-sidebar
-        className="fixed inset-0 z-[300] bg-black/40 animate-fade-in"
+        className="fixed inset-0 z-[300] bg-slate-950/35 animate-fade-in"
         onClick={() => onOpenChange(false)}
       />
       <div
@@ -35,7 +35,7 @@ export function ComposerUnavailablePanel({
         <section
           data-composer-unavailable-panel
           data-fail-closed-surface={surface}
-          className="flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-lg border border-dashed border-slate-300 bg-white shadow-2xl dark:border-stone-700 dark:bg-stone-900 sm:w-[40%] sm:min-w-[560px] sm:rounded-lg"
+          className="flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] dark:border-stone-700 dark:bg-stone-900 sm:w-[40%] sm:min-w-[560px] sm:rounded-lg"
           onClick={(event) => event.stopPropagation()}
         >
           <header className="relative flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-stone-800 sm:px-5">

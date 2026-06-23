@@ -9,7 +9,7 @@ import {
 import { Toaster } from "react-hot-toast";
 import { useTranslation } from "react-i18next";
 import { ProtectedRoute } from "./components/auth/ProtectedRoute";
-import { ChatPageSkeleton, FilesPageSkeleton } from "./components/skeletons";
+import { ChatPageSkeleton } from "./components/skeletons";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { ErrorBoundary } from "./components/common/ErrorBoundary";
 import { SelectionActionPopover } from "./components/common/SelectionActionPopover";
@@ -23,6 +23,7 @@ import {
 import { APP_TOASTER_CLASS_NAME } from "./components/layout/AppContent/appToastLayout";
 import { useAuth } from "./hooks/useAuth";
 import type { TabType } from "./components/layout/AppContent/types";
+import type { FrontendGovernanceState } from "./components/governance/frontendGovernanceState";
 
 const SharedPage = lazy(() =>
   import("./components/share/SharedPage").then((m) => ({
@@ -67,6 +68,68 @@ const NotFoundPage = lazy(() =>
     default: m.NotFoundPage,
   })),
 );
+
+type PhaseTwoTab = "users" | "settings" | "feedback" | "agents" | "notifications";
+
+interface PhaseTwoWorkbenchConfig {
+  state: FrontendGovernanceState;
+  titleKey: string;
+  descriptionKey: string;
+  capabilities: string[];
+}
+
+const phaseTwoWorkbenchConfigs: Record<PhaseTwoTab, PhaseTwoWorkbenchConfig> = {
+  users: {
+    state: "degraded",
+    titleKey: "workbench.phaseTwo.users.title",
+    descriptionKey: "workbench.phaseTwo.users.description",
+    capabilities: [
+      "workbench.phaseTwo.users.capabilities.directory",
+      "workbench.phaseTwo.users.capabilities.lifecycle",
+      "workbench.phaseTwo.users.capabilities.audit",
+    ],
+  },
+  settings: {
+    state: "degraded",
+    titleKey: "workbench.phaseTwo.settings.title",
+    descriptionKey: "workbench.phaseTwo.settings.description",
+    capabilities: [
+      "workbench.phaseTwo.settings.capabilities.publicProfile",
+      "workbench.phaseTwo.settings.capabilities.runtime",
+      "workbench.phaseTwo.settings.capabilities.secrets",
+    ],
+  },
+  feedback: {
+    state: "degraded",
+    titleKey: "workbench.phaseTwo.feedback.title",
+    descriptionKey: "workbench.phaseTwo.feedback.description",
+    capabilities: [
+      "workbench.phaseTwo.feedback.capabilities.capture",
+      "workbench.phaseTwo.feedback.capabilities.triage",
+      "workbench.phaseTwo.feedback.capabilities.audit",
+    ],
+  },
+  agents: {
+    state: "degraded",
+    titleKey: "workbench.phaseTwo.agents.title",
+    descriptionKey: "workbench.phaseTwo.agents.description",
+    capabilities: [
+      "workbench.phaseTwo.agents.capabilities.publicSelection",
+      "workbench.phaseTwo.agents.capabilities.roleAssignment",
+      "workbench.phaseTwo.agents.capabilities.adminProjection",
+    ],
+  },
+  notifications: {
+    state: "degraded",
+    titleKey: "workbench.phaseTwo.notifications.title",
+    descriptionKey: "workbench.phaseTwo.notifications.description",
+    capabilities: [
+      "workbench.phaseTwo.notifications.capabilities.banner",
+      "workbench.phaseTwo.notifications.capabilities.inbox",
+      "workbench.phaseTwo.notifications.capabilities.admin",
+    ],
+  },
+};
 
 function ChatPageSEO() {
   const { sessionId } = useParams<{ sessionId?: string }>();
@@ -201,7 +264,12 @@ function UsersPage() {
     description: "seo.users.description",
     path: "/users",
   });
-  return <AppContent key="users" activeTab="users" />;
+  return (
+    <PhaseTwoWorkbenchPage
+      activeTab="users"
+      config={phaseTwoWorkbenchConfigs.users}
+    />
+  );
 }
 
 function RolesPage() {
@@ -219,7 +287,12 @@ function SettingsPage() {
     description: "seo.settings.description",
     path: "/settings",
   });
-  return <AppContent key="settings" activeTab="settings" />;
+  return (
+    <PhaseTwoWorkbenchPage
+      activeTab="settings"
+      config={phaseTwoWorkbenchConfigs.settings}
+    />
+  );
 }
 
 function MCPPage() {
@@ -237,7 +310,12 @@ function FeedbackPage() {
     description: "seo.feedback.description",
     path: "/feedback",
   });
-  return <AppContent key="feedback" activeTab="feedback" />;
+  return (
+    <PhaseTwoWorkbenchPage
+      activeTab="feedback"
+      config={phaseTwoWorkbenchConfigs.feedback}
+    />
+  );
 }
 
 function ChannelsPage() {
@@ -255,7 +333,12 @@ function AgentsPage() {
     description: "seo.agents.description",
     path: "/agents",
   });
-  return <AppContent key="agents" activeTab="agents" />;
+  return (
+    <PhaseTwoWorkbenchPage
+      activeTab="agents"
+      config={phaseTwoWorkbenchConfigs.agents}
+    />
+  );
 }
 
 function ModelsPage() {
@@ -267,22 +350,18 @@ function ModelsPage() {
   return <AppContent key="models" activeTab="models" />;
 }
 
-function FilesPage() {
-  useSEO({
-    title: "seo.files.title",
-    description: "seo.files.description",
-    path: "/files",
-  });
-  return <AppContent key="files" activeTab="files" />;
-}
-
 function NotificationsPage() {
   useSEO({
     title: "seo.notifications.title",
     description: "seo.notifications.description",
     path: "/notifications",
   });
-  return <AppContent key="notifications" activeTab="notifications" />;
+  return (
+    <PhaseTwoWorkbenchPage
+      activeTab="notifications"
+      config={phaseTwoWorkbenchConfigs.notifications}
+    />
+  );
 }
 
 function MemoryPage() {
@@ -316,6 +395,30 @@ function WorkbenchForbiddenPage({
           permission: permissionLabel,
         }),
         surface: `${activeTab}-route-permission`,
+      }}
+    />
+  );
+}
+
+function PhaseTwoWorkbenchPage({
+  activeTab,
+  config,
+}: {
+  activeTab: PhaseTwoTab;
+  config: PhaseTwoWorkbenchConfig;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <AppContent
+      key={`${activeTab}-phase2`}
+      activeTab={activeTab}
+      routeUnavailable={{
+        state: config.state,
+        title: t(config.titleKey),
+        description: t(config.descriptionKey),
+        surface: `${activeTab}-phase2-backend-projection`,
+        details: config.capabilities.map((key) => t(key)),
       }}
     />
   );
@@ -430,15 +533,7 @@ function App() {
             <Route
               path="/users"
               element={
-                <ProtectedRoute
-                  permissions={[Permission.USER_READ]}
-                  fallbackComponent={
-                    <WorkbenchForbiddenPage
-                      activeTab="users"
-                      permissionLabel={Permission.USER_READ}
-                    />
-                  }
-                >
+                <ProtectedRoute>
                   <UsersPage />
                 </ProtectedRoute>
               }
@@ -446,15 +541,7 @@ function App() {
             <Route
               path="/roles"
               element={
-                <ProtectedRoute
-                  permissions={[Permission.ROLE_MANAGE]}
-                  fallbackComponent={
-                    <WorkbenchForbiddenPage
-                      activeTab="roles"
-                      permissionLabel={Permission.ROLE_MANAGE}
-                    />
-                  }
-                >
+                <ProtectedRoute>
                   <RolesPage />
                 </ProtectedRoute>
               }
@@ -462,15 +549,7 @@ function App() {
             <Route
               path="/settings"
               element={
-                <ProtectedRoute
-                  permissions={[Permission.SETTINGS_MANAGE]}
-                  fallbackComponent={
-                    <WorkbenchForbiddenPage
-                      activeTab="settings"
-                      permissionLabel={Permission.SETTINGS_MANAGE}
-                    />
-                  }
-                >
+                <ProtectedRoute>
                   <SettingsPage />
                 </ProtectedRoute>
               }
@@ -478,15 +557,7 @@ function App() {
             <Route
               path="/feedback"
               element={
-                <ProtectedRoute
-                  permissions={[Permission.FEEDBACK_READ]}
-                  fallbackComponent={
-                    <WorkbenchForbiddenPage
-                      activeTab="feedback"
-                      permissionLabel={Permission.FEEDBACK_READ}
-                    />
-                  }
-                >
+                <ProtectedRoute>
                   <FeedbackPage />
                 </ProtectedRoute>
               }
@@ -502,15 +573,7 @@ function App() {
             <Route
               path="/agents"
               element={
-                <ProtectedRoute
-                  permissions={[Permission.AGENT_ADMIN]}
-                  fallbackComponent={
-                    <WorkbenchForbiddenPage
-                      activeTab="agents"
-                      permissionLabel={Permission.AGENT_ADMIN}
-                    />
-                  }
-                >
+                <ProtectedRoute>
                   <AgentsPage />
                 </ProtectedRoute>
               }
@@ -534,23 +597,15 @@ function App() {
             <Route
               path="/files"
               element={
-                <ProtectedRoute loadingComponent={<FilesPageSkeleton />}>
-                  <FilesPage />
+                <ProtectedRoute>
+                  <Navigate to="/chat" replace />
                 </ProtectedRoute>
               }
             />
             <Route
               path="/notifications"
               element={
-                <ProtectedRoute
-                  permissions={[Permission.NOTIFICATION_MANAGE]}
-                  fallbackComponent={
-                    <WorkbenchForbiddenPage
-                      activeTab="notifications"
-                      permissionLabel={Permission.NOTIFICATION_MANAGE}
-                    />
-                  }
-                >
+                <ProtectedRoute>
                   <NotificationsPage />
                 </ProtectedRoute>
               }

@@ -154,7 +154,7 @@ export function ToolSelector({
   const ModalContent = () => (
     <div
       ref={swipeRef as React.RefObject<HTMLDivElement>}
-      className="sm:rounded-2xl rounded-t-2xl shadow-2xl w-full sm:w-[40%] sm:min-w-[600px] min-h-[40vh] sm:max-h-[80vh] max-h-[85vh] max-h-[85dvh] flex flex-col overflow-hidden"
+      className="w-full min-h-[40vh] max-h-[85vh] max-h-[85dvh] flex flex-col overflow-hidden rounded-t-lg border border-[var(--theme-border)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] sm:w-[40%] sm:min-w-[600px] sm:max-h-[80vh] sm:rounded-lg"
       style={{ background: "var(--theme-bg-card)" }}
       onClick={(e) => e.stopPropagation()}
     >
@@ -166,14 +166,14 @@ export function ToolSelector({
         {/* Mobile drag handle */}
         <div className="absolute left-1/2 -translate-x-1/2 top-2 w-10 h-1 rounded-full bg-stone-300 dark:bg-stone-600 sm:hidden" />
         <div className="flex items-center gap-3 mt-2 sm:mt-0">
-          <div className="size-9 sm:size-10 rounded-xl bg-gradient-to-br from-stone-100 to-stone-200 dark:from-amber-500/20 dark:to-orange-500/20 flex items-center justify-center">
+          <div className="size-9 sm:size-10 rounded-lg bg-[var(--theme-bg-sidebar)] ring-1 ring-[var(--theme-border)] flex items-center justify-center">
             <Wrench
               size={16}
-              className="text-stone-500 dark:text-amber-400 sm:w-[18px] sm:h-[18px]"
+              className="text-stone-500 dark:text-stone-300 sm:w-[18px] sm:h-[18px]"
             />
           </div>
           <div>
-            <h2 className="text-sm sm:text-base font-semibold text-stone-900 dark:text-stone-100 font-serif">
+            <h2 className="text-sm sm:text-base font-semibold text-stone-900 dark:text-stone-100">
               {t("tools.title")}
             </h2>
             <p className="text-xs sm:text-xs text-stone-500 dark:text-stone-400">
@@ -214,20 +214,20 @@ export function ToolSelector({
             setIsOpen(false);
             navigate("/mcp");
           }}
-          className="flex items-center gap-1 px-3 py-2 sm:py-1.5 text-xs font-medium text-stone-500 dark:text-amber-400 hover:text-stone-700 dark:hover:text-amber-300 hover:bg-stone-100 dark:hover:bg-amber-500/10 active:bg-stone-200 dark:active:bg-amber-500/20 rounded-lg transition-colors"
+          className="flex items-center gap-1 px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-bg-sidebar)] rounded-lg transition-colors"
         >
           <Plus size={14} />
           <span>{t("tools.add")}</span>
         </button>
       </div>
 
-      <div className="border-b border-stone-200/80 bg-white/80 px-4 py-3 dark:border-stone-700/80 dark:bg-stone-800/60 sm:px-5">
+      <div className="border-b border-[var(--theme-border)] bg-[var(--theme-bg)] px-4 py-3 sm:px-5">
         <input
           type="text"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder={t("tools.searchPlaceholder", "Search tools")}
-          className="w-full rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-700 outline-none transition-colors focus:border-[var(--theme-primary)] focus:bg-white dark:border-stone-700 dark:bg-stone-900/60 dark:text-stone-100 dark:focus:bg-stone-900"
+          className="h-10 w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-3 text-sm text-[var(--theme-text)] outline-none transition-colors placeholder:text-[var(--theme-text-secondary)] focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary-light)]"
         />
       </div>
 
@@ -246,7 +246,7 @@ export function ToolSelector({
             return (
               <div
                 key={category}
-                className="rounded-xl border border-stone-200/80 dark:border-stone-700/60 overflow-hidden bg-stone-50/50 dark:bg-stone-800/40"
+                className="rounded-lg border border-[var(--theme-border)] overflow-hidden bg-[var(--theme-bg-card)]"
               >
                 {/* Category Header */}
                 <div
@@ -259,7 +259,7 @@ export function ToolSelector({
                       isExpanded ? "rotate-90" : ""
                     }`}
                   />
-                  <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-white dark:bg-stone-700 flex items-center justify-center shadow-sm border border-stone-100 dark:border-stone-600">
+                  <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-[var(--theme-bg-sidebar)] flex items-center justify-center ring-1 ring-[var(--theme-border)]">
                     <Icon
                       size={13}
                       className="text-stone-500 dark:text-stone-400 sm:w-[14px] sm:h-[14px]"
@@ -335,7 +335,7 @@ export function ToolSelector({
                                     {tool.name}
                                   </span>
                                   {tool.server && (
-                                    <span className="text-[9px] sm:text-xs px-1.5 py-0.5 rounded-md bg-stone-100 dark:bg-amber-500/20 text-stone-500 dark:text-amber-400 font-medium">
+                                    <span className="text-[9px] sm:text-xs px-1.5 py-0.5 rounded-md bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] font-medium">
                                       {tool.server}
                                     </span>
                                   )}
@@ -371,7 +371,7 @@ export function ToolSelector({
                                     </span>
                                   </div>
                                   {/* Table Body */}
-                                  <div className="bg-white dark:bg-stone-800">
+                                  <div className="bg-[var(--theme-bg-card)]">
                                     <table className="w-full text-xs sm:text-xs">
                                       <thead>
                                         <tr className="border-b border-stone-100 dark:border-stone-700">
@@ -395,7 +395,7 @@ export function ToolSelector({
                                             >
                                               <td className="px-2.5 sm:px-3 py-1.5">
                                                 <div className="flex items-center gap-1">
-                                                  <code className="px-1.5 py-0.5 rounded bg-stone-100 dark:bg-amber-500/20 text-stone-600 dark:text-amber-400 font-mono font-medium">
+                                                  <code className="px-1.5 py-0.5 rounded bg-[var(--theme-bg-sidebar)] text-[var(--theme-text)] font-mono font-medium">
                                                     {param.name}
                                                   </code>
                                                   {param.required && (
@@ -433,7 +433,7 @@ export function ToolSelector({
           },
         )}
         {filteredTools.length === 0 && (
-          <div className="rounded-xl border border-dashed border-stone-200 bg-stone-50/70 px-4 py-6 text-center text-sm text-stone-500 dark:border-stone-700 dark:bg-stone-800/40 dark:text-stone-400">
+          <div className="rounded-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-4 py-6 text-center text-sm text-[var(--theme-text-secondary)]">
             {t("tools.noMatchingTools", "No matching tools")}
           </div>
         )}
@@ -443,7 +443,7 @@ export function ToolSelector({
       <div className="px-4 sm:px-5 py-3 sm:py-3.5 border-t border-stone-200 dark:border-stone-700 bg-stone-50/80 dark:bg-stone-800/50 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         <button
           onClick={() => setIsOpen(false)}
-          className="w-full py-2.5 px-4 bg-stone-900 dark:bg-stone-600 text-white dark:text-stone-100 rounded-xl font-medium text-sm hover:bg-stone-800 dark:hover:bg-stone-500 active:bg-stone-700 dark:active:bg-stone-600 transition-colors"
+          className="w-full py-2.5 px-4 bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-950 rounded-lg font-medium text-sm hover:bg-stone-800 dark:hover:bg-stone-200 active:bg-stone-700 transition-colors"
         >
           {t("tools.done")}
         </button>
@@ -458,7 +458,7 @@ export function ToolSelector({
           <>
             <div
               data-yields-sidebar
-              className="fixed inset-0 z-[300] bg-black/50 animate-fade-in"
+              className="fixed inset-0 z-[300] bg-slate-950/35 animate-fade-in"
               onClick={() => setIsOpen(false)}
             />
             <div
@@ -508,7 +508,7 @@ export function ToolSelector({
           <>
             <div
               data-yields-sidebar
-              className="fixed inset-0 z-[300] bg-black/50 animate-fade-in"
+              className="fixed inset-0 z-[300] bg-slate-950/35 animate-fade-in"
               onClick={() => setIsOpen(false)}
             />
 

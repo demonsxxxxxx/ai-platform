@@ -63,7 +63,7 @@ export function MemoryFilter({
       </button>
 
       {open && (
-        <div className="absolute right-0 z-10 mt-1 w-44 rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg-card)] py-2 shadow-xl dark:shadow-black/40 animate-in fade-in-0 zoom-in-95 duration-100">
+        <div className="absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] py-2 shadow-[0_12px_28px_rgba(15,23,42,0.12)] animate-in fade-in-0 zoom-in-95 duration-100">
           <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--theme-text-secondary)]">
             {t("memory.typeLabel")}
           </div>
@@ -76,7 +76,7 @@ export function MemoryFilter({
                 className={`flex w-full items-center gap-2 px-3 py-2 text-sm transition-colors ${
                   typeValue === opt.value
                     ? "bg-[var(--theme-primary-light)] text-[var(--theme-text)]"
-                    : "text-[var(--theme-text-secondary)] hover:bg-[var(--glass-bg)]"
+                    : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)]"
                 }`}
               >
                 {d && <span className={`h-2 w-2 rounded-full ${d}`} />}
@@ -90,7 +90,7 @@ export function MemoryFilter({
               </button>
             );
           })}
-          <div className="my-1 border-t border-[var(--glass-border)]" />
+          <div className="my-1 border-t border-[var(--theme-border)]" />
           <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--theme-text-secondary)]">
             {t("memory.sourceLabel")}
           </div>
@@ -103,7 +103,7 @@ export function MemoryFilter({
                 className={`flex w-full items-center gap-2 px-3 py-2 text-sm transition-colors ${
                   sourceValue === opt.value
                     ? "bg-[var(--theme-primary-light)] text-[var(--theme-text)]"
-                    : "text-[var(--theme-text-secondary)] hover:bg-[var(--glass-bg)]"
+                    : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)]"
                 }`}
               >
                 {d && <span className={`h-2 w-2 rounded-full ${d}`} />}

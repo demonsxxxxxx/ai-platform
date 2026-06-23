@@ -3,7 +3,8 @@ import {
   Search,
   Clock,
   LayoutGrid,
-  Sparkles,
+  Package,
+  ShoppingBag,
   Server,
   Bot,
 } from "lucide-react";
@@ -22,6 +23,7 @@ interface SidebarRailProps {
   onOpenRecentChats: () => void;
   onOpenLaunchpad: () => void;
   onOpenSkills: () => void;
+  onOpenMarketplace: () => void;
   onOpenMcp: () => void;
   recentChatsBtnRef: React.RefObject<HTMLButtonElement | null>;
   onShowProfile: () => void;
@@ -37,6 +39,7 @@ export function SidebarRail({
   onOpenRecentChats,
   onOpenLaunchpad,
   onOpenSkills,
+  onOpenMarketplace,
   onOpenMcp,
   recentChatsBtnRef,
   onShowProfile,
@@ -114,10 +117,19 @@ export function SidebarRail({
           type="button"
           onClick={onOpenSkills}
           className={railBtn}
-          title={t("featureMenu.skillsMarketplace")}
-          aria-label={t("featureMenu.skillsMarketplace")}
+          title={t("nav.skills")}
+          aria-label={t("nav.skills")}
         >
-          <Sparkles size={20} />
+          <Package size={20} />
+        </button>
+        <button
+          type="button"
+          onClick={onOpenMarketplace}
+          className={railBtn}
+          title={t("nav.marketplace")}
+          aria-label={t("nav.marketplace")}
+        >
+          <ShoppingBag size={20} />
         </button>
         <button
           type="button"

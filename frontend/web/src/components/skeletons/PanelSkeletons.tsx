@@ -149,13 +149,13 @@ export function UsersPanelSkeleton() {
       <div className="flex-1 overflow-y-auto min-h-0 py-2 sm:py-4 px-4">
         {/* Desktop table */}
         <div className="hidden sm:block">
-          <div className="glass-card rounded-xl !p-0 overflow-hidden">
+          <div className="panel-card !p-0 overflow-hidden">
             {/* Table header */}
             <div
               className="flex items-center gap-4 px-6 py-3"
               style={{
                 backgroundColor:
-                  "var(--glass-bg-subtle, color-mix(in srgb, var(--theme-bg) 80%, white))",
+                  "color-mix(in srgb, var(--theme-bg-card) 78%, var(--theme-bg))",
               }}
             >
               <SkeletonLine width="w-24 xl:w-28" className="!h-3 !rounded" />
@@ -174,7 +174,7 @@ export function UsersPanelSkeleton() {
                 className="flex items-center gap-4 px-6 py-4"
                 style={{
                   borderTop:
-                    "1px solid var(--glass-border, var(--theme-border))",
+                    "1px solid var(--theme-border)",
                 }}
               >
                 <div className="flex items-center gap-3 w-28 xl:w-32 shrink-0">
@@ -207,7 +207,7 @@ export function UsersPanelSkeleton() {
         {/* Mobile cards */}
         <div className="space-y-3 sm:hidden">
           {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="glass-card rounded-xl p-4">
+            <div key={i} className="panel-card p-4">
               <div className="flex items-start gap-3">
                 <div className="skeleton-line size-10 rounded-full shrink-0" />
                 <div className="flex-1 min-w-0">
@@ -243,16 +243,16 @@ export function RolesPanelSkeleton() {
       <div className="flex-1 overflow-y-auto py-2 sm:py-4 px-4 xl:p-8">
         <div className="grid gap-4 xl:grid-cols-2">
           {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="glass-card rounded-xl p-4">
+            <div key={i} className="panel-card p-4">
               <div className="flex items-start justify-between gap-2">
                 <div className="flex-1 min-w-0">
                   {/* Icon + name row */}
                   <div className="flex items-center gap-2">
                     <div
-                      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl"
+                      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg"
                       style={{
                         backgroundColor:
-                          "var(--glass-bg-subtle, color-mix(in srgb, var(--theme-bg) 80%, white))",
+                          "color-mix(in srgb, var(--theme-bg-card) 78%, var(--theme-bg))",
                       }}
                     >
                       <div className="skeleton-line size-[14px] rounded-sm" />
@@ -383,13 +383,13 @@ export function FeedbackPanelSkeleton() {
       {/* Stats section */}
       <div className="grid grid-cols-2 gap-3 px-4 sm:grid-cols-4 sm:gap-4 sm:px-6">
         {[0, 1, 2, 3].map((i) => (
-          <div key={i} className="glass-card rounded-xl p-4">
+          <div key={i} className="panel-card p-4">
             <div className="flex items-center gap-2 sm:gap-3">
               <div
                 className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg"
                 style={{
                   backgroundColor:
-                    "var(--glass-bg-subtle, color-mix(in srgb, var(--theme-bg) 80%, white))",
+                    "color-mix(in srgb, var(--theme-bg-card) 78%, var(--theme-bg))",
                 }}
               >
                 <div className="skeleton-line size-6 rounded-md" />
@@ -411,7 +411,7 @@ export function FeedbackPanelSkeleton() {
         {/* Desktop */}
         <div className="hidden space-y-3 sm:block">
           {Array.from({ length: 7 }).map((_, i) => (
-            <div key={i} className="glass-card rounded-xl p-5">
+            <div key={i} className="panel-card p-5">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 sm:gap-3 min-w-0">
                   <div className="skeleton-line size-9 sm:size-10 rounded-full shrink-0" />
@@ -441,7 +441,7 @@ export function FeedbackPanelSkeleton() {
         {/* Mobile */}
         <div className="space-y-3 sm:hidden">
           {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="glass-card rounded-xl p-4">
+            <div key={i} className="panel-card p-4">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <div className="skeleton-line size-9 rounded-full shrink-0" />
@@ -477,13 +477,13 @@ export function ChannelsPanelSkeleton() {
       <PanelHeaderSkeleton hasSearch={false} />
       <div className="flex-1 overflow-y-auto py-2 sm:py-4 px-4 space-y-4">
         {Array.from({ length: 6 }).map((_, i) => (
-          <div key={i} className="glass-card rounded-xl p-4">
+          <div key={i} className="panel-card p-4">
             <div className="flex items-center gap-2.5 sm:gap-3">
               <div
-                className="flex size-8 sm:size-10 shrink-0 items-center justify-center rounded-xl"
+                className="flex size-8 sm:size-10 shrink-0 items-center justify-center rounded-lg"
                 style={{
                   backgroundColor:
-                    "var(--glass-bg-subtle, color-mix(in srgb, var(--theme-bg) 80%, white))",
+                    "color-mix(in srgb, var(--theme-bg-card) 78%, var(--theme-bg))",
                 }}
               >
                 <div className="skeleton-line size-5 rounded-md" />
@@ -513,7 +513,7 @@ export function AgentPanelSkeleton() {
     <div className="flex h-full min-h-0 flex-col gap-3 sm:gap-4 animate-fade-in">
       <PanelHeaderSkeleton hasSearch={false} />
       {/* Tab bar — matches glass-divider + tab buttons */}
-      <div className="glass-divider flex px-2">
+      <div className="flex border-b border-[var(--theme-border)] bg-[var(--theme-bg)] px-2">
         <div className="px-4 py-3.5">
           <SkeletonLine width="w-16 sm:w-20" className="!h-4" />
           {/* Active indicator */}
@@ -527,14 +527,14 @@ export function AgentPanelSkeleton() {
         {Array.from({ length: 7 }).map((_, i) => (
           <div
             key={i}
-            className="glass-card rounded-xl p-4 flex items-center justify-between"
+            className="panel-card p-4 flex items-center justify-between"
           >
             <div className="flex items-center gap-3.5 min-w-0 flex-1">
               <div
-                className="flex size-11 shrink-0 items-center justify-center rounded-xl ring-1"
+                className="flex size-11 shrink-0 items-center justify-center rounded-lg ring-1"
                 style={{
                   backgroundColor:
-                    "var(--glass-bg-subtle, color-mix(in srgb, var(--theme-bg) 80%, white))",
+                    "color-mix(in srgb, var(--theme-bg-card) 78%, var(--theme-bg))",
                 }}
               >
                 <div className="skeleton-line size-5 rounded-md" />
@@ -564,7 +564,7 @@ export function ModelPanelSkeleton() {
     <div className="flex h-full min-h-0 flex-col gap-3 sm:gap-4 animate-fade-in">
       <PanelHeaderSkeleton hasSearch={false} />
       {/* Tab bar — matches glass-tab-bar */}
-      <div className="glass-tab-bar flex px-4 sm:px-6">
+      <div className="flex border-b border-[var(--theme-border)] bg-[var(--theme-bg)] px-4 sm:px-6">
         <div className="px-5 py-3">
           <SkeletonLine width="w-14 sm:w-16" className="!h-4" />
           <div className="absolute bottom-0 left-4 right-4 h-0.5 rounded-full skeleton-line" />
@@ -583,7 +583,7 @@ export function ModelPanelSkeleton() {
           <div className="skeleton-line h-8 w-20 rounded-lg" />
         </div>
         {Array.from({ length: 8 }).map((_, i) => (
-          <div key={i} className="glass-card rounded-xl">
+          <div key={i} className="panel-card">
             {/* Desktop row */}
             <div className="hidden sm:flex items-center justify-between p-4 gap-2">
               <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0">

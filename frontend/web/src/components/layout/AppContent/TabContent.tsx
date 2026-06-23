@@ -1,5 +1,5 @@
 import { Suspense, lazy } from "react";
-import { WorkbenchUnavailableState } from "../../workbench/WorkbenchUnavailableState";
+import { WorkbenchStateSurface } from "../../workbench/WorkbenchStateSurface";
 import type { RouteUnavailableConfig, TabType } from "./types";
 
 const SkillsHubPanel = lazy(() =>
@@ -7,48 +7,25 @@ const SkillsHubPanel = lazy(() =>
     default: m.SkillsHubPanel,
   })),
 );
-const UsersPanel = lazy(() =>
-  import("../../panels/UsersPanel").then((m) => ({ default: m.UsersPanel })),
+const MarketplacePanel = lazy(() =>
+  import("../../panels/MarketplacePanel").then((m) => ({
+    default: m.MarketplacePanel,
+  })),
 );
 const RolesPanel = lazy(() =>
   import("../../panels/RolesPanel").then((m) => ({ default: m.RolesPanel })),
 );
-const SettingsPanel = lazy(() =>
-  import("../../panels/SettingsPanel").then((m) => ({
-    default: m.SettingsPanel,
-  })),
-);
-const AgentConfigPanel = lazy(() =>
-  import("../../panels/AgentPanel").then((m) => ({
-    default: m.AgentConfigPanel,
-  })),
-);
 const MCPPanel = lazy(() =>
   import("../../panels/MCPPanel").then((m) => ({ default: m.MCPPanel })),
 );
-const FeedbackPanel = lazy(() =>
-  import("../../panels/FeedbackPanel").then((m) => ({
-    default: m.FeedbackPanel,
-  })),
-);
-const QuarantinedLegacyPanel = lazy(() =>
-  import("./QuarantinedLegacyPanel").then((m) => ({
-    default: m.QuarantinedLegacyPanel,
+const ModelCatalogPanel = lazy(() =>
+  import("../../panels/ModelCatalogPanel").then((m) => ({
+    default: m.ModelCatalogPanel,
   })),
 );
 const ChannelImportPanel = lazy(() =>
   import("../../channels/ChannelImportPanel").then((m) => ({
     default: m.ChannelImportPanel,
-  })),
-);
-const RevealedFilesPage = lazy(() =>
-  import("../../fileLibrary/RevealedFilesPanel").then((m) => ({
-    default: m.RevealedFilesPanel,
-  })),
-);
-const NotificationPanel = lazy(() =>
-  import("../../panels/NotificationPanel").then((m) => ({
-    default: m.NotificationPanel,
   })),
 );
 const MemoryPanel = lazy(() =>
@@ -68,17 +45,11 @@ const panelMap: Record<
 > = {
   apps: LaunchpadPanel,
   skills: SkillsHubPanel,
-  marketplace: SkillsHubPanel,
-  users: UsersPanel,
+  marketplace: MarketplacePanel,
   roles: RolesPanel,
-  settings: SettingsPanel,
   mcp: MCPPanel,
-  feedback: FeedbackPanel,
   channels: ChannelImportPanel,
-  agents: AgentConfigPanel,
-  models: QuarantinedLegacyPanel,
-  files: RevealedFilesPage,
-  notifications: NotificationPanel,
+  models: ModelCatalogPanel,
   memory: MemoryPanel,
 };
 
@@ -110,10 +81,12 @@ export function TabContent({
         data-frontend-governance-state={routeUnavailable.state}
       >
         <div className="flex h-full w-full items-center justify-center px-4">
-          <WorkbenchUnavailableState
+          <WorkbenchStateSurface
+            state={routeUnavailable.state}
             title={routeUnavailable.title}
             description={routeUnavailable.description}
             surface={routeUnavailable.surface}
+            details={routeUnavailable.details}
           />
         </div>
       </main>

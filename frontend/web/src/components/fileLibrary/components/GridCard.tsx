@@ -33,7 +33,7 @@ export function GridCard({
       <div
         onClick={() => onPreview(file)}
         onContextMenu={(e) => ctx.show(e, file)}
-        className="group/card relative flex cursor-pointer flex-col overflow-hidden rounded-xl border border-stone-200/60 dark:border-stone-700/40 bg-white dark:bg-stone-900/50 transition-all duration-200 hover:shadow-lg hover:shadow-stone-900/[0.06] dark:hover:shadow-black/20 hover:border-stone-300/80 dark:hover:border-stone-600/50"
+        className="group/card relative flex cursor-pointer flex-col overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] transition-all duration-200 hover:border-slate-300 hover:shadow-lg hover:shadow-stone-900/[0.06] dark:border-stone-700/40 dark:bg-stone-900/50 dark:hover:border-stone-600/50 dark:hover:shadow-black/20"
       >
         {/* File header */}
         <div className="flex items-center gap-2 px-2.5 py-2.5 border-b border-stone-100 dark:border-stone-800/80">

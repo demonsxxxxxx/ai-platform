@@ -8,16 +8,6 @@ import type {
 import { API_BASE } from "./config";
 
 export const notificationApi = {
-  async getActive(): Promise<Notification[]> {
-    try {
-      return await authFetch<Notification[]>(
-        `${API_BASE}/api/notifications/active`,
-      );
-    } catch {
-      return [];
-    }
-  },
-
   async list(
     skip: number = 0,
     limit: number = 50,
@@ -48,12 +38,6 @@ export const notificationApi = {
   async delete(id: string): Promise<void> {
     return authFetch(`${API_BASE}/api/notifications/${id}`, {
       method: "DELETE",
-    });
-  },
-
-  async dismiss(id: string): Promise<void> {
-    return authFetch(`${API_BASE}/api/notifications/${id}/dismiss`, {
-      method: "POST",
     });
   },
 };

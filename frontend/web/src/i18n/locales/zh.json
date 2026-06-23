@@ -49,6 +49,32 @@
     "searchPlaceholder": "搜索智能体",
     "noMatchingAgents": "没有匹配的智能体"
   },
+  "frontendStates": {
+    "logged-out": {
+      "title": "需要登录",
+      "description": "请先登录公司账号，再进入 AI Platform 工作台。"
+    },
+    "loading": {
+      "title": "正在加载工作台",
+      "description": "正在确认账号、权限和工作区状态。"
+    },
+    "no-workspace": {
+      "title": "未分配工作区",
+      "description": "当前账号尚未分配可用工作区，请联系管理员开通。"
+    },
+    "forbidden": {
+      "title": "当前账号不可用",
+      "description": "该能力受公司权限治理，需要管理员授权后才能使用。"
+    },
+    "degraded": {
+      "title": "降级可读",
+      "description": "页面可继续查看，但部分操作在当前状态下保持锁定。"
+    },
+    "ready": {
+      "title": "已就绪",
+      "description": "该页面已经可用于当前账号。"
+    }
+  },
   "agentConfig": {
     "addFirstModel": "添加第一个模型",
     "addModel": "添加模型",
@@ -396,6 +422,8 @@
     "marketplaceSkillNoFiles": "市场技能没有文件",
     "marketplaceSyncFailed": "同步文件到市场失败",
     "marketplaceSyncRolledBack": "同步文件失败，市场条目已回滚",
+    "marketplaceDirectWriteNotBacked": "市场直接写入暂未开放。当前可浏览、预览、安装和更新已批准 Skills，发布治理仍走管理员流程。",
+    "mcpLifecycleNotBacked": "MCP 生命周期管理暂未开放。当前可浏览受治理的 MCP 工具，服务器、凭证和升降级操作保持 fail-closed。",
     "memoryBackendUnavailable": "记忆后端不可用",
     "memoryDeleteLimit": "一次最多只能删除 100 条记忆",
     "memoryIdsRequired": "memory_ids 不能为空",
@@ -433,7 +461,10 @@
     "shareSourceMissing": "原会话已不存在",
     "shareViewOwnOnly": "只能查看自己会话的分享",
     "skillDeactivated": "该技能已停用",
+    "skillFileDeleteNotBacked": "Skill 文件删除暂未开放。当前可读取和导出已批准 Skills，文件变更需要后续存储能力。",
+    "skillFileWriteNotBacked": "Skill 文件编辑暂未开放。当前可读取和导出已批准 Skills，文件变更需要后续存储能力。",
     "skillFileRequired": "技能至少需要一个文件",
+    "skillImportNotBacked": "Skill 导入暂未开放。请先使用市场中已批准的 Skills，ZIP/GitHub 导入需要后续存储能力。",
     "skillNotFound": "技能不存在",
     "targetOwnerRequired": "需要指定新的所有者",
     "targetUserRequired": "需要指定目标用户",
@@ -1407,6 +1438,50 @@
     "title": "记忆空间",
     "titleLabel": "标题",
     "titlePlaceholder": "输入记忆标题...",
+    "workbench": {
+      "activeRecords": "活跃记录",
+      "adminHidden": "当前角色不可查看管理员记忆库存。后端管理员接口保持 fail-closed。",
+      "adminProjection": "管理员运行投影",
+      "agent": "智能体",
+      "agentPublicId": "智能体公开 ID",
+      "allAgents": "全部智能体",
+      "allowSessionWrites": "允许会话记忆写入",
+      "allowSessionWritesHint": "跨会话长期记忆继续保持 fail-closed。",
+      "cleanupDeleted": "保留期清理已删除 {{count}} 条记录",
+      "days": "{{count}} 天",
+      "defaultPolicy": "默认",
+      "deleteRecord": "删除记忆记录",
+      "deleteRecordConfirm": "确认删除这条会话绑定的记忆记录？",
+      "expires": "{{date}} 过期",
+      "loadingAdmin": "正在加载管理员记忆投影...",
+      "loadingRecords": "正在加载会话记忆记录...",
+      "longTermClosed": "长期记忆关闭",
+      "noAdminRecords": "管理员投影中没有活跃记录。",
+      "noPolicy": "尚未加载记忆策略投影。",
+      "noSessionRecords": "该会话下没有可见的活跃记忆记录。",
+      "noStoredPolicies": "当前筛选条件下没有已存储策略。",
+      "policyMeta": "{{days}} 天保留 · {{source}} · {{date}}",
+      "policyUpdated": "记忆策略已更新",
+      "publicProjectionOnly": "仅公开投影",
+      "reason": "原因",
+      "reasonPlaceholder": "可选的公开安全审计原因",
+      "recordDeleted": "记忆记录已删除",
+      "retention": "保留期",
+      "retentionCleanup": "保留期清理",
+      "retentionDays": "保留天数",
+      "savePolicy": "保存策略",
+      "sessionId": "会话 ID",
+      "sessionIdPlaceholder": "查看记忆记录需要会话 ID",
+      "sessionRecords": "会话记忆记录",
+      "sessionRequired": "输入会话 ID 后可查看会话绑定的记忆记录。跨会话浏览按设计关闭。",
+      "source": "来源",
+      "storedPolicies": "已存储策略",
+      "subtitle": "ai-platform 公开记忆策略、会话记录与管理员投影",
+      "updated": "更新时间",
+      "user": "用户",
+      "userPolicy": "用户记忆策略",
+      "workspace": "工作区"
+    },
     "type": {
       "feedback": "反馈",
       "project": "项目",
@@ -1727,7 +1802,10 @@
     "maxUploadSizeImage": "图片大小上限 (MB)",
     "maxUploadSizeVideo": "视频大小上限 (MB)",
     "noMatchingRoles": "没有找到匹配的角色",
+    "noMatchingRolesDescription": "当前角色管理投影已返回，但没有匹配这个搜索词的数据。请清空搜索或调整关键词。",
     "noRoles": "暂无角色",
+    "noRolesDescriptionAdmin": "角色管理入口已接入当前后端投影，但后端没有返回角色数据。你有写权限时可以创建角色；没有数据不再表现为空白页面。",
+    "noRolesDescriptionReadOnly": "角色管理入口已接入当前后端投影，但当前账号没有角色写权限，且后端没有返回可浏览的角色数据。",
     "operationFailed": "操作失败",
     "permissionCount": "{{count}} 个权限",
     "permissions": "权限",
@@ -2296,6 +2374,7 @@
     "republishSuccess": "技能已在技能商店中更新",
     "republishTitle": "更新技能商店里的「{{name}}」",
     "searchPlaceholder": "搜索技能...",
+    "selectBackedZipSkills": "选择要覆盖的已发布技能",
     "selectSkillsToInstall": "选择要安装的技能",
     "selectZipFile": "选择 ZIP 文件",
     "sourceLocal": "本地",
@@ -2310,6 +2389,9 @@
     "uploadZipTitle": "上传技能 ZIP",
     "uploading": "上传中...",
     "userSkillVisible": "用户技能（仅对自己可见）",
+    "publicCatalogSkill": "公共目录",
+    "newSkillImportUnsupported": "暂不支持新建",
+    "zipImportBackedHint": "ZIP 导入当前会写入你自己的技能文件覆盖层，只支持覆盖已存在的公共技能；新技能创建仍由后端第二阶段治理。",
     "marketplace": {
       "departmentAvailability": "部门可用范围",
       "groupToggleUnavailable": "部门与群组开关会展示给管理员查看；当前工作区启用部门 Skills 前保持只读。"
@@ -2535,6 +2617,28 @@
       "subtitle": "已在输入框展示，但当前工作区尚未启用。"
     }
   },
+  "models": {
+    "adminGovernance": "管理写操作",
+    "adminGovernanceDescription": "新增、排序、密钥和网关配置需要 ai-platform 管理投影补齐后再开放。",
+    "catalogLoadFailed": "模型目录暂不可用",
+    "catalogStats": "目录状态",
+    "catalogStatsDescription": "已启用 {{enabled}} / {{total}} 个模型，{{providers}} 个供应商。",
+    "catalogUnavailable": "模型目录暂不可用",
+    "catalogUnavailableDescription": "公开模型投影没有返回可用数据。聊天页会继续使用已缓存或默认模型，管理写操作保持关闭。",
+    "contextWindow": "上下文",
+    "contextWindowUnknown": "未公开",
+    "defaultModel": "默认",
+    "emptyDescription": "模型目录来自公开投影。若这里为空，聊天页仍会 fail-closed 到默认配置或等待后端补齐。",
+    "loading": "正在加载模型目录",
+    "noMatchingModels": "没有匹配的模型",
+    "noModels": "暂无可用模型",
+    "provider": "供应商",
+    "publicProjection": "公开模型投影",
+    "publicProjectionDescription": "聊天和选择器只读取公开可用模型，不暴露密钥、网关配置或租户外信息。",
+    "searchPlaceholder": "搜索模型、供应商或能力",
+    "subtitle": "查看当前工作台可用模型，管理写操作按治理策略保持关闭。",
+    "title": "模型"
+  },
   "workbench": {
     "cockpit": "Workbench",
     "commandDock": "输入框",
@@ -2544,6 +2648,53 @@
     "forbidden": {
       "description": "该页面仍保留在工作台中，但当前账号缺少 {{permission}}。需要管理员授权后才能使用其中的控制项。",
       "title": "{{page}} 受权限治理"
+    },
+    "phaseTwo": {
+      "users": {
+        "capabilities": {
+          "audit": "用户审计、导入和停用流程需要后端提供可追溯的管理员投影。",
+          "directory": "公司用户目录会保留入口；当前不加载旧用户管理接口。",
+          "lifecycle": "创建、禁用、角色分配等写操作等待后端 RBAC 管理合同。"
+        },
+        "description": "用户目录是企业工作台能力，但当前后端尚未开放公司用户管理投影。前端保持入口可见，不暴露旧后台写接口。",
+        "title": "公司用户管理尚未开放"
+      },
+      "settings": {
+        "capabilities": {
+          "publicProfile": "个人偏好仍通过个人资料和公开设置读取。",
+          "runtime": "系统级运行配置等待管理员设置投影，不从旧 settings 页面读取。",
+          "secrets": "密钥、网关和环境变量不会在普通前端页面暴露。"
+        },
+        "description": "系统设置需要管理员可审计投影。当前工作台只保留入口和状态，不展示旧管理表单。",
+        "title": "系统设置投影尚未开放"
+      },
+      "feedback": {
+        "capabilities": {
+          "audit": "处理记录和状态变更需要后端审计链路。",
+          "capture": "聊天消息级反馈仍保留在对话内；独立反馈台等待后端汇总投影。",
+          "triage": "分派、关闭和标签治理不从旧反馈后台读取。"
+        },
+        "description": "反馈入口会成为统一处理台；当前后端还没有可用于登录后工作台的汇总与分派合同。",
+        "title": "反馈处理台尚未开放"
+      },
+      "agents": {
+        "capabilities": {
+          "adminProjection": "系统提示词、工具和模型绑定写操作等待管理员投影。",
+          "publicSelection": "聊天页仍使用当前可选 Agent；这里不加载旧配置后台。",
+          "roleAssignment": "按角色分配 Agent 的治理能力需要后端 RBAC 合同。"
+        },
+        "description": "Agent 管理需要角色、模型和工具治理联动。当前只保留入口，不展示旧配置页。",
+        "title": "Agent 管理尚未开放"
+      },
+      "notifications": {
+        "capabilities": {
+          "admin": "公告创建、定向和失效需要管理员通知投影。",
+          "banner": "运行时通知仍通过当前消息/对话提示展示。",
+          "inbox": "统一通知收件箱等待后端读状态和范围合同。"
+        },
+        "description": "通知公告需要可审计的发布、范围和已读状态合同。当前工作台保留入口但不加载旧公告后台。",
+        "title": "通知公告管理尚未开放"
+      }
     },
     "newConversation": "新对话",
     "none": "无",

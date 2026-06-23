@@ -234,7 +234,7 @@ export function SearchDialog({
     >
       {/* Backdrop */}
       <div
-        className={`absolute inset-0 bg-black/30 transition-opacity duration-200 ${
+        className={`absolute inset-0 bg-slate-950/35 transition-opacity duration-200 ${
           visible ? "opacity-100" : "opacity-0"
         }`}
         onClick={onClose}
@@ -243,7 +243,7 @@ export function SearchDialog({
       {/* Dialog panel — scale + fade */}
       <div
         onTransitionEnd={handleTransitionEnd}
-        className={`relative w-[92vw] max-w-lg bg-white dark:bg-stone-900 rounded-2xl shadow-[0_25px_60px_-12px_rgba(0,0,0,0.25)] dark:shadow-[0_25px_60px_-12px_rgba(0,0,0,0.5)] border border-stone-200/60 dark:border-stone-700/40 overflow-hidden transition-all duration-200 ease-out origin-top ${
+        className={`relative w-[92vw] max-w-lg overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] transition-all duration-200 ease-out origin-top dark:bg-stone-900 ${
           visible
             ? "opacity-100 scale-100 translate-y-0"
             : "opacity-0 scale-[0.97] -translate-y-2"

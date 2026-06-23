@@ -29,20 +29,20 @@ export class ErrorBoundary extends Component<Props, State> {
     if (this.state.hasError) {
       const t = i18n.t.bind(i18n);
       return (
-        <div className="min-h-screen flex items-center justify-center bg-stone-50 dark:bg-stone-950 px-4">
-          <div className="w-full max-w-[380px] sm:max-w-[420px] rounded-2xl border border-stone-200/80 dark:border-stone-800/60 bg-white/80 dark:bg-stone-900/80 p-8 sm:p-10 text-center shadow-[0_2px_12px_rgba(0,0,0,0.04)] dark:shadow-[0_2px_16px_rgba(0,0,0,0.2)]">
+        <div className="flex min-h-screen items-center justify-center bg-[var(--theme-bg)] px-4 dark:bg-stone-950">
+          <div className="w-full max-w-[380px] rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-8 text-center shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:bg-stone-900 sm:max-w-[420px] sm:p-10">
             <div className="mx-auto mb-5 w-14 h-14 rounded-full bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center">
               <AlertTriangle className="w-7 h-7 text-amber-500 dark:text-amber-400" />
             </div>
-            <h1 className="text-xl font-bold text-stone-900 dark:text-stone-100 font-serif tracking-tight mb-2">
+            <h1 className="mb-2 text-xl font-semibold text-[var(--theme-text)]">
               {t("errorBoundary.title")}
             </h1>
-            <p className="text-sm text-stone-500 dark:text-stone-400 leading-relaxed mb-6 break-words">
+            <p className="mb-6 break-words text-sm leading-relaxed text-[var(--theme-text-secondary)]">
               {this.state.error?.message || t("errorBoundary.unexpectedError")}
             </p>
             <button
               onClick={() => window.location.reload()}
-              className="inline-flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-sm font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition-colors duration-200"
+              className="btn-primary inline-flex w-full items-center justify-center gap-2 px-4 py-2.5"
             >
               <RotateCcw className="w-4 h-4" />
               {t("errorBoundary.reloadPage")}

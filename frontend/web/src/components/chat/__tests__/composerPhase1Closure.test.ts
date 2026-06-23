@@ -121,3 +121,117 @@ test("composer model and context labels are localized", () => {
   assert.match(zh, /"unavailable"/);
   assert.match(zh, /"contextSelector"/);
 });
+
+test("composer model selector uses restrained workbench overlay styling", () => {
+  const modelPanel = read("src/components/chat/ComposerModelPanel.tsx");
+
+  assert.match(modelPanel, /data-composer-model-panel/);
+  assert.match(modelPanel, /bg-\[var\(--theme-bg-card\)\]/);
+  assert.match(modelPanel, /bg-\[var\(--theme-bg-sidebar\)\]/);
+  assert.match(modelPanel, /shadow-\[0_8px_24px_rgba\(18,38,63,0\.12\)\]/);
+  assert.doesNotMatch(modelPanel, /shadow-xl|shadow-2xl/);
+  assert.doesNotMatch(modelPanel, /rounded-xl|rounded-2xl|rounded-3xl/);
+  assert.doesNotMatch(modelPanel, /bg-black\/(?:30|40)/);
+  assert.doesNotMatch(modelPanel, /\bbg-white(?:\s|")/);
+});
+
+test("authenticated workbench popovers avoid legacy heavy overlays", () => {
+  const activePopoverFiles = [
+    "src/components/chat/ComposerUnavailablePanel.tsx",
+    "src/components/chat/AgentOptionButton.tsx",
+    "src/components/chat/ChatInputShortcuts.tsx",
+    "src/components/chat/ChatMessage/FeedbackDialog.tsx",
+    "src/components/layout/UserMenu.tsx",
+    "src/components/notification/NotificationDialog.tsx",
+    "src/components/selectors/AgentModeSelector.tsx",
+    "src/components/selectors/SkillSelector.tsx",
+    "src/components/selectors/ToolSelector.tsx",
+  ];
+
+  for (const path of activePopoverFiles) {
+    const source = read(path);
+    assert.match(source, /bg-slate-950\/35/, path);
+    assert.match(
+      source,
+      /shadow-\[0_8px_24px_rgba\(18,38,63,0\.12\)\]/,
+      path,
+    );
+    assert.doesNotMatch(source, /bg-black\/(?:40|50)/, path);
+    assert.doesNotMatch(source, /shadow-xl|shadow-2xl/, path);
+    assert.doesNotMatch(source, /rounded-2xl|rounded-3xl/, path);
+  }
+});
+
+test("chat loading and feedback surfaces use restrained workbench radius", () => {
+  const sources = new Map([
+    ["ChatSkeletons", read("src/components/skeletons/ChatSkeletons.tsx")],
+    ["FeedbackDialog", read("src/components/chat/ChatMessage/FeedbackDialog.tsx")],
+  ]);
+
+  for (const [name, source] of sources) {
+    assert.doesNotMatch(source, /rounded-2xl|rounded-3xl/, name);
+    assert.doesNotMatch(source, /\bbg-white\b|\bdark:bg-stone-(?:800|900)\b/, name);
+    assert.doesNotMatch(source, /shadow-xl|shadow-2xl/, name);
+  }
+});
+
+test("authenticated chat support surfaces use restrained enterprise workbench tokens", () => {
+  const sources = new Map([
+    ["ViewerToolbar", read("src/components/common/ViewerToolbar.tsx")],
+    ["AttachmentCard", read("src/components/common/AttachmentCard.tsx")],
+    ["ErrorBoundary", read("src/components/common/ErrorBoundary.tsx")],
+    ["AttachmentPreview", read("src/components/chat/AttachmentPreview.tsx")],
+    ["SlashCommandMenu", read("src/components/chat/SlashCommandMenu.tsx")],
+    [
+      "ComposerCommandHintBar",
+      read("src/components/chat/ComposerCommandHintBar.tsx"),
+    ],
+    ["ChatMessage", read("src/components/chat/ChatMessage/index.tsx")],
+    [
+      "UserMessageBubble",
+      read("src/components/chat/ChatMessage/UserMessageBubble.tsx"),
+    ],
+    [
+      "MessagePartRenderer",
+      read("src/components/chat/ChatMessage/MessagePartRenderer.tsx"),
+    ],
+    [
+      "FileRevealItem",
+      read("src/components/chat/ChatMessage/items/FileRevealItem.tsx"),
+    ],
+    [
+      "ProjectRevealItem",
+      read("src/components/chat/ChatMessage/items/ProjectRevealItem.tsx"),
+    ],
+    [
+      "ToolResultPanel",
+      read("src/components/chat/ChatMessage/items/ToolResultPanel.tsx"),
+    ],
+    ["UsersPanel", read("src/components/panels/UsersPanel.tsx")],
+    ["RolesPanel", read("src/components/panels/RolesPanel.tsx")],
+    ["MCPPanel", read("src/components/panels/MCPPanel.tsx")],
+    [
+      "SkillsList",
+      read("src/components/panels/SkillsPanel/SkillsList.tsx"),
+    ],
+    [
+      "AgentConfigPanel",
+      read("src/components/panels/AgentPanel/AgentConfigPanel.tsx"),
+    ],
+    ["FeedbackPanel", read("src/components/panels/FeedbackPanel.tsx")],
+  ]);
+
+  for (const [name, source] of sources) {
+    assert.match(
+      source,
+      /var\(--theme-bg-card\)|panel-card|enterprise-modal-shell/,
+      `${name} should use shared enterprise surface tokens`,
+    );
+    assert.doesNotMatch(source, /rounded-xl|rounded-2xl|rounded-3xl/, name);
+    assert.doesNotMatch(source, /\bbg-white(?:\b|\/)/, name);
+    assert.doesNotMatch(source, /\bbg-black\/(?:50|70)\b/, name);
+    assert.doesNotMatch(source, /shadow-xl|shadow-2xl|shadow-lg/, name);
+    assert.doesNotMatch(source, /rgba\(0,0,0/, name);
+    assert.doesNotMatch(source, /glass-divider/, name);
+  }
+});

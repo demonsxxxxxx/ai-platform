@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { useAuth } from "../../../hooks/useAuth";
 import { Permission } from "../../../types";
+import { isPermissionError } from "../../governance/frontendGovernanceState";
 import { ConfirmDialog } from "../../common/ConfirmDialog";
 import { useSkillsActions } from "./useSkillsActions";
 import { SkillsList } from "./SkillsList";
@@ -24,12 +25,15 @@ export function SkillsPanel({
   const { t } = useTranslation();
   const { hasAnyPermission } = useAuth();
 
-  const canRead = hasAnyPermission([Permission.SKILL_READ]);
   const canDelete = hasAnyPermission([Permission.SKILL_DELETE]);
   const canPublishByAuth = hasAnyPermission([Permission.MARKETPLACE_PUBLISH]);
-  const isGovernedUnavailable = governedUnavailable || !canRead;
+  const skillFileWriteBacked = true;
+  const skillImportBacked = true;
+  const skillBatchWriteBacked = true;
 
-  const actions = useSkillsActions({ enabled: !isGovernedUnavailable });
+  const actions = useSkillsActions({ enabled: !governedUnavailable });
+  const isGovernedUnavailable =
+    governedUnavailable || isPermissionError(actions.error);
   const effectivePermissions = new Set(actions.effectivePermissions);
   const canWrite =
     !isGovernedUnavailable &&
@@ -41,10 +45,16 @@ export function SkillsPanel({
   const canPublish =
     !isGovernedUnavailable &&
     (canPublishByAuth || effectivePermissions.has(Permission.MARKETPLACE_PUBLISH));
+  const canEditSkills = skillFileWriteBacked && canWrite;
+  const canCreateSkills = false;
+  const canImportSkills = skillImportBacked && canWrite;
+  const canBatchSkills =
+    skillBatchWriteBacked && (canWrite || canDeleteSkill);
 
   return (
     <div
-      className="skill-theme-shell flex h-full min-h-0 flex-col"
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      data-skill-workbench-shell
       data-settings-state-degraded={settingsStateDegraded || undefined}
     >
       <SkillsList
@@ -67,6 +77,10 @@ export function SkillsPanel({
         error={actions.error}
         clearError={actions.clearError}
         canWrite={canWrite && !isGovernedUnavailable}
+        canEdit={canEditSkills && !isGovernedUnavailable}
+        canCreate={canCreateSkills && !isGovernedUnavailable}
+        canImport={canImportSkills && !isGovernedUnavailable}
+        canBatch={canBatchSkills && !isGovernedUnavailable}
         canDelete={canDeleteSkill && !isGovernedUnavailable}
         canPublish={canPublish && !isGovernedUnavailable}
         governedUnavailable={isGovernedUnavailable}
@@ -143,12 +157,12 @@ export function SkillsPanel({
         setSelectedGithubSkills={actions.setSelectedGithubSkills}
       />
 
-      {actions.selectionMode && (
+      {actions.selectionMode && canBatchSkills && (
         <BatchActionBar
           selectedCount={actions.selectedNames.size}
           batchLoading={actions.batchLoading}
-          canWrite={canWrite && !isGovernedUnavailable}
-          canDelete={canDeleteSkill && !isGovernedUnavailable}
+          canWrite={canBatchSkills && canWrite && !isGovernedUnavailable}
+          canDelete={canBatchSkills && canDeleteSkill && !isGovernedUnavailable}
           onBatchToggle={actions.handleBatchToggle}
           onBatchDelete={actions.handleBatchDelete}
           onClearSelection={actions.clearSelection}

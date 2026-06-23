@@ -43,6 +43,14 @@ export const workbenchSurface = {
     "rounded-lg border border-dashed border-slate-300 bg-[var(--theme-bg-card)] p-4 text-sm leading-6 text-slate-600",
     "dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300",
   ),
+  stateSurface: clsx(
+    "rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-5 text-center shadow-[0_4px_12px_rgba(18,38,63,0.03)]",
+    "dark:border-stone-800 dark:bg-stone-900",
+  ),
+  stateIcon: clsx(
+    "mx-auto flex size-11 items-center justify-center rounded-lg bg-[var(--theme-bg-sidebar)] text-slate-500 ring-1 ring-[var(--theme-border)]",
+    "dark:bg-stone-950 dark:text-stone-300 dark:ring-stone-800",
+  ),
   statusTile: clsx(
     "rounded-md border border-slate-200/70 bg-[var(--theme-bg-card)] p-3",
     "dark:border-stone-800 dark:bg-stone-900",

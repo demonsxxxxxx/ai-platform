@@ -1,5 +1,5 @@
 /**
- * 反馈管理面板 - ChatGPT 风格
+ * 反馈管理面板 - enterprise workbench surface
  */
 
 import { useState, useEffect, useCallback } from "react";
@@ -15,6 +15,7 @@ import {
   TrendingUp,
   Copy,
   Check,
+  X,
 } from "lucide-react";
 import { PanelHeader } from "../common/PanelHeader";
 import { GlassSelect } from "../common/GlassSelect";
@@ -42,9 +43,9 @@ function StatsCard({
   value: string | number;
 }) {
   return (
-    <div className="glass-card rounded-xl p-4">
+    <div className="panel-card">
       <div className="flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--glass-bg-subtle)]">
+        <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)]">
           <Icon size={24} className="text-stone-600 dark:text-stone-400" />
         </div>
         <div>
@@ -58,7 +59,7 @@ function StatsCard({
   );
 }
 
-// Delete confirmation modal with ChatGPT-style centered dialog
+// Delete confirmation modal
 function DeleteConfirmModal({
   onConfirm,
   onCancel,
@@ -70,45 +71,39 @@ function DeleteConfirmModal({
 
   return (
     <>
-      {/* Backdrop */}
       <div
-        className="fixed inset-0 z-50 bg-black/50  transition-opacity"
+        className="enterprise-modal-backdrop"
         onClick={onCancel}
       />
-      {/* Modal */}
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="enterprise-modal-layer">
         <div
-          className="w-full max-w-md transform overflow-hidden rounded-2xl bg-[var(--theme-bg-card)] p-6 text-left align-middle shadow-xl transition-all"
+          className="enterprise-modal-shell p-5"
           onClick={(e) => e.stopPropagation()}
         >
-          {/* Icon */}
-          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/30 mb-4">
+          <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-lg border border-red-200 bg-red-50 dark:border-red-900/50 dark:bg-red-950/30">
             <AlertCircle className="text-red-600 dark:text-red-400" size={24} />
           </div>
 
-          {/* Title */}
-          <h3 className="text-xl font-semibold text-stone-900 dark:text-stone-100 font-serif">
+          <h3 className="text-base font-semibold text-stone-900 dark:text-stone-100">
             {t("feedback.deleteConfirmTitle")}
           </h3>
 
-          {/* Description */}
           <div className="mt-2">
             <p className="text-sm text-stone-500 dark:text-stone-400">
               {t("feedback.deleteConfirm")}
             </p>
           </div>
 
-          {/* Actions */}
           <div className="mt-6 flex gap-3">
             <button
               onClick={onCancel}
-              className="flex-1 rounded-xl border border-[var(--glass-border)] bg-[var(--theme-bg-card)] px-4 py-2.5 text-sm font-medium text-stone-700 transition-colors hover:bg-stone-50 dark:text-stone-300 dark:hover:bg-stone-700"
+              className="btn-secondary flex-1 justify-center"
             >
               {t("common.cancel")}
             </button>
             <button
               onClick={onConfirm}
-              className="flex-1 rounded-xl bg-red-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700"
+              className="btn-danger flex-1 justify-center border-red-300 bg-red-600 text-white hover:bg-red-700 dark:border-red-700 dark:bg-red-600 dark:text-white dark:hover:bg-red-700"
             >
               {t("feedback.delete")}
             </button>
@@ -135,47 +130,31 @@ function FeedbackDetailModal({
 
   return (
     <>
-      {/* Backdrop */}
       <div
-        className="fixed inset-0 z-50 bg-black/50  transition-opacity"
+        className="enterprise-modal-backdrop"
         onClick={onClose}
       />
-      {/* Modal */}
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="enterprise-modal-layer">
         <div
-          className="w-full max-w-lg transform overflow-hidden rounded-2xl bg-[var(--theme-bg-card)] p-6 text-left align-middle shadow-xl transition-all"
+          className="enterprise-modal-shell enterprise-modal-shell--wide"
           onClick={(e) => e.stopPropagation()}
         >
-          {/* Header */}
-          <div className="flex items-center justify-between mb-6">
-            <h3 className="text-xl font-semibold text-stone-900 dark:text-stone-100 font-serif">
+          <div className="enterprise-modal-header">
+            <h3 className="text-base font-semibold text-stone-900 dark:text-stone-100">
               {t("feedback.detailTitle") || "Feedback Details"}
             </h3>
             <button
               onClick={onClose}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-600 dark:hover:bg-stone-800 dark:hover:text-stone-300"
+              className="enterprise-icon-button"
             >
               <span className="sr-only">Close</span>
-              <svg
-                className="h-5 w-5"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M6 18L18 6M6 6l12 12"
-                />
-              </svg>
+              <X size={18} />
             </button>
           </div>
 
-          {/* User Info */}
-          <div className="mb-6">
+          <div className="enterprise-modal-body">
             <div className="flex items-center gap-3 mb-4">
-              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--glass-bg-subtle)] text-stone-600 dark:text-stone-300 font-semibold text-lg">
+              <div className="enterprise-avatar h-12 w-12 text-lg">
                 {feedback.username.charAt(0).toUpperCase()}
               </div>
               <div>
@@ -193,7 +172,7 @@ function FeedbackDetailModal({
               <span
                 className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium ${
                   feedback.rating === "up"
-                    ? "bg-[var(--glass-bg-subtle)] text-stone-600 dark:text-stone-300"
+                    ? "bg-[var(--theme-bg-sidebar)] text-stone-600 ring-1 ring-[var(--theme-border)] dark:text-stone-300"
                     : "bg-stone-800 text-stone-300 dark:bg-stone-200 dark:text-stone-700"
                 }`}
               >
@@ -215,12 +194,12 @@ function FeedbackDetailModal({
                   Session ID
                 </label>
                 <div className="flex items-center gap-2">
-                  <code className="flex-1 rounded-lg bg-stone-100 px-3 py-2 text-sm text-stone-600 dark:bg-stone-800 dark:text-stone-300 font-mono truncate">
+                  <code className="enterprise-code-chip flex-1 truncate">
                     {feedback.session_id}
                   </code>
                   <button
                     onClick={() => onCopy(feedback.session_id, "session")}
-                    className="flex h-9 w-9 items-center justify-center rounded-lg text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-600 dark:hover:bg-stone-800 dark:hover:text-stone-300"
+                    className="enterprise-icon-button"
                     title={t("documents.copy")}
                   >
                     {copiedField === "session" ? (
@@ -237,12 +216,12 @@ function FeedbackDetailModal({
                   Run ID
                 </label>
                 <div className="flex items-center gap-2">
-                  <code className="flex-1 rounded-lg bg-stone-100 px-3 py-2 text-sm text-stone-600 dark:bg-stone-800 dark:text-stone-300 font-mono truncate">
+                  <code className="enterprise-code-chip flex-1 truncate">
                     {feedback.run_id}
                   </code>
                   <button
                     onClick={() => onCopy(feedback.run_id, "run")}
-                    className="flex h-9 w-9 items-center justify-center rounded-lg text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-600 dark:hover:bg-stone-800 dark:hover:text-stone-300"
+                    className="enterprise-icon-button"
                     title={t("documents.copy")}
                   >
                     {copiedField === "run" ? (
@@ -254,24 +233,23 @@ function FeedbackDetailModal({
                 </div>
               </div>
             </div>
-          </div>
           {/* Comment */}
           {feedback.comment && (
             <div>
               <label className="block text-xs font-medium text-stone-500 dark:text-stone-400 mb-2">
                 {t("feedback.comment") || "Comment"}
               </label>
-              <div className="rounded-xl bg-[var(--glass-bg-subtle)] p-4 text-sm text-stone-700 dark:text-stone-300 whitespace-pre-wrap">
+              <div className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] p-4 text-sm text-stone-700 dark:text-stone-300 whitespace-pre-wrap">
                 {feedback.comment}
               </div>
             </div>
           )}
+          </div>
 
-          {/* Close button */}
-          <div className="mt-6 flex justify-end">
+          <div className="enterprise-modal-footer justify-end">
             <button
               onClick={onClose}
-              className="rounded-xl border border-[var(--glass-border)] bg-[var(--theme-bg-card)] px-4 py-2.5 text-sm font-medium text-stone-700 transition-colors hover:bg-stone-50 dark:text-stone-300 dark:hover:bg-stone-700"
+              className="btn-secondary"
             >
               {t("common.close") || "Close"}
             </button>
@@ -363,7 +341,7 @@ export function FeedbackPanel() {
     formatDateTimeShort(dateString);
 
   return (
-    <div className="glass-shell flex h-full flex-col min-h-0">
+    <div className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100">
       {/* Header */}
       <PanelHeader
         title={t("feedback.title")}
@@ -413,13 +391,13 @@ export function FeedbackPanel() {
         </div>
       )}
 
-      {/* Feedback List - ChatGPT style */}
+      {/* Feedback List */}
       <div className="flex-1 overflow-y-auto py-2 sm:py-4 px-4 sm:p-6">
         {isLoading && feedbackList.length === 0 ? (
           <FeedbackPanelSkeleton />
         ) : !isLoading && feedbackList.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center text-center">
-            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-stone-100 dark:bg-stone-800">
+          <div className="enterprise-empty-state">
+            <div className="enterprise-empty-state-icon mb-4">
               <ThumbsUp
                 size={32}
                 className="text-stone-400 dark:text-stone-500"
@@ -440,12 +418,12 @@ export function FeedbackPanel() {
                 <button
                   key={feedback.id}
                   onClick={() => setSelectedFeedback(feedback)}
-                  className="group relative w-full text-left overflow-hidden glass-card rounded-xl p-4 hover:border-stone-300 dark:hover:border-stone-600 transition-colors"
+                  className="panel-card group relative w-full overflow-hidden text-left"
                 >
                   <div className="flex items-start justify-between gap-3">
                     {/* User Info */}
                     <div className="flex items-center gap-3 min-w-0">
-                      <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-[var(--glass-bg-subtle)] text-stone-600 dark:text-stone-300 text-sm font-medium">
+                      <div className="enterprise-avatar h-9 w-9">
                         {feedback.username.charAt(0).toUpperCase()}
                       </div>
                       <div className="min-w-0">
@@ -462,7 +440,7 @@ export function FeedbackPanel() {
                       <span
                         className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${
                           feedback.rating === "up"
-                            ? "bg-[var(--glass-bg-subtle)] text-stone-600 dark:text-stone-300"
+                            ? "bg-[var(--theme-bg-sidebar)] text-stone-600 ring-1 ring-[var(--theme-border)] dark:text-stone-300"
                             : "bg-stone-800 text-stone-300 dark:bg-stone-200 dark:text-stone-700"
                         }`}
                       >
@@ -478,7 +456,7 @@ export function FeedbackPanel() {
                             e.stopPropagation();
                             setDeleteTarget(feedback);
                           }}
-                          className="flex h-8 w-8 items-center justify-center rounded-lg text-stone-400 transition-all hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/30 dark:hover:text-red-400"
+                          className="enterprise-danger-icon-button h-8 w-8"
                           title={t("feedback.delete")}
                         >
                           <Trash2 size={16} />
@@ -488,7 +466,7 @@ export function FeedbackPanel() {
                   </div>
                   {/* Comment */}
                   {feedback.comment && (
-                    <div className="mt-3 rounded-lg bg-[var(--glass-bg-subtle)] p-3 text-sm text-stone-600 dark:text-stone-300 whitespace-pre-wrap">
+                    <div className="mt-3 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] p-3 text-sm text-stone-600 dark:text-stone-300 whitespace-pre-wrap">
                       {feedback.comment}
                     </div>
                   )}
@@ -502,12 +480,12 @@ export function FeedbackPanel() {
                 <button
                   key={feedback.id}
                   onClick={() => setSelectedFeedback(feedback)}
-                  className="group relative w-full text-left overflow-hidden glass-card rounded-xl p-5 hover:border-stone-300 dark:hover:border-stone-600 transition-colors"
+                  className="panel-card group relative w-full overflow-hidden p-5 text-left"
                 >
                   <div className="flex items-start justify-between gap-4">
                     {/* User Info */}
                     <div className="flex items-center gap-4">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--glass-bg-subtle)] text-stone-600 dark:text-stone-300 font-medium">
+                      <div className="enterprise-avatar">
                         {feedback.username.charAt(0).toUpperCase()}
                       </div>
                       <div>
@@ -524,7 +502,7 @@ export function FeedbackPanel() {
                     <span
                       className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ${
                         feedback.rating === "up"
-                          ? "bg-[var(--glass-bg-subtle)] text-stone-600 dark:text-stone-300"
+                          ? "bg-[var(--theme-bg-sidebar)] text-stone-600 ring-1 ring-[var(--theme-border)] dark:text-stone-300"
                           : "bg-stone-800 text-stone-300 dark:bg-stone-200 dark:text-stone-700"
                       }`}
                     >
@@ -545,7 +523,7 @@ export function FeedbackPanel() {
                           e.stopPropagation();
                           setDeleteTarget(feedback);
                         }}
-                        className="flex h-9 w-9 items-center justify-center rounded-lg text-stone-400 transition-all hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/30 dark:hover:text-red-400 opacity-0 group-hover:opacity-100"
+                        className="enterprise-danger-icon-button opacity-0 group-hover:opacity-100"
                         title={t("feedback.delete")}
                       >
                         <Trash2 size={18} />
@@ -555,7 +533,7 @@ export function FeedbackPanel() {
 
                   {/* Comment */}
                   {feedback.comment && (
-                    <div className="mt-4 rounded-xl bg-[var(--glass-bg-subtle)] p-4 text-sm text-stone-600 dark:text-stone-300 whitespace-pre-wrap">
+                    <div className="mt-4 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] p-4 text-sm text-stone-600 dark:text-stone-300 whitespace-pre-wrap">
                       {feedback.comment}
                     </div>
                   )}
@@ -568,7 +546,7 @@ export function FeedbackPanel() {
 
       {/* Pagination */}
       {total > limit && (
-        <div className="glass-divider bg-transparent px-4 py-4 sm:px-6">
+        <div className="enterprise-divider border-t bg-transparent px-4 py-4 sm:px-6">
           <Pagination
             page={Math.floor(skip / limit) + 1}
             pageSize={limit}

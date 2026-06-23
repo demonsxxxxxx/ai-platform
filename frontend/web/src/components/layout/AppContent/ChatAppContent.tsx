@@ -34,7 +34,12 @@ import {
   resolveDefaultModelSelection,
 } from "./modelSelection";
 import { getRestoredModelSelection } from "./sessionState";
-import { buildEffectiveSkills, countEnabledSkills } from "./skillAvailability";
+import {
+  buildEffectiveSkills,
+  countEnabledSkills,
+  resolveComposerSkillsAvailability,
+  resolveSettingsBooleanProjection,
+} from "./skillAvailability";
 import { AppShell } from "./AppShell";
 import { ChatView } from "./ChatView";
 import { WorkbenchShell } from "../../workbench/WorkbenchShell";
@@ -67,10 +72,20 @@ export function ChatAppContent({
   const { t } = useTranslation();
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { enableSkills, availableModels, defaultModel } = useSettingsContext();
+  const { enableSkills, settings, availableModels, defaultModel } =
+    useSettingsContext();
   const { hasPermission, isAuthenticated } = useAuth();
   const canReadSkills = hasPermission(Permission.SKILL_READ);
   const canReadMcpTools = hasPermission(Permission.MCP_READ);
+  const enableSkillsProjection = resolveSettingsBooleanProjection(
+    settings,
+    "ENABLE_SKILLS",
+  );
+  const composerSkillsAvailability = resolveComposerSkillsAvailability({
+    canReadSkills,
+    enableSkillsSettingKnown: enableSkillsProjection.known,
+    enableSkillsSetting: enableSkillsProjection.value ?? enableSkills,
+  });
 
   const { isPageDragging, pageDragAttachments, setPageDragAttachments } =
     useDragAndDrop();
@@ -97,7 +112,7 @@ export function ChatAppContent({
     pendingSkillNames,
     isMutating: skillsMutating,
     fetchSkills,
-  } = useSkills({ enabled: enableSkills && canReadSkills });
+  } = useSkills({ enabled: composerSkillsAvailability.shouldFetchSkills });
 
   const canReadPersonaPresets = hasPermission(Permission.PERSONA_PRESET_READ);
   const canManagePersonaPresets =
@@ -734,7 +749,7 @@ export function ChatAppContent({
       <>
         {isPageDragging && (
           <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-stone-500/5 transition-colors dark:bg-stone-500/10">
-            <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-dashed border-stone-400 bg-white/95 px-16 py-12 shadow-xl transition-colors dark:border-stone-500 dark:bg-stone-800/95">
+            <div className="flex flex-col items-center gap-3 rounded-lg border-2 border-dashed border-stone-400 bg-[var(--theme-bg-card)] px-16 py-12 shadow-[0_12px_28px_rgba(18,38,63,0.08)] transition-colors dark:border-stone-500 dark:bg-stone-900">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 className="h-12 w-12 text-stone-500 dark:text-stone-400"
@@ -780,7 +795,7 @@ export function ChatAppContent({
           skillsMutating={skillsMutating}
           enabledSkillsCount={countEnabledSkills(effectiveSkills)}
           totalSkillsCount={effectiveSkills.length}
-          enableSkills={enableSkills}
+          enableSkills={composerSkillsAvailability.enableComposerSkills}
           personaPresets={personaPresets}
           personaPresetsTotal={personaPresetsTotal}
           personaPresetsPage={personaPresetPage}

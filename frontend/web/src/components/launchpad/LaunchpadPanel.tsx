@@ -82,7 +82,7 @@ export function LaunchpadPanel() {
   return (
     <section
       data-launchpad-workbench
-      className="flex h-full min-h-0 flex-col bg-slate-50 px-3 pb-3 dark:bg-stone-950 sm:px-4"
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] px-3 pb-3 text-slate-950 dark:bg-stone-950 dark:text-stone-100 sm:px-4"
     >
       <div className="shrink-0 border-b border-slate-200/80 py-3 dark:border-stone-800">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -108,7 +108,7 @@ export function LaunchpadPanel() {
                   className={`h-9 rounded-md px-4 text-sm font-medium transition-colors ${
                     activeTab === tab.key
                       ? "bg-slate-900 text-white dark:bg-stone-100 dark:text-stone-900"
-                      : "text-slate-600 hover:bg-slate-100 dark:text-stone-300 dark:hover:bg-stone-800"
+                      : "text-slate-600 hover:bg-[var(--theme-bg-sidebar)] dark:text-stone-300 dark:hover:bg-stone-800"
                   }`}
                 >
                   {t(`launchpad.tabs.${tab.key}`, tab.label)}
@@ -124,7 +124,7 @@ export function LaunchpadPanel() {
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                className="h-10 w-full rounded-lg border border-slate-200 bg-white pl-10 pr-3 text-sm text-slate-800 outline-none transition-colors placeholder:text-slate-400 focus:border-slate-400 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-100 dark:focus:border-stone-600"
+                className="panel-search h-10"
                 placeholder={t("launchpad.searchPlaceholder")}
                 type="search"
               />
@@ -142,7 +142,7 @@ export function LaunchpadPanel() {
                 <a
                   key={group.id}
                   href={`#${group.id}`}
-                  className="flex min-h-10 items-center gap-2 rounded-lg px-3 py-2 text-sm text-slate-600 transition-colors hover:bg-white hover:text-slate-900 dark:text-stone-300 dark:hover:bg-stone-900 dark:hover:text-stone-100"
+                  className="flex min-h-10 items-center gap-2 rounded-lg px-3 py-2 text-sm text-slate-600 transition-colors hover:bg-[var(--theme-bg-card)] hover:text-slate-900 dark:text-stone-300 dark:hover:bg-stone-900 dark:hover:text-stone-100"
                 >
                   <Icon size={17} />
                   <span className="min-w-0 flex-1 truncate">{group.name}</span>
@@ -164,7 +164,7 @@ export function LaunchpadPanel() {
               <a
                 key={group.id}
                 href={`#${group.id}`}
-                className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-600 shadow-sm transition-colors hover:border-slate-300 hover:text-slate-900 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-300 dark:hover:border-stone-700 dark:hover:text-stone-100"
+                className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-3 text-sm text-slate-600 shadow-sm transition-colors hover:border-slate-300 hover:text-slate-900 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-300 dark:hover:border-stone-700 dark:hover:text-stone-100"
               >
                 <span className="max-w-28 truncate">{group.name}</span>
                 <span className="text-xs text-stone-400">
@@ -190,7 +190,7 @@ export function LaunchpadPanel() {
             {query && (
               <button
                 type="button"
-                className="rounded-md px-2 py-1 hover:bg-white dark:hover:bg-stone-900"
+                className="rounded-md px-2 py-1 hover:bg-[var(--theme-bg-card)] dark:hover:bg-stone-900"
                 onClick={() => setQuery("")}
               >
                 {t("launchpad.clearSearch")}
@@ -212,7 +212,7 @@ export function LaunchpadPanel() {
                     <h2 className="text-sm font-semibold text-slate-800 dark:text-stone-100">
                       {group.name}
                     </h2>
-                    <span className="rounded-md bg-white px-2 py-0.5 text-xs text-slate-500 ring-1 ring-slate-200 dark:bg-stone-900 dark:text-stone-300 dark:ring-stone-800">
+                    <span className="rounded-md bg-[var(--theme-bg-card)] px-2 py-0.5 text-xs text-slate-500 ring-1 ring-[var(--theme-border)] dark:bg-stone-900 dark:text-stone-300 dark:ring-stone-800">
                       {group.entries.length}
                     </span>
                   </div>

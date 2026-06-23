@@ -32,7 +32,7 @@ export function ListCard({
       <div
         onClick={() => onPreview(file)}
         onContextMenu={(e) => ctx.show(e, file)}
-        className="group/card relative flex items-center gap-3.5 px-4 py-3 rounded-xl bg-white dark:bg-stone-900/40 border border-stone-200/60 dark:border-stone-700/40 cursor-pointer select-none transition-all duration-150 hover:bg-stone-50 dark:hover:bg-stone-800/30 hover:border-stone-300/80 dark:hover:border-stone-600/50 hover:shadow-sm hover:shadow-stone-900/[0.04] dark:hover:shadow-black/10"
+        className="group/card relative flex cursor-pointer select-none items-center gap-3.5 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-4 py-3 transition-all duration-150 hover:border-slate-300 hover:bg-[var(--theme-bg-card)] hover:shadow-sm hover:shadow-stone-900/[0.04] dark:border-stone-700/40 dark:bg-stone-900/40 dark:hover:border-stone-600/50 dark:hover:bg-stone-800/30 dark:hover:shadow-black/10"
       >
         {/* Icon / thumbnail */}
         <div className="shrink-0">

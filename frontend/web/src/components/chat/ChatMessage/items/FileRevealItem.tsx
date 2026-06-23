@@ -169,16 +169,16 @@ export function FileRevealItem({
 
   if (isPending) {
     return (
-      <div className="my-2 flex items-center gap-3 px-4 py-3 rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900">
+      <div className="my-2 flex items-center gap-3 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-4 py-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:bg-stone-900">
         <div className={`p-2.5 rounded-lg ${bg}`}>
           <LoadingSpinner size="sm" className={color} />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-medium text-stone-700 dark:text-stone-300 truncate">
+          <div className="truncate text-sm font-medium text-[var(--theme-text)]">
             {fileName}
           </div>
           {parsed.description && (
-            <div className="text-xs text-stone-500 dark:text-stone-400 truncate mt-0.5">
+            <div className="mt-0.5 truncate text-xs text-[var(--theme-text-secondary)]">
               {parsed.description}
             </div>
           )}
@@ -192,7 +192,7 @@ export function FileRevealItem({
 
   if (cancelled && !result) {
     return (
-      <div className="my-2 flex items-center gap-3 px-4 py-3 rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20">
+      <div className="my-2 flex items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-800 dark:bg-amber-900/20">
         <div className={`p-2.5 rounded-lg ${bg}`}>
           <FileIcon size={20} className={color} />
         </div>
@@ -215,7 +215,7 @@ export function FileRevealItem({
 
   if (parsed.error) {
     return (
-      <div className="my-2 flex items-center gap-3 px-4 py-3 rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20">
+      <div className="my-2 flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 dark:border-red-800 dark:bg-red-900/20">
         <div className={`p-2.5 rounded-lg bg-red-100 dark:bg-red-900/30`}>
           <FileIcon size={20} className="text-red-500" />
         </div>
@@ -252,9 +252,9 @@ export function FileRevealItem({
       {canPreview && mediaObjectUrl && success ? (
         <div
           className={clsx(
-            "w-full rounded-xl border overflow-hidden transition-colors transition-shadow",
-            "border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900",
-            "hover:shadow-lg hover:border-stone-300 dark:hover:border-stone-600",
+            "w-full overflow-hidden rounded-lg border transition-colors",
+            "border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:bg-stone-900",
+            "hover:bg-[var(--theme-bg-sidebar)]",
           )}
         >
           {isAudio ? (
@@ -305,7 +305,7 @@ export function FileRevealItem({
               )}
               {(isImage || isVideo) && (
                 <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center pointer-events-none">
-                  <div className="opacity-0 group-hover:opacity-100 transition-opacity p-2 rounded-full bg-white/90 dark:bg-stone-800/90 shadow-lg pointer-events-auto cursor-pointer">
+                  <div className="pointer-events-auto cursor-pointer rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-2 opacity-0 shadow-[0_4px_12px_rgba(18,38,63,0.03)] transition-opacity group-hover:opacity-100 dark:bg-stone-900">
                     <ExternalLink
                       size={16}
                       className="text-stone-600 dark:text-stone-300"
@@ -318,7 +318,7 @@ export function FileRevealItem({
 
           <div
             className={clsx(
-              "flex items-center gap-2 px-3 py-2 bg-stone-50 dark:bg-stone-800/50 border-t border-stone-200 dark:border-stone-700",
+            "flex items-center gap-2 border-t border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-3 py-2",
               isAudio && "border-t-0",
             )}
             onClick={() => {
@@ -349,10 +349,10 @@ export function FileRevealItem({
             }
           }}
           className={clsx(
-            "w-full flex items-center gap-3 p-4 rounded-xl border transition-colors transition-transform cursor-pointer text-left",
+            "flex w-full cursor-pointer items-center gap-3 rounded-lg border p-4 text-left transition-colors",
             success
-              ? "border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 hover:shadow-lg hover:border-stone-300 dark:hover:border-stone-600 hover:scale-[1.005]"
-              : "border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 opacity-70",
+              ? "border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-[0_4px_12px_rgba(18,38,63,0.03)] hover:bg-[var(--theme-bg-sidebar)] dark:bg-stone-900"
+              : "border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] opacity-70",
           )}
           disabled={!parsed.filePath || !success}
         >

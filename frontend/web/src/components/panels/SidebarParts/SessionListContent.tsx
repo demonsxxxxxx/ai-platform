@@ -5,8 +5,9 @@ import {
   FolderPlus,
   MessageSquarePlus,
   LayoutGrid,
+  Package,
+  ShoppingBag,
   Server,
-  Sparkles,
   Bot,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -178,11 +179,19 @@ export function SessionListContent({
         </button>
 
         <button
+          onClick={() => navigate("/skills")}
+          className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+        >
+          <Package size={20} />
+          <span>{t("nav.skills")}</span>
+        </button>
+
+        <button
           onClick={() => navigate("/marketplace")}
           className="sidebar-nav-btn w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
         >
-          <Sparkles size={20} />
-          <span>{t("featureMenu.skillsMarketplace")}</span>
+          <ShoppingBag size={20} />
+          <span>{t("nav.marketplace")}</span>
         </button>
 
         <button
@@ -431,7 +440,7 @@ export function SessionListContent({
       <div className="shrink-0 px-2 py-1 border-t border-stone-200/60 dark:border-stone-800/60">
         <div
           onClick={onShowProfile}
-          className="group flex items-center rounded-xl py-3 px-2 w-full hover:bg-stone-100 dark:hover:bg-stone-800/60 transition cursor-pointer"
+          className="group flex items-center rounded-lg py-3 px-2 w-full hover:bg-stone-100 dark:hover:bg-stone-800/60 transition cursor-pointer"
         >
           <div className="shrink-0 w-8 h-8 rounded-full overflow-hidden ring-1 ring-stone-200 dark:ring-stone-700 group-hover:ring-[var(--theme-primary)] transition mr-3">
             {user?.avatar_url && !imgError ? (

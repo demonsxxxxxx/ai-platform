@@ -22,7 +22,7 @@ import { useAuth } from "../../../hooks/useAuth";
 import { useTheme } from "../../../contexts/ThemeContext";
 import { useSettingsContext } from "../../../contexts/SettingsContext";
 import { authApi } from "../../../services/api";
-import { notificationApi } from "../../../services/api/notification";
+import { notificationPublicApi } from "../../../services/api/notificationPublic";
 import { useSessionTitle } from "../../../hooks/useSessionTitle";
 import { NotificationDialog } from "../../notification/NotificationDialog";
 import { Permission } from "../../../types";
@@ -88,7 +88,7 @@ export function Header({
   }, []);
 
   const refreshNotifCount = useCallback(() => {
-    notificationApi
+    notificationPublicApi
       .getActive()
       .then((items) => setActiveNotifCount(items.length));
   }, []);
@@ -235,7 +235,7 @@ export function Header({
               createPortal(
                 <div
                   ref={mobileMenuPanelRef}
-                  className="fixed z-[301] w-56 rounded-xl shadow-xl border overflow-hidden animate-scale-in"
+                  className="fixed z-[301] w-56 overflow-hidden rounded-lg border shadow-[0_8px_18px_rgba(18,38,63,0.08)] animate-scale-in"
                   style={{
                     top: getMenuPosition().top,
                     right: getMenuPosition().right,
@@ -365,7 +365,7 @@ export function Header({
           {langMenuOpen &&
             createPortal(
               <div
-                className="fixed z-[302] w-56 rounded-xl shadow-xl border overflow-hidden animate-scale-in"
+                className="fixed z-[302] w-56 overflow-hidden rounded-lg border shadow-[0_8px_18px_rgba(18,38,63,0.08)] animate-scale-in"
                 style={{
                   top: getMenuPosition().top,
                   right: getMenuPosition().right,

@@ -23,6 +23,7 @@ export function isPermissionError(message: string | null | undefined): boolean {
   if (!message) return false;
   return (
     message.startsWith("missing_permission:") ||
+    message.includes("Missing permission:") ||
     message.includes("backendErrors.permissionMissing") ||
     message.includes("缺少权限")
   );

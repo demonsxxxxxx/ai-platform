@@ -25,7 +25,7 @@ export function BatchActionBar({
 
   return (
     <div className="fixed bottom-4 left-4 right-4 z-40 flex justify-center sm:bottom-6 sm:left-1/2 sm:right-auto sm:-translate-x-1/2">
-      <div className="flex items-center gap-1 rounded-2xl border border-[var(--theme-border)] bg-[var(--theme-bg)] px-2 py-1.5 shadow-xl shadow-black/8 dark:shadow-black/24">
+      <div className="flex items-center gap-1 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2 py-1.5 shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
         <span className="mr-1.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--theme-primary)] px-1 text-[10px] font-bold leading-none text-white dark:text-[var(--theme-bg)]">
           {selectedCount}
         </span>

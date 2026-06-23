@@ -61,7 +61,7 @@ function UserAvatar({ user, size = "sm" }: UserAvatarProps) {
   const initial = user.username.charAt(0).toUpperCase();
   return (
     <div
-      className={`flex items-center justify-center rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 font-medium ${sizeClasses}`}
+      className={`flex items-center justify-center rounded-full bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)] font-medium ${sizeClasses}`}
     >
       {initial}
     </div>
@@ -439,7 +439,7 @@ export function UsersPanel() {
   }
 
   return (
-    <div className="glass-shell flex h-full flex-col min-h-0">
+    <div className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100">
       {/* 头部 */}
       <PanelHeader
         title={t("users.title")}
@@ -460,7 +460,7 @@ export function UsersPanel() {
 
       {/* 错误提示 */}
       {error && (
-        <div className="mx-3 mt-4 flex items-center gap-2 rounded-xl bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/30 dark:text-red-400 sm:mx-6">
+        <div className="mx-3 mt-4 flex items-center gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/30 dark:text-red-400 sm:mx-6">
           <AlertCircle size={18} />
           <span>{error}</span>
         </div>
@@ -469,11 +469,10 @@ export function UsersPanel() {
       {/* 用户列表 */}
       <div className="flex-1 overflow-y-auto py-2 sm:py-4 px-4">
         {users.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center text-center">
-            <Users
-              size={48}
-              className="mb-4 text-theme-text-secondary opacity-40"
-            />
+          <div className="enterprise-empty-state">
+            <div className="enterprise-empty-state-icon mb-4">
+              <Users size={32} className="text-theme-text-secondary" />
+            </div>
             <p className="text-theme-text-secondary">
               {debouncedSearch
                 ? t("users.noMatchingUsers")
@@ -483,9 +482,9 @@ export function UsersPanel() {
         ) : (
           <>
             {/* Desktop table view */}
-            <div className="hidden overflow-x-auto glass-card rounded-xl sm:block">
-              <table className="min-w-full divide-y divide-[var(--glass-border)]">
-                <thead className="bg-[var(--glass-bg-subtle)]">
+            <div className="enterprise-table-surface hidden overflow-x-auto sm:block">
+              <table className="min-w-full divide-y divide-[var(--theme-border)]">
+                <thead className="bg-[var(--theme-bg-sidebar)]">
                   <tr>
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-theme-text-secondary">
                       {t("users.user")}
@@ -509,11 +508,11 @@ export function UsersPanel() {
                     )}
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-[var(--glass-border)]">
+                <tbody className="divide-y divide-[var(--theme-border)]">
                   {users.map((user) => (
                     <tr
                       key={user.id}
-                      className="hover:bg-[var(--glass-bg-subtle)]"
+                      className="hover:bg-[var(--theme-bg-sidebar)]"
                     >
                       <td className="whitespace-nowrap px-6 py-4">
                         <div className="flex items-center gap-3">
@@ -663,7 +662,7 @@ export function UsersPanel() {
 
       {/* Pagination */}
       {total > pageSize && (
-        <div className="glass-divider px-3 py-3 sm:px-6">
+        <div className="enterprise-divider border-t px-3 py-3 sm:px-6">
           <Pagination
             page={page}
             pageSize={pageSize}

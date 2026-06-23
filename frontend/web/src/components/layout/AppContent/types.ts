@@ -1,3 +1,5 @@
+import type { FrontendGovernanceState } from "../../governance/frontendGovernanceState";
+
 export type TabType =
   | "chat"
   | "apps"
@@ -11,13 +13,13 @@ export type TabType =
   | "channels"
   | "agents"
   | "models"
-  | "files"
   | "notifications"
   | "memory";
 
 export interface RouteUnavailableConfig {
-  state: "forbidden" | "no-workspace" | "degraded";
+  state: FrontendGovernanceState;
   title: string;
   description: string;
   surface: string;
+  details?: string[];
 }

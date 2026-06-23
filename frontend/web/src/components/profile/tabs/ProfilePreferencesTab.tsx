@@ -5,9 +5,11 @@ import { Settings, ChevronRight, Check } from "lucide-react";
 import { toast } from "react-hot-toast";
 import { useTheme } from "../../../contexts/ThemeContext";
 import { useSettingsContext } from "../../../contexts/SettingsContext";
-import { authApi, agentConfigApi, agentApi } from "../../../services/api";
+import { authApi } from "../../../services/api/auth";
+import { agentApi } from "../../../services/api/agent";
 import { DEFAULT_THINKING_LEVEL_STORAGE_KEY } from "../../layout/AppContent/useAgentOptions";
 import { SkeletonLine } from "../../skeletons";
+import { useAuth } from "../../../hooks/useAuth";
 import type { AgentInfo } from "../../../types";
 
 const NEWLINE_MODIFIER_KEY = "newlineModifier";
@@ -144,6 +146,7 @@ export function ProfilePreferencesTab() {
   const { t, i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
   const { availableModels, defaultModel } = useSettingsContext();
+  const { user, refreshUser } = useAuth();
 
   // Dropdown open states
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
@@ -190,23 +193,22 @@ export function ProfilePreferencesTab() {
   const loadAgents = useCallback(async () => {
     setAgentsLoading(true);
     try {
-      const [agentsRes, prefRes] = await Promise.all([
-        agentApi.list(),
-        agentConfigApi
-          .getUserPreference()
-          .catch(() => ({ default_agent_id: null })),
-      ]);
+      const agentsRes = await agentApi.list();
+      const metadataDefaultAgentId =
+        typeof user?.metadata?.defaultAgentId === "string"
+          ? user.metadata.defaultAgentId
+          : localStorage.getItem("defaultAgentId");
       setAgents(agentsRes.agents || []);
-      setCurrentAgentPref(prefRes.default_agent_id);
+      setCurrentAgentPref(metadataDefaultAgentId || null);
       setSelectedAgent(
-        prefRes.default_agent_id || agentsRes.default_agent || "",
+        metadataDefaultAgentId || agentsRes.default_agent || "",
       );
     } catch {
       // silent — dropdown will show empty
     } finally {
       setAgentsLoading(false);
     }
-  }, []);
+  }, [user?.metadata?.defaultAgentId]);
 
   useEffect(() => {
     loadAgents();
@@ -256,10 +258,16 @@ export function ProfilePreferencesTab() {
     setOpenDropdown(null);
     setAgentsSaving(true);
     try {
-      await agentConfigApi.setUserPreference(agentId);
+      await authApi.updateMetadata({ defaultAgentId: agentId });
+      localStorage.setItem("defaultAgentId", agentId);
       setCurrentAgentPref(agentId);
+      void refreshUser();
       toast.success(t("agentConfig.preferenceSaved"));
-      window.dispatchEvent(new CustomEvent("agent-preference-updated"));
+      window.dispatchEvent(
+        new CustomEvent("agent-preference-updated", {
+          detail: { agentId },
+        }),
+      );
     } catch (err) {
       toast.error((err as Error).message || t("agentConfig.saveFailed"));
       setSelectedAgent(currentAgentPref || "");

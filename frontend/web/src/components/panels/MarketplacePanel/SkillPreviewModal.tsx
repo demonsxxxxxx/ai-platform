@@ -120,7 +120,7 @@ export function SkillPreviewModal({
                 return (
                   <div
                     key={filePath}
-                    className="overflow-hidden rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg)]/78"
+                    className="overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg)]/78"
                   >
                     <button
                       onClick={() => {

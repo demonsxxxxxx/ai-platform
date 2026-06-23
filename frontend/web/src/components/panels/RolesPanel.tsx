@@ -12,6 +12,7 @@ import {
   AlertCircle,
   Lock,
   ChevronDown,
+  Search,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
@@ -629,7 +630,7 @@ export function RolesPanel() {
   }
 
   return (
-    <div className="glass-shell flex h-full flex-col min-h-0">
+    <div className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100">
       {/* 头部 */}
       <PanelHeader
         title={t("roles.title")}
@@ -650,7 +651,7 @@ export function RolesPanel() {
 
       {/* 错误提示 */}
       {error && (
-        <div className="mx-4 mt-4 flex items-center gap-2 rounded-xl bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/30 dark:text-red-400 sm:mx-6">
+        <div className="mx-4 mt-4 flex items-center gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/30 dark:text-red-400 sm:mx-6">
           <AlertCircle size={18} />
           <span>{error}</span>
         </div>
@@ -659,13 +660,26 @@ export function RolesPanel() {
       {/* 角色列表 */}
       <div className="flex-1 overflow-y-auto py-2 sm:py-4 px-4">
         {filteredRoles.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center text-center">
-            <Shield
-              size={48}
-              className="mb-4 text-theme-text-secondary opacity-40"
-            />
-            <p className="text-theme-text-secondary">
+          <div
+            data-roles-empty-state
+            className="enterprise-empty-state mx-auto max-w-xl px-4"
+          >
+            <div className="enterprise-empty-state-icon mb-4">
+              {searchQuery ? (
+                <Search size={32} className="text-theme-text-secondary" />
+              ) : (
+                <Shield size={32} className="text-theme-text-secondary" />
+              )}
+            </div>
+            <p className="text-sm font-semibold text-theme-text">
               {searchQuery ? t("roles.noMatchingRoles") : t("roles.noRoles")}
+            </p>
+            <p className="mt-2 text-sm leading-6 text-theme-text-secondary">
+              {searchQuery
+                ? t("roles.noMatchingRolesDescription")
+                : canManage
+                  ? t("roles.noRolesDescriptionAdmin")
+                  : t("roles.noRolesDescriptionReadOnly")}
             </p>
           </div>
         ) : (
@@ -675,7 +689,7 @@ export function RolesPanel() {
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
-                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--glass-bg-subtle)]">
+                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--theme-bg-sidebar)] ring-1 ring-[var(--theme-border)]">
                         <Lock size={14} className="text-theme-text-secondary" />
                       </div>
                       <div>
@@ -684,7 +698,7 @@ export function RolesPanel() {
                             {role.name}
                           </h3>
                           {role.is_system && (
-                            <span className="rounded bg-[var(--glass-bg-subtle)] px-1.5 py-0.5 text-xs text-theme-text-secondary">
+                            <span className="rounded bg-[var(--theme-bg-sidebar)] px-1.5 py-0.5 text-xs text-theme-text-secondary ring-1 ring-[var(--theme-border)]">
                               {t("roles.systemRole")}
                             </span>
                           )}
@@ -777,7 +791,7 @@ export function RolesPanel() {
 
       {/* Pagination */}
       {total > pageSize && (
-        <div className="glass-divider px-3 py-3 sm:px-4">
+        <div className="enterprise-divider border-t px-3 py-3 sm:px-4">
           <Pagination
             page={page}
             pageSize={pageSize}

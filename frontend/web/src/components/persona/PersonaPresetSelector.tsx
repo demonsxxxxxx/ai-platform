@@ -140,11 +140,11 @@ export function PersonaPresetSelector({
   const selector = createPortal(
     <div
       data-yields-sidebar
-      className="fixed inset-0 z-[250] flex items-end justify-center bg-black/30 p-0 sm:items-center sm:p-6"
+      className="fixed inset-0 z-[250] flex items-end justify-center bg-slate-950/35 p-0 sm:items-center sm:p-6"
       onClick={() => onOpenChange(false)}
     >
       <div
-        className="flex max-h-[90vh] w-full flex-col overflow-hidden rounded-t-2xl shadow-2xl sm:max-w-3xl md:max-w-4xl lg:max-w-5xl sm:rounded-2xl"
+        className="flex max-h-[90vh] w-full flex-col overflow-hidden rounded-t-lg shadow-[0_8px_24px_rgba(18,38,63,0.12)] sm:max-w-3xl sm:rounded-lg md:max-w-4xl lg:max-w-5xl"
         style={{ background: "var(--theme-bg-card)" }}
         onClick={(event) => event.stopPropagation()}
       >
@@ -153,7 +153,7 @@ export function PersonaPresetSelector({
           style={{ borderColor: "var(--theme-border)" }}
         >
           <div className="flex items-center gap-3">
-            <div className="flex size-10 items-center justify-center rounded-xl bg-stone-100 dark:bg-stone-800">
+            <div className="flex size-10 items-center justify-center rounded-lg bg-[var(--theme-bg-sidebar)] dark:bg-stone-800">
               <UserRound size={18} style={{ color: "var(--theme-primary)" }} />
             </div>
             <div>

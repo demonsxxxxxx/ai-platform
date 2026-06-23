@@ -21,13 +21,13 @@ export const ToggleSwitch = React.memo(function ToggleSwitch({
       disabled={disabled}
       className={`relative h-7 w-12 flex-shrink-0 rounded-full transition-all duration-200 ease-out ${
         enabled
-          ? "bg-amber-500 dark:bg-amber-500"
+          ? "bg-[var(--theme-primary)]"
           : "bg-stone-300 dark:bg-stone-600"
       }`}
       aria-label={ariaLabel}
     >
       <span
-        className={`absolute top-0.5 left-0.5 h-6 w-6 rounded-full bg-white shadow-lg transition-transform duration-200 ${
+        className={`absolute top-0.5 left-0.5 h-6 w-6 rounded-full bg-white shadow-sm transition-transform duration-200 ${
           enabled ? "translate-x-5" : "translate-x-0"
         }`}
       />
