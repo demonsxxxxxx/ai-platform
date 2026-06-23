@@ -22,6 +22,11 @@ import {
   clearRedirectPath,
 } from "../services/api";
 import { DEFAULT_THINKING_LEVEL_STORAGE_KEY } from "../components/layout/AppContent/useAgentOptions";
+import {
+  hasAllEffectivePermissions,
+  hasAnyEffectivePermission,
+  hasEffectivePermission,
+} from "../components/governance/permissionProjection";
 import { THEME_STORAGE_KEY } from "../utils/themeDom";
 import { Permission } from "../types";
 import type { User, UserCreate, LoginRequest, AuthState } from "../types";
@@ -336,7 +341,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // 检查是否拥有某个权限
   const hasPermission = useCallback(
     (permission: Permission): boolean => {
-      return permissions.includes(permission);
+      return hasEffectivePermission(permissions, permission);
     },
     [permissions],
   );
@@ -344,7 +349,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // 检查是否拥有任意一个权限
   const hasAnyPermission = useCallback(
     (perms: Permission[]): boolean => {
-      return perms.some((p) => permissions.includes(p));
+      return hasAnyEffectivePermission(permissions, perms);
     },
     [permissions],
   );
@@ -352,7 +357,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // 检查是否拥有所有权限
   const hasAllPermissions = useCallback(
     (perms: Permission[]): boolean => {
-      return perms.every((p) => permissions.includes(p));
+      return hasAllEffectivePermissions(permissions, perms);
     },
     [permissions],
   );

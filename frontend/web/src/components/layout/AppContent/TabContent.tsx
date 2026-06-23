@@ -1,5 +1,5 @@
 import { Suspense, lazy } from "react";
-import { WorkbenchStateSurface } from "../../workbench/WorkbenchStateSurface";
+import { GovernedRouteWorkbench } from "../../workbench/GovernedRouteWorkbench";
 import type { RouteUnavailableConfig, TabType } from "./types";
 
 const SkillsHubPanel = lazy(() =>
@@ -81,16 +81,10 @@ export function TabContent({
         data-authenticated-workbench-page={activeTab}
         data-frontend-governance-state={routeUnavailable.state}
       >
-        <div className="flex h-full w-full items-center justify-center px-4">
-          <WorkbenchStateSurface
-            state={routeUnavailable.state}
-            title={routeUnavailable.title}
-            description={routeUnavailable.description}
-            surface={routeUnavailable.surface}
-            details={routeUnavailable.details}
-            capabilities={routeUnavailable.capabilities}
-          />
-        </div>
+        <GovernedRouteWorkbench
+          activeTab={activeTab}
+          config={routeUnavailable}
+        />
       </main>
     );
   }
