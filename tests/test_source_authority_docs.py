@@ -27,24 +27,24 @@ RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_RUNTIME_RELATION_MANIFEST = (
     ROOT / "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json"
 )
-ACTIVE_RUNTIME_SUBJECT_SHA = "e7558cc6a86a378ee747eb02ae9a4496ca40041a"
-ACTIVE_SOURCE_TREE_SHA = "e7558cc6a86a378ee747eb02ae9a4496ca40041a"
+ACTIVE_RUNTIME_SUBJECT_SHA = "e4c0e9d0298c684df369afecd29ec902fcc2221d"
+ACTIVE_SOURCE_TREE_SHA = "e4c0e9d0298c684df369afecd29ec902fcc2221d"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_SUBJECT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
 ACTIVE_CLOSURE_SOURCE_TREE_SHA = "3c06c5351517028111c18a365ff9a24ed22ffa33"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE = "ai-platform:380de6b-merged-main-runtime"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE_ID = "sha256:e36e4dfad072cdd12b841019db3ccbcdef4b63ccf5262869c994757fef5663f9"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:e7558cc-issue164-current-main-runtime-only-v2"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:f52fd75021ba0cc4ff169f67650bcbfdd95eee5a8c843b15e4862884c166c056"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-24-211-foundation-alpha-poc-e7558cc-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-24-211-foundation-alpha-poc-e7558cc-auth-rbac-smoke"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:e4c0e9d-issue164-post-pr206-runtime-only-v2"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:22ad0ef518d0ae206c349e8b647d801dfeab0d019f9155f35b033e3bda306090"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-24-211-foundation-alpha-poc-e4c0e9d-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-24-211-foundation-alpha-poc-e4c0e9d-auth-rbac-smoke"
 ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID = (
-    "2026-06-24-211-foundation-alpha-poc-e7558cc-governance-runtime-smoke"
+    "2026-06-24-211-foundation-alpha-poc-e4c0e9d-governance-runtime-smoke"
 )
 ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-24-211-foundation-alpha-poc-e7558cc-release-evidence-runtime-acceptance"
+    "2026-06-24-211-foundation-alpha-poc-e4c0e9d-release-evidence-runtime-acceptance"
 )
 ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-24-211-foundation-alpha-poc-e7558cc-alert-trace-export-runtime-acceptance"
+    "2026-06-24-211-foundation-alpha-poc-e4c0e9d-alert-trace-export-runtime-acceptance"
 )
 CBBFAFF_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
 CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
@@ -236,8 +236,8 @@ def test_backend_prd_records_b3_operator_snapshot_and_reference_boundaries():
     for expected in (
         "Current Backend Productization State",
         "#164",
-        "e7558cc6a86a378ee747eb02ae9a4496ca40041a",
-        "Reviewed runtime-subject evidence exists for `e7558cc`",
+        "e4c0e9d0298c684df369afecd29ec902fcc2221d",
+        "Reviewed runtime-subject evidence exists for `e4c0e9d`",
         "not `gate closable`",
         "not current-source verified after later runtime-affecting `main` changes",
         "Reopen when readiness reports runtime rollout, source/runtime drift, or a runtime-affecting merge.",
@@ -1209,12 +1209,13 @@ def test_gate_status_does_not_overstate_superseded_evidence_as_current():
     assert "active B0 latest-main reference is `87528bf` / #124" not in gate_status_text
     assert "e8e8a0a` runtime still lacks a passing runtime POC smoke" in gate_status_text
     assert "readiness must keep reporting" in gate_status_text
-    assert "after the `e7558cc` source-runtime relation manifest and #164 evidence" in compact_text
+    assert "after the `e4c0e9d` source-runtime relation manifest and #164 evidence" in compact_text
     assert "runtime rollout requirement such as `source_synced_runtime_pending`" in gate_status_text
     assert "the `dab7dbc` / #164 evidence is the active B0 latest-main reference" not in gate_status_text
     assert "the `dab7dbc` / #164 evidence is the current reviewed runtime-subject reference" not in compact_text
     assert "the `d94d274` / #164 evidence is the current reviewed runtime-subject reference" not in compact_text
-    assert "the `e7558cc` / #164 evidence is the latest reviewed runtime-subject reference" in compact_text
+    assert "the `e4c0e9d` / #164 evidence is the latest reviewed runtime-subject reference" in compact_text
+    assert "the `e7558cc` / #164 evidence is the latest reviewed runtime-subject reference" not in compact_text
     assert "the `17dc3ae` / #164 evidence is the latest reviewed runtime-subject reference" not in compact_text
     assert "the `0a9e70a` / #164 evidence is the latest reviewed runtime-subject reference" not in compact_text
     assert "the `df85a9f` / #164 evidence is the latest reviewed runtime-subject reference" not in compact_text
@@ -1234,15 +1235,15 @@ def test_gate_status_records_issue164_b0_runtime_refresh_with_source_caveats():
 
     for expected in (
         "#164",
-        "e7558cc6a86a378ee747eb02ae9a4496ca40041a",
-        "ai-platform:e7558cc-issue164-current-main-runtime-only-v2",
+        "e4c0e9d0298c684df369afecd29ec902fcc2221d",
+        "ai-platform:e4c0e9d-issue164-post-pr206-runtime-only-v2",
         "runtime_rollout_required",
         "Foundation Runtime concurrency refresh",
         "external env-file caveat",
     ):
         assert expected in combined_text
-    assert "Foundation Runtime concurrency refresh for the same `e7558cc` runtime subject verified 12 concurrent" in compact_text
-    assert "This removes the `foundation_runtime_concurrency_evidence` blocker for the named `e7558cc` runtime subject only" in compact_text
+    assert "Foundation Runtime concurrency refresh for the same `e4c0e9d` runtime subject verified 12 concurrent" in compact_text
+    assert "This removes the `foundation_runtime_concurrency_evidence` blocker for the named `e4c0e9d` runtime subject only" in compact_text
     assert "G0 source-authority closure remains blocked by the external env-file label caveat" in compact_text
     assert "ordinary_user_acceptance_for_quarantined_legacy_routes" in compact_text
     assert "Later runtime-affecting source changes require a fresh rollout before any current-source verification claim" in compact_text
