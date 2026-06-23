@@ -26,24 +26,24 @@ RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_RUNTIME_RELATION_MANIFEST = (
     ROOT / "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json"
 )
-ACTIVE_RUNTIME_SUBJECT_SHA = "2bc3a357605fca7a9bf63b1d69ba89ba70fc406f"
-ACTIVE_SOURCE_TREE_SHA = "2bc3a357605fca7a9bf63b1d69ba89ba70fc406f"
+ACTIVE_RUNTIME_SUBJECT_SHA = "a4bded07852933ad77f830a24c7d18763ecf519b"
+ACTIVE_SOURCE_TREE_SHA = "a4bded07852933ad77f830a24c7d18763ecf519b"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_SUBJECT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
 ACTIVE_CLOSURE_SOURCE_TREE_SHA = "3c06c5351517028111c18a365ff9a24ed22ffa33"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE = "ai-platform:380de6b-merged-main-runtime"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE_ID = "sha256:e36e4dfad072cdd12b841019db3ccbcdef4b63ccf5262869c994757fef5663f9"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:2bc3a35-main-runtime-only-v1"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:ce979b612e2d81e935f186e6613bb4f41a80d964fd8e84d7232e6531887b8ccc"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-22-211-foundation-alpha-poc-2bc3a35-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-22-211-foundation-alpha-poc-2bc3a35-auth-rbac-smoke"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:a4bded0-main-runtime-only-v2"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:543a980f54690b77393088df658c9eeebc7084c7ee59fd013d44a8fc56d99c1d"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-23-211-foundation-alpha-poc-a4bded0-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-23-211-foundation-alpha-poc-a4bded0-auth-rbac-smoke"
 ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID = (
-    "2026-06-22-211-foundation-alpha-poc-2bc3a35-governance-runtime-smoke"
+    "2026-06-23-211-foundation-alpha-poc-a4bded0-governance-runtime-smoke"
 )
 ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-22-211-foundation-alpha-poc-2bc3a35-release-evidence-runtime-acceptance"
+    "2026-06-23-211-foundation-alpha-poc-a4bded0-release-evidence-runtime-acceptance"
 )
 ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-22-211-foundation-alpha-poc-2bc3a35-alert-trace-export-runtime-acceptance"
+    "2026-06-23-211-foundation-alpha-poc-a4bded0-alert-trace-export-runtime-acceptance"
 )
 CBBFAFF_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
 CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
@@ -1195,12 +1195,12 @@ def test_gate_status_does_not_overstate_superseded_evidence_as_current():
     assert "active B0 latest-main reference is `87528bf` / #124" not in gate_status_text
     assert "e8e8a0a` runtime still lacks a passing runtime POC smoke" in gate_status_text
     assert "readiness must keep reporting" in gate_status_text
-    assert "after the `2bc3a35` source-runtime relation manifest and #164 evidence" in compact_text
+    assert "after the `a4bded0` source-runtime relation manifest and #164 evidence" in compact_text
     assert "runtime rollout requirement such as `source_synced_runtime_pending`" in gate_status_text
     assert "the `dab7dbc` / #164 evidence is the active B0 latest-main reference" not in gate_status_text
     assert "the `dab7dbc` / #164 evidence is the current reviewed runtime-subject reference" not in compact_text
     assert "the `d94d274` / #164 evidence is the current reviewed runtime-subject reference" not in compact_text
-    assert "the `2bc3a35` / #164 evidence is the latest reviewed runtime-subject reference" in compact_text
+    assert "the `a4bded0` / #164 evidence is the latest reviewed runtime-subject reference" in compact_text
     assert "the `e8e8a0a` / #164 evidence is the active B0 latest-main reference" not in gate_status_text
     assert "the `4039e4b` / #138 evidence is the active B0 latest-main reference" not in gate_status_text
     assert "when it consumes the 87528bf source-runtime relation manifest and #124 evidence" not in compact_text
@@ -1216,15 +1216,15 @@ def test_gate_status_records_issue164_b0_runtime_refresh_with_source_caveats():
 
     for expected in (
         "#164",
-        "2bc3a357605fca7a9bf63b1d69ba89ba70fc406f",
-        "2bc3a35-main-runtime-only-v1",
+        "a4bded07852933ad77f830a24c7d18763ecf519b",
+        "a4bded0-main-runtime-only-v2",
         "runtime_rollout_required",
         "Foundation Runtime concurrency rerun",
         "external env-file caveat",
     ):
         assert expected in combined_text
-    assert "`foundation_runtime_concurrency_evidence` blocker for the named `2bc3a35` runtime subject" in compact_text
-    assert "legacy dotted `ai-platform.source.revision` label still records `dab7dbc`" in compact_text
+    assert "`foundation_runtime_concurrency_evidence` blocker for the named `a4bded0` runtime subject" in compact_text
+    assert "G0 source-authority closure remains blocked by the external env-file label caveat" in compact_text
     assert "ordinary_user_acceptance_for_quarantined_legacy_routes" in compact_text
     assert "Later runtime-affecting source changes require a fresh rollout before any current-source verification claim" in compact_text
 
