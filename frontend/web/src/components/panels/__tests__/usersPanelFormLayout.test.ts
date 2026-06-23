@@ -15,12 +15,12 @@ const componentsCss = readFileSync(
 
 test("user form icon inputs reserve stable leading space", () => {
   const iconInputClassMatches = usersPanelSource.match(
-    /className="glass-input es-input es-input--with-leading-icon"/g,
+    /className="enterprise-field-control es-input es-input--with-leading-icon"/g,
   );
 
   assert.equal(iconInputClassMatches?.length, 3);
   assert.match(
     componentsCss,
-    /\.glass-input\.es-input\.es-input--with-leading-icon\s*\{[\s\S]*padding-left:\s*2\.5rem;/,
+    /\.enterprise-field-control\.es-input\.es-input--with-leading-icon\s*\{[\s\S]*padding-left:\s*2\.5rem;/,
   );
 });

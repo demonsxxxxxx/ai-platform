@@ -217,7 +217,7 @@ function UserFormModal({
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              className="glass-input es-input es-input--with-leading-icon"
+              className="enterprise-field-control es-input es-input--with-leading-icon"
               placeholder={t("users.usernamePlaceholder")}
             />
           </div>
@@ -234,7 +234,7 @@ function UserFormModal({
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="glass-input es-input es-input--with-leading-icon"
+              className="enterprise-field-control es-input es-input--with-leading-icon"
               placeholder={t("users.emailPlaceholder")}
             />
           </div>
@@ -253,7 +253,7 @@ function UserFormModal({
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="glass-input es-input es-input--with-leading-icon"
+              className="enterprise-field-control es-input es-input--with-leading-icon"
               placeholder={
                 isEditing
                   ? t("users.passwordPlaceholderEdit")

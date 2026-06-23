@@ -9,7 +9,7 @@ import type {
   MCPRoleQuota,
   MCPTransport,
 } from "../../types";
-import { GlassSelect } from "../common/GlassSelect";
+import { EnterpriseSelect } from "../common/EnterpriseSelect";
 import { EnvKeysSelector } from "./EnvKeysSelector";
 import { RoleSelector } from "./RoleSelector";
 
@@ -291,7 +291,7 @@ export function MCPServerForm({
           onChange={(e) => setName(e.target.value)}
           disabled={isEditing}
           placeholder={t("mcp.form.serverNamePlaceholder")}
-          className={`glass-input es-input ${
+          className={`enterprise-field-control es-input ${
             errors.name ? "!border-red-300 dark:!border-red-700" : ""
           }`}
         />
@@ -308,7 +308,7 @@ export function MCPServerForm({
       {/* Transport Type */}
       <div className="es-field">
         <label className="es-label">{t("mcp.form.transportType")}</label>
-        <GlassSelect
+        <EnterpriseSelect
           value={transport}
           onChange={(v) => setTransport(v as MCPTransport)}
           options={availableTransports.map((tr) => ({
@@ -385,7 +385,7 @@ export function MCPServerForm({
                             updateRoleQuota(role, "daily_limit", e.target.value)
                           }
                           placeholder={t("mcp.form.unlimited")}
-                          className="glass-input es-input px-3"
+                          className="enterprise-field-control es-input px-3"
                         />
                       </div>
                       <div className="es-field">
@@ -404,7 +404,7 @@ export function MCPServerForm({
                             )
                           }
                           placeholder={t("mcp.form.unlimited")}
-                          className="glass-input es-input px-3"
+                          className="enterprise-field-control es-input px-3"
                         />
                       </div>
                     </div>
@@ -427,7 +427,7 @@ export function MCPServerForm({
               value={command}
               onChange={(e) => setCommand(e.target.value)}
               placeholder={t("mcp.form.commandPlaceholder")}
-              className={`glass-input es-input font-mono ${
+              className={`enterprise-field-control es-input font-mono ${
                 errors.command ? "!border-red-300 dark:!border-red-700" : ""
               }`}
             />
@@ -458,7 +458,7 @@ export function MCPServerForm({
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder={t("mcp.form.urlPlaceholder")}
-              className={`glass-input es-input font-mono ${
+              className={`enterprise-field-control es-input font-mono ${
                 errors.url ? "!border-red-300 dark:!border-red-700" : ""
               }`}
             />
@@ -492,7 +492,7 @@ export function MCPServerForm({
                       updateHeader(header.id, "key", e.target.value)
                     }
                     placeholder={t("mcp.form.headerNamePlaceholder")}
-                    className="glass-input es-input font-mono"
+                    className="enterprise-field-control es-input font-mono"
                   />
                   <input
                     type="text"
@@ -501,7 +501,7 @@ export function MCPServerForm({
                       updateHeader(header.id, "value", e.target.value)
                     }
                     placeholder={t("mcp.form.valuePlaceholder")}
-                    className="glass-input es-input font-mono"
+                    className="enterprise-field-control es-input font-mono"
                   />
                   <button
                     type="button"

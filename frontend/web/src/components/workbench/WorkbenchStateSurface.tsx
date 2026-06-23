@@ -21,6 +21,36 @@ const stateIcons: Record<FrontendGovernanceState, ElementType> = {
   ready: CheckCircle2,
 };
 
+const stateCopyKeys: Record<
+  FrontendGovernanceState,
+  { title: string; description: string }
+> = {
+  "logged-out": {
+    title: "workbench.states.logged-out.title",
+    description: "workbench.states.logged-out.description",
+  },
+  loading: {
+    title: "workbench.states.loading.title",
+    description: "workbench.states.loading.description",
+  },
+  "no-workspace": {
+    title: "workbench.states.no-workspace.title",
+    description: "workbench.states.no-workspace.description",
+  },
+  forbidden: {
+    title: "workbench.states.forbidden.title",
+    description: "workbench.states.forbidden.description",
+  },
+  degraded: {
+    title: "workbench.states.degraded.title",
+    description: "workbench.states.degraded.description",
+  },
+  ready: {
+    title: "workbench.states.ready.title",
+    description: "workbench.states.ready.description",
+  },
+};
+
 export interface WorkbenchStateSurfaceProps {
   state: FrontendGovernanceState;
   title?: string;
@@ -44,6 +74,7 @@ export function WorkbenchStateSurface({
 }: WorkbenchStateSurfaceProps) {
   const { t } = useTranslation();
   const Icon = icon ?? stateIcons[state];
+  const copy = stateCopyKeys[state];
   const iconClass =
     state === "loading"
       ? "animate-spin text-slate-500 dark:text-stone-300"
@@ -60,10 +91,10 @@ export function WorkbenchStateSurface({
         <Icon className={iconClass} size={22} strokeWidth={1.9} />
       </div>
       <h1 className="mt-4 text-base font-semibold text-slate-900 dark:text-stone-100">
-        {title ?? t(`frontendStates.${state}.title`)}
+        {title ?? t(copy.title)}
       </h1>
       <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-600 dark:text-stone-300">
-        {description ?? t(`frontendStates.${state}.description`)}
+        {description ?? t(copy.description)}
       </p>
       {details && details.length > 0 ? (
         <div className="mx-auto mt-5 grid max-w-md gap-2 text-left">

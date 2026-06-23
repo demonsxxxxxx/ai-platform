@@ -512,7 +512,7 @@ export function AgentPanelSkeleton() {
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 sm:gap-4 animate-fade-in">
       <PanelHeaderSkeleton hasSearch={false} />
-      {/* Tab bar — matches glass-divider + tab buttons */}
+      {/* Tab bar — matches enterprise divider + tab buttons */}
       <div className="flex border-b border-[var(--theme-border)] bg-[var(--theme-bg)] px-2">
         <div className="px-4 py-3.5">
           <SkeletonLine width="w-16 sm:w-20" className="!h-4" />
@@ -563,7 +563,7 @@ export function ModelPanelSkeleton() {
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 sm:gap-4 animate-fade-in">
       <PanelHeaderSkeleton hasSearch={false} />
-      {/* Tab bar — matches glass-tab-bar */}
+      {/* Tab bar — matches enterprise tab bar */}
       <div className="flex border-b border-[var(--theme-border)] bg-[var(--theme-bg)] px-4 sm:px-6">
         <div className="px-5 py-3">
           <SkeletonLine width="w-14 sm:w-16" className="!h-4" />

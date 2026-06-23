@@ -2,29 +2,29 @@ import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, Check } from "lucide-react";
 
-export interface GlassSelectOption {
+export interface EnterpriseSelectOption {
   value: string;
   label: string;
   disabled?: boolean;
 }
 
-interface GlassSelectProps {
+interface EnterpriseSelectProps {
   value: string;
   onChange: (value: string) => void;
-  options: GlassSelectOption[];
+  options: EnterpriseSelectOption[];
   disabled?: boolean;
   placeholder?: string;
   className?: string;
 }
 
-export function GlassSelect({
+export function EnterpriseSelect({
   value,
   onChange,
   options,
   disabled = false,
   placeholder,
   className,
-}: GlassSelectProps) {
+}: EnterpriseSelectProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -80,7 +80,7 @@ export function GlassSelect({
         type="button"
         disabled={disabled}
         onClick={() => !disabled && setOpen((v) => !v)}
-        className="glass-input es-select-btn"
+        className="enterprise-field-control es-select-btn"
       >
         <span className="truncate">{displayText}</span>
         <ChevronDown
@@ -94,7 +94,7 @@ export function GlassSelect({
         createPortal(
           <div
             ref={dropdownRef}
-            className="glass-select-dropdown"
+            className="enterprise-select-dropdown"
             style={dropdownStyle}
           >
             {options.map((opt) => (
@@ -107,14 +107,14 @@ export function GlassSelect({
                   onChange(opt.value);
                   setOpen(false);
                 }}
-                className={`glass-select-option ${
+                className={`enterprise-select-option ${
                   opt.value === value ? "active" : ""
                 } ${opt.disabled ? "disabled" : ""}`}
               >
                 {opt.value === value && (
-                  <Check size={14} className="glass-select-option-check" />
+                  <Check size={14} className="enterprise-select-option-check" />
                 )}
-                <span className="glass-select-option-label">{opt.label}</span>
+                <span className="enterprise-select-option-label">{opt.label}</span>
               </button>
             ))}
           </div>,

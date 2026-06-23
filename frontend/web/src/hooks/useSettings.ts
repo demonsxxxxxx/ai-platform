@@ -131,7 +131,7 @@ export function useSettings() {
     const a = document.createElement("a");
     const date = new Date().toISOString().split("T")[0];
     a.href = url;
-    a.download = `lamb-agent-settings-${date}.json`;
+    a.download = `ai-platform-settings-${date}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

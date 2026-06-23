@@ -14,7 +14,7 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import type { PendingApproval, FormField } from "../../types";
 import { Checkbox } from "../common/Checkbox";
-import { GlassSelect } from "../common/GlassSelect";
+import { EnterpriseSelect } from "../common/EnterpriseSelect";
 import { parseDate } from "../../utils/datetime";
 
 interface ApprovalPanelProps {
@@ -120,7 +120,7 @@ function FormFieldRenderer({
       );
     case "select":
       return (
-        <GlassSelect
+        <EnterpriseSelect
           value={(value as string) ?? ""}
           onChange={(v) => {
             interact();
@@ -426,7 +426,7 @@ export function ApprovalPanel({
         )}
 
         <div
-            className="approval-card panel-card animate-glass-enter"
+            className="approval-card panel-card animate-enterprise-enter"
           key={currentApproval.id}
         >
           {/* Header */}

@@ -284,7 +284,7 @@ function RoleFormModal({
             value={name}
             onChange={(e) => setName(e.target.value)}
             disabled={isSystem}
-            className="glass-input es-input px-3"
+            className="enterprise-field-control es-input px-3"
             placeholder={t("roles.roleNamePlaceholder")}
           />
         </div>
@@ -296,7 +296,7 @@ function RoleFormModal({
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             rows={2}
-            className="glass-input es-textarea"
+            className="enterprise-field-control es-textarea"
             placeholder={t("roles.descriptionPlaceholder")}
           />
         </div>
@@ -313,7 +313,7 @@ function RoleFormModal({
                 e.target.value === "" ? "" : Number(e.target.value),
               )
             }
-            className="glass-input es-input px-3"
+            className="enterprise-field-control es-input px-3"
             placeholder={t("roles.maxChannelsPlaceholder")}
           />
           <p className="es-hint">{t("roles.maxChannelsHint")}</p>
@@ -338,7 +338,7 @@ function RoleFormModal({
                     e.target.value === "" ? "" : Number(e.target.value),
                   )
                 }
-                className="glass-input es-input px-3"
+                className="enterprise-field-control es-input px-3"
                 placeholder="5"
               />
             </div>
@@ -353,7 +353,7 @@ function RoleFormModal({
                     e.target.value === "" ? "" : Number(e.target.value),
                   )
                 }
-                className="glass-input es-input px-3"
+                className="enterprise-field-control es-input px-3"
                 placeholder="10"
               />
             </div>
@@ -417,7 +417,7 @@ function RoleFormModal({
                         e.target.value === "" ? "" : Number(e.target.value),
                       )
                     }
-                    className="glass-input es-input px-3"
+                    className="enterprise-field-control es-input px-3"
                     placeholder={t("roles.maxChannelsPlaceholder")}
                   />
                 </div>

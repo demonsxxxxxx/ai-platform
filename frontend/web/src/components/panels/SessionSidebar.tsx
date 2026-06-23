@@ -503,7 +503,7 @@ export const SessionSidebar = forwardRef<
       />
 
       <div
-        className={`rounded-r-lg fixed left-0 top-0 z-[70] w-64 flex flex-col sm:hidden bg-[var(--theme-bg-sidebar)] transition-transform duration-300 ease-in-out ${
+        className={`rounded-r-lg fixed left-0 top-0 z-[70] w-64 flex flex-col sm:hidden bg-[var(--theme-sidebar-panel)] transition-transform duration-300 ease-in-out ${
           mobileOpen ? "translate-x-0" : "-translate-x-full"
         }`}
         style={{
@@ -561,7 +561,7 @@ export const SessionSidebar = forwardRef<
         }}
       >
         <div
-          className={`h-full w-full flex flex-col bg-[var(--theme-bg-sidebar)] border-r border-stone-200/60 dark:border-stone-800/60 ${
+          className={`h-full w-full flex flex-col bg-[var(--theme-sidebar-panel)] border-r border-slate-200/70 dark:border-stone-800/60 ${
             isCollapsed ? "hidden" : ""
           }`}
         >

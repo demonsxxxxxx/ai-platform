@@ -162,7 +162,7 @@ export function MemoryEditor({
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder={t("memory.titlePlaceholder")}
-              className="glass-input es-input"
+              className="enterprise-field-control es-input"
               maxLength={80}
             />
           </div>
@@ -174,7 +174,7 @@ export function MemoryEditor({
               value={summary}
               onChange={(e) => setSummary(e.target.value)}
               placeholder={t("memory.summaryPlaceholder")}
-              className="glass-input es-input"
+              className="enterprise-field-control es-input"
               maxLength={300}
             />
           </div>
@@ -271,7 +271,7 @@ export function MemoryEditor({
               value={content}
               onChange={(e) => setContent(e.target.value)}
               placeholder={t("memory.contentPlaceholder")}
-              className="glass-input es-textarea min-h-48"
+              className="enterprise-field-control es-textarea min-h-48"
               rows={8}
             />
           )}
@@ -284,7 +284,7 @@ export function MemoryEditor({
             value={tagsInput}
             onChange={(e) => setTagsInput(e.target.value)}
             placeholder={t("memory.tagsPlaceholder")}
-            className="glass-input es-input"
+            className="enterprise-field-control es-input"
           />
           {tagsInput.trim() && (
             <div className="flex flex-wrap gap-1.5">

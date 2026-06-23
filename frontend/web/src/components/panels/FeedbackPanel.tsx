@@ -18,7 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { PanelHeader } from "../common/PanelHeader";
-import { GlassSelect } from "../common/GlassSelect";
+import { EnterpriseSelect } from "../common/EnterpriseSelect";
 import { FeedbackPanelSkeleton } from "../skeletons";
 import { Pagination } from "../common/Pagination";
 import { feedbackApi } from "../../services/api/feedback";
@@ -349,7 +349,7 @@ export function FeedbackPanel() {
         icon={<Star size={20} className="text-stone-600 dark:text-stone-400" />}
         actions={
           <div className="w-full sm:w-44">
-            <GlassSelect
+            <EnterpriseSelect
               value={ratingFilter || ""}
               onChange={(v) =>
                 setRatingFilter(v ? (v as RatingValue) : undefined)

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { GlassSelect } from "../common/GlassSelect";
+import { EnterpriseSelect } from "../common/EnterpriseSelect";
 import {
   Plus,
   Pencil,
@@ -538,7 +538,7 @@ export function PersonaEditorModal({
                 <label className="ppe-label">
                   {t("personaPresets.scope", "范围")}
                 </label>
-                <GlassSelect
+                <EnterpriseSelect
                   value={editorScope}
                   onChange={(v) => setEditorScope(v as "user" | "global")}
                   disabled={!!editingPreset}
@@ -559,7 +559,7 @@ export function PersonaEditorModal({
                   <label className="ppe-label">
                     {t("personaPresets.status", "状态")}
                   </label>
-                  <GlassSelect
+                  <EnterpriseSelect
                     value={editorStatus}
                     onChange={(v) => setEditorStatus(v as PersonaPresetStatus)}
                     options={[
