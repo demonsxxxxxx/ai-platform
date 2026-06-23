@@ -27,24 +27,24 @@ RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_RUNTIME_RELATION_MANIFEST = (
     ROOT / "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json"
 )
-ACTIVE_RUNTIME_SUBJECT_SHA = "0a9e70a41f2e86afce2be2294b21d2f5651d448d"
-ACTIVE_SOURCE_TREE_SHA = "0a9e70a41f2e86afce2be2294b21d2f5651d448d"
+ACTIVE_RUNTIME_SUBJECT_SHA = "17dc3ae111cd1538fcf1412558d9d19b93f5b918"
+ACTIVE_SOURCE_TREE_SHA = "17dc3ae111cd1538fcf1412558d9d19b93f5b918"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_SUBJECT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
 ACTIVE_CLOSURE_SOURCE_TREE_SHA = "3c06c5351517028111c18a365ff9a24ed22ffa33"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE = "ai-platform:380de6b-merged-main-runtime"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE_ID = "sha256:e36e4dfad072cdd12b841019db3ccbcdef4b63ccf5262869c994757fef5663f9"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:0a9e70a-issue164-b0-label-fix-runtime-only-v1"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:1aa734e4b316c0653257de4ed5e44132ea1a941d9b26851de161ff451d256bc1"
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-23-211-foundation-alpha-poc-0a9e70a-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-23-211-foundation-alpha-poc-0a9e70a-auth-rbac-smoke"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:17dc3ae-issue164-post-pr199-runtime-only-v1"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:97cb1c15b96b46da99049b8d9ef79c11605769651c1f1d8f3e7b08847e7d7259"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-24-211-foundation-alpha-poc-17dc3ae-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-24-211-foundation-alpha-poc-17dc3ae-auth-rbac-smoke"
 ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID = (
-    "2026-06-23-211-foundation-alpha-poc-0a9e70a-governance-runtime-smoke"
+    "2026-06-24-211-foundation-alpha-poc-17dc3ae-governance-runtime-smoke"
 )
 ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-23-211-foundation-alpha-poc-0a9e70a-release-evidence-runtime-acceptance"
+    "2026-06-24-211-foundation-alpha-poc-17dc3ae-release-evidence-runtime-acceptance"
 )
 ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = (
-    "2026-06-23-211-foundation-alpha-poc-0a9e70a-alert-trace-export-runtime-acceptance"
+    "2026-06-24-211-foundation-alpha-poc-17dc3ae-alert-trace-export-runtime-acceptance"
 )
 CBBFAFF_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
 CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
@@ -236,8 +236,8 @@ def test_backend_prd_records_b3_operator_snapshot_and_reference_boundaries():
     for expected in (
         "Current Backend Productization State",
         "#164",
-        "dab7dbc30a43725d58a8a6b2ddb8e52888f303b5",
-        "Reviewed runtime-subject evidence exists for `dab7dbc`",
+        "17dc3ae111cd1538fcf1412558d9d19b93f5b918",
+        "Reviewed runtime-subject evidence exists for `17dc3ae`",
         "not `gate closable`",
         "not current-source verified after later runtime-affecting `main` changes",
         "Reopen when readiness reports runtime rollout, source/runtime drift, or a runtime-affecting merge.",
@@ -291,7 +291,7 @@ def test_backend_prd_records_b3_operator_snapshot_and_reference_boundaries():
         "External projects are references only. ai-platform owns identity, tenancy, RBAC, audit, source authority, release evidence, and gate closure.",
         "Reading a project does not authorize copying code, adding dependencies, or changing runtime architecture.",
         "Repositories with GitHub license posture `Other`, AGPL/LGPL/copyleft terms, or unknown license posture are concept-only references by default.",
-        "This is not `gate closable`, does not prove current-source runtime verification for later `main` commits, and does not close full G0 source authority because the configured 211 source path remains dirty, the rollout used a runtime-only marker rebase workaround, the compose env-file label still points to an external env-file path, production auth rollout remains separate, and future runtime-affecting source changes reopen B0",
+        "This is not `gate closable`, does not prove current-source runtime verification for later `main` commits, and does not close full G0 source authority because the rollout used a runtime-only marker rebase workaround, the compose env-file label still points to an external env-file path, production auth rollout remains separate, and future runtime-affecting source changes reopen B0",
         "Code adaptation still requires a focused issue with repository, commit/tag, license, tests, and runtime evidence where applicable.",
     ):
         assert boundary in compact_backend_prd_text
@@ -1031,7 +1031,7 @@ def test_frontend_source_import_is_documented_without_replacing_current_runtime(
     assert "Backend scheduling, sandbox, auth/session, DB schema" in combined_text
     assert "deploy/ai-platform/docker-compose.yml` is not changed" in combined_text
     assert "ai-platform-frontend" in combined_text
-    assert "current 211 thin-shell deployment remains the active runtime entry" in combined_text
+    assert "current 211 static frontend deployment remains the active runtime entry" in combined_text
     assert "G8/G10 Long Task and Multi-Agent work are not implemented" in combined_text
     assert "Docker compose one-command startup is not a current" in combined_text
     assert "tools/office_context_readiness.py" in combined_text
@@ -1209,12 +1209,13 @@ def test_gate_status_does_not_overstate_superseded_evidence_as_current():
     assert "active B0 latest-main reference is `87528bf` / #124" not in gate_status_text
     assert "e8e8a0a` runtime still lacks a passing runtime POC smoke" in gate_status_text
     assert "readiness must keep reporting" in gate_status_text
-    assert "after the `0a9e70a` source-runtime relation manifest and #164 evidence" in compact_text
+    assert "after the `17dc3ae` source-runtime relation manifest and #164 evidence" in compact_text
     assert "runtime rollout requirement such as `source_synced_runtime_pending`" in gate_status_text
     assert "the `dab7dbc` / #164 evidence is the active B0 latest-main reference" not in gate_status_text
     assert "the `dab7dbc` / #164 evidence is the current reviewed runtime-subject reference" not in compact_text
     assert "the `d94d274` / #164 evidence is the current reviewed runtime-subject reference" not in compact_text
-    assert "the `0a9e70a` / #164 evidence is the latest reviewed runtime-subject reference" in compact_text
+    assert "the `17dc3ae` / #164 evidence is the latest reviewed runtime-subject reference" in compact_text
+    assert "the `0a9e70a` / #164 evidence is the latest reviewed runtime-subject reference" not in compact_text
     assert "the `df85a9f` / #164 evidence is the latest reviewed runtime-subject reference" not in compact_text
     assert "the `a4bded0` / #164 evidence is the latest reviewed runtime-subject reference" not in compact_text
     assert "the `e8e8a0a` / #164 evidence is the active B0 latest-main reference" not in gate_status_text
@@ -1232,15 +1233,15 @@ def test_gate_status_records_issue164_b0_runtime_refresh_with_source_caveats():
 
     for expected in (
         "#164",
-        "0a9e70a41f2e86afce2be2294b21d2f5651d448d",
-        "0a9e70a-issue164-b0-label-fix-runtime-only-v1",
+        "17dc3ae111cd1538fcf1412558d9d19b93f5b918",
+        "17dc3ae-issue164-post-pr199-runtime-only-v1",
         "runtime_rollout_required",
         "Foundation Runtime concurrency refresh",
         "external env-file caveat",
     ):
         assert expected in combined_text
-    assert "Foundation Runtime concurrency refresh for the same `0a9e70a` runtime subject verified 12 concurrent" in compact_text
-    assert "This removes the `foundation_runtime_concurrency_evidence` blocker for the named `0a9e70a` runtime subject only" in compact_text
+    assert "Foundation Runtime concurrency refresh for the same `17dc3ae` runtime subject verified 12 concurrent" in compact_text
+    assert "This removes the `foundation_runtime_concurrency_evidence` blocker for the named `17dc3ae` runtime subject only" in compact_text
     assert "G0 source-authority closure remains blocked by the external env-file label caveat" in compact_text
     assert "ordinary_user_acceptance_for_quarantined_legacy_routes" in compact_text
     assert "Later runtime-affecting source changes require a fresh rollout before any current-source verification claim" in compact_text
