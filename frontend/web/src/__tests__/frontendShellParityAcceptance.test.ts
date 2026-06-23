@@ -12,6 +12,7 @@ test("frontend shell parity components are registered", () => {
     "src/components/chat/ComposerChips.tsx",
     "src/components/governance/GovernanceAvailabilityBadge.tsx",
     "src/components/channels/ChannelImportPanel.tsx",
+    "src/components/panels/ModelCatalogPanel.tsx",
     "src/components/share/ShareUnavailableState.tsx",
   ];
 
@@ -37,8 +38,9 @@ test("app routes expose PRD phase 1B and 1C surfaces", () => {
   assert.match(tabs, /marketplace:\s*SkillsHubPanel/);
   assert.match(tabs, /mcp:\s*MCPPanel/);
   assert.match(tabs, /channels:\s*ChannelImportPanel/);
-  assert.match(tabs, /models:\s*QuarantinedLegacyPanel/);
+  assert.match(tabs, /models:\s*ModelCatalogPanel/);
   assert.doesNotMatch(tabs, /models:\s*ModelPanel/);
+  assert.doesNotMatch(tabs, /models:\s*QuarantinedLegacyPanel/);
 });
 
 test("phase 1C discovery routes are login reachable and fail closed inside pages", () => {
@@ -219,6 +221,35 @@ test("authenticated marketplace pages share the workbench surface tokens", () =>
   assert.doesNotMatch(skillsHub, /bg-slate-50/);
   assert.doesNotMatch(marketplace, /bg-slate-50/);
   assert.doesNotMatch(marketplace, /border-slate-200 bg-white/);
+});
+
+test("model catalog route is a governed public-projection workbench page", () => {
+  const tabs = readFileSync(
+    join(root, "src/components/layout/AppContent/TabContent.tsx"),
+    "utf8",
+  );
+  const modelCatalog = readFileSync(
+    join(root, "src/components/panels/ModelCatalogPanel.tsx"),
+    "utf8",
+  );
+  const zhLocale = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
+  const enLocale = readFileSync(join(root, "src/i18n/locales/en.json"), "utf8");
+
+  assert.match(tabs, /models:\s*ModelCatalogPanel/);
+  assert.match(modelCatalog, /data-model-catalog-shell/);
+  assert.match(modelCatalog, /modelPublicApi\.listAvailable/);
+  assert.match(modelCatalog, /modelPublicApi\.listProviders/);
+  assert.match(modelCatalog, /deriveProviderProjections/);
+  assert.match(modelCatalog, /providersResult\.status === "fulfilled"/);
+  assert.match(modelCatalog, /providerProjectionDegraded/);
+  assert.match(modelCatalog, /WorkbenchStateSurface/);
+  assert.match(modelCatalog, /data-model-admin-governance/);
+  assert.match(modelCatalog, /bg-\[var\(--theme-bg\)\]/);
+  assert.ok(JSON.parse(zhLocale).models);
+  assert.ok(JSON.parse(enLocale).models);
+  assert.doesNotMatch(modelCatalog, /modelApi|agentConfigApi|roleApi/);
+  assert.doesNotMatch(modelCatalog, /glass-card|glass-card-subtle|glass-input/);
+  assert.doesNotMatch(modelCatalog, /Legacy surface quarantined/);
 });
 
 test("production pwa updates auto-activate so old authenticated bundles cannot persist", () => {

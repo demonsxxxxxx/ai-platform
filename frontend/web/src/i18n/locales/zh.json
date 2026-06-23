@@ -2605,6 +2605,29 @@
       "subtitle": "已在输入框展示，但当前工作区尚未启用。"
     }
   },
+  "models": {
+    "adminGovernance": "管理写操作",
+    "adminGovernanceDescription": "新增、排序、密钥和网关配置需要 ai-platform 管理投影补齐后再开放。",
+    "catalogLoadFailed": "模型目录暂不可用",
+    "catalogStats": "目录状态",
+    "catalogStatsDescription": "已启用 {{enabled}} / {{total}} 个模型，{{providers}} 个供应商。",
+    "catalogUnavailable": "模型目录暂不可用",
+    "catalogUnavailableDescription": "公开模型投影没有返回可用数据。聊天页会继续使用已缓存或默认模型，管理写操作保持关闭。",
+    "contextWindow": "上下文",
+    "contextWindowUnknown": "未公开",
+    "defaultModel": "默认",
+    "emptyDescription": "模型目录来自公开投影。若这里为空，聊天页仍会 fail-closed 到默认配置或等待后端补齐。",
+    "loading": "正在加载模型目录",
+    "noMatchingModels": "没有匹配的模型",
+    "noModels": "暂无可用模型",
+    "provider": "供应商",
+    "providerProjectionDegraded": "供应商投影暂不可用，模型目录仍可浏览。",
+    "publicProjection": "公开模型投影",
+    "publicProjectionDescription": "聊天和选择器只读取公开可用模型，不暴露密钥、网关配置或租户外信息。",
+    "searchPlaceholder": "搜索模型、供应商或能力",
+    "subtitle": "查看当前工作台可用模型，管理写操作按治理策略保持关闭。",
+    "title": "模型"
+  },
   "workbench": {
     "cockpit": "Workbench",
     "commandDock": "输入框",

@@ -2604,6 +2604,29 @@
       "subtitle": "Visible in the composer, but not enabled for your workspace yet."
     }
   },
+  "models": {
+    "adminGovernance": "Admin writes",
+    "adminGovernanceDescription": "Create, order, key, and gateway settings stay locked until ai-platform admin projections are backed.",
+    "catalogLoadFailed": "Model catalog is unavailable",
+    "catalogStats": "Catalog status",
+    "catalogStatsDescription": "{{enabled}} / {{total}} models enabled across {{providers}} providers.",
+    "catalogUnavailable": "Model catalog is unavailable",
+    "catalogUnavailableDescription": "The public model projection did not return usable data. Chat keeps using cached or default models while admin writes stay locked.",
+    "contextWindow": "Context",
+    "contextWindowUnknown": "Not published",
+    "defaultModel": "Default",
+    "emptyDescription": "This catalog comes from the public model projection. If it is empty, chat fails closed to default configuration or waits for backend coverage.",
+    "loading": "Loading model catalog",
+    "noMatchingModels": "No matching models",
+    "noModels": "No available models",
+    "provider": "Provider",
+    "providerProjectionDegraded": "Provider projection is unavailable; the model catalog remains browsable.",
+    "publicProjection": "Public model projection",
+    "publicProjectionDescription": "Chat and selectors only read approved public models without exposing keys, gateway configuration, or cross-tenant data.",
+    "searchPlaceholder": "Search models, providers, or capabilities",
+    "subtitle": "View models available to this workbench. Admin writes stay locked by governance policy.",
+    "title": "Models"
+  },
   "workbench": {
     "cockpit": "Workbench",
     "commandDock": "Composer",

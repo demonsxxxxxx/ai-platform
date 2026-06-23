@@ -11,6 +11,7 @@ Status: `local partial`
 - Marketplace read and install/update contracts are backed under `/api/marketplace/`: list, tags, detail, files, install, and update.
 - Tool permission request/decision contracts are backed under `/api/ai/runs/{run_id}/tool-permissions/...`.
 - Admin tool policy inventory, history, and update contracts are backed under `/api/ai/admin/tool-policies`.
+- Public model catalog reads are backed under `/api/agent/models/available`; this is sufficient for a read-only model catalog surface.
 
 ## Remaining Backend Gaps
 
@@ -19,6 +20,7 @@ Status: `local partial`
 - Direct Marketplace write/admin routes are absent: `POST /api/marketplace/`, `PUT /api/marketplace/{skill_name}`, `PATCH /api/marketplace/{skill_name}/activate`, and `DELETE /api/marketplace/{skill_name}`.
 - MCP server lifecycle routes are still absent from `app/routes` and `app/main.py`: `/api/mcp/*` and `/api/admin/mcp/*` are referenced by legacy frontend hooks but not served by the current backend.
 - MCP tool governance is partially backed by admin tool policies and run-scoped tool permission decisions, but not by server CRUD, credential lifecycle, department enablement, or a standalone approval inbox.
+- Model provider list projection is absent on 211: `/api/agent/models/providers/list` returned `404` while `/api/agent/models/available` returned `200`. The frontend derives provider counts from the public model catalog and shows only a small degraded provider-projection notice.
 
 ## Frontend Handling
 
@@ -27,6 +29,7 @@ Status: `local partial`
 - Skills catalog keeps read, toggle, delete, publish-request, and export paths visible when authorized.
 - Skills create, edit, ZIP import, GitHub import, and batch actions stay hidden until durable file storage/import/batch routes exist.
 - MCP page stays as a governed directory shell with lifecycle and credential controls shown as fail-closed, not as writable controls.
+- Models page uses `/api/agent/models/available` as the source of truth. If `/api/agent/models/providers/list` is absent, provider summaries are derived from the returned models instead of re-enabling the legacy model admin page.
 
 ## Backend Follow-Up Needed
 
@@ -39,3 +42,4 @@ Issue #183 covers:
 - Batch toggle/delete contracts, or explicit product decision to remove batch management.
 - Marketplace direct publish/edit/admin lifecycle contracts, if those actions are intended beyond publish-request audit.
 - MCP server lifecycle, credential governance, department enablement, and approval inbox contracts.
+- Optional model provider list projection, if the frontend should display backend-authored provider protocol and prefix metadata instead of deriving it from model values.

@@ -31,9 +31,9 @@ const FeedbackPanel = lazy(() =>
     default: m.FeedbackPanel,
   })),
 );
-const QuarantinedLegacyPanel = lazy(() =>
-  import("./QuarantinedLegacyPanel").then((m) => ({
-    default: m.QuarantinedLegacyPanel,
+const ModelCatalogPanel = lazy(() =>
+  import("../../panels/ModelCatalogPanel").then((m) => ({
+    default: m.ModelCatalogPanel,
   })),
 );
 const ChannelImportPanel = lazy(() =>
@@ -76,7 +76,7 @@ const panelMap: Record<
   feedback: FeedbackPanel,
   channels: ChannelImportPanel,
   agents: AgentConfigPanel,
-  models: QuarantinedLegacyPanel,
+  models: ModelCatalogPanel,
   files: RevealedFilesPage,
   notifications: NotificationPanel,
   memory: MemoryPanel,
