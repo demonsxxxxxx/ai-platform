@@ -87,16 +87,16 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         route["route_prefix"]: route
         for route in active_route_inventory["ordinary_user_reachable_legacy_route_policies"]
     }
-    assert set(ordinary_routes) == {"/api/roles"}
-    assert ordinary_routes["/api/roles"]["required_action"] == (
-        "remap_to_ai_platform_admin_projection_or_hide"
-    )
+    assert ordinary_routes == {}
     permission_gated_routes = {
         route["route_prefix"]: route
         for route in active_route_inventory["legacy_route_policies"]
         if route["active_browser_access"] == "permission_gated"
     }
-    assert set(permission_gated_routes) == set(active_policy_routes) - {"/api/roles"}
+    assert set(permission_gated_routes) == set(active_policy_routes)
+    assert "ROLE_MANAGE" in permission_gated_routes["/api/roles"][
+        "non_ordinary_required_permissions"
+    ]
     policy_routes = {
         route["route_prefix"]: route
         for route in audit["route_inventory"]["legacy_route_policies"]
@@ -111,7 +111,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     )
     assert policy_routes["/api/mcp"]["governance_gate"] == "G6"
     assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
-    assert "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
+    assert "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap" not in audit["open_gaps"]
     assert "legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
     assert "quarantined_legacy_sources_need_ai_platform_projection_remap" in audit["open_gaps"]
     gap_details = {item["gap"]: item for item in audit["open_gap_details"]}
