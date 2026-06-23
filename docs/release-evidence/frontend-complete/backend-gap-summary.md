@@ -1,52 +1,38 @@
-# Frontend Complete Backend Gap Summary
+# Frontend Complete Backend Contract Summary
 
 Date: 2026-06-23
 Branch: `codex/frontend-complete-pass-20260623`
-Status: `PR ready` frontend evidence; backend follow-up remains open
+Status: `PR ready` frontend evidence after backend #183 closure; not `reviewed`, not `merged`, not `gate closable`
 
 ## Confirmed Backed Contracts
 
-- PR #177 is merged and this branch contains the merge commit for `[codex] add public skills marketplace contracts`.
-- Public Skills read contracts are backed under `/api/skills/`: list, detail, file read, tenant availability toggle, tenant availability delete, and publish-request audit.
-- Marketplace read and install/update contracts are backed under `/api/marketplace/`: list, tags, detail, files, install, and update.
-- Tool permission request/decision contracts are backed under `/api/ai/runs/{run_id}/tool-permissions/...`.
-- Admin tool policy inventory, history, and update contracts are backed under `/api/ai/admin/tool-policies`.
-- Public model catalog reads are backed under `/api/agent/models/available`; this is sufficient for a read-only model catalog surface.
-- PR #187 is merged and adds the first backend contract slice for Skills import/batch routes, direct Marketplace lifecycle routes, MCP read projection, and MCP lifecycle/admin route surfaces. These new contracts are permission-gated and intentionally fail closed where durable storage or lifecycle implementation is still not backed.
-
-## Remaining Backend Gaps
-
-- Durable public Skill file writes remain intentionally fail-closed. `PUT /api/skills/{skill_name}/files/{file_path}` and `DELETE /api/skills/{skill_name}/files/{file_path}` return `409` until user skill storage is backed.
-- Skills ZIP/GitHub import storage is not durable yet. PR #187 adds stable fail-closed contracts, not actual import storage.
-- Direct Marketplace write/admin lifecycle remains fail-closed behind backend policy until product scope and storage are complete.
-- MCP tool governance is partially backed by admin tool policies, run-scoped tool permission decisions, and PR #187 read projections, but not by real server CRUD, credential lifecycle, department enablement, or a standalone approval inbox.
-- Model provider list projection is absent on 211: `/api/agent/models/providers/list` returned `404` while `/api/agent/models/available` returned `200`. The frontend now avoids that missing endpoint and derives provider counts from the public model catalog.
+- PR #177 is merged and backs public Skills/Marketplace read and install/update contracts.
+- PR #187, #189, #190, #191, #192, #193, #194, #195, and #196 are merged and close #183's backend contract backlog.
+- Public Skills are backed under `/api/skills/`: list, detail, file read, tenant availability toggle/delete, publish-request audit, durable user file overlays, ZIP import overlays, and GitHub import paths.
+- Marketplace contracts are backed under `/api/marketplace/`: list, tags, detail, files, install/update, and direct lifecycle/admin operations where authorized.
+- MCP contracts are backed under `/api/mcp/*` and `/api/admin/mcp/*` for read projection, server CRUD/toggle metadata, credential fingerprint/metadata redaction, department filtering, and registry-first projection.
+- Tool permission request/decision contracts are backed under `/api/ai/runs/{run_id}/tool-permissions/...`; the standalone approval inbox is backed under `/api/ai/tool-permissions/inbox`.
+- Public model catalog reads are backed under `/api/agent/models/available`; the frontend uses this as the read-only model catalog source.
 
 ## 211 Runtime Notes
 
-- 211 static frontend provenance was refreshed after the #187 backend runtime deployment.
-- The 211 backend API/worker currently run `ai-platform:df85a9f-issue183-contracts-runtime-only-v1`, with runtime labels pointing at merged main commit `df85a9fb3266aab92a2ca4122db06d4ec7a00175`.
-- Post-deployment unauthenticated route probes no longer return 404 for the #187 route surfaces: `GET /api/skills/upload/preview` returned `405`, `GET /api/mcp/` returned `401`, and `GET /api/admin/mcp/` returned `405`. The backend issue has a fuller authenticated route smoke comment for the first #183 backend contract slice.
-- Do not treat #183 as `gate closable`: durable user Skill storage, ZIP/GitHub import storage, direct Marketplace lifecycle, and real MCP server CRUD/credential/department/approval governance remain open.
+- #183 has current-main consolidated 211 backend smoke evidence recorded on the issue and is closed.
+- The final #183 backend runtime evidence reports merged main `0a9e70a41f2e86afce2be2294b21d2f5651d448d` running on 211 with `ai-platform:0a9e70a-issue183-approval-inbox-runtime-only-v1`.
+- That consolidated smoke covered durable Skill overlays, ZIP/GitHub import paths, Marketplace lifecycle, MCP lifecycle/credential/department filtering, standalone approval inbox, schema objects, redaction, cleanup, and log scan.
+- The current frontend PR still requires its own exact-head 211 static frontend provenance and route smoke before claiming `211 verified` for the latest pushed head.
+
+## Remaining Frontend Boundary
+
+- This PR is a frontend convergence pass. It does not by itself close the broader Phase 1/Phase 2 frontend absorption issue #82.
+- `/roles` is login-reachable and visually converged, but it still consumes the compatibility `/api/roles` endpoint from `app/routes/lambchat_compat.py`.
+- On 211, `GET /api/roles` currently returns an empty compatibility projection (`{"roles":[],"total":0,...}`), not a durable ai-platform RBAC/admin projection.
+- The projection audit keeps `/api/roles` as `ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap`; this should remain tracked under #82 unless split into a narrower backend/admin projection issue.
+- The role write controls remain gated by `role:manage`; the compatibility endpoint does not make role CRUD gate-closable.
 
 ## Frontend Handling
 
-- Marketplace keeps read, preview, install, and update affordances enabled only when `marketplace:read` and `skill:write` allow them.
-- Marketplace direct create/edit/activate/delete affordances stay hidden behind `marketplaceDirectWriteBacked = false`.
-- Skills catalog keeps read, toggle, delete, publish-request, and export paths visible when authorized.
-- Skills create, edit, ZIP import, GitHub import, and batch actions stay hidden until durable file storage/import/batch routes exist.
-- MCP page stays as a governed directory shell with lifecycle and credential controls shown as fail-closed, not as writable controls.
-- Models page uses `/api/agent/models/available` as the source of truth. Provider summaries are derived from the returned models instead of calling `/api/agent/models/providers/list` or re-enabling the legacy model admin page.
-
-## Backend Follow-Up Needed
-
-Filed backend follow-up: https://github.com/demonsxxxxxx/ai-platform/issues/183
-
-Issue #183 covers:
-
-- Durable user Skill write storage for file create/update/delete.
-- Skills ZIP/GitHub import preview and install contracts, or frontend removal of those legacy paths from the product scope.
-- Batch toggle/delete contracts, or explicit product decision to remove batch management.
-- Marketplace direct publish/edit/admin lifecycle contracts, if those actions are intended beyond publish-request audit.
-- MCP server lifecycle, credential governance, department enablement, and approval inbox contracts.
-- Optional model provider list projection, if the frontend should display backend-authored provider protocol and prefix metadata instead of deriving it from model values.
+- Marketplace keeps read, preview, install, update, and lifecycle affordances governed by backend permissions and explicit fail-closed state handling.
+- Skills catalog keeps read, file overlay, import, batch, publish-request, and export paths visible only when authorized and backed.
+- MCP renders a governed directory/lifecycle shell using the backend registry projection and keeps unsupported or permission-denied controls fail-closed.
+- Models uses `/api/agent/models/available` and derives provider summaries from returned model data instead of depending on the absent provider-list endpoint.
+- Role management remains a read-visible, write-gated surface pending the #82 RBAC replacement boundary described above.
