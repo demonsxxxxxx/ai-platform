@@ -3,7 +3,11 @@ import os
 import subprocess
 import sys
 
-from app.governance_readiness import build_governance_readiness, render_governance_readiness_markdown
+from app.governance_readiness import (
+    _frontend_projection_audit_evidence,
+    build_governance_readiness,
+    render_governance_readiness_markdown,
+)
 
 
 B1_GATE_BOUNDARY_GAPS: list[str] = []
@@ -428,7 +432,8 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "frontend_packaged_image_blocker_traceability" in domains["frontend_projection"]["implemented"]
     assert "frontend_packaged_image_definition_traceability" in domains["frontend_projection"]["implemented"]
     assert "frontend_packaged_image_ci_build_provenance_contract" in domains["frontend_projection"]["implemented"]
-    assert "ordinary_user_g9_acceptance_for_legacy_admin_mcp_model_envvar_routes" in domains["frontend_projection"]["gaps"]
+    assert "ordinary_user_g9_acceptance_for_legacy_admin_model_envvar_routes" in domains["frontend_projection"]["gaps"]
+    assert "ordinary_user_g9_acceptance_for_legacy_admin_mcp_model_envvar_routes" not in domains["frontend_projection"]["gaps"]
     assert "active_envvar_profile_surface_needs_policy_or_projection_remap" not in domains["frontend_projection"]["gaps"]
     assert "quarantined_legacy_frontend_sources_need_projection_remap" in domains["frontend_projection"]["gaps"]
     assert "frontend_packaged_image_delivery_and_release_acceptance" in domains["frontend_projection"]["gaps"]
@@ -438,6 +443,8 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "add and verify the packaged frontend image definition before release acceptance" not in domains["frontend_projection"]["next_checks"]
     assert "verify the packaged frontend image on a Docker-capable host before release acceptance" in domains["frontend_projection"]["next_checks"]
     assert "enforce frontend checks in CI before closing source ownership" not in domains["frontend_projection"]["next_checks"]
+    assert "hide or policy-gate remaining legacy admin/model/envvar/channel surfaces for ordinary users" in domains["frontend_projection"]["next_checks"]
+    assert not any("MCP" in check for check in domains["frontend_projection"]["next_checks"])
     projection_evidence = domains["frontend_projection"]["evidence"]["projection_audit"]
     packaged_contract = domains["frontend_projection"]["evidence"]["packaged_runtime_smoke_contract"]
     assert packaged_contract["schema_version"] == "ai-platform.frontend-packaged-runtime-smoke.v1"
@@ -460,10 +467,14 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert projection_evidence["summary"]["quarantined_legacy_source_violations"] >= 1
     gap_details = {item["gap"]: item for item in projection_evidence["open_gap_details"]}
     assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in gap_details
-    assert any(
-        route["route_prefix"] == "/api/mcp"
-        for route in gap_details["active_legacy_routes_need_policy_enforcement_or_ai_platform_remap"]["routes"]
-    )
+    active_legacy_routes = {
+        route["route_prefix"]
+        for route in gap_details[
+            "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap"
+        ]["routes"]
+    }
+    assert "/api/mcp" not in active_legacy_routes
+    assert "/api/admin/mcp" not in active_legacy_routes
     assert "quarantined_legacy_sources_need_ai_platform_projection_remap" in gap_details
     assert gap_details["quarantined_legacy_sources_need_ai_platform_projection_remap"]["sample_violations"]
 
@@ -478,6 +489,25 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "storage_key" not in serialized
     assert "executor_private_payload" not in serialized
     assert ".claude/skills" not in serialized
+
+
+def test_governance_readiness_frontend_projection_evidence_clears_mcp_active_legacy_gap():
+    projection_evidence = _frontend_projection_audit_evidence()
+
+    assert projection_evidence["schema_version"] == "ai-platform.frontend-projection-audit.v1"
+    assert projection_evidence["status"] == "pass_with_policy_gaps"
+    assert projection_evidence["summary"]["active_forbidden_projection_violations"] == 0
+    assert projection_evidence["summary"]["active_legacy_route_policies"] >= 1
+    gap_details = {item["gap"]: item for item in projection_evidence["open_gap_details"]}
+    assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in gap_details
+    active_legacy_routes = {
+        route["route_prefix"]
+        for route in gap_details[
+            "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap"
+        ]["routes"]
+    }
+    assert "/api/mcp" not in active_legacy_routes
+    assert "/api/admin/mcp" not in active_legacy_routes
 
 
 def test_governance_readiness_sanitizes_frontend_ci_gap_detail(monkeypatch):
