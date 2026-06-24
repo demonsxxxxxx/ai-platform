@@ -11,6 +11,8 @@ import {
   Cpu,
   MessageCircle,
   ShieldCheck,
+  UserRound,
+  FileStack,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
@@ -195,6 +197,22 @@ export function SessionListContent({
         >
           <Cpu size={20} />
           <span>{t("nav.models")}</span>
+        </button>
+
+        <button
+          onClick={() => navigate("/persona")}
+          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+        >
+          <UserRound size={20} />
+          <span>{t("nav.persona")}</span>
+        </button>
+
+        <button
+          onClick={() => navigate("/files")}
+          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+        >
+          <FileStack size={20} />
+          <span>{t("nav.files")}</span>
         </button>
 
         <button

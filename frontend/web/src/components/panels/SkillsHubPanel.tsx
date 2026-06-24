@@ -201,18 +201,6 @@ export function SkillsHubPanel() {
             labelKey={permissionAvailability.labelKey}
           />
 
-          <div
-            data-skills-hub-composer-entry
-            className="rounded-md bg-[var(--theme-bg-sidebar)] px-3 py-2 text-xs leading-5 text-slate-600 ring-1 ring-[var(--theme-border)] dark:bg-stone-950/70 dark:text-stone-300 dark:ring-stone-800"
-          >
-            <p className="font-semibold text-slate-800 dark:text-stone-100">
-              {t("skillsHub.composerEntry.title")}
-            </p>
-            <p className="mt-1 text-slate-500 dark:text-stone-400">
-              {t("skillsHub.composerEntry.description")}
-            </p>
-          </div>
-
           <div className="grid gap-2">
             {[
               {

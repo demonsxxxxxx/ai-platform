@@ -14,15 +14,15 @@ test("group availability has explicit governed states", () => {
   assert.equal(resolveGroupAvailability({ adminOnly: true }).state, "admin-only");
 });
 
-test("skills hub exposes governed status and composer entry language", () => {
+test("skills hub exposes governed catalog status without composer help copy", () => {
   const source = readFileSync(
     join(root, "src/components/panels/SkillsHubPanel.tsx"),
     "utf8",
   );
   assert.match(source, /GovernanceAvailabilityBadge/);
   assert.match(source, /skillsHub\.\$\{statusCopyKey\}\.title/);
-  assert.match(source, /skillsHub\.composerEntry\.title/);
-  assert.match(source, /data-skills-hub-composer-entry/);
+  assert.doesNotMatch(source, /skillsHub\.composerEntry/);
+  assert.doesNotMatch(source, /data-skills-hub-composer-entry/);
   assert.match(source, /TAB_PATHS\.marketplace/);
   assert.match(source, /data-auth-projection-has-permission/);
   assert.match(source, /onCatalogStateChange/);
