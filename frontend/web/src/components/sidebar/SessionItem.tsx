@@ -243,10 +243,10 @@ export function SessionItem({
           }
         }}
         style={isDragging ? { touchAction: "none" } : undefined}
-        className={`group relative flex cursor-pointer items-center gap-3 h-10 rounded-[10px] px-[9px] transition-colors ${
+        className={`group relative flex cursor-pointer items-center gap-3 h-10 rounded-lg px-[9px] transition-colors ${
           isActive
-            ? "bg-stone-100 dark:bg-stone-800/60"
-            : "hover:bg-stone-100 dark:hover:bg-stone-800/40"
+            ? "bg-[var(--theme-sidebar-panel-muted)]"
+            : "hover:bg-[var(--theme-sidebar-panel-muted)]"
         } ${isDragging || isDraggingTouch ? "opacity-50 scale-95" : ""}`}
       >
         {/* Title - editable or display */}
@@ -260,15 +260,15 @@ export function SessionItem({
               onKeyDown={handleKeyDown}
               onBlur={handleSaveTitle}
               disabled={isSaving}
-              className="w-full text-[13px] bg-transparent text-stone-700 dark:text-stone-200 border border-stone-300 dark:border-stone-500 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-stone-400"
+              className="w-full rounded border border-slate-600 bg-transparent px-1.5 py-0.5 text-[13px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-slate-400"
               onClick={(e) => e.stopPropagation()}
             />
           ) : (
             <div
               className={`truncate text-[13px] transition-colors ${
                 isActive
-                  ? "text-stone-800 dark:text-stone-100 font-medium"
-                  : "text-stone-600 dark:text-stone-300 group-hover:text-stone-700 dark:group-hover:text-stone-200"
+                  ? "text-slate-100 font-medium"
+                  : "text-slate-300 group-hover:text-slate-100"
               }`}
             >
               {displayTitle}
@@ -286,13 +286,13 @@ export function SessionItem({
           <button
             ref={menuButtonRef}
             onClick={handleMenuClick}
-            className="flex-shrink-0 rounded p-1 hover:bg-stone-200/60 dark:hover:bg-stone-700/60 transition-all opacity-0 group-hover:opacity-100"
+            className="flex-shrink-0 rounded p-1 text-slate-500 opacity-0 transition-all hover:bg-slate-700/60 hover:text-slate-200 group-hover:opacity-100"
             style={isTouched ? { opacity: 1 } : undefined}
             title={t("sidebar.moreOptions")}
           >
             <MoreHorizontal
               size={14}
-              className="text-stone-400 hover:text-stone-600 dark:text-stone-500 dark:hover:text-stone-300"
+              className="text-current"
             />
           </button>
         )}

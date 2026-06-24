@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import {
   Brain,
   Database,
+  History,
+  LockKeyhole,
   RefreshCw,
   Save,
   ShieldCheck,
@@ -10,6 +12,14 @@ import {
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { PanelHeader } from "../../common/PanelHeader";
+import { GovernanceAvailabilityBadge } from "../../governance/GovernanceAvailabilityBadge";
+import {
+  isPermissionError,
+  resolveFrontendGovernanceState,
+} from "../../governance/frontendGovernanceState";
+import { resolveGroupAvailability } from "../../governance/groupAvailability";
+import { WorkbenchStateSurface } from "../../workbench/WorkbenchStateSurface";
+import { workbenchSurface } from "../../workbench/workbenchSurface";
 import { useAuth } from "../../../hooks/useAuth";
 import { formatDateTimeShort } from "../../../utils/datetime";
 import {
@@ -220,7 +230,11 @@ function PolicySummary({ policy }: { policy: MemoryPolicy | null }) {
 
 export function MemoryPanel() {
   const { t } = useTranslation();
-  const { user } = useAuth();
+  const {
+    user,
+    isAuthenticated,
+    isLoading: authLoading,
+  } = useAuth();
   const [workspaceId, setWorkspaceId] = useState("default");
   const [agentId, setAgentId] = useState("document-review");
   const [sessionId, setSessionId] = useState("");
@@ -235,6 +249,8 @@ export function MemoryPanel() {
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [adminLoading, setAdminLoading] = useState(false);
   const [cleanupLoading, setCleanupLoading] = useState(false);
+  const [policyError, setPolicyError] = useState<string | null>(null);
+  const [recordsError, setRecordsError] = useState<string | null>(null);
   const [adminError, setAdminError] = useState<string | null>(null);
   const recordsRequestSeq = useRef(0);
 
@@ -245,9 +261,34 @@ export function MemoryPanel() {
   const normalizedWorkspaceId = normalizedOptionalId(workspaceId) ?? "default";
   const normalizedAgentId = normalizedOptionalId(agentId);
   const normalizedSessionId = normalizedOptionalId(sessionId);
+  const topLevelProjectionError =
+    policyError || (canUseAdminMemory ? adminError : null);
+  const governanceState = resolveFrontendGovernanceState({
+    isAuthenticated,
+    isLoading: authLoading || (policyLoading && !policy && !policyError),
+    hasWorkspace: Boolean(normalizedWorkspaceId),
+    hasPermission: !isPermissionError(topLevelProjectionError),
+    featureEnabled: true,
+    projectionError: topLevelProjectionError,
+    degraded: Boolean(canUseAdminMemory && adminError),
+  });
+  const policyAvailability = resolveGroupAvailability({
+    backed: !policyError,
+    enabled: Boolean(policy && !policyError),
+  });
+  const recordsAvailability = resolveGroupAvailability({
+    backed: !recordsError,
+    enabled: Boolean(normalizedSessionId && !recordsError),
+  });
+  const adminAvailability = resolveGroupAvailability({
+    backed: canUseAdminMemory ? !adminError : true,
+    enabled: canUseAdminMemory && !adminError,
+    adminOnly: !canUseAdminMemory,
+  });
 
   const loadPolicy = useCallback(async () => {
     setPolicyLoading(true);
+    setPolicyError(null);
     try {
       const response = await fetchMemoryPolicy({
         workspace_id: normalizedWorkspaceId,
@@ -257,7 +298,9 @@ export function MemoryPanel() {
       setMemoryEnabled(response.memory_policy.memory_enabled);
       setRetentionDays(response.memory_policy.retention_days);
     } catch (error) {
-      toast.error(errorMessage(error));
+      const message = errorMessage(error);
+      setPolicyError(message);
+      toast.error(message);
       setPolicy(null);
     } finally {
       setPolicyLoading(false);
@@ -269,9 +312,11 @@ export function MemoryPanel() {
     recordsRequestSeq.current = requestSeq;
     if (!normalizedSessionId) {
       setRecords([]);
+      setRecordsError(null);
       return;
     }
     setRecordsLoading(true);
+    setRecordsError(null);
     try {
       const response = await fetchMemoryRecords({
         workspace_id: normalizedWorkspaceId,
@@ -284,7 +329,9 @@ export function MemoryPanel() {
       }
     } catch (error) {
       if (recordsRequestSeq.current === requestSeq) {
-        toast.error(errorMessage(error));
+        const message = errorMessage(error);
+        setRecordsError(message);
+        toast.error(message);
         setRecords([]);
       }
     } finally {
@@ -345,6 +392,7 @@ export function MemoryPanel() {
 
   const savePolicy = async () => {
     setPolicyLoading(true);
+    setPolicyError(null);
     try {
       const response = await setMemoryPolicy({
         workspace_id: normalizedWorkspaceId,
@@ -358,7 +406,9 @@ export function MemoryPanel() {
       toast.success(t("memory.workbench.policyUpdated"));
       await Promise.all([loadRecords(), loadAdminProjection()]);
     } catch (error) {
-      toast.error(errorMessage(error));
+      const message = errorMessage(error);
+      setPolicyError(message);
+      toast.error(message);
     } finally {
       setPolicyLoading(false);
     }
@@ -401,33 +451,163 @@ export function MemoryPanel() {
     }
   };
 
+  const refreshAction = (
+    <button
+      type="button"
+      className="btn-primary"
+      onClick={refreshAll}
+      disabled={policyLoading || recordsLoading || adminLoading}
+    >
+      <RefreshCw
+        size={14}
+        className={
+          policyLoading || recordsLoading || adminLoading ? "animate-spin" : ""
+        }
+      />
+      <span className="hidden sm:inline">{t("common.refresh", "Refresh")}</span>
+    </button>
+  );
+
+  const blockingGovernanceState =
+    governanceState === "loading" ||
+    governanceState === "logged-out" ||
+    governanceState === "no-workspace" ||
+    governanceState === "forbidden";
+
+  if (blockingGovernanceState) {
+    return (
+      <div
+        data-memory-workbench-shell
+        data-frontend-governance-state={governanceState}
+        className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-[var(--theme-text)]"
+      >
+        <PanelHeader
+          title={t("memory.title", "Memory")}
+          subtitle={t("memory.workbench.subtitle")}
+          icon={<Brain size={20} />}
+          actions={refreshAction}
+        />
+
+        <div className="flex min-h-0 flex-1 items-center justify-center px-4 py-4">
+          <WorkbenchStateSurface
+            state={governanceState}
+            surface="memory-workbench-governance"
+            title={
+              governanceState === "forbidden"
+                ? t("workbench.states.forbidden.title")
+                : undefined
+            }
+            description={
+              governanceState === "forbidden"
+                ? t("memory.workbench.forbiddenDescription")
+                : undefined
+            }
+            details={topLevelProjectionError ? [topLevelProjectionError] : undefined}
+          />
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-[var(--theme-text)]">
+    <div
+      data-memory-workbench-shell
+      data-frontend-governance-state={governanceState}
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-[var(--theme-text)]"
+    >
       <PanelHeader
         title={t("memory.title", "Memory")}
         subtitle={t("memory.workbench.subtitle")}
         icon={<Brain size={20} />}
-        actions={
-          <button
-            type="button"
-            className="btn-primary"
-            onClick={refreshAll}
-            disabled={policyLoading || recordsLoading || adminLoading}
-          >
-            <RefreshCw
-              size={14}
-              className={
-                policyLoading || recordsLoading || adminLoading
-                  ? "animate-spin"
-                  : ""
-              }
-            />
-            <span className="hidden sm:inline">{t("common.refresh", "Refresh")}</span>
-          </button>
-        }
+        actions={refreshAction}
       />
 
       <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-6">
+        {governanceState === "degraded" ? (
+          <WorkbenchStateSurface
+            state="degraded"
+            surface="memory-workbench-degraded"
+            title={t("memory.workbench.degradedTitle")}
+            description={t("memory.workbench.degradedDescription")}
+            details={
+              topLevelProjectionError ? [topLevelProjectionError] : undefined
+            }
+            className="mb-4 max-w-none text-left"
+          />
+        ) : null}
+
+        <section className="mb-4 grid gap-3 lg:grid-cols-3">
+          <div className={workbenchSurface.compactPanel}>
+            <div className="flex items-start justify-between gap-3 p-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck
+                    size={16}
+                    className="text-stone-500 dark:text-stone-400"
+                  />
+                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
+                    {t("memory.workbench.policyProjection")}
+                  </h3>
+                </div>
+                <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                  {t("memory.workbench.policyProjectionDescription")}
+                </p>
+              </div>
+              <GovernanceAvailabilityBadge
+                state={policyAvailability.state}
+                labelKey={policyAvailability.labelKey}
+              />
+            </div>
+          </div>
+          <div className={workbenchSurface.compactPanel}>
+            <div className="flex items-start justify-between gap-3 p-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <History
+                    size={16}
+                    className="text-stone-500 dark:text-stone-400"
+                  />
+                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
+                    {t("memory.workbench.sessionRecordsProjection")}
+                  </h3>
+                </div>
+                <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                  {t("memory.workbench.sessionRecordsProjectionDescription")}
+                </p>
+              </div>
+              <GovernanceAvailabilityBadge
+                state={recordsAvailability.state}
+                labelKey={recordsAvailability.labelKey}
+              />
+            </div>
+          </div>
+          <div
+            data-fail-closed-surface="memory-admin-governance"
+            className={workbenchSurface.compactPanel}
+          >
+            <div className="flex items-start justify-between gap-3 p-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <LockKeyhole
+                    size={16}
+                    className="text-stone-500 dark:text-stone-400"
+                  />
+                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
+                    {t("memory.workbench.adminGovernance")}
+                  </h3>
+                </div>
+                <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                  {t("memory.workbench.adminGovernanceDescription")}
+                </p>
+              </div>
+              <GovernanceAvailabilityBadge
+                state={adminAvailability.state}
+                labelKey={adminAvailability.labelKey}
+              />
+            </div>
+          </div>
+        </section>
+
         <div className="mb-4 grid gap-3 lg:grid-cols-3">
           <FieldLabel label={t("memory.workbench.workspace")}>
             <TextInput value={workspaceId} onChange={setWorkspaceId} />
@@ -449,7 +629,7 @@ export function MemoryPanel() {
         </div>
 
         <div className="grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-          <section className="panel-card p-4 sm:p-5">
+          <section className={`${workbenchSurface.panel} p-4 sm:p-5`}>
             <div className="mb-4 flex flex-wrap items-center gap-2">
               <ShieldCheck size={18} className="text-[var(--theme-text-secondary)]" />
               <h2 className="text-base font-semibold text-[var(--theme-text)]">
@@ -525,7 +705,7 @@ export function MemoryPanel() {
             </div>
           </section>
 
-          <section className="panel-card p-4 sm:p-5">
+          <section className={`${workbenchSurface.panel} p-4 sm:p-5`}>
             <div className="mb-4 flex flex-wrap items-center gap-2">
               <Database size={18} className="text-[var(--theme-text-secondary)]" />
               <h2 className="text-base font-semibold text-[var(--theme-text)]">
@@ -536,7 +716,9 @@ export function MemoryPanel() {
               </span>
             </div>
 
-            {!normalizedSessionId ? (
+            {recordsError ? (
+              <EmptyState>{recordsError}</EmptyState>
+            ) : !normalizedSessionId ? (
               <EmptyState>
                 {t("memory.workbench.sessionRequired")}
               </EmptyState>
@@ -559,7 +741,7 @@ export function MemoryPanel() {
           </section>
         </div>
 
-        <section className="panel-card mt-4 p-4 sm:p-5">
+        <section className={`${workbenchSurface.panel} mt-4 p-4 sm:p-5`}>
           <div className="mb-4 flex flex-wrap items-center gap-2">
             <ShieldCheck size={18} className="text-[var(--theme-text-secondary)]" />
             <h2 className="text-base font-semibold text-[var(--theme-text)]">

@@ -2,7 +2,7 @@ import { useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { toast } from "react-hot-toast";
-import { X } from "lucide-react";
+import { Bell, X } from "lucide-react";
 import { useWebSocket } from "../../../hooks/useWebSocket";
 import { useBrowserNotification } from "../../../hooks/useBrowserNotification";
 import { sessionApi } from "../../../services/api";
@@ -158,12 +158,8 @@ export function useWebSocketNotifications({
             </button>
 
             <div className="flex items-center gap-3 text-left">
-              <div className="flex shrink-0 items-center justify-center">
-                <img
-                  src="/icons/icon.svg"
-                  alt=""
-                  className="size-8 rounded-lg"
-                />
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]">
+                <Bell size={16} />
               </div>
               <div className="min-w-0 flex-1">
                 <div className="line-clamp-1 text-[13px] font-semibold leading-tight">

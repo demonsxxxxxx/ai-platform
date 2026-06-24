@@ -1404,7 +1404,7 @@
       "title": "MCP 工具受治理"
     },
     "catalogUnavailable": {
-      "description": "MCP 工具目录会保持可见用于发现。凭证、生命周期控制和工具选择在管理员启用前保持锁定。",
+      "description": "MCP 工具目录会保持可见用于发现。服务生命周期、凭证轮换和工具策略写入由管理员治理。",
       "title": "MCP 工具目录受治理"
     },
     "overwriteExisting": "覆盖同名服务器",
@@ -1419,9 +1419,9 @@
     "userServerVisible": "用户服务器（仅对自己可见）",
     "permissionMode": "权限模式",
     "addToComposer": "在聊天输入框使用 /mcp 搜索受治理的工具，并把已启用工具加入 composer。",
-    "lifecycleUnavailable": "运行时生命周期控制",
-    "lifecycleUnavailableDescription": "启动、停止、重启和原始凭证控制对普通用户保持锁定。",
-    "credentialsUnavailable": "凭证分配和密钥轮换在第一阶段保持不可用。",
+    "lifecycleUnavailable": "服务生命周期治理",
+    "lifecycleUnavailableDescription": "启动、停止、重启和服务器配置写入由管理员治理；普通用户可查看已批准目录并在聊天中使用已启用工具。",
+    "credentialsUnavailable": "凭证分配和密钥轮换由管理员治理。",
     "noMatchingTools": "没有匹配的工具",
     "toolsSearchPlaceholder": "搜索工具"
   },
@@ -1479,6 +1479,8 @@
     "titlePlaceholder": "输入记忆标题...",
     "workbench": {
       "activeRecords": "活跃记录",
+      "adminGovernance": "管理员治理",
+      "adminGovernanceDescription": "策略库存、全局活跃记录和保留期清理只对具备管理员角色的账号开放。",
       "adminHidden": "当前角色不可查看管理员记忆库存。后端管理员接口保持 fail-closed。",
       "adminProjection": "管理员运行投影",
       "agent": "智能体",
@@ -1491,7 +1493,10 @@
       "defaultPolicy": "默认",
       "deleteRecord": "删除记忆记录",
       "deleteRecordConfirm": "确认删除这条会话绑定的记忆记录？",
+      "degradedDescription": "基础记忆策略可继续读取，但管理员投影或部分记录查询返回异常，相关操作保持锁定。",
+      "degradedTitle": "记忆工作台降级可读",
       "expires": "{{date}} 过期",
+      "forbiddenDescription": "当前账号不能读取记忆策略或管理员记忆投影。页面入口保留，但不会展示可操作记忆内容。",
       "loadingAdmin": "正在加载管理员记忆投影...",
       "loadingRecords": "正在加载会话记忆记录...",
       "longTermClosed": "长期记忆关闭",
@@ -1500,6 +1505,8 @@
       "noSessionRecords": "该会话下没有可见的活跃记忆记录。",
       "noStoredPolicies": "当前筛选条件下没有已存储策略。",
       "policyMeta": "{{days}} 天保留 · {{source}} · {{date}}",
+      "policyProjection": "策略投影",
+      "policyProjectionDescription": "读取当前用户、工作区和 Agent 的公开记忆策略，不暴露跨用户记录。",
       "policyUpdated": "记忆策略已更新",
       "publicProjectionOnly": "仅公开投影",
       "reason": "原因",
@@ -1512,6 +1519,8 @@
       "sessionId": "会话 ID",
       "sessionIdPlaceholder": "查看记忆记录需要会话 ID",
       "sessionRecords": "会话记忆记录",
+      "sessionRecordsProjection": "会话记录投影",
+      "sessionRecordsProjectionDescription": "只按显式会话 ID 读取当前会话绑定记录；跨会话浏览保持关闭。",
       "sessionRequired": "输入会话 ID 后可查看会话绑定的记忆记录。跨会话浏览按设计关闭。",
       "source": "来源",
       "storedPolicies": "已存储策略",
@@ -1978,7 +1987,7 @@
       "title": "用户反馈"
     },
     "files": {
-      "description": "上传、组织和管理 AI 工作空间中的文件。与 AI 智能体共享文档、图像和媒体，进行分析和处理。",
+      "description": "受治理的文件工作台入口，用于查看已揭示文件和产物；后端文件投影可用前保持降级状态。",
       "title": "文件库"
     },
     "landing": {
@@ -2006,7 +2015,7 @@
       "title": "通知中心"
     },
     "persona": {
-      "description": "选择和自定义 AI 人设。定义个性、语气、专业领域和行为模式，打造专属对话体验。",
+      "description": "受治理的角色工作台入口，用于角色预设发现和管理；后端角色投影可用前保持降级状态。",
       "title": "人设预设"
     },
     "roles": {
@@ -2742,7 +2751,7 @@
   },
   "models": {
     "adminGovernance": "管理写操作",
-    "adminGovernanceDescription": "新增、排序、密钥和网关配置需要 ai-platform 管理投影补齐后再开放。",
+    "adminGovernanceDescription": "新增、排序、密钥和网关配置只在具备 model:admin 权限的治理入口开放。",
     "catalogLoadFailed": "模型目录暂不可用",
     "catalogStats": "目录状态",
     "catalogStatsDescription": "已启用 {{enabled}} / {{total}} 个模型，{{providers}} 个供应商。",
@@ -2751,7 +2760,7 @@
     "contextWindow": "上下文",
     "contextWindowUnknown": "未公开",
     "defaultModel": "默认",
-    "emptyDescription": "模型目录来自公开投影。若这里为空，聊天页仍会 fail-closed 到默认配置或等待后端补齐。",
+    "emptyDescription": "模型目录来自公开投影。若这里为空，聊天页会 fail-closed 到默认模型配置，并保留管理写操作锁定。",
     "loading": "正在加载模型目录",
     "noMatchingModels": "没有匹配的模型",
     "noModels": "暂无可用模型",
@@ -2764,7 +2773,7 @@
   },
   "agentDirectory": {
     "adminGovernance": "管理配置",
-    "adminGovernanceDescription": "角色分配、提示词编辑、模型绑定和工具治理需要后端管理员投影补齐后再开放。",
+    "adminGovernanceDescription": "角色分配、提示词编辑、模型绑定和工具治理继续锁定在管理员治理入口。",
     "directoryStats": "目录状态",
     "directoryStatsDescription": "已发布 {{count}} 个 Agent。默认：{{defaultAgent}}。模型范围：{{models}}。",
     "emptyDescription": "这里只展示后端公开投影返回的 Agent。管理员配置继续保持关闭。",

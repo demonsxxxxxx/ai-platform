@@ -28,7 +28,13 @@ import {
   type ExternalNavigationState,
 } from "../layout/AppContent/externalNavigationState";
 
-export function RevealedFilesPanel() {
+interface RevealedFilesPanelProps {
+  onProjectionStateChange?: (error: string | null, isLoading: boolean) => void;
+}
+
+export function RevealedFilesPanel({
+  onProjectionStateChange,
+}: RevealedFilesPanelProps = {}) {
   const { t } = useTranslation();
   const navigate = useNavigate();
 
@@ -68,6 +74,7 @@ export function RevealedFilesPanel() {
     isLoading,
     isLoadingMore,
     hasMore,
+    error,
     loadMoreRef,
     toggleFavorite,
   } = useRevealedFilesGrouped({
@@ -78,6 +85,9 @@ export function RevealedFilesPanel() {
     sort_by: sortBy,
     sort_order: sortOrder,
   });
+  useEffect(() => {
+    onProjectionStateChange?.(error, isLoading);
+  }, [error, isLoading, onProjectionStateChange]);
 
   const buildFileNavigationState = useCallback(
     (file: RevealedFileItem): ExternalNavigationState =>

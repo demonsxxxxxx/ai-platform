@@ -48,12 +48,10 @@
   flex-direction: column;
   height: 100%;
   overflow: hidden;
-  border-radius: 1rem;
+  border-radius: 0.5rem;
   background: var(--theme-bg-card);
   border: 1px solid var(--theme-border);
-  box-shadow:
-    0 1px 3px 0 rgb(0 0 0 / 0.06),
-    0 1px 2px -1px rgb(0 0 0 / 0.04);
+  box-shadow: 0 1px 2px rgb(18 38 63 / 0.04);
   transition:
     transform 0.35s cubic-bezier(0.16, 1, 0.3, 1),
     box-shadow 0.35s cubic-bezier(0.16, 1, 0.3, 1),
@@ -65,16 +63,15 @@
 }
 
 .scb:hover {
-  transform: translateY(-4px);
+  transform: translateY(-1px);
   border-color: color-mix(
     in srgb,
     var(--theme-primary) 18%,
     var(--theme-border)
   );
   box-shadow:
-    0 12px 32px -8px rgb(0 0 0 / 0.1),
-    0 4px 12px -4px rgb(0 0 0 / 0.05),
-    0 0 0 1px color-mix(in srgb, var(--theme-primary) 8%, transparent);
+    0 6px 16px -12px rgb(15 23 42 / 0.18),
+    0 0 0 1px color-mix(in srgb, var(--theme-primary) 6%, transparent);
 }
 
 .dark .scb:hover {
@@ -159,9 +156,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 2.5rem;
-  height: 2.5rem;
-  border-radius: 0.75rem;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 0.5rem;
   border: 1px solid var(--theme-border);
   background: color-mix(
     in srgb,
@@ -436,8 +433,8 @@
 
 /* --- Footer --- */
 .scb__footer {
-  margin-top: 1rem;
-  padding-top: 0.75rem;
+  margin-top: 0.75rem;
+  padding-top: 0.625rem;
   border-top: 1px solid color-mix(in srgb, var(--theme-border) 70%, transparent);
 }
 
@@ -451,10 +448,10 @@
   flex-direction: column;
   height: 100%;
   overflow: hidden;
-  border-radius: 1rem;
+  border-radius: 0.5rem;
   background: var(--theme-bg-card);
   border: 1px solid var(--theme-border);
-  box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.08);
+  box-shadow: 0 1px 2px rgb(18 38 63 / 0.04);
   transition:
     transform 0.3s cubic-bezier(0.16, 1, 0.3, 1),
     box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1),
@@ -467,10 +464,10 @@
 }
 
 .mp-card:hover {
-  transform: translateY(-4px);
+  transform: translateY(-1px);
   box-shadow:
-    0 12px 32px -8px rgb(0 0 0 / 0.1),
-    0 4px 12px -4px rgb(0 0 0 / 0.05);
+    0 6px 16px -12px rgb(15 23 42 / 0.18),
+    0 0 0 1px color-mix(in srgb, var(--theme-primary) 6%, transparent);
 }
 
 .dark .mp-card:hover {

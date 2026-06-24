@@ -291,7 +291,7 @@ export function PersonaPresetSelector({
                 return (
                   <div
                     key={preset.id}
-                    className="pps-card group flex h-full flex-col overflow-hidden rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-sm dark:shadow-none cursor-pointer"
+                    className="pps-card group flex h-full flex-col overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-[0_1px_2px_rgba(18,38,63,0.04)] dark:shadow-none cursor-pointer"
                     style={{ animationDelay: `${index * 50}ms` }}
                     onClick={() => setPreviewPreset(preset)}
                   >

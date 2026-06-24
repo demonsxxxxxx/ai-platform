@@ -307,13 +307,13 @@ export const ProjectItem = forwardRef<ProjectItemHandle, ProjectItemProps>(
           onDrop={handleDrop}
           data-project-drop={favoritesOnly ? undefined : true}
           data-project-id={favoritesOnly ? undefined : project.id}
-          className={`group relative flex cursor-pointer items-center gap-3 h-10 rounded-[10px] px-[9px] transition-colors ${
+          className={`group relative flex cursor-pointer items-center gap-3 h-10 rounded-lg px-[9px] transition-colors ${
             (!favoritesOnly && isDragOver) ||
             (!favoritesOnly && draggingSessionId)
-              ? "bg-stone-200/60 dark:bg-stone-700/40 ring-1 ring-inset ring-stone-300 dark:ring-stone-600"
+              ? "bg-[var(--theme-sidebar-panel-muted)] ring-1 ring-inset ring-slate-600/70"
               : isExpanded
-                ? "bg-stone-100/60 dark:bg-stone-800/40"
-                : "hover:bg-stone-100 dark:hover:bg-stone-800/30"
+                ? "bg-[var(--theme-sidebar-panel-muted)]"
+                : "hover:bg-[var(--theme-sidebar-panel-muted)]"
           }`}
         >
           {/* Project icon - editable */}
@@ -327,7 +327,7 @@ export const ProjectItem = forwardRef<ProjectItemHandle, ProjectItemProps>(
                 if (e.key === "Enter") handleSaveIcon();
                 if (e.key === "Escape") setIsEditingIcon(false);
               }}
-              className="w-16 text-xs bg-white dark:bg-stone-700 border border-stone-300 dark:border-stone-500 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-stone-400"
+              className="w-16 rounded border border-slate-600 bg-slate-950/60 px-1 py-0.5 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-slate-400"
               autoFocus
             />
           ) : (
@@ -339,7 +339,7 @@ export const ProjectItem = forwardRef<ProjectItemHandle, ProjectItemProps>(
               <DynamicIcon
                 name={project.icon}
                 size={20}
-                className="text-stone-500 dark:text-stone-400 fill-current text-[20px]"
+                className="text-slate-400 fill-current text-[20px]"
               />
             </button>
           )}
@@ -355,11 +355,11 @@ export const ProjectItem = forwardRef<ProjectItemHandle, ProjectItemProps>(
                 onKeyDown={handleKeyDown}
                 onBlur={handleSaveName}
                 disabled={isSaving}
-                className="w-full text-sm bg-transparent text-stone-700 dark:text-stone-200 border border-stone-300 dark:border-stone-500 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-stone-400"
+                className="w-full rounded border border-slate-600 bg-transparent px-1.5 py-0.5 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-slate-400"
                 onClick={(e) => e.stopPropagation()}
               />
             ) : (
-              <div className="truncate text-[13px] text-stone-600 dark:text-stone-400 group-hover:text-stone-700 dark:group-hover:text-stone-300 transition-colors">
+              <div className="truncate text-[13px] text-slate-300 transition-colors group-hover:text-slate-100">
                 {isFavorites ? t("sidebar.favorites") : project.name}
               </div>
             )}
@@ -376,13 +376,13 @@ export const ProjectItem = forwardRef<ProjectItemHandle, ProjectItemProps>(
             <button
               ref={menuButtonRef}
               onClick={handleMenuClick}
-              className="flex-shrink-0 rounded p-0.5 hover:bg-stone-200/60 dark:hover:bg-stone-700/60 transition-all opacity-0 group-hover:opacity-100 [&:not(:placeholder-shown)]:opacity-100"
+              className="flex-shrink-0 rounded p-0.5 text-slate-500 opacity-0 transition-all hover:bg-slate-700/60 hover:text-slate-200 group-hover:opacity-100 [&:not(:placeholder-shown)]:opacity-100"
               style={isTouched ? { opacity: 1 } : undefined}
               title={t("sidebar.moreOptions")}
             >
               <MoreHorizontal
                 size={14}
-                className="text-stone-400 hover:text-stone-600 dark:text-stone-500 dark:hover:text-stone-300"
+                className="text-current"
               />
             </button>
           )}

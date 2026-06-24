@@ -52,7 +52,7 @@ export function PersonaPresetCard({
   });
 
   return (
-    <div className="scb group flex h-full flex-col overflow-hidden rounded-2xl border border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-sm dark:shadow-none">
+    <div className="scb group flex h-full flex-col overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-sm dark:shadow-none">
       {/* Gradient Banner */}
       <div
         className="scb__banner relative h-12 shrink-0"

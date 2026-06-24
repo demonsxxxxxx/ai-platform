@@ -1403,7 +1403,7 @@
       "title": "MCP tools are governed"
     },
     "catalogUnavailable": {
-      "description": "The MCP tool directory stays visible for discovery. Credentials, lifecycle controls, and tool selection are locked until an administrator enables them.",
+      "description": "The MCP tool directory stays visible for discovery. Service lifecycle, credential rotation, and tool policy writes are governed by administrators.",
       "title": "MCP tool directory is governed"
     },
     "overwriteExisting": "Overwrite existing servers with the same name",
@@ -1418,9 +1418,9 @@
     "userServerVisible": "User Server (only visible to you)",
     "permissionMode": "Permission mode",
     "addToComposer": "Use /mcp in chat to search governed tools and add enabled tools to the composer.",
-    "lifecycleUnavailable": "Runtime lifecycle controls",
-    "lifecycleUnavailableDescription": "Start, stop, restart, and raw credential controls stay locked for ordinary users.",
-    "credentialsUnavailable": "Credential assignment and secret rotation remain unavailable in Phase 1.",
+    "lifecycleUnavailable": "Service lifecycle governance",
+    "lifecycleUnavailableDescription": "Start, stop, restart, and server configuration writes are administrator-governed. Ordinary users can inspect the approved directory and use enabled tools in chat.",
+    "credentialsUnavailable": "Credential assignment and secret rotation are administrator-governed.",
     "noMatchingTools": "No matching tools",
     "toolsSearchPlaceholder": "Search tools"
   },
@@ -1478,6 +1478,8 @@
     "titlePlaceholder": "Enter memory title...",
     "workbench": {
       "activeRecords": "Active records",
+      "adminGovernance": "Admin governance",
+      "adminGovernanceDescription": "Policy inventory, global active records, and retention cleanup are available only to administrator roles.",
       "adminHidden": "Admin memory inventory is hidden for this role. Backend admin routes remain fail-closed.",
       "adminProjection": "Admin operational projection",
       "agent": "Agent",
@@ -1490,7 +1492,10 @@
       "defaultPolicy": "default",
       "deleteRecord": "Delete memory record",
       "deleteRecordConfirm": "Delete this session-bound memory record?",
+      "degradedDescription": "The base memory policy can still be read, but admin projection or record lookup returned an error. Related actions stay locked.",
+      "degradedTitle": "Memory workbench is degraded",
       "expires": "expires {{date}}",
+      "forbiddenDescription": "This account cannot read memory policy or admin memory projections. The entry stays visible without exposing operational memory content.",
       "loadingAdmin": "Loading admin memory projection...",
       "loadingRecords": "Loading session memory records...",
       "longTermClosed": "long-term closed",
@@ -1499,6 +1504,8 @@
       "noSessionRecords": "No active memory records are visible for this session.",
       "noStoredPolicies": "No stored policies for this filter.",
       "policyMeta": "{{days}}d retention · {{source}} · {{date}}",
+      "policyProjection": "Policy projection",
+      "policyProjectionDescription": "Reads the current user, workspace, and Agent public memory policy without exposing cross-user records.",
       "policyUpdated": "Memory policy updated",
       "publicProjectionOnly": "public projection only",
       "reason": "Reason",
@@ -1511,6 +1518,8 @@
       "sessionId": "Session id",
       "sessionIdPlaceholder": "Required for memory records",
       "sessionRecords": "Session memory records",
+      "sessionRecordsProjection": "Session records projection",
+      "sessionRecordsProjectionDescription": "Reads only records bound to an explicit session id; cross-session browsing stays closed.",
       "sessionRequired": "Enter a session id to inspect session-bound memory records. Cross-session browsing is intentionally closed.",
       "source": "Source",
       "storedPolicies": "Stored policies",
@@ -1977,7 +1986,7 @@
       "title": "User Feedback"
     },
     "files": {
-      "description": "Upload, organize, and manage files in your AI workspace. Share documents, images, and media with AI agents for analysis and processing.",
+      "description": "Governed file workbench entry for revealed files and artifacts. The page stays degraded until backend file projections are available.",
       "title": "File Library"
     },
     "landing": {
@@ -2005,7 +2014,7 @@
       "title": "Notifications"
     },
     "persona": {
-      "description": "Choose and customize AI personas. Define personality, tone, expertise, and behavior patterns for specialized conversation experiences.",
+      "description": "Governed persona workbench entry for preset discovery and management. The page stays degraded until backend persona projections are available.",
       "title": "Persona Presets"
     },
     "roles": {
@@ -2741,7 +2750,7 @@
   },
   "models": {
     "adminGovernance": "Admin writes",
-    "adminGovernanceDescription": "Create, order, key, and gateway settings stay locked until ai-platform admin projections are backed.",
+    "adminGovernanceDescription": "Create, order, key, and gateway settings are available only through model:admin governed controls.",
     "catalogLoadFailed": "Model catalog is unavailable",
     "catalogStats": "Catalog status",
     "catalogStatsDescription": "{{enabled}} / {{total}} models enabled across {{providers}} providers.",
@@ -2750,7 +2759,7 @@
     "contextWindow": "Context",
     "contextWindowUnknown": "Not published",
     "defaultModel": "Default",
-    "emptyDescription": "This catalog comes from the public model projection. If it is empty, chat fails closed to default configuration or waits for backend coverage.",
+    "emptyDescription": "This catalog comes from the public model projection. If it is empty, chat fails closed to default model configuration while admin writes stay locked.",
     "loading": "Loading model catalog",
     "noMatchingModels": "No matching models",
     "noModels": "No available models",
@@ -2763,7 +2772,7 @@
   },
   "agentDirectory": {
     "adminGovernance": "Admin configuration",
-    "adminGovernanceDescription": "Role assignment, prompt editing, model binding, and tool governance need backend admin projections before they open here.",
+    "adminGovernanceDescription": "Role assignment, prompt editing, model binding, and tool governance remain locked to administrator-controlled surfaces.",
     "directoryStats": "Directory status",
     "directoryStatsDescription": "{{count}} Agents published. Default: {{defaultAgent}}. Model scope: {{models}}.",
     "emptyDescription": "The directory only shows public Agents returned by the backend projection. Admin configuration remains closed.",

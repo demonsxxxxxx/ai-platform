@@ -113,22 +113,22 @@ export function SessionPreviewDialog({
     <>
       <div
         data-yields-sidebar
-        className="fixed inset-0 z-[299] bg-black/50"
+        className="fixed inset-0 z-[299] bg-[var(--theme-overlay-strong)]"
         onClick={onClose}
       />
       <div className="fixed inset-0 z-[300] flex items-end sm:items-center sm:justify-center sm:pointer-events-none">
         <div
           ref={swipeRef as React.RefObject<HTMLDivElement>}
-          className="relative z-10 w-full sm:max-w-2xl sm:mx-4 sm:pointer-events-auto bg-white dark:bg-stone-800 sm:rounded-xl rounded-t-xl shadow-xl border border-stone-200 dark:border-stone-700 overflow-hidden duration-300 max-h-[85vh] max-h-[85dvh] flex flex-col animate-slide-up-sheet sm:animate-in sm:fade-in sm:zoom-in-95 sm:duration-200"
+          className="relative z-10 w-full sm:max-w-2xl sm:mx-4 sm:pointer-events-auto bg-[var(--theme-bg-card)] sm:rounded-lg rounded-t-lg shadow-[0_8px_24px_rgba(18,38,63,0.12)] border border-[var(--theme-border)] overflow-hidden duration-300 max-h-[85vh] max-h-[85dvh] flex flex-col animate-slide-up-sheet sm:animate-in sm:fade-in sm:zoom-in-95 sm:duration-200"
         >
           {/* Header */}
-          <div className="flex items-center justify-between px-5 py-4 border-b border-stone-200 dark:border-stone-700 shrink-0">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--theme-border)] shrink-0">
             <div className="flex items-center gap-2 min-w-0">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 fill="none"
                 viewBox="0 0 24 24"
-                className="w-5 h-5 text-stone-600 dark:text-stone-300 shrink-0"
+                className="w-5 h-5 text-[var(--theme-text-secondary)] shrink-0"
               >
                 <path
                   fillRule="evenodd"
@@ -137,13 +137,13 @@ export function SessionPreviewDialog({
                   fill="currentColor"
                 />
               </svg>
-              <h2 className="text-sm font-semibold text-stone-800 dark:text-stone-100 truncate">
+              <h2 className="text-sm font-semibold text-[var(--theme-text)] truncate">
                 {sessionName}
               </h2>
             </div>
             <button
               onClick={onClose}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-stone-400 hover:text-stone-600 hover:bg-stone-100 dark:hover:text-stone-300 dark:hover:bg-stone-700 transition-colors shrink-0"
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-bg-sidebar)] transition-colors shrink-0"
             >
               <X size={18} />
             </button>
@@ -153,10 +153,13 @@ export function SessionPreviewDialog({
           <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
             {isLoading ? (
               <div className="flex items-center justify-center py-12">
-                <Loader2 size={20} className="animate-spin text-stone-400" />
+                <Loader2
+                  size={20}
+                  className="animate-spin text-[var(--theme-text-tertiary)]"
+                />
               </div>
             ) : messages.length === 0 ? (
-              <div className="text-center py-12 text-sm text-stone-400 dark:text-stone-500">
+              <div className="text-center py-12 text-sm text-[var(--theme-text-secondary)]">
                 {t("sidebar.noMessages") || "No messages yet"}
               </div>
             ) : (
@@ -165,29 +168,29 @@ export function SessionPreviewDialog({
                   <div
                     className={`shrink-0 mt-0.5 flex h-7 w-7 items-center justify-center rounded-full ${
                       msg.role === "user"
-                        ? "bg-stone-200 dark:bg-stone-700"
-                        : "bg-stone-100 dark:bg-stone-800"
+                        ? "bg-[var(--theme-primary-light)]"
+                        : "bg-[var(--theme-bg-sidebar)]"
                     }`}
                   >
                     {msg.role === "user" ? (
                       <User
                         size={14}
-                        className="text-stone-500 dark:text-stone-400"
+                        className="text-[var(--theme-text-secondary)]"
                       />
                     ) : (
                       <Bot
                         size={14}
-                        className="text-stone-500 dark:text-stone-400"
+                        className="text-[var(--theme-text-secondary)]"
                       />
                     )}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="text-[11px] font-medium text-stone-400 dark:text-stone-500 mb-1">
+                    <div className="text-[11px] font-medium text-[var(--theme-text-tertiary)] mb-1">
                       {msg.role === "user"
                         ? t("chat.user") || "You"
                         : t("chat.assistant") || "Assistant"}
                     </div>
-                    <div className="text-[13px] text-stone-700 dark:text-stone-300 whitespace-pre-wrap break-words leading-relaxed">
+                    <div className="text-[13px] text-[var(--theme-text-secondary)] whitespace-pre-wrap break-words leading-relaxed">
                       {msg.content}
                     </div>
                   </div>

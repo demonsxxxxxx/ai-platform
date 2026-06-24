@@ -33,7 +33,7 @@ export function GridCard({
       <div
         onClick={() => onPreview(file)}
         onContextMenu={(e) => ctx.show(e, file)}
-        className="group/card relative flex cursor-pointer flex-col overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] transition-all duration-200 hover:border-slate-300 hover:shadow-lg hover:shadow-stone-900/[0.06] dark:border-stone-700/40 dark:bg-stone-900/50 dark:hover:border-stone-600/50 dark:hover:shadow-black/20"
+        className="group/card relative flex cursor-pointer flex-col overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-[0_1px_2px_rgba(18,38,63,0.04)] transition-all duration-200 hover:border-slate-300 hover:shadow-[0_8px_18px_rgba(18,38,63,0.05)] dark:border-stone-700/40 dark:bg-stone-900/50 dark:hover:border-stone-600/50 dark:hover:shadow-black/20"
       >
         {/* File header */}
         <div className="flex items-center gap-2 px-2.5 py-2.5 border-b border-stone-100 dark:border-stone-800/80">
@@ -70,7 +70,7 @@ export function GridCard({
         </div>
 
         {/* Preview area */}
-        <div className="aspect-[16/9] overflow-hidden relative bg-stone-50/80 dark:bg-stone-800/20">
+        <div className="aspect-[16/9] overflow-hidden relative bg-[var(--theme-bg-sidebar)]">
           <FileCardPreview preview={cardPreview} icon={FileIcon} />
         </div>
 

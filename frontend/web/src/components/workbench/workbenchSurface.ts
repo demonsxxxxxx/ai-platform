@@ -20,19 +20,19 @@ export const workbenchSurface = {
     "dark:border-stone-800 dark:bg-stone-950",
   ),
   context: clsx(
-    "hidden min-h-0 w-80 shrink-0 flex-col border-l border-slate-200/70 bg-[var(--theme-bg-sidebar)]",
+    "hidden min-h-0 w-80 shrink-0 flex-col border-l border-slate-200/70 bg-[var(--theme-bg)]",
     "dark:border-stone-800 dark:bg-stone-950 xl:flex",
   ),
   panel: clsx(
-    "rounded-lg border border-slate-200/80 bg-[var(--theme-bg-card)] shadow-[0_4px_12px_rgba(18,38,63,0.03)]",
+    "rounded-lg border border-slate-200/80 bg-[var(--theme-bg-card)] shadow-[0_1px_2px_rgba(18,38,63,0.04)]",
     "dark:border-stone-800 dark:bg-stone-900",
   ),
   secondaryPanel: clsx(
-    "rounded-lg border border-slate-200/70 bg-[var(--theme-bg-sidebar)] shadow-none",
-    "dark:border-stone-800 dark:bg-stone-950/80",
+    "rounded-lg border border-slate-200/80 bg-[var(--theme-bg-card)] shadow-[0_1px_2px_rgba(18,38,63,0.04)]",
+    "dark:border-stone-800 dark:bg-stone-900",
   ),
   compactPanel: clsx(
-    "rounded-lg border border-slate-200/80 bg-[var(--theme-bg-card)] shadow-[0_4px_12px_rgba(18,38,63,0.03)]",
+    "rounded-lg border border-slate-200/80 bg-[var(--theme-bg-card)] shadow-[0_1px_2px_rgba(18,38,63,0.04)]",
     "dark:border-stone-800 dark:bg-stone-900",
   ),
   commandSurface: clsx(
@@ -44,7 +44,7 @@ export const workbenchSurface = {
     "dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300",
   ),
   stateSurface: clsx(
-    "rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-5 text-center shadow-[0_4px_12px_rgba(18,38,63,0.03)]",
+    "rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-5 text-center shadow-[0_1px_2px_rgba(18,38,63,0.04)]",
     "dark:border-stone-800 dark:bg-stone-900",
   ),
   stateIcon: clsx(

@@ -28,6 +28,16 @@ const MemoryPanel = lazy(() =>
     default: m.MemoryPanel,
   })),
 );
+const PersonaWorkbenchPanel = lazy(() =>
+  import("../../persona/PersonaWorkbenchPanel").then((m) => ({
+    default: m.PersonaWorkbenchPanel,
+  })),
+);
+const RevealedFilesWorkbenchPanel = lazy(() =>
+  import("../../fileLibrary/RevealedFilesWorkbenchPanel").then((m) => ({
+    default: m.RevealedFilesWorkbenchPanel,
+  })),
+);
 const AgentDirectoryPanel = lazy(() =>
   import("../../panels/AgentDirectoryPanel").then((m) => ({
     default: m.AgentDirectoryPanel,
@@ -74,6 +84,8 @@ const panelMap: Record<
   channels: ChannelImportPanel,
   agents: AgentDirectoryPanel,
   models: ModelCatalogPanel,
+  persona: PersonaWorkbenchPanel,
+  files: RevealedFilesWorkbenchPanel,
   notifications: WorkbenchNotificationsProjectionPanel,
   memory: MemoryPanel,
 };
