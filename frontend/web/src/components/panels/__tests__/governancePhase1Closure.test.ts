@@ -42,7 +42,10 @@ test("skills and marketplace surfaces avoid obsolete department availability pla
   assert.doesNotMatch(marketplace, /skills\.marketplace\.departmentAvailability/);
   for (const source of [skillsHub, marketplace, mcp]) {
     assert.doesNotMatch(source, /skill-theme-shell|glass-shell/);
-    assert.match(source, /bg-\[var\(--theme-workbench-canvas\)\]|bg-\[var\(--theme-bg\)\]/);
+    assert.match(
+      source,
+      /bg-\[var\(--theme-workbench-canvas\)\]|workbenchSurface\.(?:page|statePage)/,
+    );
   }
 });
 

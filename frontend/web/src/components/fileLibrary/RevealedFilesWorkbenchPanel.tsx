@@ -45,7 +45,7 @@ export function RevealedFilesWorkbenchPanel() {
       <div
         data-files-workbench-shell
         data-frontend-governance-state={governanceState}
-        className="flex h-full min-h-0 items-center justify-center bg-[var(--theme-bg)] px-4"
+        className={workbenchSurface.statePage}
       >
         <WorkbenchStateSurface
           state={governanceState}
@@ -60,7 +60,7 @@ export function RevealedFilesWorkbenchPanel() {
       <div
         data-files-workbench-shell
         data-frontend-governance-state={governanceState}
-        className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+        className={workbenchSurface.page}
       >
         <PanelHeader
           title={t("fileLibrary.workbenchTitle", "文件工作台")}
@@ -107,7 +107,7 @@ export function RevealedFilesWorkbenchPanel() {
     <div
       data-files-workbench-shell
       data-frontend-governance-state={governanceState}
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      className={workbenchSurface.page}
     >
       <PanelHeader
         title={t("fileLibrary.workbenchTitle", "文件工作台")}

@@ -69,6 +69,20 @@ test("workbench right context uses the same canvas as the main workspace", () =>
 
 test("post-login projection panels share workbench surface tokens", () => {
   const panels = new Map([
+    ["MCPPanel", read("src/components/panels/MCPPanel.tsx")],
+    ["RolesPanel", read("src/components/panels/RolesPanel.tsx")],
+    [
+      "ChannelImportPanel",
+      read("src/components/channels/ChannelImportPanel.tsx"),
+    ],
+    [
+      "PersonaWorkbenchPanel",
+      read("src/components/persona/PersonaWorkbenchPanel.tsx"),
+    ],
+    [
+      "RevealedFilesWorkbenchPanel",
+      read("src/components/fileLibrary/RevealedFilesWorkbenchPanel.tsx"),
+    ],
     ["AgentDirectoryPanel", read("src/components/panels/AgentDirectoryPanel.tsx")],
     ["ModelCatalogPanel", read("src/components/panels/ModelCatalogPanel.tsx")],
     ["MemoryPanel", read("src/components/panels/MemoryPanel/index.tsx")],
@@ -80,12 +94,23 @@ test("post-login projection panels share workbench surface tokens", () => {
 
   for (const [name, source] of panels) {
     assert.match(source, /data-frontend-governance-state/, name);
-    assert.match(source, /bg-\[var\(--theme-workbench-canvas\)\]/, name);
+    assert.match(source, /workbenchSurface\.(?:page|statePage|compactPanel|panel)/, name);
     assert.match(source, /workbenchSurface\.(?:compactPanel|panel)/, name);
-    assert.doesNotMatch(source, /bg-white(?:\/\d+)?/, name);
-    assert.doesNotMatch(source, /dark:bg-stone-950(?:\/\d+)?/, name);
+    assert.doesNotMatch(source, /bg-\[var\(--theme-bg\)\]/, name);
+    assert.doesNotMatch(source, /className="[^"]*dark:bg-stone-950(?:\/\d+)?[^"]*"/, name);
     assert.doesNotMatch(source, /text-stone-(?:700|800|900)/, name);
   }
+});
+
+test("workbench surface exports shared page containers for governed routes", () => {
+  const surface = read("src/components/workbench/workbenchSurface.ts");
+
+  assert.match(surface, /page:/);
+  assert.match(surface, /statePage:/);
+  assert.match(surface, /sectionPanel:/);
+  assert.match(surface, /page:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.match(surface, /statePage:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.match(surface, /sectionPanel:[\s\S]*bg-\[var\(--theme-bg-card\)\]/);
 });
 
 test("safe projection pages render a full workbench instead of thin lists", () => {
