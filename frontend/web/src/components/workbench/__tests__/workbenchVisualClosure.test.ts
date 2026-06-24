@@ -100,7 +100,13 @@ test("skills hub routes use the public contract resolver", () => {
 
   assert.match(hub, /resolveSkillsHubGovernance/);
   assert.match(hub, /data-required-permission=\{hubGovernance\.requiredPermission\}/);
+  assert.match(hub, /data-effective-projection-has-permission=\{hubGovernance\.effectiveProjectionHasPermission\}/);
+  assert.match(hub, /data-effective-permissions-source=\{hubGovernance\.effectivePermissionsSource\}/);
+  assert.match(hub, /workbenchSurface\.panel/);
   assert.match(resolver, /requiredPermission: "skill:read" \| "marketplace:read"/);
+  assert.match(resolver, /effectivePermissions\?: string\[\]/);
+  assert.match(resolver, /effectiveProjectionHasPermission/);
+  assert.match(resolver, /effectivePermissionsSource/);
   assert.match(resolver, /marketplace:read/);
   assert.match(resolver, /skill:read/);
 });

@@ -86,6 +86,38 @@ test("does not block the catalog probe when auth permissions omit the public rea
   assert.equal(state.governedUnavailable, false);
 });
 
+test("uses backend effective permissions to mark skills ready after catalog load", () => {
+  const state = resolveSkillsHubGovernance({
+    requestedTab: "skills",
+    isAuthenticated: true,
+    canReadSkills: false,
+    canReadMarketplace: false,
+    effectivePermissions: ["skill:read"],
+  });
+
+  assert.equal(state.pageState, "ready");
+  assert.equal(state.hasPermission, true);
+  assert.equal(state.authProjectionHasPermission, false);
+  assert.equal(state.effectiveProjectionHasPermission, true);
+  assert.equal(state.requiredPermission, "skill:read");
+});
+
+test("uses backend effective permissions to mark marketplace ready after catalog load", () => {
+  const state = resolveSkillsHubGovernance({
+    requestedTab: "marketplace",
+    isAuthenticated: true,
+    canReadSkills: false,
+    canReadMarketplace: false,
+    effectivePermissions: ["marketplace:read"],
+  });
+
+  assert.equal(state.pageState, "ready");
+  assert.equal(state.hasPermission, true);
+  assert.equal(state.authProjectionHasPermission, false);
+  assert.equal(state.effectiveProjectionHasPermission, true);
+  assert.equal(state.requiredPermission, "marketplace:read");
+});
+
 test("marks the hub forbidden only after the catalog API proves permission denial", () => {
   const state = resolveSkillsHubGovernance({
     requestedTab: "marketplace",

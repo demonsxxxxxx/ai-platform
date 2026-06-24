@@ -23,6 +23,7 @@ const TAB_PATHS: Record<SkillsHubTab, string> = {
 interface CatalogState {
   permissionDenied: boolean;
   projectionError: string | null;
+  effectivePermissions: string[];
 }
 
 export function SkillsHubPanel() {
@@ -40,8 +41,16 @@ export function SkillsHubPanel() {
   const [catalogStateByTab, setCatalogStateByTab] = useState<
     Record<SkillsHubTab, CatalogState>
   >({
-    skills: { permissionDenied: false, projectionError: null },
-    marketplace: { permissionDenied: false, projectionError: null },
+    skills: {
+      permissionDenied: false,
+      projectionError: null,
+      effectivePermissions: [],
+    },
+    marketplace: {
+      permissionDenied: false,
+      projectionError: null,
+      effectivePermissions: [],
+    },
   });
   const catalogPermissionDeniedByTab = {
     skills: catalogStateByTab.skills.permissionDenied,
@@ -50,6 +59,10 @@ export function SkillsHubPanel() {
   const catalogProjectionErrorByTab = {
     skills: catalogStateByTab.skills.projectionError,
     marketplace: catalogStateByTab.marketplace.projectionError,
+  };
+  const effectivePermissionsByTab = {
+    skills: catalogStateByTab.skills.effectivePermissions,
+    marketplace: catalogStateByTab.marketplace.effectivePermissions,
   };
   const visibleTab = requestedTab;
   const isMarketplaceView = visibleTab === "marketplace";
@@ -64,6 +77,7 @@ export function SkillsHubPanel() {
     canReadMarketplace,
     catalogPermissionDenied: catalogPermissionDeniedByTab[requestedTab],
     projectionError: catalogProjectionErrorByTab[requestedTab],
+    effectivePermissions: effectivePermissionsByTab[requestedTab],
   });
   const governanceState = hubGovernance.pageState;
   const statusCopyKey =
@@ -90,9 +104,12 @@ export function SkillsHubPanel() {
     (nextState: CatalogState) => {
       setCatalogStateByTab((previous) => {
         const current = previous[requestedTab];
+        const currentPermissions = current.effectivePermissions.join("\u0000");
+        const nextPermissions = nextState.effectivePermissions.join("\u0000");
         if (
           current.permissionDenied === nextState.permissionDenied &&
-          current.projectionError === nextState.projectionError
+          current.projectionError === nextState.projectionError &&
+          currentPermissions === nextPermissions
         ) {
           return previous;
         }
@@ -109,6 +126,8 @@ export function SkillsHubPanel() {
       data-frontend-governance-state={governanceState}
       data-required-permission={hubGovernance.requiredPermission}
       data-auth-projection-has-permission={hubGovernance.authProjectionHasPermission}
+      data-effective-projection-has-permission={hubGovernance.effectiveProjectionHasPermission}
+      data-effective-permissions-source={hubGovernance.effectivePermissionsSource}
       className="flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
     >
       <PanelHeader
@@ -163,7 +182,7 @@ export function SkillsHubPanel() {
       <div className="flex min-h-0 flex-1 gap-3 px-4 pb-4">
         <aside
           data-skills-catalog-sidebar
-          className={`${workbenchSurface.secondaryPanel} hidden w-64 shrink-0 flex-col gap-4 p-3 lg:flex`}
+          className={`${workbenchSurface.panel} hidden w-64 shrink-0 flex-col gap-4 p-3 lg:flex`}
         >
           <div>
             <p className={workbenchSurface.label}>
@@ -181,6 +200,34 @@ export function SkillsHubPanel() {
             state={permissionAvailability.state}
             labelKey={permissionAvailability.labelKey}
           />
+
+          <div className="grid gap-2">
+            {[
+              {
+                label: t("skillsHub.stateDetails.required"),
+                value: hubGovernance.requiredPermission,
+              },
+              {
+                label: t("skillsHub.stateDetails.source"),
+                value: t(
+                  `skillsHub.permissionSource.${hubGovernance.effectivePermissionsSource}`,
+                ),
+              },
+            ].map((item) => (
+              <div
+                key={item.label}
+                data-skills-hub-state-detail
+                className="rounded-md bg-[var(--theme-bg-sidebar)] px-3 py-2 text-xs ring-1 ring-[var(--theme-border)] dark:bg-stone-950/70 dark:ring-stone-800"
+              >
+                <p className="font-medium text-slate-500 dark:text-stone-400">
+                  {item.label}
+                </p>
+                <p className="mt-1 truncate font-semibold text-slate-800 dark:text-stone-100">
+                  {item.value}
+                </p>
+              </div>
+            ))}
+          </div>
 
           <nav className="grid gap-1.5">
             {[

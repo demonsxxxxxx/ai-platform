@@ -2549,6 +2549,15 @@
       "description": "Skills and marketplace discovery are available for this account. Write, publish, and department availability controls remain governed by administrator permissions.",
       "title": "Skills catalog is available"
     },
+    "permissionSource": {
+      "auth": "Account permissions",
+      "catalog": "Catalog permissions",
+      "probe": "Checking access"
+    },
+    "stateDetails": {
+      "required": "Current entry",
+      "source": "Access source"
+    },
     "subtitle": "Manage local skills and explore the marketplace",
     "title": "Skills"
   },

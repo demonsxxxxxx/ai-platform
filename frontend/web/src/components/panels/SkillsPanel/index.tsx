@@ -15,6 +15,7 @@ import { PublishDialog } from "./PublishDialog";
 interface CatalogState {
   permissionDenied: boolean;
   projectionError: string | null;
+  effectivePermissions: string[];
 }
 
 interface SkillsPanelProps {
@@ -61,8 +62,14 @@ export function SkillsPanel({
     onCatalogStateChange?.({
       permissionDenied,
       projectionError: permissionDenied ? null : actions.listError,
+      effectivePermissions: actions.effectivePermissions,
     });
-  }, [actions.listError, onCatalogStateChange, permissionDenied]);
+  }, [
+    actions.effectivePermissions,
+    actions.listError,
+    onCatalogStateChange,
+    permissionDenied,
+  ]);
 
   return (
     <div
