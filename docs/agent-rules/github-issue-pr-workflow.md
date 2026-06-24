@@ -115,6 +115,13 @@ Otherwise link the issue without auto-closing language.
   `gate closable`, and it carries no #164 or stage/gate closure claim
   unless the normal review, deployed-runtime, and issue-closure gates below also
   pass.
+  Recent evidence examples:
+  - PR #165 kept terminal run failures visible instead of hiding them behind
+    artifact ACL symptoms.
+  - PR #168 separated governed worker concurrency and sanitized public
+    `sdk_error` diagnostics.
+  - PR #169 tied the controlled runner fallback to proven empty Bash tool-input
+    loops while preserving ordinary SDK failure paths.
 - When review is performed by sub-agents or other local assistants, record the
   result on GitHub before using it as review evidence. The comment should name
   the reviewer role, scope, findings, fixes or rejections, and verification
