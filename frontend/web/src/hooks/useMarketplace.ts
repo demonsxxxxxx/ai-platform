@@ -16,6 +16,9 @@ export function useMarketplace(options?: { enabled?: boolean }) {
   const enabled = options?.enabled !== false;
   const [skills, setSkills] = useState<MarketplaceSkillResponse[]>([]);
   const [tags, setTags] = useState<string[]>([]);
+  const [effectivePermissions, setEffectivePermissions] = useState<string[]>(
+    [],
+  );
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [listError, setListError] = useState<string | null>(null);
@@ -60,7 +63,11 @@ export function useMarketplace(options?: { enabled?: boolean }) {
         tags: tagsParam,
         search: debouncedSearch || undefined,
       });
-      setSkills(data ?? []);
+      setSkills(data.skills ?? []);
+      setEffectivePermissions(data.effective_permissions ?? []);
+      if (data.available_tags.length > 0) {
+        setTags(data.available_tags);
+      }
     } catch (err) {
       const message =
         err instanceof Error
@@ -316,6 +323,7 @@ export function useMarketplace(options?: { enabled?: boolean }) {
   return {
     skills,
     tags,
+    effectivePermissions,
     isLoading,
     error,
     listError,

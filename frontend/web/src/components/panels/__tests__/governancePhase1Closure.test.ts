@@ -66,7 +66,7 @@ test("skills and marketplace remain catalog shells when backend enablement is un
   assert.match(skillsPanel, /effectivePermissions:\s*actions\.effectivePermissions/);
   assert.doesNotMatch(skillsPanel, /!enableSkills/);
   assert.match(marketplace, /governedUnavailable/);
-  assert.match(marketplace, /effectivePermissions:\s*userEffectivePermissions/);
+  assert.match(marketplace, /effectivePermissions:\s*marketplaceEffectivePermissions/);
   assert.match(marketplace, /data-marketplace-catalog-shell/);
   assert.match(marketplace, /data-marketplace-forbidden-shell/);
   assert.doesNotMatch(marketplace, /data-marketplace-unavailable-shell/);
@@ -460,6 +460,7 @@ test("marketplace exposes direct write governance only through permission gates"
   assert.match(marketplace, /Permission\.SKILL_WRITE/);
   assert.match(marketplace, /Permission\.MARKETPLACE_READ/);
   assert.match(marketplace, /effectivePermissions/);
+  assert.match(marketplace, /marketplaceEffectivePermissions/);
   assert.match(marketplace, /hasEffectiveSkillWrite/);
   assert.match(marketplace, /hasEffectiveMarketplaceRead/);
   assert.match(

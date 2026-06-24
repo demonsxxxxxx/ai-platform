@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   X,
   ShoppingBag,
@@ -50,6 +50,7 @@ export function MarketplacePanel({
   const {
     skills,
     tags,
+    effectivePermissions: marketplaceEffectivePermissions,
     isLoading,
     error,
     listError,
@@ -97,7 +98,14 @@ export function MarketplacePanel({
     effectivePermissions: userEffectivePermissions,
   } = useSkills({ enabled: !effectiveGovernedUnavailable });
   const marketplaceDirectWriteBacked = true;
-  const effectivePermissions = new Set(userEffectivePermissions);
+  const catalogEffectivePermissions = useMemo(
+    () =>
+      marketplaceEffectivePermissions.length > 0
+        ? marketplaceEffectivePermissions
+        : userEffectivePermissions,
+    [marketplaceEffectivePermissions, userEffectivePermissions],
+  );
+  const effectivePermissions = new Set(catalogEffectivePermissions);
   const hasEffectiveSkillWrite =
     hasAnyPermission([Permission.SKILL_WRITE]) ||
     effectivePermissions.has(Permission.SKILL_WRITE);
@@ -123,13 +131,13 @@ export function MarketplacePanel({
     onCatalogStateChange?.({
       permissionDenied,
       projectionError: permissionDenied ? null : listError,
-      effectivePermissions: userEffectivePermissions,
+      effectivePermissions: catalogEffectivePermissions,
     });
   }, [
+    catalogEffectivePermissions,
     listError,
     onCatalogStateChange,
     permissionDenied,
-    userEffectivePermissions,
   ]);
 
   const installedMarketplaceNames = new Set(

@@ -131,6 +131,17 @@ export interface MarketplaceSkillResponse {
   file_count: number;
 }
 
+// Marketplace list response. Current backend may still return the legacy
+// array shape; the frontend normalizes both shapes at the API boundary.
+export interface MarketplaceListResponse {
+  skills: MarketplaceSkillResponse[];
+  total: number;
+  skip: number;
+  limit: number;
+  available_tags: string[];
+  effective_permissions: string[];
+}
+
 // Direct create in marketplace request
 export interface MarketplaceCreateRequest {
   skill_name: string;
