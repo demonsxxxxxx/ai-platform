@@ -1067,6 +1067,7 @@
       "newCollection": "New Collection"
     },
     "allProjects": "All Projects",
+    "backendGapDetail": "The backend file library projection has not returned a readable directory yet. Lists, grouping, stats, and preview actions stay locked until /api/files/revealed returns the workbench contract.",
     "clearFilters": "Clear",
     "column": {
       "date": "Date",
@@ -1082,6 +1083,8 @@
       "unfavorite": "Remove from favorites"
     },
     "empty": "No files revealed yet",
+    "degradedDescription": "The backend file library projection is not available yet. The workbench entry stays visible without showing a missing route as an empty file library.",
+    "degradedTitle": "File projection is degraded",
     "favorites": "Favorites",
     "files": "files",
     "filter": {
@@ -1646,6 +1649,7 @@
     "archived": "Archived",
     "avatar": "Avatar",
     "avatarUploadFailed": "Avatar upload failed",
+    "backendGapDetail": "The backend persona preset projection has not returned a readable directory yet. Read, filter, and write actions stay locked until /api/persona-presets returns the workbench contract.",
     "change": "Change Persona",
     "changeAvatar": "Change Avatar",
     "clear": "Clear Persona",
@@ -1663,6 +1667,8 @@
     "createSuccess": "Persona \"{{name}}\" created",
     "deleteFailed": "Failed to delete persona preset",
     "deleteSuccess": "Persona \"{{name}}\" deleted",
+    "degradedDescription": "The backend persona preset projection is not available yet. The workbench entry stays visible without showing a missing route as an empty persona catalog.",
+    "degradedTitle": "Persona projection is degraded",
     "description": "Description",
     "descriptionPlaceholder": "Briefly describe the persona's capabilities and characteristics",
     "draft": "Draft",

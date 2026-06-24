@@ -1068,6 +1068,7 @@
       "newCollection": "新建收藏夹"
     },
     "allProjects": "全部项目",
+    "backendGapDetail": "后端文件库投影尚未返回可读目录；列表、分组、统计和预览操作会保持锁定，直到 /api/files/revealed 返回工作台合同。",
     "clearFilters": "清除",
     "column": {
       "date": "日期",
@@ -1083,6 +1084,8 @@
       "unfavorite": "取消收藏"
     },
     "empty": "还没有展示过的文件",
+    "degradedDescription": "后端文件库投影暂不可用；页面保留工作台入口，并避免把缺路由误显示为空文件库。",
+    "degradedTitle": "文件投影已降级",
     "favorites": "我的收藏",
     "files": "个文件",
     "filter": {
@@ -1647,6 +1650,7 @@
     "archived": "已归档",
     "avatar": "头像",
     "avatarUploadFailed": "头像上传失败",
+    "backendGapDetail": "后端角色预设投影尚未返回可读目录；读取、筛选和写入操作会保持锁定，直到 /api/persona-presets 返回工作台合同。",
     "change": "更换角色",
     "changeAvatar": "更换头像",
     "clear": "清除使用",
@@ -1664,6 +1668,8 @@
     "createSuccess": "角色「{{name}}」已创建",
     "deleteFailed": "删除角色预设失败",
     "deleteSuccess": "角色「{{name}}」已删除",
+    "degradedDescription": "后端角色预设投影暂不可用；页面保留工作台入口，并避免把缺路由误显示为空角色目录。",
+    "degradedTitle": "角色投影已降级",
     "description": "简介",
     "descriptionPlaceholder": "简短描述角色的能力和特点",
     "draft": "草稿",

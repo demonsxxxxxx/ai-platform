@@ -582,10 +582,14 @@ test("persona and files are governed authenticated workbench pages", () => {
   assert.match(personaWorkbench, /data-frontend-governance-state=\{governanceState\}/);
   assert.match(personaWorkbench, /resolveFrontendGovernanceState/);
   assert.match(personaWorkbench, /WorkbenchStateSurface/);
+  assert.match(personaWorkbench, /personaPresets\.backendGapDetail/);
+  assert.doesNotMatch(personaWorkbench, /details=\{persona\.error \? \[persona\.error\] : undefined\}/);
   assert.match(filesWorkbench, /data-files-workbench-shell/);
   assert.match(filesWorkbench, /data-frontend-governance-state=\{governanceState\}/);
   assert.match(filesWorkbench, /resolveFrontendGovernanceState/);
   assert.match(filesWorkbench, /WorkbenchStateSurface/);
+  assert.match(filesWorkbench, /fileLibrary\.backendGapDetail/);
+  assert.doesNotMatch(filesWorkbench, /details=\{filesProjectionError \? \[filesProjectionError\] : undefined\}/);
   assert.doesNotMatch(activeGraph, /MobileMoreMenuSheet|DesktopMoreMenu/);
   assert.doesNotMatch(personaSelector, /角色广场/);
   assert.match(personaSelector, /bg-slate-950\/35/);
@@ -658,6 +662,54 @@ test("persona degraded state does not render a false empty catalog", () => {
   assert.doesNotMatch(degradedReturn, /persona\.handleImport/);
   assert.doesNotMatch(degradedReturn, /persona\.openModal/);
   assert.doesNotMatch(degradedReturn, /persona\.paged/);
+});
+
+test("persona and files degraded states hide raw missing-route errors", () => {
+  const personaWorkbench = readFileSync(
+    join(root, "src/components/persona/PersonaWorkbenchPanel.tsx"),
+    "utf8",
+  );
+  const filesWorkbench = readFileSync(
+    join(root, "src/components/fileLibrary/RevealedFilesWorkbenchPanel.tsx"),
+    "utf8",
+  );
+  const zhLocale = JSON.parse(readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8"));
+  const enLocale = JSON.parse(readFileSync(join(root, "src/i18n/locales/en.json"), "utf8"));
+  const personaDegradedReturn = personaWorkbench.match(
+    /if \(governanceState === "degraded"\) \{\s*return \(([\s\S]*?)\);\s*\}/,
+  )?.[1] ?? "";
+  const filesDegradedReturn = filesWorkbench.match(
+    /if \(governanceState === "degraded"\) \{\s*return \(([\s\S]*?)\);\s*\}/,
+  )?.[1] ?? "";
+
+  for (const [name, source] of [
+    ["PersonaWorkbenchPanel degraded branch", personaDegradedReturn],
+    ["RevealedFilesWorkbenchPanel degraded branch", filesDegradedReturn],
+  ] as const) {
+    assert.doesNotMatch(source, /details=\{[^}]*persona\.error/si, name);
+    assert.doesNotMatch(source, /details=\{[^}]*filesProjectionError/si, name);
+    assert.doesNotMatch(source, /Not Found|Request failed:\s*404|statusText|response\.status/i, name);
+  }
+
+  for (const [locale, copy] of [
+    ["zh", zhLocale],
+    ["en", enLocale],
+  ] as const) {
+    const personaCopy = JSON.stringify({
+      degradedTitle: copy.personaPresets.degradedTitle,
+      degradedDescription: copy.personaPresets.degradedDescription,
+      backendGapDetail: copy.personaPresets.backendGapDetail,
+    });
+    const fileCopy = JSON.stringify({
+      degradedTitle: copy.fileLibrary.degradedTitle,
+      degradedDescription: copy.fileLibrary.degradedDescription,
+      backendGapDetail: copy.fileLibrary.backendGapDetail,
+    });
+    assert.match(personaCopy, /backendGapDetail|后端角色预设投影|persona preset projection/i, locale);
+    assert.match(fileCopy, /backendGapDetail|后端文件库投影|file library projection/i, locale);
+    assert.doesNotMatch(personaCopy, /Not Found|Request failed:\s*404/i, locale);
+    assert.doesNotMatch(fileCopy, /Not Found|Request failed:\s*404/i, locale);
+  }
 });
 
 test("authenticated marketplace pages share the workbench surface tokens", () => {
