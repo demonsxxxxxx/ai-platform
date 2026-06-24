@@ -387,6 +387,10 @@ def test_b2_sandbox_readiness_accepts_reviewed_runtime_hardening_without_gate_cl
             "platform_allowlist_enforced": True,
             "callback_exception_scoped_to_run_token": True,
             "denied_egress_redacted": True,
+            "denied_target": "https://egress-denied.invalid/",
+            "denied_probe_error_code": "egress_denied",
+            "allowed_callback_host": "172.17.0.1",
+            "callback_probe_status": "delivered",
             "policy_source": "platform_policy",
         },
         "security_options": {
@@ -423,6 +427,68 @@ def test_b2_sandbox_readiness_accepts_reviewed_runtime_hardening_without_gate_cl
         "security_options_evidence": "verified_211_runtime_acceptance",
     }
     assert "gate closable" not in json.dumps(readiness, ensure_ascii=False).lower()
+
+
+def test_b2_sandbox_readiness_rejects_egress_hardening_without_probe_details(tmp_path):
+    write_future_reviewed_b2_smoke(tmp_path)
+    evidence_path = (
+        tmp_path
+        / "docs/release-evidence/b2-sandbox"
+        / FUTURE_RUNTIME_SUBJECT
+        / "2026-06-20-211-b2-sandbox-runtime-smoke-1234567.json"
+    )
+    payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+    smoke = payload["evidence_ref"]["runtime_checks"]["b2_211_real_sandbox_smoke"]
+    smoke["hardening"] = {
+        **smoke["hardening"],
+        "resource_limits": {
+            "evidence_class": "live_platform_probe",
+            "memory_limit_mb": 512,
+            "cpu_limit_count": 0.5,
+            "pids_limit": 128,
+            "process_timeout_seconds": 60,
+            "limit_source": "platform_request",
+            "docker_inspection_verified": True,
+            "over_limit_cleanup_verified": True,
+            "over_limit_probe_kind": "platform_resource_timeout",
+            "over_limit_timeout_probe_seconds": 0,
+            "bounded_error_projection_verified": True,
+            "bounded_error_projection": {
+                "source": "admin_runtime_projection",
+                "run_id": FUTURE_RUN_ID,
+                "status": "failed",
+                "error_code": "executor_health_timeout",
+                "host_paths_redacted": True,
+                "raw_docker_payload_absent": True,
+                "callback_token_absent": True,
+            },
+        },
+        "egress_policy": {
+            "evidence_class": "live_platform_probe",
+            "default_deny_outbound": True,
+            "platform_allowlist_enforced": True,
+            "callback_exception_scoped_to_run_token": True,
+            "denied_egress_redacted": True,
+            "policy_source": "platform_policy",
+        },
+        "security_options": {
+            "evidence_class": "live_platform_probe",
+            "privileged": False,
+            "no_new_privileges": True,
+            "capabilities_dropped": True,
+            "docker_socket_mounted": False,
+            "workspace_mount_mode": "rw",
+            "root_filesystem_read_only_or_minimal": True,
+        },
+    }
+    evidence_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
+
+    assert readiness["status"] == "runtime_acceptance_recorded"
+    assert "egress_policy_evidence" in readiness["open_gaps"]
+    smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
+    assert smoke_evidence.get("hardening_runtime_evidence") is None
 
 
 def test_b2_sandbox_readiness_rejects_partial_runtime_hardening_closure(tmp_path):
@@ -511,6 +577,10 @@ def test_b2_sandbox_readiness_rejects_self_asserted_bounded_projection(tmp_path)
             "platform_allowlist_enforced": True,
             "callback_exception_scoped_to_run_token": True,
             "denied_egress_redacted": True,
+            "denied_target": "https://egress-denied.invalid/",
+            "denied_probe_error_code": "egress_denied",
+            "allowed_callback_host": "172.17.0.1",
+            "callback_probe_status": "delivered",
             "policy_source": "platform_policy",
         },
         "security_options": {
@@ -807,6 +877,10 @@ def test_b2_sandbox_readiness_tracks_current_verifier_and_generator_contract():
             "platform_allowlist_enforced=true",
             "callback_exception_scoped_to_run_token=true",
             "denied_egress_redacted=true",
+            "denied_target",
+            "denied_probe_error_code=egress_denied",
+            "allowed_callback_host",
+            "callback_probe_status=delivered",
             "policy_source=platform_policy",
         ],
         "security_options": [

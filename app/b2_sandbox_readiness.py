@@ -167,6 +167,10 @@ _RUNTIME_PROBE_RESULTS_REQUIRED_SECTION_FIELDS = {
         "platform_allowlist_enforced=true",
         "callback_exception_scoped_to_run_token=true",
         "denied_egress_redacted=true",
+        "denied_target",
+        "denied_probe_error_code=egress_denied",
+        "allowed_callback_host",
+        "callback_probe_status=delivered",
         "policy_source=platform_policy",
     ],
     "security_options": [
@@ -432,6 +436,19 @@ def _egress_policy_runtime_verified(hardening: dict[str, Any]) -> bool:
     if section.get("evidence_class") != "live_platform_probe":
         return False
     if section.get("policy_source") != "platform_policy":
+        return False
+    for field in (
+        "denied_target",
+        "denied_probe_error_code",
+        "allowed_callback_host",
+        "callback_probe_status",
+    ):
+        value = section.get(field)
+        if not isinstance(value, str) or not value:
+            return False
+    if section.get("denied_probe_error_code") != "egress_denied":
+        return False
+    if section.get("callback_probe_status") != "delivered":
         return False
     return all(
         section.get(field) is True
