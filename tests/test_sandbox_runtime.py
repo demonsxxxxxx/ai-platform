@@ -196,6 +196,46 @@ async def test_runtime_result_splits_sandbox_cold_start_from_executor_latency(tm
 
 
 @pytest.mark.asyncio
+async def test_runtime_releases_ephemeral_lease_as_failed_when_executor_reports_failed(tmp_path, monkeypatch):
+    calls = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    async def execute(executor_url, task_request):
+        return {
+            "status": "failed",
+            "run_id": task_request.run_id,
+            "error_code": "executor_health_timeout",
+            "error_message": "Executor health timeout",
+        }
+
+    async def record_lease(lease, request, workspace):
+        calls.append(("record", lease.run_id))
+        return {"id": "lease-created-a"}
+
+    async def release_lease(lease, reason, lease_record_id=None):
+        calls.append(("release", reason, lease_record_id))
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=FakeContainerProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda token_id: "secret-token",
+        record_lease=record_lease,
+        release_lease=release_lease,
+    )
+
+    result = await runtime.submit(request(sandbox_mode="ephemeral"))
+
+    assert result.status == "failed"
+    assert calls == [("record", "run-a"), ("release", "run_failed", "lease-created-a")]
+
+
+@pytest.mark.asyncio
 async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, monkeypatch):
     calls = []
 

@@ -86,6 +86,15 @@ def _safe_id_list(value: Any) -> list[str]:
     return safe_values
 
 
+def _resource_limit_seconds(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def create_executor_app(
     workspace_root: str | Path = "/workspace",
     callback_sender: CallbackSender | None = None,
@@ -113,13 +122,25 @@ def create_executor_app(
             progress=5,
             state_patch={"stage": "accepted"},
         )
+        resource_limits = request.config.get("resource_limits", {})
+        max_seconds = (
+            _resource_limit_seconds(resource_limits.get("max_seconds"))
+            if isinstance(resource_limits, dict)
+            else None
+        )
+        timed_out = max_seconds is not None and max_seconds <= 0
         completed_event = ExecutorCallbackEvent(
             session_id=request.session_id,
             run_id=request.run_id,
             callback_token_id=request.callback_token_id,
-            status="completed",
-            progress=100,
-            state_patch={"marker_path": f"/workspace/runtime/{marker_path.name}"},
+            status="failed" if timed_out else "completed",
+            progress=100 if not timed_out else 5,
+            state_patch=(
+                {"error_code": "executor_health_timeout"}
+                if timed_out
+                else {"marker_path": f"/workspace/runtime/{marker_path.name}"}
+            ),
+            error_message="Executor health timeout" if timed_out else None,
         )
 
         for event in (running_event, completed_event):
@@ -135,11 +156,14 @@ def create_executor_app(
 
         executor_model_latency_ms = max(int(round((time.monotonic() - started_at) * 1000)), 0)
         response: dict[str, Any] = {
-            "status": "accepted",
+            "status": "failed" if timed_out else "accepted",
             "run_id": request.run_id,
             "executor_model_latency_ms": executor_model_latency_ms,
             "document_processing_latency_ms": document_processing_latency_ms,
         }
+        if timed_out:
+            response["error_code"] = "executor_health_timeout"
+            response["error_message"] = "Executor health timeout"
         if callback_errors:
             response["callback_errors"] = callback_errors
         return response

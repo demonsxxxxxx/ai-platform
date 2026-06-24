@@ -368,6 +368,8 @@ def test_b2_sandbox_readiness_accepts_reviewed_runtime_hardening_without_gate_cl
             "limit_source": "platform_request",
             "docker_inspection_verified": True,
             "over_limit_cleanup_verified": True,
+            "over_limit_probe_kind": "platform_resource_timeout",
+            "over_limit_timeout_probe_seconds": 0,
             "bounded_error_projection_verified": True,
             "bounded_error_projection": {
                 "source": "admin_runtime_projection",
@@ -444,6 +446,8 @@ def test_b2_sandbox_readiness_rejects_partial_runtime_hardening_closure(tmp_path
             "limit_source": "platform_request",
             "docker_inspection_verified": True,
             "over_limit_cleanup_verified": True,
+            "over_limit_probe_kind": "platform_resource_timeout",
+            "over_limit_timeout_probe_seconds": 0,
             "bounded_error_projection_verified": True,
             "bounded_error_projection": {
                 "source": "admin_runtime_projection",
@@ -497,6 +501,8 @@ def test_b2_sandbox_readiness_rejects_self_asserted_bounded_projection(tmp_path)
             "limit_source": "platform_request",
             "docker_inspection_verified": True,
             "over_limit_cleanup_verified": True,
+            "over_limit_probe_kind": "platform_resource_timeout",
+            "over_limit_timeout_probe_seconds": 0,
             "bounded_error_projection_verified": True,
         },
         "egress_policy": {
@@ -792,6 +798,8 @@ def test_b2_sandbox_readiness_tracks_current_verifier_and_generator_contract():
     assert runtime["runtime_probe_results_required_section_fields"] == {
         "resource_limits": [
             "over_limit_cleanup_verified=true",
+            "probe_kind=platform_resource_timeout",
+            "timeout_probe_seconds=0",
             "bounded_error_projection.safe_admin_runtime_projection",
         ],
         "egress_policy": [

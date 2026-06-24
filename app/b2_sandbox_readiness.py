@@ -158,6 +158,8 @@ _RUNTIME_PROBE_RESULTS_REQUIRED_FIELDS = [
 _RUNTIME_PROBE_RESULTS_REQUIRED_SECTION_FIELDS = {
     "resource_limits": [
         "over_limit_cleanup_verified=true",
+        "probe_kind=platform_resource_timeout",
+        "timeout_probe_seconds=0",
         "bounded_error_projection.safe_admin_runtime_projection",
     ],
     "egress_policy": [
@@ -416,6 +418,8 @@ def _resource_limits_runtime_verified(hardening: dict[str, Any], *, run_id: str)
     return (
         section.get("docker_inspection_verified") is True
         and section.get("over_limit_cleanup_verified") is True
+        and section.get("over_limit_probe_kind") == "platform_resource_timeout"
+        and section.get("over_limit_timeout_probe_seconds") == 0
         and section.get("bounded_error_projection_verified") is True
         and bounded_error_projection_is_safe(section.get("bounded_error_projection"), run_id=run_id)
     )

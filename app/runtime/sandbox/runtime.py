@@ -207,9 +207,17 @@ class SandboxRuntime:
         sandbox_cleanup_latency_ms = 0
         if request.sandbox_mode == "ephemeral":
             cleanup_started_at = time.monotonic()
+            terminal_status = str(response.get("status") or "")
+            release_reason = (
+                "run_failed"
+                if terminal_status == "failed"
+                else "run_cancelled"
+                if terminal_status in {"cancelled", "canceled"}
+                else "dispatch_completed"
+            )
             await self._stop_and_release_ephemeral_lease(
                 lease,
-                reason="dispatch_completed",
+                reason=release_reason,
                 lease_record_id=lease_record_id,
             )
             sandbox_cleanup_latency_ms = self._elapsed_ms(cleanup_started_at)
