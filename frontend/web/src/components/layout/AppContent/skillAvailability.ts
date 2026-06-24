@@ -2,7 +2,9 @@ import type { SkillResponse } from "../../../types";
 import type { SettingsResponse } from "../../../types";
 
 function hasSkillReadPermission(permissions: readonly string[]): boolean {
-  return permissions.includes("skill:read") || permissions.includes("skill:admin");
+  return (
+    permissions.includes("skill:read") || permissions.includes("skill:admin")
+  );
 }
 
 export function buildEffectiveSkills({
@@ -63,10 +65,12 @@ export function resolveComposerSkillsAvailability({
   isAuthenticated,
   canReadSkills,
   catalogEffectivePermissions,
+  catalogPermissionsKnown,
 }: {
   isAuthenticated: boolean;
   canReadSkills: boolean;
   catalogEffectivePermissions: string[];
+  catalogPermissionsKnown: boolean;
   enableSkillsSettingKnown: boolean;
   enableSkillsSetting: boolean;
 }): {
@@ -74,9 +78,14 @@ export function resolveComposerSkillsAvailability({
   enableComposerSkills: boolean;
 } {
   const shouldFetchSkills = isAuthenticated;
-  const available =
-    shouldFetchSkills &&
-    (canReadSkills || hasSkillReadPermission(catalogEffectivePermissions));
+  const catalogCanReadSkills = hasSkillReadPermission(
+    catalogEffectivePermissions,
+  );
+  const available = shouldFetchSkills
+    ? catalogPermissionsKnown
+      ? catalogCanReadSkills
+      : canReadSkills
+    : false;
 
   return {
     shouldFetchSkills,

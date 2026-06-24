@@ -78,6 +78,8 @@ export function useSkills(options?: {
   const [effectivePermissions, setEffectivePermissions] = useState<string[]>(
     [],
   );
+  const [effectivePermissionsKnown, setEffectivePermissionsKnown] =
+    useState(false);
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -100,6 +102,7 @@ export function useSkills(options?: {
       setIsLoading(true);
       setError(null);
       setListError(null);
+      setEffectivePermissionsKnown(false);
       try {
         const response = await skillApi.list(params ?? listParams ?? {});
         const userSkills: UserSkill[] = response.skills;
@@ -109,6 +112,7 @@ export function useSkills(options?: {
         setTotal(response.total);
         setAvailableTags(response.available_tags || []);
         setEffectivePermissions(response.effective_permissions || []);
+        setEffectivePermissionsKnown(true);
         // 保留正在 toggle 中的 skill 的乐观状态，避免竞态覆盖
         const pendingToggles = pendingTogglesRef.current;
         if (pendingToggles.size === 0) {
@@ -129,6 +133,8 @@ export function useSkills(options?: {
           err instanceof Error ? err.message : "Failed to fetch skills";
         setError(message);
         setListError(message);
+        setEffectivePermissions([]);
+        setEffectivePermissionsKnown(true);
       } finally {
         setIsLoading(false);
       }
@@ -662,6 +668,7 @@ export function useSkills(options?: {
     skills,
     availableTags,
     effectivePermissions,
+    effectivePermissionsKnown,
     total,
     isLoading,
     error,

@@ -84,6 +84,7 @@ export function ChatAppContent({
     isAuthenticated,
     canReadSkills,
     catalogEffectivePermissions: [],
+    catalogPermissionsKnown: false,
     enableSkillsSettingKnown: enableSkillsProjection.known,
     enableSkillsSetting: enableSkillsProjection.value ?? enableSkills,
   });
@@ -114,11 +115,13 @@ export function ChatAppContent({
     isMutating: skillsMutating,
     fetchSkills,
     effectivePermissions: skillsEffectivePermissions,
+    effectivePermissionsKnown: skillsEffectivePermissionsKnown,
   } = useSkills({ enabled: composerSkillsProbeAvailability.shouldFetchSkills });
   const composerSkillsAvailability = resolveComposerSkillsAvailability({
     isAuthenticated,
     canReadSkills,
     catalogEffectivePermissions: skillsEffectivePermissions,
+    catalogPermissionsKnown: skillsEffectivePermissionsKnown,
     enableSkillsSettingKnown: enableSkillsProjection.known,
     enableSkillsSetting: enableSkillsProjection.value ?? enableSkills,
   });
