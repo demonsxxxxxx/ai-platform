@@ -1,0 +1,194 @@
+{
+  "artifact_kind": "211_runtime_smoke",
+  "captured_at": "2026-06-24T07:39:37+08:00",
+  "commit_sha": "066141392871ddeeda0f21b3fc74169cd81efc82",
+  "evidence_id": "2026-06-24-211-workbench-projections-0661413-route-smoke",
+  "evidence_ref": {
+    "command": "operator 211 workbench projection smoke against local API endpoint",
+    "result": "ok:true",
+    "runtime_checks": {
+      "workbench_projection_211_smoke": {
+        "admin_write_checks": {
+          "admin_feedback_update": 200,
+          "admin_notifications_create": 200,
+          "admin_notifications_list": 200,
+          "admin_notifications_replay": 200,
+          "admin_settings_update_nested_secret": 200,
+          "admin_settings_update_secret": 200,
+          "admin_users_create": 200
+        },
+        "assertions": {
+          "admin_notifications_list_200": true,
+          "admin_writes_200": true,
+          "api_image_expected": true,
+          "api_label_expected": true,
+          "forbidden_before_validation": true,
+          "health_ok": true,
+          "no_sensitive_material_in_responses": true,
+          "ordinary_reads_200": true,
+          "ordinary_writes_403": true,
+          "routes_present": true,
+          "settings_secret_redacted": true,
+          "source_commit_expected": true,
+          "worker_image_expected": true,
+          "worker_label_expected": true
+        },
+        "health": {
+          "body": {
+            "status": "ok"
+          },
+          "status": 200
+        },
+        "leaks": [],
+        "ok": true,
+        "ordinary_read_checks": {
+          "ordinary_feedback": 200,
+          "ordinary_notifications": 200,
+          "ordinary_settings": 200,
+          "ordinary_users": 200
+        },
+        "ordinary_write_checks": {
+          "ordinary_feedback_write_forbidden": 403,
+          "ordinary_notification_write_forbidden": 403,
+          "ordinary_settings_write_forbidden": 403,
+          "ordinary_user_write_forbidden": 403
+        },
+        "route_inventory": [
+          "api.feedback.collection",
+          "api.feedback.stats",
+          "api.feedback.item",
+          "api.notifications.collection",
+          "api.notifications.active",
+          "api.notifications.admin",
+          "api.notifications.item",
+          "api.notifications.dismiss",
+          "api.notifications.replay",
+          "api.settings.root",
+          "api.settings.collection",
+          "api.settings.reset",
+          "api.settings.reset_key",
+          "api.settings.key",
+          "api.users.collection",
+          "api.users.item"
+        ],
+        "schema_version": "issue205-workbench-projections-smoke/v1"
+      },
+      "verifier_checks": [
+        {
+          "name": "check_source_commit_expected",
+          "passed": true
+        },
+        {
+          "name": "check_api_and_worker_image_expected",
+          "passed": true
+        },
+        {
+          "name": "check_api_and_worker_labels_expected",
+          "passed": true
+        },
+        {
+          "name": "check_routes_present",
+          "passed": true
+        },
+        {
+          "name": "check_ordinary_reads_return_200",
+          "passed": true
+        },
+        {
+          "name": "check_ordinary_writes_return_403",
+          "passed": true
+        },
+        {
+          "name": "check_admin_writes_return_200",
+          "passed": true
+        },
+        {
+          "name": "check_no_sensitive_material_in_responses",
+          "passed": true
+        },
+        {
+          "name": "check_settings_write_response_redacted",
+          "passed": true
+        }
+      ]
+    },
+    "verifier": "operator_211_workbench_projection_smoke"
+  },
+  "gate": "Workbench Projection Contracts",
+  "issue_refs": [
+    "#205"
+  ],
+  "open_followups": [
+    "This evidence covers only the #205 governed post-login workbench projection routes for the named 0661413 runtime subject.",
+    "This evidence does not close #164, Foundation Alpha POC readiness, production readiness, Docker sandbox hardening, ordinary-user multi-agent exposure, packaged frontend image acceptance, department rollout, or capacity-upgrade evidence.",
+    "The 211 service source directory was refreshed from a local git archive and source marker, not a Git checkout; use this record as runtime-subject evidence for #205 only, not as G0 source-authority closure."
+  ],
+  "pr_refs": [
+    "#211"
+  ],
+  "redaction_scan_status": "passed",
+  "review_notes": [
+    "211 smoke returned ok=true for schema issue205-workbench-projections-smoke/v1 against commit 066141392871ddeeda0f21b3fc74169cd81efc82.",
+    "The smoke covered users, settings, feedback, and notifications route presence; ordinary-user read projections; ordinary-user write denial before validation; admin lifecycle writes; admin notification list access; settings write-response redaction; and response leakage scan.",
+    "API and worker containers both ran image ai-platform:0661413-issue205-workbench-projections-runtime-only-v1 with image ID sha256:c6905bfa0348ef577ccebbab8b3c88324ce3b18255980d595eb86d200f501d2b and runtime/source labels matching 066141392871ddeeda0f21b3fc74169cd81efc82.",
+    "The runtime-only flat-rebase deployment workaround and external runtime environment-file usage are intentionally recorded as operational caveats without copying or exposing environment values."
+  ],
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "066141392871ddeeda0f21b3fc74169cd81efc82",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "api_health": {
+      "status": "ok"
+    },
+    "branch": "main",
+    "build_mode": "runtime-only-flat-rebase workaround",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_source": "existing external 211 runtime environment file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "image": "ai-platform:0661413-issue205-workbench-projections-runtime-only-v1",
+    "image_id": "sha256:c6905bfa0348ef577ccebbab8b3c88324ce3b18255980d595eb86d200f501d2b",
+    "image_labels": {
+      "ai-platform.build-mode": "runtime-only-flat-rebase",
+      "ai-platform.runtime-rollout": "issue205-workbench-projections-runtime-only-v1",
+      "ai-platform.runtime-subject": "066141392871ddeeda0f21b3fc74169cd81efc82",
+      "ai-platform.runtime_subject": "066141392871ddeeda0f21b3fc74169cd81efc82",
+      "ai-platform.source-branch": "main",
+      "ai-platform.source-note": "issue205-workbench-projections-runtime-only-v1",
+      "ai-platform.source-origin": "local-git-archive",
+      "ai-platform.source-revision": "066141392871ddeeda0f21b3fc74169cd81efc82",
+      "ai-platform.source-tree-commit": "066141392871ddeeda0f21b3fc74169cd81efc82",
+      "ai-platform.source_note": "issue205-workbench-projections-runtime-only-v1",
+      "ai-platform.source_revision": "066141392871ddeeda0f21b3fc74169cd81efc82",
+      "ai-platform.source_tree_commit": "066141392871ddeeda0f21b3fc74169cd81efc82",
+      "com.docker.compose.image": "sha256:c6905bfa0348ef577ccebbab8b3c88324ce3b18255980d595eb86d200f501d2b",
+      "com.docker.compose.project.config_files": "<redacted-repo-local-compose-path>",
+      "com.docker.compose.project.environment_file": "<redacted-external-runtime-env-path>",
+      "com.docker.compose.project.working_dir": "<redacted-repo-local-compose-workdir>",
+      "org.opencontainers.image.revision": "066141392871ddeeda0f21b3fc74169cd81efc82"
+    },
+    "repo_local_env_present": false,
+    "runtime_boundary": {
+      "api_container": "ai-platform-api",
+      "worker_container": "ai-platform-worker"
+    },
+    "runtime_commit": "066141392871ddeeda0f21b3fc74169cd81efc82",
+    "runtime_source_marker": "066141392871ddeeda0f21b3fc74169cd81efc82",
+    "runtime_subject_label_status": "runtime_subject_label_current",
+    "service_source_layout": "archive_unpacked_not_git_checkout",
+    "source_authority_caveat": "211 service source was refreshed from a local git archive plus source marker; do not use this #205 workbench projection evidence as G0 source-authority closure.",
+    "source_revision_alias_label_status": "source_revision_alias_label_current",
+    "source_snapshot": {
+      "captured_by": "issue205-workbench-projection-runtime-refresh",
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "runtime_subject_commit_sha": "066141392871ddeeda0f21b3fc74169cd81efc82",
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "source_tree_commit_sha": "066141392871ddeeda0f21b3fc74169cd81efc82",
+      "source_tree_dirty": false
+    },
+    "source_tree_dirty": false
+  }
+}
