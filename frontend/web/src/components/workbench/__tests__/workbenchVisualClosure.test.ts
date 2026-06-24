@@ -49,6 +49,23 @@ test("workbench right context uses the same canvas as the main workspace", () =>
   assert.match(rightPanel, /workbenchSurface\.secondaryPanel/);
 });
 
+test("post-login projection panels share workbench surface tokens", () => {
+  const panels = new Map([
+    ["AgentDirectoryPanel", read("src/components/panels/AgentDirectoryPanel.tsx")],
+    ["ModelCatalogPanel", read("src/components/panels/ModelCatalogPanel.tsx")],
+    ["MemoryPanel", read("src/components/panels/MemoryPanel/index.tsx")],
+  ]);
+
+  for (const [name, source] of panels) {
+    assert.match(source, /data-frontend-governance-state/, name);
+    assert.match(source, /bg-\[var\(--theme-bg\)\]/, name);
+    assert.match(source, /workbenchSurface\.(?:compactPanel|panel)/, name);
+    assert.doesNotMatch(source, /bg-white(?:\/\d+)?/, name);
+    assert.doesNotMatch(source, /dark:bg-stone-950(?:\/\d+)?/, name);
+    assert.doesNotMatch(source, /text-stone-(?:700|800|900)/, name);
+  }
+});
+
 test("skills marketplace cards stay dense and enterprise-workbench sized", () => {
   const baseCard = read("src/components/common/SkillBaseCard.tsx");
   const cardCss = read("src/styles/card-base.css");

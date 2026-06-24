@@ -150,7 +150,7 @@ export function AgentDirectoryPanel() {
     <div
       data-agent-directory-shell
       data-frontend-governance-state={readyState ? "ready" : "degraded"}
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-[var(--theme-text)]"
     >
       <PanelHeader
         title={t("agentDirectory.title", "Agents")}
@@ -171,7 +171,7 @@ export function AgentDirectoryPanel() {
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <ShieldCheck size={16} className="text-stone-500" />
-                  <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
                     {t("agentDirectory.publicProjection", "Public projection")}
                   </h3>
                 </div>
@@ -193,7 +193,7 @@ export function AgentDirectoryPanel() {
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <CheckCircle2 size={16} className="text-stone-500" />
-                  <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
                     {t("agentDirectory.directoryStats", "Directory status")}
                   </h3>
                 </div>
@@ -222,7 +222,7 @@ export function AgentDirectoryPanel() {
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <LockKeyhole size={16} className="text-stone-500" />
-                  <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
                     {t("agentDirectory.adminGovernance", "Admin configuration")}
                   </h3>
                 </div>
@@ -270,15 +270,15 @@ export function AgentDirectoryPanel() {
               return (
                 <article
                   key={agent.id}
-                  className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-4 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900"
+                  className={`${workbenchSurface.compactPanel} p-4`}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex min-w-0 items-start gap-3">
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--theme-bg-sidebar)] text-slate-600 ring-1 ring-[var(--theme-border)] dark:bg-stone-950 dark:text-stone-300 dark:ring-stone-800">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
                         <Bot size={19} />
                       </div>
                       <div className="min-w-0">
-                        <h3 className="truncate text-sm font-semibold text-stone-900 dark:text-stone-100">
+                        <h3 className="truncate text-sm font-semibold text-[var(--theme-text)]">
                           {agent.name}
                         </h3>
                         <p className="mt-1 truncate text-xs text-stone-500 dark:text-stone-400">
@@ -299,19 +299,19 @@ export function AgentDirectoryPanel() {
                   </p>
 
                   <dl className="mt-4 grid grid-cols-2 gap-2 text-xs">
-                    <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2 dark:bg-stone-950/50">
+                    <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2">
                       <dt className="text-stone-400 dark:text-stone-500">
                         {t("agentDirectory.version", "Version")}
                       </dt>
-                      <dd className="mt-1 truncate font-medium text-stone-700 dark:text-stone-200">
+                      <dd className="mt-1 truncate font-medium text-[var(--theme-text)]">
                         {agent.version || t("workbench.none", "None")}
                       </dd>
                     </div>
-                    <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2 dark:bg-stone-950/50">
+                    <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2">
                       <dt className="text-stone-400 dark:text-stone-500">
                         {t("agentDirectory.options", "Options")}
                       </dt>
-                      <dd className="mt-1 truncate font-medium text-stone-700 dark:text-stone-200">
+                      <dd className="mt-1 truncate font-medium text-[var(--theme-text)]">
                         {t("agentDirectory.optionCount", "{{count}} published", {
                           count: optionCount,
                         })}

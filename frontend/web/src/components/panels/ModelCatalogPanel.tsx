@@ -174,7 +174,7 @@ export function ModelCatalogPanel() {
       data-frontend-governance-state={
         state?.models.length ? "ready" : "degraded"
       }
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-[var(--theme-text)]"
     >
       <PanelHeader
         title={t("models.title", "模型")}
@@ -195,7 +195,7 @@ export function ModelCatalogPanel() {
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <ShieldCheck size={16} className="text-stone-500" />
-                  <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
                     {t("models.publicProjection", "公开模型投影")}
                   </h3>
                 </div>
@@ -217,7 +217,7 @@ export function ModelCatalogPanel() {
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <Gauge size={16} className="text-stone-500" />
-                  <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
                     {t("models.catalogStats", "目录状态")}
                   </h3>
                 </div>
@@ -240,7 +240,7 @@ export function ModelCatalogPanel() {
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <LockKeyhole size={16} className="text-stone-500" />
-                  <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
                     {t("models.adminGovernance", "管理写操作")}
                   </h3>
                 </div>
@@ -290,7 +290,7 @@ export function ModelCatalogPanel() {
               return (
                 <article
                   key={model.id || model.value}
-                  className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-4 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900"
+                  className={`${workbenchSurface.compactPanel} p-4`}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex min-w-0 items-start gap-3">
@@ -300,7 +300,7 @@ export function ModelCatalogPanel() {
                         size={34}
                       />
                       <div className="min-w-0">
-                        <h3 className="truncate text-sm font-semibold text-stone-900 dark:text-stone-100">
+                        <h3 className="truncate text-sm font-semibold text-[var(--theme-text)]">
                           {model.label}
                         </h3>
                         <p className="mt-1 truncate text-xs text-stone-500 dark:text-stone-400">
@@ -322,19 +322,19 @@ export function ModelCatalogPanel() {
                   ) : null}
 
                   <dl className="mt-4 grid grid-cols-2 gap-2 text-xs">
-                    <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2 dark:bg-stone-950/50">
+                    <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2">
                       <dt className="text-stone-400 dark:text-stone-500">
                         {t("models.provider", "供应商")}
                       </dt>
-                      <dd className="mt-1 truncate font-medium text-stone-700 dark:text-stone-200">
+                      <dd className="mt-1 truncate font-medium text-[var(--theme-text)]">
                         {providerLabel(model)}
                       </dd>
                     </div>
-                    <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2 dark:bg-stone-950/50">
+                    <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2">
                       <dt className="text-stone-400 dark:text-stone-500">
                         {t("models.contextWindow", "上下文")}
                       </dt>
-                      <dd className="mt-1 truncate font-medium text-stone-700 dark:text-stone-200">
+                      <dd className="mt-1 truncate font-medium text-[var(--theme-text)]">
                         {contextWindowLabel(
                           model,
                           t("models.contextWindowUnknown", "Not published"),
