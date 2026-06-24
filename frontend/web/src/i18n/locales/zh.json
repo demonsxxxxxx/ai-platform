@@ -1404,7 +1404,7 @@
       "title": "MCP 工具受治理"
     },
     "catalogUnavailable": {
-      "description": "MCP 工具目录会保持可见用于发现。凭证、生命周期控制和工具选择在管理员启用前保持锁定。",
+      "description": "MCP 工具目录会保持可见用于发现。服务生命周期、凭证轮换和工具策略写入由管理员治理。",
       "title": "MCP 工具目录受治理"
     },
     "overwriteExisting": "覆盖同名服务器",
@@ -1419,9 +1419,9 @@
     "userServerVisible": "用户服务器（仅对自己可见）",
     "permissionMode": "权限模式",
     "addToComposer": "在聊天输入框使用 /mcp 搜索受治理的工具，并把已启用工具加入 composer。",
-    "lifecycleUnavailable": "运行时生命周期控制",
-    "lifecycleUnavailableDescription": "启动、停止、重启和原始凭证控制对普通用户保持锁定。",
-    "credentialsUnavailable": "凭证分配和密钥轮换在第一阶段保持不可用。",
+    "lifecycleUnavailable": "服务生命周期治理",
+    "lifecycleUnavailableDescription": "启动、停止、重启和服务器配置写入由管理员治理；普通用户可查看已批准目录并在聊天中使用已启用工具。",
+    "credentialsUnavailable": "凭证分配和密钥轮换由管理员治理。",
     "noMatchingTools": "没有匹配的工具",
     "toolsSearchPlaceholder": "搜索工具"
   },

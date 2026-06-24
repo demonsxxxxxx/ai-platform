@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { resolveMcpGovernanceState } from "../mcpGovernanceState.ts";
 
-test("MCP directory stays reachable while public catalog probe is pending permission proof", () => {
+test("MCP directory is ready for empty backed projections while permission proof is pending", () => {
   const state = resolveMcpGovernanceState({
     isAuthenticated: true,
     canReadMcp: false,
@@ -11,10 +11,10 @@ test("MCP directory stays reachable while public catalog probe is pending permis
     total: 0,
   });
 
-  assert.equal(state.pageState, "degraded");
+  assert.equal(state.pageState, "ready");
   assert.equal(state.authProjectionHasPermission, false);
   assert.equal(state.directoryAvailability.state, "disabled");
-  assert.equal(state.lifecycleAvailability.state, "unavailable");
+  assert.equal(state.lifecycleAvailability.state, "admin-only");
   assert.equal(state.requiredPermission, "mcp:read");
 });
 
@@ -87,7 +87,7 @@ test("MCP directory is ready when backend returns visible servers", () => {
 
   assert.equal(state.pageState, "ready");
   assert.equal(state.directoryAvailability.state, "enabled");
-  assert.equal(state.lifecycleAvailability.state, "unavailable");
+  assert.equal(state.lifecycleAvailability.state, "admin-only");
 });
 
 test("MCP directory degrades empty and non-permission failures without opening lifecycle controls", () => {
@@ -105,9 +105,9 @@ test("MCP directory degrades empty and non-permission failures without opening l
     loadError: "mcp projection unavailable",
   });
 
-  assert.equal(empty.pageState, "degraded");
+  assert.equal(empty.pageState, "ready");
   assert.equal(empty.directoryAvailability.state, "disabled");
-  assert.equal(empty.lifecycleAvailability.state, "unavailable");
+  assert.equal(empty.lifecycleAvailability.state, "admin-only");
   assert.equal(failed.pageState, "degraded");
   assert.equal(failed.governedUnavailable, false);
 });

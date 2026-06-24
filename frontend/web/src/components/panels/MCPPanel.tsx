@@ -356,7 +356,7 @@ export function MCPPanel() {
                   </dl>
 
                   <div className="mt-3 rounded-md border border-dashed border-stone-200 p-2 text-xs leading-5 text-stone-500 dark:border-stone-800 dark:text-stone-400">
-                    {t("mcp.lifecycleUnavailableDescription")}
+                    {t("mcp.catalogUnavailable.description")}
                   </div>
                 </article>
               );

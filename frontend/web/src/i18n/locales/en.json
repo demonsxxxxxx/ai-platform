@@ -1403,7 +1403,7 @@
       "title": "MCP tools are governed"
     },
     "catalogUnavailable": {
-      "description": "The MCP tool directory stays visible for discovery. Credentials, lifecycle controls, and tool selection are locked until an administrator enables them.",
+      "description": "The MCP tool directory stays visible for discovery. Service lifecycle, credential rotation, and tool policy writes are governed by administrators.",
       "title": "MCP tool directory is governed"
     },
     "overwriteExisting": "Overwrite existing servers with the same name",
@@ -1418,9 +1418,9 @@
     "userServerVisible": "User Server (only visible to you)",
     "permissionMode": "Permission mode",
     "addToComposer": "Use /mcp in chat to search governed tools and add enabled tools to the composer.",
-    "lifecycleUnavailable": "Runtime lifecycle controls",
-    "lifecycleUnavailableDescription": "Start, stop, restart, and raw credential controls stay locked for ordinary users.",
-    "credentialsUnavailable": "Credential assignment and secret rotation remain unavailable in Phase 1.",
+    "lifecycleUnavailable": "Service lifecycle governance",
+    "lifecycleUnavailableDescription": "Start, stop, restart, and server configuration writes are administrator-governed. Ordinary users can inspect the approved directory and use enabled tools in chat.",
+    "credentialsUnavailable": "Credential assignment and secret rotation are administrator-governed.",
     "noMatchingTools": "No matching tools",
     "toolsSearchPlaceholder": "Search tools"
   },

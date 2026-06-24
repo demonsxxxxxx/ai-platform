@@ -45,16 +45,15 @@ export function resolveMcpGovernanceState({
     isLoading,
     hasWorkspace,
     hasPermission: !permissionDenied,
-    featureEnabled: hasDirectoryRows,
+    featureEnabled: true,
     projectionError: loadError,
-    degraded: !canReadMcp && !permissionDenied,
   });
   const directoryAvailability = resolveGroupAvailability({
     backed: !permissionDenied,
     enabled: hasDirectoryRows,
   });
-  const lifecycleAvailability = resolveGroupAvailability({ backed: false });
-  const credentialsAvailability = resolveGroupAvailability({ backed: false });
+  const lifecycleAvailability = resolveGroupAvailability({ adminOnly: true });
+  const credentialsAvailability = resolveGroupAvailability({ adminOnly: true });
 
   return {
     pageState,

@@ -21,7 +21,11 @@ export interface MCPServerResponse extends MCPServerBase {
   is_system: boolean;
   can_edit: boolean;
   allowed_roles: string[];
+  allowed_departments?: string[];
   role_quotas: Record<string, MCPRoleQuota>;
+  credential_state?: "not_configured" | "configured" | "platform_managed";
+  credential_metadata?: Record<string, unknown>;
+  contract_version?: string;
   created_at?: string;
   updated_at?: string;
 }
