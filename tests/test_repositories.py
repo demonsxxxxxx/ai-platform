@@ -3564,6 +3564,76 @@ async def test_list_admin_tool_policy_history_clamps_limit_for_direct_callers():
 
 
 @pytest.mark.asyncio
+async def test_list_role_governance_audit_history_uses_bounded_tenant_scoped_query():
+    class RoleGovernanceHistoryCursor:
+        async def fetchall(self):
+            return [{"id": "aud-role", "target_id": "skill_developer"}]
+
+    class RoleGovernanceHistoryConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return RoleGovernanceHistoryCursor()
+
+    conn = RoleGovernanceHistoryConnection()
+
+    rows = await repositories.list_role_governance_audit_history(
+        conn,
+        tenant_id="tenant-a",
+        user_id="ordinary",
+        limit=10,
+    )
+
+    assert rows == [{"id": "aud-role", "target_id": "skill_developer"}]
+    sql, params = conn.calls[0]
+    assert "from audit_logs" in sql
+    assert "tenant_id = %s" in sql
+    assert "action = any(%s)" in sql
+    assert "user_id = %s or payload_json->>'requester_id' = %s" in sql
+    assert "order by created_at desc, id desc" in sql
+    assert "limit %s" in sql.lower()
+    assert params == (
+        "tenant-a",
+        [
+            "role_governance.request.created",
+            "role_governance.approval.approve_requested",
+            "role_governance.approval.reject_requested",
+            "role_governance.rollback.requested",
+        ],
+        "ordinary",
+        "ordinary",
+        10,
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_role_governance_audit_history_clamps_limit_for_direct_callers():
+    class RoleGovernanceHistoryCursor:
+        async def fetchall(self):
+            return []
+
+    class RoleGovernanceHistoryConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return RoleGovernanceHistoryCursor()
+
+    conn = RoleGovernanceHistoryConnection()
+
+    await repositories.list_role_governance_audit_history(conn, tenant_id="tenant-a", limit=9999)
+    await repositories.list_role_governance_audit_history(conn, tenant_id="tenant-a", limit=-5)
+    await repositories.list_role_governance_audit_history(conn, tenant_id="tenant-a", limit=0)
+
+    assert conn.calls[0][1][-1] == 100
+    assert conn.calls[1][1][-1] == 1
+    assert conn.calls[2][1][-1] == 1
+
+
+@pytest.mark.asyncio
 async def test_resolve_agent_skill_uses_tenant_stable_release_policy():
     class ResolveCursor:
         async def fetchone(self):
