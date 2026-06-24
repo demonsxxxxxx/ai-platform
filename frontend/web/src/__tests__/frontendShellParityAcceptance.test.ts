@@ -122,7 +122,8 @@ test("roles route is login reachable and does not load legacy role management AP
   assert.doesNotMatch(rolesRoute, /<WorkbenchForbiddenPage/);
   assert.match(authTypes, /ADMIN_STATUS = "admin:status"/);
   assert.match(rolesPanel, /data-role-plaza-shell/);
-  assert.match(rolesPanel, /data-role-plaza-backend-gap/);
+  assert.match(rolesPanel, /data-frontend-governance-state="ready"/);
+  assert.doesNotMatch(rolesPanel, /data-role-plaza-backend-gap/);
   assert.match(rolesPanel, /Permission\.ROLE_MANAGE/);
   assert.doesNotMatch(rolesPanel, /roleApi|authApi|getPermissions\(|RoleFormModal/);
   assert.doesNotMatch(rolesPanel, /\/api\/roles/);

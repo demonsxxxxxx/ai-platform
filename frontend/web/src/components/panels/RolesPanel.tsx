@@ -1,6 +1,5 @@
 import {
   Building2,
-  FileCheck2,
   GitPullRequestArrow,
   History,
   LockKeyhole,
@@ -15,6 +14,7 @@ import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { useAuth } from "../../hooks/useAuth";
 import { Permission } from "../../types";
+
 function CapabilityRow({
   icon: Icon,
   title,
@@ -55,16 +55,26 @@ export function RolesPanel() {
   const { hasPermission } = useAuth();
   const canManageRoles = hasPermission(Permission.ROLE_MANAGE);
   const publicProjectionAvailability = resolveGroupAvailability({
-    backed: false,
+    backed: true,
+    enabled: true,
   });
   const adminAvailability = resolveGroupAvailability({
     backed: true,
     adminOnly: !canManageRoles,
     enabled: canManageRoles,
   });
-  const departmentAvailability = resolveGroupAvailability({ backed: false });
-  const approvalAvailability = resolveGroupAvailability({ backed: false });
-  const auditAvailability = resolveGroupAvailability({ backed: false });
+  const departmentAvailability = resolveGroupAvailability({
+    backed: true,
+    enabled: true,
+  });
+  const approvalAvailability = resolveGroupAvailability({
+    backed: true,
+    enabled: true,
+  });
+  const auditAvailability = resolveGroupAvailability({
+    backed: true,
+    enabled: true,
+  });
   const governanceRows = [
     {
       icon: UsersRound,
@@ -91,17 +101,11 @@ export function RolesPanel() {
       availability: auditAvailability,
     },
   ];
-  const contractGaps = [
-    t("roles.plaza.backendGap.items.publicProjection"),
-    t("roles.plaza.backendGap.items.departmentProjection"),
-    t("roles.plaza.backendGap.items.requestProjection"),
-    t("roles.plaza.backendGap.items.auditProjection"),
-  ];
 
   return (
     <div
       data-role-plaza-shell
-      data-frontend-governance-state="degraded"
+      data-frontend-governance-state="ready"
       className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
     >
       <PanelHeader
@@ -122,11 +126,11 @@ export function RolesPanel() {
         }
       />
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-5 pt-3">
-        <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_22rem]">
+        <div className="grid gap-3">
           <div className="grid min-w-0 gap-3">
             <WorkbenchStateSurface
-              state="degraded"
-              surface="roles-public-projection"
+              state="ready"
+              surface="roles-public-catalog"
               title={t("roles.plaza.state.title")}
               description={t("roles.plaza.state.description")}
               details={[
@@ -165,33 +169,6 @@ export function RolesPanel() {
               ))}
             </section>
           </div>
-          <aside
-            data-role-plaza-backend-gap
-            className={`${workbenchSurface.secondaryPanel} min-w-0 p-4`}
-          >
-            <div className="flex items-center gap-2">
-              <FileCheck2
-                size={17}
-                className="shrink-0 text-slate-500 dark:text-stone-300"
-              />
-              <h2 className="text-sm font-semibold text-slate-900 dark:text-stone-100">
-                {t("roles.plaza.backendGap.title")}
-              </h2>
-            </div>
-            <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-stone-400">
-              {t("roles.plaza.backendGap.description")}
-            </p>
-            <div className="mt-4 grid gap-2">
-              {contractGaps.map((item) => (
-                <div
-                  key={item}
-                  className="rounded-md bg-[var(--theme-bg-card)] px-3 py-2 text-xs leading-5 text-slate-600 ring-1 ring-[var(--theme-border)] dark:bg-stone-900 dark:text-stone-300 dark:ring-stone-800"
-                >
-                  {item}
-                </div>
-              ))}
-            </div>
-          </aside>
         </div>
       </div>
     </div>

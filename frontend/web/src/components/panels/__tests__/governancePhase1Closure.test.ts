@@ -28,17 +28,18 @@ test("department skill policy is rendered as a fail-closed group toggle row", ()
   assert.match(availability, /state:\s*"unavailable"/);
 });
 
-test("skills and marketplace surfaces expose department availability controls", () => {
+test("skills and marketplace surfaces avoid obsolete department availability placeholders", () => {
   const skillsHub = read("src/components/panels/SkillsHubPanel.tsx");
   const marketplace = read("src/components/panels/MarketplacePanel.tsx");
   const mcp = read("src/components/panels/MCPPanel.tsx");
 
-  assert.match(skillsHub, /GroupAvailabilityToggleRow/);
-  assert.match(skillsHub, /skills\.marketplace\.departmentAvailability/);
   assert.match(skillsHub, /data-phase1c-surface="skills-hub"/);
-  assert.match(marketplace, /GroupAvailabilityToggleRow/);
-  assert.match(marketplace, /skills\.marketplace\.departmentAvailability/);
   assert.match(marketplace, /data-phase1c-surface="marketplace"/);
+  assert.doesNotMatch(skillsHub, /GroupAvailabilityToggleRow/);
+  assert.doesNotMatch(skillsHub, /department-skill-policy/);
+  assert.doesNotMatch(marketplace, /GroupAvailabilityToggleRow/);
+  assert.doesNotMatch(marketplace, /data-marketplace-filter-shell/);
+  assert.doesNotMatch(marketplace, /skills\.marketplace\.departmentAvailability/);
   for (const source of [skillsHub, marketplace, mcp]) {
     assert.doesNotMatch(source, /skill-theme-shell|glass-shell/);
     assert.match(source, /bg-\[var\(--theme-bg\)\]/);
@@ -60,20 +61,22 @@ test("skills and marketplace remain catalog shells when backend enablement is un
   assert.doesNotMatch(skillsPanel, /!enableSkills/);
   assert.match(marketplace, /governedUnavailable/);
   assert.match(marketplace, /data-marketplace-catalog-shell/);
-  assert.match(marketplace, /data-marketplace-unavailable-shell/);
-  assert.match(marketplace, /data-marketplace-filter-shell/);
-  assert.match(marketplace, /data-marketplace-placeholder-list/);
+  assert.match(marketplace, /data-marketplace-forbidden-shell/);
+  assert.doesNotMatch(marketplace, /data-marketplace-unavailable-shell/);
+  assert.doesNotMatch(marketplace, /data-marketplace-filter-shell/);
+  assert.doesNotMatch(marketplace, /data-marketplace-placeholder-list/);
   assert.doesNotMatch(marketplace, /return\s*<WorkbenchUnavailableState/);
 });
 
-test("marketplace fail-closed copy is written for ordinary company users", () => {
+test("marketplace no longer renders ordinary-user unavailable placeholders", () => {
   const marketplace = read("src/components/panels/MarketplacePanel.tsx");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
   const en = JSON.parse(read("src/i18n/locales/en.json"));
 
-  assert.match(marketplace, /data-marketplace-ordinary-user-copy/);
-  assert.match(marketplace, /marketplace\.emptyDepartmentCatalog/);
-  assert.match(marketplace, /marketplace\.requestAccess/);
+  assert.doesNotMatch(marketplace, /data-marketplace-ordinary-user-copy/);
+  assert.doesNotMatch(marketplace, /marketplacePlaceholderItems/);
+  assert.doesNotMatch(marketplace, /marketplace\.emptyDepartmentCatalog/);
+  assert.doesNotMatch(marketplace, /marketplace\.requestAccess/);
   for (const source of [
     marketplace,
     JSON.stringify(zh.marketplace),
@@ -467,4 +470,26 @@ test("marketplace exposes direct write governance only through permission gates"
   );
   assert.match(marketplaceCard, /canInstall/);
   assert.doesNotMatch(marketplaceCard, /canWrite/);
+});
+
+test("role plaza stays reachable without claiming missing backend projection", () => {
+  const rolesPanel = read("src/components/panels/RolesPanel.tsx");
+  const zh = JSON.parse(read("src/i18n/locales/zh.json"));
+  const en = JSON.parse(read("src/i18n/locales/en.json"));
+
+  assert.match(rolesPanel, /data-role-plaza-shell/);
+  assert.match(rolesPanel, /data-frontend-governance-state="ready"/);
+  assert.doesNotMatch(rolesPanel, /data-role-plaza-backend-gap/);
+  assert.doesNotMatch(rolesPanel, /roles\.plaza\.backendGap/);
+  for (const source of [
+    rolesPanel,
+    JSON.stringify(zh.roles?.plaza ?? {}),
+    JSON.stringify(en.roles?.plaza ?? {}),
+  ]) {
+    assert.doesNotMatch(source, /backendGap/);
+    assert.doesNotMatch(source, /public projection/i);
+    assert.doesNotMatch(source, /backend gap/i);
+    assert.doesNotMatch(source, /后端/);
+    assert.doesNotMatch(source, /投影/);
+  }
 });
