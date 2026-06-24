@@ -225,6 +225,26 @@ export type {
 } from "./channel";
 
 // ============================================
+// Role Governance Types
+// ============================================
+export type {
+  RoleGovernanceAuditItem,
+  RoleGovernanceDecisionRequest,
+  RoleGovernanceDepartment,
+  RoleGovernanceOperationResponse,
+  RoleGovernanceOverviewResponse,
+  RoleGovernanceRequestCreate,
+  RoleGovernanceRequestItem,
+  RoleGovernanceRole,
+  RoleGovernanceRoleDirectory,
+  RoleGovernanceRollbackRequest,
+  RoleGovernanceScope,
+  RoleGovernanceSkillAvailability,
+  RoleGovernanceWorkbenchGovernance,
+  RoleGovernanceWorkspace,
+} from "./roleGovernance";
+
+// ============================================
 // Version Types
 // ============================================
 export type { VersionInfo } from "./common";

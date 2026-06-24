@@ -111,6 +111,14 @@ test("roles route is login reachable and does not load legacy role management AP
     join(root, "src/components/panels/RolesPanel.tsx"),
     "utf8",
   );
+  const roleGovernanceApi = readFileSync(
+    join(root, "src/services/api/roleGovernance.ts"),
+    "utf8",
+  );
+  const roleGovernanceTypes = readFileSync(
+    join(root, "src/types/roleGovernance.ts"),
+    "utf8",
+  );
 
   const rolesRoute =
     app.match(
@@ -123,12 +131,21 @@ test("roles route is login reachable and does not load legacy role management AP
   assert.match(authTypes, /ADMIN_STATUS = "admin:status"/);
   assert.match(rolesPanel, /data-role-plaza-shell/);
   assert.match(rolesPanel, /resolveRoleGovernanceState/);
+  assert.match(rolesPanel, /roleGovernanceApi\.getOverview/);
   assert.match(rolesPanel, /data-frontend-governance-state=\{roleGovernance\.pageState\}/);
   assert.doesNotMatch(rolesPanel, /data-frontend-governance-state="ready"/);
+  assert.doesNotMatch(rolesPanel, /roleDirectoryBacked:\s*false/);
   assert.doesNotMatch(rolesPanel, /data-role-plaza-backend-gap/);
+  assert.match(rolesPanel, /Permission\.ROLE_READ/);
+  assert.match(rolesPanel, /Permission\.ROLE_REQUEST/);
   assert.match(rolesPanel, /Permission\.ROLE_MANAGE/);
   assert.doesNotMatch(rolesPanel, /roleApi|authApi|getPermissions\(|RoleFormModal/);
   assert.doesNotMatch(rolesPanel, /\/api\/roles/);
+  assert.match(roleGovernanceApi, /\/api\/role-governance\/overview/);
+  assert.match(roleGovernanceApi, /\/api\/role-governance\/requests/);
+  assert.match(roleGovernanceApi, /\/api\/role-governance\/approvals/);
+  assert.match(roleGovernanceApi, /\/api\/role-governance\/audit/);
+  assert.match(roleGovernanceTypes, /RoleGovernanceOverviewResponse/);
   assert.doesNotMatch(
     rolesPanel,
     /const canManage = hasAnyPermission\(\[[\s\S]*Permission\.AGENT_ADMIN/,
@@ -554,6 +571,8 @@ test("workbench projection pages consume safe backend contracts instead of phase
   assert.doesNotMatch(workbenchApi, /\/api\/ai\/admin|\/api\/admin\/settings/);
 
   assert.match(authTypes, /USER_ADMIN = "user:admin"/);
+  assert.match(authTypes, /ROLE_READ = "role:read"/);
+  assert.match(authTypes, /ROLE_REQUEST = "role:request"/);
   assert.match(authTypes, /SETTINGS_READ = "settings:read"/);
   assert.match(authTypes, /SETTINGS_ADMIN = "settings:admin"/);
   assert.match(authTypes, /NOTIFICATION_READ = "notification:read"/);

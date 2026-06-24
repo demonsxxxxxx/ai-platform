@@ -474,6 +474,7 @@ test("marketplace exposes direct write governance only through permission gates"
 
 test("role plaza stays reachable without claiming missing backend projection", () => {
   const rolesPanel = read("src/components/panels/RolesPanel.tsx");
+  const roleGovernanceApi = read("src/services/api/roleGovernance.ts");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
   const en = JSON.parse(read("src/i18n/locales/en.json"));
 
@@ -491,8 +492,15 @@ test("role plaza stays reachable without claiming missing backend projection", (
     assert.doesNotMatch(source, /投影/);
   }
   assert.match(rolesPanel, /resolveRoleGovernanceState/);
+  assert.match(rolesPanel, /roleGovernanceApi\.getOverview/);
   assert.match(rolesPanel, /data-frontend-governance-state=\{roleGovernance\.pageState\}/);
   assert.doesNotMatch(rolesPanel, /data-frontend-governance-state="ready"/);
-  assert.match(rolesPanel, /roleDirectoryBacked:\s*false/);
+  assert.doesNotMatch(rolesPanel, /roleDirectoryBacked:\s*false/);
+  assert.match(roleGovernanceApi, /\/api\/role-governance\/overview/);
+  assert.match(roleGovernanceApi, /\/api\/role-governance\/requests/);
+  assert.match(roleGovernanceApi, /\/api\/role-governance\/approvals/);
+  assert.match(roleGovernanceApi, /\/api\/role-governance\/audit/);
+  assert.match(rolesPanel, /Permission\.ROLE_READ/);
+  assert.match(rolesPanel, /Permission\.ROLE_REQUEST/);
   assert.match(rolesPanel, /Permission\.ROLE_MANAGE/);
 });
