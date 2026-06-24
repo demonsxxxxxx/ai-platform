@@ -98,7 +98,7 @@ export function ProjectMenu({
       <>
         {/* Backdrop */}
         <div
-          className="fixed inset-0 z-40 bg-black/50 sm:hidden"
+          className="fixed inset-0 z-40 bg-slate-950/35 sm:hidden"
           onClick={onClose}
         />
         {/* Bottom sheet */}
@@ -107,7 +107,7 @@ export function ProjectMenu({
             menuRef.current = el;
             swipeRef.current = el;
           }}
-          className="fixed bottom-0 left-0 right-0 z-50 sm:hidden bg-white dark:bg-stone-800 rounded-t-2xl shadow-xl max-h-[70vh] overflow-y-auto"
+          className="fixed bottom-0 left-0 right-0 z-50 max-h-[70vh] overflow-y-auto rounded-t-lg border-x border-t border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] sm:hidden"
         >
           {/* Handle bar */}
           <div className="flex justify-center py-2">
@@ -121,14 +121,15 @@ export function ProjectMenu({
             </span>
             <button
               onClick={onClose}
-              className="p-1 rounded-full hover:bg-stone-100 dark:hover:bg-stone-700"
+              className="rounded-lg p-1 text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-hover)] hover:text-[var(--theme-text)]"
+              aria-label={t("common.close")}
             >
-              <X size={16} className="text-stone-400" />
+              <X size={16} />
             </button>
           </div>
 
           {/* Menu items */}
-          <div className="px-2 pb-4">
+          <div className="bg-[var(--theme-bg-sidebar)] px-2 pb-4 pt-1">
             {/* New Session */}
             {onNewSessionInProject && (
               <button
@@ -136,7 +137,7 @@ export function ProjectMenu({
                   onNewSessionInProject(_project.id);
                   onClose();
                 }}
-                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-[var(--theme-text-secondary)] hover:bg-stone-100 dark:hover:bg-stone-700 rounded-lg transition-colors"
+                className="w-full flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13px] text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-hover)] hover:text-[var(--theme-text)]"
               >
                 <MessageSquarePlus size={16} />
                 <span>{t("sidebar.newChat")}</span>
@@ -149,14 +150,14 @@ export function ProjectMenu({
                 onRename();
                 onClose();
               }}
-              className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-[var(--theme-text-secondary)] hover:bg-stone-100 dark:hover:bg-stone-700 rounded-lg transition-colors"
+              className="w-full flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13px] text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-hover)] hover:text-[var(--theme-text)]"
             >
               <Edit2 size={16} />
               <span>{t("sidebar.rename")}</span>
             </button>
 
             {/* Divider */}
-            <div className="h-px bg-stone-200 dark:bg-stone-700 my-1.5" />
+            <div className="my-1.5 h-px bg-[var(--theme-border)]" />
 
             {/* Delete */}
             <button
@@ -164,7 +165,7 @@ export function ProjectMenu({
                 onDelete();
                 onClose();
               }}
-              className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+              className="w-full flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13px] text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/25"
             >
               <Trash2 size={16} />
               <span>{t("common.delete")}</span>
@@ -189,7 +190,7 @@ export function ProjectMenu({
     <div
       ref={menuRef}
       style={menuStyle}
-      className="w-48 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 shadow-lg py-1"
+      className="w-48 overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] py-1 shadow-[0_8px_24px_rgba(18,38,63,0.12)]"
     >
       {/* Rename option */}
       <button
@@ -197,7 +198,7 @@ export function ProjectMenu({
           onRename();
           onClose();
         }}
-        className="w-full flex items-center gap-2 px-3 py-2 text-sm text-[var(--theme-text-secondary)] hover:bg-stone-100 dark:hover:bg-stone-700 transition-colors"
+        className="w-full flex items-center gap-2 px-3 py-2 text-sm text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-hover)] hover:text-[var(--theme-text)]"
       >
         <Edit2 size={14} />
         <span>{t("sidebar.rename")}</span>
@@ -210,7 +211,7 @@ export function ProjectMenu({
             onNewSessionInProject(_project.id);
             onClose();
           }}
-          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-[var(--theme-text-secondary)] hover:bg-stone-100 dark:hover:bg-stone-700 transition-colors"
+          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-hover)] hover:text-[var(--theme-text)]"
         >
           <MessageSquarePlus size={14} />
           <span>{t("sidebar.newChat")}</span>
@@ -218,7 +219,7 @@ export function ProjectMenu({
       )}
 
       {/* Divider */}
-      <div className="h-px bg-stone-200 dark:bg-stone-700 my-1" />
+      <div className="my-1 h-px bg-[var(--theme-border)]" />
 
       {/* Delete option */}
       <button
@@ -226,7 +227,7 @@ export function ProjectMenu({
           onDelete();
           onClose();
         }}
-        className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+        className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/25"
       >
         <Trash2 size={14} />
         <span>{t("common.delete")}</span>

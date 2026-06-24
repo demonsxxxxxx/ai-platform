@@ -31,12 +31,12 @@ const TYPE_CONFIG: Record<
   warning: {
     icon: AlertTriangle,
     labelKey: "notification.typeWarning",
-    dotClass: "bg-amber-500",
+    dotClass: "bg-yellow-500",
   },
   maintenance: {
     icon: Wrench,
     labelKey: "notification.typeMaintenance",
-    dotClass: "bg-orange-500",
+    dotClass: "bg-slate-500",
   },
 };
 
@@ -97,11 +97,7 @@ export function NotificationDialog({
       onClick={onClose}
     >
       <div
-        className="w-full h-[60vh] sm:h-[55vh] sm:max-w-2xl flex flex-col rounded-t-lg sm:rounded-lg shadow-[0_8px_24px_rgba(18,38,63,0.12)]"
-        style={{
-          backgroundColor: "var(--theme-bg-card)",
-          border: "1px solid var(--theme-border)",
-        }}
+        className="flex h-[60vh] w-full flex-col rounded-t-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] sm:h-[55vh] sm:max-w-2xl sm:rounded-lg"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -120,7 +116,7 @@ export function NotificationDialog({
               <Bell size={16} style={{ color: "var(--theme-primary)" }} />
             </div>
             <h2
-              className="text-base font-semibold font-serif"
+              className="text-base font-semibold"
               style={{ color: "var(--theme-text)" }}
             >
               {t("nav.notifications")}
@@ -143,7 +139,7 @@ export function NotificationDialog({
         </div>
 
         {/* List */}
-        <div className="flex-1 overflow-y-auto py-2 sm:py-4 px-4 sm:p-5 space-y-2.5">
+        <div className="flex-1 overflow-y-auto bg-[var(--theme-bg-sidebar)] px-4 py-2 sm:p-5 sm:py-4 space-y-2.5">
           {notifications.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 gap-3">
               <div
@@ -185,10 +181,9 @@ export function NotificationDialog({
               return (
                 <div
                   key={n.id}
-                  className="group relative rounded-xl p-3.5 sm:p-4 transition-all"
+                  className="group relative rounded-lg p-3.5 transition-all sm:p-4"
                   style={{
-                    backgroundColor:
-                      "var(--theme-bg-secondary, rgba(0,0,0,0.02))",
+                    backgroundColor: "var(--theme-bg-card)",
                     border: "1px solid var(--theme-border)",
                   }}
                 >
