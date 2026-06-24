@@ -119,7 +119,7 @@ export function ProfileToolsTab() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Wrench size={15} className="text-amber-500 dark:text-amber-400" />
+          <Wrench size={15} className="text-teal-700 dark:text-teal-300" />
           <h3 className="text-xs font-semibold uppercase tracking-wide text-stone-400 dark:text-stone-500">
             {t("profile.toolsManagement", "MCP Tools")}
           </h3>
@@ -146,7 +146,7 @@ export function ProfileToolsTab() {
           {Array.from({ length: 3 }).map((_, i) => (
             <div
               key={i}
-              className="rounded-xl border border-stone-200/60 dark:border-stone-600/40 bg-stone-50 dark:bg-stone-700/40 overflow-hidden"
+              className="rounded-lg border border-slate-200/70 dark:border-stone-800 bg-[var(--theme-bg-sidebar)] dark:bg-stone-950/70 overflow-hidden"
             >
               <div className="px-3 py-2 border-b border-stone-200/60 dark:border-stone-600/40 flex items-center justify-between bg-stone-100/60 dark:bg-stone-800/30">
                 <SkeletonLine width="w-32" />
@@ -187,7 +187,7 @@ export function ProfileToolsTab() {
             return (
               <div
                 key={serverName}
-                className="rounded-xl border border-stone-200/60 dark:border-stone-600/40 bg-stone-50 dark:bg-stone-700/40 overflow-hidden"
+                className="rounded-lg border border-slate-200/70 dark:border-stone-800 bg-[var(--theme-bg-sidebar)] dark:bg-stone-950/70 overflow-hidden"
               >
                 {/* Server header */}
                 <div className="px-3 py-2 border-b border-stone-200/60 dark:border-stone-600/40 flex items-center justify-between bg-stone-100/60 dark:bg-stone-800/30">

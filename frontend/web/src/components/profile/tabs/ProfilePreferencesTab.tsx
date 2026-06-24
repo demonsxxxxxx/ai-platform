@@ -98,7 +98,7 @@ function SelectRow<T extends string>({
           >
             <div className="absolute inset-0 bg-black/40" />
             <div
-              className="relative z-10 w-[300px] max-h-[60vh] rounded-2xl bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 shadow-2xl overflow-hidden animate-scale-in"
+              className="relative z-10 w-[300px] max-h-[60vh] rounded-lg bg-[var(--theme-bg-card)] dark:bg-stone-900 border border-slate-200 dark:border-stone-800 shadow-[0_8px_24px_rgba(18,38,63,0.12)] dark:shadow-[0_8px_24px_rgba(0,0,0,0.35)] overflow-hidden animate-scale-in"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="px-5 pt-4 pb-2">
@@ -113,14 +113,14 @@ function SelectRow<T extends string>({
                     onClick={() => onSelect(opt.key)}
                     className={`w-full text-left px-5 py-2.5 text-sm transition-colors ${
                       value === opt.key
-                        ? "bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 font-medium"
+                        ? "bg-slate-100 dark:bg-stone-800 text-slate-950 dark:text-stone-100 font-medium"
                         : "text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-700/50"
                     }`}
                   >
                     <span className="flex items-center justify-between">
                       {renderLabel ? renderLabel(opt.key) : t(opt.labelKey)}
                       {value === opt.key && (
-                        <Check size={14} className="text-amber-500 shrink-0" />
+                        <Check size={14} className="text-teal-700 dark:text-teal-300 shrink-0" />
                       )}
                     </span>
                   </button>
@@ -299,9 +299,9 @@ export function ProfilePreferencesTab() {
   };
 
   return (
-    <div className="rounded-2xl bg-stone-50 dark:bg-stone-700/40 p-4 border border-stone-200/60 dark:border-stone-600/40">
+    <div className="rounded-lg bg-[var(--theme-bg-sidebar)] dark:bg-stone-950/70 p-4 border border-slate-200/70 dark:border-stone-800">
       <div className="flex items-center gap-2 mb-3">
-        <Settings size={15} className="text-amber-500 dark:text-amber-400" />
+        <Settings size={15} className="text-teal-700 dark:text-teal-300" />
         <h3 className="text-xs font-semibold uppercase tracking-wide text-stone-400 dark:text-stone-500">
           {t("profile.preferences")}
         </h3>

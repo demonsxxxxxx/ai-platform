@@ -10,7 +10,7 @@ export function ProfileNotificationTab() {
   return (
     <div className="space-y-3">
       {/* Browser Notification Setting */}
-      <div className="rounded-xl bg-stone-50 dark:bg-stone-700/50 p-3.5 sm:p-4">
+      <div className="rounded-lg border border-slate-200/70 bg-[var(--theme-bg-sidebar)] dark:border-stone-800 dark:bg-stone-950/70 p-3.5 sm:p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h4 className="font-medium text-sm text-stone-900 dark:text-stone-100">
@@ -32,7 +32,7 @@ export function ProfileNotificationTab() {
           ) : (
             <button
               onClick={requestPermission}
-              className="shrink-0 px-3 py-1.5 text-xs bg-amber-500 hover:bg-amber-600 text-white rounded-lg transition-colors font-medium"
+              className="shrink-0 px-3 py-1.5 text-xs bg-slate-950 hover:bg-slate-800 text-white rounded-lg transition-colors font-medium dark:bg-stone-100 dark:text-stone-950 dark:hover:bg-stone-200"
             >
               {permission === "denied"
                 ? t("profile.retry")
@@ -50,7 +50,7 @@ export function ProfileNotificationTab() {
       </div>
 
       {/* WebSocket Connection Status */}
-      <div className="rounded-xl bg-stone-50 dark:bg-stone-700/50 p-3.5 sm:p-4">
+      <div className="rounded-lg border border-slate-200/70 bg-[var(--theme-bg-sidebar)] dark:border-stone-800 dark:bg-stone-950/70 p-3.5 sm:p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h4 className="font-medium text-sm text-stone-900 dark:text-stone-100">

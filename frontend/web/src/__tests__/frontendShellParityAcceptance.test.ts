@@ -416,6 +416,38 @@ test("authenticated marketplace pages share the workbench surface tokens", () =>
   assert.doesNotMatch(marketplace, /border-slate-200 bg-white/);
 });
 
+test("profile modal shares the authenticated workbench visual language", () => {
+  const profileFiles = [
+    "src/components/profile/ProfileModal.tsx",
+    "src/components/profile/tabs/ProfileInfoTab.tsx",
+    "src/components/profile/tabs/ProfileNotificationTab.tsx",
+    "src/components/profile/tabs/ProfilePreferencesTab.tsx",
+    "src/components/profile/tabs/ProfileToolsTab.tsx",
+    "src/components/profile/tabs/ProfileModelsTab.tsx",
+    "src/components/profile/tabs/ProfileTermsTab.tsx",
+  ];
+
+  const sources = profileFiles.map((file) => [
+    file,
+    readFileSync(join(root, file), "utf8"),
+  ] as const);
+  const profileModal =
+    sources.find(([file]) => file.endsWith("ProfileModal.tsx"))?.[1] ?? "";
+
+  assert.match(profileModal, /data-profile-workbench-modal/);
+  assert.match(profileModal, /bg-\[var\(--theme-bg-card\)\]/);
+  assert.match(profileModal, /bg-\[var\(--theme-bg-sidebar\)\]/);
+
+  for (const [file, source] of sources) {
+    assert.doesNotMatch(source, /font-serif/, file);
+    assert.doesNotMatch(source, /from-amber|to-amber|from-orange|to-orange/, file);
+    assert.doesNotMatch(source, /\b(?:bg|text|border|ring|decoration)-amber-/, file);
+    assert.doesNotMatch(source, /\b(?:bg|text|border|ring|decoration)-orange-/, file);
+    assert.doesNotMatch(source, /rounded-2xl|rounded-3xl/, file);
+    assert.doesNotMatch(source, /shadow-xl|shadow-2xl/, file);
+  }
+});
+
 test("model catalog route is a governed public-projection workbench page", () => {
   const tabs = readFileSync(
     join(root, "src/components/layout/AppContent/TabContent.tsx"),

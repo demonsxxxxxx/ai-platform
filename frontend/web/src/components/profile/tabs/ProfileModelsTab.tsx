@@ -13,9 +13,9 @@ export function ProfileModelsTab() {
     setExpanded((prev) => (prev === id ? null : id));
 
   return (
-    <div className="rounded-2xl bg-stone-50 dark:bg-stone-700/40 p-4 border border-stone-200/60 dark:border-stone-600/40">
+    <div className="rounded-lg bg-[var(--theme-bg-sidebar)] dark:bg-stone-950/70 p-4 border border-slate-200/70 dark:border-stone-800">
       <div className="flex items-center gap-2 mb-3">
-        <Cpu size={15} className="text-amber-500 dark:text-amber-400" />
+        <Cpu size={15} className="text-teal-700 dark:text-teal-300" />
         <h3 className="text-xs font-semibold uppercase tracking-wide text-stone-400 dark:text-stone-500">
           {t("profile.modelIntro")}
         </h3>

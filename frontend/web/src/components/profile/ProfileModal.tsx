@@ -126,7 +126,7 @@ export function ProfileModal({
   const renderCloseButton = (className?: string) => (
     <button
       onClick={onCloseProfileModal}
-      className={`p-1.5 rounded-lg text-stone-400 hover:text-stone-600 hover:bg-stone-100 dark:text-stone-500 dark:hover:text-stone-300 dark:hover:bg-stone-700/60 transition-all ${
+      className={`p-1.5 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 dark:text-stone-500 dark:hover:text-stone-200 dark:hover:bg-stone-800 transition-colors ${
         className ?? ""
       }`}
     >
@@ -136,7 +136,7 @@ export function ProfileModal({
 
   const renderFooter = (className?: string) => (
     <div
-      className={`px-4 sm:px-5 py-2.5 sm:py-3 border-t border-stone-100 dark:border-stone-700/50 flex items-center justify-between bg-stone-50/50 dark:bg-stone-900/30 whitespace-nowrap ${
+      className={`px-4 sm:px-5 py-2.5 sm:py-3 border-t border-slate-200/70 dark:border-stone-800 flex items-center justify-between bg-[var(--theme-bg-sidebar)] dark:bg-stone-950/80 whitespace-nowrap ${
         className ?? ""
       }`}
     >
@@ -145,9 +145,9 @@ export function ProfileModal({
         target="_blank"
         rel="noopener noreferrer"
         onClick={(e) => e.stopPropagation()}
-        className="text-[11px] text-stone-400 dark:text-stone-500 tabular-nums hover:text-stone-600 dark:hover:text-stone-300 transition-colors"
+        className="text-[11px] text-slate-500 dark:text-stone-500 tabular-nums hover:text-slate-700 dark:hover:text-stone-300 transition-colors"
       >
-        <span className="font-semibold text-stone-500 dark:text-stone-400 font-serif tracking-tight">
+        <span className="font-semibold text-slate-700 dark:text-stone-300 tracking-tight">
           {APP_NAME}
         </span>
         {versionInfo?.app_version && (
@@ -159,7 +159,7 @@ export function ProfileModal({
         target="_blank"
         rel="noopener noreferrer"
         onClick={(e) => e.stopPropagation()}
-        className="px-1.5 sm:px-2 text-[11px] font-medium text-stone-400 dark:text-stone-500 hover:text-stone-600 dark:hover:text-stone-300 transition-colors py-1 rounded-md hover:bg-stone-100 dark:hover:bg-stone-700/60 shrink-0 font-serif"
+        className="px-1.5 sm:px-2 text-[11px] font-medium text-slate-500 dark:text-stone-500 hover:text-slate-800 dark:hover:text-stone-300 transition-colors py-1 rounded-md hover:bg-slate-100 dark:hover:bg-stone-800 shrink-0"
       >
         {t("common.poweredBy")}
       </a>
@@ -168,6 +168,7 @@ export function ProfileModal({
 
   return createPortal(
     <div
+      data-profile-workbench-modal
       data-yields-sidebar
       className="fixed inset-0 z-[300] flex items-end sm:items-center sm:justify-center"
       onClick={() => onCloseProfileModal()}
@@ -178,7 +179,7 @@ export function ProfileModal({
       {/* ===== Mobile: bottom sheet ===== */}
       <div
         ref={swipeRef as React.RefObject<HTMLDivElement>}
-        className="sm:hidden relative z-10 w-full bg-white dark:bg-stone-800 rounded-t-2xl shadow-2xl shadow-black/20 dark:shadow-black/50 border-x border-t border-stone-200/80 dark:border-stone-700/60 overflow-hidden max-h-[90dvh] flex flex-col animate-slide-up-sheet"
+        className="sm:hidden relative z-10 w-full bg-[var(--theme-bg-card)] dark:bg-stone-900 rounded-t-lg shadow-[0_8px_24px_rgba(18,38,63,0.12)] dark:shadow-[0_8px_24px_rgba(0,0,0,0.35)] border-x border-t border-slate-200/80 dark:border-stone-800 overflow-hidden max-h-[90dvh] flex flex-col animate-slide-up-sheet"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Drag handle */}
@@ -188,7 +189,7 @@ export function ProfileModal({
 
         {/* Header */}
         <div className="px-4 py-2.5 flex items-center justify-between">
-          <h3 className="text-[15px] font-semibold text-stone-900 dark:text-stone-100 tracking-tight font-serif">
+          <h3 className="text-[15px] font-semibold text-slate-950 dark:text-stone-100 tracking-tight">
             {t("profile.title")}
           </h3>
           {renderCloseButton()}
@@ -212,8 +213,8 @@ export function ProfileModal({
                   style={{ scrollSnapAlign: "start" }}
                   className={`relative shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-all whitespace-nowrap ${
                     isActive
-                      ? "bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900"
-                      : "text-stone-500 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-700/50"
+                      ? "bg-slate-950 text-white dark:bg-stone-100 dark:text-stone-950"
+                      : "text-slate-600 dark:text-stone-400 hover:bg-slate-100 dark:hover:bg-stone-800"
                   }`}
                 >
                   {Icon && <Icon size={14} />}
@@ -245,16 +246,16 @@ export function ProfileModal({
 
       {/* ===== Desktop: centered with sidebar ===== */}
       <div
-        className="hidden sm:flex relative z-10 w-[80vw] max-w-[680px] h-[75vh] max-h-[640px] bg-white dark:bg-stone-800 rounded-2xl shadow-2xl shadow-stone-900/10 dark:shadow-black/40 border border-stone-200/80 dark:border-stone-700/50 overflow-hidden flex-col animate-scale-in"
+        className="hidden sm:flex relative z-10 w-[80vw] max-w-[680px] h-[75vh] max-h-[640px] bg-[var(--theme-bg-card)] dark:bg-stone-900 rounded-lg shadow-[0_8px_24px_rgba(18,38,63,0.12)] dark:shadow-[0_8px_24px_rgba(0,0,0,0.35)] border border-slate-200/80 dark:border-stone-800 overflow-hidden flex-col animate-scale-in"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="px-5 py-4 flex items-center justify-between border-b border-stone-100 dark:border-stone-700/50">
+        <div className="px-5 py-4 flex items-center justify-between border-b border-slate-200/70 dark:border-stone-800">
           <div>
-            <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100 tracking-tight">
+            <h3 className="text-sm font-semibold text-slate-950 dark:text-stone-100 tracking-tight">
               {t("profile.title")}
             </h3>
-            <p className="text-[11px] text-stone-400 dark:text-stone-500 mt-0.5">
+            <p className="text-[11px] text-slate-500 dark:text-stone-500 mt-0.5">
               {t("profile.title")}
             </p>
           </div>
@@ -264,7 +265,7 @@ export function ProfileModal({
         {/* Body: left sidebar tabs + right content */}
         <div className="flex flex-1 min-h-0">
           {/* Left sidebar tabs */}
-          <div className="w-[152px] shrink-0 border-r border-stone-100 dark:border-stone-700/50 py-2 px-2 space-y-0.5 bg-stone-50/50 dark:bg-stone-900/20">
+          <div className="w-[152px] shrink-0 border-r border-slate-200/70 dark:border-stone-800 py-2 px-2 space-y-0.5 bg-[var(--theme-bg-sidebar)] dark:bg-stone-950/80">
             {tabs.map((tab) => {
               const Icon = TAB_ICONS[tab.key];
               const isActive = activeTab === tab.key;
@@ -274,8 +275,8 @@ export function ProfileModal({
                   onClick={() => setActiveTab(tab.key)}
                   className={`w-full text-left flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-xs font-medium transition-all ${
                     isActive
-                      ? "bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 shadow-sm border border-stone-200/80 dark:border-stone-700/60"
-                      : "text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-white/60 dark:hover:bg-stone-800/60 border border-transparent"
+                      ? "bg-[var(--theme-bg-card)] dark:bg-stone-900 text-slate-950 dark:text-stone-100 shadow-sm border border-slate-200/80 dark:border-stone-800"
+                      : "text-slate-600 dark:text-stone-400 hover:text-slate-900 dark:hover:text-stone-200 hover:bg-slate-100/80 dark:hover:bg-stone-900/60 border border-transparent"
                   }`}
                 >
                   {Icon && (
@@ -283,7 +284,7 @@ export function ProfileModal({
                       size={15}
                       className={
                         isActive
-                          ? "text-amber-500 dark:text-amber-400"
+                          ? "text-teal-700 dark:text-teal-300"
                           : "opacity-60"
                       }
                     />
@@ -292,7 +293,7 @@ export function ProfileModal({
                 </button>
               );
             })}
-            <div className="!mt-3 pt-3 border-t border-stone-200/80 dark:border-stone-700/50">
+            <div className="!mt-3 pt-3 border-t border-slate-200/80 dark:border-stone-800">
               <button
                 onClick={() => {
                   logout();
