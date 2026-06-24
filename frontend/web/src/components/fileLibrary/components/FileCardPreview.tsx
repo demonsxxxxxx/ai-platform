@@ -88,14 +88,14 @@ function CoverLayout({
 
   if (compact) {
     return (
-      <div className="flex h-full w-full items-center justify-center bg-stone-50 dark:bg-stone-800/40">
+      <div className="flex h-full w-full items-center justify-center bg-[var(--theme-bg-sidebar)]">
         <Icon size={17} strokeWidth={2} className={tint} />
       </div>
     );
   }
 
   return (
-    <div className="relative flex h-full w-full flex-col overflow-hidden bg-stone-50 dark:bg-stone-800/30">
+    <div className="relative flex h-full w-full flex-col overflow-hidden bg-[var(--theme-bg-sidebar)]">
       {/* Centered icon */}
       <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
         <Icon

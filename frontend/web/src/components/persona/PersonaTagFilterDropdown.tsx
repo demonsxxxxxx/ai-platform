@@ -29,7 +29,7 @@ export function PersonaTagFilterDropdown({
   return createPortal(
     <div className="fixed inset-0 z-[999]" onMouseDown={onClose}>
       <div
-        className="skill-filter-dropdown absolute w-72 rounded-2xl border bg-[var(--skill-surface)] p-3 shadow-lg"
+        className="absolute w-72 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 shadow-[0_8px_24px_rgba(18,38,63,0.10)] dark:shadow-black/30"
         style={{
           top: tagBtnRef.current.getBoundingClientRect().bottom + 8,
           right:

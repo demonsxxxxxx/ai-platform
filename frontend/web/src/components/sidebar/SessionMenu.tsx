@@ -273,7 +273,7 @@ export function SessionMenu({
     return (
       <>
         <div
-          className="fixed inset-0 z-40 bg-black/50 sm:hidden"
+          className="fixed inset-0 z-40 bg-[var(--theme-overlay-strong)] sm:hidden"
           onClick={onClose}
         />
         <div
@@ -281,7 +281,7 @@ export function SessionMenu({
             menuRef.current = el;
             swipeRef.current = el;
           }}
-          className="fixed bottom-0 left-0 right-0 z-50 sm:hidden rounded-t-2xl shadow-xl max-h-[70vh] overflow-y-auto animate-in fade-in slide-in-from-bottom-4 duration-200"
+          className="fixed bottom-0 left-0 right-0 z-50 sm:hidden rounded-t-lg shadow-[0_8px_24px_rgba(18,38,63,0.12)] max-h-[70vh] overflow-y-auto animate-in fade-in slide-in-from-bottom-4 duration-200"
           style={{ backgroundColor: "var(--theme-bg-card)" }}
         >
           <div className="flex justify-center py-2">
@@ -340,7 +340,7 @@ export function SessionMenu({
         backgroundColor: "var(--theme-bg-card)",
         borderColor: "var(--theme-border)",
       }}
-      className="w-56 rounded-xl border shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-150 origin-top-right"
+      className="w-56 rounded-lg border shadow-[0_8px_24px_rgba(18,38,63,0.12)] overflow-hidden animate-in fade-in zoom-in-95 duration-150 origin-top-right"
     >
       {subPanel ? projectSubPanel : mainMenu}
     </div>

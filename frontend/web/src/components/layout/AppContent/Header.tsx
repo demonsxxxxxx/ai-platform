@@ -145,14 +145,14 @@ export function Header({
             <>
               <button
                 onClick={() => setMobileSidebarOpen(true)}
-                className={`flex h-8 w-8 items-center justify-center rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 sm:hidden transition-colors`}
+                className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] sm:hidden transition-colors"
                 title={t("sidebar.expandSidebar")}
               >
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
                   fill="none"
                   viewBox="0 0 24 24"
-                  className="w-5 h-5 text-stone-600 dark:text-stone-300"
+                  className="w-5 h-5"
                 >
                   <path
                     fillRule="evenodd"
@@ -182,16 +182,16 @@ export function Header({
                   );
                   if (!project) return null;
                   return (
-                    <div className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-stone-100 dark:bg-stone-700/50 border border-stone-200 dark:border-stone-600/40">
+                    <div className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-[var(--theme-bg-card)] border border-[var(--theme-border)]">
                       <svg
                         xmlns="http://www.w3.org/2000/svg"
                         viewBox="0 0 24 24"
                         fill="currentColor"
-                        className="size-3 text-stone-400 dark:text-stone-500"
+                        className="size-3 text-[var(--theme-text-tertiary)]"
                       >
                         <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V5h14v14z" />
                       </svg>
-                      <span className="text-xs text-stone-500 dark:text-stone-400 truncate max-w-[120px]">
+                      <span className="text-xs text-[var(--theme-text-secondary)] truncate max-w-[120px]">
                         {project.name}
                       </span>
                     </div>
@@ -202,7 +202,7 @@ export function Header({
             <div className="flex items-center gap-1.5">
               <button
                 onClick={() => navigate(-1)}
-                className="flex h-8 w-8 items-center justify-center rounded-lg text-stone-600 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-800 transition-colors"
+                className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] transition-colors"
                 title={t("common.back")}
               >
                 <ChevronLeft size={20} />
@@ -226,7 +226,7 @@ export function Header({
             <button
               ref={mobileMenuBtnRef}
               onClick={() => setMobileMenuOpen((v) => !v)}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-stone-600 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-800 transition-colors"
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] transition-colors"
               title={t("common.menu")}
             >
               <MoreHorizontal size={20} />

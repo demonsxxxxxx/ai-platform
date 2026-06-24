@@ -39,7 +39,7 @@ export function PersonaScopeDropdown({
   return createPortal(
     <div className="fixed inset-0 z-[999]" onMouseDown={onClose}>
       <div
-        className="absolute w-44 rounded-xl border bg-[var(--theme-bg-card,#1c1917)] p-1 shadow-lg"
+        className="absolute w-44 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-1 shadow-[0_8px_24px_rgba(18,38,63,0.10)] dark:shadow-black/30"
         style={{
           top: scopeBtnRef.current.getBoundingClientRect().bottom + 8,
           left: scopeBtnRef.current.getBoundingClientRect().right - 176,
@@ -61,7 +61,7 @@ export function PersonaScopeDropdown({
                 background:
                   scopeFilter === key
                     ? "var(--skill-surface-alt)"
-                    : "var(--theme-bg-card, #1c1917)",
+                    : "var(--theme-bg-card)",
                 color:
                   scopeFilter === key
                     ? "var(--theme-text)"

@@ -350,12 +350,17 @@ test("authenticated shell chrome avoids legacy playful branding accents", () => 
       "utf8",
     ),
     readFileSync(join(root, "src/components/panels/SearchDialog.tsx"), "utf8"),
+    readFileSync(
+      join(root, "src/components/layout/AppContent/useWebSocketNotifications.tsx"),
+      "utf8",
+    ),
   ].join("\n");
 
   assert.doesNotMatch(chrome, /font-serif|from-amber-400|to-orange-500/);
   assert.doesNotMatch(chrome, /icons\/icon\.svg/);
   assert.doesNotMatch(chrome, /shadow-xl|shadow-2xl/);
   assert.doesNotMatch(chrome, /bg-white(?:\/\d+)?/);
+  assert.doesNotMatch(chrome, /bg-stone-50(?!0)|bg-stone-100/);
   assert.doesNotMatch(chrome, /rounded-xl|rounded-2xl|rounded-3xl/);
   assert.doesNotMatch(chrome, /bg-black\/30/);
   assert.match(chrome, /data-workbench-header/);
@@ -390,8 +395,52 @@ test("persona and files routes are governed workbench pages instead of legacy sh
     join(root, "src/components/fileLibrary/RevealedFilesWorkbenchPanel.tsx"),
     "utf8",
   );
+  const fileToolbar = readFileSync(
+    join(root, "src/components/fileLibrary/components/Toolbar.tsx"),
+    "utf8",
+  );
+  const fileDropdown = readFileSync(
+    join(root, "src/components/fileLibrary/components/DropdownShell.tsx"),
+    "utf8",
+  );
+  const fileContextMenu = readFileSync(
+    join(root, "src/components/fileLibrary/components/FileContextMenu.tsx"),
+    "utf8",
+  );
   const personaSelector = readFileSync(
     join(root, "src/components/persona/PersonaPresetSelector.tsx"),
+    "utf8",
+  );
+  const personaPreviewSidebar = readFileSync(
+    join(root, "src/components/persona/PersonaPreviewSidebar.tsx"),
+    "utf8",
+  );
+  const sessionPreviewDialog = readFileSync(
+    join(root, "src/components/sidebar/SessionPreviewDialog.tsx"),
+    "utf8",
+  );
+  const sessionMenu = readFileSync(
+    join(root, "src/components/sidebar/SessionMenu.tsx"),
+    "utf8",
+  );
+  const fileCardPreview = readFileSync(
+    join(root, "src/components/fileLibrary/components/FileCardPreview.tsx"),
+    "utf8",
+  );
+  const fileGridCard = readFileSync(
+    join(root, "src/components/fileLibrary/components/GridCard.tsx"),
+    "utf8",
+  );
+  const fileSessionGroup = readFileSync(
+    join(root, "src/components/fileLibrary/components/SessionGroup.tsx"),
+    "utf8",
+  );
+  const personaTagDropdown = readFileSync(
+    join(root, "src/components/persona/PersonaTagFilterDropdown.tsx"),
+    "utf8",
+  );
+  const personaScopeDropdown = readFileSync(
+    join(root, "src/components/persona/PersonaScopeDropdown.tsx"),
     "utf8",
   );
   const zhLocale = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
@@ -434,8 +483,43 @@ test("persona and files routes are governed workbench pages instead of legacy sh
   assert.match(personaSelector, /sm:rounded-lg/);
   assert.match(personaSelector, /shadow-\[0_8px_24px_rgba\(18,38,63,0\.12\)\]/);
   assert.doesNotMatch(personaSelector, /shadow-xl|shadow-2xl/);
-  assert.doesNotMatch(personaSelector, /rounded-2xl|rounded-3xl/);
+  assert.doesNotMatch(personaSelector, /rounded-xl|rounded-2xl|rounded-3xl/);
   assert.doesNotMatch(personaSelector, /bg-black\/30/);
+  for (const [name, source] of [
+    ["FileToolbar", fileToolbar],
+    ["FileDropdown", fileDropdown],
+    ["FileContextMenu", fileContextMenu],
+    ["PersonaTagFilterDropdown", personaTagDropdown],
+    ["PersonaScopeDropdown", personaScopeDropdown],
+    ["PersonaPreviewSidebar", personaPreviewSidebar],
+    ["SessionPreviewDialog", sessionPreviewDialog],
+    ["SessionMenu", sessionMenu],
+    ["FileCardPreview", fileCardPreview],
+    ["FileGridCard", fileGridCard],
+    ["FileSessionGroup", fileSessionGroup],
+  ] as const) {
+    assert.doesNotMatch(source, /bg-white(?:\/\d+)?/, name);
+    assert.doesNotMatch(source, /bg-stone-50(?!0)(?:\/\d+)?/, name);
+    assert.doesNotMatch(source, /bg-black\/50|bg-black\/30/, name);
+    assert.doesNotMatch(source, /rounded-xl|rounded-2xl|rounded-3xl/, name);
+    assert.doesNotMatch(source, /shadow-xl|shadow-2xl|\bshadow-lg\b/, name);
+  }
+  for (const [name, source] of [
+    ["FileToolbar", fileToolbar],
+    ["FileDropdown", fileDropdown],
+    ["FileContextMenu", fileContextMenu],
+    ["PersonaTagFilterDropdown", personaTagDropdown],
+    ["PersonaScopeDropdown", personaScopeDropdown],
+    ["PersonaPreviewSidebar", personaPreviewSidebar],
+    ["SessionPreviewDialog", sessionPreviewDialog],
+    ["SessionMenu", sessionMenu],
+    ["FileGridCard", fileGridCard],
+    ["FileSessionGroup", fileSessionGroup],
+  ] as const) {
+    assert.match(source, /var\(--theme-bg-card\)/, name);
+    assert.match(source, /var\(--theme-border\)/, name);
+  }
+  assert.match(fileCardPreview, /var\(--theme-bg-sidebar\)/);
   assert.doesNotMatch(zhLocale, /角色广场/);
 });
 
