@@ -161,12 +161,12 @@ export function ProfileInfoTab() {
             <img
               src={user.avatar_url}
               alt="Avatar"
-              className="size-20 rounded-full object-cover border-4 border-white dark:border-stone-700 shadow-lg ring-2 ring-stone-100 dark:ring-stone-600"
+              className="size-20 rounded-full object-cover border-4 border-[var(--theme-bg-card)] dark:border-stone-800 shadow-sm ring-1 ring-slate-200 dark:ring-stone-700"
               onError={() => setImgError(true)}
             />
           ) : (
-            <div className="size-20 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center border-4 border-white dark:border-stone-700 shadow-lg ring-2 ring-stone-100 dark:ring-stone-600">
-              <span className="text-3xl font-bold text-white font-serif">
+            <div className="size-20 rounded-full bg-slate-950 dark:bg-stone-100 flex items-center justify-center border-4 border-[var(--theme-bg-card)] dark:border-stone-800 shadow-sm ring-1 ring-slate-200 dark:ring-stone-700">
+              <span className="text-3xl font-bold text-white dark:text-stone-950">
                 {user?.username?.charAt(0).toUpperCase() || "U"}
               </span>
             </div>
@@ -215,7 +215,7 @@ export function ProfileInfoTab() {
                 type="text"
                 value={newUsername}
                 onChange={(e) => setNewUsername(e.target.value)}
-                className="w-full rounded-lg border border-stone-300 dark:border-stone-600 bg-stone-50 dark:bg-stone-900 px-3 py-2.5 text-sm text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                className="w-full rounded-lg border border-slate-300 dark:border-stone-700 bg-[var(--theme-bg-card)] dark:bg-stone-950 px-3 py-2.5 text-sm text-slate-950 dark:text-stone-100 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-700/15 dark:focus:border-teal-300 dark:focus:ring-teal-300/15"
                 minLength={3}
                 maxLength={50}
                 placeholder={t("profile.usernamePlaceholder")}
@@ -232,7 +232,7 @@ export function ProfileInfoTab() {
                   disabled={
                     isUpdatingUsername || newUsername === user?.username
                   }
-                  className="flex-1 sm:flex-none px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+                  className="flex-1 sm:flex-none px-4 py-2 bg-slate-950 hover:bg-slate-800 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 dark:bg-stone-100 dark:text-stone-950 dark:hover:bg-stone-200"
                 >
                   {isUpdatingUsername ? (
                     <Loader2 size={14} className="animate-spin" />
@@ -267,7 +267,7 @@ export function ProfileInfoTab() {
                     setNewUsername(user?.username || "");
                     setIsEditingUsername(true);
                   }}
-                  className="shrink-0 text-amber-500 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/30 rounded-md p-1 transition-colors"
+                  className="shrink-0 text-teal-700 dark:text-teal-300 hover:bg-teal-50 dark:hover:bg-teal-950/40 rounded-md p-1 transition-colors"
                   title={t("common.edit")}
                 >
                   <Pencil size={13} />
@@ -318,7 +318,7 @@ export function ProfileInfoTab() {
                   <Mail size={14} />
                   {t("profile.email", "Email")}
                 </span>
-                <span className="text-sm font-medium text-stone-900 dark:text-stone-100 truncate group-hover:text-amber-600 dark:group-hover:text-amber-400 transition-colors">
+                <span className="text-sm font-medium text-stone-900 dark:text-stone-100 truncate group-hover:text-teal-700 dark:group-hover:text-teal-300 transition-colors">
                   {adminEmail}
                 </span>
               </a>
@@ -334,7 +334,7 @@ export function ProfileInfoTab() {
                   <ExternalLink size={14} />
                   {t("about.contactSupport", "Support")}
                 </span>
-                <span className="text-sm font-medium text-stone-400 dark:text-stone-500 group-hover:text-amber-600 dark:group-hover:text-amber-400 transition-colors">
+                <span className="text-sm font-medium text-stone-400 dark:text-stone-500 group-hover:text-teal-700 dark:group-hover:text-teal-300 transition-colors">
                   →
                 </span>
               </a>

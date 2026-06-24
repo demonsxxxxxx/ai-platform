@@ -17,16 +17,16 @@ const regulationLink = (
     href={TERMS_LINK}
     target="_blank"
     rel="noopener noreferrer"
-    className="relative inline-flex items-center gap-0.5 text-amber-600 dark:text-amber-400 font-medium hover:text-amber-700 dark:hover:text-amber-300 underline decoration-amber-400/40 dark:decoration-amber-500/30 underline-offset-2 transition-colors after:content-['↗'] after:text-[9px] after:ml-0.5 after:opacity-60"
+    className="relative inline-flex items-center gap-0.5 text-teal-700 dark:text-teal-300 font-medium hover:text-teal-800 dark:hover:text-teal-200 underline decoration-teal-700/30 dark:decoration-teal-300/30 underline-offset-2 transition-colors after:content-['↗'] after:text-[9px] after:ml-0.5 after:opacity-60"
   />
 );
 
 const items = [
   {
     icon: BookOpen,
-    color: "text-amber-500 dark:text-amber-400",
-    dot: "bg-amber-400 dark:bg-amber-500/70",
-    bg: "bg-amber-50/60 dark:bg-amber-500/[0.04]",
+    color: "text-teal-700 dark:text-teal-300",
+    dot: "bg-teal-600 dark:bg-teal-400/70",
+    bg: "bg-teal-50/60 dark:bg-teal-500/[0.04]",
     key: "termsItem1",
     useTrans: true,
   },
@@ -48,18 +48,18 @@ const items = [
   },
   {
     icon: ShieldAlert,
-    color: "text-orange-500 dark:text-orange-400",
-    dot: "bg-orange-400 dark:bg-orange-500/70",
-    bg: "bg-orange-50/60 dark:bg-orange-500/[0.04]",
+    color: "text-slate-600 dark:text-stone-300",
+    dot: "bg-slate-400 dark:bg-stone-500/70",
+    bg: "bg-slate-50/80 dark:bg-stone-800/40",
     key: "termsItem4",
     useTrans: false,
     bold: true,
   },
   {
     icon: AlertTriangle,
-    color: "text-orange-500 dark:text-orange-400",
-    dot: "bg-orange-400 dark:bg-orange-500/70",
-    bg: "bg-orange-50/60 dark:bg-orange-500/[0.04]",
+    color: "text-slate-600 dark:text-stone-300",
+    dot: "bg-slate-400 dark:bg-stone-500/70",
+    bg: "bg-slate-50/80 dark:bg-stone-800/40",
     key: "termsItem5",
     useTrans: false,
     bold: true,
@@ -82,8 +82,8 @@ export function ProfileTermsTab() {
     <div className="space-y-5">
       {/* Header */}
       <div className="flex items-center gap-3">
-        <div className="flex items-center justify-center w-10 h-10 rounded-2xl bg-gradient-to-br from-amber-400 to-amber-600 shadow-sm shadow-amber-500/25">
-          <Scale size={17} className="text-white" />
+        <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-[var(--theme-bg-sidebar)] dark:bg-stone-950 border border-slate-200/70 dark:border-stone-800">
+          <Scale size={17} className="text-teal-700 dark:text-teal-300" />
         </div>
         <div>
           <h3 className="text-sm font-bold text-stone-800 dark:text-stone-100 tracking-tight">
@@ -96,7 +96,7 @@ export function ProfileTermsTab() {
       </div>
 
       {/* Divider */}
-      <div className="h-px bg-gradient-to-r from-stone-200/80 via-stone-200/40 to-transparent dark:from-stone-700/60 dark:via-stone-700/30 dark:to-transparent" />
+      <div className="h-px bg-slate-200/80 dark:bg-stone-800" />
 
       {/* Items */}
       <div className="space-y-3">
@@ -116,7 +116,7 @@ export function ProfileTermsTab() {
           return (
             <div
               key={i}
-              className={`group relative flex items-start gap-3 pl-4 pr-3 py-3 rounded-xl ${item.bg} transition-all duration-200 hover:shadow-[inset_0_0_0_1px_rgba(0,0,0,0.04)] dark:hover:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]`}
+              className={`group relative flex items-start gap-3 pl-4 pr-3 py-3 rounded-lg border border-transparent ${item.bg} transition-colors duration-200 hover:border-slate-200/70 dark:hover:border-stone-800`}
             >
               {/* Left accent dot */}
               <span
@@ -143,11 +143,11 @@ export function ProfileTermsTab() {
 
       {/* Footer */}
       <div className="flex items-center justify-center gap-1.5 pt-1">
-        <span className="h-px flex-1 max-w-[40px] bg-gradient-to-r from-transparent to-stone-200 dark:to-stone-700" />
+        <span className="h-px flex-1 max-w-[40px] bg-slate-200 dark:bg-stone-800" />
         <p className="text-[10px] text-stone-400 dark:text-stone-500 whitespace-nowrap">
           {t("auth.termsHint")}
         </p>
-        <span className="h-px flex-1 max-w-[40px] bg-gradient-to-l from-transparent to-stone-200 dark:to-stone-700" />
+        <span className="h-px flex-1 max-w-[40px] bg-slate-200 dark:bg-stone-800" />
       </div>
     </div>
   );

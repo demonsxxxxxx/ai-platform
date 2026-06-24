@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { MessageSquareText } from "lucide-react";
 import { sessionApi } from "../../services/api/session";
 import { getSessionTitle } from "../panels/sessionHelpers";
-import { APP_NAME } from "../../constants";
 import type { BackendSession } from "../../services/api/session";
 import { formatDateTime } from "../../utils/datetime";
 
@@ -101,7 +101,7 @@ export function RecentChatsDialog({
   return createPortal(
     <div
       id="recent-chats-popover"
-      className="fixed z-[301] w-[280px] rounded-xl shadow-xl border border-stone-200/60 dark:border-stone-800/60 overflow-hidden animate-scale-in bg-[var(--theme-bg-sidebar)]"
+      className="fixed z-[301] w-[280px] overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] animate-scale-in"
       style={{
         top: position.top,
         left: position.left,
@@ -109,19 +109,17 @@ export function RecentChatsDialog({
       }}
     >
       {/* Header */}
-      <div className="flex items-center gap-2 px-4 pt-3 pb-2 border-b border-stone-200/60 dark:border-stone-800/60 shrink-0">
-        <img
-          src="/icons/icon.svg"
-          alt={APP_NAME}
-          className="size-5 rounded-full object-cover"
-        />
-        <span className="text-sm font-bold text-stone-800 dark:text-stone-100 font-serif leading-none">
+      <div className="flex items-center gap-2 border-b border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-4 pt-3 pb-2 shrink-0">
+        <span className="flex size-6 items-center justify-center rounded-lg bg-[var(--theme-bg-sidebar)] text-[var(--theme-primary)] ring-1 ring-[var(--theme-border)]">
+          <MessageSquareText size={14} />
+        </span>
+        <span className="text-sm font-semibold text-[var(--theme-text)] leading-none">
           {t("sidebar.recentChats")}
         </span>
       </div>
 
       {/* Session list */}
-      <div className="overflow-y-auto max-h-[420px] py-1">
+      <div className="max-h-[420px] overflow-y-auto bg-[var(--theme-bg-sidebar)] py-1">
         {isLoading ? (
           <div className="px-4 py-2 space-y-1">
             {Array.from({ length: 6 }).map((_, i) => (
@@ -140,7 +138,7 @@ export function RecentChatsDialog({
             ))}
           </div>
         ) : sessions.length === 0 ? (
-          <div className="text-center py-10 text-xs text-stone-400 dark:text-stone-500">
+          <div className="py-10 text-center text-xs text-[var(--theme-text-tertiary)]">
             {t("sidebar.noSessions") || "No recent chats"}
           </div>
         ) : (
@@ -153,21 +151,21 @@ export function RecentChatsDialog({
               }}
               className={`w-full flex items-center gap-3 px-4 py-2.5 transition-colors text-left group ${
                 session.id === currentSessionId
-                  ? "bg-stone-100 dark:bg-stone-800/60"
-                  : "hover:bg-stone-100 dark:hover:bg-stone-800/40"
+                  ? "bg-[var(--theme-primary-light)]"
+                  : "hover:bg-[var(--theme-hover)]"
               }`}
             >
               <div className="min-w-0 flex-1">
                 <div
                   className={`truncate text-[13px] ${
                     session.id === currentSessionId
-                      ? "text-stone-800 dark:text-stone-100 font-medium"
-                      : "text-stone-600 dark:text-stone-300 group-hover:text-stone-700 dark:group-hover:text-stone-200"
+                      ? "font-medium text-[var(--theme-text)]"
+                      : "text-[var(--theme-text-secondary)] group-hover:text-[var(--theme-text)]"
                   }`}
                 >
                   {getSessionTitle(session, t)}
                 </div>
-                <div className="text-[11px] text-stone-400 dark:text-stone-500 mt-0.5">
+                <div className="mt-0.5 text-[11px] text-[var(--theme-text-tertiary)]">
                   {formatDateTime(session.updated_at)}
                 </div>
               </div>

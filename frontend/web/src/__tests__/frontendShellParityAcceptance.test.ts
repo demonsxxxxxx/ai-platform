@@ -416,6 +416,69 @@ test("authenticated marketplace pages share the workbench surface tokens", () =>
   assert.doesNotMatch(marketplace, /border-slate-200 bg-white/);
 });
 
+test("profile modal shares the authenticated workbench visual language", () => {
+  const profileFiles = [
+    "src/components/profile/ProfileModal.tsx",
+    "src/components/profile/tabs/ProfileInfoTab.tsx",
+    "src/components/profile/tabs/ProfileNotificationTab.tsx",
+    "src/components/profile/tabs/ProfilePreferencesTab.tsx",
+    "src/components/profile/tabs/ProfileToolsTab.tsx",
+    "src/components/profile/tabs/ProfileModelsTab.tsx",
+    "src/components/profile/tabs/ProfileTermsTab.tsx",
+  ];
+
+  const sources = profileFiles.map((file) => [
+    file,
+    readFileSync(join(root, file), "utf8"),
+  ] as const);
+  const profileModal =
+    sources.find(([file]) => file.endsWith("ProfileModal.tsx"))?.[1] ?? "";
+
+  assert.match(profileModal, /data-profile-workbench-modal/);
+  assert.match(profileModal, /bg-\[var\(--theme-bg-card\)\]/);
+  assert.match(profileModal, /bg-\[var\(--theme-bg-sidebar\)\]/);
+
+  for (const [file, source] of sources) {
+    assert.doesNotMatch(source, /font-serif/, file);
+    assert.doesNotMatch(source, /from-amber|to-amber|from-orange|to-orange/, file);
+    assert.doesNotMatch(source, /\b(?:bg|text|border|ring|decoration)-amber-/, file);
+    assert.doesNotMatch(source, /\b(?:bg|text|border|ring|decoration)-orange-/, file);
+    assert.doesNotMatch(source, /rounded-2xl|rounded-3xl/, file);
+    assert.doesNotMatch(source, /shadow-xl|shadow-2xl/, file);
+  }
+});
+
+test("authenticated overlay surfaces share the workbench visual language", () => {
+  const overlayFiles = [
+    "src/components/notification/NotificationDialog.tsx",
+    "src/components/share/ShareDialog.tsx",
+    "src/components/sidebar/RecentChatsDialog.tsx",
+    "src/components/sidebar/ProjectMenu.tsx",
+  ];
+
+  const sources = overlayFiles.map((file) => [
+    file,
+    readFileSync(join(root, file), "utf8"),
+  ] as const);
+
+  for (const [file, source] of sources) {
+    assert.match(source, /bg-\[var\(--theme-bg-card\)\]|var\(--theme-bg-card\)/, file);
+    assert.match(source, /bg-\[var\(--theme-bg-sidebar\)\]|var\(--theme-bg-sidebar\)/, file);
+    assert.match(source, /rounded-t-lg|rounded-lg/, file);
+    assert.match(source, /shadow-\[0_8px_24px_rgba\(18,38,63,0\.12\)\]/, file);
+    assert.doesNotMatch(source, /font-serif/, file);
+    assert.doesNotMatch(source, /icons\/icon\.svg/, file);
+    assert.doesNotMatch(source, /bg-black\/50|bg-black\/30/, file);
+    assert.doesNotMatch(source, /bg-white(?:\/\d+)?/, file);
+    assert.doesNotMatch(source, /dark:bg-stone-800|dark:bg-stone-900/, file);
+    assert.doesNotMatch(source, /rounded-xl|rounded-2xl|rounded-3xl/, file);
+    assert.doesNotMatch(source, /shadow-xl|shadow-2xl/, file);
+    assert.doesNotMatch(source, /from-amber|to-amber|from-orange|to-orange/, file);
+    assert.doesNotMatch(source, /\b(?:bg|text|border|ring|decoration)-amber-/, file);
+    assert.doesNotMatch(source, /\b(?:bg|text|border|ring|decoration)-orange-/, file);
+  }
+});
+
 test("model catalog route is a governed public-projection workbench page", () => {
   const tabs = readFileSync(
     join(root, "src/components/layout/AppContent/TabContent.tsx"),
