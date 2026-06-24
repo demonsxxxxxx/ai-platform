@@ -76,6 +76,20 @@ def _runtime_probe_section_error(section_name: str, section: dict[str, Any], *, 
         ):
             if section.get(field) is not True:
                 return f"runtime probe results missing: egress_policy.{field}"
+        required_text_fields = (
+            "denied_target",
+            "denied_probe_error_code",
+            "allowed_callback_host",
+            "callback_probe_status",
+        )
+        for field in required_text_fields:
+            value = section.get(field)
+            if not isinstance(value, str) or not value:
+                return f"runtime probe results missing: egress_policy.{field}"
+        if section.get("denied_probe_error_code") != "egress_denied":
+            return "runtime probe results missing: egress_policy.denied_probe_error_code"
+        if section.get("callback_probe_status") != "delivered":
+            return "runtime probe results missing: egress_policy.callback_probe_status"
         if section.get("policy_source") != "platform_policy":
             return "runtime probe results missing: egress_policy.policy_source"
         return None
@@ -568,6 +582,10 @@ def _platform_hardening_evidence(
             )
             is True,
             "denied_egress_redacted": egress_probe.get("denied_egress_redacted") is True,
+            "denied_target": str(egress_probe.get("denied_target") or ""),
+            "denied_probe_error_code": str(egress_probe.get("denied_probe_error_code") or ""),
+            "allowed_callback_host": str(egress_probe.get("allowed_callback_host") or ""),
+            "callback_probe_status": str(egress_probe.get("callback_probe_status") or ""),
             "policy_source": (
                 "platform_policy" if egress_probe.get("policy_source") == "platform_policy" else "not_runtime_verified"
             ),

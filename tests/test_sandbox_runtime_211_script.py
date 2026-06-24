@@ -456,6 +456,10 @@ def test_platform_runtime_hardening_requires_isolation_cleanup_and_fallback_evid
             "platform_allowlist_enforced": True,
             "callback_exception_scoped_to_run_token": True,
             "denied_egress_redacted": True,
+            "denied_target": "https://egress-denied.invalid/",
+            "denied_probe_error_code": "egress_denied",
+            "allowed_callback_host": "172.17.0.1",
+            "callback_probe_status": "delivered",
             "policy_source": "platform_policy",
         },
         "security_options": {
@@ -602,6 +606,50 @@ def test_no_secret_leakage_rejects_standalone_json_token(tmp_path):
 
     assert result.passed is False
     assert "abc" not in result.message
+
+
+def test_no_secret_leakage_rejects_secret_and_authorization_values(tmp_path):
+    verifier = load_verifier()
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text('{"secret":"abc","authorization":"Basic abc"}', encoding="utf-8")
+
+    result = verifier.check_no_secret_leakage(evidence)
+
+    assert result.passed is False
+    assert "abc" not in result.message
+
+
+def test_no_secret_leakage_allows_safe_absence_field_names(tmp_path):
+    verifier = load_verifier()
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text(
+        json.dumps(
+            {
+                "run_id": "run-a",
+                "resource_limits": {
+                    "bounded_error_projection": {
+                        "source": "admin_runtime_projection",
+                        "run_id": "run-a",
+                        "status": "failed",
+                        "error_code": "executor_health_timeout",
+                        "host_paths_redacted": True,
+                        "raw_docker_payload_absent": True,
+                        "callback_token_absent": True,
+                    },
+                },
+                "egress_policy": {
+                    "denied_egress_redacted": True,
+                    "authorization_header_absent": True,
+                    "secret_values_absent": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = verifier.check_no_secret_leakage(evidence)
+
+    assert result.passed is True
 
 
 def test_docker_socket_probe_sanitizes_errors():
@@ -876,6 +924,10 @@ def test_run_platform_runtime_probe_records_timings_and_hardening(tmp_path):
         "platform_allowlist_enforced": False,
         "callback_exception_scoped_to_run_token": True,
         "denied_egress_redacted": False,
+        "denied_target": "",
+        "denied_probe_error_code": "",
+        "allowed_callback_host": "",
+        "callback_probe_status": "",
         "policy_source": "not_runtime_verified",
     }
     assert recorder.hardening["security_options"] == {
@@ -932,6 +984,10 @@ def test_platform_hardening_evidence_maps_runtime_docker_inspection_and_probe_re
             "platform_allowlist_enforced": True,
             "callback_exception_scoped_to_run_token": True,
             "denied_egress_redacted": True,
+            "denied_target": "https://egress-denied.invalid/",
+            "denied_probe_error_code": "egress_denied",
+            "allowed_callback_host": "172.17.0.1",
+            "callback_probe_status": "delivered",
             "policy_source": "platform_policy",
         },
     }
@@ -973,6 +1029,10 @@ def test_platform_hardening_evidence_maps_runtime_docker_inspection_and_probe_re
         "platform_allowlist_enforced": True,
         "callback_exception_scoped_to_run_token": True,
         "denied_egress_redacted": True,
+        "denied_target": "https://egress-denied.invalid/",
+        "denied_probe_error_code": "egress_denied",
+        "allowed_callback_host": "172.17.0.1",
+        "callback_probe_status": "delivered",
         "policy_source": "platform_policy",
     }
     assert hardening["security_options"] == {
@@ -1297,6 +1357,10 @@ def test_platform_runtime_mode_accepts_bound_runtime_probe_results_file(tmp_path
                     "platform_allowlist_enforced": True,
                     "callback_exception_scoped_to_run_token": True,
                     "denied_egress_redacted": True,
+                    "denied_target": "https://egress-denied.invalid/",
+                    "denied_probe_error_code": "egress_denied",
+                    "allowed_callback_host": "172.17.0.1",
+                    "callback_probe_status": "delivered",
                     "policy_source": "platform_policy",
                 },
                 "security_options": {
@@ -1381,6 +1445,10 @@ def test_platform_runtime_mode_accepts_bound_runtime_probe_results_file(tmp_path
             "platform_allowlist_enforced": True,
             "callback_exception_scoped_to_run_token": True,
             "denied_egress_redacted": True,
+            "denied_target": "https://egress-denied.invalid/",
+            "denied_probe_error_code": "egress_denied",
+            "allowed_callback_host": "172.17.0.1",
+            "callback_probe_status": "delivered",
             "policy_source": "platform_policy",
         },
         "security_options": {
@@ -1486,6 +1554,10 @@ def test_runtime_probe_results_file_rejects_under_specified_hardening_sections(t
             "platform_allowlist_enforced": True,
             "callback_exception_scoped_to_run_token": True,
             "denied_egress_redacted": True,
+            "denied_target": "https://egress-denied.invalid/",
+            "denied_probe_error_code": "egress_denied",
+            "allowed_callback_host": "172.17.0.1",
+            "callback_probe_status": "delivered",
             "policy_source": "platform_policy",
         },
         "security_options": {
@@ -1513,6 +1585,152 @@ def test_runtime_probe_results_file_rejects_under_specified_hardening_sections(t
             assert expected_message in str(exc)
         else:
             raise AssertionError(f"under-specified {section_name} should fail closed")
+
+    for missing_field in (
+        "denied_target",
+        "denied_probe_error_code",
+        "allowed_callback_host",
+        "callback_probe_status",
+    ):
+        payload = dict(base_payload)
+        payload["egress_policy"] = dict(base_payload["egress_policy"])
+        payload["egress_policy"].pop(missing_field)
+        runtime_probe_results_file.write_text(json.dumps(payload), encoding="utf-8")
+
+        try:
+            generator.load_runtime_probe_results(runtime_probe_results_file, run_id="run-a")
+        except RuntimeError as exc:
+            assert f"egress_policy.{missing_field}" in str(exc)
+        else:
+            raise AssertionError(f"egress policy missing {missing_field} should fail closed")
+
+    invalid_values = (
+        ("denied_probe_error_code", "timeout"),
+        ("callback_probe_status", "accepted"),
+    )
+    for field, value in invalid_values:
+        payload = dict(base_payload)
+        payload["egress_policy"] = dict(base_payload["egress_policy"])
+        payload["egress_policy"][field] = value
+        runtime_probe_results_file.write_text(json.dumps(payload), encoding="utf-8")
+
+        try:
+            generator.load_runtime_probe_results(runtime_probe_results_file, run_id="run-a")
+        except RuntimeError as exc:
+            assert f"egress_policy.{field}" in str(exc)
+        else:
+            raise AssertionError(f"egress policy with invalid {field} should fail closed")
+
+
+def test_platform_hardening_rejects_wrong_egress_probe_error_code(tmp_path):
+    verifier = load_verifier()
+    evidence = tmp_path / "evidence.json"
+    hardening = {
+        "lease_isolation": {
+            "evidence_class": "live_platform_probe",
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "recorded_lease_id": "lease-a",
+            "released_lease_id": "lease-a",
+            "release_reason": "dispatch_completed",
+            "host_paths_redacted": True,
+        },
+        "workspace_isolation": {
+            "evidence_class": "live_platform_probe",
+            "workspace_container_path": "/workspace",
+            "inputs_container_path": "/workspace/inputs",
+            "host_paths_redacted": True,
+            "marker_path_is_container_path": True,
+        },
+        "cleanup": {
+            "evidence_class": "live_platform_probe",
+            "ephemeral_container_removed": True,
+            "cancel_probe_container_removed": True,
+            "active_lease_released": True,
+        },
+        "resource_timeout": {
+            "evidence_class": "source_regression_guard",
+            "max_seconds_enforced": True,
+            "timeout_error_code": "executor_health_timeout",
+            "failed_container_removed": True,
+            "source_regression_tests": [
+                "tests/test_sandbox_container_provider.py::test_docker_provider_maps_health_false_to_timeout",
+                "tests/test_sandbox_container_provider.py::test_docker_provider_removes_container_after_health_timeout",
+            ],
+        },
+        "failure_fallback": {
+            "evidence_class": "source_regression_guard",
+            "dispatch_failure_stops_container": True,
+            "lease_record_failure_stops_container": True,
+            "db_lease_not_released_when_stop_fails": True,
+            "source_regression_tests": [
+                "tests/test_sandbox_runtime.py::test_runtime_does_not_release_db_lease_when_completion_stop_fails",
+                "tests/test_sandbox_runtime.py::test_runtime_does_not_release_db_lease_when_dispatch_failure_stop_fails",
+                "tests/test_sandbox_runtime.py::test_runtime_stops_live_container_when_lease_recording_fails",
+            ],
+        },
+        "cached_lease_revalidation": {
+            "evidence_class": "source_regression_guard",
+            "cached_lease_revalidates_scope_labels": True,
+            "scope_mismatch_fails_closed": True,
+            "tenant_workspace_user_session_checked": True,
+            "source_regression_tests": [
+                "tests/test_sandbox_container_provider.py::test_docker_provider_cached_lease_revalidates_container_scope_labels"
+            ],
+        },
+        "resource_limits": {
+            "evidence_class": "live_platform_probe",
+            "memory_limit_mb": 512,
+            "cpu_limit_count": 0.5,
+            "pids_limit": 128,
+            "process_timeout_seconds": 60,
+            "limit_source": "platform_request",
+            "docker_inspection_verified": True,
+            "over_limit_cleanup_verified": True,
+            "over_limit_probe_kind": "platform_resource_timeout",
+            "over_limit_timeout_probe_seconds": 0,
+            "bounded_error_projection_verified": True,
+            "bounded_error_projection": {
+                "source": "admin_runtime_projection",
+                "run_id": "run-a",
+                "status": "failed",
+                "error_code": "executor_health_timeout",
+                "host_paths_redacted": True,
+                "raw_docker_payload_absent": True,
+                "callback_token_absent": True,
+            },
+        },
+        "egress_policy": {
+            "evidence_class": "live_platform_probe",
+            "default_deny_outbound": True,
+            "platform_allowlist_enforced": True,
+            "callback_exception_scoped_to_run_token": True,
+            "denied_egress_redacted": True,
+            "denied_target": "https://egress-denied.invalid/",
+            "denied_probe_error_code": "timeout",
+            "allowed_callback_host": "172.17.0.1",
+            "callback_probe_status": "delivered",
+            "policy_source": "platform_policy",
+        },
+        "security_options": {
+            "evidence_class": "live_platform_probe",
+            "privileged": False,
+            "no_new_privileges": True,
+            "capabilities_dropped": True,
+            "docker_socket_mounted": False,
+            "workspace_mount_mode": "rw",
+            "root_filesystem_read_only_or_minimal": True,
+        },
+    }
+    evidence.write_text(json.dumps({"run_id": "run-a", "hardening": hardening}), encoding="utf-8")
+
+    failed = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
+
+    assert failed.passed is False
+    assert "egress_policy.denied_probe_error_code" in failed.message
 
 
 def test_run_platform_runtime_probe_captures_executor_container_inspect(monkeypatch, tmp_path):

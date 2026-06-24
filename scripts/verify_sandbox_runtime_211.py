@@ -34,17 +34,19 @@ SENSITIVE_PATTERNS = [
     re.compile(r"/home/[^\s\"']*", re.IGNORECASE),
     re.compile(r"/tmp/[^\s\"']*", re.IGNORECASE),
     re.compile(r"[A-Za-z]:\\[^\s\"']*"),
-    re.compile(r"callback[_-]?token", re.IGNORECASE),
     re.compile(r'"[^"]*token[^"]*"\s*:\s*"[^"]*"', re.IGNORECASE),
+    re.compile(r'"[^"]*secret[^"]*"\s*:\s*"[^"]*"', re.IGNORECASE),
+    re.compile(r'"[^"]*authorization[^"]*"\s*:\s*"[^"]*"', re.IGNORECASE),
     re.compile(r"\btoken\b\s*[:=]\s*[^,\s\"'}]+", re.IGNORECASE),
+    re.compile(r"\bcallback[_-]?token\b\s*[:=]\s*[^,\s\"'}]+", re.IGNORECASE),
+    re.compile(r"\bsecret\b\s*[:=]\s*[^,\s\"'}]+", re.IGNORECASE),
+    re.compile(r"\bauthorization\b\s*[:=]\s*[^,\s\"'}]+", re.IGNORECASE),
     re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
     re.compile(r"OPENAI_API_KEY", re.IGNORECASE),
     re.compile(r"RAGFLOW_API_KEY", re.IGNORECASE),
     re.compile(r"ANTHROPIC_AUTH_TOKEN", re.IGNORECASE),
     re.compile(r"access[_-]?key", re.IGNORECASE),
     re.compile(r"storage[_-]?key", re.IGNORECASE),
-    re.compile(r"secret", re.IGNORECASE),
-    re.compile(r"authorization", re.IGNORECASE),
 ]
 
 EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime-211.v1"
@@ -126,6 +128,10 @@ REQUIRED_HARDENING_FLAGS = {
         "platform_allowlist_enforced",
         "callback_exception_scoped_to_run_token",
         "denied_egress_redacted",
+        "denied_target",
+        "denied_probe_error_code",
+        "allowed_callback_host",
+        "callback_probe_status",
         "policy_source",
     ],
     "security_options": [
@@ -568,6 +574,19 @@ def _egress_policy_hardening_error(section: dict[str, Any]) -> str | None:
     ):
         if section.get(field) is not True:
             return f"hardening evidence missing: egress_policy.{field}"
+    for field in (
+        "denied_target",
+        "denied_probe_error_code",
+        "allowed_callback_host",
+        "callback_probe_status",
+    ):
+        value = section.get(field)
+        if not isinstance(value, str) or not value:
+            return f"hardening evidence missing: egress_policy.{field}"
+    if section.get("denied_probe_error_code") != "egress_denied":
+        return "hardening evidence missing: egress_policy.denied_probe_error_code"
+    if section.get("callback_probe_status") != "delivered":
+        return "hardening evidence missing: egress_policy.callback_probe_status"
     if section.get("policy_source") != "platform_policy":
         return "hardening evidence missing: egress_policy.policy_source"
     return None
