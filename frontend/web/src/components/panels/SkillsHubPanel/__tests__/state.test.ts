@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { resolveSkillsHubTab } from "../state.ts";
+import {
+  resolveSkillsHubGovernance,
+  resolveSkillsHubTab,
+} from "../state.ts";
 import { resolveFrontendGovernanceState } from "../../../governance/frontendGovernanceState.ts";
 
 test("keeps the requested tab when both permissions are available", () => {
@@ -40,4 +43,89 @@ test("keeps backend public read permission authoritative when settings are degra
     }),
     "degraded",
   );
+});
+
+test("maps the skills route to the public skill read contract", () => {
+  const state = resolveSkillsHubGovernance({
+    requestedTab: "skills",
+    isAuthenticated: true,
+    canReadSkills: true,
+    canReadMarketplace: false,
+  });
+
+  assert.equal(state.hasPermission, true);
+  assert.equal(state.authProjectionHasPermission, true);
+  assert.equal(state.governedUnavailable, false);
+  assert.equal(state.requiredPermission, "skill:read");
+  assert.equal(state.degraded, false);
+});
+
+test("maps the marketplace route to the public marketplace read contract", () => {
+  const state = resolveSkillsHubGovernance({
+    requestedTab: "marketplace",
+    isAuthenticated: true,
+    canReadSkills: true,
+    canReadMarketplace: false,
+    projectionError: "marketplace projection unavailable",
+  });
+
+  assert.equal(state.requiredPermission, "marketplace:read");
+  assert.equal(state.degraded, true);
+});
+
+test("does not block the catalog probe when auth permissions omit the public read grant", () => {
+  const state = resolveSkillsHubGovernance({
+    requestedTab: "skills",
+    isAuthenticated: true,
+    canReadSkills: false,
+    canReadMarketplace: false,
+  });
+
+  assert.equal(state.hasPermission, true);
+  assert.equal(state.authProjectionHasPermission, false);
+  assert.equal(state.governedUnavailable, false);
+});
+
+test("marks the hub forbidden only after the catalog API proves permission denial", () => {
+  const state = resolveSkillsHubGovernance({
+    requestedTab: "marketplace",
+    isAuthenticated: true,
+    canReadSkills: false,
+    canReadMarketplace: false,
+    catalogPermissionDenied: true,
+  });
+
+  assert.equal(state.hasPermission, false);
+  assert.equal(state.authProjectionHasPermission, false);
+  assert.equal(state.governedUnavailable, true);
+});
+
+test("keeps settings permission gaps degraded until the catalog API denies public read", () => {
+  const state = resolveSkillsHubGovernance({
+    requestedTab: "skills",
+    isAuthenticated: true,
+    canReadSkills: false,
+    canReadMarketplace: false,
+    projectionError: "missing_permission:settings:read",
+  });
+
+  assert.equal(state.hasPermission, true);
+  assert.equal(state.governedUnavailable, false);
+  assert.equal(state.degraded, true);
+  assert.equal(state.pageState, "degraded");
+});
+
+test("keeps catalog permission denial authoritative over settings degradation", () => {
+  const state = resolveSkillsHubGovernance({
+    requestedTab: "marketplace",
+    isAuthenticated: true,
+    canReadSkills: false,
+    canReadMarketplace: false,
+    catalogPermissionDenied: true,
+    projectionError: "settings projection unavailable",
+  });
+
+  assert.equal(state.hasPermission, false);
+  assert.equal(state.governedUnavailable, true);
+  assert.equal(state.pageState, "forbidden");
 });

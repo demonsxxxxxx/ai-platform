@@ -1,17 +1,20 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Package, ShoppingBag, Sparkles, TerminalSquare } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useSettingsContext } from "../../contexts/SettingsContext";
 import { useAuth } from "../../hooks/useAuth";
 import { Permission } from "../../types";
-import { resolveFrontendGovernanceState } from "../governance/frontendGovernanceState";
 import { PanelHeader } from "../common/PanelHeader";
 import { MarketplacePanel } from "./MarketplacePanel";
 import { SkillsPanel } from "./SkillsPanel";
-import type { SkillsHubTab } from "./SkillsHubPanel/state";
+import {
+  resolveSkillsHubGovernance,
+  type SkillsHubTab,
+} from "./SkillsHubPanel/state";
 import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
 import { resolveGroupAvailability } from "../governance/groupAvailability";
+import { workbenchSurface } from "../workbench/workbenchSurface";
 
 const TAB_PATHS: Record<SkillsHubTab, string> = {
   skills: "/skills",
@@ -22,7 +25,11 @@ export function SkillsHubPanel() {
   const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
-  const { isAuthenticated, isLoading: authLoading } = useAuth();
+  const {
+    hasAnyPermission,
+    isAuthenticated,
+    isLoading: authLoading,
+  } = useAuth();
   const {
     isLoading: settingsLoading,
     error: settingsError,
@@ -30,20 +37,27 @@ export function SkillsHubPanel() {
 
   const requestedTab: SkillsHubTab =
     location.pathname === "/marketplace" ? "marketplace" : "skills";
+  const [catalogPermissionDeniedByTab, setCatalogPermissionDeniedByTab] =
+    useState<Record<SkillsHubTab, boolean>>({
+      skills: false,
+      marketplace: false,
+    });
   const visibleTab = requestedTab;
   const isMarketplaceView = visibleTab === "marketplace";
-  const hasCatalogPermissionGap = false;
+  const canReadSkills = hasAnyPermission([Permission.SKILL_READ]);
+  const canReadMarketplace = hasAnyPermission([Permission.MARKETPLACE_READ]);
   const showTabSwitcher = true;
   const skillsProjectionDegraded = Boolean(settingsError);
-  const governanceState = resolveFrontendGovernanceState({
+  const hubGovernance = resolveSkillsHubGovernance({
+    requestedTab,
     isAuthenticated,
     isLoading: authLoading || settingsLoading,
-    hasWorkspace: true,
-    hasPermission: true,
-    featureEnabled: true,
+    canReadSkills,
+    canReadMarketplace,
+    catalogPermissionDenied: catalogPermissionDeniedByTab[requestedTab],
     projectionError: settingsError,
-    degraded: skillsProjectionDegraded,
   });
+  const governanceState = hubGovernance.pageState;
   const statusCopyKey =
     governanceState === "ready"
       ? "ready"
@@ -52,8 +66,8 @@ export function SkillsHubPanel() {
       : "permissionLimited";
   const permissionAvailability = resolveGroupAvailability({
     backed: governanceState !== "degraded",
-    enabled: governanceState === "ready" && !hasCatalogPermissionGap,
-    adminOnly: hasCatalogPermissionGap,
+    enabled: governanceState === "ready",
+    adminOnly: governanceState === "forbidden",
   });
 
   useEffect(() => {
@@ -64,13 +78,24 @@ export function SkillsHubPanel() {
     }
   }, [location.pathname, navigate, visibleTab]);
 
+  const handleCatalogPermissionDeniedChange = useCallback(
+    (permissionDenied: boolean) => {
+      setCatalogPermissionDeniedByTab((previous) => {
+        if (previous[requestedTab] === permissionDenied) {
+          return previous;
+        }
+        return { ...previous, [requestedTab]: permissionDenied };
+      });
+    },
+    [requestedTab],
+  );
+
   return (
     <div
       data-phase1c-surface="skills-hub"
       data-frontend-governance-state={governanceState}
-      data-required-permission={
-        isMarketplaceView ? Permission.MARKETPLACE_READ : Permission.SKILL_READ
-      }
+      data-required-permission={hubGovernance.requiredPermission}
+      data-auth-projection-has-permission={hubGovernance.authProjectionHasPermission}
       className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
     >
       <PanelHeader
@@ -124,7 +149,7 @@ export function SkillsHubPanel() {
 
       <div className="px-4 pb-3">
         <section className="grid gap-3 lg:grid-cols-2">
-          <div className="flex flex-col gap-3 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900 sm:flex-row sm:items-center sm:justify-between">
+          <div className={`${workbenchSurface.compactPanel} flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between`}>
             <div className="min-w-0">
               <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
                 {t(`skillsHub.${statusCopyKey}.title`)}
@@ -138,7 +163,7 @@ export function SkillsHubPanel() {
               labelKey={permissionAvailability.labelKey}
             />
           </div>
-          <div className="flex flex-col gap-3 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900 sm:flex-row sm:items-center sm:justify-between">
+          <div className={`${workbenchSurface.compactPanel} flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between`}>
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <TerminalSquare size={16} className="text-stone-500 dark:text-stone-400" />
@@ -168,7 +193,8 @@ export function SkillsHubPanel() {
           <div data-skill-catalog-shell className="h-full min-h-0">
             <SkillsPanel
               embedded
-              governedUnavailable={hasCatalogPermissionGap}
+              governedUnavailable={hubGovernance.governedUnavailable}
+              onPermissionDeniedChange={handleCatalogPermissionDeniedChange}
               settingsStateDegraded={skillsProjectionDegraded}
             />
           </div>
@@ -176,7 +202,8 @@ export function SkillsHubPanel() {
           <div data-marketplace-catalog-shell className="h-full min-h-0">
             <MarketplacePanel
               embedded
-              governedUnavailable={hasCatalogPermissionGap}
+              governedUnavailable={hubGovernance.governedUnavailable}
+              onPermissionDeniedChange={handleCatalogPermissionDeniedChange}
               settingsStateDegraded={skillsProjectionDegraded}
             />
           </div>

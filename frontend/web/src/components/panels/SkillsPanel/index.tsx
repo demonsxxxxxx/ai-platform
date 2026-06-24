@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "../../../hooks/useAuth";
 import { Permission } from "../../../types";
@@ -15,12 +16,14 @@ interface SkillsPanelProps {
   embedded?: boolean;
   governedUnavailable?: boolean;
   settingsStateDegraded?: boolean;
+  onPermissionDeniedChange?: (permissionDenied: boolean) => void;
 }
 
 export function SkillsPanel({
   embedded = false,
   governedUnavailable = false,
   settingsStateDegraded = false,
+  onPermissionDeniedChange,
 }: SkillsPanelProps) {
   const { t } = useTranslation();
   const { hasAnyPermission } = useAuth();
@@ -32,8 +35,8 @@ export function SkillsPanel({
   const skillBatchWriteBacked = true;
 
   const actions = useSkillsActions({ enabled: !governedUnavailable });
-  const isGovernedUnavailable =
-    governedUnavailable || isPermissionError(actions.error);
+  const permissionDenied = isPermissionError(actions.error);
+  const isGovernedUnavailable = governedUnavailable || permissionDenied;
   const effectivePermissions = new Set(actions.effectivePermissions);
   const canWrite =
     !isGovernedUnavailable &&
@@ -50,6 +53,10 @@ export function SkillsPanel({
   const canImportSkills = skillImportBacked && canWrite;
   const canBatchSkills =
     skillBatchWriteBacked && (canWrite || canDeleteSkill);
+
+  useEffect(() => {
+    onPermissionDeniedChange?.(permissionDenied);
+  }, [onPermissionDeniedChange, permissionDenied]);
 
   return (
     <div

@@ -122,7 +122,9 @@ test("roles route is login reachable and does not load legacy role management AP
   assert.doesNotMatch(rolesRoute, /<WorkbenchForbiddenPage/);
   assert.match(authTypes, /ADMIN_STATUS = "admin:status"/);
   assert.match(rolesPanel, /data-role-plaza-shell/);
-  assert.match(rolesPanel, /data-frontend-governance-state="ready"/);
+  assert.match(rolesPanel, /resolveRoleGovernanceState/);
+  assert.match(rolesPanel, /data-frontend-governance-state=\{roleGovernance\.pageState\}/);
+  assert.doesNotMatch(rolesPanel, /data-frontend-governance-state="ready"/);
   assert.doesNotMatch(rolesPanel, /data-role-plaza-backend-gap/);
   assert.match(rolesPanel, /Permission\.ROLE_MANAGE/);
   assert.doesNotMatch(rolesPanel, /roleApi|authApi|getPermissions\(|RoleFormModal/);
@@ -711,17 +713,38 @@ test("skills hub lets PR177 public catalogs prove permissions before fail-closed
     join(root, "src/components/panels/SkillsHubPanel.tsx"),
     "utf8",
   );
+  const resolver = readFileSync(
+    join(root, "src/components/panels/SkillsHubPanel/state.ts"),
+    "utf8",
+  );
   const useAuth = readFileSync(join(root, "src/hooks/useAuth.tsx"), "utf8");
 
-  assert.match(skillsHub, /hasPermission:\s*true/);
-  assert.match(skillsHub, /const hasCatalogPermissionGap = false;/);
-  assert.match(skillsHub, /governedUnavailable=\{hasCatalogPermissionGap\}/);
-  assert.match(
-    skillsHub,
-    /data-required-permission=\{[\s\S]{0,120}isMarketplaceView\s*\?\s*Permission\.MARKETPLACE_READ\s*:\s*Permission\.SKILL_READ[\s\S]{0,80}\}/,
-  );
+  assert.match(skillsHub, /resolveSkillsHubGovernance/);
+  assert.match(skillsHub, /canReadSkills = hasAnyPermission\(\[Permission\.SKILL_READ\]\)/);
+  assert.match(skillsHub, /canReadMarketplace = hasAnyPermission\(\[Permission\.MARKETPLACE_READ\]\)/);
+  assert.match(skillsHub, /const governanceState = hubGovernance\.pageState/);
+  assert.match(skillsHub, /data-required-permission=\{hubGovernance\.requiredPermission\}/);
+  assert.match(skillsHub, /catalogPermissionDeniedByTab/);
+  assert.match(skillsHub, /catalogPermissionDenied: catalogPermissionDeniedByTab\[requestedTab\]/);
+  assert.match(skillsHub, /governedUnavailable=\{hubGovernance\.governedUnavailable\}/);
+  assert.match(skillsHub, /onPermissionDeniedChange=\{handleCatalogPermissionDeniedChange\}/);
+  assert.match(skillsHub, /data-auth-projection-has-permission=\{hubGovernance\.authProjectionHasPermission\}/);
+  assert.match(resolver, /catalogPermissionDenied\?: boolean/);
+  assert.match(resolver, /pageState: FrontendGovernanceState/);
+  assert.match(resolver, /authProjectionHasPermission/);
+  assert.match(resolver, /const governedUnavailable = Boolean\(catalogPermissionDenied\)/);
+  assert.match(resolver, /governedUnavailable\s*\?\s*"forbidden"/);
+  assert.match(resolver, /projectionError\s*\?\s*"degraded"/);
+  assert.match(resolver, /requiredPermission: "skill:read" \| "marketplace:read"/);
+  assert.match(resolver, /requestedTab === "marketplace"/);
+  assert.match(resolver, /requestedTab === "marketplace" \? canReadMarketplace : canReadSkills/);
+  assert.match(resolver, /hasPermission: !governedUnavailable/);
+  assert.doesNotMatch(resolver, /hasPermission: canReadMarketplace/);
+  assert.doesNotMatch(resolver, /hasPermission: canReadSkills/);
+  assert.doesNotMatch(skillsHub, /resolveFrontendGovernanceState/);
+  assert.doesNotMatch(skillsHub, /hasPermission:\s*true/);
+  assert.doesNotMatch(skillsHub, /hasCatalogPermissionGap/);
   assert.doesNotMatch(skillsHub, /activeTabHasPermission/);
-  assert.doesNotMatch(skillsHub, /governedUnavailable=\{governanceState === "forbidden"\}/);
   assert.match(useAuth, /hasEffectivePermission\(permissions, permission\)/);
   assert.match(useAuth, /hasAnyEffectivePermission\(permissions, perms\)/);
   assert.match(useAuth, /hasAllEffectivePermissions\(permissions, perms\)/);

@@ -30,12 +30,14 @@ interface MarketplacePanelProps {
   embedded?: boolean;
   governedUnavailable?: boolean;
   settingsStateDegraded?: boolean;
+  onPermissionDeniedChange?: (permissionDenied: boolean) => void;
 }
 
 export function MarketplacePanel({
   embedded = false,
   governedUnavailable = false,
   settingsStateDegraded = false,
+  onPermissionDeniedChange,
 }: MarketplacePanelProps) {
   const { t } = useTranslation();
   const {
@@ -113,6 +115,10 @@ export function MarketplacePanel({
   const canAdmin =
     marketplaceDirectWriteBacked &&
     hasEffectiveMarketplaceAdmin;
+
+  useEffect(() => {
+    onPermissionDeniedChange?.(permissionDenied);
+  }, [onPermissionDeniedChange, permissionDenied]);
 
   const installedMarketplaceNames = new Set(
     userSkills
