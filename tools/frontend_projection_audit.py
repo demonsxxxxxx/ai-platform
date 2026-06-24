@@ -104,12 +104,14 @@ SAFE_PUBLIC_ROUTE_PREFIXES = [
     "/api/github",
     "/api/feedback",
     "/api/marketplace",
+    "/api/mcp",
     "/api/notifications/active",
     "/api/skills",
     "/api/settings",
     "/api/users",
 ]
 SAFE_ADMIN_ROUTE_PREFIXES = [
+    "/api/admin/mcp",
     "/api/notifications/admin",
 ]
 ORDINARY_USER_BASELINE_PERMISSION_TOKENS = {
@@ -131,11 +133,9 @@ COMPAT_ROUTE_PREFIXES = [
 ]
 LEGACY_POLICY_REQUIRED_ROUTE_PREFIXES = [
     "/api/admin/",
-    "/api/admin/mcp",
     "/api/agent/config",
     "/api/agent/models",
     "/api/env-vars",
-    "/api/mcp",
     "/api/memory",
     "/api/persona-presets",
     "/api/roles",
@@ -146,13 +146,6 @@ LEGACY_ROUTE_POLICY_MAP: dict[str, dict[str, str]] = {
         "governance_gate": "G6",
         "ordinary_user_exposure": "fail_closed",
         "admin_exposure": "same_tenant_admin_projection_only",
-        "required_action": "remap_to_ai_platform_admin_projection_or_hide",
-    },
-    "/api/admin/mcp": {
-        "domain": "mcp_tool_governance",
-        "governance_gate": "G6",
-        "ordinary_user_exposure": "fail_closed",
-        "admin_exposure": "same_tenant_admin_policy_projection_only",
         "required_action": "remap_to_ai_platform_admin_projection_or_hide",
     },
     "/api/agent/config": {
@@ -174,13 +167,6 @@ LEGACY_ROUTE_POLICY_MAP: dict[str, dict[str, str]] = {
         "governance_gate": "G6",
         "ordinary_user_exposure": "fail_closed",
         "admin_exposure": "same_tenant_admin_masked_projection_only",
-        "required_action": "remap_to_ai_platform_admin_projection_or_hide",
-    },
-    "/api/mcp": {
-        "domain": "mcp_tool_governance",
-        "governance_gate": "G6",
-        "ordinary_user_exposure": "fail_closed",
-        "admin_exposure": "same_tenant_admin_policy_projection_only",
         "required_action": "remap_to_ai_platform_admin_projection_or_hide",
     },
     "/api/memory": {
@@ -1172,6 +1158,14 @@ def render_frontend_projection_audit_markdown(audit: dict[str, Any]) -> str:
         f"- `{route['route_prefix']}` ({len(route['references'])} sampled refs)"
         for route in route_inventory["ai_platform_projection_routes"]
     ) or "- none"
+    safe_public_routes = "\n".join(
+        f"- `{route['route_prefix']}` ({len(route['references'])} sampled refs)"
+        for route in route_inventory["safe_public_projection_routes"]
+    ) or "- none"
+    safe_admin_routes = "\n".join(
+        f"- `{route['route_prefix']}` ({len(route['references'])} sampled refs)"
+        for route in route_inventory["safe_admin_projection_routes"]
+    ) or "- none"
     legacy_routes = "\n".join(
         f"- `{route['route_prefix']}` ({len(route['references'])} sampled refs)"
         for route in route_inventory["legacy_policy_required_routes"]
@@ -1237,6 +1231,10 @@ def render_frontend_projection_audit_markdown(audit: dict[str, Any]) -> str:
         f"Production source files scanned: `{audit['scanned']['production_source_files']}`\n\n"
         "## ai-platform Projection Routes\n\n"
         f"{ai_routes}\n\n"
+        "## Safe Public Projection Routes\n\n"
+        f"{safe_public_routes}\n\n"
+        "## Safe Admin Projection Routes\n\n"
+        f"{safe_admin_routes}\n\n"
         "## Legacy Routes Requiring Policy Mapping\n\n"
         f"{legacy_routes}\n\n"
         "## Legacy Route Policies\n\n"
