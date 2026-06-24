@@ -429,15 +429,7 @@ function App() {
             <Route
               path="/roles"
               element={
-                <ProtectedRoute
-                  permissions={[Permission.ROLE_MANAGE]}
-                  fallbackComponent={
-                    <WorkbenchForbiddenPage
-                      activeTab="roles"
-                      permissionLabel={Permission.ROLE_MANAGE}
-                    />
-                  }
-                >
+                <ProtectedRoute>
                   <RolesPage />
                 </ProtectedRoute>
               }

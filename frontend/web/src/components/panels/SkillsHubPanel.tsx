@@ -12,8 +12,6 @@ import { SkillsPanel } from "./SkillsPanel";
 import type { SkillsHubTab } from "./SkillsHubPanel/state";
 import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
 import { resolveGroupAvailability } from "../governance/groupAvailability";
-import { GroupAvailabilityToggleRow } from "../governance/GroupAvailabilityToggleRow";
-import { resolveSettingsBooleanProjection } from "../layout/AppContent/skillAvailability";
 
 const TAB_PATHS: Record<SkillsHubTab, string> = {
   skills: "/skills",
@@ -26,8 +24,6 @@ export function SkillsHubPanel() {
   const navigate = useNavigate();
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const {
-    enableSkills,
-    settings,
     isLoading: settingsLoading,
     error: settingsError,
   } = useSettingsContext();
@@ -38,20 +34,13 @@ export function SkillsHubPanel() {
   const isMarketplaceView = visibleTab === "marketplace";
   const hasCatalogPermissionGap = false;
   const showTabSwitcher = true;
-  const enableSkillsProjection = resolveSettingsBooleanProjection(
-    settings,
-    "ENABLE_SKILLS",
-  );
-  const settingsProjectionKnown = enableSkillsProjection.known;
-  const skillsFeatureEnabled = enableSkillsProjection.value ?? enableSkills;
-  const skillsProjectionDegraded =
-    Boolean(settingsError) || (settingsProjectionKnown && !skillsFeatureEnabled);
+  const skillsProjectionDegraded = Boolean(settingsError);
   const governanceState = resolveFrontendGovernanceState({
     isAuthenticated,
     isLoading: authLoading || settingsLoading,
     hasWorkspace: true,
     hasPermission: true,
-    featureEnabled: settingsProjectionKnown ? skillsFeatureEnabled : true,
+    featureEnabled: true,
     projectionError: settingsError,
     degraded: skillsProjectionDegraded,
   });
@@ -60,8 +49,6 @@ export function SkillsHubPanel() {
       ? "ready"
       : governanceState === "degraded"
       ? "degraded"
-      : settingsProjectionKnown && !skillsFeatureEnabled
-      ? "featureDisabled"
       : "permissionLimited";
   const permissionAvailability = resolveGroupAvailability({
     backed: governanceState !== "degraded",
@@ -136,7 +123,7 @@ export function SkillsHubPanel() {
       />
 
       <div className="px-4 pb-3">
-        <section className="grid gap-3 lg:grid-cols-3">
+        <section className="grid gap-3 lg:grid-cols-2">
           <div className="flex flex-col gap-3 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
@@ -171,14 +158,6 @@ export function SkillsHubPanel() {
                 $
               </span>
             </div>
-          </div>
-          <div data-fail-closed-surface="department-skill-policy">
-            <GroupAvailabilityToggleRow
-              label={t("skills.marketplace.departmentAvailability")}
-              description={t("skills.marketplace.groupToggleUnavailable")}
-              state="unavailable"
-              backed={false}
-            />
           </div>
         </section>
       </div>

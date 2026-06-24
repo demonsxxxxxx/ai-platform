@@ -57,8 +57,6 @@ export function resolveSettingsBooleanProjection(
 
 export function resolveComposerSkillsAvailability({
   canReadSkills,
-  enableSkillsSettingKnown,
-  enableSkillsSetting,
 }: {
   canReadSkills: boolean;
   enableSkillsSettingKnown: boolean;
@@ -67,8 +65,7 @@ export function resolveComposerSkillsAvailability({
   shouldFetchSkills: boolean;
   enableComposerSkills: boolean;
 } {
-  const settingsAllowsSkills = !enableSkillsSettingKnown || enableSkillsSetting;
-  const available = canReadSkills && settingsAllowsSkills;
+  const available = canReadSkills;
 
   return {
     shouldFetchSkills: available,

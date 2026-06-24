@@ -1256,8 +1256,8 @@
     "confirmUpdate": "Update Skill",
     "confirmUpdateMessage": "This will re-download the skill from the marketplace and overwrite your local changes. Continue?",
     "catalogUnavailable": {
-      "title": "Marketplace needs administrator enablement",
-      "description": "Your department can browse this entry point now. Installing, publishing, and department availability will turn on after an administrator enables them for your workspace."
+      "title": "This account cannot read the marketplace",
+      "description": "The marketplace catalog is connected to the authenticated workbench. If this state appears, confirm this account has marketplace:read."
     },
     "createAndPublish": "Publish Skill",
     "createHint": "To publish a skill to the marketplace, create it in your Skills panel first, then click the publish button.",
@@ -1296,19 +1296,7 @@
     "update": "Update",
     "updateFailed": "Failed to update skill",
     "updateSuccess": "Skill updated successfully",
-    "viewInMySkills": "Open in My Skills",
-    "emptyDepartmentCatalog": {
-      "title": "Department Skills",
-      "description": "Skills approved for your department will appear here after an administrator enables them."
-    },
-    "approvedCatalog": {
-      "title": "Approved toolkits",
-      "description": "Company-approved Skills and MCP-backed workflows stay listed here when they are ready for your role."
-    },
-    "requestAccess": {
-      "title": "Request access",
-      "description": "Ask your department administrator to enable a Skill for your team before installation is available."
-    }
+    "viewInMySkills": "Open in My Skills"
   },
   "mcp": {
     "addFirst": "Add your first MCP server",
@@ -1859,6 +1847,39 @@
     "operationFailed": "Operation failed",
     "permissionCount": "{{count}} permissions",
     "permissions": "Permissions",
+    "plaza": {
+      "capabilities": {
+        "auditTrail": {
+          "description": "Role and department-agent changes keep audit, trace, and rollback state visible.",
+          "title": "Audit trail"
+        },
+        "departmentScope": {
+          "description": "Department availability, inherited policy, and workspace boundaries are grouped here.",
+          "title": "Department scope"
+        },
+        "requestFlow": {
+          "description": "User requests, administrator approval, and notification flow stay reachable after login.",
+          "title": "Request workflow"
+        },
+        "roleDirectory": {
+          "description": "Shows requestable roles, descriptions, and applicable scope.",
+          "title": "Role directory"
+        }
+      },
+      "capabilityMatrixDescription": "This page keeps explainable governance status; write buttons remain gated by administrator permissions.",
+      "capabilityMatrixTitle": "Governance capability matrix",
+      "state": {
+        "description": "Role governance is reachable after login. Ordinary users can inspect role governance status, while writes, approvals, and scope changes remain administrator-gated.",
+        "details": {
+          "failClosed": "Without write permission, legacy role CRUD forms are not rendered.",
+          "loginReachable": "Authenticated users can open this page and inspect current governance status.",
+          "requiredPermission": "Real writes still require {{permission}}."
+        },
+        "title": "Role governance is available"
+      },
+      "subtitle": "View governance status for roles, department agents, and approval capabilities.",
+      "title": "Role Governance"
+    },
     "roleName": "Role Name",
     "roleNamePlaceholder": "Enter role name",
     "saving": "Saving...",
