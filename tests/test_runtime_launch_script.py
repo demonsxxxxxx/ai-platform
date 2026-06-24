@@ -10,6 +10,15 @@ TARGET_211_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platf
 STALE_211_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/deploy/ai-platform/.env"
 
 
+def compose_service_text(compose_text: str, service_name: str) -> str:
+    marker = f"\n  {service_name}:"
+    section = compose_text.split(marker, 1)[1]
+    for next_marker in ("\n  worker:", "\nvolumes:"):
+        if next_marker in section:
+            section = section.split(next_marker, 1)[0]
+    return section
+
+
 def test_company_auth_defaults_match_webui_production_backend():
     settings_text = Path("app/settings.py").read_text(encoding="utf-8")
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
@@ -232,6 +241,34 @@ def test_compose_requires_non_empty_sandbox_callback_token():
 
     assert "SANDBOX_CALLBACK_TOKEN: ${SANDBOX_CALLBACK_TOKEN:?set SANDBOX_CALLBACK_TOKEN}" in compose_text
     assert "SANDBOX_CALLBACK_TOKEN=change_me_sandbox_callback_token" in env_example_text
+
+
+def test_env_example_documents_sandbox_egress_policy_defaults():
+    env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+
+    for expected in [
+        "SANDBOX_CONTAINER_PROVIDER=fake",
+        "SANDBOX_EXECUTOR_IMAGE=ai-platform:local",
+        "SANDBOX_WORKSPACE_ROOT=/tmp/ai-platform-sandbox-workspaces",
+        "SANDBOX_CALLBACK_BASE_URL=http://host.docker.internal:8020",
+        "SANDBOX_EGRESS_POLICY_ENABLED=false",
+        "SANDBOX_EGRESS_NETWORK_NAME=ai-platform-sandbox-egress",
+        "SANDBOX_CALLBACK_HOST_GATEWAY=host.docker.internal",
+    ]:
+        assert expected in env_example_text
+
+
+def test_compose_passes_sandbox_egress_policy_env_to_api_and_worker():
+    compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
+
+    for service_name in ("api", "worker"):
+        service_text = compose_service_text(compose_text, service_name)
+        for expected in [
+            "SANDBOX_EGRESS_POLICY_ENABLED: ${SANDBOX_EGRESS_POLICY_ENABLED:-false}",
+            "SANDBOX_EGRESS_NETWORK_NAME: ${SANDBOX_EGRESS_NETWORK_NAME:-ai-platform-sandbox-egress}",
+            "SANDBOX_CALLBACK_HOST_GATEWAY: ${SANDBOX_CALLBACK_HOST_GATEWAY:-host.docker.internal}",
+        ]:
+            assert expected in service_text
 
 
 def test_compose_requires_core_production_secrets():
