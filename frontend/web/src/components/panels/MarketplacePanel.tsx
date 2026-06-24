@@ -32,6 +32,7 @@ interface MarketplacePanelProps {
   onCatalogStateChange?: (state: {
     permissionDenied: boolean;
     projectionError: string | null;
+    effectivePermissions: string[];
   }) => void;
 }
 
@@ -122,8 +123,14 @@ export function MarketplacePanel({
     onCatalogStateChange?.({
       permissionDenied,
       projectionError: permissionDenied ? null : listError,
+      effectivePermissions: userEffectivePermissions,
     });
-  }, [listError, onCatalogStateChange, permissionDenied]);
+  }, [
+    listError,
+    onCatalogStateChange,
+    permissionDenied,
+    userEffectivePermissions,
+  ]);
 
   const installedMarketplaceNames = new Set(
     userSkills

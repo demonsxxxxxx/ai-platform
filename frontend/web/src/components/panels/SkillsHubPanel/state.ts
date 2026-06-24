@@ -9,6 +9,7 @@ export interface SkillsHubGovernanceInput {
   hasWorkspace?: boolean;
   canReadSkills: boolean;
   canReadMarketplace: boolean;
+  effectivePermissions?: string[];
   catalogPermissionDenied?: boolean;
   projectionError?: string | null;
 }
@@ -17,9 +18,27 @@ export interface SkillsHubGovernanceState {
   pageState: FrontendGovernanceState;
   hasPermission: boolean;
   authProjectionHasPermission: boolean;
+  effectiveProjectionHasPermission: boolean;
+  effectivePermissionsSource: "catalog" | "auth" | "probe";
   governedUnavailable: boolean;
   requiredPermission: "skill:read" | "marketplace:read";
   degraded: boolean;
+}
+
+function hasEffectiveReadPermission(
+  permissions: string[] | undefined,
+  requiredPermission: "skill:read" | "marketplace:read",
+): boolean {
+  const permissionSet = new Set(permissions ?? []);
+  if (permissionSet.has(requiredPermission)) {
+    return true;
+  }
+
+  if (requiredPermission === "skill:read") {
+    return permissionSet.has("skill:admin");
+  }
+
+  return permissionSet.has("marketplace:admin");
 }
 
 export function resolveSkillsHubTab(
@@ -53,11 +72,23 @@ export function resolveSkillsHubGovernance({
   hasWorkspace = true,
   canReadSkills,
   canReadMarketplace,
+  effectivePermissions,
   catalogPermissionDenied,
   projectionError,
 }: SkillsHubGovernanceInput): SkillsHubGovernanceState {
+  const requiredPermission =
+    requestedTab === "marketplace" ? "marketplace:read" : "skill:read";
   const authProjectionHasPermission =
     requestedTab === "marketplace" ? canReadMarketplace : canReadSkills;
+  const effectiveProjectionHasPermission = hasEffectiveReadPermission(
+    effectivePermissions,
+    requiredPermission,
+  );
+  const effectivePermissionsSource = effectiveProjectionHasPermission
+    ? "catalog"
+    : authProjectionHasPermission
+      ? "auth"
+      : "probe";
   const governedUnavailable = Boolean(catalogPermissionDenied);
   const pageState: FrontendGovernanceState = isLoading
     ? "loading"
@@ -76,8 +107,10 @@ export function resolveSkillsHubGovernance({
       pageState,
       hasPermission: !governedUnavailable,
       authProjectionHasPermission,
+      effectiveProjectionHasPermission,
+      effectivePermissionsSource,
       governedUnavailable,
-      requiredPermission: "marketplace:read",
+      requiredPermission,
       degraded: Boolean(projectionError),
     };
   }
@@ -86,8 +119,10 @@ export function resolveSkillsHubGovernance({
     pageState,
     hasPermission: !governedUnavailable,
     authProjectionHasPermission,
+    effectiveProjectionHasPermission,
+    effectivePermissionsSource,
     governedUnavailable,
-    requiredPermission: "skill:read",
+    requiredPermission,
     degraded: Boolean(projectionError),
   };
 }

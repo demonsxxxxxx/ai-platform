@@ -2550,6 +2550,15 @@
       "description": "Skills 与技能市场已经接入当前账号的读权限。写入、发布和部门可用范围继续按管理员授权开放。",
       "title": "Skills 目录可用"
     },
+    "permissionSource": {
+      "auth": "账号权限",
+      "catalog": "目录权限",
+      "probe": "正在确认"
+    },
+    "stateDetails": {
+      "required": "当前入口",
+      "source": "权限来源"
+    },
     "subtitle": "管理本地技能并浏览技能商店",
     "title": "技能"
   },

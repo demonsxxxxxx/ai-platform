@@ -56,13 +56,17 @@ test("skills and marketplace remain catalog shells when backend enablement is un
   assert.match(skillsHub, /catalogStateByTab/);
   assert.match(skillsHub, /catalogPermissionDeniedByTab/);
   assert.match(skillsHub, /catalogProjectionErrorByTab/);
+  assert.match(skillsHub, /effectivePermissionsByTab/);
+  assert.match(skillsHub, /effectivePermissions:\s*effectivePermissionsByTab\[requestedTab\]/);
   assert.match(skillsHub, /onCatalogStateChange=\{handleCatalogStateChange\}/);
   assert.match(skillsHub, /data-skill-catalog-shell/);
   assert.match(skillsHub, /data-marketplace-catalog-shell/);
   assert.match(skillsHub, /data-frontend-governance-state/);
   assert.match(skillsPanel, /governedUnavailable/);
+  assert.match(skillsPanel, /effectivePermissions:\s*actions\.effectivePermissions/);
   assert.doesNotMatch(skillsPanel, /!enableSkills/);
   assert.match(marketplace, /governedUnavailable/);
+  assert.match(marketplace, /effectivePermissions:\s*userEffectivePermissions/);
   assert.match(marketplace, /data-marketplace-catalog-shell/);
   assert.match(marketplace, /data-marketplace-forbidden-shell/);
   assert.doesNotMatch(marketplace, /data-marketplace-unavailable-shell/);
