@@ -982,20 +982,26 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
         required_controls = "\n".join(
             f"  - `{item}`" for item in contract.get("required_controls", [])
         ) or "  - none"
-        runtime_evidence_items = "\n".join(
-            f"  - {item}" for item in contract.get("runtime_evidence_required", [])
-        ) or "  - none"
+        remaining_runtime_gap = contract.get("remaining_runtime_gap")
+        remaining_runtime_lines = ""
+        if remaining_runtime_gap:
+            runtime_evidence_items = "\n".join(
+                f"  - {item}" for item in contract.get("runtime_evidence_required", [])
+            ) or "  - none"
+            remaining_runtime_lines = (
+                f"- remaining runtime gap: `{remaining_runtime_gap}`\n"
+                "\nRuntime evidence still required:\n\n"
+                f"{runtime_evidence_items}\n\n"
+            )
         hardening_policy_contracts.append(
             f"### {gap}\n\n"
             f"- status: `{contract.get('status')}`\n"
             f"- evidence level: `{contract.get('evidence_level')}`\n"
-            f"- remaining runtime gap: `{contract.get('remaining_runtime_gap')}`\n"
+            f"{remaining_runtime_lines}"
             f"- does not close broader B2/G7 gate: `{str(contract.get('does_not_close_broader_b2_g7_gate')).lower()}`\n"
             f"- does not claim Docker sandbox production hardening: `{str(contract.get('does_not_claim_docker_sandbox_production_hardening')).lower()}`\n\n"
             "Required controls:\n\n"
-            f"{required_controls}\n\n"
-            "Runtime evidence still required:\n\n"
-            f"{runtime_evidence_items}"
+            f"{required_controls}"
         )
     hardening_policy_contract_lines = "\n\n".join(hardening_policy_contracts) or "- none"
     rollback = readiness.get("rollback_assumptions", {})

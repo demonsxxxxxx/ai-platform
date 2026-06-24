@@ -942,6 +942,8 @@ def test_b2_sandbox_readiness_markdown_is_gap_first_and_operator_readable():
     assert "resource_limits_runtime_hardening_evidence" not in markdown
     assert "egress_runtime_hardening_evidence" not in markdown
     assert "security_options_runtime_hardening_evidence" not in markdown
+    assert "remaining runtime gap: `None`" not in markdown
+    assert "Runtime evidence still required:" not in markdown
     assert "recorded_source_policy_contract" in markdown
     assert "container_memory_limit_defined" in markdown
     assert "default_deny_outbound_network_policy_defined" in markdown
