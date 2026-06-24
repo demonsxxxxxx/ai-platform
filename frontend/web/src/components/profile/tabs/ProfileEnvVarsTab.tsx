@@ -130,7 +130,7 @@ export function ProfileEnvVarsTab() {
 
   if (!canRead) {
     return (
-      <div className="flex items-center justify-center py-12 text-stone-400 dark:text-stone-500 text-sm">
+      <div className="enterprise-empty-state enterprise-empty-state--compact text-sm">
         {t("common.noPermission")}
       </div>
     );
@@ -146,26 +146,26 @@ export function ProfileEnvVarsTab() {
         onCancel={() => setDeleteTarget(null)}
         variant="danger"
       />
-      <div className="rounded-2xl bg-stone-50 dark:bg-stone-700/40 p-4 border border-stone-200/60 dark:border-stone-600/40">
-        <div className="flex items-center gap-2 mb-3">
-          <Braces size={15} className="text-amber-500 dark:text-amber-400" />
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-stone-400 dark:text-stone-500">
+      <div className="enterprise-subtle-panel p-4">
+        <div className="mb-3 flex items-center gap-2">
+          <Braces size={15} className="text-teal-700 dark:text-teal-300" />
+          <h3 className="text-xs font-semibold uppercase text-[var(--theme-text-secondary)]">
             {t("envVars.title")}
           </h3>
         </div>
-        <p className="text-xs text-stone-500 dark:text-stone-400 mb-3">
+        <p className="mb-3 text-xs text-[var(--theme-text-secondary)]">
           {t("envVars.description")}
         </p>
 
         {/* 添加新变量 */}
         {canWrite && (
-          <div className="flex gap-2 mb-3">
+          <div className="mb-3 flex gap-2">
             <input
               type="text"
               value={newKey}
               onChange={(e) => setNewKey(e.target.value)}
               placeholder={t("envVars.keyPlaceholder")}
-              className="flex-1 min-w-0 px-3 py-1.5 text-xs rounded-lg bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-600 text-stone-800 dark:text-stone-200 placeholder:text-stone-400 dark:placeholder:text-stone-500 focus:outline-none focus:ring-1 focus:ring-amber-400"
+              className="enterprise-form-input min-h-8 flex-1 text-xs"
               onKeyDown={(e) => e.key === "Enter" && handleAdd()}
             />
             <input
@@ -173,13 +173,14 @@ export function ProfileEnvVarsTab() {
               value={newValue}
               onChange={(e) => setNewValue(e.target.value)}
               placeholder={t("envVars.valuePlaceholder")}
-              className="flex-1 min-w-0 px-3 py-1.5 text-xs rounded-lg bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-600 text-stone-800 dark:text-stone-200 placeholder:text-stone-400 dark:placeholder:text-stone-500 focus:outline-none focus:ring-1 focus:ring-amber-400"
+              className="enterprise-form-input min-h-8 flex-1 text-xs"
               onKeyDown={(e) => e.key === "Enter" && handleAdd()}
             />
             <button
               onClick={handleAdd}
               disabled={adding || !newKey.trim() || !newValue.trim()}
-              className="shrink-0 p-1.5 rounded-lg bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="btn-primary h-8 w-8 shrink-0 justify-center p-0"
+              aria-label={t("envVars.add")}
             >
               {adding ? (
                 <LoadingSpinner size="xs" color="text-white" />
@@ -194,7 +195,7 @@ export function ProfileEnvVarsTab() {
         {loading ? (
           <SkeletonList count={4} className="py-1" />
         ) : vars.length === 0 ? (
-          <div className="text-center py-6 text-xs text-stone-400 dark:text-stone-500">
+          <div className="enterprise-empty-state enterprise-empty-state--compact py-6 text-xs">
             {t("envVars.empty")}
           </div>
         ) : (
@@ -202,14 +203,14 @@ export function ProfileEnvVarsTab() {
             {vars.map((envVar) => (
               <div
                 key={envVar.key}
-                className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white dark:bg-stone-800 border border-stone-100 dark:border-stone-600/60 group"
+                className="group flex items-center gap-2 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-3 py-2 dark:bg-stone-900"
               >
                 {editingKey === envVar.key ? (
                   <>
-                    <span className="text-xs font-mono font-medium text-stone-700 dark:text-stone-200 shrink-0">
+                    <span className="shrink-0 font-mono text-xs font-medium text-[var(--theme-text)]">
                       {envVar.key}
                     </span>
-                    <span className="text-stone-300 dark:text-stone-600">
+                    <span className="text-[var(--theme-text-quaternary)]">
                       =
                     </span>
                     <input
@@ -217,7 +218,7 @@ export function ProfileEnvVarsTab() {
                       value={editingValue}
                       onChange={(e) => setEditingValue(e.target.value)}
                       placeholder={t("envVars.newValuePlaceholder")}
-                      className="flex-1 min-w-0 px-2 py-0.5 text-xs font-mono rounded bg-stone-50 dark:bg-stone-700 border border-stone-200 dark:border-stone-600 text-stone-800 dark:text-stone-200 placeholder:text-stone-400 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                      className="enterprise-form-input min-h-7 flex-1 px-2 py-0.5 font-mono text-xs"
                       autoFocus
                       onKeyDown={(e) => {
                         if (e.key === "Enter") saveEdit();
@@ -227,7 +228,8 @@ export function ProfileEnvVarsTab() {
                     <button
                       onClick={saveEdit}
                       disabled={saving || !editingValue.trim()}
-                      className="shrink-0 p-1 rounded hover:bg-stone-100 dark:hover:bg-stone-700 text-green-600 transition-colors disabled:opacity-40"
+                      className="btn-icon shrink-0 text-green-600 disabled:opacity-40"
+                      aria-label={t("common.save")}
                     >
                       {saving ? (
                         <LoadingSpinner size="xs" />
@@ -237,27 +239,28 @@ export function ProfileEnvVarsTab() {
                     </button>
                     <button
                       onClick={cancelEdit}
-                      className="shrink-0 p-1 rounded hover:bg-stone-100 dark:hover:bg-stone-700 text-stone-400 transition-colors"
+                      className="btn-icon shrink-0"
+                      aria-label={t("common.cancel")}
                     >
                       <X size={12} />
                     </button>
                   </>
                 ) : (
                   <>
-                    <span className="text-xs font-mono font-medium text-stone-700 dark:text-stone-200 shrink-0 max-w-[40%] truncate">
+                    <span className="max-w-[40%] shrink-0 truncate font-mono text-xs font-medium text-[var(--theme-text)]">
                       {envVar.key}
                     </span>
-                    <span className="text-stone-300 dark:text-stone-600">
+                    <span className="text-[var(--theme-text-quaternary)]">
                       =
                     </span>
-                    <span className="flex-1 min-w-0 text-xs font-mono text-stone-400 dark:text-stone-500 select-none">
+                    <span className="min-w-0 flex-1 select-none font-mono text-xs text-[var(--theme-text-secondary)]">
                       ••••••••
                     </span>
-                    <div className="shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                       {canWrite && (
                         <button
                           onClick={() => startEdit(envVar.key)}
-                          className="p-1 rounded hover:bg-stone-100 dark:hover:bg-stone-700 text-stone-400 transition-colors"
+                          className="btn-icon"
                           title={t("envVars.edit")}
                         >
                           <Pencil size={12} />
@@ -266,7 +269,7 @@ export function ProfileEnvVarsTab() {
                       {canDelete && (
                         <button
                           onClick={() => handleDelete(envVar.key)}
-                          className="p-1 rounded hover:bg-stone-100 dark:hover:bg-stone-700 text-red-400 hover:text-red-500 transition-colors"
+                          className="btn-icon text-red-500 hover:text-red-600 dark:hover:text-red-400"
                           title={t("envVars.delete")}
                         >
                           <Trash2 size={12} />
@@ -281,7 +284,7 @@ export function ProfileEnvVarsTab() {
         )}
 
         {vars.length > 0 && (
-          <div className="mt-2 text-right text-[10px] text-stone-400 dark:text-stone-500">
+          <div className="mt-2 text-right text-[10px] text-[var(--theme-text-secondary)]">
             {t("envVars.count", { count: vars.length })}
           </div>
         )}

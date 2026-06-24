@@ -59,22 +59,22 @@ export function ProfilePasswordTab() {
   return (
     <div className="space-y-4">
       {passwordSuccess && (
-        <div className="flex items-center gap-2 p-3 rounded-xl bg-green-50 dark:bg-green-900/30 text-green-600 dark:text-green-400 text-sm">
+        <div className="es-callout es-callout--success">
           <Check size={16} className="shrink-0" />
-          {t("profile.passwordChanged")}
+          <span className="text-sm">{t("profile.passwordChanged")}</span>
         </div>
       )}
 
       {passwordError && (
-        <div className="flex items-center gap-2 p-3 rounded-xl bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400 text-sm">
+        <div className="es-error">
           <AlertCircle size={16} className="shrink-0" />
-          {passwordError}
+          <span>{passwordError}</span>
         </div>
       )}
 
       {/* Old Password */}
       <div>
-        <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-1.5">
+        <label className="mb-1.5 block text-sm font-medium text-[var(--theme-text-secondary)]">
           {t("profile.oldPassword")}
         </label>
         <div className="relative">
@@ -82,13 +82,18 @@ export function ProfilePasswordTab() {
             type={showPassword ? "text" : "password"}
             value={oldPassword}
             onChange={(e) => setOldPassword(e.target.value)}
-            className="w-full px-3.5 py-2.5 pr-10 rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 text-sm"
+            className="enterprise-form-input pr-10"
             placeholder={t("profile.oldPassword")}
           />
           <button
             type="button"
             onClick={() => setShowPassword(!showPassword)}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"
+            className="btn-icon absolute right-2 top-1/2 h-8 w-8 -translate-y-1/2"
+            aria-label={
+              showPassword
+                ? t("passwordInput.hidePassword")
+                : t("passwordInput.showPassword")
+            }
           >
             {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
           </button>
@@ -97,28 +102,28 @@ export function ProfilePasswordTab() {
 
       {/* New Password */}
       <div>
-        <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-1.5">
+        <label className="mb-1.5 block text-sm font-medium text-[var(--theme-text-secondary)]">
           {t("profile.newPassword")}
         </label>
         <input
           type={showPassword ? "text" : "password"}
           value={newPassword}
           onChange={(e) => setNewPassword(e.target.value)}
-          className="w-full px-3.5 py-2.5 rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 text-sm"
+          className="enterprise-form-input"
           placeholder={t("profile.newPassword")}
         />
       </div>
 
       {/* Confirm Password */}
       <div>
-        <label className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-1.5">
+        <label className="mb-1.5 block text-sm font-medium text-[var(--theme-text-secondary)]">
           {t("profile.confirmPassword")}
         </label>
         <input
           type={showPassword ? "text" : "password"}
           value={confirmPassword}
           onChange={(e) => setConfirmPassword(e.target.value)}
-          className="w-full px-3.5 py-2.5 rounded-lg border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 text-sm"
+          className="enterprise-form-input"
           placeholder={t("profile.confirmPassword")}
         />
       </div>
@@ -127,7 +132,7 @@ export function ProfilePasswordTab() {
       <button
         onClick={handlePasswordChange}
         disabled={isLoading}
-        className="w-full py-2.5 px-4 bg-amber-500 hover:bg-amber-600 disabled:bg-amber-300 dark:disabled:bg-amber-700 text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2 text-sm"
+        className="btn-primary w-full justify-center py-2.5"
       >
         <span className="inline-flex h-4 w-4 items-center justify-center">
           {isLoading ? <LoadingSpinner size="sm" color="text-white" /> : null}
