@@ -6,6 +6,7 @@ export interface SkillsHubGovernanceInput {
   requestedTab: SkillsHubTab;
   isAuthenticated: boolean;
   isLoading?: boolean;
+  hasWorkspace?: boolean;
   canReadSkills: boolean;
   canReadMarketplace: boolean;
   catalogPermissionDenied?: boolean;
@@ -49,6 +50,7 @@ export function resolveSkillsHubGovernance({
   requestedTab,
   isAuthenticated,
   isLoading,
+  hasWorkspace = true,
   canReadSkills,
   canReadMarketplace,
   catalogPermissionDenied,
@@ -61,11 +63,13 @@ export function resolveSkillsHubGovernance({
     ? "loading"
     : !isAuthenticated
       ? "logged-out"
-      : governedUnavailable
-        ? "forbidden"
-        : projectionError
-          ? "degraded"
-          : "ready";
+      : !hasWorkspace
+        ? "no-workspace"
+        : governedUnavailable
+          ? "forbidden"
+          : projectionError
+            ? "degraded"
+            : "ready";
 
   if (requestedTab === "marketplace") {
     return {

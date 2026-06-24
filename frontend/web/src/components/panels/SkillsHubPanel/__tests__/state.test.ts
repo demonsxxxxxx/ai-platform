@@ -129,3 +129,17 @@ test("keeps catalog permission denial authoritative over settings degradation", 
   assert.equal(state.governedUnavailable, true);
   assert.equal(state.pageState, "forbidden");
 });
+
+test("maps authenticated accounts without a workspace before permission denial", () => {
+  const state = resolveSkillsHubGovernance({
+    requestedTab: "marketplace",
+    isAuthenticated: true,
+    hasWorkspace: false,
+    canReadSkills: true,
+    canReadMarketplace: true,
+  });
+
+  assert.equal(state.pageState, "no-workspace");
+  assert.equal(state.hasPermission, true);
+  assert.equal(state.governedUnavailable, false);
+});

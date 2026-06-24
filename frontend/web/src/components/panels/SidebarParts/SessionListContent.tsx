@@ -122,30 +122,33 @@ export function SessionListContent({
   const groupedUncategorized = groupSessionsByTime(uncategorizedSessions, t);
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[var(--theme-sidebar-panel)] text-slate-900 dark:text-stone-100">
+    <div
+      data-workbench-sidebar-panel
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-sidebar-panel)] text-slate-100"
+    >
       {/* Header */}
       <div className="flex items-center justify-between px-3 pt-3 pb-1 sm:px-4">
         <div className="flex h-7 items-center gap-2">
-          <span className="flex size-6 items-center justify-center rounded-md bg-slate-900 text-white shadow-sm dark:bg-stone-100 dark:text-stone-950">
+          <span className="flex size-6 items-center justify-center rounded-md bg-slate-100/10 text-white shadow-sm ring-1 ring-slate-100/10">
             <Bot size={15} strokeWidth={2.2} aria-hidden="true" />
           </span>
           <a
             href={APP_HOME_URL}
-            className="text-[15px] font-semibold leading-none text-slate-900 transition-colors hover:text-slate-700 dark:text-stone-100 dark:hover:text-stone-50"
+            className="text-[15px] font-semibold leading-none text-slate-100 transition-colors hover:text-white"
           >
             {APP_NAME}
           </a>
         </div>
         <button
           onClick={onCollapse}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-stone-600 hover:bg-stone-100 dark:text-stone-400 dark:hover:bg-stone-800/60 transition-colors cursor-w-resize rtl:cursor-e-resize"
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-300 hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-white transition-colors cursor-w-resize rtl:cursor-e-resize"
           title={t("sidebar.collapseSidebar")}
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
             fill="none"
             viewBox="0 0 24 24"
-            className="w-5 h-5 text-stone-600 dark:text-stone-300"
+            className="w-5 h-5 text-slate-300"
           >
             <path
               fillRule="evenodd"
@@ -165,7 +168,7 @@ export function SessionListContent({
         >
           <MessageSquarePlus size={20} />
           <span className="flex-1 text-left">{t("sidebar.newChat")}</span>
-          <kbd className="hidden sm:inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-medium text-stone-400 dark:text-stone-500 rounded opacity-0 group-hover:opacity-100 transition-opacity">
+          <kbd className="hidden sm:inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 rounded opacity-0 group-hover:opacity-100 transition-opacity">
             {t("sidebar.newChatShortcut")}
           </kbd>
         </button>
@@ -231,12 +234,12 @@ export function SessionListContent({
             onClick={onToggleProjectsCollapsed}
             className="flex items-center justify-between px-[9px] h-9 cursor-pointer select-none group/section"
           >
-            <span className="text-[13px] font-medium text-stone-400 dark:text-stone-500 group-hover/section:text-stone-500 dark:group-hover/section:text-stone-400 transition-colors">
+            <span className="text-[13px] font-medium text-slate-500 group-hover/section:text-slate-300 transition-colors">
               {t("sidebar.projects")}
             </span>
             <ChevronDown
               size={14}
-              className={`text-stone-300 dark:text-stone-600 transition-transform duration-200 ${
+              className={`text-slate-600 transition-transform duration-200 ${
                 isProjectsCollapsed ? "-rotate-90" : ""
               }`}
             />
@@ -245,7 +248,7 @@ export function SessionListContent({
           {!isProjectsCollapsed && (
             <button
               onClick={projectActions.onOpenNewProjectModal}
-              className="w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm text-stone-500 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800/60 transition-colors cursor-pointer"
+              className="w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm text-slate-400 hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-slate-100 transition-colors cursor-pointer"
             >
               <FolderPlus size={20} />
               <span>{t("sidebar.newProject")}</span>
@@ -317,7 +320,7 @@ export function SessionListContent({
               ))}
 
           {!isProjectsCollapsed && (
-            <div className="h-px bg-stone-200/60 dark:bg-stone-700/40 mx-2 my-1" />
+            <div className="h-px bg-slate-700/70 mx-2 my-1" />
           )}
 
           {/* Uncategorized sessions (by time) */}
@@ -328,7 +331,7 @@ export function SessionListContent({
                 className="flex items-center justify-between px-[9px] h-9 cursor-pointer select-none group/section"
               >
                 <div className="flex min-w-0 items-center gap-2">
-                  <span className="text-[13px] font-medium text-stone-400 dark:text-stone-500 group-hover/section:text-stone-500 dark:group-hover/section:text-stone-400 transition-colors">
+                  <span className="text-[13px] font-medium text-slate-500 group-hover/section:text-slate-300 transition-colors">
                     {t("sidebar.chats")}
                   </span>
                   {chatsUnreadCount > 0 && (
@@ -339,7 +342,7 @@ export function SessionListContent({
                 </div>
                 <ChevronDown
                   size={14}
-                  className={`text-stone-300 dark:text-stone-600 transition-transform duration-200 ${
+                  className={`text-slate-600 transition-transform duration-200 ${
                     isChatsCollapsed ? "-rotate-90" : ""
                   }`}
                 />
@@ -373,7 +376,7 @@ export function SessionListContent({
                   ) : (
                     groupedUncategorized.map((group) => (
                       <div key={group.label}>
-                        <div className="px-[9px] h-7 flex items-center text-[13px] font-medium text-stone-400 dark:text-stone-500 select-none">
+                        <div className="px-[9px] h-7 flex items-center text-[13px] font-medium text-slate-500 select-none">
                           {group.label}
                         </div>
                         <div className="flex flex-col gap-px">
@@ -422,7 +425,7 @@ export function SessionListContent({
                   {hasMoreUncategorized && (
                     <div ref={loadMoreRef} className="flex justify-center py-2">
                       {isLoadingMoreUncategorized && (
-                        <div className="flex items-center gap-2 text-stone-400 dark:text-stone-500">
+                        <div className="flex items-center gap-2 text-slate-500">
                           <LoadingSpinner size="xs" />
                           <span className="text-xs">{t("common.loading")}</span>
                         </div>
@@ -437,12 +440,12 @@ export function SessionListContent({
       </div>
 
       {/* Footer */}
-      <div className="shrink-0 px-2 py-1 border-t border-stone-200/60 dark:border-stone-800/60">
+      <div className="shrink-0 px-2 py-1 border-t border-slate-800">
         <div
           onClick={onShowProfile}
-          className="group flex items-center rounded-lg py-3 px-2 w-full hover:bg-stone-100 dark:hover:bg-stone-800/60 transition cursor-pointer"
+          className="group flex items-center rounded-lg py-3 px-2 w-full hover:bg-[var(--theme-sidebar-panel-muted)] transition cursor-pointer"
         >
-          <div className="shrink-0 w-8 h-8 rounded-full overflow-hidden ring-1 ring-stone-200 dark:ring-stone-700 group-hover:ring-[var(--theme-primary)] transition mr-3">
+          <div className="shrink-0 w-8 h-8 rounded-full overflow-hidden ring-1 ring-slate-700 group-hover:ring-slate-500 transition mr-3">
             {user?.avatar_url && !imgError ? (
               <img
                 src={user.avatar_url}
@@ -460,16 +463,16 @@ export function SessionListContent({
             )}
           </div>
           <div className="flex-1 text-left min-w-0">
-            <div className="text-sm font-medium text-stone-800 dark:text-stone-100 truncate">
+            <div className="text-sm font-medium text-slate-100 truncate">
               {user?.username || "User"}
             </div>
-            <div className="text-xs text-stone-400 dark:text-stone-500 whitespace-nowrap">
+            <div className="text-xs text-slate-500 whitespace-nowrap">
               {(user?.roles?.[0] || "User").replace(/^./, (c) =>
                 c.toUpperCase(),
               )}
             </div>
           </div>
-          <ChevronsUpDown className="size-4 text-stone-400 shrink-0" />
+          <ChevronsUpDown className="size-4 text-slate-500 shrink-0" />
         </div>
       </div>
     </div>

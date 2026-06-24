@@ -281,6 +281,14 @@ test("authenticated workbench adopts one dark-rail enterprise shell", () => {
     join(root, "src/components/panels/SidebarParts/SidebarRail.tsx"),
     "utf8",
   );
+  const projectItem = readFileSync(
+    join(root, "src/components/sidebar/ProjectItem.tsx"),
+    "utf8",
+  );
+  const sessionItem = readFileSync(
+    join(root, "src/components/sidebar/SessionItem.tsx"),
+    "utf8",
+  );
   const theme = readFileSync(join(root, "src/styles/base.css"), "utf8");
   const components = readFileSync(
     join(root, "src/styles/components.css"),
@@ -302,13 +310,24 @@ test("authenticated workbench adopts one dark-rail enterprise shell", () => {
   assert.match(settingsHook, /ai-platform-settings-\$\{date\}\.json/);
   assert.doesNotMatch(settingsHook, /lamb-agent-settings/);
   assert.match(theme, /--theme-sidebar-rail:\s*#111827;/);
-  assert.match(theme, /--theme-sidebar-panel:\s*#f6f8fb;/);
+  assert.match(theme, /--theme-sidebar-panel:\s*#111827;/);
+  assert.match(theme, /--theme-sidebar-panel-muted:\s*#1f2937;/);
   assert.match(theme, /--theme-bg:\s*#f3f5f8;/);
   assert.match(sidebar, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sidebarList, /bg-\[var\(--theme-sidebar-panel\)\]/);
+  assert.match(sidebarList, /data-workbench-sidebar-panel/);
+  assert.match(sidebarList, /text-slate-100/);
   assert.match(sidebarRail, /bg-\[var\(--theme-sidebar-rail\)\]/);
   assert.match(sidebarRail, /text-slate-200/);
+  assert.match(projectItem, /hover:bg-\[var\(--theme-sidebar-panel-muted\)\]/);
+  assert.match(sessionItem, /hover:bg-\[var\(--theme-sidebar-panel-muted\)\]/);
+  assert.match(projectItem, /text-slate-300/);
+  assert.match(sessionItem, /text-slate-300/);
   assert.doesNotMatch(sidebarList, /rounded-\[10px\]/);
+  assert.doesNotMatch(projectItem, /rounded-\[10px\]/);
+  assert.doesNotMatch(sessionItem, /rounded-\[10px\]/);
+  assert.doesNotMatch(projectItem, /text-stone-600|text-stone-700|bg-stone-100/);
+  assert.doesNotMatch(sessionItem, /text-stone-600|text-stone-700|bg-stone-100/);
   assert.doesNotMatch(sidebarRail, /style=\{\{[\s\S]{0,160}backgroundColor/);
 });
 
@@ -843,9 +862,11 @@ test("skills hub lets PR177 public catalogs prove permissions before fail-closed
   assert.match(skillsHub, /onPermissionDeniedChange=\{handleCatalogPermissionDeniedChange\}/);
   assert.match(skillsHub, /data-auth-projection-has-permission=\{hubGovernance\.authProjectionHasPermission\}/);
   assert.match(resolver, /catalogPermissionDenied\?: boolean/);
+  assert.match(resolver, /hasWorkspace\?: boolean/);
   assert.match(resolver, /pageState: FrontendGovernanceState/);
   assert.match(resolver, /authProjectionHasPermission/);
   assert.match(resolver, /const governedUnavailable = Boolean\(catalogPermissionDenied\)/);
+  assert.match(resolver, /!hasWorkspace\s*\?\s*"no-workspace"/);
   assert.match(resolver, /governedUnavailable\s*\?\s*"forbidden"/);
   assert.match(resolver, /projectionError\s*\?\s*"degraded"/);
   assert.match(resolver, /requiredPermission: "skill:read" \| "marketplace:read"/);
