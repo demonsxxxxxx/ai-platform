@@ -1986,7 +1986,7 @@
       "title": "User Feedback"
     },
     "files": {
-      "description": "Upload, organize, and manage files in your AI workspace. Share documents, images, and media with AI agents for analysis and processing.",
+      "description": "Governed file workbench entry for revealed files and artifacts. The page stays degraded until backend file projections are available.",
       "title": "File Library"
     },
     "landing": {
@@ -2014,7 +2014,7 @@
       "title": "Notifications"
     },
     "persona": {
-      "description": "Choose and customize AI personas. Define personality, tone, expertise, and behavior patterns for specialized conversation experiences.",
+      "description": "Governed persona workbench entry for preset discovery and management. The page stays degraded until backend persona projections are available.",
       "title": "Persona Presets"
     },
     "roles": {

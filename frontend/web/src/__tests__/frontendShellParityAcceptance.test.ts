@@ -523,6 +523,31 @@ test("persona and files routes are governed workbench pages instead of legacy sh
   assert.doesNotMatch(zhLocale, /角色广场/);
 });
 
+test("persona degraded state does not render a false empty catalog", () => {
+  const personaWorkbench = readFileSync(
+    join(root, "src/components/persona/PersonaWorkbenchPanel.tsx"),
+    "utf8",
+  );
+
+  const degradedReturn = personaWorkbench.match(
+    /if \(governanceState === "degraded"\) \{\s*return \(([\s\S]*?)\);\s*\}/,
+  )?.[1];
+
+  assert.ok(
+    degradedReturn,
+    "persona degraded state should return a dedicated degraded workbench surface before catalog controls",
+  );
+  assert.match(degradedReturn, /WorkbenchStateSurface/);
+  assert.doesNotMatch(degradedReturn, /personaPresets\.empty/);
+  assert.doesNotMatch(degradedReturn, /PersonaPresetCard/);
+  assert.doesNotMatch(degradedReturn, /PersonaEditorModal/);
+  assert.doesNotMatch(degradedReturn, /PersonaScopeDropdown/);
+  assert.doesNotMatch(degradedReturn, /PersonaTagFilterDropdown/);
+  assert.doesNotMatch(degradedReturn, /persona\.handleImport/);
+  assert.doesNotMatch(degradedReturn, /persona\.openModal/);
+  assert.doesNotMatch(degradedReturn, /persona\.paged/);
+});
+
 test("authenticated marketplace pages share the workbench surface tokens", () => {
   const skillsHub = readFileSync(
     join(root, "src/components/panels/SkillsHubPanel.tsx"),

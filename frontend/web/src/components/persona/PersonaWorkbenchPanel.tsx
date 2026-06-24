@@ -50,6 +50,34 @@ export function PersonaWorkbenchPanel() {
     enabled: persona.canAdmin,
     adminOnly: !persona.canAdmin,
   });
+  const personaStatusTiles = (
+    <div className="grid gap-3 px-4 pb-3 lg:grid-cols-3">
+      <StatusTile
+        title={t("personaPresets.readContract", "读取合同")}
+        description={t(
+          "personaPresets.readContractDescription",
+          "使用 persona preset 公共接口读取当前可见角色。",
+        )}
+        availability={readAvailability}
+      />
+      <StatusTile
+        title={t("personaPresets.writeContract", "写入合同")}
+        description={t(
+          "personaPresets.writeContractDescription",
+          "创建、导入和编辑仅在账号具备写权限时开放。",
+        )}
+        availability={writeAvailability}
+      />
+      <StatusTile
+        title={t("personaPresets.adminContract", "官方角色治理")}
+        description={t(
+          "personaPresets.adminContractDescription",
+          "官方角色发布、归档和删除继续由管理员权限控制。",
+        )}
+        availability={adminAvailability}
+      />
+    </div>
+  );
 
   if (governanceState === "loading" || governanceState === "forbidden") {
     return (
@@ -81,6 +109,52 @@ export function PersonaWorkbenchPanel() {
               : undefined
           }
         />
+      </div>
+    );
+  }
+
+  if (governanceState === "degraded") {
+    return (
+      <div
+        data-persona-workbench-shell
+        data-frontend-governance-state={governanceState}
+        className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      >
+        <PanelHeader
+          title={t("personaPresets.workbenchTitle", "角色工作台")}
+          subtitle={t(
+            "personaPresets.workbenchSubtitle",
+            "选择、收藏、复制和维护对话角色；写入能力继续受后端权限约束。",
+          )}
+          icon={<UserRound size={20} className="text-slate-600" />}
+          actions={
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
+              <GovernanceAvailabilityBadge
+                state={readAvailability.state}
+                labelKey={readAvailability.labelKey}
+              />
+              <GovernanceAvailabilityBadge
+                state={writeAvailability.state}
+                labelKey={writeAvailability.labelKey}
+              />
+            </div>
+          }
+        />
+
+        {personaStatusTiles}
+
+        <div className="flex min-h-0 flex-1 items-center justify-center px-4 pb-4">
+          <WorkbenchStateSurface
+            state="degraded"
+            surface="persona-workbench"
+            title={t("personaPresets.degradedTitle", "角色投影已降级")}
+            description={t(
+              "personaPresets.degradedDescription",
+              "后端角色预设投影暂不可用；页面保留工作台入口，并避免把缺路由误显示为空角色目录。",
+            )}
+            details={persona.error ? [persona.error] : undefined}
+          />
+        </div>
       </div>
     );
   }
@@ -167,48 +241,9 @@ export function PersonaWorkbenchPanel() {
         }
       />
 
-      <div className="grid gap-3 px-4 pb-3 lg:grid-cols-3">
-        <StatusTile
-          title={t("personaPresets.readContract", "读取合同")}
-          description={t(
-            "personaPresets.readContractDescription",
-            "使用 persona preset 公共接口读取当前可见角色。",
-          )}
-          availability={readAvailability}
-        />
-        <StatusTile
-          title={t("personaPresets.writeContract", "写入合同")}
-          description={t(
-            "personaPresets.writeContractDescription",
-            "创建、导入和编辑仅在账号具备写权限时开放。",
-          )}
-          availability={writeAvailability}
-        />
-        <StatusTile
-          title={t("personaPresets.adminContract", "官方角色治理")}
-          description={t(
-            "personaPresets.adminContractDescription",
-            "官方角色发布、归档和删除继续由管理员权限控制。",
-          )}
-          availability={adminAvailability}
-        />
-      </div>
+      {personaStatusTiles}
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
-        {governanceState === "degraded" ? (
-          <WorkbenchStateSurface
-            state="degraded"
-            surface="persona-workbench"
-            title={t("personaPresets.degradedTitle", "角色投影已降级")}
-            description={t(
-              "personaPresets.degradedDescription",
-              "后端返回了非权限类错误；页面保留工作台结构并显示可用本地状态。",
-            )}
-            details={persona.error ? [persona.error] : undefined}
-            className="mb-3 max-w-none text-left"
-          />
-        ) : null}
-
         {persona.paged.length === 0 ? (
           <div className={`${workbenchSurface.stateSurface} mx-auto mt-8 max-w-xl`}>
             <div className={workbenchSurface.stateIcon}>
