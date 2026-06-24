@@ -171,6 +171,18 @@ test("authenticated sidebar uses governed workbench entries instead of old plaza
   assert.match(sidebar, /navigate\("\/marketplace"\)/);
   assert.match(sidebar, /navigate\("\/mcp"\)/);
   assert.match(sidebar, /navigate\("\/apps"\)/);
+  for (const route of ["/agents", "/models", "/roles", "/channels"]) {
+    assert.match(sidebar, new RegExp(`navigate\\("${route}"\\)`), route);
+  }
+  for (const handler of [
+    "onOpenAgents",
+    "onOpenModels",
+    "onOpenRoles",
+    "onOpenChannels",
+  ]) {
+    assert.match(sidebar, new RegExp(handler), handler);
+  }
+  assert.doesNotMatch(sidebar, /Permission\.ROLE_READ|Permission\.AGENT_ADMIN|Permission\.MODEL_READ|Permission\.CHANNEL_READ/);
   assert.doesNotMatch(sidebar, /navigate\("\/persona"\)/);
   assert.doesNotMatch(sidebar, /navigate\("\/files"\)/);
   assert.doesNotMatch(sidebar, /onOpenPersonaPlaza|onOpenFileLibrary/);
@@ -195,8 +207,28 @@ test("post-login navigation keeps governed MCP entry discoverable without stale 
     "utf8",
   );
 
-  assert.match(userMenu, /path:\s*"\/mcp"[\s\S]{0,120}show:\s*true/);
-  assert.doesNotMatch(userMenu, /Permission\.MCP_READ/);
+  for (const route of [
+    "/mcp",
+    "/channels",
+    "/agents",
+    "/models",
+    "/roles",
+    "/users",
+    "/settings",
+    "/feedback",
+    "/notifications",
+  ]) {
+    assert.match(
+      userMenu,
+      new RegExp(`path:\\s*"${route}"[\\s\\S]{0,160}show:\\s*true`),
+      route,
+    );
+  }
+  assert.doesNotMatch(userMenu, /Permission\.MCP_READ|Permission\.CHANNEL_READ|Permission\.SETTINGS_MANAGE/);
+  assert.doesNotMatch(userMenu, /canReadChannels|canManageSettings/);
+  assert.match(userMenu, /max-h-\[min\(calc\(100vh-5rem\),34rem\)\]/);
+  assert.match(userMenu, /overflow-y-auto/);
+  assert.match(userMenu, /w-60/);
   assert.match(chatAppContent, /useTools\(\{ enabled: true \}\)/);
   assert.doesNotMatch(chatAppContent, /const canReadMcpTools = hasPermission\(Permission\.MCP_READ\);/);
   assert.match(chatInput, /toolsAvailable/);

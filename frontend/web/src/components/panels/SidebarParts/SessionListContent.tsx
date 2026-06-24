@@ -8,6 +8,9 @@ import {
   ShoppingBag,
   Server,
   Bot,
+  Cpu,
+  MessageCircle,
+  ShieldCheck,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
@@ -168,6 +171,38 @@ export function SessionListContent({
         >
           <Server size={20} />
           <span>{t("featureMenu.mcpTools")}</span>
+        </button>
+
+        <button
+          onClick={() => navigate("/channels")}
+          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+        >
+          <MessageCircle size={20} />
+          <span>{t("nav.channels")}</span>
+        </button>
+
+        <button
+          onClick={() => navigate("/agents")}
+          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+        >
+          <Bot size={20} />
+          <span>{t("nav.agents")}</span>
+        </button>
+
+        <button
+          onClick={() => navigate("/models")}
+          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+        >
+          <Cpu size={20} />
+          <span>{t("nav.models")}</span>
+        </button>
+
+        <button
+          onClick={() => navigate("/roles")}
+          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+        >
+          <ShieldCheck size={20} />
+          <span>{t("nav.roles")}</span>
         </button>
 
         <button

@@ -3,19 +3,23 @@ import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import {
+  Bell,
+  Bot,
+  Cpu,
   MessageSquare,
+  MessageCircle,
   Package,
   ShoppingBag,
   LogOut,
   Settings,
   Server,
-  MessageCircle,
   Brain,
   User,
+  Users,
+  ShieldCheck,
 } from "lucide-react";
 import { useAuth } from "../../hooks/useAuth";
 import { useSettingsContext } from "../../contexts/SettingsContext";
-import { Permission } from "../../types";
 import {
   beginSessionSelectionGuard,
   clearSessionSelectionGuard,
@@ -28,7 +32,7 @@ interface UserMenuProps {
 
 export function UserMenu({ onShowProfile }: UserMenuProps) {
   const { t } = useTranslation();
-  const { logout, hasAnyPermission, user } = useAuth();
+  const { logout, user } = useAuth();
   const { enableMemory } = useSettingsContext();
   const navigate = useNavigate();
   const [showMenu, setShowMenu] = useState(false);
@@ -44,9 +48,6 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
     onClose: () => setShowMenu(false),
     enabled: showMenu && isMobile,
   });
-
-  const canReadChannels = hasAnyPermission([Permission.CHANNEL_READ]);
-  const canManageSettings = hasAnyPermission([Permission.SETTINGS_MANAGE]);
 
   // Reactive mobile detection
   useEffect(() => {
@@ -131,7 +132,49 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
       path: "/channels",
       label: t("nav.channels"),
       icon: MessageCircle,
-      show: canReadChannels,
+      show: true,
+    },
+    {
+      path: "/agents",
+      label: t("nav.agents"),
+      icon: Bot,
+      show: true,
+    },
+    {
+      path: "/models",
+      label: t("nav.models"),
+      icon: Cpu,
+      show: true,
+    },
+    {
+      path: "/roles",
+      label: t("nav.roles"),
+      icon: ShieldCheck,
+      show: true,
+    },
+    {
+      path: "/users",
+      label: t("nav.users"),
+      icon: Users,
+      show: true,
+    },
+    {
+      path: "/settings",
+      label: t("nav.settings"),
+      icon: Settings,
+      show: true,
+    },
+    {
+      path: "/feedback",
+      label: t("nav.feedback"),
+      icon: MessageCircle,
+      show: true,
+    },
+    {
+      path: "/notifications",
+      label: t("nav.notifications"),
+      icon: Bell,
+      show: true,
     },
     {
       path: "/memory",
@@ -188,35 +231,6 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
     <>
       {/* Navigation */}
       {visibleNav.length > 0 && <div>{visibleNav.map(renderNavItem)}</div>}
-
-      {/* System Settings (only settings page remains here for quick access) */}
-      {canManageSettings && (
-        <button
-          type="button"
-          className={`${menuItemClass} ${
-            location.pathname === "/settings"
-              ? "bg-[var(--theme-primary-light)] text-[var(--theme-text)]"
-              : ""
-          }`}
-          onMouseDown={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            beginSessionSelectionGuard("/settings");
-          }}
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            beginSessionSelectionGuard("/settings");
-            setShowMenu(false);
-            requestAnimationFrame(() => {
-              navigate("/settings");
-            });
-          }}
-        >
-          <Settings size={16} strokeWidth={1.8} />
-          <span>{t("nav.systemSettings")}</span>
-        </button>
-      )}
 
       <button
         onClick={() => {
@@ -301,7 +315,7 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
                 />
                 <div
                   ref={menuRef}
-                  className="fixed z-[301] w-52 overflow-hidden rounded-lg border shadow-[0_8px_18px_rgba(18,38,63,0.08)] animate-scale-in"
+                  className="fixed z-[301] max-h-[min(calc(100vh-5rem),34rem)] w-60 overflow-y-auto rounded-lg border shadow-[0_8px_18px_rgba(18,38,63,0.08)] animate-scale-in"
                   style={{
                     top: `${menuPosition.top}px`,
                     right: `${menuPosition.right}px`,

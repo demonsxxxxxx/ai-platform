@@ -452,6 +452,10 @@ export const SessionSidebar = forwardRef<
             onOpenSkills={() => navigate("/skills")}
             onOpenMarketplace={() => navigate("/marketplace")}
             onOpenMcp={() => navigate("/mcp")}
+            onOpenChannels={() => navigate("/channels")}
+            onOpenAgents={() => navigate("/agents")}
+            onOpenModels={() => navigate("/models")}
+            onOpenRoles={() => navigate("/roles")}
             recentChatsBtnRef={recentChatsBtnRef}
             onShowProfile={onShowProfile!}
           />
