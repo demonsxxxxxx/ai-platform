@@ -924,6 +924,25 @@ test("workbench projection pages consume safe backend contracts instead of phase
   assert.match(authTypes, /NOTIFICATION_ADMIN = "notification:admin"/);
 });
 
+test("safe projection locale copy no longer reports backed workbench pages as unopened backend gaps", () => {
+  const zh = JSON.parse(readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8"));
+  const en = JSON.parse(readFileSync(join(root, "src/i18n/locales/en.json"), "utf8"));
+
+  for (const [locale, workbench] of [
+    ["zh", zh.workbench.phaseTwo],
+    ["en", en.workbench.phaseTwo],
+  ] as const) {
+    for (const page of ["users", "settings", "feedback", "notifications"]) {
+      const copy = JSON.stringify(workbench[page]);
+      assert.doesNotMatch(
+        copy,
+        /尚未开放|未开放|等待后端|后端还没有|backend has not|not enabled yet|waiting for backend|Next contract|Projection gap|Admin projection gap/i,
+        `${locale}.${page} should describe the safe read projection and governed writes, not a missing backend contract`,
+      );
+    }
+  }
+});
+
 test("agents route uses a public read-only directory instead of legacy config admin APIs", () => {
   const app = readFileSync(join(root, "src/App.tsx"), "utf8");
   const tabs = readFileSync(
