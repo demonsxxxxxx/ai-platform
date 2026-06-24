@@ -5,13 +5,15 @@ from pathlib import Path
 from typing import Any
 
 from app.backend_stage_closure_evidence import find_stage_issue_closure_evidence
-from app.foundation_alpha_readiness import _resolve_runtime_affecting_changes_between
+from app.foundation_alpha_readiness import (
+    _resolve_runtime_affecting_changes_between as _resolve_source_runtime_affecting_changes_between,
+)
 from app.sandbox_hardening_contract import bounded_error_projection_is_safe
 
 
 SCHEMA_VERSION = "ai-platform.b2-sandbox-readiness.v1"
 BACKEND_STAGE = "B2 real sandbox usable"
-ISSUE = "#89"
+ISSUE = "#130"
 RUNTIME_ACCEPTANCE_GAP = "b2_211_real_sandbox_smoke"
 REVIEWED_EVIDENCE_GAP = "b2_reviewed_release_evidence"
 ISSUE_CLOSURE_GAP = "b2_issue_review_and_closure_evidence"
@@ -22,6 +24,10 @@ RUNTIME_ACCEPTANCE_ARTIFACT_KIND = "211_sandbox_runtime_smoke"
 RUNTIME_ACCEPTANCE_VERIFIER_SCHEMA = "ai-platform.sandbox-runtime-211.v1"
 RUNTIME_PROBE_RESULTS_SCHEMA_VERSION = "ai-platform.sandbox-runtime-probe-results.v1"
 _RUNTIME_EVIDENCE_ROOT = "docs/release-evidence/b2-sandbox"
+_B2_RUNTIME_NEUTRAL_EXACT_PATHS = {
+    "app/b2_sandbox_readiness.py",
+    "tools/b2_sandbox_readiness.py",
+}
 
 _CLOSED_SOURCE_CONTROLS = [
     "sandbox_provider_fail_closed_for_unknown_provider",
@@ -250,21 +256,21 @@ _ROLLBACK_ASSUMPTIONS_PRECONDITIONS = [
     "rollback is scoped to verifier-owned or selected-workflow sandbox resources",
     "operator has current release evidence for the image and runtime subject being rolled back",
     "no broad Docker socket mount or ordinary-user high-risk sandbox exposure is enabled by this contract",
-    "resource limits, egress policy, and security options remain separate open gates",
+    "resource limits, egress policy, and security options remain separately visible when still open",
 ]
 
 _ROLLBACK_ASSUMPTIONS_FAILURE_CONDITIONS = [
     "active same-scope sandbox lease cannot be released",
     "verifier-owned container cannot be stopped or identified safely",
     "Admin Runtime sandbox overview cannot be read by same-tenant admin",
-    "B2 readiness stops reporting remaining hardening gaps as open",
+    "B2 readiness stops reporting remaining issue, source, or hardening boundaries accurately",
 ]
 
 _ROLLBACK_ASSUMPTIONS_AFTER_EVIDENCE = [
     "Admin Runtime sandbox overview shows zero verifier-owned active containers or active leases",
     "selected workflow is disabled or restored to fake/test-only provider posture",
     "orphan cleanup scan completed for same tenant/workspace/user/session/run scope",
-    "B2 readiness still reports resource limits, egress, and security options as open",
+    "B2 readiness still reports any remaining issue, source, or hardening boundary as open",
     "operator issue comment records source/runtime subject, command result, and residual caveats",
 ]
 
@@ -605,7 +611,7 @@ def _issue_closure_boundary_evidence(repo_root: Path) -> dict[str, Any]:
             "status": "open_missing_issue_closure_evidence",
             "closed_gap": None,
             "issue": ISSUE,
-            "required_next_step": "record reviewed local issue-closure evidence for #89 before closing this boundary",
+            "required_next_step": f"record reviewed local issue-closure evidence for {ISSUE} before closing this boundary",
             "does_not_close_broader_b2_g7_gate": True,
         }
     return {
@@ -634,6 +640,23 @@ def _runtime_subject_commit_from_evidence(
     return value if isinstance(value, str) else ""
 
 
+def _resolve_b2_runtime_affecting_changes_between(
+    base_commit: str,
+    source_tree_commit: str,
+) -> list[str] | None:
+    changes = _resolve_source_runtime_affecting_changes_between(
+        base_commit,
+        source_tree_commit,
+    )
+    if changes is None:
+        return None
+    return [
+        path
+        for path in changes
+        if path.replace("\\", "/").strip() not in _B2_RUNTIME_NEUTRAL_EXACT_PATHS
+    ]
+
+
 def _merged_source_runtime_review(
     repo_root: Path,
     runtime_acceptance_evidence: dict[str, dict[str, Any]],
@@ -650,7 +673,7 @@ def _merged_source_runtime_review(
             "required_next_step": "record reviewed 211 B2 sandbox smoke evidence before reviewing merged-source drift",
             "does_not_close_broader_b2_g7_gate": True,
         }
-    runtime_affecting_changes = _resolve_runtime_affecting_changes_between(
+    runtime_affecting_changes = _resolve_b2_runtime_affecting_changes_between(
         runtime_subject,
         current_source,
     )
@@ -685,7 +708,7 @@ def _merged_source_runtime_review(
     }
 
 
-def _rollback_assumptions_contract() -> dict[str, Any]:
+def _rollback_assumptions_contract(open_hardening_runtime_gaps: list[str]) -> dict[str, Any]:
     return {
         "status": "recorded_source_operator_contract",
         "closed_gap": "rollback_assumptions_evidence",
@@ -696,7 +719,7 @@ def _rollback_assumptions_contract() -> dict[str, Any]:
         "preconditions": list(_ROLLBACK_ASSUMPTIONS_PRECONDITIONS),
         "failure_conditions": list(_ROLLBACK_ASSUMPTIONS_FAILURE_CONDITIONS),
         "required_after_rollback_evidence": list(_ROLLBACK_ASSUMPTIONS_AFTER_EVIDENCE),
-        "remaining_hardening_gaps": list(_PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED),
+        "remaining_hardening_gaps": list(open_hardening_runtime_gaps),
         "non_expansion_invariants": {
             **dict(_B2_NON_EXPANSION_INVARIANTS),
             "department_rollout_allowed": False,
@@ -704,7 +727,9 @@ def _rollback_assumptions_contract() -> dict[str, Any]:
     }
 
 
-def _hardening_policy_contracts() -> dict[str, dict[str, Any]]:
+def _hardening_policy_contracts(
+    open_hardening_runtime_gaps: list[str],
+) -> dict[str, dict[str, Any]]:
     return {
         gap: {
             "status": "recorded_source_policy_contract",
@@ -712,8 +737,16 @@ def _hardening_policy_contracts() -> dict[str, dict[str, Any]]:
             "does_not_close_broader_b2_g7_gate": True,
             "does_not_claim_docker_sandbox_production_hardening": True,
             "required_controls": list(contract["required_controls"]),
-            "runtime_evidence_required": list(contract["runtime_evidence_required"]),
-            "remaining_runtime_gap": contract["remaining_runtime_gap"],
+            "runtime_evidence_required": (
+                list(contract["runtime_evidence_required"])
+                if gap in open_hardening_runtime_gaps
+                else []
+            ),
+            "remaining_runtime_gap": (
+                contract["remaining_runtime_gap"]
+                if gap in open_hardening_runtime_gaps
+                else None
+            ),
         }
         for gap, contract in _HARDENING_POLICY_CONTRACTS.items()
     }
@@ -736,6 +769,11 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
         gap
         for gap in _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED
         if hardening_runtime_evidence.get(gap) == "verified_211_runtime_acceptance"
+    ]
+    open_hardening_runtime_gaps = [
+        gap
+        for gap in _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED
+        if gap not in closed_hardening_runtime_gaps
     ]
     gate_boundary_evidence = {
         ISSUE_CLOSURE_GAP: _issue_closure_boundary_evidence(root),
@@ -760,11 +798,7 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
             for gap in [ISSUE_CLOSURE_GAP, RUNTIME_SOURCE_REVIEW_GAP]
             if gap not in closed_gate_boundary_gaps
         ]
-        open_gaps.extend(
-            gap
-            for gap in _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED
-            if gap not in closed_hardening_runtime_gaps
-        )
+        open_gaps.extend(open_hardening_runtime_gaps)
     if b2_smoke_recorded and len(closed_hardening_runtime_gaps) == len(
         _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED
     ):
@@ -820,7 +854,7 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
             "status_label_before_smoke": "local partial",
             "status_label_after_smoke_before_review": "local partial",
             "smoke_without_reviewed_evidence_status": "runtime_smoke_recorded_review_required",
-            "status_label_after_reviewed_evidence": "211 verified",
+            "status_label_after_reviewed_evidence": "local partial",
             "reviewed_evidence_required_for_211_verified": True,
             "does_not_close_b2_gate_by_itself": True,
             "verifier_required_checks": list(_VERIFIER_REQUIRED_CHECKS),
@@ -831,9 +865,7 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
             "hardening_evidence_class": dict(_HARDENING_EVIDENCE_CLASS),
             "required_non_expansion_invariants": dict(_NON_EXPANSION_INVARIANTS),
             "verifier_required_evidence_sections": list(_VERIFIER_REQUIRED_EVIDENCE_SECTIONS),
-            "prd_b2_g7_requirements_not_yet_verified": list(
-                _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED
-            ),
+            "prd_b2_g7_requirements_not_yet_verified": list(open_hardening_runtime_gaps),
             "verifier_required_runtime_evidence": [
                 "platform lease record for tenant/workspace/user/session/run",
                 "Docker/equivalent launch selected by platform policy",
@@ -855,16 +887,15 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
         "closed_runtime_gaps": closed_runtime_gaps,
         "closed_gate_boundary_gaps": closed_gate_boundary_gaps,
         "gate_boundary_evidence": gate_boundary_evidence,
-        "broader_b2_g7_open_requirements": list(_PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED),
-        "hardening_policy_contracts": _hardening_policy_contracts(),
-        "rollback_assumptions": _rollback_assumptions_contract(),
+        "broader_b2_g7_open_requirements": list(open_hardening_runtime_gaps),
+        "hardening_policy_contracts": _hardening_policy_contracts(open_hardening_runtime_gaps),
+        "rollback_assumptions": _rollback_assumptions_contract(open_hardening_runtime_gaps),
         "runtime_acceptance_evidence": runtime_acceptance_evidence,
         "non_expansion_invariants": dict(_B2_NON_EXPANSION_INVARIANTS),
         "evidence_policy": (
-            "B2 can become `211 verified` only after reviewed, redacted 211 Docker/equivalent "
-            "sandbox smoke evidence proves launch, command execution, callback, cancel, cleanup, "
-            "orphan prevention, artifact/event return, and projection redaction for merged source. "
-            "Existing fake-provider and source-regression evidence stay `local partial`."
+            "B2 remains `local partial` until the current issue boundary, reviewed release evidence, "
+            "and required 211 smoke/readiness evidence are all complete. Reviewed fake-provider, "
+            "source-regression, or runtime-hardening evidence by itself does not complete gate closure."
         ),
     }
 
@@ -900,8 +931,10 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
         )
         issue_closure_lines = (
             f"- status: `{issue_closure.get('status')}`\n"
+            f"- issue: `{issue_closure.get('issue')}`\n"
             f"- path: `{issue_closure.get('path')}`\n"
             f"- closed at: `{issue_closure.get('closed_at')}`\n"
+            f"- required next step: `{issue_closure.get('required_next_step')}`\n"
             "- linked PRs:\n"
             f"{linked_pr_lines}\n"
             "- evidence refs:\n"
@@ -943,26 +976,32 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
     ) or "- none"
     pending_prd_requirements = "\n".join(
         f"- `{item}`" for item in readiness["broader_b2_g7_open_requirements"]
-    )
+    ) or "- none"
     hardening_policy_contracts = []
     for gap, contract in readiness.get("hardening_policy_contracts", {}).items():
         required_controls = "\n".join(
             f"  - `{item}`" for item in contract.get("required_controls", [])
         ) or "  - none"
-        runtime_evidence_items = "\n".join(
-            f"  - {item}" for item in contract.get("runtime_evidence_required", [])
-        ) or "  - none"
+        remaining_runtime_gap = contract.get("remaining_runtime_gap")
+        remaining_runtime_lines = ""
+        if remaining_runtime_gap:
+            runtime_evidence_items = "\n".join(
+                f"  - {item}" for item in contract.get("runtime_evidence_required", [])
+            ) or "  - none"
+            remaining_runtime_lines = (
+                f"- remaining runtime gap: `{remaining_runtime_gap}`\n"
+                "\nRuntime evidence still required:\n\n"
+                f"{runtime_evidence_items}\n\n"
+            )
         hardening_policy_contracts.append(
             f"### {gap}\n\n"
             f"- status: `{contract.get('status')}`\n"
             f"- evidence level: `{contract.get('evidence_level')}`\n"
-            f"- remaining runtime gap: `{contract.get('remaining_runtime_gap')}`\n"
+            f"{remaining_runtime_lines}"
             f"- does not close broader B2/G7 gate: `{str(contract.get('does_not_close_broader_b2_g7_gate')).lower()}`\n"
             f"- does not claim Docker sandbox production hardening: `{str(contract.get('does_not_claim_docker_sandbox_production_hardening')).lower()}`\n\n"
             "Required controls:\n\n"
-            f"{required_controls}\n\n"
-            "Runtime evidence still required:\n\n"
-            f"{runtime_evidence_items}"
+            f"{required_controls}"
         )
     hardening_policy_contract_lines = "\n\n".join(hardening_policy_contracts) or "- none"
     rollback = readiness.get("rollback_assumptions", {})
@@ -1006,7 +1045,7 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"- smoke status before reviewed evidence: `{runtime['status_label_after_smoke_before_review']}`\n"
         f"- smoke-without-review status: `{runtime['smoke_without_reviewed_evidence_status']}`\n"
         f"- target status after reviewed evidence: `{runtime['status_label_after_reviewed_evidence']}`\n"
-        f"- reviewed evidence required for 211 verified: `{str(runtime['reviewed_evidence_required_for_211_verified']).lower()}`\n"
+        f"- reviewed evidence required before elevated status: `{str(runtime['reviewed_evidence_required_for_211_verified']).lower()}`\n"
         f"- does not close B2 gate by itself: `{str(runtime['does_not_close_b2_gate_by_itself']).lower()}`\n\n"
         f"- runtime probe results schema: `{runtime.get('runtime_probe_results_schema_version')}`\n"
         f"- runtime probe results flag: `{runtime.get('runtime_probe_results_cli_flag')}`\n"
@@ -1019,7 +1058,7 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"{required_sections}\n\n"
         "Verifier-required runtime evidence:\n\n"
         f"{runtime_evidence}\n\n"
-        "PRD B2/G7 requirements not yet verifier-checked:\n\n"
+        "PRD B2/G7 runtime hardening requirements still open:\n\n"
         f"{pending_prd_requirements}\n\n"
         "## Hardening Policy Contracts\n\n"
         f"{hardening_policy_contract_lines}\n\n"
