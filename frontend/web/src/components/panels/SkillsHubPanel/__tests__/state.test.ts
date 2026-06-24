@@ -99,3 +99,33 @@ test("marks the hub forbidden only after the catalog API proves permission denia
   assert.equal(state.authProjectionHasPermission, false);
   assert.equal(state.governedUnavailable, true);
 });
+
+test("keeps settings permission gaps degraded until the catalog API denies public read", () => {
+  const state = resolveSkillsHubGovernance({
+    requestedTab: "skills",
+    isAuthenticated: true,
+    canReadSkills: false,
+    canReadMarketplace: false,
+    projectionError: "missing_permission:settings:read",
+  });
+
+  assert.equal(state.hasPermission, true);
+  assert.equal(state.governedUnavailable, false);
+  assert.equal(state.degraded, true);
+  assert.equal(state.pageState, "degraded");
+});
+
+test("keeps catalog permission denial authoritative over settings degradation", () => {
+  const state = resolveSkillsHubGovernance({
+    requestedTab: "marketplace",
+    isAuthenticated: true,
+    canReadSkills: false,
+    canReadMarketplace: false,
+    catalogPermissionDenied: true,
+    projectionError: "settings projection unavailable",
+  });
+
+  assert.equal(state.hasPermission, false);
+  assert.equal(state.governedUnavailable, true);
+  assert.equal(state.pageState, "forbidden");
+});

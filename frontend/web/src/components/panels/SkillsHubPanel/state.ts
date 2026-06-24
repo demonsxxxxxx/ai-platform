@@ -1,3 +1,5 @@
+import type { FrontendGovernanceState } from "../../governance/frontendGovernanceState";
+
 export type SkillsHubTab = "skills" | "marketplace";
 
 export interface SkillsHubGovernanceInput {
@@ -11,6 +13,7 @@ export interface SkillsHubGovernanceInput {
 }
 
 export interface SkillsHubGovernanceState {
+  pageState: FrontendGovernanceState;
   hasPermission: boolean;
   authProjectionHasPermission: boolean;
   governedUnavailable: boolean;
@@ -44,6 +47,8 @@ export function resolveSkillsHubTab(
 
 export function resolveSkillsHubGovernance({
   requestedTab,
+  isAuthenticated,
+  isLoading,
   canReadSkills,
   canReadMarketplace,
   catalogPermissionDenied,
@@ -51,21 +56,33 @@ export function resolveSkillsHubGovernance({
 }: SkillsHubGovernanceInput): SkillsHubGovernanceState {
   const authProjectionHasPermission =
     requestedTab === "marketplace" ? canReadMarketplace : canReadSkills;
+  const governedUnavailable = Boolean(catalogPermissionDenied);
+  const pageState: FrontendGovernanceState = isLoading
+    ? "loading"
+    : !isAuthenticated
+      ? "logged-out"
+      : governedUnavailable
+        ? "forbidden"
+        : projectionError
+          ? "degraded"
+          : "ready";
 
   if (requestedTab === "marketplace") {
     return {
-      hasPermission: !catalogPermissionDenied,
+      pageState,
+      hasPermission: !governedUnavailable,
       authProjectionHasPermission,
-      governedUnavailable: Boolean(catalogPermissionDenied),
+      governedUnavailable,
       requiredPermission: "marketplace:read",
       degraded: Boolean(projectionError),
     };
   }
 
   return {
-    hasPermission: !catalogPermissionDenied,
+    pageState,
+    hasPermission: !governedUnavailable,
     authProjectionHasPermission,
-    governedUnavailable: Boolean(catalogPermissionDenied),
+    governedUnavailable,
     requiredPermission: "skill:read",
     degraded: Boolean(projectionError),
   };

@@ -5,7 +5,6 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useSettingsContext } from "../../contexts/SettingsContext";
 import { useAuth } from "../../hooks/useAuth";
 import { Permission } from "../../types";
-import { resolveFrontendGovernanceState } from "../governance/frontendGovernanceState";
 import { PanelHeader } from "../common/PanelHeader";
 import { MarketplacePanel } from "./MarketplacePanel";
 import { SkillsPanel } from "./SkillsPanel";
@@ -58,15 +57,7 @@ export function SkillsHubPanel() {
     catalogPermissionDenied: catalogPermissionDeniedByTab[requestedTab],
     projectionError: settingsError,
   });
-  const governanceState = resolveFrontendGovernanceState({
-    isAuthenticated,
-    isLoading: authLoading || settingsLoading,
-    hasWorkspace: true,
-    hasPermission: hubGovernance.hasPermission,
-    featureEnabled: true,
-    projectionError: settingsError,
-    degraded: hubGovernance.degraded,
-  });
+  const governanceState = hubGovernance.pageState;
   const statusCopyKey =
     governanceState === "ready"
       ? "ready"
