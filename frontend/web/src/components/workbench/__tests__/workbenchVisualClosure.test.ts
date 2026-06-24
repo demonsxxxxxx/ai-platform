@@ -40,6 +40,24 @@ test("authenticated workbench source avoids marketing and nested-card patterns",
   assert.match(tabContent, /data-authenticated-workbench-page/);
 });
 
+test("post-login routes do not fall back to public landing or split backgrounds", () => {
+  const tabContent = read("src/components/layout/AppContent/TabContent.tsx");
+  const launchpad = read("src/components/launchpad/LaunchpadPanel.tsx");
+  const sidebar = read(
+    "src/components/panels/SidebarParts/SessionListContent.tsx",
+  );
+
+  assert.match(
+    tabContent,
+    /className="flex-1 overflow-hidden bg-\[var\(--theme-workbench-canvas\)\]"/,
+  );
+  assert.doesNotMatch(tabContent, /className="flex-1 overflow-hidden bg-\[var\(--theme-bg\)\]"/);
+  assert.match(launchpad, /bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.doesNotMatch(launchpad, /bg-\[var\(--theme-bg\)\]/);
+  assert.doesNotMatch(sidebar, /href=\{APP_HOME_URL\}/);
+  assert.match(sidebar, /onClick=\{onNewSession\}/);
+});
+
 test("workbench right context uses the same canvas as the main workspace", () => {
   const surface = read("src/components/workbench/workbenchSurface.ts");
   const rightPanel = read("src/components/workbench/WorkbenchRightPanel.tsx");

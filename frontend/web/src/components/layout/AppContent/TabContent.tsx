@@ -113,7 +113,7 @@ export function TabContent({
   if (routeUnavailable) {
     return (
       <main
-        className="flex-1 overflow-hidden bg-[var(--theme-bg)]"
+        className="flex-1 overflow-hidden bg-[var(--theme-workbench-canvas)]"
         data-authenticated-workbench-page={activeTab}
         data-frontend-governance-state={routeUnavailable.state}
       >
@@ -130,7 +130,7 @@ export function TabContent({
 
   return (
     <main
-      className="flex-1 overflow-hidden bg-[var(--theme-bg)]"
+      className="flex-1 overflow-hidden bg-[var(--theme-workbench-canvas)]"
       data-authenticated-workbench-page={activeTab}
     >
       <div className="flex h-full w-full flex-col">

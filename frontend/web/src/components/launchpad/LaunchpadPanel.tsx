@@ -82,7 +82,7 @@ export function LaunchpadPanel() {
   return (
     <section
       data-launchpad-workbench
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] px-3 pb-3 text-slate-950 dark:bg-stone-950 dark:text-stone-100 sm:px-4"
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] px-3 pb-3 text-slate-950 dark:bg-stone-950 dark:text-stone-100 sm:px-4"
     >
       <div className="shrink-0 border-b border-slate-200/80 py-3 dark:border-stone-800">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
