@@ -69,6 +69,37 @@ class RecordingConnection:
 
 
 @pytest.mark.asyncio
+async def test_tenant_exists_checks_tenant_identity():
+    class ExistingTenantCursor:
+        async def fetchone(self):
+            return {"exists": 1}
+
+    class MissingTenantCursor:
+        async def fetchone(self):
+            return None
+
+    class TenantConnection:
+        def __init__(self, cursor):
+            self.cursor = cursor
+            self.sql = ""
+            self.params = None
+
+        async def execute(self, sql, params):
+            self.sql = " ".join(sql.split())
+            self.params = params
+            return self.cursor
+
+    existing_conn = TenantConnection(ExistingTenantCursor())
+    missing_conn = TenantConnection(MissingTenantCursor())
+
+    assert await repositories.tenant_exists(existing_conn, tenant_id="tenant-a") is True
+    assert "from tenants where id = %s" in existing_conn.sql
+    assert existing_conn.params == ("tenant-a",)
+    assert await repositories.tenant_exists(missing_conn, tenant_id="tenant-b") is False
+    assert missing_conn.params == ("tenant-b",)
+
+
+@pytest.mark.asyncio
 async def test_count_active_runs_for_user_counts_queued_and_running_only():
     conn = FakeConnection()
 
