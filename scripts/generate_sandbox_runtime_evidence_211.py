@@ -92,6 +92,8 @@ def _runtime_probe_section_error(section_name: str, section: dict[str, Any], *, 
             return "runtime probe results missing: egress_policy.callback_probe_status"
         if section.get("policy_source") != "platform_policy":
             return "runtime probe results missing: egress_policy.policy_source"
+        if section.get("probe_source") != "runtime_probe_results":
+            return "runtime probe results missing: egress_policy.probe_source"
         return None
     if section_name == "security_options":
         if section.get("privileged") is not False:
@@ -476,6 +478,88 @@ def _docker_security_options(docker_inspect: dict[str, Any] | None) -> dict[str,
     }
 
 
+def _callback_delivered(callbacks: list[dict[str, object]] | None) -> bool:
+    if not isinstance(callbacks, list):
+        return False
+    statuses = {str(item.get("status") or "") for item in callbacks if isinstance(item, dict)}
+    return bool(statuses & TERMINAL_STATUSES)
+
+
+def _docker_config_labels(docker_inspect: dict[str, Any] | None) -> dict[str, str]:
+    if not isinstance(docker_inspect, dict):
+        return {}
+    config = docker_inspect.get("Config")
+    labels = config.get("Labels") if isinstance(config, dict) else None
+    if not isinstance(labels, dict):
+        return {}
+    return {str(key): str(value) for key, value in labels.items()}
+
+
+def _docker_egress_network_name(docker_inspect: dict[str, Any] | None) -> str:
+    labels = _docker_config_labels(docker_inspect)
+    return str(labels.get("ai-platform.egress.network") or "")
+
+
+def _docker_network_masquerade_disabled(
+    docker_network_inspect: dict[str, Any] | None,
+    *,
+    expected_network_name: str,
+) -> bool:
+    if not isinstance(docker_network_inspect, dict) or not expected_network_name:
+        return False
+    if str(docker_network_inspect.get("Name") or "") != expected_network_name:
+        return False
+    if str(docker_network_inspect.get("Driver") or "") != "bridge":
+        return False
+    options = docker_network_inspect.get("Options")
+    if not isinstance(options, dict):
+        return False
+    return str(options.get("com.docker.network.bridge.enable_ip_masquerade") or "").lower() == "false"
+
+
+def _platform_no_masq_egress_probe(
+    *,
+    docker_inspect: dict[str, Any] | None,
+    docker_network_inspect: dict[str, Any] | None,
+    callbacks: list[dict[str, object]] | None,
+) -> dict[str, Any]:
+    if not isinstance(docker_inspect, dict) or not _callback_delivered(callbacks):
+        return {}
+    labels = _docker_config_labels(docker_inspect)
+    if labels.get("ai-platform.egress.policy") != "default-deny-no-masq":
+        return {}
+    network_name = str(labels.get("ai-platform.egress.network") or "")
+    callback_host = str(labels.get("ai-platform.egress.callback_host") or "")
+    if not network_name or not callback_host:
+        return {}
+    host_config = _docker_host_config(docker_inspect)
+    if host_config.get("NetworkMode") != network_name:
+        return {}
+    network_settings = docker_inspect.get("NetworkSettings")
+    networks = network_settings.get("Networks") if isinstance(network_settings, dict) else None
+    if not isinstance(networks, dict) or network_name not in networks:
+        return {}
+    extra_hosts = [str(item) for item in host_config.get("ExtraHosts") or []]
+    if f"{callback_host}:host-gateway" not in extra_hosts:
+        return {}
+    if not _docker_network_masquerade_disabled(docker_network_inspect, expected_network_name=network_name):
+        return {}
+    return {
+        "default_deny_outbound": False,
+        "platform_allowlist_enforced": False,
+        "callback_exception_scoped_to_run_token": True,
+        "denied_egress_redacted": False,
+        "denied_target": "",
+        "denied_probe_error_code": "",
+        "allowed_callback_host": callback_host,
+        "callback_probe_status": "delivered",
+        "policy_source": "not_runtime_verified",
+        "probe_source": "docker_network_inspect",
+        "network_inspection_verified": True,
+        "docker_network_masquerade_disabled": True,
+    }
+
+
 def _platform_hardening_evidence(
     *,
     run_id: str,
@@ -485,11 +569,21 @@ def _platform_hardening_evidence(
     release_reason: str,
     resource_limits: dict[str, Any] | None = None,
     docker_inspect: dict[str, Any] | None = None,
+    docker_network_inspect: dict[str, Any] | None = None,
     runtime_probe_results: dict[str, Any] | None = None,
+    callbacks: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     limits = resource_limits if isinstance(resource_limits, dict) else {}
     resource_probe = _runtime_probe_section(runtime_probe_results, "resource_limits")
     egress_probe = _runtime_probe_section(runtime_probe_results, "egress_policy")
+    if egress_probe:
+        egress_probe = {**egress_probe, "probe_source": str(egress_probe.get("probe_source") or "runtime_probe_results")}
+    else:
+        egress_probe = _platform_no_masq_egress_probe(
+            docker_inspect=docker_inspect,
+            docker_network_inspect=docker_network_inspect,
+            callbacks=callbacks,
+        )
     security_options = _docker_security_options(docker_inspect)
     bounded_error_projection = safe_bounded_error_projection(
         resource_probe.get("bounded_error_projection"),
@@ -589,6 +683,9 @@ def _platform_hardening_evidence(
             "policy_source": (
                 "platform_policy" if egress_probe.get("policy_source") == "platform_policy" else "not_runtime_verified"
             ),
+            "probe_source": str(egress_probe.get("probe_source") or ""),
+            "network_inspection_verified": egress_probe.get("network_inspection_verified") is True,
+            "docker_network_masquerade_disabled": egress_probe.get("docker_network_masquerade_disabled") is True,
         },
         "security_options": {
             "evidence_class": "live_platform_probe",
@@ -679,8 +776,15 @@ def run_platform_runtime_probe(
                 captured["recorded_run_id"] = lease.run_id
                 captured["container_name"] = lease.container_name
                 captured["workspace_container_path"] = workspace.workspace_container_path
-                captured["docker_inspect"] = _inspect_docker_container(
+                docker_inspect = _inspect_docker_container(
                     lease.container_name,
+                    docker_cmd=docker_cmd,
+                    run=run,
+                )
+                captured["docker_inspect"] = docker_inspect
+                network_name = _docker_egress_network_name(docker_inspect)
+                captured["docker_network_inspect"] = _inspect_docker_network(
+                    network_name,
                     docker_cmd=docker_cmd,
                     run=run,
                 )
@@ -751,7 +855,11 @@ def run_platform_runtime_probe(
         release_reason=captured.get("release_reason") or "",
         resource_limits={"max_seconds": 60, "memory_mb": 512, "cpu_count": 0.5, "pids_limit": 128},
         docker_inspect=captured.get("docker_inspect") if isinstance(captured.get("docker_inspect"), dict) else None,
+        docker_network_inspect=captured.get("docker_network_inspect")
+        if isinstance(captured.get("docker_network_inspect"), dict)
+        else None,
         runtime_probe_results=derived_runtime_probe_results,
+        callbacks=recorder.callbacks,
     )
     output = {
         "status": str(getattr(result, "status", "")),
@@ -787,6 +895,31 @@ def _inspect_docker_container(
         return None
     completed = _run_docker(
         [*docker_cmd, "inspect", container_name],
+        run=run,
+        timeout=30,
+        check=False,
+    )
+    if getattr(completed, "returncode", 1) != 0:
+        return None
+    try:
+        payload = json.loads(str(getattr(completed, "stdout", "") or "[]"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
+        return None
+    return dict(payload[0])
+
+
+def _inspect_docker_network(
+    network_name: str,
+    *,
+    docker_cmd: tuple[str, ...],
+    run: Callable[..., Any],
+) -> dict[str, Any] | None:
+    if not network_name:
+        return None
+    completed = _run_docker(
+        [*docker_cmd, "network", "inspect", network_name],
         run=run,
         timeout=30,
         check=False,

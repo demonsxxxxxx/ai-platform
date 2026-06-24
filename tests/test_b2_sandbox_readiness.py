@@ -882,6 +882,7 @@ def test_b2_sandbox_readiness_tracks_current_verifier_and_generator_contract():
             "allowed_callback_host",
             "callback_probe_status=delivered",
             "policy_source=platform_policy",
+            "probe_source=runtime_probe_results",
         ],
         "security_options": [
             "privileged=false",

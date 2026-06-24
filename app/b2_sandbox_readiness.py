@@ -172,6 +172,7 @@ _RUNTIME_PROBE_RESULTS_REQUIRED_SECTION_FIELDS = {
         "allowed_callback_host",
         "callback_probe_status=delivered",
         "policy_source=platform_policy",
+        "probe_source=runtime_probe_results",
     ],
     "security_options": [
         "privileged=false",

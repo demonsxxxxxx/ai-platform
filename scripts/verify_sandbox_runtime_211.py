@@ -164,6 +164,7 @@ REQUIRED_HARDENING_FLAGS = {
         "allowed_callback_host",
         "callback_probe_status",
         "policy_source",
+        "probe_source",
     ],
     "security_options": [
         "evidence_class",
@@ -620,6 +621,8 @@ def _egress_policy_hardening_error(section: dict[str, Any]) -> str | None:
         return "hardening evidence missing: egress_policy.callback_probe_status"
     if section.get("policy_source") != "platform_policy":
         return "hardening evidence missing: egress_policy.policy_source"
+    if section.get("probe_source") != "runtime_probe_results":
+        return "hardening evidence missing: egress_policy.probe_source"
     return None
 
 

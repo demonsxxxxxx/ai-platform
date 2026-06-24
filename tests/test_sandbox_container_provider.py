@@ -135,6 +135,22 @@ class FakeDockerContainers:
         return self._client.containers_by_name[name]
 
 
+class FakeDockerNetworks:
+    def __init__(self, client: "FakeDockerClient") -> None:
+        self._client = client
+
+    def get(self, name: str) -> dict[str, Any]:
+        if name not in self._client.networks_by_name:
+            raise KeyError(name)
+        return self._client.networks_by_name[name]
+
+    def create(self, name: str, **kwargs) -> dict[str, Any]:
+        network = {"name": name, **kwargs}
+        self._client.networks_by_name[name] = network
+        self._client.network_create_calls.append((name, kwargs))
+        return network
+
+
 class FakeDockerClient:
     def __init__(
         self,
@@ -152,7 +168,10 @@ class FakeDockerClient:
         self.host_port = host_port
         self.created: list[dict[str, Any]] = []
         self.containers_by_name: dict[str, FakeDockerContainer] = {}
+        self.networks_by_name: dict[str, dict[str, Any]] = {}
+        self.network_create_calls: list[tuple[str, dict[str, Any]]] = []
         self.containers = FakeDockerContainers(self)
+        self.networks = FakeDockerNetworks(self)
         self.ping_count = 0
 
     def ping(self) -> None:
@@ -497,6 +516,192 @@ async def test_docker_provider_maps_resource_limits_to_docker_create_kwargs_with
     assert created["pids_limit"] == 128
     assert created["storage_opt"] == {"size": "1024m"}
     assert "network_disabled" not in created
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_uses_platform_egress_network_without_disabling_published_executor_port(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+
+    fake = FakeDockerClient()
+    monkeypatch.setattr(
+        container_provider,
+        "get_settings",
+        lambda: type(
+            "StubSettings",
+            (),
+            {
+                "sandbox_container_start_timeout_seconds": 30,
+                "sandbox_executor_health_timeout_seconds": 60,
+                "sandbox_executor_image": "ai-platform-executor:dev",
+                "sandbox_executor_published_host": "127.0.0.1",
+                "sandbox_callback_base_url": "http://host.docker.internal:8000",
+                "sandbox_egress_policy_enabled": True,
+                "sandbox_egress_network_name": "ai-platform-sandbox-egress",
+                "sandbox_callback_host_gateway": "host.docker.internal",
+            },
+        )(),
+    )
+    provider = container_provider.DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+
+    await provider.create_or_reuse(request(), workspace())
+
+    created = fake.created[0]
+    assert fake.network_create_calls == [
+        (
+            "ai-platform-sandbox-egress",
+            {
+                "driver": "bridge",
+                "options": {"com.docker.network.bridge.enable_ip_masquerade": "false"},
+            },
+        )
+    ]
+    assert created["network"] == "ai-platform-sandbox-egress"
+    assert created["extra_hosts"] == {"host.docker.internal": "host-gateway"}
+    assert created["ports"] == {"18000/tcp": None}
+    assert created["labels"]["ai-platform.egress.policy"] == "default-deny-no-masq"
+    assert created["labels"]["ai-platform.egress.network"] == "ai-platform-sandbox-egress"
+    assert created["labels"]["ai-platform.egress.callback_host"] == "host.docker.internal"
+    assert "network_disabled" not in created
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_rejects_existing_egress_network_when_masquerade_is_enabled(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+
+    fake = FakeDockerClient()
+    fake.networks_by_name["ai-platform-sandbox-egress"] = {
+        "name": "ai-platform-sandbox-egress",
+        "options": {"com.docker.network.bridge.enable_ip_masquerade": "true"},
+    }
+    monkeypatch.setattr(
+        container_provider,
+        "get_settings",
+        lambda: type(
+            "StubSettings",
+            (),
+            {
+                "sandbox_container_start_timeout_seconds": 30,
+                "sandbox_executor_health_timeout_seconds": 60,
+                "sandbox_executor_image": "ai-platform-executor:dev",
+                "sandbox_executor_published_host": "127.0.0.1",
+                "sandbox_callback_base_url": "http://host.docker.internal:8000",
+                "sandbox_egress_policy_enabled": True,
+                "sandbox_egress_network_name": "ai-platform-sandbox-egress",
+                "sandbox_callback_host_gateway": "host.docker.internal",
+            },
+        )(),
+    )
+    provider = container_provider.DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+
+    with pytest.raises(container_provider.ContainerStartFailedError):
+        await provider.create_or_reuse(request(), workspace())
+
+    assert fake.created == []
+    assert fake.network_create_calls == []
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_rejects_reused_container_missing_required_egress_labels(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+
+    fake = FakeDockerClient()
+    fake.networks_by_name["ai-platform-sandbox-egress"] = {
+        "name": "ai-platform-sandbox-egress",
+        "options": {"com.docker.network.bridge.enable_ip_masquerade": "false"},
+    }
+    monkeypatch.setattr(
+        container_provider,
+        "get_settings",
+        lambda: type(
+            "StubSettings",
+            (),
+            {
+                "sandbox_container_start_timeout_seconds": 30,
+                "sandbox_executor_health_timeout_seconds": 60,
+                "sandbox_executor_image": "ai-platform-executor:dev",
+                "sandbox_executor_published_host": "127.0.0.1",
+                "sandbox_callback_base_url": "http://host.docker.internal:8000",
+                "sandbox_egress_policy_enabled": True,
+                "sandbox_egress_network_name": "ai-platform-sandbox-egress",
+                "sandbox_callback_host_gateway": "host.docker.internal",
+            },
+        )(),
+    )
+    stale_labels = {
+        "ai-platform.owner": "sandbox-runtime",
+        "ai-platform.tenant_id": "tenant-a",
+        "ai-platform.workspace_id": "workspace-a",
+        "ai-platform.user_id": "user-a",
+        "ai-platform.session_id": "session-a",
+        "ai-platform.run_id": "run-a",
+        "ai-platform.sandbox_mode": "ephemeral",
+        "ai-platform.browser_enabled": "false",
+    }
+    stale = FakeDockerContainer(
+        image="ai-platform-executor:dev",
+        name="executor-exec-run-a",
+        detach=True,
+        labels=stale_labels,
+        volumes={},
+        environment={},
+        ports={"18000/tcp": None},
+    )
+    stale.status = "running"
+    fake.containers_by_name[stale.name] = stale
+    provider = container_provider.DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+
+    with pytest.raises(container_provider.ContainerStartFailedError):
+        await provider.create_or_reuse(request(), workspace())
+
+    assert fake.created == []
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_cached_lease_keeps_required_egress_labels(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+
+    fake = FakeDockerClient()
+    monkeypatch.setattr(
+        container_provider,
+        "get_settings",
+        lambda: type(
+            "StubSettings",
+            (),
+            {
+                "sandbox_container_start_timeout_seconds": 30,
+                "sandbox_executor_health_timeout_seconds": 60,
+                "sandbox_executor_image": "ai-platform-executor:dev",
+                "sandbox_executor_published_host": "127.0.0.1",
+                "sandbox_callback_base_url": "http://host.docker.internal:8000",
+                "sandbox_egress_policy_enabled": True,
+                "sandbox_egress_network_name": "ai-platform-sandbox-egress",
+                "sandbox_callback_host_gateway": "host.docker.internal",
+            },
+        )(),
+    )
+    provider = container_provider.DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+
+    first_lease = await provider.create_or_reuse(request(), workspace())
+
+    assert first_lease.labels["ai-platform.egress.policy"] == "default-deny-no-masq"
+    assert first_lease.labels["ai-platform.egress.network"] == "ai-platform-sandbox-egress"
+    assert first_lease.labels["ai-platform.egress.callback_host"] == "host.docker.internal"
+    reused_lease = await provider.create_or_reuse(request(), workspace())
+
+    assert reused_lease.container_id == first_lease.container_id
+    assert len(fake.created) == 1
 
 
 @pytest.mark.asyncio

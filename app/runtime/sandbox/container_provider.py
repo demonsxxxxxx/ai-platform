@@ -164,7 +164,7 @@ def _container_status_from_labels(container: Any) -> ContainerStatus | None:
 
 
 def _status_matches_lease(status: ContainerStatus, lease: ContainerLease) -> bool:
-    return (
+    if not (
         status.tenant_id == lease.tenant_id
         and status.workspace_id == lease.workspace_id
         and status.user_id == lease.user_id
@@ -172,7 +172,15 @@ def _status_matches_lease(status: ContainerStatus, lease: ContainerLease) -> boo
         and status.run_id == lease.run_id
         and status.sandbox_mode == lease.sandbox_mode
         and status.browser_enabled == lease.browser_enabled
-    )
+    ):
+        return False
+    labels = status.detail.get("labels")
+    if not isinstance(labels, dict):
+        labels = {}
+    for key, expected in lease.labels.items():
+        if str(key).startswith("ai-platform.egress.") and str(labels.get(key) or "") != expected:
+            return False
+    return True
 
 
 def _positive_int_limit(resource_limits: dict[str, Any], key: str) -> int | None:
@@ -221,6 +229,80 @@ def _docker_security_kwargs() -> dict[str, Any]:
         "read_only": True,
         "tmpfs": {"/tmp": "rw,noexec,nosuid,size=64m"},
     }
+
+
+def _docker_network_options(network: Any) -> dict[str, str]:
+    if isinstance(network, dict):
+        raw_options = network.get("Options") or network.get("options") or {}
+    else:
+        attrs = getattr(network, "attrs", {})
+        raw_options = attrs.get("Options") if isinstance(attrs, dict) else {}
+    if not isinstance(raw_options, dict):
+        return {}
+    return {str(key): str(value).lower() for key, value in raw_options.items()}
+
+
+def _docker_network_has_no_masquerade(network: Any) -> bool:
+    options = _docker_network_options(network)
+    return options.get("com.docker.network.bridge.enable_ip_masquerade") == "false"
+
+
+def _is_network_not_found_error(exc: BaseException) -> bool:
+    if isinstance(exc, KeyError):
+        return True
+    if docker is not None:
+        not_found_error = getattr(getattr(docker, "errors", None), "NotFound", None)
+        if not_found_error is not None and isinstance(exc, not_found_error):
+            return True
+    message = str(exc).lower()
+    return "not found" in message or "no such network" in message or "404" in message
+
+
+def _docker_egress_network_kwargs(client: Any, settings: Any) -> dict[str, Any]:
+    if getattr(settings, "sandbox_egress_policy_enabled", False) is not True:
+        return {}
+    network_name = str(getattr(settings, "sandbox_egress_network_name", "") or "").strip()
+    if not network_name:
+        raise ContainerStartFailedError()
+    networks = getattr(client, "networks", None)
+    if networks is None:
+        raise ContainerStartFailedError()
+    try:
+        network = networks.get(network_name)
+    except Exception as exc:
+        if not _is_network_not_found_error(exc):
+            raise ContainerStartFailedError() from exc
+        try:
+            network = networks.create(
+                network_name,
+                driver="bridge",
+                options={"com.docker.network.bridge.enable_ip_masquerade": "false"},
+            )
+        except Exception as create_exc:
+            raise ContainerStartFailedError() from create_exc
+    if not _docker_network_has_no_masquerade(network):
+        raise ContainerStartFailedError()
+    callback_host = str(getattr(settings, "sandbox_callback_host_gateway", "") or "").strip()
+    kwargs: dict[str, Any] = {"network": network_name}
+    if callback_host:
+        kwargs["extra_hosts"] = {callback_host: "host-gateway"}
+    return kwargs
+
+
+def _egress_policy_labels(settings: Any) -> dict[str, str]:
+    if getattr(settings, "sandbox_egress_policy_enabled", False) is not True:
+        return {}
+    network_name = str(getattr(settings, "sandbox_egress_network_name", "") or "").strip()
+    callback_host = str(getattr(settings, "sandbox_callback_host_gateway", "") or "").strip()
+    if not network_name:
+        return {}
+    labels = {
+        "ai-platform.egress.policy": "default-deny-no-masq",
+        "ai-platform.egress.network": network_name,
+    }
+    if callback_host:
+        labels["ai-platform.egress.callback_host"] = callback_host
+    return labels
 
 
 def _is_permission_denied(message: str) -> bool:
@@ -388,8 +470,10 @@ class DockerContainerProvider:
             if _is_permission_denied(message):
                 raise DockerPermissionDeniedError() from exc
             raise DockerUnavailableError("Docker daemon is unavailable") from exc
+        expected_egress_labels = _egress_policy_labels(settings)
         existing = self._leases.get(container_id)
         if existing is not None:
+            existing.labels.update(expected_egress_labels)
             recovered_existing = await self._reuse_existing_container(
                 existing,
                 settings.sandbox_container_start_timeout_seconds,
@@ -401,6 +485,7 @@ class DockerContainerProvider:
             return recovered_existing
 
         bootstrap_lease = _lease_from_request("docker", request, workspace, executor_url=_executor_url())
+        bootstrap_lease.labels.update(expected_egress_labels)
         recovered = await self._reuse_existing_container(
             bootstrap_lease,
             settings.sandbox_container_start_timeout_seconds,
@@ -429,6 +514,7 @@ class DockerContainerProvider:
                     "AI_PLATFORM_CALLBACK_BASE_URL": settings.sandbox_callback_base_url,
                 },
                 ports={"18000/tcp": None},
+                **_docker_egress_network_kwargs(client, settings),
                 **_docker_security_kwargs(),
                 **_docker_resource_kwargs(request.resource_limits),
             )
@@ -473,6 +559,7 @@ class DockerContainerProvider:
                 "sandbox_healthcheck_latency_ms": sandbox_healthcheck_latency_ms,
             },
         )
+        lease.labels.update(bootstrap_lease.labels)
         self._leases[lease.container_id] = lease
         return lease
 

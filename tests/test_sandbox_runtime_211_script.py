@@ -461,6 +461,7 @@ def test_platform_runtime_hardening_requires_isolation_cleanup_and_fallback_evid
             "allowed_callback_host": "172.17.0.1",
             "callback_probe_status": "delivered",
             "policy_source": "platform_policy",
+            "probe_source": "runtime_probe_results",
         },
         "security_options": {
             "evidence_class": "live_platform_probe",
@@ -706,6 +707,36 @@ def test_no_secret_leakage_allows_safe_absence_field_names(tmp_path):
                     "denied_egress_redacted": True,
                     "authorization_header_absent": True,
                     "secret_values_absent": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = verifier.check_no_secret_leakage(evidence)
+
+    assert result.passed is True
+
+
+def test_no_secret_leakage_allows_callback_token_absent_bounded_projection(tmp_path):
+    verifier = load_verifier()
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text(
+        json.dumps(
+            {
+                "run_id": "run-a",
+                "hardening": {
+                    "resource_limits": {
+                        "bounded_error_projection": {
+                            "source": "admin_runtime_projection",
+                            "run_id": "run-a",
+                            "status": "failed",
+                            "error_code": "executor_health_timeout",
+                            "host_paths_redacted": True,
+                            "raw_docker_payload_absent": True,
+                            "callback_token_absent": True,
+                        }
+                    }
                 },
             }
         ),
@@ -1019,6 +1050,9 @@ def test_run_platform_runtime_probe_records_timings_and_hardening(tmp_path):
         "allowed_callback_host": "",
         "callback_probe_status": "",
         "policy_source": "not_runtime_verified",
+        "probe_source": "",
+        "network_inspection_verified": False,
+        "docker_network_masquerade_disabled": False,
     }
     assert recorder.hardening["security_options"] == {
         "evidence_class": "live_platform_probe",
@@ -1079,6 +1113,7 @@ def test_platform_hardening_evidence_maps_runtime_docker_inspection_and_probe_re
             "allowed_callback_host": "172.17.0.1",
             "callback_probe_status": "delivered",
             "policy_source": "platform_policy",
+            "probe_source": "runtime_probe_results",
         },
     }
 
@@ -1124,6 +1159,9 @@ def test_platform_hardening_evidence_maps_runtime_docker_inspection_and_probe_re
         "allowed_callback_host": "172.17.0.1",
         "callback_probe_status": "delivered",
         "policy_source": "platform_policy",
+        "probe_source": "runtime_probe_results",
+        "network_inspection_verified": False,
+        "docker_network_masquerade_disabled": False,
     }
     assert hardening["security_options"] == {
         "evidence_class": "live_platform_probe",
@@ -1134,6 +1172,148 @@ def test_platform_hardening_evidence_maps_runtime_docker_inspection_and_probe_re
         "workspace_mount_mode": "rw",
         "root_filesystem_read_only_or_minimal": True,
     }
+
+
+def test_platform_hardening_records_network_inspect_without_claiming_denied_egress(tmp_path):
+    generator = load_generator()
+
+    docker_inspect = {
+        "HostConfig": {
+            "NetworkMode": "ai-platform-sandbox-egress",
+            "Memory": 536870912,
+            "NanoCpus": 500000000,
+            "PidsLimit": 128,
+            "Privileged": False,
+            "SecurityOpt": ["no-new-privileges:true"],
+            "CapDrop": ["ALL"],
+            "ReadonlyRootfs": True,
+            "Binds": ["/tmp/workspace:/workspace:rw"],
+            "ExtraHosts": ["host.docker.internal:host-gateway"],
+        },
+        "Mounts": [
+            {
+                "Source": "/tmp/workspace",
+                "Destination": "/workspace",
+                "RW": True,
+            }
+        ],
+        "NetworkSettings": {
+            "Networks": {
+                "ai-platform-sandbox-egress": {
+                    "NetworkID": "net-a",
+                    "Gateway": "192.168.48.1",
+                    "IPAMConfig": None,
+                }
+            }
+        },
+        "Config": {
+            "Labels": {
+                "ai-platform.egress.policy": "default-deny-no-masq",
+                "ai-platform.egress.network": "ai-platform-sandbox-egress",
+                "ai-platform.egress.callback_host": "host.docker.internal",
+            },
+        },
+    }
+    docker_network_inspect = {
+        "Name": "ai-platform-sandbox-egress",
+        "Driver": "bridge",
+        "Options": {"com.docker.network.bridge.enable_ip_masquerade": "false"},
+    }
+
+    hardening = generator._platform_hardening_evidence(
+        run_id="run-a",
+        workspace_root=tmp_path,
+        recorded_lease_id="lease-a",
+        released_lease_id="lease-a",
+        release_reason="dispatch_completed",
+        resource_limits={"max_seconds": 60, "memory_mb": 512, "cpu_count": 0.5, "pids_limit": 128},
+        docker_inspect=docker_inspect,
+        docker_network_inspect=docker_network_inspect,
+        callbacks=[{"status": "running"}, {"status": "completed"}],
+    )
+
+    assert hardening["egress_policy"] == {
+        "evidence_class": "live_platform_probe",
+        "default_deny_outbound": False,
+        "platform_allowlist_enforced": False,
+        "callback_exception_scoped_to_run_token": True,
+        "denied_egress_redacted": False,
+        "denied_target": "",
+        "denied_probe_error_code": "",
+        "allowed_callback_host": "host.docker.internal",
+        "callback_probe_status": "delivered",
+        "policy_source": "not_runtime_verified",
+        "probe_source": "docker_network_inspect",
+        "network_inspection_verified": True,
+        "docker_network_masquerade_disabled": True,
+    }
+
+
+def test_platform_hardening_does_not_derive_egress_policy_without_network_inspect(tmp_path):
+    generator = load_generator()
+
+    docker_inspect = {
+        "HostConfig": {
+            "NetworkMode": "ai-platform-sandbox-egress",
+            "ExtraHosts": ["host.docker.internal:host-gateway"],
+        },
+        "NetworkSettings": {"Networks": {"ai-platform-sandbox-egress": {}}},
+        "Config": {
+            "Labels": {
+                "ai-platform.egress.policy": "default-deny-no-masq",
+                "ai-platform.egress.network": "ai-platform-sandbox-egress",
+                "ai-platform.egress.callback_host": "host.docker.internal",
+            },
+        },
+    }
+
+    hardening = generator._platform_hardening_evidence(
+        run_id="run-a",
+        workspace_root=tmp_path,
+        recorded_lease_id="lease-a",
+        released_lease_id="lease-a",
+        release_reason="dispatch_completed",
+        resource_limits={"max_seconds": 60, "memory_mb": 512, "cpu_count": 0.5, "pids_limit": 128},
+        docker_inspect=docker_inspect,
+        callbacks=[{"status": "completed"}],
+    )
+
+    assert hardening["egress_policy"]["default_deny_outbound"] is False
+    assert hardening["egress_policy"]["network_inspection_verified"] is False
+    assert hardening["egress_policy"]["policy_source"] == "not_runtime_verified"
+
+
+def test_platform_hardening_does_not_derive_egress_policy_without_callback_delivery(tmp_path):
+    generator = load_generator()
+
+    docker_inspect = {
+        "HostConfig": {
+            "NetworkMode": "ai-platform-sandbox-egress",
+            "ExtraHosts": ["host.docker.internal:host-gateway"],
+        },
+        "NetworkSettings": {"Networks": {"ai-platform-sandbox-egress": {}}},
+        "Config": {
+            "Labels": {
+                "ai-platform.egress.policy": "default-deny-no-masq",
+                "ai-platform.egress.network": "ai-platform-sandbox-egress",
+                "ai-platform.egress.callback_host": "host.docker.internal",
+            },
+        },
+    }
+
+    hardening = generator._platform_hardening_evidence(
+        run_id="run-a",
+        workspace_root=tmp_path,
+        recorded_lease_id="lease-a",
+        released_lease_id="lease-a",
+        release_reason="dispatch_completed",
+        resource_limits={"max_seconds": 60, "memory_mb": 512, "cpu_count": 0.5, "pids_limit": 128},
+        docker_inspect=docker_inspect,
+        callbacks=[{"status": "running"}],
+    )
+
+    assert hardening["egress_policy"]["default_deny_outbound"] is False
+    assert hardening["egress_policy"]["policy_source"] == "not_runtime_verified"
 
 
 def test_platform_hardening_evidence_derives_bounded_projection_from_safe_shape(tmp_path):
@@ -1452,6 +1632,7 @@ def test_platform_runtime_mode_accepts_bound_runtime_probe_results_file(tmp_path
                     "allowed_callback_host": "172.17.0.1",
                     "callback_probe_status": "delivered",
                     "policy_source": "platform_policy",
+                    "probe_source": "runtime_probe_results",
                 },
                 "security_options": {
                     "privileged": False,
@@ -1540,6 +1721,7 @@ def test_platform_runtime_mode_accepts_bound_runtime_probe_results_file(tmp_path
             "allowed_callback_host": "172.17.0.1",
             "callback_probe_status": "delivered",
             "policy_source": "platform_policy",
+            "probe_source": "runtime_probe_results",
         },
         "security_options": {
             "privileged": False,
@@ -1649,6 +1831,7 @@ def test_runtime_probe_results_file_rejects_under_specified_hardening_sections(t
             "allowed_callback_host": "172.17.0.1",
             "callback_probe_status": "delivered",
             "policy_source": "platform_policy",
+            "probe_source": "runtime_probe_results",
         },
         "security_options": {
             "privileged": False,
@@ -1681,6 +1864,7 @@ def test_runtime_probe_results_file_rejects_under_specified_hardening_sections(t
         "denied_probe_error_code",
         "allowed_callback_host",
         "callback_probe_status",
+        "probe_source",
     ):
         payload = dict(base_payload)
         payload["egress_policy"] = dict(base_payload["egress_policy"])
@@ -1804,6 +1988,7 @@ def test_platform_hardening_rejects_wrong_egress_probe_error_code(tmp_path):
             "allowed_callback_host": "172.17.0.1",
             "callback_probe_status": "delivered",
             "policy_source": "platform_policy",
+            "probe_source": "runtime_probe_results",
         },
         "security_options": {
             "evidence_class": "live_platform_probe",
@@ -1821,6 +2006,120 @@ def test_platform_hardening_rejects_wrong_egress_probe_error_code(tmp_path):
 
     assert failed.passed is False
     assert "egress_policy.denied_probe_error_code" in failed.message
+
+
+def test_platform_hardening_rejects_network_inspect_as_denied_egress_source(tmp_path):
+    verifier = load_verifier()
+    evidence = tmp_path / "evidence.json"
+    hardening = {
+        "lease_isolation": {
+            "evidence_class": "live_platform_probe",
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "recorded_lease_id": "lease-a",
+            "released_lease_id": "lease-a",
+            "release_reason": "dispatch_completed",
+            "host_paths_redacted": True,
+        },
+        "workspace_isolation": {
+            "evidence_class": "live_platform_probe",
+            "workspace_container_path": "/workspace",
+            "inputs_container_path": "/workspace/inputs",
+            "host_paths_redacted": True,
+            "marker_path_is_container_path": True,
+        },
+        "cleanup": {
+            "evidence_class": "live_platform_probe",
+            "ephemeral_container_removed": True,
+            "cancel_probe_container_removed": True,
+            "active_lease_released": True,
+        },
+        "resource_timeout": {
+            "evidence_class": "source_regression_guard",
+            "max_seconds_enforced": True,
+            "timeout_error_code": "executor_health_timeout",
+            "failed_container_removed": True,
+            "source_regression_tests": [
+                "tests/test_sandbox_container_provider.py::test_docker_provider_maps_health_false_to_timeout",
+                "tests/test_sandbox_container_provider.py::test_docker_provider_removes_container_after_health_timeout",
+            ],
+        },
+        "failure_fallback": {
+            "evidence_class": "source_regression_guard",
+            "dispatch_failure_stops_container": True,
+            "lease_record_failure_stops_container": True,
+            "db_lease_not_released_when_stop_fails": True,
+            "source_regression_tests": [
+                "tests/test_sandbox_runtime.py::test_runtime_does_not_release_db_lease_when_completion_stop_fails",
+                "tests/test_sandbox_runtime.py::test_runtime_does_not_release_db_lease_when_dispatch_failure_stop_fails",
+                "tests/test_sandbox_runtime.py::test_runtime_stops_live_container_when_lease_recording_fails",
+            ],
+        },
+        "cached_lease_revalidation": {
+            "evidence_class": "source_regression_guard",
+            "cached_lease_revalidates_scope_labels": True,
+            "scope_mismatch_fails_closed": True,
+            "tenant_workspace_user_session_checked": True,
+            "source_regression_tests": [
+                "tests/test_sandbox_container_provider.py::test_docker_provider_cached_lease_revalidates_container_scope_labels"
+            ],
+        },
+        "resource_limits": {
+            "evidence_class": "live_platform_probe",
+            "memory_limit_mb": 512,
+            "cpu_limit_count": 0.5,
+            "pids_limit": 128,
+            "process_timeout_seconds": 60,
+            "limit_source": "platform_request",
+            "docker_inspection_verified": True,
+            "over_limit_cleanup_verified": True,
+            "over_limit_probe_kind": "platform_resource_timeout",
+            "over_limit_timeout_probe_seconds": 0,
+            "bounded_error_projection_verified": True,
+            "bounded_error_projection": {
+                "source": "admin_runtime_projection",
+                "run_id": "run-a",
+                "status": "failed",
+                "error_code": "executor_health_timeout",
+                "host_paths_redacted": True,
+                "raw_docker_payload_absent": True,
+                "callback_token_absent": True,
+            },
+        },
+        "egress_policy": {
+            "evidence_class": "live_platform_probe",
+            "default_deny_outbound": True,
+            "platform_allowlist_enforced": True,
+            "callback_exception_scoped_to_run_token": True,
+            "denied_egress_redacted": True,
+            "denied_target": "https://egress-denied.invalid/",
+            "denied_probe_error_code": "egress_denied",
+            "allowed_callback_host": "host.docker.internal",
+            "callback_probe_status": "delivered",
+            "policy_source": "platform_policy",
+            "probe_source": "docker_network_inspect",
+            "network_inspection_verified": True,
+            "docker_network_masquerade_disabled": True,
+        },
+        "security_options": {
+            "evidence_class": "live_platform_probe",
+            "privileged": False,
+            "no_new_privileges": True,
+            "capabilities_dropped": True,
+            "docker_socket_mounted": False,
+            "workspace_mount_mode": "rw",
+            "root_filesystem_read_only_or_minimal": True,
+        },
+    }
+    evidence.write_text(json.dumps({"run_id": "run-a", "hardening": hardening}), encoding="utf-8")
+
+    failed = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
+
+    assert failed.passed is False
+    assert "egress_policy.probe_source" in failed.message
 
 
 def test_run_platform_runtime_probe_captures_executor_container_inspect(monkeypatch, tmp_path):
@@ -1966,6 +2265,154 @@ def test_run_platform_runtime_probe_captures_executor_container_inspect(monkeypa
     assert recorder.hardening["resource_limits"]["bounded_error_projection_verified"] is False
     assert recorder.hardening["egress_policy"]["default_deny_outbound"] is False
     assert recorder.hardening["egress_policy"]["platform_allowlist_enforced"] is False
+
+
+def test_run_platform_runtime_probe_captures_egress_network_inspect(monkeypatch, tmp_path):
+    generator = load_generator()
+    calls = []
+
+    class FakeRuntime:
+        def __init__(
+            self,
+            *,
+            workspace_root,
+            callback_token_resolver,
+            record_lease,
+            release_lease,
+        ):
+            self.record_lease = record_lease
+            self.release_lease = release_lease
+
+        async def submit(self, request):
+            from app.runtime.sandbox.contracts import ContainerLease, WorkspaceLease
+
+            lease = ContainerLease(
+                container_id="exec-run-a",
+                container_name="executor-exec-run-a",
+                provider="docker",
+                executor_url="http://127.0.0.1:18000",
+                tenant_id=request.tenant_id,
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                run_id=request.run_id,
+                sandbox_mode=request.sandbox_mode,
+                browser_enabled=request.browser_enabled,
+                workspace_host_path=str(tmp_path),
+                workspace_container_path="/workspace",
+                labels={"ai-platform.run_id": request.run_id},
+                timings={},
+            )
+            workspace = WorkspaceLease(
+                tenant_id=request.tenant_id,
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                run_id=request.run_id,
+                host_root=str(tmp_path),
+                workspace_host_path=str(tmp_path),
+                workspace_container_path="/workspace",
+                inputs_host_path=str(tmp_path / "inputs"),
+                logs_host_path=str(tmp_path / "logs"),
+            )
+            lease_id = await self.record_lease(lease, request, workspace)
+            await self.release_lease(lease, "dispatch_completed", lease_id)
+            return type(
+                "SandboxRuntimeResult",
+                (),
+                {
+                    "status": "accepted",
+                    "session_id": request.session_id,
+                    "run_id": request.run_id,
+                    "executor_response": {"status": "accepted", "run_id": request.run_id},
+                    "timings": {
+                        "schema_version": "ai-platform.sandbox-latency-split.v1",
+                        "sandbox_lease_acquire_latency_ms": 1,
+                        "sandbox_container_cold_start_latency_ms": 2,
+                        "sandbox_healthcheck_latency_ms": 3,
+                        "sandbox_executor_dispatch_latency_ms": 4,
+                        "executor_model_latency_ms": 0,
+                        "document_processing_latency_ms": 0,
+                        "sandbox_cleanup_latency_ms": 5,
+                        "sandbox_total_latency_ms": 15,
+                    },
+                },
+            )()
+
+    def fake_run(cmd, capture_output, text, timeout, check):
+        calls.append(tuple(cmd))
+        if tuple(cmd) == ("docker", "inspect", "executor-exec-run-a"):
+            return type(
+                "Completed",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": json.dumps(
+                        [
+                            {
+                                "HostConfig": {
+                                    "NetworkMode": "ai-platform-sandbox-egress",
+                                    "ExtraHosts": ["host.docker.internal:host-gateway"],
+                                },
+                                "NetworkSettings": {"Networks": {"ai-platform-sandbox-egress": {}}},
+                                "Config": {
+                                    "Labels": {
+                                        "ai-platform.egress.policy": "default-deny-no-masq",
+                                        "ai-platform.egress.network": "ai-platform-sandbox-egress",
+                                        "ai-platform.egress.callback_host": "host.docker.internal",
+                                    }
+                                },
+                            }
+                        ]
+                    ),
+                    "stderr": "",
+                },
+            )()
+        if tuple(cmd) == ("docker", "network", "inspect", "ai-platform-sandbox-egress"):
+            return type(
+                "Completed",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": json.dumps(
+                        [
+                            {
+                                "Name": "ai-platform-sandbox-egress",
+                                "Driver": "bridge",
+                                "Options": {"com.docker.network.bridge.enable_ip_masquerade": "false"},
+                            }
+                        ]
+                    ),
+                    "stderr": "",
+                },
+            )()
+        raise AssertionError(f"unexpected docker command: {cmd}")
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.SandboxRuntime", FakeRuntime)
+    recorder = generator.EvidenceRecorder(
+        run_id="run-a",
+        executor_url="http://executor.test",
+        callback_token="secret-token",
+    )
+    recorder.record_callback({"run_id": "run-a", "status": "completed"}, "secret-token")
+
+    generator.run_platform_runtime_probe(
+        recorder=recorder,
+        sandbox_provider="docker",
+        sandbox_executor_image="ai-platform:local",
+        workspace_root=str(tmp_path),
+        callback_url="http://callback.test/callback",
+        docker_cmd=("docker",),
+        run=fake_run,
+    )
+
+    assert calls == [
+        ("docker", "inspect", "executor-exec-run-a"),
+        ("docker", "network", "inspect", "ai-platform-sandbox-egress"),
+    ]
+    assert recorder.hardening["egress_policy"]["probe_source"] == "docker_network_inspect"
+    assert recorder.hardening["egress_policy"]["network_inspection_verified"] is True
+    assert recorder.hardening["egress_policy"]["docker_network_masquerade_disabled"] is True
 
 
 def test_run_platform_runtime_probe_does_not_derive_resource_over_limit_from_generic_failure(monkeypatch, tmp_path):
