@@ -7,6 +7,9 @@ import {
   ShoppingBag,
   Server,
   Bot,
+  Cpu,
+  MessageCircle,
+  ShieldCheck,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -25,6 +28,10 @@ interface SidebarRailProps {
   onOpenSkills: () => void;
   onOpenMarketplace: () => void;
   onOpenMcp: () => void;
+  onOpenChannels: () => void;
+  onOpenAgents: () => void;
+  onOpenModels: () => void;
+  onOpenRoles: () => void;
   recentChatsBtnRef: React.RefObject<HTMLButtonElement | null>;
   onShowProfile: () => void;
 }
@@ -41,6 +48,10 @@ export function SidebarRail({
   onOpenSkills,
   onOpenMarketplace,
   onOpenMcp,
+  onOpenChannels,
+  onOpenAgents,
+  onOpenModels,
+  onOpenRoles,
   recentChatsBtnRef,
   onShowProfile,
 }: SidebarRailProps) {
@@ -135,6 +146,42 @@ export function SidebarRail({
           aria-label={t("featureMenu.mcpTools")}
         >
           <Server size={20} />
+        </button>
+        <button
+          type="button"
+          onClick={onOpenChannels}
+          className={railBtn}
+          title={t("nav.channels")}
+          aria-label={t("nav.channels")}
+        >
+          <MessageCircle size={20} />
+        </button>
+        <button
+          type="button"
+          onClick={onOpenAgents}
+          className={railBtn}
+          title={t("nav.agents")}
+          aria-label={t("nav.agents")}
+        >
+          <Bot size={20} />
+        </button>
+        <button
+          type="button"
+          onClick={onOpenModels}
+          className={railBtn}
+          title={t("nav.models")}
+          aria-label={t("nav.models")}
+        >
+          <Cpu size={20} />
+        </button>
+        <button
+          type="button"
+          onClick={onOpenRoles}
+          className={railBtn}
+          title={t("nav.roles")}
+          aria-label={t("nav.roles")}
+        >
+          <ShieldCheck size={20} />
         </button>
         <button
           type="button"

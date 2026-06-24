@@ -18,6 +18,7 @@ export function useMarketplace(options?: { enabled?: boolean }) {
   const [tags, setTags] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -51,6 +52,7 @@ export function useMarketplace(options?: { enabled?: boolean }) {
     if (!enabled) return;
     setIsLoading(true);
     setError(null);
+    setListError(null);
     try {
       const tagsParam =
         selectedTags.length > 0 ? selectedTags.join(",") : undefined;
@@ -60,11 +62,12 @@ export function useMarketplace(options?: { enabled?: boolean }) {
       });
       setSkills(data ?? []);
     } catch (err) {
-      setError(
+      const message =
         err instanceof Error
           ? err.message
-          : "Failed to fetch marketplace skills",
-      );
+          : "Failed to fetch marketplace skills";
+      setError(message);
+      setListError(message);
     } finally {
       setIsLoading(false);
     }
@@ -315,6 +318,7 @@ export function useMarketplace(options?: { enabled?: boolean }) {
     tags,
     isLoading,
     error,
+    listError,
     selectedTags,
     searchQuery,
     setSearchQuery,

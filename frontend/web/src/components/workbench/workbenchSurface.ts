@@ -2,7 +2,7 @@ import { clsx } from "clsx";
 
 export const workbenchSurface = {
   root: clsx(
-    "flex min-h-0 flex-1 bg-[var(--theme-bg)] text-slate-950",
+    "flex min-h-0 flex-1 bg-[var(--theme-workbench-canvas)] text-slate-950",
     "dark:bg-stone-950 dark:text-stone-100",
   ),
   workspace: clsx(
@@ -11,16 +11,16 @@ export const workbenchSurface = {
   ),
   thread: clsx(
     "workbench-thread-frame flex min-w-0 flex-1 flex-col",
-    "border-r border-slate-200/70 bg-[var(--theme-bg)]",
+    "border-r border-slate-200/70 bg-[var(--theme-workbench-canvas)]",
     "dark:border-stone-800 dark:bg-stone-950",
   ),
   threadBody: "flex min-h-0 flex-1 flex-col px-3 pb-2 sm:px-4",
   composer: clsx(
-    "shrink-0 border-t border-slate-200/70 bg-[var(--theme-bg)] px-3 py-2.5",
+    "shrink-0 border-t border-slate-200/70 bg-[var(--theme-workbench-canvas)] px-3 py-2.5",
     "dark:border-stone-800 dark:bg-stone-950",
   ),
   context: clsx(
-    "hidden min-h-0 w-80 shrink-0 flex-col border-l border-slate-200/70 bg-[var(--theme-bg)]",
+    "hidden min-h-0 w-80 shrink-0 flex-col border-l border-slate-200/70 bg-[var(--theme-workbench-canvas)]",
     "dark:border-stone-800 dark:bg-stone-950 xl:flex",
   ),
   panel: clsx(

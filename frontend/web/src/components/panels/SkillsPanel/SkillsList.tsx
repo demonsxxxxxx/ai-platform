@@ -230,7 +230,7 @@ export function SkillsList({
   return (
     <>
       {embedded && (
-        <div className="skill-panel-header">
+        <div data-skills-catalog-toolbar className="skill-panel-header">
           <div className="mt-2 flex flex-col gap-2 sm:mt-3 sm:flex-row sm:items-center">
             <div className="flex items-center gap-2">
               <div className="relative min-w-0 flex-1">
@@ -322,7 +322,10 @@ export function SkillsList({
             )}
           </div>
         ) : (
-          <div className="skill-grid grid auto-grid-cols gap-3">
+          <div
+            data-skills-catalog-grid
+            className="skill-grid grid auto-grid-cols gap-3"
+          >
             {paginatedSkills.map((skill) => (
               <SkillCard
                 key={skill.name}

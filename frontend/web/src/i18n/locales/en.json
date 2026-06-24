@@ -2836,26 +2836,26 @@
       "users": {
         "capabilities": {
           "audit": {
-            "description": "User audit, import, and deactivation need a traceable admin projection.",
+            "description": "User audit, import, and deactivation are shown as governed states; writes remain administrator-audited.",
             "title": "Audit and import"
           },
           "directory": {
-            "description": "The company directory entry remains visible; legacy user APIs are not loaded.",
+            "description": "The company directory reads the safe workbench projection and does not trigger legacy write APIs.",
             "title": "Company directory"
           },
           "lifecycle": {
-            "description": "Create, disable, and role-assignment writes are waiting for backend RBAC contracts.",
+            "description": "Create, disable, and role-assignment writes open only with administrator permissions and audit coverage.",
             "title": "Lifecycle writes"
           }
         },
         "details": {
-          "adminProjection": "Admin projection gap: user creation, account disablement, and role assignment must not connect directly to legacy /api/users admin APIs.",
-          "auditProjection": "Audit gap: imports, deactivation, and permission changes need traceable backend events before opening.",
-          "nextContract": "Next contract: backend should provide layered public and admin projections for directory, lifecycle writes, and permission audit.",
-          "publicProjection": "Current state: the entry stays in the authenticated workbench; ordinary users only see governed status and trigger no legacy write APIs."
+          "adminProjection": "Admin controls: lifecycle writes and role assignment stay permission-gated and do not connect directly to legacy /api/users writes.",
+          "auditProjection": "Audit boundary: imports, deactivation, and permission changes require actor, time, source, and rollback hints.",
+          "nextContract": "Backed contract: the company directory is safe to read; lifecycle writes remain governed by administrator projections.",
+          "publicProjection": "Current state: the authenticated workbench reads the company directory projection and ordinary users do not trigger legacy write APIs."
         },
-        "description": "Company user management belongs in the enterprise workbench, but the backend has not opened the user admin projection yet. The entry stays visible without exposing legacy write APIs.",
-        "title": "Company user management is not enabled yet"
+        "description": "The company directory is connected to the safe workbench projection. Creation, deactivation, and role assignment remain administrator-audited.",
+        "title": "Company directory"
       },
       "settings": {
         "capabilities": {
@@ -2864,7 +2864,7 @@
             "title": "Personal preferences"
           },
           "runtime": {
-            "description": "System runtime configuration is waiting for an audited admin settings projection.",
+            "description": "System runtime configuration is shown from the read projection; writes remain administrator-audited.",
             "title": "Runtime configuration"
           },
           "secrets": {
@@ -2873,22 +2873,22 @@
           }
         },
         "details": {
-          "adminProjection": "Admin projection gap: runtime configuration, tenant switches, and platform parameters need an audited settings contract.",
-          "auditProjection": "Audit gap: settings changes need actor, time, source, and rollback hints; the frontend cannot just render the old form.",
-          "nextContract": "Next contract: backend should split personal preferences, system configuration, and key or gateway permissions.",
-          "publicProjection": "Current state: personal preferences remain available through profile surfaces; system settings stay as a read-only governed entry."
+          "adminProjection": "Admin controls: runtime configuration, tenant switches, and platform parameters are layered by settings permissions.",
+          "auditProjection": "Audit boundary: settings changes need actor, time, source, and rollback hints; ordinary pages stay read-only.",
+          "nextContract": "Backed contract: personal preferences and system configuration reads are layered; keys and gateways stay redacted and permission-bound.",
+          "publicProjection": "Current state: personal preferences and system settings read the safe projection, while writes remain administrator-governed."
         },
-        "description": "System settings need an audited admin projection. The workbench keeps this entry as a state surface instead of rendering legacy settings forms.",
-        "title": "System settings projection is not enabled yet"
+        "description": "System settings read the safe workbench projection. Keys, gateways, and runtime configuration writes continue through administrator audit flows.",
+        "title": "System settings"
       },
       "feedback": {
         "capabilities": {
           "audit": {
-            "description": "Triage history and status changes need backend audit coverage.",
+            "description": "Triage history and status changes remain audit-bound.",
             "title": "Triage audit"
           },
           "capture": {
-            "description": "Message-level feedback remains in chat; the standalone desk waits for an aggregate projection.",
+            "description": "Message-level feedback remains in chat; the standalone desk reads the aggregate projection.",
             "title": "Message feedback capture"
           },
           "triage": {
@@ -2897,13 +2897,13 @@
           }
         },
         "details": {
-          "adminProjection": "Admin projection gap: feedback aggregation, assignment, closure, and label governance are not open as workbench contracts.",
-          "auditProjection": "Audit gap: state and owner changes need backend event history; legacy feedback admin reads are not a substitute.",
-          "nextContract": "Next contract: backend should provide layered user and admin projections for aggregate feedback, assignment state, and triage history.",
-          "publicProjection": "Current state: message-level chat feedback remains available; the standalone desk shows governed status and pending capabilities."
+          "adminProjection": "Admin controls: feedback aggregation, assignment, closure, and label governance are layered by workbench permissions.",
+          "auditProjection": "Audit boundary: state and owner changes need event history; legacy feedback admin reads are not the page source.",
+          "nextContract": "Backed contract: aggregate feedback and assignment state are safe to read; triage writes remain permission-governed.",
+          "publicProjection": "Current state: message-level chat feedback remains available and the standalone desk reads governed aggregate data."
         },
-        "description": "Feedback will become a unified triage desk, but the backend does not yet provide the aggregate and assignment contracts for the workbench.",
-        "title": "Feedback triage is not enabled yet"
+        "description": "Feedback is connected as a unified triage desk over the safe projection. Assignment, closure, and label writes remain permission- and audit-governed.",
+        "title": "Feedback triage"
       },
       "agents": {
         "capabilities": {
@@ -2926,7 +2926,7 @@
       "notifications": {
         "capabilities": {
           "admin": {
-            "description": "Announcement creation, targeting, and expiry need an admin notification projection.",
+            "description": "Announcement creation, targeting, and expiry remain behind the admin notification projection.",
             "title": "Announcement management"
           },
           "banner": {
@@ -2934,18 +2934,18 @@
             "title": "Runtime notices"
           },
           "inbox": {
-            "description": "A unified inbox is waiting for backend read-state and audience-scope contracts.",
+            "description": "The unified inbox reads published notices and read-state projection data.",
             "title": "Unified inbox"
           }
         },
         "details": {
-          "adminProjection": "Admin projection gap: announcement creation, targeting, expiry, and replay need a new notification management contract.",
-          "auditProjection": "Audit gap: publish, revoke, and read-scope changes need backend records; the old notification admin panel is not wired here.",
-          "nextContract": "Next contract: backend should expose layered projections for runtime notices, a unified inbox, and announcement management.",
-          "publicProjection": "Current state: the top-bar notification entry keeps reading runtime notices; the management route stays visible and fail-closed."
+          "adminProjection": "Admin controls: announcement creation, targeting, expiry, and replay are layered by notification permissions.",
+          "auditProjection": "Audit boundary: publish, revoke, and read-scope changes need event records; the old notification admin panel is not the page source.",
+          "nextContract": "Backed contract: runtime notices, the unified inbox, and announcement reads are layered; writes remain governed.",
+          "publicProjection": "Current state: the top-bar notification entry and notification page read governed runtime notices."
         },
-        "description": "Notifications need audited publishing, audience, and read-state contracts. The workbench keeps the entry visible without loading legacy announcement admin pages.",
-        "title": "Notification management is not enabled yet"
+        "description": "Notifications read audited runtime notice and announcement projections. Publishing, revocation, and audience changes remain administrator-governed.",
+        "title": "Notifications"
       }
     },
     "projections": {

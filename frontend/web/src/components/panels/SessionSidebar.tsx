@@ -1,6 +1,5 @@
 /**
  * Session sidebar component for displaying and managing chat history.
- * Each project independently loads its sessions with per-project pagination.
  */
 
 import {
@@ -19,25 +18,20 @@ import { sessionApi, type BackendSession } from "../../services/api";
 import { useAuth } from "../../hooks/useAuth";
 import { useProjectSessionList } from "../../hooks/useSession";
 import { useProjectManager } from "../../hooks/useProjectManager";
-import { useTouchDrag } from "../../hooks/useTouchDrag";
 import { ConfirmDialog } from "../common/ConfirmDialog";
-import { DeleteProjectDialog } from "../common/DeleteProjectDialog";
-import type { ProjectItemHandle } from "../sidebar/ProjectItem";
 import { RecentChatsDialog } from "../sidebar/RecentChatsDialog";
 import {
   mergeUnreadUpdate,
   type UnreadBySession,
 } from "../sidebar/unreadCounts";
 import { isSessionFavorite } from "../sidebar/sessionFavorites";
-import { getSessionTitle } from "./sessionHelpers";
 import { SearchDialog } from "./SearchDialog";
 import { ShareDialog } from "../share/ShareDialog";
-import { NewProjectModal } from "./NewProjectModal";
 import {
   SessionListContent,
   SidebarRail,
 } from "./SidebarParts";
-import type { SessionActions, ProjectActions } from "./SidebarParts";
+import type { SessionActions } from "./SidebarParts";
 
 interface SessionSidebarProps {
   currentSessionId: string | null;
@@ -50,10 +44,6 @@ interface SessionSidebarProps {
   isCollapsed?: boolean;
   onToggleCollapsed?: (collapsed: boolean) => void;
   onShowProfile?: () => void;
-  onSetPendingProjectId?: (projectId: string | null) => void;
-  /** Project ID to auto-expand after a new session is created in it */
-  autoExpandProjectId?: string | null;
-  onConsumeAutoExpandProjectId?: (projectId: string) => void;
 }
 
 export interface SessionSidebarHandle {
@@ -80,9 +70,6 @@ export const SessionSidebar = forwardRef<
     isCollapsed: externalCollapsed,
     onToggleCollapsed,
     onShowProfile,
-    onSetPendingProjectId,
-    autoExpandProjectId,
-    onConsumeAutoExpandProjectId,
   },
   ref,
 ) {
@@ -91,7 +78,6 @@ export const SessionSidebar = forwardRef<
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [imgError, setImgError] = useState(false);
   const [internalCollapsed, setInternalCollapsed] = useState(true);
-  const [isProjectsCollapsed, setIsProjectsCollapsed] = useState(false);
   const [isChatsCollapsed, setIsChatsCollapsed] = useState(false);
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
   const [unreadBySession, setUnreadBySession] = useState<UnreadBySession>(
@@ -116,20 +102,12 @@ export const SessionSidebar = forwardRef<
     return () => mq.removeEventListener("change", handler);
   }, []);
 
-  const handleNewSessionInProject = useCallback(
-    (projectId: string) => {
-      onSetPendingProjectId?.(projectId);
-      onNewSession();
-    },
-    [onNewSession, onSetPendingProjectId],
-  );
-
   const isCollapsed = externalCollapsed ?? internalCollapsed;
   const setIsCollapsed = onToggleCollapsed ?? setInternalCollapsed;
 
   // ─── Hooks ──────────────────────────────────────────────────────
 
-  const uncategorizedList = useProjectSessionList("none", scrollEl);
+  const uncategorizedList = useProjectSessionList("all", scrollEl);
 
   const handleSessionUnread = useCallback(
     (
@@ -150,12 +128,6 @@ export const SessionSidebar = forwardRef<
       if (session) {
         uncategorizedList.updateSession({ ...session, unread_count: count });
       }
-      for (const [, handle] of projectRefs.current) {
-        const s = handle.sessions.find((s) => s.id === sid);
-        if (s) {
-          handle.updateSession({ ...s, unread_count: count });
-        }
-      }
     },
     [uncategorizedList],
   );
@@ -166,31 +138,11 @@ export const SessionSidebar = forwardRef<
     [handleSessionUnread],
   );
 
-  const projectRefs = useRef<Map<string, ProjectItemHandle>>(new Map());
   const lastAppliedNewSessionKeyRef = useRef<string | null>(null);
   const recentChatsBtnRef = useRef<HTMLButtonElement>(null);
 
-  const getProjectRef = useCallback(
-    (projectId: string): ProjectItemHandle | null => {
-      return projectRefs.current.get(projectId) ?? null;
-    },
-    [],
-  );
-
-  const setProjectRef = useCallback(
-    (projectId: string, handle: ProjectItemHandle | null) => {
-      if (handle) {
-        projectRefs.current.set(projectId, handle);
-      } else {
-        projectRefs.current.delete(projectId);
-      }
-    },
-    [],
-  );
-
   const projectManager = useProjectManager();
   const { projects } = projectManager;
-  const projectCount = projects.length;
 
   const handleMoveSession = useCallback(
     async (sessionId: string, projectId: string | null) => {
@@ -198,19 +150,7 @@ export const SessionSidebar = forwardRef<
         const response = await sessionApi.moveToProject(sessionId, projectId);
         if (response.session) {
           const favorite = isSessionFavorite(response.session);
-          for (const [, handle] of projectRefs.current) {
-            handle.removeSession(sessionId);
-          }
-          uncategorizedList.removeSession(sessionId);
-          if (projectId) {
-            getProjectRef(projectId)?.prependSession(response.session);
-          } else {
-            uncategorizedList.prependSession(response.session);
-          }
-          if (favorite) {
-            const fp = projects.find((p) => p.type === "favorites");
-            if (fp) getProjectRef(fp.id)?.prependSession(response.session);
-          }
+          uncategorizedList.updateSession(response.session);
           setUnreadBySession((prev) =>
             mergeUnreadUpdate(prev, {
               sessionId,
@@ -229,65 +169,32 @@ export const SessionSidebar = forwardRef<
         toast.error(t("sidebar.sessionMoveFailed"));
       }
     },
-    [getProjectRef, projects, uncategorizedList, t],
+    [uncategorizedList, t],
   );
-
-  const handleMoveSessionRef = useRef(handleMoveSession);
-  handleMoveSessionRef.current = handleMoveSession;
 
   const handleShareSession = useCallback(
     (sessionId: string) => {
-      let title = "";
-      for (const [, handle] of projectRefs.current) {
-        const s = handle.sessions.find((s) => s.id === sessionId);
-        if (s) {
-          title = getSessionTitle(s, t);
-          break;
-        }
-      }
-      if (!title) {
-        const s = uncategorizedList.sessions.find((s) => s.id === sessionId);
-        if (s) title = getSessionTitle(s, t);
-      }
+      const s = uncategorizedList.sessions.find((item) => item.id === sessionId);
+      const title =
+        s?.name ||
+        ((s?.metadata as Record<string, unknown> | undefined)?.title as
+          | string
+          | undefined) ||
+        "";
       setShareDialogSessionId(sessionId);
       setShareDialogSessionName(title || t("sidebar.newChat"));
     },
     [uncategorizedList, t],
   );
 
-  const touchDrag = useTouchDrag([], (sessionId, projectId) => {
-    handleMoveSessionRef.current(sessionId, projectId);
-  });
-
   const handleToggleFavorite = useCallback(
     async (sessionId: string) => {
       try {
         const response = await sessionApi.toggleFavorite(sessionId);
         const updatedSession = response.session;
-        const favoritesProject = projects.find((p) => p.type === "favorites");
-        const favoritesRef = favoritesProject
-          ? getProjectRef(favoritesProject.id)
-          : null;
 
         if (uncategorizedList.sessions.some((s) => s.id === sessionId)) {
           uncategorizedList.updateSession(updatedSession);
-        }
-        for (const [, handle] of projectRefs.current) {
-          const exists = handle.sessions.some((s) => s.id === sessionId);
-          if (!exists) continue;
-          if (
-            favoritesRef &&
-            handle === favoritesRef &&
-            !response.is_favorite
-          ) {
-            handle.removeSession(sessionId);
-            continue;
-          }
-          handle.updateSession(updatedSession);
-        }
-        if (response.is_favorite && favoritesRef) {
-          favoritesRef.prependSession(updatedSession);
-          favoritesRef.updateSession(updatedSession);
         }
         setUnreadBySession((prev) =>
           mergeUnreadUpdate(prev, {
@@ -306,7 +213,7 @@ export const SessionSidebar = forwardRef<
         toast.error(t("sidebar.favoriteToggleFailed", "收藏状态更新失败"));
       }
     },
-    [getProjectRef, projects, t, uncategorizedList],
+    [t, uncategorizedList],
   );
 
   // ─── Delete confirmation ────────────────────────────────────────
@@ -316,30 +223,11 @@ export const SessionSidebar = forwardRef<
     sessionId: string | null;
   }>({ isOpen: false, sessionId: null });
 
-  const [deleteProjectConfirm, setDeleteProjectConfirm] = useState<{
-    isOpen: boolean;
-    projectId: string | null;
-    projectName: string;
-  }>({ isOpen: false, projectId: null, projectName: "" });
-
-  const confirmDeleteProject = async (deleteSessions: boolean) => {
-    const { projectId } = deleteProjectConfirm;
-    if (!projectId) return;
-    setDeleteProjectConfirm((prev) => ({ ...prev, isOpen: false }));
-    await projectManager.handleDeleteProject(projectId, {
-      deleteSessions,
-      onAfter: () => uncategorizedList.refresh(),
-    });
-  };
-
   const confirmDeleteSession = async () => {
     const sessionId = deleteConfirm.sessionId;
     if (!sessionId) return;
     try {
       await sessionApi.delete(sessionId);
-      for (const [, handle] of projectRefs.current) {
-        handle.removeSession(sessionId);
-      }
       uncategorizedList.removeSession(sessionId);
       if (currentSessionId === sessionId) onNewSession();
       toast.success(t("sidebar.sessionDeleted"));
@@ -354,10 +242,6 @@ export const SessionSidebar = forwardRef<
   // ─── Effects ────────────────────────────────────────────────────
 
   useEffect(() => {
-    if (autoExpandProjectId) setIsProjectsCollapsed(false);
-  }, [autoExpandProjectId]);
-
-  useEffect(() => {
     projectManager.loadProjects();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
@@ -365,7 +249,6 @@ export const SessionSidebar = forwardRef<
   useEffect(() => {
     if (!currentSessionId) return;
     uncategorizedList.softRefresh();
-    projectRefs.current.forEach((ref) => ref?.softRefresh());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentSessionId]);
 
@@ -377,23 +260,11 @@ export const SessionSidebar = forwardRef<
         newSession.name ?? "",
       ].join(":");
       if (lastAppliedNewSessionKeyRef.current === sessionKey) return;
-      const projectId = newSession.metadata?.project_id as string | undefined;
-      const list = projectId ? getProjectRef(projectId) : uncategorizedList;
-      if (list) {
-        list.prependSession(newSession);
-        list.updateSession(newSession);
-      }
-      if (isSessionFavorite(newSession)) {
-        const fp = projects.find((p) => p.type === "favorites");
-        if (fp) {
-          const favRef = getProjectRef(fp.id);
-          favRef?.prependSession(newSession);
-          favRef?.updateSession(newSession);
-        }
-      }
+      uncategorizedList.prependSession(newSession);
+      uncategorizedList.updateSession(newSession);
       lastAppliedNewSessionKeyRef.current = sessionKey;
     }
-  }, [newSession, getProjectRef, projectCount, projects, uncategorizedList]);
+  }, [newSession, uncategorizedList]);
 
   // ─── Keyboard shortcuts ──────────────────────────────────────────
 
@@ -425,17 +296,16 @@ export const SessionSidebar = forwardRef<
       const uncategorizedSession = uncategorizedList.sessions.find(
         (session) => session.id === sessionId,
       );
-      const existingSession =
-        uncategorizedSession ??
-        Array.from(projectRefs.current.values())
-          .flatMap((handle) => handle.sessions)
-          .find((session) => session.id === sessionId);
       handleSessionUnread(
         sessionId,
         0,
-        (existingSession?.metadata?.project_id as string | null | undefined) ??
-          null,
-        existingSession ? isSessionFavorite(existingSession) : undefined,
+        (uncategorizedSession?.metadata?.project_id as
+          | string
+          | null
+          | undefined) ?? null,
+        uncategorizedSession
+          ? isSessionFavorite(uncategorizedSession)
+          : undefined,
       );
       onSelectSession(sessionId);
       onMobileClose?.();
@@ -453,41 +323,13 @@ export const SessionSidebar = forwardRef<
       onToggleFavorite: handleToggleFavorite,
       onShareSession: handleShareSession,
       onSelectSession: selectAndClose,
-      onDragStartTouch: touchDrag.handleDragStartTouch,
-      draggingSessionId: touchDrag.draggingSessionId,
-      touchDropTarget: touchDrag.touchDropTarget,
     }),
     [
       handleMoveSession,
       handleToggleFavorite,
       handleShareSession,
       selectAndClose,
-      touchDrag,
     ],
-  );
-
-  const projectActions: ProjectActions = useMemo(
-    () => ({
-      onRenameProject: projectManager.handleRenameProject,
-      onDeleteProject: (id) => {
-        const proj = projects.find((p) => p.id === id);
-        setDeleteProjectConfirm({
-          isOpen: true,
-          projectId: id,
-          projectName: proj?.name ?? "",
-        });
-      },
-      onUpdateIcon: projectManager.handleUpdateIcon,
-      onOpenNewProjectModal: () => projectManager.setShowNewProjectModal(true),
-      onNewSessionInProject: handleNewSessionInProject,
-      onSetProjectRef: setProjectRef,
-    }),
-    [projectManager, projects, handleNewSessionInProject, setProjectRef],
-  );
-
-  const favoritesProject = useMemo(
-    () => projects.find((p) => p.type === "favorites"),
-    [projects],
   );
 
   // ─── JSX ────────────────────────────────────────────────────────
@@ -524,27 +366,19 @@ export const SessionSidebar = forwardRef<
             onNewSession={onNewSession}
             onOpenSearch={() => setIsSearchOpen(true)}
             onShowProfile={onShowProfile!}
-            scrollEl={scrollEl}
             onSetScrollEl={setScrollEl}
             uncategorizedSessions={uncategorizedList.sessions}
             isUncategorizedLoading={uncategorizedList.isLoading}
             hasMoreUncategorized={uncategorizedList.hasMore}
             isLoadingMoreUncategorized={uncategorizedList.isLoadingMore}
             loadMoreRef={uncategorizedList.loadMoreRef}
-            onSoftRefreshUncategorized={uncategorizedList.softRefresh}
             onUpdateUncategorizedSession={uncategorizedList.updateSession}
             projects={projects}
-            favoritesProject={favoritesProject}
             currentSessionId={currentSessionId}
             unreadBySession={unreadBySession}
             sessionActions={sessionActions}
-            projectActions={projectActions}
-            isProjectsCollapsed={isProjectsCollapsed}
-            onToggleProjectsCollapsed={() => setIsProjectsCollapsed((v) => !v)}
             isChatsCollapsed={isChatsCollapsed}
             onToggleChatsCollapsed={() => setIsChatsCollapsed((v) => !v)}
-            autoExpandProjectId={autoExpandProjectId ?? null}
-            onConsumeAutoExpandProjectId={onConsumeAutoExpandProjectId!}
           />
         ) : (
           <div className="flex-1" />
@@ -574,29 +408,19 @@ export const SessionSidebar = forwardRef<
               onNewSession={onNewSession}
               onOpenSearch={() => setIsSearchOpen(true)}
               onShowProfile={onShowProfile!}
-              scrollEl={scrollEl}
               onSetScrollEl={setScrollEl}
               uncategorizedSessions={uncategorizedList.sessions}
               isUncategorizedLoading={uncategorizedList.isLoading}
               hasMoreUncategorized={uncategorizedList.hasMore}
               isLoadingMoreUncategorized={uncategorizedList.isLoadingMore}
               loadMoreRef={uncategorizedList.loadMoreRef}
-              onSoftRefreshUncategorized={uncategorizedList.softRefresh}
               onUpdateUncategorizedSession={uncategorizedList.updateSession}
               projects={projects}
-              favoritesProject={favoritesProject}
               currentSessionId={currentSessionId}
               unreadBySession={unreadBySession}
               sessionActions={sessionActions}
-              projectActions={projectActions}
-              isProjectsCollapsed={isProjectsCollapsed}
-              onToggleProjectsCollapsed={() =>
-                setIsProjectsCollapsed((v) => !v)
-              }
               isChatsCollapsed={isChatsCollapsed}
               onToggleChatsCollapsed={() => setIsChatsCollapsed((v) => !v)}
-              autoExpandProjectId={autoExpandProjectId ?? null}
-              onConsumeAutoExpandProjectId={onConsumeAutoExpandProjectId!}
             />
           ) : (
             <div className="flex-1" />
@@ -628,23 +452,15 @@ export const SessionSidebar = forwardRef<
             onOpenSkills={() => navigate("/skills")}
             onOpenMarketplace={() => navigate("/marketplace")}
             onOpenMcp={() => navigate("/mcp")}
+            onOpenChannels={() => navigate("/channels")}
+            onOpenAgents={() => navigate("/agents")}
+            onOpenModels={() => navigate("/models")}
+            onOpenRoles={() => navigate("/roles")}
             recentChatsBtnRef={recentChatsBtnRef}
             onShowProfile={onShowProfile!}
           />
         </div>
       </div>
-
-      {touchDrag.dragIndicatorPos && (
-        <div
-          className="fixed z-[100] pointer-events-none px-3 py-1.5 rounded-lg bg-stone-700 dark:bg-stone-200 text-white dark:text-stone-800 text-xs shadow-lg max-w-[200px] truncate"
-          style={{
-            left: touchDrag.dragIndicatorPos.x - 20,
-            top: touchDrag.dragIndicatorPos.y - 40,
-          }}
-        >
-          {touchDrag.dragIndicatorTitle}
-        </div>
-      )}
 
       {isSearchOpen && (
         <SearchDialog
@@ -667,34 +483,6 @@ export const SessionSidebar = forwardRef<
         onCancel={() => setDeleteConfirm({ isOpen: false, sessionId: null })}
         variant="danger"
       />
-
-      <DeleteProjectDialog
-        isOpen={deleteProjectConfirm.isOpen}
-        projectName={deleteProjectConfirm.projectName}
-        onConfirm={confirmDeleteProject}
-        onCancel={() =>
-          setDeleteProjectConfirm({
-            isOpen: false,
-            projectId: null,
-            projectName: "",
-          })
-        }
-      />
-
-      {projectManager.showNewProjectModal && (
-        <NewProjectModal
-          icon={projectManager.newProjectIcon}
-          name={projectManager.newProjectName}
-          onIconChange={projectManager.setNewProjectIcon}
-          onNameChange={projectManager.setNewProjectName}
-          onCreate={projectManager.handleCreateProject}
-          onClose={() => {
-            projectManager.setShowNewProjectModal(false);
-            projectManager.setNewProjectName("");
-            projectManager.setNewProjectIcon("📁");
-          }}
-        />
-      )}
 
       <ShareDialog
         isOpen={shareDialogSessionId !== null}

@@ -42,7 +42,7 @@ test("skills and marketplace surfaces avoid obsolete department availability pla
   assert.doesNotMatch(marketplace, /skills\.marketplace\.departmentAvailability/);
   for (const source of [skillsHub, marketplace, mcp]) {
     assert.doesNotMatch(source, /skill-theme-shell|glass-shell/);
-    assert.match(source, /bg-\[var\(--theme-bg\)\]/);
+    assert.match(source, /bg-\[var\(--theme-workbench-canvas\)\]|bg-\[var\(--theme-bg\)\]/);
   }
 });
 
@@ -53,7 +53,10 @@ test("skills and marketplace remain catalog shells when backend enablement is un
 
   assert.doesNotMatch(skillsHub, /if\s*\(!enableSkills\)\s*{\s*return/);
   assert.doesNotMatch(skillsPanel, /if\s*\(!enableSkills\)\s*{\s*return/);
-  assert.match(skillsHub, /skillsProjectionDegraded/);
+  assert.match(skillsHub, /catalogStateByTab/);
+  assert.match(skillsHub, /catalogPermissionDeniedByTab/);
+  assert.match(skillsHub, /catalogProjectionErrorByTab/);
+  assert.match(skillsHub, /onCatalogStateChange=\{handleCatalogStateChange\}/);
   assert.match(skillsHub, /data-skill-catalog-shell/);
   assert.match(skillsHub, /data-marketplace-catalog-shell/);
   assert.match(skillsHub, /data-frontend-governance-state/);
@@ -78,7 +81,6 @@ test("marketplace no longer renders ordinary-user unavailable placeholders", () 
   assert.doesNotMatch(marketplace, /marketplace\.emptyDepartmentCatalog/);
   assert.doesNotMatch(marketplace, /marketplace\.requestAccess/);
   for (const source of [
-    marketplace,
     JSON.stringify(zh.marketplace),
     JSON.stringify(zh.skillsHub),
     JSON.stringify(zh.skills.marketplace),

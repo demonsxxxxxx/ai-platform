@@ -29,15 +29,16 @@ import {
 interface MarketplacePanelProps {
   embedded?: boolean;
   governedUnavailable?: boolean;
-  settingsStateDegraded?: boolean;
-  onPermissionDeniedChange?: (permissionDenied: boolean) => void;
+  onCatalogStateChange?: (state: {
+    permissionDenied: boolean;
+    projectionError: string | null;
+  }) => void;
 }
 
 export function MarketplacePanel({
   embedded = false,
   governedUnavailable = false,
-  settingsStateDegraded = false,
-  onPermissionDeniedChange,
+  onCatalogStateChange,
 }: MarketplacePanelProps) {
   const { t } = useTranslation();
   const {
@@ -50,6 +51,7 @@ export function MarketplacePanel({
     tags,
     isLoading,
     error,
+    listError,
     selectedTags,
     searchQuery,
     setSearchQuery,
@@ -75,7 +77,7 @@ export function MarketplacePanel({
     closePreview,
     setPreviewFileContent,
   } = useMarketplace({ enabled: !governedUnavailable });
-  const permissionDenied = isPermissionError(error);
+  const permissionDenied = isPermissionError(listError);
   const effectiveGovernedUnavailable = governedUnavailable || permissionDenied;
   const governanceState = resolveFrontendGovernanceState({
     isAuthenticated,
@@ -83,7 +85,7 @@ export function MarketplacePanel({
     hasWorkspace: true,
     hasPermission: !permissionDenied,
     featureEnabled: true,
-    degraded: settingsStateDegraded || Boolean(error),
+    projectionError: permissionDenied ? null : listError,
   });
 
   const {
@@ -117,8 +119,11 @@ export function MarketplacePanel({
     hasEffectiveMarketplaceAdmin;
 
   useEffect(() => {
-    onPermissionDeniedChange?.(permissionDenied);
-  }, [onPermissionDeniedChange, permissionDenied]);
+    onCatalogStateChange?.({
+      permissionDenied,
+      projectionError: permissionDenied ? null : listError,
+    });
+  }, [listError, onCatalogStateChange, permissionDenied]);
 
   const installedMarketplaceNames = new Set(
     userSkills
@@ -330,7 +335,7 @@ export function MarketplacePanel({
         />
       </button>
       {isFilterOpen && (
-        <div className="skill-filter-dropdown absolute right-0 top-[calc(100%+0.5rem)] z-20 w-72 rounded-lg border p-3 shadow-lg">
+        <div className="skill-filter-dropdown absolute right-0 top-[calc(100%+0.5rem)] z-20 w-72 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
           <div className="mb-2 flex items-center justify-between">
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--theme-text-secondary)]">
               {t("adminMarketplace.tags")}
@@ -400,11 +405,10 @@ export function MarketplacePanel({
       data-phase1c-surface="marketplace"
       data-frontend-governance-state={governanceState}
       data-marketplace-catalog-shell
-      data-settings-state-degraded={settingsStateDegraded || undefined}
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
     >
       {embedded && (
-        <div className="skill-panel-header">
+        <div data-marketplace-catalog-toolbar className="skill-panel-header">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex min-w-0 flex-1 items-center gap-2">
               <div className="relative min-w-0 flex-1">
@@ -498,7 +502,10 @@ export function MarketplacePanel({
             )}
           </div>
         ) : (
-          <div className="grid auto-grid-cols gap-3">
+          <div
+            data-marketplace-catalog-grid
+            className="grid auto-grid-cols gap-3"
+          >
             {skills.map((skill, index) => (
               <SkillCard
                 key={skill.skill_name}

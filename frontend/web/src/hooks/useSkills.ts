@@ -81,6 +81,7 @@ export function useSkills(options?: {
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
 
   // Per-operation loading states for better UX
   const [isCreating, setIsCreating] = useState(false);
@@ -98,6 +99,7 @@ export function useSkills(options?: {
       if (!enabled) return;
       setIsLoading(true);
       setError(null);
+      setListError(null);
       try {
         const response = await skillApi.list(params ?? listParams ?? {});
         const userSkills: UserSkill[] = response.skills;
@@ -123,7 +125,10 @@ export function useSkills(options?: {
           );
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to fetch skills");
+        const message =
+          err instanceof Error ? err.message : "Failed to fetch skills";
+        setError(message);
+        setListError(message);
       } finally {
         setIsLoading(false);
       }
@@ -660,6 +665,7 @@ export function useSkills(options?: {
     total,
     isLoading,
     error,
+    listError,
     fetchSkills,
     getSkill,
     getFullSkill,
