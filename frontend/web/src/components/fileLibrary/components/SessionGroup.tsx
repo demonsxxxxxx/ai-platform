@@ -57,7 +57,7 @@ export function SessionGroup({
             {sessionName}
           </button>
         </div>
-        <span className="text-[12px] leading-[18px] text-stone-400 dark:text-stone-500 flex-shrink-0 tabular-nums bg-stone-50 dark:bg-stone-800/60 px-2 py-0.5 rounded-md">
+        <span className="text-[12px] leading-[18px] text-[var(--theme-text-tertiary)] flex-shrink-0 tabular-nums bg-[var(--theme-bg-card)] border border-[var(--theme-border)] px-2 py-0.5 rounded-md">
           {dateLabel}
         </span>
       </div>
@@ -86,7 +86,7 @@ export function SessionGroup({
       {hiddenCount > 0 && (
         <button
           onClick={() => setExpanded((v) => !v)}
-          className="flex items-center gap-1.5 px-3 py-1.5 self-start text-[12px] font-medium text-stone-400 dark:text-stone-500 hover:text-stone-600 dark:hover:text-stone-300 rounded-lg border border-stone-200/60 dark:border-stone-700/50 bg-stone-50/50 dark:bg-stone-800/30 hover:bg-stone-100 dark:hover:bg-stone-800/60 transition-all duration-150"
+          className="flex items-center gap-1.5 px-3 py-1.5 self-start text-[12px] font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] hover:bg-[var(--theme-bg-sidebar)] transition-all duration-150"
         >
           <span>
             {expanded

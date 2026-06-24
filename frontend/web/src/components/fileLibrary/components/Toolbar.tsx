@@ -38,16 +38,16 @@ interface ToolbarProps {
 const btnBase =
   "flex items-center h-9 gap-1.5 rounded-lg border transition-all duration-150 text-sm";
 const btnDefault =
-  "border-stone-200 dark:border-stone-700/60 text-stone-500 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800/60 hover:border-stone-300 dark:hover:border-stone-600";
+  "border-[var(--theme-border)] text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]";
 const btnActive =
-  "border-stone-300 dark:border-stone-600 bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-200";
+  "border-[var(--theme-border)] bg-[var(--theme-primary-light)] text-[var(--theme-text)]";
 
 const ddItemBase =
   "w-full text-left px-3 py-2 text-sm transition-colors rounded-lg flex items-center gap-2";
 const ddItemActive =
-  "text-stone-900 dark:text-stone-100 bg-stone-100 dark:bg-stone-700 font-medium";
+  "text-[var(--theme-text)] bg-[var(--theme-primary-light)] font-medium";
 const ddItemDef =
-  "text-stone-500 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/50";
+  "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]";
 
 const smItemBase =
   "w-full text-left px-3 py-2 text-xs rounded-lg flex items-center gap-2";
@@ -109,7 +109,7 @@ export function Toolbar({
         className="absolute inset-0"
         style={{ backgroundColor: "var(--theme-bg)" }}
       />
-      <div className="absolute bottom-0 left-0 right-0 h-px bg-stone-200/60 dark:bg-stone-700/40" />
+      <div className="absolute bottom-0 left-0 right-0 h-px bg-[var(--theme-border)]" />
 
       <div className="relative px-3 @sm:px-4 @md:px-6 py-2 @md:py-3">
         <div className="flex items-center justify-between gap-2 @sm:gap-3 w-full">
@@ -134,7 +134,7 @@ export function Toolbar({
                 </span>
                 <ChevronDown
                   size={16}
-                  className={`text-stone-400 dark:text-stone-500 hidden @sm:block transition-transform duration-200 ${
+                  className={`hidden text-[var(--theme-text-tertiary)] transition-transform duration-200 @sm:block ${
                     showFilter ? "rotate-180" : ""
                   }`}
                 />
@@ -167,11 +167,11 @@ export function Toolbar({
             {/* Favorites */}
             <button
               onClick={onFavoritesToggle}
-              className={`${btnBase} w-9 h-9 p-0 flex items-center justify-center transition-all duration-150 ${
-                favoritesOnly
-                  ? "border-amber-300/80 dark:border-amber-600/60 bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 shadow-sm shadow-amber-100 dark:shadow-black/20"
-                  : "border-stone-200 dark:border-stone-700/60 text-stone-500 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800/60 hover:border-stone-300 dark:hover:border-stone-600"
-              }`}
+                  className={`${btnBase} w-9 h-9 p-0 flex items-center justify-center transition-all duration-150 ${
+                    favoritesOnly
+                      ? "border-amber-300/80 bg-amber-50 text-amber-700 shadow-sm shadow-amber-100 dark:border-amber-600/60 dark:bg-amber-500/10 dark:text-amber-300 dark:shadow-black/20"
+                      : btnDefault
+                  }`}
             >
               <Star
                 size={16}
@@ -204,7 +204,7 @@ export function Toolbar({
                   </span>
                   <ChevronDown
                     size={16}
-                    className={`text-stone-400 dark:text-stone-500 transition-transform duration-200 ${
+                    className={`text-[var(--theme-text-tertiary)] transition-transform duration-200 ${
                       showProject ? "rotate-180" : ""
                     }`}
                   />
@@ -228,7 +228,7 @@ export function Toolbar({
                   >
                     {t("fileLibrary.allProjects")}
                   </button>
-                  <div className="mx-2 my-1 border-t border-stone-100 dark:border-stone-700" />
+                  <div className="mx-2 my-1 border-t border-[var(--theme-border)]" />
                   {projects.map((p) => (
                     <button
                       key={p.id}
@@ -260,14 +260,14 @@ export function Toolbar({
               >
                 <SortIcon
                   order={sortOrder}
-                  className="text-stone-400 dark:text-stone-500"
+                  className="text-[var(--theme-text-tertiary)]"
                 />
                 <span className="max-w-[80px] truncate hidden @sm:inline">
                   {t(currentSortLabel ?? "fileLibrary.sort.newest")}
                 </span>
                 <ChevronDown
                   size={16}
-                  className={`text-stone-400 dark:text-stone-500 transition-transform duration-200 ${
+                  className={`text-[var(--theme-text-tertiary)] transition-transform duration-200 ${
                     showSort ? "rotate-180" : ""
                   }`}
                 />
@@ -284,7 +284,7 @@ export function Toolbar({
                   return (
                     <div key={`${o.key}-${o.order}`}>
                       {(i === 2 || i === 4) && (
-                        <div className="mx-2 my-1 border-t border-stone-100 dark:border-stone-700" />
+                        <div className="mx-2 my-1 border-t border-[var(--theme-border)]" />
                       )}
                       <button
                         onClick={() => {
@@ -303,7 +303,7 @@ export function Toolbar({
                         {isActive && (
                           <Check
                             size={16}
-                            className="text-stone-400 dark:text-stone-500 shrink-0"
+                            className="shrink-0 text-[var(--theme-text-tertiary)]"
                           />
                         )}
                       </button>
@@ -317,22 +317,22 @@ export function Toolbar({
           {/* ─── Right group: Search + View toggle ─── */}
           <div className="flex items-center gap-1.5 @sm:gap-2 shrink-0">
             {/* Search */}
-            <div className="group flex items-center h-9 w-[120px] @sm:w-[160px] @md:w-[200px] rounded-lg border border-stone-200 dark:border-stone-700/60 bg-stone-50/50 dark:bg-stone-800/30 px-2 @sm:px-3 pl-9 relative focus-within:border-stone-400 dark:focus-within:border-stone-500 focus-within:bg-white dark:focus-within:bg-stone-800/60 transition-all duration-150">
+            <div className="group relative flex h-9 w-[120px] items-center rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2 pl-9 transition-all duration-150 focus-within:border-[var(--theme-ring)] focus-within:bg-[var(--theme-bg-card)] @sm:w-[160px] @sm:px-3 @md:w-[200px]">
               <Search
                 size={16}
-                className="absolute left-2 @sm:left-3 top-1/2 -translate-y-1/2 text-stone-400 dark:text-stone-500 pointer-events-none"
+                className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[var(--theme-text-tertiary)] @sm:left-3"
               />
               <input
                 type="text"
                 value={search}
                 onChange={(e) => onSearchChange(e.target.value)}
                 placeholder={t("fileLibrary.searchPlaceholder")}
-                className="h-full min-w-0 flex-1 bg-transparent text-sm text-stone-700 dark:text-stone-300 placeholder:text-stone-500 dark:placeholder:text-stone-400 focus:outline-none"
+                className="h-full min-w-0 flex-1 bg-transparent text-sm text-[var(--theme-text)] placeholder:text-[var(--theme-text-tertiary)] focus:outline-none"
               />
               {search && (
                 <button
                   onClick={() => onSearchChange("")}
-                  className="shrink-0 text-stone-300 hover:text-stone-500 dark:text-stone-600 dark:hover:text-stone-400 transition-colors rounded"
+                  className="shrink-0 rounded text-[var(--theme-text-tertiary)] transition-colors hover:text-[var(--theme-text-secondary)]"
                 >
                   <X size={16} />
                 </button>
@@ -341,7 +341,7 @@ export function Toolbar({
 
             {/* View toggle */}
             <div className="hidden @sm:block">
-              <div className="flex items-center rounded-lg border border-stone-200 dark:border-stone-700/60 bg-stone-50/50 dark:bg-stone-800/30 h-9 p-px">
+              <div className="flex h-9 items-center rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-px">
                 {(["grid", "list"] as const).map((mode) => {
                   const label =
                     mode === "grid"
@@ -355,7 +355,7 @@ export function Toolbar({
                       className={`relative z-10 flex items-center justify-center w-8 h-full rounded-md transition-colors duration-200 ${
                         viewMode === mode
                           ? "text-stone-800 dark:text-stone-100"
-                          : "text-stone-400 dark:text-stone-500 hover:text-stone-600 dark:hover:text-stone-300"
+                          : "text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-secondary)]"
                       }`}
                     >
                       <span className="relative z-10">
@@ -366,7 +366,7 @@ export function Toolbar({
                         )}
                       </span>
                       {viewMode === mode && (
-                        <div className="absolute inset-0 bg-white dark:bg-stone-600 rounded-md shadow-sm dark:shadow-black/20 pointer-events-none" />
+                        <div className="pointer-events-none absolute inset-0 rounded-md bg-[var(--theme-primary-light)] shadow-sm dark:shadow-black/20" />
                       )}
                     </button>
                   );

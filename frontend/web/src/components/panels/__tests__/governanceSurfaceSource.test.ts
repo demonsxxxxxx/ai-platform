@@ -14,14 +14,17 @@ test("group availability has explicit governed states", () => {
   assert.equal(resolveGroupAvailability({ adminOnly: true }).state, "admin-only");
 });
 
-test("skills hub exposes marketplace and group availability language", () => {
+test("skills hub exposes governed status and composer entry language", () => {
   const source = readFileSync(
     join(root, "src/components/panels/SkillsHubPanel.tsx"),
     "utf8",
   );
   assert.match(source, /GovernanceAvailabilityBadge/);
-  assert.match(source, /skills\.marketplace\.departmentAvailability/);
-  assert.match(source, /skills\.marketplace\.groupToggleUnavailable/);
+  assert.match(source, /skillsHub\.\$\{statusCopyKey\}\.title/);
+  assert.match(source, /skillsHub\.composerEntry\.title/);
+  assert.match(source, /TAB_PATHS\.marketplace/);
+  assert.match(source, /data-auth-projection-has-permission/);
+  assert.match(source, /onPermissionDeniedChange/);
 });
 
 test("mcp panel exposes governed tools without raw lifecycle controls", () => {

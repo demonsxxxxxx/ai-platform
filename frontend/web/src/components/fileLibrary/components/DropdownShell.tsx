@@ -41,10 +41,10 @@ export function DropdownShell({
       <div
         className={`
           py-1.5 ${isMobile ? "w-auto" : w} ${maxH ?? ""}
-          rounded-xl
-          border border-stone-200/80 dark:border-stone-700/60
-          bg-white dark:bg-stone-800
-          shadow-xl shadow-stone-900/[0.06] dark:shadow-black/40
+          rounded-lg
+          border border-[var(--theme-border)]
+          bg-[var(--theme-bg-card)]
+          shadow-[0_8px_24px_rgba(18,38,63,0.10)] dark:shadow-black/30
           ${maxH ? "overflow-y-auto scrollbar-none" : ""}
           animate-in fade-in-0 zoom-in-95 duration-100
         `}

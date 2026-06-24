@@ -13,13 +13,60 @@ declare const self: ServiceWorkerGlobalScope & {
   __WB_MANIFEST: Array<unknown>;
 };
 
-const APP_SHELL_CACHE = "ai-platform-app-shell-v1";
-const STATIC_CACHE = "ai-platform-static-v1";
+const PRECACHE_MANIFEST = self.__WB_MANIFEST;
+const BUILD_CACHE_VERSION = getBuildCacheVersion(PRECACHE_MANIFEST);
+const APP_SHELL_CACHE = `ai-platform-app-shell-${BUILD_CACHE_VERSION}`;
+const STATIC_CACHE = `ai-platform-static-${BUILD_CACHE_VERSION}`;
+const RUNTIME_CACHE_PREFIXES = [
+  "ai-platform-app-shell-",
+  "ai-platform-static-",
+] as const;
 const OFFLINE_URL = "/offline.html";
 
 cleanupOutdatedCaches();
-precacheAndRoute(self.__WB_MANIFEST);
+precacheAndRoute(PRECACHE_MANIFEST);
 clientsClaim();
+
+function getBuildCacheVersion(manifest: Array<unknown>): string {
+  const signature = manifest
+    .map((entry) => {
+      if (typeof entry === "string") return entry;
+      if (!entry || typeof entry !== "object") return "";
+      const item = entry as { url?: unknown; revision?: unknown };
+      return `${String(item.url ?? "")}:${String(item.revision ?? "")}`;
+    })
+    .sort()
+    .join("|");
+
+  let hash = 0;
+  for (let index = 0; index < signature.length; index += 1) {
+    hash = (hash * 31 + signature.charCodeAt(index)) >>> 0;
+  }
+
+  return hash.toString(36) || "empty";
+}
+
+function isAiPlatformRuntimeCache(cacheName: string): boolean {
+  return RUNTIME_CACHE_PREFIXES.some((prefix) => cacheName.startsWith(prefix));
+}
+
+async function deleteOutdatedRuntimeCaches(): Promise<void> {
+  const expectedCaches = new Set([APP_SHELL_CACHE, STATIC_CACHE]);
+  const cacheNames = await caches.keys();
+
+  await Promise.all(
+    cacheNames
+      .filter(
+        (cacheName) =>
+          isAiPlatformRuntimeCache(cacheName) && !expectedCaches.has(cacheName),
+      )
+      .map((cacheName) => caches.delete(cacheName)),
+  );
+}
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(deleteOutdatedRuntimeCaches());
+});
 
 self.addEventListener("message", (event) => {
   if (!isPwaSkipWaitingMessage(event.data)) return;

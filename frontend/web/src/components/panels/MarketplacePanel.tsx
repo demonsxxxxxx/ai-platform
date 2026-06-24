@@ -461,7 +461,7 @@ export function MarketplacePanel({
       )}
 
       {/* Skills List */}
-      <div className="skill-content-area flex-1 overflow-y-auto py-2 sm:py-4 px-4 sm:p-6">
+      <div className="skill-content-area flex-1 overflow-y-auto px-4 py-3">
         {effectiveGovernedUnavailable ? (
           <div data-marketplace-forbidden-shell className="skill-empty-state">
             <div className="skill-empty-state__icon">
@@ -498,7 +498,7 @@ export function MarketplacePanel({
             )}
           </div>
         ) : (
-          <div className="grid auto-grid-cols gap-5">
+          <div className="grid auto-grid-cols gap-3">
             {skills.map((skill, index) => (
               <SkillCard
                 key={skill.skill_name}

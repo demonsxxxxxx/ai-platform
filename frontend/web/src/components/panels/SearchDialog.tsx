@@ -267,18 +267,18 @@ export function SearchDialog({
           {searchQuery && (
             <button
               onClick={() => setSearchQuery("")}
-              className="flex-shrink-0 flex items-center justify-center w-5 h-5 rounded-full text-stone-400 hover:text-stone-600 dark:text-stone-500 dark:hover:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition-all"
+              className="flex-shrink-0 flex items-center justify-center w-5 h-5 rounded-full text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-bg-sidebar)] transition-all"
             >
               <X size={12} strokeWidth={2.5} />
             </button>
           )}
-          <kbd className="hidden sm:inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium text-stone-400 dark:text-stone-500 bg-stone-100 dark:bg-stone-800 rounded-md border border-stone-200/80 dark:border-stone-700/60">
+          <kbd className="hidden sm:inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium text-[var(--theme-text-tertiary)] bg-[var(--theme-bg-sidebar)] rounded-md border border-[var(--theme-border)]">
             ESC
           </kbd>
         </div>
 
         {/* Divider */}
-        <div className="mx-4 h-px bg-stone-100 dark:bg-stone-800/60" />
+        <div className="mx-4 h-px bg-[var(--theme-border)]" />
 
         {/* Results list */}
         <div
@@ -354,8 +354,8 @@ export function SearchDialog({
                     onMouseEnter={() => setActiveIndex(index)}
                     className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-all duration-75 group ${
                       isActive
-                        ? "bg-stone-100 dark:bg-stone-800/60"
-                        : "hover:bg-stone-50 dark:hover:bg-stone-800/30"
+                        ? "bg-[var(--theme-primary-light)]"
+                        : "hover:bg-[var(--theme-bg-sidebar)]"
                     }`}
                   >
                     <span className="flex-1 min-w-0">
@@ -372,7 +372,7 @@ export function SearchDialog({
                       )}
                     </span>
                     {projectName && (
-                      <span className="flex-shrink-0 flex items-center gap-1 text-[11px] text-stone-400 dark:text-stone-500 bg-stone-100 dark:bg-stone-800/50 px-1.5 py-0.5 rounded-md">
+                      <span className="flex-shrink-0 flex items-center gap-1 text-[11px] text-[var(--theme-text-tertiary)] bg-[var(--theme-bg-sidebar)] border border-[var(--theme-border)] px-1.5 py-0.5 rounded-md">
                         <Hash size={9} strokeWidth={2} />
                         {projectName}
                       </span>
@@ -399,23 +399,23 @@ export function SearchDialog({
         {/* Bottom hint bar */}
         {!isLoading && hasQuery && allSessions.length > 0 && (
           <>
-            <div className="mx-4 h-px bg-stone-100 dark:bg-stone-800/60" />
+            <div className="mx-4 h-px bg-[var(--theme-border)]" />
             <div className="flex items-center justify-between px-4 py-2 text-[11px] text-stone-400 dark:text-stone-500">
               <span>
                 {allSessions.length} {hasMore ? "..." : ""}
               </span>
               <div className="flex items-center gap-2">
                 <span className="flex items-center gap-0.5">
-                  <kbd className="px-1 py-0.5 rounded bg-stone-100 dark:bg-stone-800 border border-stone-200/60 dark:border-stone-700/50 text-[10px]">
+                  <kbd className="px-1 py-0.5 rounded bg-[var(--theme-bg-sidebar)] border border-[var(--theme-border)] text-[10px]">
                     ↑
                   </kbd>
-                  <kbd className="px-1 py-0.5 rounded bg-stone-100 dark:bg-stone-800 border border-stone-200/60 dark:border-stone-700/50 text-[10px]">
+                  <kbd className="px-1 py-0.5 rounded bg-[var(--theme-bg-sidebar)] border border-[var(--theme-border)] text-[10px]">
                     ↓
                   </kbd>
                   <span className="ml-0.5">{t("sidebar.navigate")}</span>
                 </span>
                 <span className="flex items-center gap-0.5">
-                  <kbd className="px-1.5 py-0.5 rounded bg-stone-100 dark:bg-stone-800 border border-stone-200/60 dark:border-stone-700/50 text-[10px]">
+                  <kbd className="px-1.5 py-0.5 rounded bg-[var(--theme-bg-sidebar)] border border-[var(--theme-border)] text-[10px]">
                     ↵
                   </kbd>
                   <span className="ml-0.5">{t("sidebar.open")}</span>

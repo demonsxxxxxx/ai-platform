@@ -126,7 +126,7 @@ export function PersonaPreviewSidebar({
             }}
           />
           <div className="absolute -bottom-7 left-5 sm:left-6 flex items-end gap-3">
-            <div className="pps-card__avatar relative z-10 !w-14 !h-14 !rounded-2xl !border-[2.5px] border-white dark:border-[var(--theme-bg-card)] shadow-lg">
+            <div className="pps-card__avatar relative z-10 !w-14 !h-14 !rounded-lg !border-[2px] border-[var(--theme-bg-card)] ring-1 ring-[var(--theme-border)] shadow-[0_4px_12px_rgba(18,38,63,0.10)]">
               {isPersonaImageAvatar(preset.avatar) ||
               isEmojiAvatar(preset.avatar) ? (
                 <PersonaAvatarImage
