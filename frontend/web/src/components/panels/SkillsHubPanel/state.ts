@@ -1,5 +1,23 @@
 export type SkillsHubTab = "skills" | "marketplace";
 
+export interface SkillsHubGovernanceInput {
+  requestedTab: SkillsHubTab;
+  isAuthenticated: boolean;
+  isLoading?: boolean;
+  canReadSkills: boolean;
+  canReadMarketplace: boolean;
+  catalogPermissionDenied?: boolean;
+  projectionError?: string | null;
+}
+
+export interface SkillsHubGovernanceState {
+  hasPermission: boolean;
+  authProjectionHasPermission: boolean;
+  governedUnavailable: boolean;
+  requiredPermission: "skill:read" | "marketplace:read";
+  degraded: boolean;
+}
+
 export function resolveSkillsHubTab(
   requestedTab: SkillsHubTab | undefined,
   canReadSkills: boolean,
@@ -22,4 +40,33 @@ export function resolveSkillsHubTab(
   }
 
   return "marketplace";
+}
+
+export function resolveSkillsHubGovernance({
+  requestedTab,
+  canReadSkills,
+  canReadMarketplace,
+  catalogPermissionDenied,
+  projectionError,
+}: SkillsHubGovernanceInput): SkillsHubGovernanceState {
+  const authProjectionHasPermission =
+    requestedTab === "marketplace" ? canReadMarketplace : canReadSkills;
+
+  if (requestedTab === "marketplace") {
+    return {
+      hasPermission: !catalogPermissionDenied,
+      authProjectionHasPermission,
+      governedUnavailable: Boolean(catalogPermissionDenied),
+      requiredPermission: "marketplace:read",
+      degraded: Boolean(projectionError),
+    };
+  }
+
+  return {
+    hasPermission: !catalogPermissionDenied,
+    authProjectionHasPermission,
+    governedUnavailable: Boolean(catalogPermissionDenied),
+    requiredPermission: "skill:read",
+    degraded: Boolean(projectionError),
+  };
 }

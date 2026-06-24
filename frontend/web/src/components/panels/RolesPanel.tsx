@@ -9,11 +9,11 @@ import {
 import { useTranslation } from "react-i18next";
 import { PanelHeader } from "../common/PanelHeader";
 import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
-import { resolveGroupAvailability } from "../governance/groupAvailability";
 import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { useAuth } from "../../hooks/useAuth";
 import { Permission } from "../../types";
+import { resolveRoleGovernanceState } from "./roleGovernanceState";
 
 function CapabilityRow({
   icon: Icon,
@@ -54,58 +54,41 @@ export function RolesPanel() {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
   const canManageRoles = hasPermission(Permission.ROLE_MANAGE);
-  const publicProjectionAvailability = resolveGroupAvailability({
-    backed: true,
-    enabled: true,
-  });
-  const adminAvailability = resolveGroupAvailability({
-    backed: true,
-    adminOnly: !canManageRoles,
-    enabled: canManageRoles,
-  });
-  const departmentAvailability = resolveGroupAvailability({
-    backed: true,
-    enabled: true,
-  });
-  const approvalAvailability = resolveGroupAvailability({
-    backed: true,
-    enabled: true,
-  });
-  const auditAvailability = resolveGroupAvailability({
-    backed: true,
-    enabled: true,
+  const roleGovernance = resolveRoleGovernanceState({
+    canManageRoles,
+    roleDirectoryBacked: false,
   });
   const governanceRows = [
     {
       icon: UsersRound,
       title: t("roles.plaza.capabilities.roleDirectory.title"),
       description: t("roles.plaza.capabilities.roleDirectory.description"),
-      availability: publicProjectionAvailability,
+      availability: roleGovernance.capabilities.roleDirectory,
     },
     {
       icon: Building2,
       title: t("roles.plaza.capabilities.departmentScope.title"),
       description: t("roles.plaza.capabilities.departmentScope.description"),
-      availability: departmentAvailability,
+      availability: roleGovernance.capabilities.departmentScope,
     },
     {
       icon: GitPullRequestArrow,
       title: t("roles.plaza.capabilities.requestFlow.title"),
       description: t("roles.plaza.capabilities.requestFlow.description"),
-      availability: approvalAvailability,
+      availability: roleGovernance.capabilities.requestFlow,
     },
     {
       icon: History,
       title: t("roles.plaza.capabilities.auditTrail.title"),
       description: t("roles.plaza.capabilities.auditTrail.description"),
-      availability: auditAvailability,
+      availability: roleGovernance.capabilities.auditTrail,
     },
   ];
 
   return (
     <div
       data-role-plaza-shell
-      data-frontend-governance-state="ready"
+      data-frontend-governance-state={roleGovernance.pageState}
       className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
     >
       <PanelHeader
@@ -115,12 +98,12 @@ export function RolesPanel() {
         actions={
           <div className="flex flex-wrap items-center justify-end gap-2">
             <GovernanceAvailabilityBadge
-              state={publicProjectionAvailability.state}
-              labelKey={publicProjectionAvailability.labelKey}
+              state={roleGovernance.roleDirectoryAvailability.state}
+              labelKey={roleGovernance.roleDirectoryAvailability.labelKey}
             />
             <GovernanceAvailabilityBadge
-              state={adminAvailability.state}
-              labelKey={adminAvailability.labelKey}
+              state={roleGovernance.adminAvailability.state}
+              labelKey={roleGovernance.adminAvailability.labelKey}
             />
           </div>
         }
@@ -129,7 +112,7 @@ export function RolesPanel() {
         <div className="grid gap-3">
           <div className="grid min-w-0 gap-3">
             <WorkbenchStateSurface
-              state="ready"
+              state={roleGovernance.pageState}
               surface="roles-public-catalog"
               title={t("roles.plaza.state.title")}
               description={t("roles.plaza.state.description")}

@@ -49,6 +49,29 @@ test("workbench right context shares the sidebar surface layer", () => {
   assert.match(rightPanel, /workbenchSurface\.secondaryPanel/);
 });
 
+test("role plaza state is resolver-driven instead of hard-coded ready", () => {
+  const roles = read("src/components/panels/RolesPanel.tsx");
+  const resolver = read("src/components/panels/roleGovernanceState.ts");
+
+  assert.match(roles, /resolveRoleGovernanceState/);
+  assert.match(roles, /data-frontend-governance-state=\{roleGovernance\.pageState\}/);
+  assert.doesNotMatch(roles, /data-frontend-governance-state="ready"/);
+  assert.match(resolver, /roleDirectoryBacked/);
+  assert.match(resolver, /adminOnly: !canManageRoles/);
+  assert.match(resolver, /unavailable/);
+});
+
+test("skills hub routes use the public contract resolver", () => {
+  const hub = read("src/components/panels/SkillsHubPanel.tsx");
+  const resolver = read("src/components/panels/SkillsHubPanel/state.ts");
+
+  assert.match(hub, /resolveSkillsHubGovernance/);
+  assert.match(hub, /data-required-permission=\{hubGovernance\.requiredPermission\}/);
+  assert.match(resolver, /requiredPermission: "skill:read" \| "marketplace:read"/);
+  assert.match(resolver, /marketplace:read/);
+  assert.match(resolver, /skill:read/);
+});
+
 test("composer and command surfaces use stable dimensions", () => {
   const css = read("src/styles/chat.css");
   assert.match(css, /\.chat-input-container/);

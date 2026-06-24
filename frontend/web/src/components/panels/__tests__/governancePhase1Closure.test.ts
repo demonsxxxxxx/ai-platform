@@ -478,7 +478,6 @@ test("role plaza stays reachable without claiming missing backend projection", (
   const en = JSON.parse(read("src/i18n/locales/en.json"));
 
   assert.match(rolesPanel, /data-role-plaza-shell/);
-  assert.match(rolesPanel, /data-frontend-governance-state="ready"/);
   assert.doesNotMatch(rolesPanel, /data-role-plaza-backend-gap/);
   assert.doesNotMatch(rolesPanel, /roles\.plaza\.backendGap/);
   for (const source of [
@@ -489,7 +488,11 @@ test("role plaza stays reachable without claiming missing backend projection", (
     assert.doesNotMatch(source, /backendGap/);
     assert.doesNotMatch(source, /public projection/i);
     assert.doesNotMatch(source, /backend gap/i);
-    assert.doesNotMatch(source, /后端/);
     assert.doesNotMatch(source, /投影/);
   }
+  assert.match(rolesPanel, /resolveRoleGovernanceState/);
+  assert.match(rolesPanel, /data-frontend-governance-state=\{roleGovernance\.pageState\}/);
+  assert.doesNotMatch(rolesPanel, /data-frontend-governance-state="ready"/);
+  assert.match(rolesPanel, /roleDirectoryBacked:\s*false/);
+  assert.match(rolesPanel, /Permission\.ROLE_MANAGE/);
 });
