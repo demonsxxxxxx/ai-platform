@@ -31,13 +31,13 @@ export function PersonaWorkbenchPanel() {
   const persona = usePersonaPlaza();
   const governanceState = resolveFrontendGovernanceState({
     isAuthenticated,
-    isLoading: authLoading || (persona.canRead && persona.isLoading),
-    hasPermission: persona.canRead,
+    isLoading: authLoading || (!persona.error && persona.isLoading),
+    hasPermission: !persona.readPermissionDenied,
     projectionError: persona.error,
   });
   const readAvailability = resolveGroupAvailability({
     backed: true,
-    enabled: governanceState === "ready" || governanceState === "degraded",
+    enabled: governanceState === "ready",
     adminOnly: governanceState === "forbidden",
   });
   const writeAvailability = resolveGroupAvailability({

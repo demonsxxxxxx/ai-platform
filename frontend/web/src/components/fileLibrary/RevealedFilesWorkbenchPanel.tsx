@@ -1,4 +1,5 @@
 import { FileStack, ShieldCheck } from "lucide-react";
+import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { PanelHeader } from "../common/PanelHeader";
 import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
@@ -15,10 +16,20 @@ export function RevealedFilesWorkbenchPanel() {
     isAuthenticated,
     isLoading: authLoading,
   } = useAuth();
+  const [filesProjectionError, setFilesProjectionError] = useState<
+    string | null
+  >(null);
+  const handleProjectionStateChange = useCallback(
+    (error: string | null) => {
+      setFilesProjectionError(error);
+    },
+    [],
+  );
   const governanceState = resolveFrontendGovernanceState({
     isAuthenticated,
     isLoading: authLoading,
     hasPermission: true,
+    projectionError: filesProjectionError,
   });
   const readAvailability = resolveGroupAvailability({
     backed: true,
@@ -40,6 +51,49 @@ export function RevealedFilesWorkbenchPanel() {
           state={governanceState}
           surface="revealed-files-workbench"
         />
+      </div>
+    );
+  }
+
+  if (governanceState === "degraded") {
+    return (
+      <div
+        data-files-workbench-shell
+        data-frontend-governance-state={governanceState}
+        className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      >
+        <PanelHeader
+          title={t("fileLibrary.workbenchTitle", "文件工作台")}
+          subtitle={t(
+            "fileLibrary.workbenchSubtitle",
+            "按会话查看已揭示文件、项目产物和可预览附件。",
+          )}
+          icon={<FileStack size={20} className="text-slate-600" />}
+          actions={
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
+              <GovernanceAvailabilityBadge
+                state={readAvailability.state}
+                labelKey={readAvailability.labelKey}
+              />
+              <GovernanceAvailabilityBadge
+                state={previewAvailability.state}
+                labelKey={previewAvailability.labelKey}
+              />
+            </div>
+          }
+        />
+        <div className="flex min-h-0 flex-1 items-center justify-center px-4">
+          <WorkbenchStateSurface
+            state="degraded"
+            surface="revealed-files-workbench"
+            title={t("fileLibrary.degradedTitle", "文件投影已降级")}
+            description={t(
+              "fileLibrary.degradedDescription",
+              "后端文件库投影暂不可用；页面保留工作台入口，并避免把缺路由误显示为空文件库。",
+            )}
+            details={filesProjectionError ? [filesProjectionError] : undefined}
+          />
+        </div>
       </div>
     );
   }
@@ -107,7 +161,9 @@ export function RevealedFilesWorkbenchPanel() {
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        <RevealedFilesPanel />
+        <RevealedFilesPanel
+          onProjectionStateChange={handleProjectionStateChange}
+        />
       </div>
     </div>
   );

@@ -5,6 +5,7 @@ import toast from "react-hot-toast";
 import { personaPresetApi } from "../../services/api";
 import { useAuth } from "../../hooks/useAuth";
 import { usePersonaPresets } from "../../hooks/usePersonaPresets";
+import { isPermissionError } from "../governance/frontendGovernanceState";
 import { Permission } from "../../types";
 import { translateBackendError } from "../../utils/backendErrors";
 import {
@@ -87,7 +88,6 @@ export function usePersonaPlaza() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { hasPermission } = useAuth();
-  const canRead = hasPermission(Permission.PERSONA_PRESET_READ);
   const canWrite = hasPermission(Permission.PERSONA_PRESET_WRITE);
   const canAdmin = hasPermission(Permission.PERSONA_PRESET_ADMIN);
 
@@ -124,7 +124,9 @@ export function usePersonaPlaza() {
     createPreset,
     updatePreset,
     deletePreset,
-  } = usePersonaPresets({ enabled: canRead, listParams });
+  } = usePersonaPresets({ listParams });
+  const readPermissionDenied = isPermissionError(error);
+  const canRead = !readPermissionDenied && !error;
 
   const [showModal, setShowModal] = useState(false);
   const [editingPreset, setEditingPreset] = useState<PersonaPreset | null>(
@@ -438,6 +440,7 @@ export function usePersonaPlaza() {
     error,
     presets,
     canRead,
+    readPermissionDenied,
     canWrite,
     canAdmin,
     query,

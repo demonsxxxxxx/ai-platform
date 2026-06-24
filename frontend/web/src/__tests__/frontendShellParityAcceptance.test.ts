@@ -413,12 +413,18 @@ test("persona and files routes are governed workbench pages instead of legacy sh
   assert.match(personaWorkbench, /data-persona-workbench-shell/);
   assert.match(personaWorkbench, /data-frontend-governance-state=\{governanceState\}/);
   assert.match(personaWorkbench, /resolveFrontendGovernanceState/);
+  assert.match(personaWorkbench, /hasPermission:\s*!persona\.readPermissionDenied/);
+  assert.doesNotMatch(personaWorkbench, /hasPermission:\s*persona\.canRead/);
+  assert.match(personaWorkbench, /governanceState === "degraded"/);
   assert.match(personaWorkbench, /WorkbenchStateSurface/);
   assert.match(personaWorkbench, /PersonaPresetCard/);
   assert.match(personaWorkbench, /PersonaEditorModal/);
   assert.doesNotMatch(personaWorkbench, /角色广场|rounded-2xl|rounded-3xl|shadow-xl|shadow-2xl/);
   assert.match(filesWorkbench, /data-files-workbench-shell/);
   assert.match(filesWorkbench, /data-frontend-governance-state/);
+  assert.match(filesWorkbench, /filesProjectionError/);
+  assert.match(filesWorkbench, /projectionError:\s*filesProjectionError/);
+  assert.match(filesWorkbench, /onProjectionStateChange/);
   assert.match(filesWorkbench, /RevealedFilesPanel/);
   assert.match(filesWorkbench, /WorkbenchStateSurface/);
   assert.doesNotMatch(filesWorkbench, /rounded-2xl|rounded-3xl|shadow-xl|shadow-2xl/);
