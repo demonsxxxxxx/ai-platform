@@ -84,15 +84,17 @@ def write_future_reviewed_b2_smoke(
 def write_b2_issue_closure_evidence(
     repo_root: Path,
     *,
+    issue: str = "#130",
     evidence_refs: list[str] | None = None,
     residual_caveats: list[str] | None = None,
     non_expansion_invariants: dict[str, bool] | None = None,
 ) -> None:
+    issue_number = issue.removeprefix("#")
     payload = {
         "schema_version": "ai-platform.backend-stage-closure-evidence.v1",
         "backend_stage": "B2 real sandbox usable",
-        "issue": "#89",
-        "issue_url": "https://github.com/demonsxxxxxx/ai-platform/issues/89",
+        "issue": issue,
+        "issue_url": f"https://github.com/demonsxxxxxx/ai-platform/issues/{issue_number}",
         "issue_state": "closed",
         "closed_at": "2026-06-18T20:16:00Z",
         "closed_gap": "b2_issue_review_and_closure_evidence",
@@ -107,8 +109,13 @@ def write_b2_issue_closure_evidence(
         ],
         "closure_comments": [
             {
-                "url": "https://github.com/demonsxxxxxx/ai-platform/issues/89#issuecomment-4745786980",
-                "summary": "Final #89 closure evidence records only the issue-scope sandbox smoke loop.",
+                "url": (
+                    f"https://github.com/demonsxxxxxx/ai-platform/issues/{issue_number}"
+                    "#issuecomment-4745786980"
+                ),
+                "summary": (
+                    f"Final {issue} closure evidence records only the issue-scope sandbox smoke loop."
+                ),
             }
         ],
         "evidence_refs": (
@@ -142,7 +149,7 @@ def write_b2_issue_closure_evidence(
     evidence_path = (
         repo_root
         / "docs/release-evidence/backend-stage-closures/b2-sandbox"
-        / "2026-06-18-issue89-b2-closure.json"
+        / f"2026-06-18-issue{issue_number}-b2-closure.json"
     )
     evidence_path.parent.mkdir(parents=True, exist_ok=True)
     evidence_path.write_text(
@@ -156,7 +163,7 @@ def test_b2_sandbox_readiness_records_source_contract_without_gate_closure(tmp_p
 
     assert readiness["schema_version"] == "ai-platform.b2-sandbox-readiness.v1"
     assert readiness["backend_stage"] == "B2 real sandbox usable"
-    assert readiness["issue"] == "#89"
+    assert readiness["issue"] == "#130"
     assert readiness["status"] == "local_contract_ready_runtime_smoke_required"
     assert readiness["status_label"] == "local partial"
     assert readiness["provider_profile"]["provider"] == "docker"
@@ -167,7 +174,7 @@ def test_b2_sandbox_readiness_records_source_contract_without_gate_closure(tmp_p
     assert readiness["provider_profile"]["docker_socket_default_mount_allowed"] is False
     assert readiness["runtime_acceptance"]["status"] == "missing_211_real_sandbox_smoke"
     assert readiness["runtime_acceptance"]["status_label_after_smoke_before_review"] == "local partial"
-    assert readiness["runtime_acceptance"]["status_label_after_reviewed_evidence"] == "211 verified"
+    assert readiness["runtime_acceptance"]["status_label_after_reviewed_evidence"] == "local partial"
     assert readiness["runtime_acceptance"]["smoke_without_reviewed_evidence_status"] == (
         "runtime_smoke_recorded_review_required"
     )
@@ -300,10 +307,9 @@ def test_b2_sandbox_readiness_records_source_contract_without_gate_closure(tmp_p
     assert "security options" in serialized_runtime_evidence
     assert "rollback assumptions" not in serialized_runtime_evidence
     assert readiness["evidence_policy"] == (
-        "B2 can become `211 verified` only after reviewed, redacted 211 Docker/equivalent "
-        "sandbox smoke evidence proves launch, command execution, callback, cancel, cleanup, "
-        "orphan prevention, artifact/event return, and projection redaction for merged source. "
-        "Existing fake-provider and source-regression evidence stay `local partial`."
+        "B2 remains `local partial` until the current issue boundary, reviewed release evidence, "
+        "and required 211 smoke/readiness evidence are all complete. Reviewed fake-provider, "
+        "source-regression, or runtime-hardening evidence by itself does not complete gate closure."
     )
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
     assert "gate closable" not in serialized
@@ -680,9 +686,9 @@ def test_b2_sandbox_readiness_records_reviewed_211_hardening_without_closing_b2_
     assert readiness["status"] == "runtime_hardening_acceptance_recorded"
     assert readiness["status_label"] == "local partial"
     assert readiness["runtime_acceptance"]["status"] == "verified_211_runtime_acceptance"
-    assert readiness["runtime_acceptance"]["status_label_after_reviewed_evidence"] == "211 verified"
+    assert readiness["runtime_acceptance"]["status_label_after_reviewed_evidence"] == "local partial"
     assert readiness["runtime_acceptance"]["does_not_close_b2_gate_by_itself"] is True
-    assert readiness["open_gaps"] == []
+    assert readiness["open_gaps"] == ["b2_issue_review_and_closure_evidence"]
     assert readiness["closed_runtime_gaps"] == [
         "b2_211_real_sandbox_smoke",
         "b2_reviewed_release_evidence",
@@ -691,7 +697,6 @@ def test_b2_sandbox_readiness_records_reviewed_211_hardening_without_closing_b2_
         "security_options_evidence",
     ]
     assert readiness["closed_gate_boundary_gaps"] == [
-        "b2_issue_review_and_closure_evidence",
         "b2_runtime_evidence_review_against_merged_source",
     ]
     runtime_review = readiness["gate_boundary_evidence"][
@@ -702,28 +707,19 @@ def test_b2_sandbox_readiness_records_reviewed_211_hardening_without_closing_b2_
     assert runtime_review["runtime_subject_commit_sha"] == (
         "0822dad411fb72c89d9888ffde08a6c13a468cd9"
     )
-    assert runtime_review["current_source_commit_sha"] == (
-        "0822dad411fb72c89d9888ffde08a6c13a468cd9"
-    )
+    assert runtime_review["current_source_commit_sha"]
     assert runtime_review["runtime_affecting_changes_since_runtime_subject"] == []
     assert runtime_review["required_next_step"] == (
         "record issue closure evidence after final issue review"
     )
     closure_evidence = readiness["gate_boundary_evidence"]["b2_issue_review_and_closure_evidence"]
-    assert closure_evidence["status"] == "recorded_issue_closure_evidence"
-    assert closure_evidence["closed_gap"] == "b2_issue_review_and_closure_evidence"
-    assert closure_evidence["issue"] == "#89"
-    assert closure_evidence["issue_state"] == "closed"
+    assert closure_evidence["status"] == "open_missing_issue_closure_evidence"
+    assert closure_evidence["closed_gap"] is None
+    assert closure_evidence["issue"] == "#130"
     assert closure_evidence["does_not_close_broader_b2_g7_gate"] is True
-    assert "docs/release-evidence/backend-stage-closures" in closure_evidence["path"]
-    assert closure_evidence["evidence_refs"] == [
-        "docs/release-evidence/b2-sandbox/"
-        "f8a0f3c1168c34663850345d8f30358d435a0134/"
-        "2026-06-19-211-b2-sandbox-runtime-smoke-f8a0f3c.json"
-    ]
-    assert "does_not_close_broader_b2_g7_production_hardening_gate" in closure_evidence[
-        "residual_caveats"
-    ]
+    assert closure_evidence["required_next_step"] == (
+        "record reviewed local issue-closure evidence for #130 before closing this boundary"
+    )
 
     smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
     assert smoke_evidence["status"] == "verified_211_runtime_acceptance"
@@ -765,21 +761,21 @@ def test_b2_sandbox_readiness_records_reviewed_211_hardening_without_closing_b2_
         "Admin Runtime sandbox overview shows zero verifier-owned active containers or active leases",
         "selected workflow is disabled or restored to fake/test-only provider posture",
         "orphan cleanup scan completed for same tenant/workspace/user/session/run scope",
-        "B2 readiness still reports resource limits, egress, and security options as open",
+        "B2 readiness still reports any remaining issue, source, or hardening boundary as open",
         "operator issue comment records source/runtime subject, command result, and residual caveats",
     ]
+    assert rollback["remaining_hardening_gaps"] == []
     assert readiness["hardening_policy_contracts"]["resource_limits_policy_evidence"]["status"] == (
         "recorded_source_policy_contract"
     )
-    assert readiness["hardening_policy_contracts"]["egress_policy_evidence"]["remaining_runtime_gap"] == (
-        "egress_runtime_hardening_evidence"
-    )
+    assert readiness["hardening_policy_contracts"]["egress_policy_evidence"]["remaining_runtime_gap"] is None
+    assert readiness["hardening_policy_contracts"]["egress_policy_evidence"]["runtime_evidence_required"] == []
     assert readiness["hardening_policy_contracts"]["security_options_evidence"][
         "does_not_claim_docker_sandbox_production_hardening"
     ] is True
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
-    assert "211 verified" in serialized
+    assert "211 verified" not in serialized
     assert "gate closable" not in serialized
     assert "sandbox_workdir" not in serialized
     assert "callback-secret" not in serialized
@@ -896,26 +892,28 @@ def test_b2_sandbox_readiness_markdown_is_gap_first_and_operator_readable():
     assert "Status label: `local partial`" in markdown
     assert "## Open Gaps" in markdown
     open_gap_section = markdown.split("## Closed Gate Boundary Gaps", 1)[0]
-    assert "- none" in open_gap_section
+    assert "- b2_issue_review_and_closure_evidence" in open_gap_section
     assert "- resource_limits_policy_evidence" not in open_gap_section
     assert "- egress_policy_evidence" not in open_gap_section
     assert "- security_options_evidence" not in open_gap_section
     assert "- b2_runtime_evidence_review_against_merged_source" not in open_gap_section
     assert "- rollback_assumptions_evidence" not in open_gap_section
-    assert "- b2_issue_review_and_closure_evidence" not in open_gap_section
+    assert "- b2_issue_review_and_closure_evidence" in open_gap_section
     assert "## Closed Gate Boundary Gaps" in markdown
-    closed_gap_section = markdown.split("## Gate Boundary Evidence", 1)[0]
-    assert "- b2_issue_review_and_closure_evidence" in closed_gap_section
+    closed_gap_section = markdown.split("## Closed Gate Boundary Gaps", 1)[1].split(
+        "## Gate Boundary Evidence",
+        1,
+    )[0]
+    assert "- b2_issue_review_and_closure_evidence" not in closed_gap_section
     assert "- b2_runtime_evidence_review_against_merged_source" in closed_gap_section
     assert "## Gate Boundary Evidence" in markdown
     assert "### B2 Issue Closure Evidence" in markdown
     assert "### B2 Runtime Evidence Review Against Merged Source" in markdown
     assert "recorded_local_contract" in markdown
-    assert "record issue closure evidence after final issue review" in markdown
+    assert "record reviewed local issue-closure evidence for #130 before closing this boundary" in markdown
     assert "runtime_affecting_delta_requires_fresh_211_smoke" not in markdown
-    assert "docs/release-evidence/backend-stage-closures/b2-sandbox" in markdown
-    assert "2026-06-19-211-b2-sandbox-runtime-smoke-f8a0f3c.json" in markdown
-    assert "does_not_close_broader_b2_g7_production_hardening_gate" in markdown
+    assert "docs/release-evidence/backend-stage-closures/b2-sandbox" not in markdown
+    assert "2026-06-19-211-b2-sandbox-runtime-smoke-f8a0f3c.json" not in markdown
     assert "- b2_211_real_sandbox_smoke" not in markdown
     assert "- b2_reviewed_release_evidence" not in markdown
     assert "## Runtime Acceptance" in markdown
@@ -924,7 +922,8 @@ def test_b2_sandbox_readiness_markdown_is_gap_first_and_operator_readable():
     assert "`sudo -n docker`" in markdown
     assert "`ai-platform:local`" in markdown
     assert "smoke status before reviewed evidence: `local partial`" in markdown
-    assert "target status after reviewed evidence: `211 verified`" in markdown
+    assert "target status after reviewed evidence: `local partial`" in markdown
+    assert "211 verified" not in markdown
     assert "hardening.evidence_class" in markdown
     assert "admin_or_allowlist_only" in markdown
     assert "PRD B2/G7 runtime hardening requirements still open" in markdown
@@ -940,9 +939,9 @@ def test_b2_sandbox_readiness_markdown_is_gap_first_and_operator_readable():
     assert "`--runtime-probe-results-file`" in markdown
     assert "resource_limits_policy_evidence" in markdown
     assert "## Hardening Policy Contracts" in markdown
-    assert "resource_limits_runtime_hardening_evidence" in markdown
-    assert "egress_runtime_hardening_evidence" in markdown
-    assert "security_options_runtime_hardening_evidence" in markdown
+    assert "resource_limits_runtime_hardening_evidence" not in markdown
+    assert "egress_runtime_hardening_evidence" not in markdown
+    assert "security_options_runtime_hardening_evidence" not in markdown
     assert "recorded_source_policy_contract" in markdown
     assert "container_memory_limit_defined" in markdown
     assert "default_deny_outbound_network_policy_defined" in markdown
@@ -953,7 +952,7 @@ def test_b2_sandbox_readiness_markdown_is_gap_first_and_operator_readable():
     assert "Admin Runtime sandbox overview shows zero verifier-owned active containers" in markdown
     assert "## Closed Source Controls" in markdown
     assert "docker_provider_cached_lease_scope_revalidation" in markdown
-    assert "fake-provider and source-regression evidence stay `local partial`" in markdown
+    assert "runtime-hardening evidence by itself does not complete gate closure" in markdown
     assert "gate closable" not in markdown.lower()
 
 
@@ -972,7 +971,7 @@ def test_b2_sandbox_readiness_cli_outputs_json_without_secret_markers():
     assert payload["runtime_acceptance"]["status"] == "verified_211_runtime_acceptance"
     assert payload["runtime_acceptance"]["status_label_after_smoke_before_review"] == "local partial"
     assert payload["runtime_acceptance"]["reviewed_evidence_required_for_211_verified"] is True
-    assert payload["open_gaps"] == []
+    assert payload["open_gaps"] == ["b2_issue_review_and_closure_evidence"]
     assert payload["closed_runtime_gaps"] == [
         "b2_211_real_sandbox_smoke",
         "b2_reviewed_release_evidence",
@@ -981,7 +980,6 @@ def test_b2_sandbox_readiness_cli_outputs_json_without_secret_markers():
         "security_options_evidence",
     ]
     assert payload["closed_gate_boundary_gaps"] == [
-        "b2_issue_review_and_closure_evidence",
         "b2_runtime_evidence_review_against_merged_source",
     ]
     assert payload["gate_boundary_evidence"]["b2_runtime_evidence_review_against_merged_source"]["status"] == (
@@ -996,19 +994,20 @@ def test_b2_sandbox_readiness_cli_outputs_json_without_secret_markers():
     assert payload["hardening_policy_contracts"]["resource_limits_policy_evidence"]["evidence_level"] == (
         "source_contract"
     )
-    assert payload["hardening_policy_contracts"]["egress_policy_evidence"]["remaining_runtime_gap"] == (
-        "egress_runtime_hardening_evidence"
-    )
+    assert payload["hardening_policy_contracts"]["egress_policy_evidence"]["remaining_runtime_gap"] is None
+    assert payload["hardening_policy_contracts"]["egress_policy_evidence"]["runtime_evidence_required"] == []
     assert payload["hardening_policy_contracts"]["security_options_evidence"][
         "does_not_close_broader_b2_g7_gate"
     ] is True
     assert payload["rollback_assumptions"]["closed_gap"] == "rollback_assumptions_evidence"
+    assert payload["rollback_assumptions"]["remaining_hardening_gaps"] == []
     assert payload["gate_boundary_evidence"]["b2_issue_review_and_closure_evidence"]["status"] == (
-        "recorded_issue_closure_evidence"
+        "open_missing_issue_closure_evidence"
     )
     assert "callback-secret" not in result.stdout
     assert "sandbox_workdir" not in result.stdout
     assert "gate closable" not in result.stdout.lower()
+    assert "211 verified" not in result.stdout.lower()
 
 
 def test_b2_issue_closure_gap_stays_open_without_valid_local_closure_evidence(tmp_path):
@@ -1027,8 +1026,21 @@ def test_b2_issue_closure_gap_stays_open_without_valid_local_closure_evidence(tm
     assert closure_evidence["status"] == "open_missing_issue_closure_evidence"
     assert closure_evidence["closed_gap"] is None
     assert closure_evidence["required_next_step"] == (
-        "record reviewed local issue-closure evidence for #89 before closing this boundary"
+        "record reviewed local issue-closure evidence for #130 before closing this boundary"
     )
+
+
+def test_b2_issue_closure_gap_stays_open_when_only_historical_issue89_is_closed(tmp_path):
+    write_future_reviewed_b2_smoke(tmp_path)
+    write_b2_issue_closure_evidence(tmp_path, issue="#89")
+
+    readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
+
+    assert "b2_issue_review_and_closure_evidence" in readiness["open_gaps"]
+    closure_evidence = readiness["gate_boundary_evidence"]["b2_issue_review_and_closure_evidence"]
+    assert closure_evidence["status"] == "open_missing_issue_closure_evidence"
+    assert closure_evidence["closed_gap"] is None
+    assert closure_evidence["issue"] == "#130"
 
 
 def test_b2_issue_closure_gap_stays_open_for_under_specified_closure_evidence(tmp_path):
