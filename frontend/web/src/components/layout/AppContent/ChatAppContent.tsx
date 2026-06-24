@@ -178,9 +178,6 @@ export function ChatAppContent({
     clearMessages,
     switchAgent,
     loadHistory,
-    setPendingProjectId,
-    autoExpandProjectId,
-    clearAutoExpandProjectId,
     currentProjectId,
   } = useAgent({
     onApprovalRequired: (approval) => {
@@ -733,9 +730,6 @@ export function ChatAppContent({
           currentSessionId={sessionId}
           onSelectSession={handleSelectSessionAndClose}
           onNewSession={handleNewSessionAndClose}
-          onSetPendingProjectId={setPendingProjectId}
-          autoExpandProjectId={autoExpandProjectId}
-          onConsumeAutoExpandProjectId={clearAutoExpandProjectId}
           newSession={newlyCreatedSession}
           mobileOpen={mobileSidebarOpen}
           onMobileClose={handleMobileClose}

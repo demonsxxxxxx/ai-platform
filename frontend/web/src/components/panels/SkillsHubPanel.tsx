@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { Package, ShoppingBag, Sparkles, TerminalSquare } from "lucide-react";
+import { Package, ShoppingBag, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
-import { useSettingsContext } from "../../contexts/SettingsContext";
 import { useAuth } from "../../hooks/useAuth";
 import { Permission } from "../../types";
 import { PanelHeader } from "../common/PanelHeader";
@@ -21,6 +20,11 @@ const TAB_PATHS: Record<SkillsHubTab, string> = {
   marketplace: "/marketplace",
 };
 
+interface CatalogState {
+  permissionDenied: boolean;
+  projectionError: string | null;
+}
+
 export function SkillsHubPanel() {
   const { t } = useTranslation();
   const location = useLocation();
@@ -30,32 +34,36 @@ export function SkillsHubPanel() {
     isAuthenticated,
     isLoading: authLoading,
   } = useAuth();
-  const {
-    isLoading: settingsLoading,
-    error: settingsError,
-  } = useSettingsContext();
 
   const requestedTab: SkillsHubTab =
     location.pathname === "/marketplace" ? "marketplace" : "skills";
-  const [catalogPermissionDeniedByTab, setCatalogPermissionDeniedByTab] =
-    useState<Record<SkillsHubTab, boolean>>({
-      skills: false,
-      marketplace: false,
-    });
+  const [catalogStateByTab, setCatalogStateByTab] = useState<
+    Record<SkillsHubTab, CatalogState>
+  >({
+    skills: { permissionDenied: false, projectionError: null },
+    marketplace: { permissionDenied: false, projectionError: null },
+  });
+  const catalogPermissionDeniedByTab = {
+    skills: catalogStateByTab.skills.permissionDenied,
+    marketplace: catalogStateByTab.marketplace.permissionDenied,
+  };
+  const catalogProjectionErrorByTab = {
+    skills: catalogStateByTab.skills.projectionError,
+    marketplace: catalogStateByTab.marketplace.projectionError,
+  };
   const visibleTab = requestedTab;
   const isMarketplaceView = visibleTab === "marketplace";
   const canReadSkills = hasAnyPermission([Permission.SKILL_READ]);
   const canReadMarketplace = hasAnyPermission([Permission.MARKETPLACE_READ]);
   const showTabSwitcher = true;
-  const skillsProjectionDegraded = Boolean(settingsError);
   const hubGovernance = resolveSkillsHubGovernance({
     requestedTab,
     isAuthenticated,
-    isLoading: authLoading || settingsLoading,
+    isLoading: authLoading,
     canReadSkills,
     canReadMarketplace,
     catalogPermissionDenied: catalogPermissionDeniedByTab[requestedTab],
-    projectionError: settingsError,
+    projectionError: catalogProjectionErrorByTab[requestedTab],
   });
   const governanceState = hubGovernance.pageState;
   const statusCopyKey =
@@ -78,13 +86,17 @@ export function SkillsHubPanel() {
     }
   }, [location.pathname, navigate, visibleTab]);
 
-  const handleCatalogPermissionDeniedChange = useCallback(
-    (permissionDenied: boolean) => {
-      setCatalogPermissionDeniedByTab((previous) => {
-        if (previous[requestedTab] === permissionDenied) {
+  const handleCatalogStateChange = useCallback(
+    (nextState: CatalogState) => {
+      setCatalogStateByTab((previous) => {
+        const current = previous[requestedTab];
+        if (
+          current.permissionDenied === nextState.permissionDenied &&
+          current.projectionError === nextState.projectionError
+        ) {
           return previous;
         }
-        return { ...previous, [requestedTab]: permissionDenied };
+        return { ...previous, [requestedTab]: nextState };
       });
     },
     [requestedTab],
@@ -93,10 +105,11 @@ export function SkillsHubPanel() {
   return (
     <div
       data-phase1c-surface="skills-hub"
+      data-skills-catalog-workbench
       data-frontend-governance-state={governanceState}
       data-required-permission={hubGovernance.requiredPermission}
       data-auth-projection-has-permission={hubGovernance.authProjectionHasPermission}
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
     >
       <PanelHeader
         className="skill-panel-header"
@@ -147,67 +160,86 @@ export function SkillsHubPanel() {
         }
       />
 
-      <div className="px-4 pb-3">
-        <section className="grid gap-3 lg:grid-cols-2">
-          <div className={`${workbenchSurface.compactPanel} flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between`}>
-            <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
-                {t(`skillsHub.${statusCopyKey}.title`)}
-              </h3>
-              <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
-                {t(`skillsHub.${statusCopyKey}.description`)}
-              </p>
-            </div>
-            <GovernanceAvailabilityBadge
-              state={permissionAvailability.state}
-              labelKey={permissionAvailability.labelKey}
-            />
+      <div className="flex min-h-0 flex-1 gap-3 px-4 pb-4">
+        <aside
+          data-skills-catalog-sidebar
+          className={`${workbenchSurface.secondaryPanel} hidden w-64 shrink-0 flex-col gap-4 p-3 lg:flex`}
+        >
+          <div>
+            <p className={workbenchSurface.label}>
+              {t("skillsHub.title")}
+            </p>
+            <h2 className="mt-1 text-sm font-semibold text-slate-900 dark:text-stone-100">
+              {t(`skillsHub.${statusCopyKey}.title`)}
+            </h2>
+            <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-stone-400">
+              {t(`skillsHub.${statusCopyKey}.description`)}
+            </p>
           </div>
-          <div className={`${workbenchSurface.compactPanel} flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between`}>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <TerminalSquare size={16} className="text-stone-500 dark:text-stone-400" />
-                <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
-                  {t("skillsHub.composerEntry.title")}
-                </h3>
-              </div>
-              <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
-                {t("skillsHub.composerEntry.description")}
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-1 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] p-1 text-[11px] font-semibold text-stone-600 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-300">
-              <span className="rounded-md bg-slate-100 px-2 py-1 shadow-sm dark:bg-stone-900">
-                /
-              </span>
-              <span className="rounded-md bg-slate-100 px-2 py-1 shadow-sm dark:bg-stone-900">
-                $
-              </span>
-            </div>
-          </div>
-        </section>
-      </div>
 
-      {/* Child panel handles its own padding via skill-panel-header + skill-content-area */}
-      <div className="min-h-0 flex-1 overflow-hidden">
-        {visibleTab === "skills" ? (
-          <div data-skill-catalog-shell className="h-full min-h-0">
-            <SkillsPanel
-              embedded
-              governedUnavailable={hubGovernance.governedUnavailable}
-              onPermissionDeniedChange={handleCatalogPermissionDeniedChange}
-              settingsStateDegraded={skillsProjectionDegraded}
-            />
-          </div>
-        ) : (
-          <div data-marketplace-catalog-shell className="h-full min-h-0">
-            <MarketplacePanel
-              embedded
-              governedUnavailable={hubGovernance.governedUnavailable}
-              onPermissionDeniedChange={handleCatalogPermissionDeniedChange}
-              settingsStateDegraded={skillsProjectionDegraded}
-            />
-          </div>
-        )}
+          <GovernanceAvailabilityBadge
+            state={permissionAvailability.state}
+            labelKey={permissionAvailability.labelKey}
+          />
+
+          <nav className="grid gap-1.5">
+            {[
+              {
+                key: "skills" as const,
+                label: t("nav.skills"),
+                icon: Package,
+                path: TAB_PATHS.skills,
+              },
+              {
+                key: "marketplace" as const,
+                label: t("nav.marketplace"),
+                icon: ShoppingBag,
+                path: TAB_PATHS.marketplace,
+              },
+            ].map(({ key, label, icon: Icon, path }) => {
+              const isActive = visibleTab === key;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => navigate(path)}
+                  className={`flex min-h-10 items-center gap-2 rounded-md px-3 text-left text-sm font-medium transition-colors ${
+                    isActive
+                      ? "bg-[var(--theme-primary-light)] text-[var(--theme-text)]"
+                      : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
+                  }`}
+                  aria-current={isActive ? "page" : undefined}
+                >
+                  <Icon size={16} />
+                  <span>{label}</span>
+                </button>
+              );
+            })}
+          </nav>
+        </aside>
+
+        <section
+          data-skills-catalog-main
+          className="min-h-0 min-w-0 flex-1 overflow-hidden"
+        >
+          {visibleTab === "skills" ? (
+            <div data-skill-catalog-shell className="h-full min-h-0">
+              <SkillsPanel
+                embedded
+                governedUnavailable={hubGovernance.governedUnavailable}
+                onCatalogStateChange={handleCatalogStateChange}
+              />
+            </div>
+          ) : (
+            <div data-marketplace-catalog-shell className="h-full min-h-0">
+              <MarketplacePanel
+                embedded
+                governedUnavailable={hubGovernance.governedUnavailable}
+                onCatalogStateChange={handleCatalogStateChange}
+              />
+            </div>
+          )}
+        </section>
       </div>
     </div>
   );

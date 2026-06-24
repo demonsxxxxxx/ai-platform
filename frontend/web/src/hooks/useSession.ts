@@ -80,6 +80,10 @@ export function useFilteredSessionList(
   const fetchSessions = async (reset = false) => {
     const targetSkip = reset ? 0 : skip;
     if (!reset && (isLoadingMore || !hasMore)) return;
+    const projectId =
+      filter.projectId && filter.projectId !== "all"
+        ? filter.projectId
+        : undefined;
 
     if (reset) {
       setIsLoading(true);
@@ -91,7 +95,7 @@ export function useFilteredSessionList(
 
     try {
       const response = await sessionApi.list({
-        project_id: filter.projectId,
+        project_id: projectId,
         limit: PAGE_SIZE,
         skip: targetSkip,
         status: "active",
@@ -152,12 +156,16 @@ export function useFilteredSessionList(
 
   const softRefresh = useCallback(async () => {
     try {
+      const projectId =
+        filter.projectId && filter.projectId !== "all"
+          ? filter.projectId
+          : undefined;
       const requestLimit = Math.min(
         100,
         Math.max(PAGE_SIZE, loadedCountRef.current),
       );
       const response = await sessionApi.list({
-        project_id: filter.projectId,
+        project_id: projectId,
         limit: requestLimit,
         skip: 0,
         status: "active",
@@ -173,7 +181,7 @@ export function useFilteredSessionList(
         reconcileSessionList({
           previous: prev,
           latest: newSessions,
-          removeMissing: filter.favoritesOnly || filter.projectId !== undefined,
+          removeMissing: filter.favoritesOnly || projectId !== undefined,
         }),
       );
       loadedCountRef.current = Math.max(PAGE_SIZE, newSessions.length);

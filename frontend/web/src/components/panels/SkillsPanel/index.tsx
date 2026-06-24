@@ -12,18 +12,21 @@ import { GithubImportModal } from "./GithubImportModal";
 import { BatchActionBar } from "./BatchActionBar";
 import { PublishDialog } from "./PublishDialog";
 
+interface CatalogState {
+  permissionDenied: boolean;
+  projectionError: string | null;
+}
+
 interface SkillsPanelProps {
   embedded?: boolean;
   governedUnavailable?: boolean;
-  settingsStateDegraded?: boolean;
-  onPermissionDeniedChange?: (permissionDenied: boolean) => void;
+  onCatalogStateChange?: (state: CatalogState) => void;
 }
 
 export function SkillsPanel({
   embedded = false,
   governedUnavailable = false,
-  settingsStateDegraded = false,
-  onPermissionDeniedChange,
+  onCatalogStateChange,
 }: SkillsPanelProps) {
   const { t } = useTranslation();
   const { hasAnyPermission } = useAuth();
@@ -35,7 +38,7 @@ export function SkillsPanel({
   const skillBatchWriteBacked = true;
 
   const actions = useSkillsActions({ enabled: !governedUnavailable });
-  const permissionDenied = isPermissionError(actions.error);
+  const permissionDenied = isPermissionError(actions.listError);
   const isGovernedUnavailable = governedUnavailable || permissionDenied;
   const effectivePermissions = new Set(actions.effectivePermissions);
   const canWrite =
@@ -55,14 +58,16 @@ export function SkillsPanel({
     skillBatchWriteBacked && (canWrite || canDeleteSkill);
 
   useEffect(() => {
-    onPermissionDeniedChange?.(permissionDenied);
-  }, [onPermissionDeniedChange, permissionDenied]);
+    onCatalogStateChange?.({
+      permissionDenied,
+      projectionError: permissionDenied ? null : actions.listError,
+    });
+  }, [actions.listError, onCatalogStateChange, permissionDenied]);
 
   return (
     <div
       className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
       data-skill-workbench-shell
-      data-settings-state-degraded={settingsStateDegraded || undefined}
     >
       <SkillsList
         embedded={embedded}

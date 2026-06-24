@@ -175,6 +175,9 @@ test("authenticated sidebar uses governed workbench entries instead of old plaza
   assert.doesNotMatch(sidebar, /navigate\("\/files"\)/);
   assert.doesNotMatch(sidebar, /onOpenPersonaPlaza|onOpenFileLibrary/);
   assert.doesNotMatch(sidebar, /hasMoreMenuItems|MobileMoreMenuSheet|DesktopMoreMenu/);
+  assert.match(sidebar, /useProjectSessionList\("all"/);
+  assert.doesNotMatch(sidebar, /ProjectItem|showProjectSection|sidebar\.projects/);
+  assert.doesNotMatch(sidebar, /FolderPlus|sidebar\.newProject|onOpenNewProjectModal|NewProjectModal/);
   assert.doesNotMatch(sidebar, /font-serif|icons\/icon\.svg/);
 });
 
@@ -234,10 +237,10 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
   const theme = readFileSync(join(root, "src/styles/base.css"), "utf8");
   const authTheme = readFileSync(join(root, "src/styles/auth.css"), "utf8");
 
-  assert.match(surface, /root:[\s\S]*bg-\[var\(--theme-bg\)\]/);
-  assert.match(surface, /thread:[\s\S]*bg-\[var\(--theme-bg\)\]/);
-  assert.match(surface, /composer:[\s\S]*bg-\[var\(--theme-bg\)\]/);
-  assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-bg\)\]/);
+  assert.match(surface, /root:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.match(surface, /thread:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.match(surface, /composer:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(surface, /panel:[\s\S]*bg-\[var\(--theme-bg-card\)\]/);
   assert.match(
     surface,
@@ -249,6 +252,9 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
   assert.match(theme, /--theme-bg-sidebar:\s*#f3f5f8;/);
   assert.match(theme, /--theme-bg-card:\s*#ffffff;/);
   assert.match(theme, /--theme-bg:\s*#f3f5f8;[\s\S]{0,80}--theme-bg-sidebar:\s*#f3f5f8;/);
+  assert.match(theme, /--theme-workbench-canvas:\s*#f3f5f8;/);
+  assert.match(surface, /bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.match(chatView, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(authTheme, /html,\s*body\s*\{\s*background:\s*var\(--theme-bg\);/);
   assert.doesNotMatch(authTheme, /html,\s*body\s*\{\s*background:\s*#ffffff;/);
   assert.doesNotMatch(surface, /thread:[\s\S]{0,180}bg-white/);
@@ -315,6 +321,7 @@ test("authenticated workbench adopts one dark-rail enterprise shell", () => {
   assert.match(theme, /--theme-sidebar-panel:\s*#111827;/);
   assert.match(theme, /--theme-sidebar-panel-muted:\s*#1f2937;/);
   assert.match(theme, /--theme-bg:\s*#f3f5f8;/);
+  assert.match(theme, /--theme-workbench-canvas:\s*#f3f5f8;/);
   assert.match(sidebar, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sidebarList, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sidebarList, /data-workbench-sidebar-panel/);
@@ -331,6 +338,40 @@ test("authenticated workbench adopts one dark-rail enterprise shell", () => {
   assert.doesNotMatch(projectItem, /text-stone-600|text-stone-700|bg-stone-100/);
   assert.doesNotMatch(sessionItem, /text-stone-600|text-stone-700|bg-stone-100/);
   assert.doesNotMatch(sidebarRail, /style=\{\{[\s\S]{0,160}backgroundColor/);
+});
+
+test("skills and marketplace use a catalog-first workbench layout", () => {
+  const skillsHub = readFileSync(
+    join(root, "src/components/panels/SkillsHubPanel.tsx"),
+    "utf8",
+  );
+  const skillsList = readFileSync(
+    join(root, "src/components/panels/SkillsPanel/SkillsList.tsx"),
+    "utf8",
+  );
+  const marketplace = readFileSync(
+    join(root, "src/components/panels/MarketplacePanel.tsx"),
+    "utf8",
+  );
+
+  assert.match(skillsHub, /data-skills-catalog-workbench/);
+  assert.match(skillsHub, /data-skills-catalog-sidebar/);
+  assert.match(skillsHub, /data-skills-catalog-main/);
+  assert.match(skillsHub, /bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.doesNotMatch(skillsHub, /composerEntry/);
+  assert.match(skillsList, /data-skills-catalog-toolbar/);
+  assert.match(skillsList, /data-skills-catalog-grid/);
+  assert.match(marketplace, /data-marketplace-catalog-toolbar/);
+  assert.match(marketplace, /data-marketplace-catalog-grid/);
+  for (const [name, source] of [
+    ["SkillsHubPanel", skillsHub],
+    ["SkillsList", skillsList],
+    ["MarketplacePanel", marketplace],
+  ] as const) {
+    assert.doesNotMatch(source, /bg-white(?:\/\d+)?/, name);
+    assert.doesNotMatch(source, /rounded-2xl|rounded-3xl/, name);
+    assert.doesNotMatch(source, /shadow-xl|shadow-2xl/, name);
+  }
 });
 
 test("authenticated shell chrome avoids legacy playful branding accents", () => {
@@ -571,8 +612,8 @@ test("authenticated marketplace pages share the workbench surface tokens", () =>
   );
   const utilities = readFileSync(join(root, "src/styles/utilities.css"), "utf8");
 
-  assert.match(skillsHub, /bg-\[var\(--theme-bg\)\]/);
-  assert.match(marketplace, /bg-\[var\(--theme-bg\)\]/);
+  assert.match(skillsHub, /bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.match(marketplace, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(marketplace, /data-marketplace-catalog-shell/);
   assert.match(marketplace, /data-frontend-governance-state/);
   assert.match(marketplace, /effectiveGovernedUnavailable/);
@@ -1040,14 +1081,19 @@ test("skills hub lets PR177 public catalogs prove permissions before fail-closed
   const useAuth = readFileSync(join(root, "src/hooks/useAuth.tsx"), "utf8");
 
   assert.match(skillsHub, /resolveSkillsHubGovernance/);
+  assert.doesNotMatch(skillsHub, /useSettingsContext/);
+  assert.doesNotMatch(skillsHub, /settingsError/);
+  assert.doesNotMatch(skillsHub, /settingsStateDegraded/);
   assert.match(skillsHub, /canReadSkills = hasAnyPermission\(\[Permission\.SKILL_READ\]\)/);
   assert.match(skillsHub, /canReadMarketplace = hasAnyPermission\(\[Permission\.MARKETPLACE_READ\]\)/);
   assert.match(skillsHub, /const governanceState = hubGovernance\.pageState/);
   assert.match(skillsHub, /data-required-permission=\{hubGovernance\.requiredPermission\}/);
   assert.match(skillsHub, /catalogPermissionDeniedByTab/);
+  assert.match(skillsHub, /catalogProjectionErrorByTab/);
   assert.match(skillsHub, /catalogPermissionDenied: catalogPermissionDeniedByTab\[requestedTab\]/);
+  assert.match(skillsHub, /projectionError: catalogProjectionErrorByTab\[requestedTab\]/);
   assert.match(skillsHub, /governedUnavailable=\{hubGovernance\.governedUnavailable\}/);
-  assert.match(skillsHub, /onPermissionDeniedChange=\{handleCatalogPermissionDeniedChange\}/);
+  assert.match(skillsHub, /onCatalogStateChange=\{handleCatalogStateChange\}/);
   assert.match(skillsHub, /data-auth-projection-has-permission=\{hubGovernance\.authProjectionHasPermission\}/);
   assert.match(resolver, /catalogPermissionDenied\?: boolean/);
   assert.match(resolver, /hasWorkspace\?: boolean/);

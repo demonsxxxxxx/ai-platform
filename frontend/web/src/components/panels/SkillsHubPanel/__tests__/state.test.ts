@@ -115,6 +115,22 @@ test("keeps settings permission gaps degraded until the catalog API denies publi
   assert.equal(state.pageState, "degraded");
 });
 
+test("keeps PR177 public catalogs ready when unrelated settings projection fails elsewhere", () => {
+  const state = resolveSkillsHubGovernance({
+    requestedTab: "marketplace",
+    isAuthenticated: true,
+    canReadSkills: true,
+    canReadMarketplace: true,
+    catalogPermissionDenied: false,
+    projectionError: null,
+  });
+
+  assert.equal(state.pageState, "ready");
+  assert.equal(state.hasPermission, true);
+  assert.equal(state.degraded, false);
+  assert.equal(state.requiredPermission, "marketplace:read");
+});
+
 test("keeps catalog permission denial authoritative over settings degradation", () => {
   const state = resolveSkillsHubGovernance({
     requestedTab: "marketplace",

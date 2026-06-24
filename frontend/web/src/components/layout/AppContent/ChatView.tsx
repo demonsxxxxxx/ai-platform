@@ -776,7 +776,7 @@ export function ChatView({
       <WorkbenchShellComponent composer={composer} rightPanel={rightPanel}>
       <main
         ref={messagesContainerRef}
-        className={`relative flex-1 min-h-0 ${
+        className={`relative min-h-0 flex-1 bg-[var(--theme-workbench-canvas)] ${
           messages.length > 0 ? "overflow-hidden" : ""
         }`}
       >

@@ -44,8 +44,8 @@ test("workbench right context uses the same canvas as the main workspace", () =>
   const surface = read("src/components/workbench/workbenchSurface.ts");
   const rightPanel = read("src/components/workbench/WorkbenchRightPanel.tsx");
 
-  assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-bg\)\]/);
-  assert.match(rightPanel, /bg-\[var\(--theme-bg\)\]/);
+  assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.match(rightPanel, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(rightPanel, /workbenchSurface\.secondaryPanel/);
 });
 
