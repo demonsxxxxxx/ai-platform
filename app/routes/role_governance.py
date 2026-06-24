@@ -315,6 +315,8 @@ async def _append_role_governance_audit(
     payload_json: dict[str, Any],
 ) -> str:
     async with transaction() as conn:
+        if not await repositories.tenant_exists(conn, tenant_id=principal.tenant_id):
+            raise HTTPException(status_code=403, detail="tenant_not_authorized")
         return await repositories.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,

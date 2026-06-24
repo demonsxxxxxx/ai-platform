@@ -52,6 +52,20 @@ class RepositoryNotFoundError(ValueError):
     pass
 
 
+async def tenant_exists(conn: AsyncConnection, *, tenant_id: str) -> bool:
+    """Return whether the tenant identity is already provisioned."""
+
+    cursor = await conn.execute(
+        """
+        select 1
+        from tenants
+        where id = %s
+        """,
+        (tenant_id,),
+    )
+    return await cursor.fetchone() is not None
+
+
 def dumps_json(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False)
 

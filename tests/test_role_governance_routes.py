@@ -68,8 +68,13 @@ def install_role_governance_route_fakes(
         calls.append(("history", kwargs))
         return audit_history or []
 
+    async def fake_tenant_exists(conn, **kwargs):
+        calls.append(("tenant_exists", kwargs))
+        return True
+
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr(role_governance, "transaction", fake_transaction)
+    monkeypatch.setattr(role_governance.repositories, "tenant_exists", fake_tenant_exists)
     monkeypatch.setattr(role_governance.repositories, "append_audit_log", fake_audit)
     monkeypatch.setattr(role_governance.repositories, "list_role_governance_audit_history", fake_audit_history)
     return calls
@@ -222,7 +227,8 @@ def test_role_governance_user_request_is_audited_without_admin_permission(monkey
         "audit_id": "audit-role-governance-contract",
         "message": "role governance request accepted for review",
     }
-    audit_payload = calls[0][1]
+    assert calls[0] == ("tenant_exists", {"tenant_id": "tenant-a"})
+    audit_payload = calls[1][1]
     assert audit_payload["tenant_id"] == "tenant-a"
     assert audit_payload["user_id"] == "ordinary"
     assert audit_payload["action"] == "role_governance.request.created"
@@ -239,6 +245,54 @@ def test_role_governance_user_request_is_audited_without_admin_permission(monkey
     }
     assert_no_sensitive_material(body)
     assert_no_sensitive_material(calls)
+
+
+def test_role_governance_write_fails_closed_for_unprovisioned_tenant(monkeypatch):
+    from app.routes import role_governance
+
+    class MissingTenantCursor:
+        async def fetchone(self):
+            return None
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.audit_insert_attempted = False
+
+        async def execute(self, sql, params=()):
+            normalized = " ".join(sql.split()).lower()
+            if normalized.startswith("select 1 from tenants"):
+                assert params == ("tenant-a",)
+                return MissingTenantCursor()
+            if "insert into audit_logs" in normalized:
+                self.audit_insert_attempted = True
+                raise AssertionError("unprovisioned tenant must fail before audit insert")
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    fake_conn = FakeConnection()
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield fake_conn
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr(role_governance, "transaction", fake_transaction)
+    client = TestClient(create_app(), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/role-governance/requests",
+        json={
+            "target_type": "role",
+            "target_id": "skill_developer",
+            "reason": "Need Skill workbench access",
+            "workspace_id": "workspace-a",
+        },
+        headers=user_headers("role:request"),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "tenant_not_authorized"
+    assert fake_conn.audit_insert_attempted is False
+    assert_no_sensitive_material(response.json())
 
 
 def test_role_governance_audit_payload_sanitizes_free_text_fields(monkeypatch):
@@ -337,8 +391,9 @@ def test_role_governance_allows_known_department_agent_target(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["target_id"] == "platform"
-    assert calls[0][1]["payload_json"]["target_type"] == "department_agent"
-    assert calls[0][1]["payload_json"]["target_id"] == "platform"
+    assert calls[0] == ("tenant_exists", {"tenant_id": "tenant-a"})
+    assert calls[1][1]["payload_json"]["target_type"] == "department_agent"
+    assert calls[1][1]["payload_json"]["target_id"] == "platform"
     assert_no_sensitive_material(response.json())
     assert_no_sensitive_material(calls)
 
@@ -431,6 +486,8 @@ def test_role_governance_admin_approval_rejection_and_rollback_fail_closed(monke
         "message": "role governance rollback accepted for audited execution",
     }
 
+    tenant_checks = [payload for name, payload in calls if name == "tenant_exists"]
+    assert tenant_checks == [{"tenant_id": "tenant-a"}, {"tenant_id": "tenant-a"}, {"tenant_id": "tenant-a"}]
     audit_actions = [payload["action"] for name, payload in calls if name == "audit"]
     assert audit_actions == [
         "role_governance.approval.approve_requested",
