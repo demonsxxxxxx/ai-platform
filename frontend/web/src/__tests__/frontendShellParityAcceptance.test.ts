@@ -61,6 +61,7 @@ test("phase 1C discovery routes are login reachable and fail closed inside pages
     "/skills",
     "/marketplace",
     "/mcp",
+    "/roles",
     "/channels/:channelType?/:instanceId?",
   ]) {
     const routePattern = new RegExp(
@@ -72,15 +73,6 @@ test("phase 1C discovery routes are login reachable and fail closed inside pages
       `${route} should render inside the authenticated shell without route-level business permission redirects`,
     );
   }
-
-  const rolesRoutePattern = new RegExp(
-    `path="/roles"[\\s\\S]{0,260}<ProtectedRoute[\\s\\S]{0,220}Permission\\.ROLE_MANAGE[\\s\\S]{0,220}<WorkbenchForbiddenPage[\\s\\S]{0,240}<RolesPage \\/>[\\s\\S]{0,120}<\\/ProtectedRoute>`,
-  );
-  assert.match(
-    app,
-    rolesRoutePattern,
-    "RolesPage should remain login reachable while the legacy roles projection is role:manage gated",
-  );
 
   for (const [route, page] of [
     ["/users", "UsersPage"],
@@ -112,7 +104,7 @@ test("phase 1C discovery routes are login reachable and fail closed inside pages
   assert.match(app, /routeUnavailable=\{\{/);
 });
 
-test("roles route gates legacy role projection without broadening role writes", () => {
+test("roles route is login reachable and does not load legacy role management APIs", () => {
   const app = readFileSync(join(root, "src/App.tsx"), "utf8");
   const authTypes = readFileSync(join(root, "src/types/auth.ts"), "utf8");
   const rolesPanel = readFileSync(
@@ -124,12 +116,16 @@ test("roles route gates legacy role projection without broadening role writes", 
     app.match(
       /path="\/roles"[\s\S]*?<RolesPage \/>[\s\S]*?<\/ProtectedRoute>/,
     )?.[0] ?? "";
-  assert.match(rolesRoute, /permissions=\{\[Permission\.ROLE_MANAGE\]\}/);
-  assert.match(rolesRoute, /fallbackComponent=\{/);
-  assert.match(rolesRoute, /permissionLabel=\{Permission\.ROLE_MANAGE\}/);
-  assert.match(rolesRoute, /<WorkbenchForbiddenPage/);
+  assert.match(rolesRoute, /<ProtectedRoute>/);
+  assert.doesNotMatch(rolesRoute, /Permission\.ROLE_MANAGE/);
+  assert.doesNotMatch(rolesRoute, /fallbackComponent=/);
+  assert.doesNotMatch(rolesRoute, /<WorkbenchForbiddenPage/);
   assert.match(authTypes, /ADMIN_STATUS = "admin:status"/);
-  assert.match(rolesPanel, /const canManage = hasPermission\(Permission\.ROLE_MANAGE\);/);
+  assert.match(rolesPanel, /data-role-plaza-shell/);
+  assert.match(rolesPanel, /data-role-plaza-backend-gap/);
+  assert.match(rolesPanel, /Permission\.ROLE_MANAGE/);
+  assert.doesNotMatch(rolesPanel, /roleApi|authApi|getPermissions\(|RoleFormModal/);
+  assert.doesNotMatch(rolesPanel, /\/api\/roles/);
   assert.doesNotMatch(
     rolesPanel,
     /const canManage = hasAnyPermission\(\[[\s\S]*Permission\.AGENT_ADMIN/,

@@ -1859,6 +1859,49 @@
     "operationFailed": "Operation failed",
     "permissionCount": "{{count}} permissions",
     "permissions": "Permissions",
+    "plaza": {
+      "backendGap": {
+        "description": "The frontend shows governance state only. It does not call the compat empty list or legacy management APIs. The backend needs these safe projections before the page can open fully.",
+        "items": {
+          "auditProjection": "Audit and rollback: role change records, approval records, and rollback availability.",
+          "departmentProjection": "Department scope: departments, workspaces, groups, and inherited Skill availability.",
+          "publicProjection": "Public role directory: visible roles, descriptions, and requestable scope without leaking permission details.",
+          "requestProjection": "Request approval: ordinary users request role or department-agent access, administrators approve."
+        },
+        "title": "Backend contract gap"
+      },
+      "capabilities": {
+        "auditTrail": {
+          "description": "Role and department-agent changes need backend audit, trace, and rollback contracts.",
+          "title": "Audit trail"
+        },
+        "departmentScope": {
+          "description": "Department availability, inherited policy, and workspace boundaries do not have a public projection yet.",
+          "title": "Department scope"
+        },
+        "requestFlow": {
+          "description": "User requests, administrator approval, and notifications still wait for backend contracts.",
+          "title": "Request workflow"
+        },
+        "roleDirectory": {
+          "description": "A public role directory projection is needed before requestable roles and descriptions can render.",
+          "title": "Role directory"
+        }
+      },
+      "capabilityMatrixDescription": "This page keeps explainable status only and does not expose write buttons without backend support.",
+      "capabilityMatrixTitle": "Governance capability matrix",
+      "state": {
+        "description": "PR #177 added public Skills and Marketplace contracts, but role governance still needs public role, department scope, and approval projections. The page is login reachable and fails closed.",
+        "details": {
+          "failClosed": "Without a safe backend projection, legacy role CRUD forms are not rendered.",
+          "loginReachable": "Authenticated users can open this page and see the current governance gap.",
+          "requiredPermission": "Real writes still require {{permission}}."
+        },
+        "title": "Role governance is waiting for backend projection"
+      },
+      "subtitle": "View governance status for roles, department agents, and approval capabilities.",
+      "title": "Role Governance"
+    },
     "roleName": "Role Name",
     "roleNamePlaceholder": "Enter role name",
     "saving": "Saving...",

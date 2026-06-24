@@ -1860,6 +1860,49 @@
     "operationFailed": "操作失败",
     "permissionCount": "{{count}} 个权限",
     "permissions": "权限",
+    "plaza": {
+      "backendGap": {
+        "description": "前端只展示治理状态，不调用兼容空列表或旧管理接口。真正开放前需要后端提供下列安全投影。",
+        "items": {
+          "auditProjection": "审计与回滚：角色变更记录、审批记录、回滚可用性。",
+          "departmentProjection": "部门范围：部门、工作区、用户组和可用 Skills 的继承关系。",
+          "publicProjection": "公开角色目录：可展示角色、说明、可申请范围，不泄露权限明细。",
+          "requestProjection": "申请审批：普通用户申请角色/部门 Agent 权限，管理员审批。"
+        },
+        "title": "后端合同缺口"
+      },
+      "capabilities": {
+        "auditTrail": {
+          "description": "角色与部门 Agent 变更需要后端审计、追踪和回滚合同。",
+          "title": "审计追踪"
+        },
+        "departmentScope": {
+          "description": "部门可用范围、继承策略和工作区边界还没有公开投影。",
+          "title": "部门可用范围"
+        },
+        "requestFlow": {
+          "description": "普通用户申请、管理员审批和通知流仍等待后端合同。",
+          "title": "申请审批流"
+        },
+        "roleDirectory": {
+          "description": "需要公开角色目录投影后才能展示可申请角色和说明。",
+          "title": "角色目录"
+        }
+      },
+      "capabilityMatrixDescription": "当前页面只保留可解释的状态，不提供无后端支撑的写入按钮。",
+      "capabilityMatrixTitle": "治理能力矩阵",
+      "state": {
+        "description": "PR #177 已补齐 Skills/Marketplace 公共合同，但角色治理仍缺公开角色、部门范围和审批投影。页面保持登录可达，能力 fail-closed。",
+        "details": {
+          "failClosed": "没有安全后端投影时，不渲染旧角色 CRUD 表单。",
+          "loginReachable": "登录用户可以进入该页面查看当前治理缺口。",
+          "requiredPermission": "真正写入仍需要 {{permission}}。"
+        },
+        "title": "角色治理等待后端投影"
+      },
+      "subtitle": "查看角色、部门 Agent 和审批能力的治理状态。",
+      "title": "角色治理"
+    },
     "roleName": "角色名称",
     "roleNamePlaceholder": "请输入角色名称",
     "saving": "保存中...",
