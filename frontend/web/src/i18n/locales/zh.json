@@ -1257,8 +1257,8 @@
     "confirmUpdate": "更新技能",
     "confirmUpdateMessage": "将从技能商店重新下载此技能，你的本地修改将被覆盖。确定要继续吗？",
     "catalogUnavailable": {
-      "title": "技能市场等待管理员启用",
-      "description": "你现在可以看到技能市场入口。安装、发布和部门可用范围需要管理员为当前工作区启用后才可操作。"
+      "title": "当前账号不能读取技能市场",
+      "description": "技能市场目录已接入登录后工作台。若这里显示受限，请确认当前账号拥有 marketplace:read 权限。"
     },
     "createAndPublish": "发布技能",
     "createHint": "要发布技能到技能商店，请先在「我的技能」面板中创建，然后点击发布按钮。",
@@ -1297,19 +1297,7 @@
     "update": "更新",
     "updateFailed": "更新技能失败",
     "updateSuccess": "技能更新成功",
-    "viewInMySkills": "去我的技能查看",
-    "emptyDepartmentCatalog": {
-      "title": "部门 Skills",
-      "description": "管理员为你的部门启用后，可用 Skills 会出现在这里。"
-    },
-    "approvedCatalog": {
-      "title": "已批准工具包",
-      "description": "公司批准的 Skills 和 MCP 工作流会在适合当前角色时显示在这里。"
-    },
-    "requestAccess": {
-      "title": "申请使用",
-      "description": "如需安装某个 Skill，请联系部门管理员为你的团队启用。"
-    }
+    "viewInMySkills": "去我的技能查看"
   },
   "mcp": {
     "addFirst": "添加您的第一个 MCP 服务器",
@@ -1860,6 +1848,39 @@
     "operationFailed": "操作失败",
     "permissionCount": "{{count}} 个权限",
     "permissions": "权限",
+    "plaza": {
+      "capabilities": {
+        "auditTrail": {
+          "description": "角色与部门 Agent 变更保留审计、追踪和回滚状态。",
+          "title": "审计追踪"
+        },
+        "departmentScope": {
+          "description": "部门可用范围、继承策略和工作区边界会在这里集中展示。",
+          "title": "部门可用范围"
+        },
+        "requestFlow": {
+          "description": "普通用户申请、管理员审批和通知流保持登录后可达。",
+          "title": "申请审批流"
+        },
+        "roleDirectory": {
+          "description": "展示可申请角色、说明和适用范围。",
+          "title": "角色目录"
+        }
+      },
+      "capabilityMatrixDescription": "当前页面保留可解释的治理状态；写入按钮继续按管理员权限开放。",
+      "capabilityMatrixTitle": "治理能力矩阵",
+      "state": {
+        "description": "角色治理保持登录可达。普通用户可以查看角色治理状态，写入、审批和范围调整继续按管理员权限开放。",
+        "details": {
+          "failClosed": "没有写权限时，不渲染旧角色 CRUD 表单。",
+          "loginReachable": "登录用户可以进入该页面查看当前治理缺口。",
+          "requiredPermission": "真正写入仍需要 {{permission}}。"
+        },
+        "title": "角色治理已可访问"
+      },
+      "subtitle": "查看角色、部门 Agent 和审批能力的治理状态。",
+      "title": "角色治理"
+    },
     "roleName": "角色名称",
     "roleNamePlaceholder": "请输入角色名称",
     "saving": "保存中...",

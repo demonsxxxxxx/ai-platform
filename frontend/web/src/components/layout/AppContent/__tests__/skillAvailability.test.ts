@@ -112,7 +112,7 @@ test("keeps composer Skills usable when settings response omits ENABLE_SKILLS", 
   );
 });
 
-test("disables composer Skills only when settings explicitly disable Skills", () => {
+test("keeps composer Skills reachable when legacy ENABLE_SKILLS is explicitly disabled", () => {
   const projection = resolveSettingsBooleanProjection(
     {
       settings: {
@@ -127,11 +127,11 @@ test("disables composer Skills only when settings explicitly disable Skills", ()
     resolveComposerSkillsAvailability({
       canReadSkills: true,
       enableSkillsSettingKnown: projection.known,
-      enableSkillsSetting: projection.value ?? true,
+      enableSkillsSetting: projection.value ?? false,
     }),
     {
-      shouldFetchSkills: false,
-      enableComposerSkills: false,
+      shouldFetchSkills: true,
+      enableComposerSkills: true,
     },
   );
 });
