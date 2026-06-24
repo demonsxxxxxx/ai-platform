@@ -235,18 +235,18 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
   assert.match(surface, /root:[\s\S]*bg-\[var\(--theme-bg\)\]/);
   assert.match(surface, /thread:[\s\S]*bg-\[var\(--theme-bg\)\]/);
   assert.match(surface, /composer:[\s\S]*bg-\[var\(--theme-bg\)\]/);
-  assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-bg-sidebar\)\]/);
+  assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-bg\)\]/);
   assert.match(surface, /panel:[\s\S]*bg-\[var\(--theme-bg-card\)\]/);
   assert.match(
     surface,
-    /secondaryPanel:[\s\S]*bg-\[var\(--theme-bg-sidebar\)\]/,
+    /secondaryPanel:[\s\S]*bg-\[var\(--theme-bg-card\)\]/,
   );
   assert.match(surface, /secondaryPanel:/);
   assert.match(rightPanel, /workbenchSurface\.secondaryPanel/);
   assert.match(theme, /--theme-bg:\s*#f3f5f8;/);
-  assert.match(theme, /--theme-bg-sidebar:\s*#edf1f5;/);
+  assert.match(theme, /--theme-bg-sidebar:\s*#f3f5f8;/);
   assert.match(theme, /--theme-bg-card:\s*#ffffff;/);
-  assert.doesNotMatch(theme, /--theme-bg:\s*#e8edf3;[\s\S]{0,80}--theme-bg-sidebar:\s*#e8edf3;/);
+  assert.match(theme, /--theme-bg:\s*#f3f5f8;[\s\S]{0,80}--theme-bg-sidebar:\s*#f3f5f8;/);
   assert.match(authTheme, /html,\s*body\s*\{\s*background:\s*var\(--theme-bg\);/);
   assert.doesNotMatch(authTheme, /html,\s*body\s*\{\s*background:\s*#ffffff;/);
   assert.doesNotMatch(surface, /thread:[\s\S]{0,180}bg-white/);
@@ -417,10 +417,15 @@ test("authenticated marketplace pages share the workbench surface tokens", () =>
     join(root, "src/components/governance/GroupAvailabilityToggleRow.tsx"),
     "utf8",
   );
+  const skillBaseCard = readFileSync(
+    join(root, "src/components/common/SkillBaseCard.tsx"),
+    "utf8",
+  );
   const marketplaceCard = readFileSync(
     join(root, "src/components/panels/MarketplacePanel/SkillCard.tsx"),
     "utf8",
   );
+  const utilities = readFileSync(join(root, "src/styles/utilities.css"), "utf8");
 
   assert.match(skillsHub, /bg-\[var\(--theme-bg\)\]/);
   assert.match(marketplace, /bg-\[var\(--theme-bg\)\]/);
@@ -430,6 +435,9 @@ test("authenticated marketplace pages share the workbench surface tokens", () =>
   assert.match(groupAvailability, /flex flex-col[\s\S]*sm:flex-row/);
   assert.match(marketplaceCard, /versionLabel/);
   assert.match(marketplaceCard, /max-w-28 truncate/);
+  assert.match(skillBaseCard, /p-3\.5 sm:p-4/);
+  assert.doesNotMatch(skillBaseCard, /text-base font-semibold/);
+  assert.match(utilities, /minmax\(260px,\s*1fr\)/);
   assert.doesNotMatch(skillsHub, /bg-slate-50/);
   assert.doesNotMatch(marketplace, /bg-slate-50/);
   assert.doesNotMatch(marketplace, /border-slate-200 bg-white/);

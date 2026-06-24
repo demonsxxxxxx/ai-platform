@@ -40,13 +40,26 @@ test("authenticated workbench source avoids marketing and nested-card patterns",
   assert.match(tabContent, /data-authenticated-workbench-page/);
 });
 
-test("workbench right context shares the sidebar surface layer", () => {
+test("workbench right context uses the same canvas as the main workspace", () => {
   const surface = read("src/components/workbench/workbenchSurface.ts");
   const rightPanel = read("src/components/workbench/WorkbenchRightPanel.tsx");
 
-  assert.match(surface, /bg-\[var\(--theme-bg-sidebar\)\]/);
-  assert.match(rightPanel, /bg-\[var\(--theme-bg-sidebar\)\]/);
+  assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-bg\)\]/);
+  assert.match(rightPanel, /bg-\[var\(--theme-bg\)\]/);
   assert.match(rightPanel, /workbenchSurface\.secondaryPanel/);
+});
+
+test("skills marketplace cards stay dense and enterprise-workbench sized", () => {
+  const baseCard = read("src/components/common/SkillBaseCard.tsx");
+  const cardCss = read("src/styles/card-base.css");
+  const utilities = read("src/styles/utilities.css");
+
+  assert.match(baseCard, /p-3\.5 sm:p-4/);
+  assert.match(baseCard, /text-sm font-semibold/);
+  assert.doesNotMatch(baseCard, /text-base font-semibold/);
+  assert.match(cardCss, /border-radius:\s*0\.5rem/);
+  assert.doesNotMatch(cardCss, /translateY\(-4px\)/);
+  assert.match(utilities, /minmax\(260px,\s*1fr\)/);
 });
 
 test("role plaza state is resolver-driven instead of hard-coded ready", () => {

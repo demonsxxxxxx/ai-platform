@@ -285,7 +285,7 @@ export function SkillsList({
       )}
 
       {/* Skills List */}
-      <div className="skill-content-area flex-1 overflow-y-auto py-2 sm:py-4 px-4">
+      <div className="skill-content-area flex-1 overflow-y-auto px-4 py-3">
         {filteredSkills.length === 0 ? (
           <div className="skill-empty-state">
             <div className="skill-empty-state__icon">
@@ -322,7 +322,7 @@ export function SkillsList({
             )}
           </div>
         ) : (
-          <div className="skill-grid grid auto-grid-cols gap-4">
+          <div className="skill-grid grid auto-grid-cols gap-3">
             {paginatedSkills.map((skill) => (
               <SkillCard
                 key={skill.name}

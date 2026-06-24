@@ -84,12 +84,12 @@ export function SkillBaseCard({
         </div>
       )}
 
-      <div className="flex flex-1 flex-col p-4 sm:p-5">
+      <div className="flex flex-1 flex-col p-3.5 sm:p-4">
         <div className="flex items-start gap-3">
           {icon && <div className="scb__icon-ring shrink-0">{icon}</div>}
           <div className="min-w-0 flex-1">
             <h3
-              className="truncate text-base font-semibold text-[var(--theme-text)] leading-tight"
+              className="truncate text-sm font-semibold text-[var(--theme-text)] leading-tight"
               title={title}
             >
               {title}
@@ -103,19 +103,19 @@ export function SkillBaseCard({
 
         {description && (
           <p
-            className={`mt-3 text-[13px] leading-relaxed text-[var(--theme-text-secondary)] ${lineClamp} min-h-[3.25em]`}
+            className={`mt-2.5 text-xs leading-5 text-[var(--theme-text-secondary)] ${lineClamp} min-h-[2.5rem]`}
           >
             {description}
           </p>
         )}
 
-        {tags && <div className="mt-3">{tags}</div>}
+        {tags && <div className="mt-2.5">{tags}</div>}
 
-        {extraContent && <div className="mt-3">{extraContent}</div>}
+        {extraContent && <div className="mt-2.5">{extraContent}</div>}
 
         <div className="flex-1" />
 
-        {meta && <div className="mt-4">{meta}</div>}
+        {meta && <div className="mt-3">{meta}</div>}
 
         {footer && <div className="scb__footer">{footer}</div>}
       </div>
