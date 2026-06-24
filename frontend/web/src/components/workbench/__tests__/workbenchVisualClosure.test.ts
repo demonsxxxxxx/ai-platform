@@ -111,6 +111,43 @@ test("skills hub routes use the public contract resolver", () => {
   assert.match(resolver, /skill:read/);
 });
 
+test("skills marketplace hub uses one workbench canvas instead of split page backgrounds", () => {
+  const hub = read("src/components/panels/SkillsHubPanel.tsx");
+  const skillsPanel = read("src/components/panels/SkillsPanel/index.tsx");
+  const skillsList = read("src/components/panels/SkillsPanel/SkillsList.tsx");
+  const marketplace = read("src/components/panels/MarketplacePanel.tsx");
+  const skillCss = read("src/styles/skill.css");
+
+  for (const [name, source] of new Map([
+    ["SkillsHubPanel", hub],
+    ["SkillsPanel", skillsPanel],
+    ["MarketplacePanel", marketplace],
+  ])) {
+    assert.match(source, /bg-\[var\(--theme-workbench-canvas\)\]/, name);
+    assert.doesNotMatch(
+      source,
+      /className="[^"]*bg-\[var\(--theme-bg\)\][^"]*"/,
+      name,
+    );
+  }
+
+  assert.match(skillsList, /data-skills-catalog-toolbar/);
+  assert.match(marketplace, /data-marketplace-catalog-toolbar/);
+  assert.match(skillCss, /--skill-grid-bg:\s*var\(--theme-workbench-canvas\);/);
+  assert.match(
+    skillCss,
+    /\.skill-content-area\s*{\s*background:\s*var\(--theme-workbench-canvas\);/,
+  );
+  assert.match(
+    skillCss,
+    /\.skill-panel-header\s*{[\s\S]*background:\s*var\(--theme-workbench-canvas\);/,
+  );
+  assert.doesNotMatch(
+    skillCss,
+    /\.skill-content-area\s*{\s*background:\s*var\(--theme-bg\);/,
+  );
+});
+
 test("composer and command surfaces use stable dimensions", () => {
   const css = read("src/styles/chat.css");
   assert.match(css, /\.chat-input-container/);

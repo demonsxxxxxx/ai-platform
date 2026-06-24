@@ -73,7 +73,7 @@ export function SkillsPanel({
 
   return (
     <div
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
       data-skill-workbench-shell
     >
       <SkillsList

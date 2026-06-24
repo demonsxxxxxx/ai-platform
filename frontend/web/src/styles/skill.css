@@ -28,14 +28,16 @@
   --skill-shadow-strong: 0 8px 20px -14px rgb(15 23 42 / 0.14);
   --skill-glow: 0 0 0 2px
     color-mix(in srgb, var(--theme-primary) 14%, transparent);
-  --skill-grid-bg: var(--theme-bg);
+  --skill-grid-bg: var(--theme-workbench-canvas);
 }
 
 .skill-content-area {
-  background: var(--theme-bg);
+  background: var(--theme-workbench-canvas);
 }
 
 .skill-panel-header {
+  background: var(--theme-workbench-canvas);
+  border-bottom: 1px solid var(--theme-border);
   padding: 0.75rem 1rem;
 }
 
@@ -222,7 +224,7 @@
   --skill-shadow-strong: 0 10px 24px -18px rgb(0 0 0 / 0.36);
   --skill-glow: 0 0 0 2px
     color-mix(in srgb, var(--theme-primary) 16%, transparent);
-  --skill-grid-bg: var(--theme-bg);
+  --skill-grid-bg: var(--theme-workbench-canvas);
 }
 
 .dark .skill-panel-header .panel-search {
@@ -235,6 +237,7 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  background: var(--theme-workbench-canvas);
   padding: 2rem 1.5rem;
   text-align: center;
 }
