@@ -4,6 +4,7 @@ import sys
 import importlib.util
 from pathlib import Path
 
+import app.b2_sandbox_readiness as b2_sandbox_readiness
 from app.b2_sandbox_readiness import (
     build_b2_sandbox_readiness,
     render_b2_sandbox_readiness_markdown,
@@ -428,6 +429,25 @@ def test_b2_sandbox_readiness_accepts_reviewed_runtime_hardening_without_gate_cl
         "security_options_evidence": "verified_211_runtime_acceptance",
     }
     assert "gate closable" not in json.dumps(readiness, ensure_ascii=False).lower()
+
+
+def test_b2_runtime_delta_filter_treats_frontend_only_changes_as_b2_runtime_neutral(monkeypatch):
+    monkeypatch.setattr(
+        b2_sandbox_readiness,
+        "_resolve_source_runtime_affecting_changes_between",
+        lambda _base, _source: [
+            "frontend/web/src/App.tsx",
+            "frontend/web/src/components/panels/MCPPanel.tsx",
+            "app/routes/runs.py",
+        ],
+    )
+
+    changes = b2_sandbox_readiness._resolve_b2_runtime_affecting_changes_between(
+        "runtime-subject",
+        "current-source",
+    )
+
+    assert changes == ["app/routes/runs.py"]
 
 
 def test_b2_sandbox_readiness_rejects_egress_hardening_without_probe_details(tmp_path):

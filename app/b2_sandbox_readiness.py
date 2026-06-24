@@ -28,6 +28,9 @@ _B2_RUNTIME_NEUTRAL_EXACT_PATHS = {
     "app/b2_sandbox_readiness.py",
     "tools/b2_sandbox_readiness.py",
 }
+_B2_RUNTIME_NEUTRAL_PREFIXES = (
+    "frontend/",
+)
 
 _CLOSED_SOURCE_CONTROLS = [
     "sandbox_provider_fail_closed_for_unknown_provider",
@@ -653,8 +656,15 @@ def _resolve_b2_runtime_affecting_changes_between(
     return [
         path
         for path in changes
-        if path.replace("\\", "/").strip() not in _B2_RUNTIME_NEUTRAL_EXACT_PATHS
+        if not _is_b2_runtime_neutral_path(path)
     ]
+
+
+def _is_b2_runtime_neutral_path(path: str) -> bool:
+    normalized = path.replace("\\", "/").strip()
+    if normalized in _B2_RUNTIME_NEUTRAL_EXACT_PATHS:
+        return True
+    return normalized.startswith(_B2_RUNTIME_NEUTRAL_PREFIXES)
 
 
 def _merged_source_runtime_review(
