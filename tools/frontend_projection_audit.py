@@ -106,6 +106,7 @@ SAFE_PUBLIC_ROUTE_PREFIXES = [
     "/api/marketplace",
     "/api/mcp",
     "/api/notifications/active",
+    "/api/role-governance",
     "/api/skills",
     "/api/settings",
     "/api/users",

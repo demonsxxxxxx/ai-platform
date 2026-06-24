@@ -1033,6 +1033,40 @@ async def list_admin_tool_policy_history(
     return [dict(row) for row in await cursor.fetchall()]
 
 
+async def list_role_governance_audit_history(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str | None = None,
+    limit: int = 25,
+) -> list[dict[str, Any]]:
+    """Return bounded tenant-scoped role governance audit history."""
+    bounded_limit = max(min(int(25 if limit is None else limit), 100), 1)
+    role_actions = (
+        "role_governance.request.created",
+        "role_governance.approval.approve_requested",
+        "role_governance.approval.reject_requested",
+        "role_governance.rollback.requested",
+    )
+    clauses = ["tenant_id = %s", "action = any(%s)"]
+    params: list[Any] = [tenant_id, list(role_actions)]
+    if user_id:
+        clauses.append("(user_id = %s or payload_json->>'requester_id' = %s)")
+        params.extend([user_id, user_id])
+    params.append(bounded_limit)
+    cursor = await conn.execute(
+        f"""
+        select id, user_id, action, target_type, target_id, trace_id, schema_version, payload_json, created_at
+        from audit_logs
+        where {" and ".join(clauses)}
+        order by created_at desc, id desc
+        limit %s
+        """,
+        tuple(params),
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
 async def upsert_admin_tool_policy(
     conn: AsyncConnection,
     *,

@@ -101,6 +101,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     assert "/api/notifications/active" in all_safe_routes
     assert "/api/settings" in all_safe_routes
     assert "/api/users" in all_safe_routes
+    assert "/api/role-governance" in SAFE_PUBLIC_ROUTE_PREFIXES
     all_safe_admin_routes = {
         route["route_prefix"]
         for route in audit["route_inventory"]["safe_admin_projection_routes"]
@@ -116,6 +117,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     assert "/api/skills" not in active_policy_routes
     assert "/api/channels" not in active_policy_routes
     assert "/api/notifications/admin" not in active_policy_routes
+    assert "/api/role-governance" not in active_policy_routes
     assert "/api/settings" not in active_policy_routes
     assert "/api/users" not in active_policy_routes
     ordinary_routes = {
@@ -133,9 +135,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         if route["active_browser_access"] == "permission_gated"
     }
     assert set(permission_gated_routes) == set(active_policy_routes)
-    assert "ROLE_MANAGE" in permission_gated_routes["/api/roles"][
-        "non_ordinary_required_permissions"
-    ]
+    assert "/api/roles" not in permission_gated_routes
     policy_routes = {
         route["route_prefix"]: route
         for route in audit["route_inventory"]["legacy_route_policies"]
@@ -475,6 +475,58 @@ def test_frontend_projection_audit_treats_skills_as_safe_public_when_permission_
 
     assert "/api/skills" not in active_routes
     assert "/api/skills" in active_safe_routes
+
+
+def test_frontend_projection_audit_treats_role_governance_as_safe_public_projection(tmp_path):
+    source_root = tmp_path / "frontend" / "web" / "src"
+    services_root = source_root / "services" / "api"
+    hooks_root = source_root / "hooks"
+    services_root.mkdir(parents=True)
+    hooks_root.mkdir(parents=True)
+    (source_root / "main.tsx").write_text('import "./App";\n', encoding="utf-8")
+    (source_root / "App.tsx").write_text(
+        'import { useRoleGovernance } from "./hooks/useRoleGovernance";\n'
+        "function App() {\n"
+        "  useRoleGovernance();\n"
+        "  return null;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (hooks_root / "useRoleGovernance.ts").write_text(
+        'import { roleGovernanceApi } from "../services/api/roleGovernance";\n'
+        "export function useRoleGovernance() { void roleGovernanceApi.overview(); }\n",
+        encoding="utf-8",
+    )
+    (services_root / "roleGovernance.ts").write_text(
+        "export const roleGovernanceApi = { overview: () => fetch('/api/role-governance/overview') };\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+                    "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = build_frontend_projection_audit(repo_root=tmp_path)
+    active_inventory = audit["active_browser_entry"]["route_inventory"]
+    active_safe_routes = {
+        route["route_prefix"]: route
+        for route in active_inventory["safe_public_projection_routes"]
+    }
+    active_legacy_routes = {
+        route["route_prefix"]: route
+        for route in active_inventory["legacy_route_policies"]
+    }
+
+    assert "/api/role-governance" in active_safe_routes
+    assert "/api/role-governance" not in active_legacy_routes
+    assert audit["status"] == "pass"
 
 
 def test_frontend_projection_audit_treats_baseline_user_permissions_as_ordinary_reachable(tmp_path):

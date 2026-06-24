@@ -945,6 +945,157 @@ class WorkbenchOperationResponse(BaseModel):
     message: str
 
 
+class RoleGovernanceRoleResponse(BaseModel):
+    """Secret-safe role directory item for the frontend role governance surface."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role_id: str
+    name: str
+    description: str = ""
+    requestable: bool = False
+    assignable: bool = False
+    scope: Literal["tenant", "department", "workspace"] = "tenant"
+    capabilities: list[str] = Field(default_factory=list)
+
+
+class RoleGovernanceRoleDirectoryResponse(BaseModel):
+    """Role directory projection without raw permission leakage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    roles: list[RoleGovernanceRoleResponse] = Field(default_factory=list)
+
+
+class RoleGovernanceDepartmentResponse(BaseModel):
+    """Tenant-scoped department projection for role governance."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    department_id: str
+    name: str
+    current_user_member: bool = False
+    requestable: bool = True
+
+
+class RoleGovernanceWorkspaceResponse(BaseModel):
+    """Workspace projection for role and department access governance."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str
+    name: str
+    current: bool = False
+    requestable: bool = True
+
+
+class RoleGovernanceSkillAvailabilityResponse(BaseModel):
+    """Inherited Skill availability projected for role governance."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill_id: str
+    availability_state: Literal["enabled", "disabled", "inherited", "requestable"] = "inherited"
+    inherited_from: Literal["tenant", "department", "workspace"] = "tenant"
+    scope_id: str
+
+
+class RoleGovernanceScopeResponse(BaseModel):
+    """Department/workspace scope projection for the role governance page."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str
+    workspace_id: str
+    current_department_id: str = ""
+    departments: list[RoleGovernanceDepartmentResponse] = Field(default_factory=list)
+    workspaces: list[RoleGovernanceWorkspaceResponse] = Field(default_factory=list)
+    skill_availability: list[RoleGovernanceSkillAvailabilityResponse] = Field(default_factory=list)
+
+
+class RoleGovernanceRequestItemResponse(BaseModel):
+    """Safe request/approval workflow item."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    requester_id: str
+    target_type: Literal["role", "department_agent"]
+    target_id: str
+    status: Literal["pending", "approved", "rejected", "queued"] = "pending"
+    reason: str = ""
+    approver_id: str | None = None
+    created_at: Any | None = None
+    decided_at: Any | None = None
+    audit_id: str | None = None
+
+
+class RoleGovernanceAuditItemResponse(BaseModel):
+    """Safe audit and rollback projection for role governance."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    audit_id: str
+    action: str
+    target_type: str
+    target_id: str
+    actor_id: str
+    source: str = "role_governance_projection"
+    status: str = "recorded"
+    rollback_available: bool = False
+    created_at: Any | None = None
+
+
+class RoleGovernanceOverviewResponse(BaseModel):
+    """Complete frontend role governance overview projection."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    governance: WorkbenchGovernanceResponse
+    role_directory: RoleGovernanceRoleDirectoryResponse
+    scope: RoleGovernanceScopeResponse
+    requests: list[RoleGovernanceRequestItemResponse] = Field(default_factory=list)
+    audit: list[RoleGovernanceAuditItemResponse] = Field(default_factory=list)
+
+
+class RoleGovernanceRequestCreateRequest(BaseModel):
+    """Ordinary-user request for governed role or department-agent access."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_type: Literal["role", "department_agent"]
+    target_id: str
+    reason: str = Field(default="", max_length=2000)
+    workspace_id: str = "default"
+
+    @field_validator("workspace_id")
+    @classmethod
+    def validate_role_governance_workspace_id(cls, value: str):
+        return assert_safe_id(value, "workspace_id")
+
+
+class RoleGovernanceDecisionRequest(BaseModel):
+    """Admin approval or rejection note for queued role governance requests."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision_note: str = Field(default="", max_length=2000)
+    rollback_id: str | None = None
+
+    @field_validator("rollback_id")
+    @classmethod
+    def validate_rollback_id(cls, value: str | None):
+        return assert_safe_id(value, "rollback_id") if value else value
+
+
+class RoleGovernanceRollbackRequest(BaseModel):
+    """Admin rollback request for a role governance audit item."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(default="", max_length=2000)
+
+
 class WorkbenchUserResponse(BaseModel):
     """Safe company user-directory projection."""
 
