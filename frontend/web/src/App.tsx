@@ -267,24 +267,6 @@ function ModelsPage() {
   return <AppContent key="models" activeTab="models" />;
 }
 
-function PersonaPage() {
-  useSEO({
-    title: "seo.persona.title",
-    description: "seo.persona.description",
-    path: "/persona",
-  });
-  return <AppContent key="persona" activeTab="persona" />;
-}
-
-function FilesPage() {
-  useSEO({
-    title: "seo.files.title",
-    description: "seo.files.description",
-    path: "/files",
-  });
-  return <AppContent key="files" activeTab="files" />;
-}
-
 function NotificationsPage() {
   useSEO({
     title: "seo.notifications.title",
@@ -494,19 +476,11 @@ function App() {
             />
             <Route
               path="/persona"
-              element={
-                <ProtectedRoute>
-                  <PersonaPage />
-                </ProtectedRoute>
-              }
+              element={<Navigate to="/chat" replace />}
             />
             <Route
               path="/files"
-              element={
-                <ProtectedRoute>
-                  <FilesPage />
-                </ProtectedRoute>
-              }
+              element={<Navigate to="/chat" replace />}
             />
             <Route
               path="/notifications"

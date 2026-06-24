@@ -62,8 +62,6 @@ test("phase 1C discovery routes are login reachable and fail closed inside pages
     "/marketplace",
     "/mcp",
     "/roles",
-    "/persona",
-    "/files",
     "/channels/:channelType?/:instanceId?",
   ]) {
     const routePattern = new RegExp(
@@ -441,7 +439,7 @@ test("authenticated shell chrome avoids legacy playful branding accents", () => 
   assert.match(chrome, /bg-teal-700/);
 });
 
-test("persona and files routes are governed workbench pages instead of legacy shortcuts", () => {
+test("persona and files standalone routes are retired from the authenticated workbench", () => {
   const app = readFileSync(join(root, "src/App.tsx"), "utf8");
   const tabs = readFileSync(
     join(root, "src/components/layout/AppContent/TabContent.tsx"),
@@ -460,14 +458,6 @@ test("persona and files routes are governed workbench pages instead of legacy sh
     "utf8",
   );
   const activeGraph = [app, tabs, sidebarParts, welcome, inputSelectors].join("\n");
-  const personaWorkbench = readFileSync(
-    join(root, "src/components/persona/PersonaWorkbenchPanel.tsx"),
-    "utf8",
-  );
-  const filesWorkbench = readFileSync(
-    join(root, "src/components/fileLibrary/RevealedFilesWorkbenchPanel.tsx"),
-    "utf8",
-  );
   const fileToolbar = readFileSync(
     join(root, "src/components/fileLibrary/components/Toolbar.tsx"),
     "utf8",
@@ -518,38 +508,20 @@ test("persona and files routes are governed workbench pages instead of legacy sh
   );
   const zhLocale = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
 
-  assert.match(app, /path="\/persona"[\s\S]{0,260}<ProtectedRoute>[\s\S]{0,220}<PersonaPage \/>[\s\S]{0,120}<\/ProtectedRoute>/);
-  assert.match(app, /path="\/files"[\s\S]{0,260}<ProtectedRoute>[\s\S]{0,220}<FilesPage \/>[\s\S]{0,120}<\/ProtectedRoute>/);
-  assert.match(app, /function PersonaPage\(\)[\s\S]{0,260}<AppContent key="persona" activeTab="persona" \/>/);
-  assert.match(app, /function FilesPage\(\)[\s\S]{0,260}<AppContent key="files" activeTab="files" \/>/);
-  assert.doesNotMatch(app, /path="\/persona"[\s\S]{0,220}<Navigate to="\/marketplace" replace \/>/);
-  assert.doesNotMatch(app, /path="\/files"[\s\S]{0,220}<Navigate to="\/chat" replace \/>/);
+  assert.match(app, /path="\/persona"[\s\S]{0,220}<Navigate to="\/chat" replace \/>/);
+  assert.match(app, /path="\/files"[\s\S]{0,220}<Navigate to="\/chat" replace \/>/);
+  assert.doesNotMatch(app, /function PersonaPage\(\)/);
+  assert.doesNotMatch(app, /function FilesPage\(\)/);
+  assert.doesNotMatch(app, /activeTab="persona"/);
+  assert.doesNotMatch(app, /activeTab="files"/);
   assert.doesNotMatch(activeGraph, /navigate\("\/persona"\)/);
   assert.doesNotMatch(activeGraph, /navigate\("\/files"\)/);
   assert.doesNotMatch(activeGraph, /PersonaPlazaPanel|persona:\s*PersonaPlazaPanel/);
-  assert.match(tabs, /const PersonaWorkbenchPanel = lazy/);
-  assert.match(tabs, /const RevealedFilesWorkbenchPanel = lazy/);
-  assert.match(tabs, /persona:\s*PersonaWorkbenchPanel/);
-  assert.match(tabs, /files:\s*RevealedFilesWorkbenchPanel/);
+  assert.doesNotMatch(tabs, /const PersonaWorkbenchPanel = lazy/);
+  assert.doesNotMatch(tabs, /const RevealedFilesWorkbenchPanel = lazy/);
+  assert.doesNotMatch(tabs, /persona:\s*PersonaWorkbenchPanel/);
+  assert.doesNotMatch(tabs, /files:\s*RevealedFilesWorkbenchPanel/);
   assert.doesNotMatch(activeGraph, /MobileMoreMenuSheet|DesktopMoreMenu/);
-  assert.match(personaWorkbench, /data-persona-workbench-shell/);
-  assert.match(personaWorkbench, /data-frontend-governance-state=\{governanceState\}/);
-  assert.match(personaWorkbench, /resolveFrontendGovernanceState/);
-  assert.match(personaWorkbench, /hasPermission:\s*!persona\.readPermissionDenied/);
-  assert.doesNotMatch(personaWorkbench, /hasPermission:\s*persona\.canRead/);
-  assert.match(personaWorkbench, /governanceState === "degraded"/);
-  assert.match(personaWorkbench, /WorkbenchStateSurface/);
-  assert.match(personaWorkbench, /PersonaPresetCard/);
-  assert.match(personaWorkbench, /PersonaEditorModal/);
-  assert.doesNotMatch(personaWorkbench, /角色广场|rounded-2xl|rounded-3xl|shadow-xl|shadow-2xl/);
-  assert.match(filesWorkbench, /data-files-workbench-shell/);
-  assert.match(filesWorkbench, /data-frontend-governance-state/);
-  assert.match(filesWorkbench, /filesProjectionError/);
-  assert.match(filesWorkbench, /projectionError:\s*filesProjectionError/);
-  assert.match(filesWorkbench, /onProjectionStateChange/);
-  assert.match(filesWorkbench, /RevealedFilesPanel/);
-  assert.match(filesWorkbench, /WorkbenchStateSurface/);
-  assert.doesNotMatch(filesWorkbench, /rounded-2xl|rounded-3xl|shadow-xl|shadow-2xl/);
   assert.doesNotMatch(personaSelector, /角色广场/);
   assert.match(personaSelector, /bg-slate-950\/35/);
   assert.match(personaSelector, /rounded-t-lg/);
