@@ -60,6 +60,10 @@ def _runtime_probe_section_error(section_name: str, section: dict[str, Any], *, 
     if section_name == "resource_limits":
         if section.get("over_limit_cleanup_verified") is not True:
             return "runtime probe results missing: resource_limits.over_limit_cleanup_verified"
+        if section.get("probe_kind") != "platform_resource_timeout":
+            return "runtime probe results missing: resource_limits.probe_kind"
+        if section.get("timeout_probe_seconds") != 0:
+            return "runtime probe results missing: resource_limits.timeout_probe_seconds"
         if safe_bounded_error_projection(section.get("bounded_error_projection"), run_id=run_id) is None:
             return "runtime probe results missing: resource_limits.bounded_error_projection"
         return None
@@ -340,6 +344,37 @@ def _runtime_probe_section(
     return dict(section) if isinstance(section, dict) else {}
 
 
+def _safe_platform_resource_probe_from_result(
+    *,
+    run_id: str,
+    result: object,
+    release_reason: object,
+    platform_resource_timeout_probe: bool,
+) -> dict[str, Any]:
+    if not platform_resource_timeout_probe:
+        return {}
+    response = getattr(result, "executor_response", {})
+    response = response if isinstance(response, dict) else {}
+    status = str(getattr(result, "status", "") or response.get("status") or "")
+    error_code = str(response.get("error_code") or "")
+    if status != "failed" or error_code != "executor_health_timeout" or release_reason != "run_failed":
+        return {}
+    return {
+        "probe_kind": "platform_resource_timeout",
+        "timeout_probe_seconds": 0,
+        "over_limit_cleanup_verified": True,
+        "bounded_error_projection": {
+            "source": "admin_runtime_projection",
+            "run_id": run_id,
+            "status": "failed",
+            "error_code": "executor_health_timeout",
+            "host_paths_redacted": True,
+            "raw_docker_payload_absent": True,
+            "callback_token_absent": True,
+        },
+    }
+
+
 def _docker_host_config(docker_inspect: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(docker_inspect, dict):
         return {}
@@ -462,6 +497,10 @@ def _platform_hardening_evidence(
     }
     if bounded_error_projection is not None:
         resource_limits_evidence["bounded_error_projection"] = bounded_error_projection
+    if resource_probe.get("probe_kind") == "platform_resource_timeout":
+        resource_limits_evidence["over_limit_probe_kind"] = "platform_resource_timeout"
+    if resource_probe.get("timeout_probe_seconds") == 0:
+        resource_limits_evidence["over_limit_timeout_probe_seconds"] = 0
     return {
         "lease_isolation": {
             "evidence_class": "live_platform_probe",
@@ -586,6 +625,7 @@ def run_platform_runtime_probe(
     docker_cmd: tuple[str, ...] = ("docker",),
     run: Callable[..., Any] = subprocess.run,
     runtime_probe_results: dict[str, Any] | None = None,
+    platform_resource_timeout_probe: bool = False,
 ) -> dict[str, object]:
     captured: dict[str, Any] = {
         "recorded_lease_id": "",
@@ -640,6 +680,10 @@ def run_platform_runtime_probe(
                 release_lease=release_lease,
             )
             resource_limits = {"max_seconds": 60, "memory_mb": 512, "cpu_count": 0.5, "pids_limit": 128}
+            if platform_resource_timeout_probe:
+                resource_limits = dict(resource_limits)
+                resource_limits["max_seconds"] = 0
+                resource_limits["platform_timeout_probe"] = True
             request = SandboxRuntimeRequest(
                 tenant_id="tenant-a",
                 workspace_id="workspace-a",
@@ -672,6 +716,15 @@ def run_platform_runtime_probe(
     recorder.timings = _timings_from_result(result)
     recorded_lease_id = captured.get("recorded_lease_id") or f"lease-{_safe_run_id(recorder.run_id)}"
     released_lease_id = captured.get("released_lease_id") or ""
+    derived_runtime_probe_results = dict(runtime_probe_results or {})
+    platform_resource_probe = _safe_platform_resource_probe_from_result(
+        run_id=recorder.run_id,
+        result=result,
+        release_reason=captured.get("release_reason"),
+        platform_resource_timeout_probe=platform_resource_timeout_probe,
+    )
+    if platform_resource_probe:
+        derived_runtime_probe_results["resource_limits"] = platform_resource_probe
     recorder.hardening = _platform_hardening_evidence(
         run_id=recorder.run_id,
         workspace_root=workspace_root,
@@ -680,12 +733,16 @@ def run_platform_runtime_probe(
         release_reason=captured.get("release_reason") or "",
         resource_limits={"max_seconds": 60, "memory_mb": 512, "cpu_count": 0.5, "pids_limit": 128},
         docker_inspect=captured.get("docker_inspect") if isinstance(captured.get("docker_inspect"), dict) else None,
-        runtime_probe_results=runtime_probe_results,
+        runtime_probe_results=derived_runtime_probe_results,
     )
-    return {
+    output = {
         "status": str(getattr(result, "status", "")),
         "run_id": str(getattr(result, "run_id", recorder.run_id)),
     }
+    response = getattr(result, "executor_response", {})
+    if isinstance(response, dict) and response.get("error_code"):
+        output["error_code"] = str(response["error_code"])
+    return output
 
 
 def _run_docker(
@@ -829,6 +886,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--skip-live-submit", action="store_true")
     parser.add_argument("--skip-cancel-probe", action="store_true")
+    parser.add_argument(
+        "--platform-resource-timeout-probe",
+        action="store_true",
+        default=os.environ.get("AI_PLATFORM_RESOURCE_TIMEOUT_PROBE", "").lower() in {"1", "true", "yes"},
+        help="Run the platform submit with max_seconds=0 to produce explicit resource over-limit cleanup evidence.",
+    )
     parser.add_argument("--json", action="store_true", dest="json_output")
     return parser
 
@@ -868,6 +931,7 @@ def main(argv: list[str] | None = None) -> int:
                     callback_url=callback_url,
                     docker_cmd=docker_cmd,
                     runtime_probe_results=runtime_probe_results,
+                    platform_resource_timeout_probe=args.platform_resource_timeout_probe,
                 )
             else:
                 recorder.runtime_mode = "executor"

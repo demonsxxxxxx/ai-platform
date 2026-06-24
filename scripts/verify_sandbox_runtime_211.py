@@ -113,6 +113,8 @@ REQUIRED_HARDENING_FLAGS = {
         "cpu_limit_count",
         "pids_limit",
         "process_timeout_seconds",
+        "over_limit_probe_kind",
+        "over_limit_timeout_probe_seconds",
         "limit_source",
         "docker_inspection_verified",
         "over_limit_cleanup_verified",
@@ -537,6 +539,10 @@ def _resource_limits_hardening_error(section: dict[str, Any], *, run_id: str) ->
             return f"hardening evidence missing: resource_limits.{field}"
     if section.get("limit_source") != "platform_request":
         return "hardening evidence missing: resource_limits.limit_source"
+    if section.get("over_limit_probe_kind") != "platform_resource_timeout":
+        return "hardening evidence missing: resource_limits.over_limit_probe_kind"
+    if section.get("over_limit_timeout_probe_seconds") != 0:
+        return "hardening evidence missing: resource_limits.over_limit_timeout_probe_seconds"
     for field in (
         "docker_inspection_verified",
         "over_limit_cleanup_verified",

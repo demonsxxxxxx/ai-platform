@@ -82,6 +82,51 @@ def test_executor_execute_posts_running_and_completed_callbacks(tmp_path):
     assert callbacks[1][1]["progress"] == 100
 
 
+def test_executor_execute_reports_platform_timeout_probe_as_failed_callback(tmp_path):
+    callbacks = []
+    payload = task_payload("http://platform/callback")
+    payload["config"]["resource_limits"] = {"max_seconds": 0}
+
+    def callback_sender(url, payload, token):
+        callbacks.append((url, payload, token))
+        return {"accepted": True}
+
+    client = TestClient(create_executor_app(workspace_root=tmp_path, callback_sender=callback_sender))
+
+    response = client.post("/v1/tasks/execute", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["run_id"] == "run-a"
+    assert body["error_code"] == "executor_health_timeout"
+    assert body["error_message"] == "Executor health timeout"
+    assert [item[1]["status"] for item in callbacks] == ["running", "failed"]
+    assert callbacks[-1][1]["error_message"] == "Executor health timeout"
+    assert callbacks[-1][1]["state_patch"] == {"error_code": "executor_health_timeout"}
+    assert str(tmp_path) not in str(body)
+
+
+def test_executor_execute_does_not_truncate_fractional_positive_timeout(tmp_path):
+    callbacks = []
+    payload = task_payload("http://platform/callback")
+    payload["config"]["resource_limits"] = {"max_seconds": 0.5}
+
+    def callback_sender(url, payload, token):
+        callbacks.append((url, payload, token))
+        return {"accepted": True}
+
+    client = TestClient(create_executor_app(workspace_root=tmp_path, callback_sender=callback_sender))
+
+    response = client.post("/v1/tasks/execute", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "accepted"
+    assert "error_code" not in body
+    assert [item[1]["status"] for item in callbacks] == ["running", "completed"]
+
+
 def test_executor_execute_writes_runtime_marker_without_host_path(tmp_path):
     client = TestClient(
         create_executor_app(
