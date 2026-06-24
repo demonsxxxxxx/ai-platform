@@ -781,6 +781,33 @@ test("frontend governance state machine exposes every authenticated page state",
   assert.match(stateMachine, /!hasPermission[\s\S]{0,120}"forbidden"/);
 });
 
+test("mcp workbench route exposes the same frontend governance state machine as skills and roles", () => {
+  const mcpPanel = readFileSync(
+    join(root, "src/components/panels/MCPPanel.tsx"),
+    "utf8",
+  );
+  const mcpState = readFileSync(
+    join(root, "src/components/panels/mcpGovernanceState.ts"),
+    "utf8",
+  );
+
+  assert.match(mcpPanel, /resolveMcpGovernanceState/);
+  assert.match(mcpPanel, /data-mcp-directory-shell/);
+  assert.match(mcpPanel, /data-frontend-governance-state=\{mcpGovernance\.pageState\}/);
+  assert.match(mcpPanel, /data-required-permission=\{mcpGovernance\.requiredPermission\}/);
+  assert.match(mcpPanel, /data-auth-projection-has-permission/);
+  assert.match(mcpPanel, /WorkbenchStateSurface/);
+  assert.match(mcpPanel, /data-fail-closed-surface="mcp-lifecycle"/);
+  assert.match(mcpPanel, /data-fail-closed-surface="mcp-credentials"/);
+  assert.match(mcpState, /requiredPermission: "mcp:read"/);
+  assert.match(mcpState, /resolveFrontendGovernanceState/);
+  assert.match(mcpState, /isPermissionError\(loadError\)/);
+  assert.match(mcpState, /!canReadMcp && !permissionDenied/);
+  assert.doesNotMatch(mcpPanel, /data-frontend-governance-state="ready"/);
+  assert.doesNotMatch(mcpPanel, /hasPermission:\s*canReadMcp/);
+  assert.doesNotMatch(mcpPanel, /createServer|updateServer|deleteServer|toggleServer|promoteServer|demoteServer/);
+});
+
 test("skills and marketplace clients use only PR177 public contracts", () => {
   const skillApi = readFileSync(join(root, "src/services/api/skill.ts"), "utf8");
   const marketplaceApi = readFileSync(
