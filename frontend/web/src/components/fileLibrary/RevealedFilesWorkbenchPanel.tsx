@@ -1,0 +1,114 @@
+import { FileStack, ShieldCheck } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { PanelHeader } from "../common/PanelHeader";
+import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
+import { resolveFrontendGovernanceState } from "../governance/frontendGovernanceState";
+import { resolveGroupAvailability } from "../governance/groupAvailability";
+import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
+import { workbenchSurface } from "../workbench/workbenchSurface";
+import { useAuth } from "../../hooks/useAuth";
+import { RevealedFilesPanel } from "./RevealedFilesPanel";
+
+export function RevealedFilesWorkbenchPanel() {
+  const { t } = useTranslation();
+  const {
+    isAuthenticated,
+    isLoading: authLoading,
+  } = useAuth();
+  const governanceState = resolveFrontendGovernanceState({
+    isAuthenticated,
+    isLoading: authLoading,
+    hasPermission: true,
+  });
+  const readAvailability = resolveGroupAvailability({
+    backed: true,
+    enabled: governanceState === "ready",
+  });
+  const previewAvailability = resolveGroupAvailability({
+    backed: true,
+    enabled: governanceState === "ready",
+  });
+
+  if (governanceState === "loading" || governanceState === "logged-out") {
+    return (
+      <div
+        data-files-workbench-shell
+        data-frontend-governance-state={governanceState}
+        className="flex h-full min-h-0 items-center justify-center bg-[var(--theme-bg)] px-4"
+      >
+        <WorkbenchStateSurface
+          state={governanceState}
+          surface="revealed-files-workbench"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div
+      data-files-workbench-shell
+      data-frontend-governance-state={governanceState}
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+    >
+      <PanelHeader
+        title={t("fileLibrary.workbenchTitle", "文件工作台")}
+        subtitle={t(
+          "fileLibrary.workbenchSubtitle",
+          "按会话查看已揭示文件、项目产物和可预览附件。",
+        )}
+        icon={<FileStack size={20} className="text-slate-600" />}
+        actions={
+          <div className="flex flex-wrap items-center justify-end gap-1.5">
+            <GovernanceAvailabilityBadge
+              state={readAvailability.state}
+              labelKey={readAvailability.labelKey}
+            />
+            <GovernanceAvailabilityBadge
+              state={previewAvailability.state}
+              labelKey={previewAvailability.labelKey}
+            />
+          </div>
+        }
+      />
+
+      <div className="grid gap-3 px-4 pb-3 lg:grid-cols-2">
+        <div className={`${workbenchSurface.compactPanel} p-3`}>
+          <div className="flex items-start gap-3">
+            <ShieldCheck size={17} className="mt-0.5 text-slate-500" />
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-stone-100">
+                {t("fileLibrary.readContract", "安全读取")}
+              </h3>
+              <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-stone-400">
+                {t(
+                  "fileLibrary.readContractDescription",
+                  "文件列表使用 /api/files/revealed 公共工作台接口，预览 URL 继续执行 allowlist 校验。",
+                )}
+              </p>
+            </div>
+          </div>
+        </div>
+        <div className={`${workbenchSurface.compactPanel} p-3`}>
+          <div className="flex items-start gap-3">
+            <FileStack size={17} className="mt-0.5 text-slate-500" />
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-stone-100">
+                {t("fileLibrary.sessionGrouping", "按会话归档")}
+              </h3>
+              <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-stone-400">
+                {t(
+                  "fileLibrary.sessionGroupingDescription",
+                  "保留原文件库的会话分组、收藏、排序、项目过滤和预览交互。",
+                )}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <RevealedFilesPanel />
+      </div>
+    </div>
+  );
+}

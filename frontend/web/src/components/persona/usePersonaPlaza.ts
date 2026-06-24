@@ -435,6 +435,7 @@ export function usePersonaPlaza() {
   return {
     isLoading,
     isMutating,
+    error,
     presets,
     canRead,
     canWrite,
