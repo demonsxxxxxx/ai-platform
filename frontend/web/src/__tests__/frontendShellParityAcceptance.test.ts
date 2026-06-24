@@ -677,6 +677,13 @@ test("model catalog route is a governed public-projection workbench page", () =>
   assert.match(modelCatalog, /bg-\[var\(--theme-bg\)\]/);
   assert.ok(JSON.parse(zhLocale).models);
   assert.ok(JSON.parse(enLocale).models);
+  for (const source of [
+    modelCatalog,
+    JSON.stringify(JSON.parse(zhLocale).models),
+    JSON.stringify(JSON.parse(enLocale).models),
+  ]) {
+    assert.doesNotMatch(source, /管理投影补齐|等待后端补齐|admin projections are backed|backend coverage/);
+  }
   assert.doesNotMatch(modelCatalog, /modelApi|agentConfigApi|roleApi/);
   assert.doesNotMatch(modelCatalog, /listProviders/);
   assert.doesNotMatch(modelCatalog, /providers\/list/);
@@ -840,6 +847,7 @@ test("agents route uses a public read-only directory instead of legacy config ad
   assert.match(directory, /agentApi\.list\(\)/);
   assert.match(directory, /WorkbenchStateSurface/);
   assert.match(directory, /data-frontend-governance-state/);
+  assert.doesNotMatch(directory, /backend admin projections|后端管理员投影|补齐后再开放/);
   assert.doesNotMatch(directory, /agentConfigApi|roleApi|\/api\/agent\/config|Permission\.AGENT_ADMIN/);
 });
 

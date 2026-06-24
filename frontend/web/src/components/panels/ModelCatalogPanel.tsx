@@ -91,8 +91,6 @@ export function ModelCatalogPanel() {
 
   const canAdminModels = hasAnyPermission([Permission.MODEL_ADMIN]);
   const adminAvailability = resolveGroupAvailability({
-    backed: false,
-    enabled: false,
     adminOnly: canAdminModels,
   });
   const publicAvailability = resolveGroupAvailability({
@@ -247,7 +245,7 @@ export function ModelCatalogPanel() {
                 <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
                   {t(
                     "models.adminGovernanceDescription",
-                    "新增、排序、密钥和网关配置需要 ai-platform 管理投影补齐后再开放。",
+                    "新增、排序、密钥和网关配置只在具备 model:admin 权限的治理入口开放。",
                   )}
                 </p>
               </div>
@@ -279,7 +277,7 @@ export function ModelCatalogPanel() {
             <p className="mt-2 max-w-md text-center text-xs leading-5 text-stone-500 dark:text-stone-400">
               {t(
                 "models.emptyDescription",
-                "模型目录来自公开投影。若这里为空，聊天页仍会 fail-closed 到默认配置或等待后端补齐。",
+                "模型目录来自公开投影。若这里为空，聊天页会 fail-closed 到默认模型配置，并保留管理写操作锁定。",
               )}
             </p>
           </div>

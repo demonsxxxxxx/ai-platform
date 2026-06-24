@@ -2751,7 +2751,7 @@
   },
   "models": {
     "adminGovernance": "管理写操作",
-    "adminGovernanceDescription": "新增、排序、密钥和网关配置需要 ai-platform 管理投影补齐后再开放。",
+    "adminGovernanceDescription": "新增、排序、密钥和网关配置只在具备 model:admin 权限的治理入口开放。",
     "catalogLoadFailed": "模型目录暂不可用",
     "catalogStats": "目录状态",
     "catalogStatsDescription": "已启用 {{enabled}} / {{total}} 个模型，{{providers}} 个供应商。",
@@ -2760,7 +2760,7 @@
     "contextWindow": "上下文",
     "contextWindowUnknown": "未公开",
     "defaultModel": "默认",
-    "emptyDescription": "模型目录来自公开投影。若这里为空，聊天页仍会 fail-closed 到默认配置或等待后端补齐。",
+    "emptyDescription": "模型目录来自公开投影。若这里为空，聊天页会 fail-closed 到默认模型配置，并保留管理写操作锁定。",
     "loading": "正在加载模型目录",
     "noMatchingModels": "没有匹配的模型",
     "noModels": "暂无可用模型",
@@ -2773,7 +2773,7 @@
   },
   "agentDirectory": {
     "adminGovernance": "管理配置",
-    "adminGovernanceDescription": "角色分配、提示词编辑、模型绑定和工具治理需要后端管理员投影补齐后再开放。",
+    "adminGovernanceDescription": "角色分配、提示词编辑、模型绑定和工具治理继续锁定在管理员治理入口。",
     "directoryStats": "目录状态",
     "directoryStatsDescription": "已发布 {{count}} 个 Agent。默认：{{defaultAgent}}。模型范围：{{models}}。",
     "emptyDescription": "这里只展示后端公开投影返回的 Agent。管理员配置继续保持关闭。",

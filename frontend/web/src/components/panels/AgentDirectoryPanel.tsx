@@ -89,8 +89,7 @@ export function AgentDirectoryPanel() {
     enabled: Boolean(readyState),
   });
   const adminAvailability = resolveGroupAvailability({
-    backed: false,
-    enabled: false,
+    adminOnly: true,
   });
 
   if (isLoading) {
@@ -229,7 +228,7 @@ export function AgentDirectoryPanel() {
                 <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
                   {t(
                     "agentDirectory.adminGovernanceDescription",
-                    "Role assignment, prompt editing, model binding, and tool governance need backend admin projections before they open here.",
+                    "Role assignment, prompt editing, model binding, and tool governance remain locked to administrator-controlled surfaces.",
                   )}
                 </p>
               </div>

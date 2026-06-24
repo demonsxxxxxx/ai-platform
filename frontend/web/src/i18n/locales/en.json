@@ -2750,7 +2750,7 @@
   },
   "models": {
     "adminGovernance": "Admin writes",
-    "adminGovernanceDescription": "Create, order, key, and gateway settings stay locked until ai-platform admin projections are backed.",
+    "adminGovernanceDescription": "Create, order, key, and gateway settings are available only through model:admin governed controls.",
     "catalogLoadFailed": "Model catalog is unavailable",
     "catalogStats": "Catalog status",
     "catalogStatsDescription": "{{enabled}} / {{total}} models enabled across {{providers}} providers.",
@@ -2759,7 +2759,7 @@
     "contextWindow": "Context",
     "contextWindowUnknown": "Not published",
     "defaultModel": "Default",
-    "emptyDescription": "This catalog comes from the public model projection. If it is empty, chat fails closed to default configuration or waits for backend coverage.",
+    "emptyDescription": "This catalog comes from the public model projection. If it is empty, chat fails closed to default model configuration while admin writes stay locked.",
     "loading": "Loading model catalog",
     "noMatchingModels": "No matching models",
     "noModels": "No available models",
@@ -2772,7 +2772,7 @@
   },
   "agentDirectory": {
     "adminGovernance": "Admin configuration",
-    "adminGovernanceDescription": "Role assignment, prompt editing, model binding, and tool governance need backend admin projections before they open here.",
+    "adminGovernanceDescription": "Role assignment, prompt editing, model binding, and tool governance remain locked to administrator-controlled surfaces.",
     "directoryStats": "Directory status",
     "directoryStatsDescription": "{{count}} Agents published. Default: {{defaultAgent}}. Model scope: {{models}}.",
     "emptyDescription": "The directory only shows public Agents returned by the backend projection. Admin configuration remains closed.",
