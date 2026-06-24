@@ -23,8 +23,6 @@ import {
 import { APP_TOASTER_CLASS_NAME } from "./components/layout/AppContent/appToastLayout";
 import { useAuth } from "./hooks/useAuth";
 import type { TabType } from "./components/layout/AppContent/types";
-import type { FrontendGovernanceState } from "./components/governance/frontendGovernanceState";
-import type { GovernanceAvailabilityState } from "./components/governance/groupAvailability";
 
 const SharedPage = lazy(() =>
   import("./components/share/SharedPage").then((m) => ({
@@ -69,142 +67,6 @@ const NotFoundPage = lazy(() =>
     default: m.NotFoundPage,
   })),
 );
-
-type PhaseTwoTab = "users" | "settings" | "feedback" | "notifications";
-
-interface PhaseTwoCapabilityConfig {
-  titleKey: string;
-  descriptionKey: string;
-  state: GovernanceAvailabilityState;
-  labelKey?: string;
-}
-
-interface PhaseTwoWorkbenchConfig {
-  state: FrontendGovernanceState;
-  titleKey: string;
-  descriptionKey: string;
-  details: string[];
-  capabilities: PhaseTwoCapabilityConfig[];
-}
-
-const phaseTwoWorkbenchConfigs: Record<PhaseTwoTab, PhaseTwoWorkbenchConfig> = {
-  users: {
-    state: "degraded",
-    titleKey: "workbench.phaseTwo.users.title",
-    descriptionKey: "workbench.phaseTwo.users.description",
-    details: [
-      "workbench.phaseTwo.users.details.publicProjection",
-      "workbench.phaseTwo.users.details.adminProjection",
-      "workbench.phaseTwo.users.details.auditProjection",
-      "workbench.phaseTwo.users.details.nextContract",
-    ],
-    capabilities: [
-      {
-        titleKey: "workbench.phaseTwo.users.capabilities.directory.title",
-        descriptionKey: "workbench.phaseTwo.users.capabilities.directory.description",
-        state: "unavailable",
-      },
-      {
-        titleKey: "workbench.phaseTwo.users.capabilities.lifecycle.title",
-        descriptionKey: "workbench.phaseTwo.users.capabilities.lifecycle.description",
-        state: "unavailable",
-      },
-      {
-        titleKey: "workbench.phaseTwo.users.capabilities.audit.title",
-        descriptionKey: "workbench.phaseTwo.users.capabilities.audit.description",
-        state: "unavailable",
-      },
-    ],
-  },
-  settings: {
-    state: "degraded",
-    titleKey: "workbench.phaseTwo.settings.title",
-    descriptionKey: "workbench.phaseTwo.settings.description",
-    details: [
-      "workbench.phaseTwo.settings.details.publicProjection",
-      "workbench.phaseTwo.settings.details.adminProjection",
-      "workbench.phaseTwo.settings.details.auditProjection",
-      "workbench.phaseTwo.settings.details.nextContract",
-    ],
-    capabilities: [
-      {
-        titleKey: "workbench.phaseTwo.settings.capabilities.publicProfile.title",
-        descriptionKey:
-          "workbench.phaseTwo.settings.capabilities.publicProfile.description",
-        state: "enabled",
-      },
-      {
-        titleKey: "workbench.phaseTwo.settings.capabilities.runtime.title",
-        descriptionKey: "workbench.phaseTwo.settings.capabilities.runtime.description",
-        state: "unavailable",
-      },
-      {
-        titleKey: "workbench.phaseTwo.settings.capabilities.secrets.title",
-        descriptionKey: "workbench.phaseTwo.settings.capabilities.secrets.description",
-        state: "unavailable",
-      },
-    ],
-  },
-  feedback: {
-    state: "degraded",
-    titleKey: "workbench.phaseTwo.feedback.title",
-    descriptionKey: "workbench.phaseTwo.feedback.description",
-    details: [
-      "workbench.phaseTwo.feedback.details.publicProjection",
-      "workbench.phaseTwo.feedback.details.adminProjection",
-      "workbench.phaseTwo.feedback.details.auditProjection",
-      "workbench.phaseTwo.feedback.details.nextContract",
-    ],
-    capabilities: [
-      {
-        titleKey: "workbench.phaseTwo.feedback.capabilities.capture.title",
-        descriptionKey: "workbench.phaseTwo.feedback.capabilities.capture.description",
-        state: "enabled",
-      },
-      {
-        titleKey: "workbench.phaseTwo.feedback.capabilities.triage.title",
-        descriptionKey: "workbench.phaseTwo.feedback.capabilities.triage.description",
-        state: "unavailable",
-      },
-      {
-        titleKey: "workbench.phaseTwo.feedback.capabilities.audit.title",
-        descriptionKey: "workbench.phaseTwo.feedback.capabilities.audit.description",
-        state: "unavailable",
-      },
-    ],
-  },
-  notifications: {
-    state: "degraded",
-    titleKey: "workbench.phaseTwo.notifications.title",
-    descriptionKey: "workbench.phaseTwo.notifications.description",
-    details: [
-      "workbench.phaseTwo.notifications.details.publicProjection",
-      "workbench.phaseTwo.notifications.details.adminProjection",
-      "workbench.phaseTwo.notifications.details.auditProjection",
-      "workbench.phaseTwo.notifications.details.nextContract",
-    ],
-    capabilities: [
-      {
-        titleKey: "workbench.phaseTwo.notifications.capabilities.banner.title",
-        descriptionKey:
-          "workbench.phaseTwo.notifications.capabilities.banner.description",
-        state: "enabled",
-      },
-      {
-        titleKey: "workbench.phaseTwo.notifications.capabilities.inbox.title",
-        descriptionKey:
-          "workbench.phaseTwo.notifications.capabilities.inbox.description",
-        state: "unavailable",
-      },
-      {
-        titleKey: "workbench.phaseTwo.notifications.capabilities.admin.title",
-        descriptionKey:
-          "workbench.phaseTwo.notifications.capabilities.admin.description",
-        state: "unavailable",
-      },
-    ],
-  },
-};
 
 function ChatPageSEO() {
   const { sessionId } = useParams<{ sessionId?: string }>();
@@ -339,12 +201,7 @@ function UsersPage() {
     description: "seo.users.description",
     path: "/users",
   });
-  return (
-    <PhaseTwoWorkbenchPage
-      activeTab="users"
-      config={phaseTwoWorkbenchConfigs.users}
-    />
-  );
+  return <AppContent key="users" activeTab="users" />;
 }
 
 function RolesPage() {
@@ -362,12 +219,7 @@ function SettingsPage() {
     description: "seo.settings.description",
     path: "/settings",
   });
-  return (
-    <PhaseTwoWorkbenchPage
-      activeTab="settings"
-      config={phaseTwoWorkbenchConfigs.settings}
-    />
-  );
+  return <AppContent key="settings" activeTab="settings" />;
 }
 
 function MCPPage() {
@@ -385,12 +237,7 @@ function FeedbackPage() {
     description: "seo.feedback.description",
     path: "/feedback",
   });
-  return (
-    <PhaseTwoWorkbenchPage
-      activeTab="feedback"
-      config={phaseTwoWorkbenchConfigs.feedback}
-    />
-  );
+  return <AppContent key="feedback" activeTab="feedback" />;
 }
 
 function ChannelsPage() {
@@ -426,12 +273,7 @@ function NotificationsPage() {
     description: "seo.notifications.description",
     path: "/notifications",
   });
-  return (
-    <PhaseTwoWorkbenchPage
-      activeTab="notifications"
-      config={phaseTwoWorkbenchConfigs.notifications}
-    />
-  );
+  return <AppContent key="notifications" activeTab="notifications" />;
 }
 
 function MemoryPage() {
@@ -465,36 +307,6 @@ function WorkbenchForbiddenPage({
           permission: permissionLabel,
         }),
         surface: `${activeTab}-route-permission`,
-      }}
-    />
-  );
-}
-
-function PhaseTwoWorkbenchPage({
-  activeTab,
-  config,
-}: {
-  activeTab: PhaseTwoTab;
-  config: PhaseTwoWorkbenchConfig;
-}) {
-  const { t } = useTranslation();
-
-  return (
-    <AppContent
-      key={`${activeTab}-phase2`}
-      activeTab={activeTab}
-      routeUnavailable={{
-        state: config.state,
-        title: t(config.titleKey),
-        description: t(config.descriptionKey),
-        surface: `${activeTab}-phase2-backend-projection`,
-        details: config.details.map((detailKey) => t(detailKey)),
-        capabilities: config.capabilities.map((capability) => ({
-          title: t(capability.titleKey),
-          description: t(capability.descriptionKey),
-          state: capability.state,
-          labelKey: capability.labelKey,
-        })),
       }}
     />
   );

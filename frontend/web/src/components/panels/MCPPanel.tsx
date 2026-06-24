@@ -13,10 +13,9 @@ import { PanelHeader } from "../common/PanelHeader";
 import { MCPPanelSkeleton } from "../skeletons";
 import { Pagination } from "../common/Pagination";
 import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
+import { isPermissionError } from "../governance/frontendGovernanceState";
 import { resolveGroupAvailability } from "../governance/groupAvailability";
 import { useMCP } from "../../hooks/useMcp";
-import { useAuth } from "../../hooks/useAuth";
-import { Permission } from "../../types";
 import type { MCPServerResponse } from "../../types";
 
 function roleQuotaCount(server: MCPServerResponse): number {
@@ -33,6 +32,7 @@ export function MCPPanel() {
   const { t } = useTranslation();
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(1);
+  const [permissionDenied, setPermissionDenied] = useState(false);
   const pageSize = 20;
   const listParams = useMemo(
     () => ({
@@ -42,23 +42,24 @@ export function MCPPanel() {
     }),
     [page, searchQuery],
   );
-  const { hasAnyPermission } = useAuth();
-
   useEffect(() => {
     setPage(1);
   }, [searchQuery]);
 
-  const canRead = hasAnyPermission([Permission.MCP_READ]);
-  const canSelect = hasAnyPermission([Permission.MCP_READ]);
-  const governedUnavailable = !canRead;
+  const governedUnavailable = permissionDenied;
   const { servers, total, isLoading, error } = useMCP({
-    enabled: !governedUnavailable,
+    enabled: !permissionDenied,
     listParams,
   });
+
+  useEffect(() => {
+    if (isPermissionError(error)) {
+      setPermissionDenied(true);
+    }
+  }, [error]);
   const permissionAvailability = resolveGroupAvailability({
-    backed: !governedUnavailable,
-    enabled: canSelect,
-    inherited: canRead && !canSelect,
+    backed: !permissionDenied,
+    enabled: !permissionDenied,
   });
   const lifecycleAvailability = resolveGroupAvailability({ backed: false });
 

@@ -1,43 +1,116 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   BellRing,
   Cable,
+  CheckCircle2,
   Inbox,
   LockKeyhole,
   MessageSquarePlus,
+  RotateCw,
   ShieldCheck,
+  TestTube2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import toast from "react-hot-toast";
 import { PanelHeader } from "../common/PanelHeader";
+import { PanelLoadingState } from "../common/PanelLoadingState";
 import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
 import { resolveGroupAvailability } from "../governance/groupAvailability";
+import { isPermissionError, resolveFrontendGovernanceState } from "../governance/frontendGovernanceState";
 import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
+import { channelApi } from "../../services/api/channel";
+import { useAuth } from "../../hooks/useAuth";
+import { useChannelAdminOperations } from "../../hooks/useChannelAdminOperations";
+import { Permission, type PublicChannelResponse } from "../../types";
 
-const supportedChannelTypes = [
-  { id: "feishu", labelKey: "channelImport.sources.feishu" },
-  { id: "wechat", labelKey: "channelImport.sources.wechat" },
-  { id: "dingtalk", labelKey: "channelImport.sources.dingtalk" },
-  { id: "slack", labelKey: "channelImport.sources.slack" },
-];
+function formatCapability(capability: string): string {
+  return capability.replace(/[:_]/g, " ");
+}
 
 export function ChannelImportPanel() {
   const { t } = useTranslation();
+  const { hasPermission, isAuthenticated, isLoading: authLoading } = useAuth();
+  const canAdminChannels = hasPermission(Permission.CHANNEL_ADMIN);
+  const channelAdminOperations = useChannelAdminOperations({
+    enabled: canAdminChannels,
+  });
+  const [channels, setChannels] = useState<PublicChannelResponse[]>([]);
+  const [workspaceId, setWorkspaceId] = useState("default");
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [testingChannelId, setTestingChannelId] = useState<string | null>(null);
+  const permissionDenied = isPermissionError(error);
+  const governanceState = resolveFrontendGovernanceState({
+    isAuthenticated,
+    isLoading: authLoading || isLoading,
+    hasWorkspace: Boolean(workspaceId),
+    hasPermission: !permissionDenied,
+    featureEnabled: true,
+    projectionError: error,
+  });
+
+  const fetchCatalog = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const response = await channelApi.listCatalog(workspaceId);
+      setChannels(response.channels);
+      setWorkspaceId(response.workspace_id || "default");
+    } catch (err) {
+      setChannels([]);
+      setError(err instanceof Error ? err.message : "channel_catalog_failed");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [workspaceId]);
+
+  useEffect(() => {
+    fetchCatalog();
+  }, [fetchCatalog]);
+
+  const enabledCount = useMemo(
+    () => channels.filter((channel) => channel.enabled).length,
+    [channels],
+  );
   const publicProjectionAvailability = resolveGroupAvailability({
-    backed: false,
+    backed: !error,
+    enabled: governanceState === "ready",
   });
   const runtimeNoticeAvailability = resolveGroupAvailability({
     backed: true,
     enabled: true,
   });
   const lifecycleAvailability = resolveGroupAvailability({
-    backed: false,
+    backed: true,
+    enabled: canAdminChannels,
+    adminOnly: !canAdminChannels,
   });
+
+  const handleAdminTest = async (channelId: string) => {
+    setTestingChannelId(channelId);
+    try {
+      const result = await channelAdminOperations.testAdminChannel(
+        channelId,
+        workspaceId,
+      );
+      toast.success(result.message || t("channelImport.adminTestQueued"));
+    } catch (err) {
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : t("channelImport.adminTestFailed"),
+      );
+    } finally {
+      setTestingChannelId(null);
+    }
+  };
 
   return (
     <div
       data-phase1c-surface="channel-import"
       data-channel-workbench-shell
-      data-frontend-governance-state="degraded"
+      data-frontend-governance-state={governanceState}
       className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
     >
       <PanelHeader
@@ -48,6 +121,21 @@ export function ChannelImportPanel() {
             size={20}
             className="text-theme-text-secondary"
           />
+        }
+        actions={
+          <button
+            type="button"
+            onClick={fetchCatalog}
+            disabled={isLoading}
+            className="btn-secondary h-10"
+            title={t("common.refresh")}
+          >
+            <RotateCw
+              size={16}
+              className={isLoading ? "animate-spin" : undefined}
+            />
+            <span className="hidden sm:inline">{t("common.refresh")}</span>
+          </button>
         }
       />
 
@@ -92,7 +180,8 @@ export function ChannelImportPanel() {
             </div>
           </div>
           <div
-            data-fail-closed-surface="channel-lifecycle-governance"
+            data-channel-admin-governance
+            data-fail-closed-surface="channel-admin-governance"
             className={workbenchSurface.compactPanel}
           >
             <div className="flex items-start justify-between gap-3 p-3">
@@ -129,45 +218,141 @@ export function ChannelImportPanel() {
               </p>
             </div>
 
-            <div className="grid gap-3 p-4 md:grid-cols-2">
-              {supportedChannelTypes.map((source) => (
-                <article
-                  key={source.id}
-                  className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] p-3 dark:border-stone-800 dark:bg-stone-950/50"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <Inbox size={15} className="text-stone-500" />
-                        <h3 className="truncate text-sm font-semibold text-stone-900 dark:text-stone-100">
-                          {t(source.labelKey)}
-                        </h3>
+            {isLoading ? (
+              <PanelLoadingState
+                text={t("channelImport.loading")}
+                containerClassName="min-h-72"
+              />
+            ) : error ? (
+              <div className="p-4">
+                <WorkbenchStateSurface
+                  className="max-w-none border-0 shadow-none"
+                  state={governanceState}
+                  surface="channel-catalog-projection"
+                  title={
+                    permissionDenied
+                      ? t("workbench.states.forbidden.title")
+                      : t("channelImport.unavailable.title")
+                  }
+                  description={
+                    permissionDenied
+                      ? t("workbench.states.forbidden.description")
+                      : t("channelImport.unavailable.description")
+                  }
+                  details={[error]}
+                />
+              </div>
+            ) : channels.length === 0 ? (
+              <div className="p-4">
+                <WorkbenchStateSurface
+                  className="max-w-none border-0 shadow-none"
+                  state="degraded"
+                  surface="channel-catalog-empty"
+                  title={t("channelImport.empty.title")}
+                  description={t("channelImport.empty.description")}
+                />
+              </div>
+            ) : (
+              <div data-channel-catalog-list className="grid gap-3 p-4 md:grid-cols-2">
+                {channels.map((channel) => (
+                  <article
+                    key={channel.channel_id}
+                    className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] p-3 dark:border-stone-800 dark:bg-stone-950/50"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <Inbox size={15} className="text-stone-500" />
+                          <h3 className="truncate text-sm font-semibold text-stone-900 dark:text-stone-100">
+                            {channel.display_name}
+                          </h3>
+                        </div>
+                        <p className="mt-2 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                          {t("channelImport.catalogItem.description", {
+                            type: channel.channel_type,
+                            workspace: channel.workspace_id,
+                          })}
+                        </p>
                       </div>
-                      <p className="mt-2 text-xs leading-5 text-stone-500 dark:text-stone-400">
-                        {t("channelImport.sourceFailClosedDescription")}
-                      </p>
+                      <GovernanceAvailabilityBadge
+                        state={channel.enabled ? "enabled" : "disabled"}
+                        labelKey={
+                          channel.enabled
+                            ? "governance.enabled"
+                            : "governance.disabled"
+                        }
+                      />
                     </div>
-                    <GovernanceAvailabilityBadge
-                      state="unavailable"
-                      labelKey="governance.unavailable"
-                    />
-                  </div>
-                </article>
-              ))}
-            </div>
+
+                    <div className="mt-3 grid gap-2 text-xs text-stone-500 dark:text-stone-400">
+                      <div className="flex items-center justify-between gap-3 rounded-md bg-[var(--theme-bg-card)] px-2.5 py-2 ring-1 ring-[var(--theme-border)] dark:bg-stone-900 dark:ring-stone-800">
+                        <span>{t("channelImport.redaction")}</span>
+                        <span className="font-medium text-stone-700 dark:text-stone-200">
+                          {channel.redaction_policy}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3 rounded-md bg-[var(--theme-bg-card)] px-2.5 py-2 ring-1 ring-[var(--theme-border)] dark:bg-stone-900 dark:ring-stone-800">
+                        <span>{t("channelImport.retention")}</span>
+                        <span className="font-medium text-stone-700 dark:text-stone-200">
+                          {channel.retention_policy}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {channel.capabilities.map((capability) => (
+                          <span
+                            key={capability}
+                            className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2 py-1 text-[11px] font-medium text-stone-500 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400"
+                          >
+                            {formatCapability(capability)}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    {canAdminChannels ? (
+                      <div className="mt-3 flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => handleAdminTest(channel.channel_id)}
+                          disabled={testingChannelId === channel.channel_id}
+                          className="btn-secondary h-9"
+                        >
+                          <TestTube2 size={15} />
+                          <span>{t("channelImport.testDryRun")}</span>
+                        </button>
+                      </div>
+                    ) : null}
+                  </article>
+                ))}
+              </div>
+            )}
           </div>
 
-          <div data-channel-projection-gap className={workbenchSurface.panel}>
+          <div className={workbenchSurface.panel}>
             <WorkbenchStateSurface
               className="h-full max-w-none border-0 shadow-none"
-              state="degraded"
-              surface="channel-import-projection"
-              title={t("channelImport.backendGap.title")}
-              description={t("channelImport.backendGap.description")}
-              details={[
-                t("channelImport.backendGap.publicProjection"),
-                t("channelImport.backendGap.adminProjection"),
-                t("channelImport.backendGap.auditProjection"),
+              state={governanceState === "loading" ? "loading" : "ready"}
+              surface="channel-catalog-summary"
+              icon={CheckCircle2}
+              title={t("channelImport.catalogReady.title")}
+              description={t("channelImport.catalogReady.description", {
+                count: channels.length,
+                enabled: enabledCount,
+                workspace: workspaceId,
+              })}
+              capabilities={[
+                {
+                  title: t("channelImport.catalogReady.publicProjection"),
+                  description: t("channelImport.catalogReady.publicProjectionDescription"),
+                  state: publicProjectionAvailability.state,
+                  labelKey: publicProjectionAvailability.labelKey,
+                },
+                {
+                  title: t("channelImport.catalogReady.adminProjection"),
+                  description: t("channelImport.catalogReady.adminProjectionDescription"),
+                  state: lifecycleAvailability.state,
+                  labelKey: lifecycleAvailability.labelKey,
+                },
               ]}
             />
           </div>

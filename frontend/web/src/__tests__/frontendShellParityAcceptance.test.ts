@@ -88,27 +88,27 @@ test("phase 1C discovery routes are login reachable and fail closed inside pages
     ["/feedback", "FeedbackPage"],
     ["/notifications", "NotificationsPage"],
   ]) {
-    const phaseTwoRoutePattern = new RegExp(
+    const projectionRoutePattern = new RegExp(
       `path="${route}"[\\s\\S]{0,260}<ProtectedRoute>[\\s\\S]{0,220}<${page} \\/>[\\s\\S]{0,120}<\\/ProtectedRoute>`,
     );
-    const phaseTwoPagePattern = new RegExp(
-      `function ${page}\\(\\)[\\s\\S]{0,420}<PhaseTwoWorkbenchPage[\\s\\S]{0,180}activeTab="${route.slice(1)}"`,
+    const projectionPagePattern = new RegExp(
+      `function ${page}\\(\\)[\\s\\S]{0,260}<AppContent key="${route.slice(1)}" activeTab="${route.slice(1)}" \\/>`,
     );
     assert.match(
       app,
-      phaseTwoRoutePattern,
+      projectionRoutePattern,
       `${page} should remain login reachable without route-level business permission redirects`,
     );
     assert.match(
       app,
-      phaseTwoPagePattern,
-      `${page} should render the shared degraded Phase 2 workbench state instead of loading the legacy panel`,
+      projectionPagePattern,
+      `${page} should render the safe workbench projection panel instead of loading the legacy panel`,
     );
   }
 
   assert.doesNotMatch(app, /redirectTo="\/chat"/);
   assert.match(app, /function WorkbenchForbiddenPage/);
-  assert.match(app, /function PhaseTwoWorkbenchPage/);
+  assert.doesNotMatch(app, /function PhaseTwoWorkbenchPage/);
   assert.match(app, /routeUnavailable=\{\{/);
 });
 
@@ -158,6 +158,30 @@ test("authenticated sidebar uses governed workbench entries instead of old plaza
   assert.doesNotMatch(sidebar, /onOpenPersonaPlaza|onOpenFileLibrary/);
   assert.doesNotMatch(sidebar, /hasMoreMenuItems|MobileMoreMenuSheet|DesktopMoreMenu/);
   assert.doesNotMatch(sidebar, /font-serif|icons\/icon\.svg/);
+});
+
+test("post-login navigation keeps governed MCP entry discoverable without stale local permissions", () => {
+  const userMenu = readFileSync(
+    join(root, "src/components/layout/UserMenu.tsx"),
+    "utf8",
+  );
+  const chatAppContent = readFileSync(
+    join(root, "src/components/layout/AppContent/ChatAppContent.tsx"),
+    "utf8",
+  );
+  const chatInput = readFileSync(
+    join(root, "src/components/chat/ChatInput.tsx"),
+    "utf8",
+  );
+
+  assert.match(userMenu, /path:\s*"\/mcp"[\s\S]{0,120}show:\s*true/);
+  assert.doesNotMatch(userMenu, /Permission\.MCP_READ/);
+  assert.match(chatAppContent, /useTools\(\{ enabled: true \}\)/);
+  assert.doesNotMatch(chatAppContent, /const canReadMcpTools = hasPermission\(Permission\.MCP_READ\);/);
+  assert.match(chatInput, /toolsAvailable/);
+  assert.match(chatInput, /skillsAvailable/);
+  assert.doesNotMatch(chatInput, /totalToolsCount > 0/);
+  assert.doesNotMatch(chatInput, /totalSkillsCount > 0/);
 });
 
 test("authenticated chat workspace keeps one enterprise surface instead of split white canvas", () => {
@@ -404,7 +428,7 @@ test("model catalog route is a governed public-projection workbench page", () =>
   assert.doesNotMatch(modelCatalog, /Legacy surface quarantined/);
 });
 
-test("phase 2 workbench pages render concrete capability status instead of a thin placeholder", () => {
+test("workbench pages render concrete projection panels instead of thin placeholders", () => {
   const app = readFileSync(join(root, "src/App.tsx"), "utf8");
   const tabs = readFileSync(
     join(root, "src/components/layout/AppContent/TabContent.tsx"),
@@ -415,23 +439,18 @@ test("phase 2 workbench pages render concrete capability status instead of a thi
     "utf8",
   );
 
-  assert.match(app, /const phaseTwoWorkbenchConfigs/);
+  assert.doesNotMatch(app, /const phaseTwoWorkbenchConfigs/);
+  assert.doesNotMatch(app, /function PhaseTwoWorkbenchPage/);
   for (const tab of ["users", "settings", "feedback", "notifications"]) {
-    const configBlock =
-      app.match(new RegExp(`${tab}: \\{[\\s\\S]*?\\n  \\},`))?.[0] ?? "";
-    assert.match(configBlock, /details:/, `${tab} should publish route details`);
-    assert.match(
-      configBlock,
-      /capabilities:/,
-      `${tab} should publish route capability status`,
-    );
     assert.match(
       app,
-      new RegExp(
-        `activeTab="${tab}"[\\s\\S]{0,220}config=\\{phaseTwoWorkbenchConfigs\\.${tab}\\}`,
-      ),
+      new RegExp(`function ${tab[0].toUpperCase()}${tab.slice(1)}Page\\(\\)[\\s\\S]{0,260}<AppContent key="${tab}" activeTab="${tab}" \\/>`),
     );
   }
+  assert.match(tabs, /users:\s*WorkbenchUsersProjectionPanel/);
+  assert.match(tabs, /settings:\s*WorkbenchSettingsProjectionPanel/);
+  assert.match(tabs, /feedback:\s*WorkbenchFeedbackProjectionPanel/);
+  assert.match(tabs, /notifications:\s*WorkbenchNotificationsProjectionPanel/);
   assert.match(tabs, /const AgentDirectoryPanel = lazy/);
   assert.match(tabs, /agents:\s*AgentDirectoryPanel/);
   assert.doesNotMatch(app, /agents:[\s\S]{0,420}titleKey:\s*"workbench\.phaseTwo\.agents\.title"/);
@@ -464,6 +483,82 @@ test("phase 2 workbench pages render concrete capability status instead of a thi
     app,
     /公司用户、系统设置、反馈、通知和 Agent 管理仍等待对应服务能力开放/,
   );
+});
+
+test("workbench projection pages consume safe backend contracts instead of phase-two placeholders", () => {
+  const app = readFileSync(join(root, "src/App.tsx"), "utf8");
+  const tabs = readFileSync(
+    join(root, "src/components/layout/AppContent/TabContent.tsx"),
+    "utf8",
+  );
+  const projectionPages = readFileSync(
+    join(root, "src/components/workbench/WorkbenchProjectionPages.tsx"),
+    "utf8",
+  );
+  const workbenchApi = readFileSync(
+    join(root, "src/services/api/workbench.ts"),
+    "utf8",
+  );
+  const authTypes = readFileSync(join(root, "src/types/auth.ts"), "utf8");
+
+  for (const [route, page] of [
+    ["/users", "UsersPage"],
+    ["/settings", "SettingsPage"],
+    ["/feedback", "FeedbackPage"],
+    ["/notifications", "NotificationsPage"],
+  ]) {
+    assert.match(
+      app,
+      new RegExp(
+        `path="${route}"[\\s\\S]{0,260}<ProtectedRoute>[\\s\\S]{0,220}<${page} \\/>[\\s\\S]{0,120}<\\/ProtectedRoute>`,
+      ),
+    );
+    assert.match(
+      app,
+      new RegExp(
+        `function ${page}\\(\\)[\\s\\S]{0,260}<AppContent key="${route.slice(1)}" activeTab="${route.slice(1)}" \\/>`,
+      ),
+    );
+    assert.doesNotMatch(
+      app,
+      new RegExp(
+        `function ${page}\\(\\)[\\s\\S]{0,420}<PhaseTwoWorkbenchPage`,
+      ),
+    );
+  }
+
+  assert.match(tabs, /const WorkbenchUsersProjectionPanel = lazy/);
+  assert.match(tabs, /users:\s*WorkbenchUsersProjectionPanel/);
+  assert.match(tabs, /settings:\s*WorkbenchSettingsProjectionPanel/);
+  assert.match(tabs, /feedback:\s*WorkbenchFeedbackProjectionPanel/);
+  assert.match(tabs, /notifications:\s*WorkbenchNotificationsProjectionPanel/);
+
+  assert.match(projectionPages, /data-workbench-projection-page/);
+  assert.match(projectionPages, /resolveFrontendGovernanceState/);
+  assert.match(projectionPages, /WorkbenchStateSurface/);
+  assert.match(projectionPages, /GovernanceAvailabilityBadge/);
+  assert.match(projectionPages, /workbenchSurface/);
+  assert.match(projectionPages, /governance\.secret_material_projected/);
+  assert.match(projectionPages, /state === "degraded"/);
+  assert.match(projectionPages, /state === "forbidden"/);
+  assert.doesNotMatch(projectionPages, /roleApi|settingsApi|NotificationPanel|UsersPanel/);
+
+  for (const endpoint of [
+    "/api/users/",
+    "/api/settings/",
+    "/api/feedback/",
+    "/api/notifications/active",
+    "/api/notifications/admin",
+  ]) {
+    assert.ok(workbenchApi.includes(endpoint), endpoint);
+  }
+  assert.doesNotMatch(workbenchApi, /\/api\/ai\/admin|\/api\/admin\/settings/);
+
+  assert.match(authTypes, /USER_ADMIN = "user:admin"/);
+  assert.match(authTypes, /SETTINGS_READ = "settings:read"/);
+  assert.match(authTypes, /SETTINGS_ADMIN = "settings:admin"/);
+  assert.match(authTypes, /NOTIFICATION_READ = "notification:read"/);
+  assert.match(authTypes, /NOTIFICATION_ADMIN = "notification:admin"/);
 });
 
 test("agents route uses a public read-only directory instead of legacy config admin APIs", () => {
@@ -502,14 +597,17 @@ test("channels route renders a governed workbench instead of a thin unavailable 
 
   assert.match(tabs, /channels:\s*ChannelImportPanel/);
   assert.match(channels, /data-channel-workbench-shell/);
-  assert.match(channels, /data-channel-projection-gap/);
+  assert.match(channels, /channelApi\.listCatalog/);
+  assert.match(channels, /data-channel-catalog-list/);
+  assert.match(channels, /data-channel-admin-governance/);
   assert.match(channels, /PanelHeader/);
   assert.match(channels, /GovernanceAvailabilityBadge/);
   assert.match(channels, /channelImport\.capabilities\.publicSources\.title/);
-  assert.match(channels, /channelImport\.backendGap\.title/);
+  assert.match(channels, /channelImport\.catalogReady\.title/);
   assert.doesNotMatch(channels, /const backedSources/);
   assert.doesNotMatch(channels, /backedSources\.length === 0/);
-  assert.doesNotMatch(channels, /channelApi|\/api\/channels/);
+  assert.doesNotMatch(channels, /supportedChannelTypes/);
+  assert.doesNotMatch(channels, /channelImport\.backendGap/);
 });
 
 test("launchpad navigation is overflow safe on narrow authenticated viewports", () => {
@@ -573,28 +671,60 @@ test("skills and marketplace clients use only PR177 public contracts", () => {
   }
 });
 
-test("skills hub gates each public catalog by the active PR177 permission", () => {
+test("channels client uses only PR177 governed channel contracts", () => {
+  const channelApi = readFileSync(
+    join(root, "src/services/api/channel.ts"),
+    "utf8",
+  );
+  const channelAdminHook = readFileSync(
+    join(root, "src/hooks/useChannelAdminOperations.ts"),
+    "utf8",
+  );
+  const channelPanel = readFileSync(
+    join(root, "src/components/channels/ChannelImportPanel.tsx"),
+    "utf8",
+  );
+  const channelTypes = readFileSync(join(root, "src/types/channel.ts"), "utf8");
+  const authTypes = readFileSync(join(root, "src/types/auth.ts"), "utf8");
+
+  assert.match(channelApi, /\/api\/channels\/catalog/);
+  assert.match(channelApi, /\/api\/admin\/channels/);
+  assert.match(channelApi, /listCatalog/);
+  assert.match(channelApi, /channelAdminApi/);
+  assert.match(channelApi, /testAdminChannel/);
+  assert.match(channelAdminHook, /enabled/);
+  assert.match(channelAdminHook, /missing_permission:channel:admin/);
+  assert.match(channelPanel, /useChannelAdminOperations\(\{\s*enabled:\s*canAdminChannels/);
+  assert.match(channelTypes, /PublicChannelResponse/);
+  assert.match(channelTypes, /ChannelAdminOperationResponse/);
+  assert.match(authTypes, /CHANNEL_ADMIN = "channel:admin"/);
+  for (const legacyEndpoint of [
+    "/api/channels/types",
+    "/api/channels/${channelType}",
+    "/api/channels/${channelType}/${instanceId}",
+    "/api/channels/${channelType}/${instanceId}/status",
+    "/api/channels/${channelType}/${instanceId}/test",
+  ]) {
+    assert.ok(!channelApi.includes(legacyEndpoint), legacyEndpoint);
+  }
+});
+
+test("skills hub lets PR177 public catalogs prove permissions before fail-closed", () => {
   const skillsHub = readFileSync(
     join(root, "src/components/panels/SkillsHubPanel.tsx"),
     "utf8",
   );
   const useAuth = readFileSync(join(root, "src/hooks/useAuth.tsx"), "utf8");
 
-  assert.match(
-    skillsHub,
-    /const activeTabHasPermission = isMarketplaceView\s*\?\s*canReadMarketplace\s*:\s*canReadSkills;/,
-  );
-  assert.match(skillsHub, /hasPermission: activeTabHasPermission/);
-  assert.match(
-    skillsHub,
-    /governedUnavailable=\{governanceState === "forbidden"\}/,
-  );
+  assert.match(skillsHub, /hasPermission:\s*true/);
+  assert.match(skillsHub, /const hasCatalogPermissionGap = false;/);
+  assert.match(skillsHub, /governedUnavailable=\{hasCatalogPermissionGap\}/);
   assert.match(
     skillsHub,
     /data-required-permission=\{[\s\S]{0,120}isMarketplaceView\s*\?\s*Permission\.MARKETPLACE_READ\s*:\s*Permission\.SKILL_READ[\s\S]{0,80}\}/,
   );
-  assert.doesNotMatch(skillsHub, /hasPermission:\s*true/);
-  assert.doesNotMatch(skillsHub, /governedUnavailable=\{false\}/);
+  assert.doesNotMatch(skillsHub, /activeTabHasPermission/);
+  assert.doesNotMatch(skillsHub, /governedUnavailable=\{governanceState === "forbidden"\}/);
   assert.match(useAuth, /hasEffectivePermission\(permissions, permission\)/);
   assert.match(useAuth, /hasAnyEffectivePermission\(permissions, perms\)/);
   assert.match(useAuth, /hasAllEffectivePermissions\(permissions, perms\)/);

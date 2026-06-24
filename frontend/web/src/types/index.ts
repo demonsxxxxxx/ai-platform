@@ -216,6 +216,15 @@ export type {
 } from "./share";
 
 // ============================================
+// Channel Types
+// ============================================
+export type {
+  PublicChannelResponse,
+  PublicChannelsResponse,
+  ChannelAdminOperationResponse,
+} from "./channel";
+
+// ============================================
 // Version Types
 // ============================================
 export type { VersionInfo } from "./common";

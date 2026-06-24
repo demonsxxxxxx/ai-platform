@@ -551,8 +551,27 @@
     "redaction": "脱敏",
     "retention": "保留策略",
     "sourcesTitle": "渠道来源",
-    "sourcesDescription": "这些入口会保留在工作台导航中，但在后端投影补齐前不会读取 legacy /api/channels 配置。",
+    "sourcesDescription": "读取 ai-platform 受治理的频道目录，只展示租户、工作区、能力、脱敏和保留策略等安全投影。",
+    "loading": "正在加载频道目录",
+    "testDryRun": "测试",
+    "adminTestQueued": "频道测试已进入审计队列",
+    "adminTestFailed": "频道测试提交失败",
     "sourceFailClosedDescription": "等待租户级频道投影、脱敏策略和审计状态后开放。",
+    "catalogItem": {
+      "description": "{{workspace}} 工作区的 {{type}} 入口"
+    },
+    "catalogReady": {
+      "title": "频道目录已接入",
+      "description": "{{workspace}} 工作区共有 {{count}} 个频道，{{enabled}} 个已启用。管理操作只在具备 channel:admin 权限时开放。",
+      "publicProjection": "公共目录投影",
+      "publicProjectionDescription": "普通用户可见频道名称、类型、能力、连接状态和治理策略，不投影 webhook、token 或密钥。",
+      "adminProjection": "管理员生命周期",
+      "adminProjectionDescription": "创建、测试、启停、凭证和保留策略通过 /api/admin/channels 审计入口处理。"
+    },
+    "empty": {
+      "title": "暂无频道",
+      "description": "当前工作区没有可见频道。管理员创建或启用频道后会显示在这里。"
+    },
     "sources": {
       "feishu": "飞书",
       "wechat": "企业微信",
@@ -2847,6 +2866,58 @@
         },
         "description": "通知公告需要可审计的发布、范围和已读状态合同。当前工作台保留入口但不加载旧公告后台。",
         "title": "通知公告管理尚未开放"
+      }
+    },
+    "projections": {
+      "loading": {
+        "title": "正在加载投影",
+        "description": "正在确认该页面的后端工作台合同。"
+      },
+      "forbidden": {
+        "title": "投影受权限治理",
+        "description": "当前账号缺少 {{permission}}。页面入口保持可见，但后端合同会 fail-closed。"
+      },
+      "degraded": {
+        "title": "投影降级可读",
+        "description": "后端返回了安全投影，但治理元数据要求该页面保持受限模式。"
+      },
+      "governance": {
+        "projection": "投影：{{projection}} · 租户 {{tenant}} · 工作区 {{workspace}}",
+        "secretProjected": "后端报告存在密钥材料投影，前端已将页面降级处理。",
+        "safeReadTitle": "安全读取合同",
+        "safeReadDescription": "只读取该页面的公共工作台投影。",
+        "adminTitle": "管理员控制",
+        "adminDescription": "写操作继续受管理员权限和后端审计操作约束。",
+        "auditTitle": "审计与回滚",
+        "auditBacked": "该投影声明已具备审计或回滚支持。",
+        "auditUnavailable": "当前账号没有可用的写入审计路径。"
+      },
+      "users": {
+        "title": "用户",
+        "subtitle": "安全公司用户目录投影；生命周期变更继续受治理。",
+        "search": "搜索用户",
+        "empty": "当前投影中没有可见用户。"
+      },
+      "settings": {
+        "title": "设置",
+        "subtitle": "来自安全后端投影的个人与系统设置。",
+        "empty": "当前投影中没有可见设置。",
+        "redacted": "[已脱敏]"
+      },
+      "feedback": {
+        "title": "反馈",
+        "subtitle": "来自受治理工作台合同的反馈汇总台。",
+        "empty": "当前投影中没有可见反馈。",
+        "positive": "正向反馈",
+        "negative": "需要跟进",
+        "total": "总数",
+        "up": "正向",
+        "down": "负向"
+      },
+      "notifications": {
+        "title": "通知公告",
+        "subtitle": "运行时通知和受治理的公告投影。",
+        "empty": "当前投影中没有可见通知。"
       }
     },
     "governedRoute": {

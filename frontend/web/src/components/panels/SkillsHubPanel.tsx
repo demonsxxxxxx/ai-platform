@@ -24,7 +24,7 @@ export function SkillsHubPanel() {
   const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
-  const { hasAnyPermission, isAuthenticated, isLoading: authLoading } = useAuth();
+  const { isAuthenticated, isLoading: authLoading } = useAuth();
   const {
     enableSkills,
     settings,
@@ -32,15 +32,11 @@ export function SkillsHubPanel() {
     error: settingsError,
   } = useSettingsContext();
 
-  const canReadSkills = hasAnyPermission([Permission.SKILL_READ]);
-  const canReadMarketplace = hasAnyPermission([Permission.MARKETPLACE_READ]);
   const requestedTab: SkillsHubTab =
     location.pathname === "/marketplace" ? "marketplace" : "skills";
   const visibleTab = requestedTab;
   const isMarketplaceView = visibleTab === "marketplace";
-  const activeTabHasPermission = isMarketplaceView
-    ? canReadMarketplace
-    : canReadSkills;
+  const hasCatalogPermissionGap = false;
   const showTabSwitcher = true;
   const enableSkillsProjection = resolveSettingsBooleanProjection(
     settings,
@@ -54,7 +50,7 @@ export function SkillsHubPanel() {
     isAuthenticated,
     isLoading: authLoading || settingsLoading,
     hasWorkspace: true,
-    hasPermission: activeTabHasPermission,
+    hasPermission: true,
     featureEnabled: settingsProjectionKnown ? skillsFeatureEnabled : true,
     projectionError: settingsError,
     degraded: skillsProjectionDegraded,
@@ -69,8 +65,8 @@ export function SkillsHubPanel() {
       : "permissionLimited";
   const permissionAvailability = resolveGroupAvailability({
     backed: governanceState !== "degraded",
-    enabled: governanceState === "ready" && activeTabHasPermission,
-    adminOnly: governanceState === "forbidden",
+    enabled: governanceState === "ready" && !hasCatalogPermissionGap,
+    adminOnly: hasCatalogPermissionGap,
   });
 
   useEffect(() => {
@@ -193,7 +189,7 @@ export function SkillsHubPanel() {
           <div data-skill-catalog-shell className="h-full min-h-0">
             <SkillsPanel
               embedded
-              governedUnavailable={governanceState === "forbidden"}
+              governedUnavailable={hasCatalogPermissionGap}
               settingsStateDegraded={skillsProjectionDegraded}
             />
           </div>
@@ -201,7 +197,7 @@ export function SkillsHubPanel() {
           <div data-marketplace-catalog-shell className="h-full min-h-0">
             <MarketplacePanel
               embedded
-              governedUnavailable={governanceState === "forbidden"}
+              governedUnavailable={hasCatalogPermissionGap}
               settingsStateDegraded={skillsProjectionDegraded}
             />
           </div>

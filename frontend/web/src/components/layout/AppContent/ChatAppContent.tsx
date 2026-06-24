@@ -76,7 +76,6 @@ export function ChatAppContent({
     useSettingsContext();
   const { hasPermission, isAuthenticated } = useAuth();
   const canReadSkills = hasPermission(Permission.SKILL_READ);
-  const canReadMcpTools = hasPermission(Permission.MCP_READ);
   const enableSkillsProjection = resolveSettingsBooleanProjection(
     settings,
     "ENABLE_SKILLS",
@@ -104,7 +103,7 @@ export function ChatAppContent({
     totalCount: totalToolsCount,
     getDisabledToolNames,
     refreshToolsForAgent,
-  } = useTools({ enabled: canReadMcpTools });
+  } = useTools({ enabled: true });
 
   const {
     skills,

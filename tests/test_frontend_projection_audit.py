@@ -73,16 +73,20 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     }
     assert active_safe_routes == {
         "/api/agent/models/available",
+        "/api/channels",
+        "/api/feedback",
         "/api/github",
         "/api/marketplace",
         "/api/notifications/active",
         "/api/skills",
+        "/api/settings",
+        "/api/users",
     }
     active_safe_admin_routes = {
         route["route_prefix"]
         for route in active_route_inventory["safe_admin_projection_routes"]
     }
-    assert active_safe_admin_routes == set()
+    assert active_safe_admin_routes == {"/api/notifications/admin"}
     all_safe_routes = {
         route["route_prefix"]
         for route in audit["route_inventory"]["safe_public_projection_routes"]
@@ -111,13 +115,21 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         route["route_prefix"]: route
         for route in active_route_inventory["ordinary_user_reachable_legacy_route_policies"]
     }
-    assert ordinary_routes == {}
+    assert set(ordinary_routes) == {"/api/admin/mcp", "/api/mcp"}
+    assert all(
+        route["governance_gate"] == "G6" and route["domain"] == "mcp_tool_governance"
+        for route in ordinary_routes.values()
+    )
+    assert active_policy_routes["/api/admin/"]["active_browser_access"] == "permission_gated"
+    assert "CHANNEL_ADMIN" in active_policy_routes["/api/admin/"][
+        "non_ordinary_required_permissions"
+    ]
     permission_gated_routes = {
         route["route_prefix"]: route
         for route in active_route_inventory["legacy_route_policies"]
         if route["active_browser_access"] == "permission_gated"
     }
-    assert set(permission_gated_routes) == set(active_policy_routes)
+    assert set(permission_gated_routes).isdisjoint(ordinary_routes)
     assert "ROLE_MANAGE" in permission_gated_routes["/api/roles"][
         "non_ordinary_required_permissions"
     ]
@@ -135,7 +147,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     )
     assert policy_routes["/api/mcp"]["governance_gate"] == "G6"
     assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
-    assert "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap" not in audit["open_gaps"]
+    assert "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
     assert "legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
     assert "quarantined_legacy_sources_need_ai_platform_projection_remap" in audit["open_gaps"]
     gap_details = {item["gap"]: item for item in audit["open_gap_details"]}
@@ -150,6 +162,11 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     active_detail = gap_details["active_legacy_routes_need_policy_enforcement_or_ai_platform_remap"]
     assert active_detail["count"] == len(active_route_inventory["legacy_route_policies"])
     assert any(route["route_scope"] == "active_browser_entry" for route in active_detail["routes"])
+    ordinary_detail = gap_details[
+        "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap"
+    ]
+    assert ordinary_detail["count"] == len(ordinary_routes)
+    assert {route["route_prefix"] for route in ordinary_detail["routes"]} == set(ordinary_routes)
     quarantined_detail = gap_details["quarantined_legacy_sources_need_ai_platform_projection_remap"]
     assert quarantined_detail["count"] == len(audit["quarantined_legacy_sources"]["violations"])
     assert quarantined_detail["sample_violations"]

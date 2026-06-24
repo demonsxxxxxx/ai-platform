@@ -91,19 +91,30 @@ export function MarketplacePanel({
     fetchSkills: fetchUserSkills,
     isLoading: userSkillsLoading,
     getSkill,
+    effectivePermissions: userEffectivePermissions,
   } = useSkills({ enabled: !effectiveGovernedUnavailable });
   const marketplaceDirectWriteBacked = true;
+  const effectivePermissions = new Set(userEffectivePermissions);
+  const hasEffectiveSkillWrite =
+    hasAnyPermission([Permission.SKILL_WRITE]) ||
+    effectivePermissions.has(Permission.SKILL_WRITE);
+  const hasEffectiveMarketplaceRead =
+    hasAnyPermission([Permission.MARKETPLACE_READ]) ||
+    effectivePermissions.has(Permission.MARKETPLACE_READ);
+  const hasEffectiveMarketplaceAdmin =
+    hasAnyPermission([Permission.MARKETPLACE_ADMIN]) ||
+    effectivePermissions.has(Permission.MARKETPLACE_ADMIN);
   const canInstall =
-    hasAnyPermission([Permission.SKILL_WRITE]) &&
-    hasAnyPermission([Permission.MARKETPLACE_READ]) &&
+    hasEffectiveSkillWrite &&
+    hasEffectiveMarketplaceRead &&
     !effectiveGovernedUnavailable;
   const canCreateInMarketplace =
     marketplaceDirectWriteBacked &&
-    hasAnyPermission([Permission.MARKETPLACE_ADMIN]) &&
+    hasEffectiveMarketplaceAdmin &&
     !effectiveGovernedUnavailable;
   const canAdmin =
     marketplaceDirectWriteBacked &&
-    hasAnyPermission([Permission.MARKETPLACE_ADMIN]);
+    hasEffectiveMarketplaceAdmin;
 
   const installedMarketplaceNames = new Set(
     userSkills

@@ -1,0 +1,599 @@
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  type LucideIcon,
+  Bell,
+  CheckCircle2,
+  MessageSquareText,
+  RotateCcw,
+  Search,
+  Settings,
+  ShieldCheck,
+  SlidersHorizontal,
+  Users,
+} from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { PanelHeader } from "../common/PanelHeader";
+import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
+import {
+  resolveFrontendGovernanceState,
+  type FrontendGovernanceState,
+} from "../governance/frontendGovernanceState";
+import { resolveGroupAvailability } from "../governance/groupAvailability";
+import { useAuth } from "../../hooks/useAuth";
+import { workbenchApi } from "../../services/api/workbench";
+import type {
+  WorkbenchFeedbackListResponse,
+  WorkbenchGovernance,
+  WorkbenchNotification,
+  WorkbenchNotificationListResponse,
+} from "../../services/api/workbench";
+import { Permission } from "../../types";
+import { WorkbenchStateSurface } from "./WorkbenchStateSurface";
+import { workbenchSurface } from "./workbenchSurface";
+
+type LoadState<T> = {
+  data: T | null;
+  error: string | null;
+  isLoading: boolean;
+};
+
+type PageKind = "users" | "settings" | "feedback" | "notifications";
+
+const pageMeta: Record<
+  PageKind,
+  {
+    title: string;
+    subtitle: string;
+    icon: typeof Users;
+    surface: string;
+    readPermission: Permission;
+    adminPermission: Permission;
+  }
+> = {
+  users: {
+    title: "workbench.projections.users.title",
+    subtitle: "workbench.projections.users.subtitle",
+    icon: Users,
+    surface: "workbench-users-projection",
+    readPermission: Permission.USER_READ,
+    adminPermission: Permission.USER_ADMIN,
+  },
+  settings: {
+    title: "workbench.projections.settings.title",
+    subtitle: "workbench.projections.settings.subtitle",
+    icon: Settings,
+    surface: "workbench-settings-projection",
+    readPermission: Permission.SETTINGS_READ,
+    adminPermission: Permission.SETTINGS_ADMIN,
+  },
+  feedback: {
+    title: "workbench.projections.feedback.title",
+    subtitle: "workbench.projections.feedback.subtitle",
+    icon: MessageSquareText,
+    surface: "workbench-feedback-projection",
+    readPermission: Permission.FEEDBACK_READ,
+    adminPermission: Permission.FEEDBACK_ADMIN,
+  },
+  notifications: {
+    title: "workbench.projections.notifications.title",
+    subtitle: "workbench.projections.notifications.subtitle",
+    icon: Bell,
+    surface: "workbench-notifications-projection",
+    readPermission: Permission.NOTIFICATION_READ,
+    adminPermission: Permission.NOTIFICATION_ADMIN,
+  },
+};
+
+function useProjection<T>(loader: () => Promise<T>, deps: unknown[]): LoadState<T> {
+  const [state, setState] = useState<LoadState<T>>({
+    data: null,
+    error: null,
+    isLoading: true,
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    setState((current) => ({ ...current, error: null, isLoading: true }));
+
+    loader()
+      .then((data) => {
+        if (!cancelled) setState({ data, error: null, isLoading: false });
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setState({
+            data: null,
+            error:
+              error instanceof Error
+                ? error.message
+                : "workbench.projections.loadFailed",
+            isLoading: false,
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+
+  return state;
+}
+
+function governanceState(
+  state: LoadState<unknown>,
+  governance?: WorkbenchGovernance | null,
+): FrontendGovernanceState {
+  return resolveFrontendGovernanceState({
+    isAuthenticated: true,
+    isLoading: state.isLoading,
+    hasPermission: true,
+    hasWorkspace: governance ? Boolean(governance.workspace_id) : true,
+    projectionError: state.error,
+    degraded: Boolean(
+      governance?.degraded || governance?.secret_material_projected,
+    ),
+  });
+}
+
+function localizedText(
+  value: WorkbenchNotification["title_i18n"],
+  language: string,
+) {
+  if (language.startsWith("zh")) return value.zh || value.en;
+  if (language.startsWith("ja")) return value.ja || value.en;
+  if (language.startsWith("ko")) return value.ko || value.en;
+  if (language.startsWith("ru")) return value.ru || value.en;
+  return value.en || value.zh;
+}
+
+function formatValue(value: unknown) {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
+}
+
+function ProjectionShell({
+  kind,
+  loadState,
+  governance,
+  children,
+}: {
+  kind: PageKind;
+  loadState: LoadState<unknown>;
+  governance?: WorkbenchGovernance | null;
+  children: ReactNode;
+}) {
+  const { t } = useTranslation();
+  const { hasPermission } = useAuth();
+  const meta = pageMeta[kind];
+  const Icon = meta.icon;
+  const state = governanceState(loadState, governance);
+  const secretMaterialProjected = Boolean(
+    governance && governance.secret_material_projected,
+  );
+  const readAvailability = resolveGroupAvailability({
+    backed: true,
+    enabled: state === "ready" || state === "degraded",
+  });
+  const adminAvailability = resolveGroupAvailability({
+    backed: true,
+    adminOnly: !hasPermission(meta.adminPermission),
+    enabled: hasPermission(meta.adminPermission),
+  });
+  const details = [
+    loadState.error,
+    governance?.projection
+      ? t("workbench.projections.governance.projection", {
+          projection: governance.projection,
+          tenant: governance.tenant_id,
+          workspace: governance.workspace_id,
+        })
+      : null,
+    secretMaterialProjected
+      ? t("workbench.projections.governance.secretProjected")
+      : null,
+  ].filter((item): item is string => Boolean(item));
+
+  if (state === "loading" || state === "forbidden") {
+    return (
+      <div
+        data-workbench-projection-page={kind}
+        data-frontend-governance-state={state}
+        className="flex h-full min-h-0 items-center justify-center bg-[var(--theme-bg)] px-4"
+      >
+        <WorkbenchStateSurface
+          state={state}
+          surface={meta.surface}
+          title={
+            state === "forbidden"
+              ? t("workbench.projections.forbidden.title")
+              : t("workbench.projections.loading.title")
+          }
+          description={
+            state === "forbidden"
+              ? t("workbench.projections.forbidden.description", {
+                  permission: meta.readPermission,
+                })
+              : t("workbench.projections.loading.description")
+          }
+          details={details}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div
+      data-workbench-projection-page={kind}
+      data-frontend-governance-state={state}
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+    >
+      <PanelHeader
+        title={t(meta.title)}
+        subtitle={t(meta.subtitle)}
+        icon={<Icon size={20} className="text-theme-text-secondary" />}
+        actions={
+          <div className="flex items-center gap-2">
+            <GovernanceAvailabilityBadge
+              state={readAvailability.state}
+              labelKey={readAvailability.labelKey}
+            />
+            <GovernanceAvailabilityBadge
+              state={adminAvailability.state}
+              labelKey={adminAvailability.labelKey}
+            />
+          </div>
+        }
+      />
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-3">
+        {state === "degraded" ? (
+          <WorkbenchStateSurface
+            state="degraded"
+            surface={meta.surface}
+            title={t("workbench.projections.degraded.title")}
+            description={t("workbench.projections.degraded.description")}
+            details={details}
+            className="mb-3 max-w-none text-left"
+          />
+        ) : null}
+        <section className="grid gap-3 lg:grid-cols-3">
+          <StatusTile
+            icon={ShieldCheck}
+            title={t("workbench.projections.governance.safeReadTitle")}
+            description={t("workbench.projections.governance.safeReadDescription")}
+            state={readAvailability.state}
+            labelKey={readAvailability.labelKey}
+          />
+          <StatusTile
+            icon={SlidersHorizontal}
+            title={t("workbench.projections.governance.adminTitle")}
+            description={t("workbench.projections.governance.adminDescription")}
+            state={adminAvailability.state}
+            labelKey={adminAvailability.labelKey}
+          />
+          <StatusTile
+            icon={RotateCcw}
+            title={t("workbench.projections.governance.auditTitle")}
+            description={
+              governance?.audit_required || governance?.rollback_available
+                ? t("workbench.projections.governance.auditBacked")
+                : t("workbench.projections.governance.auditUnavailable")
+            }
+            state={
+              governance?.audit_required || governance?.rollback_available
+                ? "enabled"
+                : "disabled"
+            }
+            labelKey={
+              governance?.audit_required || governance?.rollback_available
+                ? "governance.enabled"
+                : "governance.disabled"
+            }
+          />
+        </section>
+        <div className="mt-3">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function StatusTile({
+  icon: Icon,
+  title,
+  description,
+  state,
+  labelKey,
+}: {
+  icon: LucideIcon;
+  title: string;
+  description: string;
+  state: "enabled" | "disabled" | "inherited" | "admin-only" | "unavailable";
+  labelKey: string;
+}) {
+  return (
+    <div className={workbenchSurface.compactPanel}>
+      <div className="flex items-start justify-between gap-3 p-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <Icon size={16} className="text-stone-500" />
+            <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+              {title}
+            </h3>
+          </div>
+          <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+            {description}
+          </p>
+        </div>
+        <GovernanceAvailabilityBadge state={state} labelKey={labelKey} />
+      </div>
+    </div>
+  );
+}
+
+export function WorkbenchUsersProjectionPanel() {
+  const { t } = useTranslation();
+  const [searchQuery, setSearchQuery] = useState("");
+  const users = useProjection(
+    () => workbenchApi.listUsers({ limit: 50, search: searchQuery }),
+    [searchQuery],
+  );
+  const rows = users.data?.items?.length ? users.data.items : users.data?.users ?? [];
+
+  return (
+    <ProjectionShell kind="users" loadState={users} governance={users.data?.governance}>
+      <div className={workbenchSurface.compactPanel}>
+        <div className="border-b border-[var(--theme-border)] p-3">
+          <div className="relative">
+            <Search
+              size={17}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400"
+            />
+            <input
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              className="panel-search h-10 pl-9"
+              placeholder={t("workbench.projections.users.search")}
+            />
+          </div>
+        </div>
+        <div className="divide-y divide-[var(--theme-border)]">
+          {rows.length === 0 ? (
+            <EmptyProjection message={t("workbench.projections.users.empty")} />
+          ) : (
+            rows.map((user) => (
+              <article
+                key={user.id}
+                className="grid gap-3 p-3 text-sm sm:grid-cols-[minmax(0,1fr)_14rem]"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2
+                      size={15}
+                      className={user.is_active ? "text-emerald-600" : "text-stone-400"}
+                    />
+                    <h3 className="truncate font-semibold text-stone-900 dark:text-stone-100">
+                      {user.full_name || user.username}
+                    </h3>
+                  </div>
+                  <p className="mt-1 truncate text-xs text-stone-500">
+                    {user.username} · {user.tenant_id}/{user.department_id || "-"}
+                  </p>
+                </div>
+                <div className="flex min-w-0 flex-wrap gap-1.5">
+                  {user.roles.slice(0, 4).map((role) => (
+                    <span
+                      key={role}
+                      className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-xs text-stone-600 ring-1 ring-[var(--theme-border)]"
+                    >
+                      {role}
+                    </span>
+                  ))}
+                </div>
+              </article>
+            ))
+          )}
+        </div>
+      </div>
+    </ProjectionShell>
+  );
+}
+
+export function WorkbenchSettingsProjectionPanel() {
+  const { t } = useTranslation();
+  const settings = useProjection(() => workbenchApi.listSettings(), []);
+  const groups = useMemo(
+    () => Object.values(settings.data?.settings ?? {}),
+    [settings.data?.settings],
+  );
+
+  return (
+    <ProjectionShell
+      kind="settings"
+      loadState={settings}
+      governance={settings.data?.governance}
+    >
+      <div className="grid gap-3 xl:grid-cols-2">
+        {groups.length === 0 ? (
+          <EmptyProjection message={t("workbench.projections.settings.empty")} />
+        ) : (
+          groups.map((group) => (
+            <section key={group.category} className={workbenchSurface.compactPanel}>
+              <div className="border-b border-[var(--theme-border)] p-3">
+                <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                  {group.category.replace(/_/g, " ")}
+                </h3>
+              </div>
+              <div className="divide-y divide-[var(--theme-border)]">
+                {group.items.map((item) => (
+                  <div key={item.key} className="grid gap-2 p-3 text-sm">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <h4 className="truncate font-medium text-stone-900 dark:text-stone-100">
+                          {item.label || item.key}
+                        </h4>
+                        <p className="mt-1 truncate text-xs text-stone-500">
+                          {item.key}
+                        </p>
+                      </div>
+                      {item.is_secret || item.audit_required ? (
+                        <GovernanceAvailabilityBadge
+                          state={item.audit_required ? "enabled" : "disabled"}
+                          labelKey={
+                            item.audit_required
+                              ? "governance.enabled"
+                              : "governance.disabled"
+                          }
+                        />
+                      ) : null}
+                    </div>
+                    <p className="truncate rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1.5 text-xs text-stone-600 ring-1 ring-[var(--theme-border)]">
+                      {item.is_secret
+                        ? t("workbench.projections.settings.redacted")
+                        : formatValue(item.value)}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ))
+        )}
+      </div>
+    </ProjectionShell>
+  );
+}
+
+export function WorkbenchFeedbackProjectionPanel() {
+  const { t } = useTranslation();
+  const feedback = useProjection(() => workbenchApi.listFeedback({ limit: 50 }), []);
+
+  return (
+    <ProjectionShell
+      kind="feedback"
+      loadState={feedback}
+      governance={feedback.data?.governance}
+    >
+      <FeedbackStats data={feedback.data} />
+      <div className={`${workbenchSurface.compactPanel} mt-3`}>
+        <div className="divide-y divide-[var(--theme-border)]">
+          {feedback.data?.items.length ? (
+            feedback.data.items.map((item) => (
+              <article key={item.id} className="grid gap-2 p-3 text-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="font-semibold text-stone-900 dark:text-stone-100">
+                      {item.rating === "up"
+                        ? t("workbench.projections.feedback.positive")
+                        : t("workbench.projections.feedback.negative")}
+                    </h3>
+                    <p className="mt-1 truncate text-xs text-stone-500">
+                      {item.username} · {item.session_id} · {item.run_id}
+                    </p>
+                  </div>
+                  <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-xs text-stone-600 ring-1 ring-[var(--theme-border)]">
+                    {item.status} / {item.assignment_state}
+                  </span>
+                </div>
+                {item.comment ? (
+                  <p className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1.5 text-xs leading-5 text-stone-600 ring-1 ring-[var(--theme-border)]">
+                    {item.comment}
+                  </p>
+                ) : null}
+              </article>
+            ))
+          ) : (
+            <EmptyProjection message={t("workbench.projections.feedback.empty")} />
+          )}
+        </div>
+      </div>
+    </ProjectionShell>
+  );
+}
+
+function FeedbackStats({ data }: { data: WorkbenchFeedbackListResponse | null }) {
+  const { t } = useTranslation();
+  const stats = data?.stats;
+  return (
+    <div className="grid gap-3 sm:grid-cols-3">
+      {[
+        [t("workbench.projections.feedback.total"), stats?.total_count ?? 0],
+        [t("workbench.projections.feedback.up"), stats?.up_count ?? 0],
+        [t("workbench.projections.feedback.down"), stats?.down_count ?? 0],
+      ].map(([label, value]) => (
+        <div key={label} className={workbenchSurface.statusTile}>
+          <p className="text-xs text-stone-500">{label}</p>
+          <p className="mt-1 text-xl font-semibold text-stone-900 dark:text-stone-100">
+            {value}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function WorkbenchNotificationsProjectionPanel() {
+  const { i18n, t } = useTranslation();
+  const { hasPermission } = useAuth();
+  const canAdminNotifications = hasPermission(Permission.NOTIFICATION_ADMIN);
+  const active = useProjection(() => workbenchApi.listActiveNotifications(), []);
+  const admin = useProjection<WorkbenchNotificationListResponse | null>(
+    () =>
+      canAdminNotifications
+        ? workbenchApi.listAdminNotifications({ limit: 50 })
+        : Promise.resolve(null),
+    [canAdminNotifications],
+  );
+  const combined: WorkbenchNotification[] = [
+    ...(active.data ?? []),
+    ...(admin.data?.items ?? []),
+  ];
+  const loadState: LoadState<unknown> = {
+    data: active.data,
+    error: active.error,
+    isLoading: active.isLoading || admin.isLoading,
+  };
+
+  return (
+    <ProjectionShell
+      kind="notifications"
+      loadState={loadState}
+      governance={admin.data?.governance ?? null}
+    >
+      <div className={workbenchSurface.compactPanel}>
+        <div className="divide-y divide-[var(--theme-border)]">
+          {combined.length === 0 ? (
+            <EmptyProjection message={t("workbench.projections.notifications.empty")} />
+          ) : (
+            combined.map((item) => (
+              <article key={`${item.id}-${item.read_state ?? "admin"}`} className="p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="truncate text-sm font-semibold text-stone-900 dark:text-stone-100">
+                      {localizedText(item.title_i18n, i18n.language)}
+                    </h3>
+                    <p className="mt-1 line-clamp-2 text-xs leading-5 text-stone-500">
+                      {localizedText(item.content_i18n, i18n.language)}
+                    </p>
+                  </div>
+                  <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-xs text-stone-600 ring-1 ring-[var(--theme-border)]">
+                    {item.read_state ?? item.type}
+                  </span>
+                </div>
+              </article>
+            ))
+          )}
+        </div>
+      </div>
+    </ProjectionShell>
+  );
+}
+
+function EmptyProjection({ message }: { message: string }) {
+  return (
+    <div className="flex min-h-44 items-center justify-center p-6 text-center text-sm text-stone-500">
+      {message}
+    </div>
+  );
+}

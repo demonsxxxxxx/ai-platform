@@ -551,8 +551,27 @@
     "redaction": "Redaction",
     "retention": "Retention",
     "sourcesTitle": "Channel sources",
-    "sourcesDescription": "These entries stay visible in the workbench, but they do not read legacy /api/channels configuration until backend projections exist.",
+    "sourcesDescription": "Reads the governed ai-platform channel catalog and only shows safe tenant, workspace, capability, redaction, and retention projections.",
+    "loading": "Loading channel catalog",
+    "testDryRun": "Test",
+    "adminTestQueued": "Channel test queued for audited execution",
+    "adminTestFailed": "Failed to queue channel test",
     "sourceFailClosedDescription": "Waiting for tenant channel projection, redaction policy, and audit status before opening.",
+    "catalogItem": {
+      "description": "{{type}} entry in workspace {{workspace}}"
+    },
+    "catalogReady": {
+      "title": "Channel catalog connected",
+      "description": "{{workspace}} has {{count}} channels, {{enabled}} enabled. Management actions only open with channel:admin permission.",
+      "publicProjection": "Public catalog projection",
+      "publicProjectionDescription": "Ordinary users can see channel name, type, capabilities, connection state, and governance policy without webhooks, tokens, or secrets.",
+      "adminProjection": "Admin lifecycle",
+      "adminProjectionDescription": "Create, test, enable, disable, credential, and retention requests go through audited /api/admin/channels endpoints."
+    },
+    "empty": {
+      "title": "No channels yet",
+      "description": "This workspace has no visible channels. Channels appear here after an administrator creates or enables them."
+    },
     "sources": {
       "feishu": "Feishu",
       "wechat": "WeCom",
@@ -2846,6 +2865,58 @@
         },
         "description": "Notifications need audited publishing, audience, and read-state contracts. The workbench keeps the entry visible without loading legacy announcement admin pages.",
         "title": "Notification management is not enabled yet"
+      }
+    },
+    "projections": {
+      "loading": {
+        "title": "Loading projection",
+        "description": "Checking the backend workbench contract for this page."
+      },
+      "forbidden": {
+        "title": "Projection is governed",
+        "description": "This account is missing {{permission}}. The page stays visible, but the backend contract is fail-closed."
+      },
+      "degraded": {
+        "title": "Projection is degraded",
+        "description": "The backend returned a safe projection, but some governance metadata keeps this page in limited mode."
+      },
+      "governance": {
+        "projection": "Projection: {{projection}} · tenant {{tenant}} · workspace {{workspace}}",
+        "secretProjected": "Backend reported that secret material was projected. Treating this page as degraded.",
+        "safeReadTitle": "Safe read contract",
+        "safeReadDescription": "Reads only the public workbench projection for this page.",
+        "adminTitle": "Admin controls",
+        "adminDescription": "Write actions stay behind admin permissions and audited backend operations.",
+        "auditTitle": "Audit and rollback",
+        "auditBacked": "This projection advertises audit or rollback support.",
+        "auditUnavailable": "No write audit path is enabled for this account."
+      },
+      "users": {
+        "title": "Users",
+        "subtitle": "Safe company directory projection. Lifecycle changes remain governed.",
+        "search": "Search users",
+        "empty": "No users are visible in this projection."
+      },
+      "settings": {
+        "title": "Settings",
+        "subtitle": "Personal and system settings from the safe backend projection.",
+        "empty": "No settings are visible in this projection.",
+        "redacted": "[redacted]"
+      },
+      "feedback": {
+        "title": "Feedback",
+        "subtitle": "Aggregate feedback desk from the governed workbench contract.",
+        "empty": "No feedback is visible in this projection.",
+        "positive": "Positive feedback",
+        "negative": "Needs follow-up",
+        "total": "Total",
+        "up": "Positive",
+        "down": "Negative"
+      },
+      "notifications": {
+        "title": "Notifications",
+        "subtitle": "Runtime notices and governed announcement projection.",
+        "empty": "No notifications are visible in this projection."
       }
     },
     "governedRoute": {

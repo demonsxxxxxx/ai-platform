@@ -22,9 +22,12 @@ export enum Permission {
   USER_READ = "user:read",
   USER_WRITE = "user:write",
   USER_DELETE = "user:delete",
+  USER_ADMIN = "user:admin",
   // Role (Admin)
   ROLE_MANAGE = "role:manage",
   // Settings (Admin)
+  SETTINGS_READ = "settings:read",
+  SETTINGS_ADMIN = "settings:admin",
   SETTINGS_MANAGE = "settings:manage",
   // MCP
   MCP_READ = "mcp:read",
@@ -49,6 +52,7 @@ export enum Permission {
   CHANNEL_READ = "channel:read",
   CHANNEL_WRITE = "channel:write",
   CHANNEL_DELETE = "channel:delete",
+  CHANNEL_ADMIN = "channel:admin",
   // Agent
   AGENT_READ = "agent:read",
   AGENT_ADMIN = "agent:admin",
@@ -69,6 +73,8 @@ export enum Permission {
   ENVVAR_WRITE = "envvar:write",
   ENVVAR_DELETE = "envvar:delete",
   // Notification
+  NOTIFICATION_READ = "notification:read",
+  NOTIFICATION_ADMIN = "notification:admin",
   NOTIFICATION_MANAGE = "notification:manage",
 }
 

@@ -45,7 +45,6 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
     enabled: showMenu && isMobile,
   });
 
-  const canReadMCP = hasAnyPermission([Permission.MCP_READ]);
   const canReadChannels = hasAnyPermission([Permission.CHANNEL_READ]);
   const canManageSettings = hasAnyPermission([Permission.SETTINGS_MANAGE]);
 
@@ -127,7 +126,7 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
       icon: ShoppingBag,
       show: true,
     },
-    { path: "/mcp", label: t("nav.mcp"), icon: Server, show: canReadMCP },
+    { path: "/mcp", label: t("nav.mcp"), icon: Server, show: true },
     {
       path: "/channels",
       label: t("nav.channels"),

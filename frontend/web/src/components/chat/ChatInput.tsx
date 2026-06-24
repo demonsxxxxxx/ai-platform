@@ -458,19 +458,16 @@ export const ChatInput = memo(function ChatInput({
 
   const hasContent = !!input.trim() && !disabled;
   const hasUploadingAttachment = attachments.some((a) => a.isUploading);
+  const skillsAvailable =
+    enableSkills &&
+    !!onToggleSkill &&
+    !!onToggleSkillCategory &&
+    !!onToggleAllSkills;
+  const toolsAvailable = !!onToggleTool && !!onToggleCategory && !!onToggleAll;
   const commandPanelAvailability = useMemo(
     () => ({
-      skills:
-        enableSkills &&
-        !!onToggleSkill &&
-        !!onToggleSkillCategory &&
-        !!onToggleAllSkills &&
-        totalSkillsCount > 0,
-      tools:
-        !!onToggleTool &&
-        !!onToggleCategory &&
-        !!onToggleAll &&
-        totalToolsCount > 0,
+      skills: skillsAvailable,
+      tools: toolsAvailable,
       agents: agents.length > 0 && !!onSelectAgent,
       models: !!availableModels?.length && !!onSelectModel,
       files: uploadCategories.length > 0,
@@ -479,17 +476,10 @@ export const ChatInput = memo(function ChatInput({
     [
       agents.length,
       availableModels?.length,
-      enableSkills,
-      onToggleAll,
-      onToggleAllSkills,
-      onToggleCategory,
       onSelectAgent,
       onSelectModel,
-      onToggleSkill,
-      onToggleSkillCategory,
-      onToggleTool,
-      totalSkillsCount,
-      totalToolsCount,
+      skillsAvailable,
+      toolsAvailable,
       uploadCategories.length,
     ],
   );

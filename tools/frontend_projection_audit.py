@@ -102,6 +102,7 @@ SAFE_PUBLIC_ROUTE_PREFIXES = [
     "/api/agent/models/available",
     "/api/channels",
     "/api/github",
+    "/api/feedback",
     "/api/marketplace",
     "/api/notifications/active",
     "/api/skills",
