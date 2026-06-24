@@ -1868,6 +1868,57 @@
       },
       "capabilityMatrixDescription": "This page keeps explainable governance status; write buttons remain gated by administrator permissions.",
       "capabilityMatrixTitle": "Governance capability matrix",
+      "actions": {
+        "approve": "Approve",
+        "queueing": "Queueing",
+        "reject": "Reject",
+        "requestDepartment": "Request department Agent",
+        "requestLocked": "This account cannot submit requests",
+        "requestRole": "Request role",
+        "rollback": "Rollback"
+      },
+      "audit": {
+        "description": "Shows recent role governance events. Only accounts with management permission can queue rollback requests.",
+        "empty": "No visible audit events yet.",
+        "title": "Audit and rollback"
+      },
+      "degraded": {
+        "description": "The role governance entry remains visible, but current data did not fully return; writes and approvals stay locked.",
+        "title": "Role governance is degraded"
+      },
+      "forbidden": {
+        "description": "This account is missing {{permission}}. The page entry remains visible, but role governance data is closed by permission.",
+        "title": "Role governance is permission-controlled"
+      },
+      "loadFailed": "Failed to load role governance",
+      "loading": "Loading role governance...",
+      "operationFailed": "Role governance operation failed",
+      "requestReasons": {
+        "approve": "Administrator approved this request from the role governance workbench.",
+        "department": "Request access to the {{department}} department Agent scope.",
+        "reject": "Administrator rejected this request from the role governance workbench.",
+        "role": "Request the {{role}} role for the matching workbench capabilities.",
+        "rollback": "Queue a rollback request from the role governance workbench."
+      },
+      "requests": {
+        "description": "User requests enter the audit queue; approval actions are only available to administrators.",
+        "empty": "No visible requests yet.",
+        "title": "Request queue"
+      },
+      "roleDirectory": {
+        "description": "{{count}} visible roles returned for this workspace. Ordinary users can only request requestable roles.",
+        "empty": "This account has no visible roles.",
+        "noCapabilities": "No capability labels",
+        "noDescription": "No description published",
+        "title": "Role directory"
+      },
+      "scope": {
+        "description": "Department, workspace, and Skill inheritance scope for tenant {{tenant}} · workspace {{workspace}}.",
+        "emptyDepartments": "This account has no visible department scope.",
+        "emptySkills": "No inherited Skill scope is visible.",
+        "skillsTitle": "Skill availability",
+        "title": "Department and workspace scope"
+      },
       "state": {
         "description": "Role governance is reachable after login. Ordinary users can inspect role governance status, while writes, approvals, and scope changes remain administrator-gated.",
         "details": {

@@ -54,11 +54,14 @@ test("role plaza state is resolver-driven instead of hard-coded ready", () => {
   const resolver = read("src/components/panels/roleGovernanceState.ts");
 
   assert.match(roles, /resolveRoleGovernanceState/);
+  assert.match(roles, /roleGovernanceApi\.getOverview/);
   assert.match(roles, /data-frontend-governance-state=\{roleGovernance\.pageState\}/);
   assert.doesNotMatch(roles, /data-frontend-governance-state="ready"/);
-  assert.match(resolver, /roleDirectoryBacked/);
+  assert.doesNotMatch(roles, /roleDirectoryBacked:\s*false/);
+  assert.match(resolver, /overview/);
+  assert.match(resolver, /featureEnabled:\s*roleDirectoryBacked/);
+  assert.match(resolver, /isPermissionError\(loadError\)/);
   assert.match(resolver, /adminOnly: !canManageRoles/);
-  assert.match(resolver, /unavailable/);
 });
 
 test("skills hub routes use the public contract resolver", () => {

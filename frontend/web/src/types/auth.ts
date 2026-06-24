@@ -24,6 +24,8 @@ export enum Permission {
   USER_DELETE = "user:delete",
   USER_ADMIN = "user:admin",
   // Role (Admin)
+  ROLE_READ = "role:read",
+  ROLE_REQUEST = "role:request",
   ROLE_MANAGE = "role:manage",
   // Settings (Admin)
   SETTINGS_READ = "settings:read",

@@ -1,6 +1,8 @@
 import { Permission } from "../../types";
 
 const inheritedPermissions: Partial<Record<Permission, Permission[]>> = {
+  [Permission.ROLE_MANAGE]: [Permission.ROLE_READ, Permission.ROLE_REQUEST],
+  [Permission.ROLE_REQUEST]: [Permission.ROLE_READ],
   [Permission.USER_ADMIN]: [Permission.USER_READ],
   [Permission.SETTINGS_ADMIN]: [
     Permission.SETTINGS_READ,

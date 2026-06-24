@@ -1,8 +1,13 @@
 import type { FrontendGovernanceState } from "../governance/frontendGovernanceState";
 import {
+  isPermissionError,
+  resolveFrontendGovernanceState,
+} from "../governance/frontendGovernanceState";
+import {
   resolveGroupAvailability,
   type GroupAvailabilityResult,
 } from "../governance/groupAvailability";
+import type { RoleGovernanceOverviewResponse } from "../../types/roleGovernance";
 
 export type RoleGovernanceCapabilityKey =
   | "roleDirectory"
@@ -11,8 +16,12 @@ export type RoleGovernanceCapabilityKey =
   | "auditTrail";
 
 export interface RoleGovernanceStateInput {
+  isAuthenticated: boolean;
+  isLoading?: boolean;
   canManageRoles: boolean;
-  roleDirectoryBacked: boolean;
+  canRequestRoles: boolean;
+  overview: RoleGovernanceOverviewResponse | null;
+  loadError?: string | null;
 }
 
 export interface RoleGovernanceState {
@@ -23,25 +32,47 @@ export interface RoleGovernanceState {
 }
 
 export function resolveRoleGovernanceState({
+  isAuthenticated,
+  isLoading = false,
   canManageRoles,
-  roleDirectoryBacked,
+  canRequestRoles,
+  overview,
+  loadError,
 }: RoleGovernanceStateInput): RoleGovernanceState {
+  const roleDirectoryBacked = Boolean(overview);
+  const hasRoles = Boolean(overview?.role_directory.roles.length);
+  const hasScope = Boolean(
+    overview &&
+      (overview.scope.departments.length > 0 ||
+        overview.scope.workspaces.length > 0 ||
+        overview.scope.skill_availability.length > 0),
+  );
+  const hasAudit = Boolean(
+    overview && (overview.governance.audit_required || overview.audit.length > 0),
+  );
   const roleDirectoryAvailability = resolveGroupAvailability({
     backed: roleDirectoryBacked,
-    enabled: roleDirectoryBacked && canManageRoles,
-    adminOnly: roleDirectoryBacked && !canManageRoles,
+    enabled: roleDirectoryBacked && hasRoles,
   });
   const adminAvailability = resolveGroupAvailability({
     backed: true,
     enabled: canManageRoles,
     adminOnly: !canManageRoles,
   });
-  const unavailable = resolveGroupAvailability({ backed: false });
-  const pageState: FrontendGovernanceState = !roleDirectoryBacked
-    ? "degraded"
-    : canManageRoles
-      ? "ready"
-      : "forbidden";
+  const pageState: FrontendGovernanceState = resolveFrontendGovernanceState({
+    isAuthenticated,
+    isLoading,
+    hasWorkspace: overview
+      ? Boolean(overview.scope.workspace_id || overview.governance.workspace_id)
+      : true,
+    hasPermission: !isPermissionError(loadError),
+    featureEnabled: roleDirectoryBacked,
+    projectionError: loadError,
+    degraded: Boolean(
+      overview?.governance.degraded ||
+        overview?.governance.secret_material_projected,
+    ),
+  });
 
   return {
     pageState,
@@ -49,9 +80,19 @@ export function resolveRoleGovernanceState({
     adminAvailability,
     capabilities: {
       roleDirectory: roleDirectoryAvailability,
-      departmentScope: unavailable,
-      requestFlow: unavailable,
-      auditTrail: unavailable,
+      departmentScope: resolveGroupAvailability({
+        backed: roleDirectoryBacked,
+        inherited: hasScope,
+        enabled: roleDirectoryBacked && !hasScope,
+      }),
+      requestFlow: resolveGroupAvailability({
+        backed: roleDirectoryBacked,
+        enabled: roleDirectoryBacked && canRequestRoles,
+      }),
+      auditTrail: resolveGroupAvailability({
+        backed: roleDirectoryBacked,
+        enabled: hasAudit,
+      }),
     },
   };
 }

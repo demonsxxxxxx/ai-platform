@@ -1869,6 +1869,57 @@
       },
       "capabilityMatrixDescription": "当前页面保留可解释的治理状态；写入按钮继续按管理员权限开放。",
       "capabilityMatrixTitle": "治理能力矩阵",
+      "actions": {
+        "approve": "批准",
+        "queueing": "提交中",
+        "reject": "拒绝",
+        "requestDepartment": "申请部门 Agent",
+        "requestLocked": "当前账号不能提交申请",
+        "requestRole": "申请角色",
+        "rollback": "回滚"
+      },
+      "audit": {
+        "description": "显示最近的角色治理事件。只有具备管理权限的账号可以提交回滚请求。",
+        "empty": "暂无可见审计事件。",
+        "title": "审计与回滚"
+      },
+      "degraded": {
+        "description": "角色治理入口仍保持可见，但当前数据未完整返回；写入和审批操作保持锁定。",
+        "title": "角色治理暂时降级"
+      },
+      "forbidden": {
+        "description": "当前账号缺少 {{permission}}。页面入口保持可见，但角色治理数据会按权限关闭。",
+        "title": "角色治理受权限控制"
+      },
+      "loadFailed": "角色治理数据加载失败",
+      "loading": "正在加载角色治理...",
+      "operationFailed": "角色治理操作失败",
+      "requestReasons": {
+        "approve": "管理员从角色治理工作台批准该申请。",
+        "department": "申请加入 {{department}} 部门 Agent 可用范围。",
+        "reject": "管理员从角色治理工作台拒绝该申请。",
+        "role": "申请 {{role}} 角色以使用对应工作台能力。",
+        "rollback": "从角色治理工作台提交回滚请求。"
+      },
+      "requests": {
+        "description": "普通用户提交申请后进入审计队列；审批操作只对管理员开放。",
+        "empty": "暂无可见申请。",
+        "title": "申请队列"
+      },
+      "roleDirectory": {
+        "description": "当前工作区返回 {{count}} 个可见角色。普通用户只能申请可申请角色。",
+        "empty": "当前账号没有可见角色。",
+        "noCapabilities": "暂无能力标签",
+        "noDescription": "未提供描述",
+        "title": "角色目录"
+      },
+      "scope": {
+        "description": "租户 {{tenant}} · 工作区 {{workspace}} 的部门、工作区和 Skill 继承范围。",
+        "emptyDepartments": "当前账号没有可见部门范围。",
+        "emptySkills": "暂无 Skill 继承范围。",
+        "skillsTitle": "Skill 可用范围",
+        "title": "部门与工作区范围"
+      },
       "state": {
         "description": "角色治理保持登录可达。普通用户可以查看角色治理状态，写入、审批和范围调整继续按管理员权限开放。",
         "details": {
