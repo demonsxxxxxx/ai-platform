@@ -409,13 +409,13 @@ def build_governance_readiness(
                 "frontend_packaged_image_ci_build_provenance_contract",
             ],
             gaps=[
-                "ordinary_user_g9_acceptance_for_legacy_admin_mcp_model_envvar_routes",
+                "ordinary_user_g9_acceptance_for_legacy_admin_model_envvar_routes",
                 "quarantined_legacy_frontend_sources_need_projection_remap",
                 "frontend_packaged_image_delivery_and_release_acceptance",
             ],
             next_checks=[
                 "remap quarantined inactive model/channel/envvar sources to ai-platform projections before release",
-                "hide or policy-gate legacy admin/model/MCP/envvar/channel surfaces for ordinary users",
+                "hide or policy-gate remaining legacy admin/model/envvar/channel surfaces for ordinary users",
                 "verify the packaged frontend image on a Docker-capable host before release acceptance",
                 "consume only ai-platform public or same-tenant admin projections",
             ],
