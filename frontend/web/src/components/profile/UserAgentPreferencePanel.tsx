@@ -84,15 +84,15 @@ export function UserAgentPreferencePanel() {
   return (
     <div className="space-y-3">
       {error && (
-        <div className="flex items-center gap-2 p-3 rounded-xl bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400 text-sm">
+        <div className="es-error">
           <AlertCircle size={16} className="shrink-0" />
           <span>{error}</span>
         </div>
       )}
 
-      <div className="rounded-xl bg-stone-50 dark:bg-stone-700/50 p-3 sm:p-4">
+      <div className="enterprise-subtle-panel">
         {availableAgents.length === 0 ? (
-          <p className="text-sm text-stone-500 dark:text-stone-400 py-2">
+          <p className="py-2 text-sm text-[var(--theme-text-secondary)]">
             {t("agentConfig.noAvailableAgents")}
           </p>
         ) : (
@@ -102,8 +102,8 @@ export function UserAgentPreferencePanel() {
                 key={agent.id}
                 className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-3 transition-colors ${
                   selectedAgent === agent.id
-                    ? "border-amber-400/60 bg-amber-50/70 dark:border-amber-500/30 dark:bg-amber-900/15"
-                    : "border-transparent bg-white/60 dark:bg-stone-600/40 hover:bg-white dark:hover:bg-stone-600/70"
+                    ? "border-teal-600/50 bg-teal-50/80 dark:border-teal-400/40 dark:bg-teal-500/10"
+                    : "border-[var(--theme-border)] bg-[var(--theme-bg-card)] hover:bg-[var(--theme-bg)] dark:bg-stone-900 dark:hover:bg-stone-800"
                 }`}
               >
                 <input
@@ -112,13 +112,13 @@ export function UserAgentPreferencePanel() {
                   value={agent.id}
                   checked={selectedAgent === agent.id}
                   onChange={(e) => setSelectedAgent(e.target.value)}
-                  className="shrink-0"
+                  className="shrink-0 accent-teal-700"
                 />
                 <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-medium text-stone-900 dark:text-stone-100 truncate">
+                  <span className="block truncate text-sm font-medium text-[var(--theme-text)]">
                     {t(agent.name)}
                   </span>
-                  <span className="block text-xs text-stone-500 dark:text-stone-400 mt-0.5 truncate">
+                  <span className="mt-0.5 block truncate text-xs text-[var(--theme-text-secondary)]">
                     {t(agent.description)}
                   </span>
                 </span>
@@ -133,7 +133,7 @@ export function UserAgentPreferencePanel() {
           <button
             onClick={handleSave}
             disabled={isSaving || !selectedAgent}
-            className="px-4 py-2 bg-amber-500 hover:bg-amber-600 disabled:bg-amber-300 dark:disabled:bg-amber-700 text-white font-medium rounded-lg transition-colors flex items-center gap-2 text-sm"
+            className="btn-primary"
           >
             <span className="inline-flex h-4 w-4 items-center justify-center">
               {isSaving ? <LoadingSpinner size="sm" /> : <Save size={15} />}
@@ -144,7 +144,7 @@ export function UserAgentPreferencePanel() {
       )}
 
       {currentPreference && !hasChanges && (
-        <div className="flex items-center gap-2 text-sm text-stone-500 dark:text-stone-400">
+        <div className="flex items-center gap-2 text-sm text-[var(--theme-text-secondary)]">
           <Check
             size={16}
             className="text-green-500 dark:text-green-400 shrink-0"

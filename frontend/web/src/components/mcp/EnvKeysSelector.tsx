@@ -78,23 +78,24 @@ export function EnvKeysSelector({
       {/* Selected keys as chips */}
       <div
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full min-h-[38px] rounded-lg border border-stone-200 bg-white px-2 py-1.5 text-sm cursor-pointer flex flex-wrap items-center gap-1 focus:border-stone-500 focus:outline-none focus:ring-1 focus:ring-stone-500 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100 dark:focus:border-amber-500 dark:focus:ring-amber-500"
+        className="enterprise-form-input flex min-h-[38px] cursor-pointer flex-wrap items-center gap-1 px-2 py-1.5"
       >
         {selectedKeys.length === 0 ? (
-          <span className="text-stone-400 dark:text-stone-500 text-xs">
+          <span className="text-xs text-[var(--theme-text-secondary)]">
             {loading ? "..." : t("mcp.form.envKeysPlaceholder")}
           </span>
         ) : (
           selectedKeys.map((key) => (
             <span
               key={key}
-              className="inline-flex items-center gap-0.5 rounded bg-stone-100 dark:bg-stone-700 px-1.5 py-0.5 text-xs font-mono text-stone-700 dark:text-stone-200"
+              className="es-chip rounded-md px-1.5 py-0.5 font-mono text-xs"
             >
               {key}
               <button
                 type="button"
                 onClick={(e) => removeKey(key, e)}
-                className="ml-0.5 rounded hover:bg-stone-200 dark:hover:bg-stone-600 text-stone-400 hover:text-stone-600 dark:hover:text-stone-300"
+                className="btn-icon ml-0.5 h-5 w-5 p-0"
+                aria-label={t("mcp.form.clearAll")}
               >
                 <X size={12} />
               </button>
@@ -103,7 +104,7 @@ export function EnvKeysSelector({
         )}
         <ChevronDown
           size={14}
-          className={`ml-auto text-stone-400 dark:text-stone-500 transition-transform ${
+          className={`ml-auto text-[var(--theme-text-secondary)] transition-transform ${
             isOpen ? "rotate-180" : ""
           }`}
         />
@@ -111,20 +112,20 @@ export function EnvKeysSelector({
 
       {/* Dropdown */}
       {isOpen && (
-        <div className="absolute z-10 mt-1 w-full rounded-lg border border-stone-200 bg-white shadow-lg dark:border-stone-700 dark:bg-stone-800">
+        <div className="enterprise-select-dropdown absolute z-10 mt-1 w-full">
           {/* Search */}
-          <div className="p-2 border-b border-stone-100 dark:border-stone-700">
-            <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-stone-50 dark:bg-stone-700/50">
+          <div className="border-b border-[var(--theme-border)] p-2">
+            <div className="flex items-center gap-1.5 rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 dark:bg-stone-900">
               <Search
                 size={12}
-                className="text-stone-400 dark:text-stone-500"
+                className="text-[var(--theme-text-secondary)]"
               />
               <input
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder={t("mcp.form.envKeysSearch")}
-                className="flex-1 bg-transparent text-xs text-stone-700 dark:text-stone-200 placeholder:text-stone-400 dark:placeholder:text-stone-500 focus:outline-none"
+                className="flex-1 bg-transparent text-xs text-[var(--theme-text)] placeholder:text-[var(--theme-text-secondary)] focus:outline-none"
                 autoFocus
               />
             </div>
@@ -133,30 +134,30 @@ export function EnvKeysSelector({
           {/* Options */}
           <div className="max-h-48 overflow-y-auto p-1">
             {loading ? (
-              <div className="py-3 text-center text-xs text-stone-400 dark:text-stone-500">
+              <div className="py-3 text-center text-xs text-[var(--theme-text-secondary)]">
                 ...
               </div>
             ) : availableKeys.length === 0 ? (
-              <div className="py-3 text-center text-xs text-stone-400 dark:text-stone-500">
+              <div className="py-3 text-center text-xs text-[var(--theme-text-secondary)]">
                 {t("mcp.form.noEnvVars")}
               </div>
             ) : filteredKeys.length === 0 ? (
-              <div className="py-3 text-center text-xs text-stone-400 dark:text-stone-500">
+              <div className="py-3 text-center text-xs text-[var(--theme-text-secondary)]">
                 {t("mcp.form.noMatchingKeys")}
               </div>
             ) : (
               filteredKeys.map((key) => (
                 <label
                   key={key}
-                  className="flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer hover:bg-stone-50 dark:hover:bg-stone-700/50"
+                  className="enterprise-select-option"
                 >
                   <input
                     type="checkbox"
                     checked={selectedKeys.includes(key)}
                     onChange={() => toggleKey(key)}
-                    className="rounded border-stone-300 dark:border-stone-600 text-amber-500 focus:ring-amber-400"
+                    className="rounded border-[var(--theme-border)] accent-teal-700 focus:ring-teal-700/20"
                   />
-                  <code className="text-xs font-mono text-stone-700 dark:text-stone-200">
+                  <code className="font-mono text-xs text-[var(--theme-text)]">
                     {key}
                   </code>
                 </label>
@@ -165,11 +166,11 @@ export function EnvKeysSelector({
           </div>
 
           {selectedKeys.length > 0 && (
-            <div className="border-t border-stone-100 dark:border-stone-700 p-2">
+            <div className="border-t border-[var(--theme-border)] p-2">
               <button
                 type="button"
                 onClick={() => onChange([])}
-                className="w-full text-center text-xs text-stone-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                className="w-full text-center text-xs text-[var(--theme-text-secondary)] transition-colors hover:text-red-500 dark:hover:text-red-400"
               >
                 {t("mcp.form.clearAll")}
               </button>

@@ -448,6 +448,37 @@ test("profile modal shares the authenticated workbench visual language", () => {
   }
 });
 
+test("profile secondary tabs and MCP selectors use workbench control tokens", () => {
+  const controlFiles = [
+    "src/components/profile/UserAgentPreferencePanel.tsx",
+    "src/components/profile/tabs/ProfilePasswordTab.tsx",
+    "src/components/profile/tabs/ProfileEnvVarsTab.tsx",
+    "src/components/mcp/RoleSelector.tsx",
+    "src/components/mcp/EnvKeysSelector.tsx",
+  ];
+
+  const sources = controlFiles.map((file) => [
+    file,
+    readFileSync(join(root, file), "utf8"),
+  ] as const);
+
+  for (const [file, source] of sources) {
+    assert.match(
+      source,
+      /enterprise-form-input|enterprise-subtle-panel|panel-card|btn-primary|btn-icon|enterprise-select-dropdown|theme-bg-card|theme-bg-sidebar/,
+      `${file} should depend on the shared enterprise workbench vocabulary`,
+    );
+    assert.doesNotMatch(source, /font-serif/, file);
+    assert.doesNotMatch(source, /from-amber|to-amber|from-orange|to-orange/, file);
+    assert.doesNotMatch(source, /\b(?:bg|text|border|ring|decoration)-amber-/, file);
+    assert.doesNotMatch(source, /\b(?:bg|text|border|ring|decoration)-orange-/, file);
+    assert.doesNotMatch(source, /rounded-xl|rounded-2xl|rounded-3xl/, file);
+    assert.doesNotMatch(source, /shadow-xl|shadow-2xl|\bshadow-lg\b/, file);
+    assert.doesNotMatch(source, /\bbg-white(?:\/\d+)?\b/, file);
+    assert.doesNotMatch(source, /\bbg-stone-50(?!0)(?:\/\d+)?\b/, file);
+  }
+});
+
 test("authenticated overlay surfaces share the workbench visual language", () => {
   const overlayFiles = [
     "src/components/notification/NotificationDialog.tsx",
