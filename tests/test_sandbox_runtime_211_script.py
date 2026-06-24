@@ -619,6 +619,71 @@ def test_no_secret_leakage_rejects_secret_and_authorization_values(tmp_path):
     assert "abc" not in result.message
 
 
+def test_no_secret_leakage_rejects_nested_secret_and_authorization_values(tmp_path):
+    verifier = load_verifier()
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text(
+        json.dumps(
+            {
+                "secret": {"value": "abc"},
+                "authorization": {"header": "Basic abc"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = verifier.check_no_secret_leakage(evidence)
+
+    assert result.passed is False
+    assert "abc" not in result.message
+
+
+def test_no_secret_leakage_rejects_denied_target_query_secrets(tmp_path):
+    verifier = load_verifier()
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text(
+        json.dumps(
+            {
+                "egress_policy": {
+                    "denied_egress_redacted": False,
+                    "denied_target": "https://blocked.invalid/path?token=abc",
+                    "denied_probe_error_code": "egress_denied",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = verifier.check_no_secret_leakage(evidence)
+
+    assert result.passed is False
+    assert "abc" not in result.message
+
+
+def test_no_secret_leakage_rejects_denied_target_secret_query_aliases(tmp_path):
+    verifier = load_verifier()
+    for query in ("client_secret=abc", "api_key=secret-value"):
+        evidence = tmp_path / f"evidence-{query.split('=')[0]}.json"
+        evidence.write_text(
+            json.dumps(
+                {
+                    "egress_policy": {
+                        "denied_egress_redacted": False,
+                        "denied_target": f"https://blocked.invalid/path?{query}",
+                        "denied_probe_error_code": "egress_denied",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = verifier.check_no_secret_leakage(evidence)
+
+        assert result.passed is False
+        assert "abc" not in result.message
+        assert "secret-value" not in result.message
+
+
 def test_no_secret_leakage_allows_safe_absence_field_names(tmp_path):
     verifier = load_verifier()
     evidence = tmp_path / "evidence.json"
@@ -641,6 +706,31 @@ def test_no_secret_leakage_allows_safe_absence_field_names(tmp_path):
                     "denied_egress_redacted": True,
                     "authorization_header_absent": True,
                     "secret_values_absent": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = verifier.check_no_secret_leakage(evidence)
+
+    assert result.passed is True
+
+
+def test_no_secret_leakage_allows_safe_token_evidence_fields(tmp_path):
+    verifier = load_verifier()
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text(
+        json.dumps(
+            {
+                "callback_auth": "token",
+                "egress_policy": {
+                    "callback_exception_scoped_to_run_token": True,
+                },
+                "timings": {
+                    "token_counts": {"input": 10, "output": 12, "total": 22},
+                    "input_tokens": 10,
+                    "output_tokens": 12,
                 },
             }
         ),

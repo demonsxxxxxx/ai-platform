@@ -17,6 +17,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import parse_qsl, urlsplit
 from urllib import request as urllib_request
 
 
@@ -48,6 +49,36 @@ SENSITIVE_PATTERNS = [
     re.compile(r"access[_-]?key", re.IGNORECASE),
     re.compile(r"storage[_-]?key", re.IGNORECASE),
 ]
+SECRET_FIELD_NAMES = {
+    "api_key",
+    "authorization",
+    "authorization_header",
+    "auth_token",
+    "bearer_token",
+    "callback_token",
+    "client_secret",
+    "gateway_secret",
+    "secret",
+    "secret_key",
+    "secret_value",
+    "token",
+}
+SECRET_FIELD_SUFFIXES = ("_api_key", "_authorization", "_authorization_header", "_secret", "_secret_key", "_token")
+SAFE_SECRET_FIELD_SUFFIXES = ("_absent", "_redacted")
+SAFE_SECRET_FIELD_NAMES = {
+    "callback_auth",
+    "callback_exception_scoped_to_run_token",
+    "input_token_count",
+    "input_tokens",
+    "output_token_count",
+    "output_tokens",
+    "remaining_token_budget",
+    "token_count",
+    "token_counts",
+    "tokenizer",
+    "total_token_count",
+    "total_tokens",
+}
 
 EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime-211.v1"
 LATENCY_SCHEMA_VERSION = "ai-platform.sandbox-latency-split.v1"
@@ -622,6 +653,43 @@ def check_platform_hardening_evidence(evidence_path: str | Path, *, run_id: str 
     return CheckResult("check_platform_hardening_evidence", True, "platform hardening evidence present")
 
 
+def _secret_like_field_name(value: str) -> bool:
+    normalized = value.replace("-", "_").lower()
+    if normalized in SAFE_SECRET_FIELD_NAMES:
+        return False
+    if normalized.endswith(SAFE_SECRET_FIELD_SUFFIXES):
+        return False
+    if normalized in SECRET_FIELD_NAMES:
+        return True
+    return normalized.endswith(SECRET_FIELD_SUFFIXES)
+
+
+def _url_query_secret_present(value: str) -> bool:
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    if not parsed.query:
+        return False
+    return any(_secret_like_field_name(key) and item not in ("", None) for key, item in parse_qsl(parsed.query))
+
+
+def _json_secret_value_present(value: Any, *, sensitive_parent: bool = False) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_is_sensitive = _secret_like_field_name(str(key))
+            if key_is_sensitive and item not in (None, "", False):
+                return True
+            if _json_secret_value_present(item, sensitive_parent=sensitive_parent or key_is_sensitive):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_json_secret_value_present(item, sensitive_parent=sensitive_parent) for item in value)
+    if isinstance(value, str) and _url_query_secret_present(value):
+        return True
+    return sensitive_parent and value not in (None, "", False)
+
+
 def check_no_secret_leakage(evidence_path: str | Path) -> CheckResult:
     evidence_path = Path(evidence_path)
     if not evidence_path.exists():
@@ -633,6 +701,12 @@ def check_no_secret_leakage(evidence_path: str | Path) -> CheckResult:
     for pattern in SENSITIVE_PATTERNS:
         if pattern.search(content):
             return CheckResult("check_no_secret_leakage", False, "sensitive evidence detected")
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        payload = None
+    if _json_secret_value_present(payload):
+        return CheckResult("check_no_secret_leakage", False, "sensitive evidence detected")
     return CheckResult("check_no_secret_leakage", True, "no sensitive evidence detected")
 
 
