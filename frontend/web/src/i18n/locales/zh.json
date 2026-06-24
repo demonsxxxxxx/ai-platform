@@ -2986,13 +2986,25 @@
         "title": "用户",
         "subtitle": "安全公司用户目录投影；生命周期变更继续受治理。",
         "search": "搜索用户",
-        "empty": "当前投影中没有可见用户。"
+        "empty": "当前投影中没有可见用户。",
+        "total": "目录总数",
+        "visible": "当前可见 {{count}} 人",
+        "active": "启用账号",
+        "inactive": "{{count}} 个未启用",
+        "roles": "角色覆盖",
+        "rolesDetail": "来自安全角色投影"
       },
       "settings": {
         "title": "设置",
         "subtitle": "来自安全后端投影的个人与系统设置。",
         "empty": "当前投影中没有可见设置。",
-        "redacted": "[已脱敏]"
+        "redacted": "[已脱敏]",
+        "groups": "设置分组",
+        "items": "{{count}} 个设置项",
+        "redactedCount": "脱敏项",
+        "redactedDetail": "不展示密钥材料",
+        "auditCount": "审计项",
+        "auditDetail": "变更需审计或回滚"
       },
       "feedback": {
         "title": "反馈",
@@ -3002,12 +3014,20 @@
         "negative": "需要跟进",
         "total": "总数",
         "up": "正向",
-        "down": "负向"
+        "down": "负向",
+        "totalDetail": "当前工作台反馈",
+        "downDetail": "待分派或跟进"
       },
       "notifications": {
         "title": "通知公告",
         "subtitle": "运行时通知和受治理的公告投影。",
-        "empty": "当前投影中没有可见通知。"
+        "empty": "当前投影中没有可见通知。",
+        "total": "通知总数",
+        "totalDetail": "运行时与公告投影",
+        "unread": "未读",
+        "unreadDetail": "当前账号状态",
+        "active": "生效中",
+        "activeDetail": "可展示通知"
       }
     },
     "governedRoute": {

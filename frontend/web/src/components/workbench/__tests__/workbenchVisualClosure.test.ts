@@ -54,16 +54,36 @@ test("post-login projection panels share workbench surface tokens", () => {
     ["AgentDirectoryPanel", read("src/components/panels/AgentDirectoryPanel.tsx")],
     ["ModelCatalogPanel", read("src/components/panels/ModelCatalogPanel.tsx")],
     ["MemoryPanel", read("src/components/panels/MemoryPanel/index.tsx")],
+    [
+      "WorkbenchProjectionPages",
+      read("src/components/workbench/WorkbenchProjectionPages.tsx"),
+    ],
   ]);
 
   for (const [name, source] of panels) {
     assert.match(source, /data-frontend-governance-state/, name);
-    assert.match(source, /bg-\[var\(--theme-bg\)\]/, name);
+    assert.match(source, /bg-\[var\(--theme-workbench-canvas\)\]/, name);
     assert.match(source, /workbenchSurface\.(?:compactPanel|panel)/, name);
     assert.doesNotMatch(source, /bg-white(?:\/\d+)?/, name);
     assert.doesNotMatch(source, /dark:bg-stone-950(?:\/\d+)?/, name);
     assert.doesNotMatch(source, /text-stone-(?:700|800|900)/, name);
   }
+});
+
+test("safe projection pages render a full workbench instead of thin lists", () => {
+  const projectionPages = read("src/components/workbench/WorkbenchProjectionPages.tsx");
+
+  assert.match(projectionPages, /data-projection-workbench-grid/);
+  assert.match(projectionPages, /data-projection-summary-panel/);
+  assert.match(projectionPages, /data-projection-insight-panel/);
+  assert.match(projectionPages, /data-projection-list-panel/);
+  assert.match(projectionPages, /ProjectionMetric/);
+  assert.match(projectionPages, /ProjectionInsightPanel/);
+  assert.match(projectionPages, /ProjectionListPanel/);
+  assert.match(projectionPages, /lg:grid-cols-\[minmax\(0,1fr\)_20rem\]/);
+  assert.doesNotMatch(projectionPages, /bg-\[var\(--theme-bg\)\]/);
+  assert.doesNotMatch(projectionPages, /text-stone-(?:700|800|900)/);
+  assert.doesNotMatch(projectionPages, /<div className="mt-3">\{children\}<\/div>/);
 });
 
 test("skills marketplace cards stay dense and enterprise-workbench sized", () => {

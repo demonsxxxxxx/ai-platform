@@ -811,7 +811,7 @@ test("model catalog route is a governed public-projection workbench page", () =>
   assert.match(modelCatalog, /deriveProviderProjections/);
   assert.match(modelCatalog, /WorkbenchStateSurface/);
   assert.match(modelCatalog, /data-model-admin-governance/);
-  assert.match(modelCatalog, /bg-\[var\(--theme-bg\)\]/);
+  assert.match(modelCatalog, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.ok(JSON.parse(zhLocale).models);
   assert.ok(JSON.parse(enLocale).models);
   for (const source of [
@@ -938,9 +938,15 @@ test("workbench projection pages consume safe backend contracts instead of phase
   assert.match(projectionPages, /WorkbenchStateSurface/);
   assert.match(projectionPages, /GovernanceAvailabilityBadge/);
   assert.match(projectionPages, /workbenchSurface/);
+  assert.match(projectionPages, /data-projection-workbench-grid/);
+  assert.match(projectionPages, /data-projection-summary-panel/);
+  assert.match(projectionPages, /data-projection-insight-panel/);
+  assert.match(projectionPages, /data-projection-list-panel/);
+  assert.match(projectionPages, /ProjectionMetric/);
   assert.match(projectionPages, /governance\.secret_material_projected/);
   assert.match(projectionPages, /state === "degraded"/);
   assert.match(projectionPages, /state === "forbidden"/);
+  assert.doesNotMatch(projectionPages, /<div className="mt-3">\{children\}<\/div>/);
   assert.doesNotMatch(projectionPages, /roleApi|settingsApi|NotificationPanel|UsersPanel/);
 
   for (const endpoint of [

@@ -2985,13 +2985,25 @@
         "title": "Users",
         "subtitle": "Safe company directory projection. Lifecycle changes remain governed.",
         "search": "Search users",
-        "empty": "No users are visible in this projection."
+        "empty": "No users are visible in this projection.",
+        "total": "Directory total",
+        "visible": "{{count}} visible now",
+        "active": "Active accounts",
+        "inactive": "{{count}} inactive",
+        "roles": "Role coverage",
+        "rolesDetail": "From safe role projection"
       },
       "settings": {
         "title": "Settings",
         "subtitle": "Personal and system settings from the safe backend projection.",
         "empty": "No settings are visible in this projection.",
-        "redacted": "[redacted]"
+        "redacted": "[redacted]",
+        "groups": "Setting groups",
+        "items": "{{count}} settings",
+        "redactedCount": "Redacted",
+        "redactedDetail": "Secret material is hidden",
+        "auditCount": "Audited",
+        "auditDetail": "Changes need audit or rollback"
       },
       "feedback": {
         "title": "Feedback",
@@ -3001,12 +3013,20 @@
         "negative": "Needs follow-up",
         "total": "Total",
         "up": "Positive",
-        "down": "Negative"
+        "down": "Negative",
+        "totalDetail": "Current workbench feedback",
+        "downDetail": "Awaiting assignment or follow-up"
       },
       "notifications": {
         "title": "Notifications",
         "subtitle": "Runtime notices and governed announcement projection.",
-        "empty": "No notifications are visible in this projection."
+        "empty": "No notifications are visible in this projection.",
+        "total": "Total notices",
+        "totalDetail": "Runtime and announcement projections",
+        "unread": "Unread",
+        "unreadDetail": "Current account state",
+        "active": "Active",
+        "activeDetail": "Visible notices"
       }
     },
     "governedRoute": {

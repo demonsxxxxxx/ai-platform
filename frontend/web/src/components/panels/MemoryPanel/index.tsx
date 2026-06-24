@@ -479,7 +479,7 @@ export function MemoryPanel() {
       <div
         data-memory-workbench-shell
         data-frontend-governance-state={governanceState}
-        className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-[var(--theme-text)]"
+        className="flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]"
       >
         <PanelHeader
           title={t("memory.title", "Memory")}
@@ -513,7 +513,7 @@ export function MemoryPanel() {
     <div
       data-memory-workbench-shell
       data-frontend-governance-state={governanceState}
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-[var(--theme-text)]"
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]"
     >
       <PanelHeader
         title={t("memory.title", "Memory")}

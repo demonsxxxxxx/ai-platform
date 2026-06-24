@@ -22,7 +22,6 @@ import { resolveGroupAvailability } from "../governance/groupAvailability";
 import { useAuth } from "../../hooks/useAuth";
 import { workbenchApi } from "../../services/api/workbench";
 import type {
-  WorkbenchFeedbackListResponse,
   WorkbenchGovernance,
   WorkbenchNotification,
   WorkbenchNotificationListResponse,
@@ -38,6 +37,15 @@ type LoadState<T> = {
 };
 
 type PageKind = "users" | "settings" | "feedback" | "notifications";
+
+type AvailabilityState = "enabled" | "disabled" | "inherited" | "admin-only" | "unavailable";
+
+type ProjectionMetric = {
+  label: string;
+  value: string | number;
+  detail?: string;
+  icon?: LucideIcon;
+};
 
 const pageMeta: Record<
   PageKind,
@@ -159,11 +167,13 @@ function ProjectionShell({
   kind,
   loadState,
   governance,
+  metrics,
   children,
 }: {
   kind: PageKind;
   loadState: LoadState<unknown>;
   governance?: WorkbenchGovernance | null;
+  metrics?: ProjectionMetric[];
   children: ReactNode;
 }) {
   const { t } = useTranslation();
@@ -202,7 +212,7 @@ function ProjectionShell({
       <div
         data-workbench-projection-page={kind}
         data-frontend-governance-state={state}
-        className="flex h-full min-h-0 items-center justify-center bg-[var(--theme-bg)] px-4"
+        className="flex h-full min-h-0 items-center justify-center bg-[var(--theme-workbench-canvas)] px-4"
       >
         <WorkbenchStateSurface
           state={state}
@@ -229,7 +239,7 @@ function ProjectionShell({
     <div
       data-workbench-projection-page={kind}
       data-frontend-governance-state={state}
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]"
     >
       <PanelHeader
         title={t(meta.title)}
@@ -248,7 +258,7 @@ function ProjectionShell({
           </div>
         }
       />
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-3">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
         {state === "degraded" ? (
           <WorkbenchStateSurface
             state="degraded"
@@ -259,44 +269,139 @@ function ProjectionShell({
             className="mb-3 max-w-none text-left"
           />
         ) : null}
-        <section className="grid gap-3 lg:grid-cols-3">
-          <StatusTile
-            icon={ShieldCheck}
-            title={t("workbench.projections.governance.safeReadTitle")}
-            description={t("workbench.projections.governance.safeReadDescription")}
-            state={readAvailability.state}
-            labelKey={readAvailability.labelKey}
-          />
-          <StatusTile
-            icon={SlidersHorizontal}
-            title={t("workbench.projections.governance.adminTitle")}
-            description={t("workbench.projections.governance.adminDescription")}
-            state={adminAvailability.state}
-            labelKey={adminAvailability.labelKey}
-          />
-          <StatusTile
-            icon={RotateCcw}
-            title={t("workbench.projections.governance.auditTitle")}
-            description={
-              governance?.audit_required || governance?.rollback_available
-                ? t("workbench.projections.governance.auditBacked")
-                : t("workbench.projections.governance.auditUnavailable")
-            }
-            state={
-              governance?.audit_required || governance?.rollback_available
-                ? "enabled"
-                : "disabled"
-            }
-            labelKey={
-              governance?.audit_required || governance?.rollback_available
-                ? "governance.enabled"
-                : "governance.disabled"
-            }
+        <section data-projection-workbench-grid className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
+          <div className="min-w-0 space-y-4">
+            {metrics?.length ? (
+              <section data-projection-summary-panel className="grid gap-3 sm:grid-cols-3">
+                {metrics.map((metric) => (
+                  <ProjectionMetric key={metric.label} {...metric} />
+                ))}
+              </section>
+            ) : null}
+            <ProjectionListPanel>{children}</ProjectionListPanel>
+          </div>
+
+          <ProjectionInsightPanel
+            details={details}
+            readAvailability={readAvailability}
+            adminAvailability={adminAvailability}
+            auditAvailable={Boolean(
+              governance?.audit_required || governance?.rollback_available,
+            )}
           />
         </section>
-        <div className="mt-3">{children}</div>
       </div>
     </div>
+  );
+}
+
+function ProjectionMetric({
+  label,
+  value,
+  detail,
+  icon: Icon = CheckCircle2,
+}: ProjectionMetric) {
+  return (
+    <div data-projection-metric className={workbenchSurface.statusTile}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className={workbenchSurface.label}>{label}</p>
+          <p className="mt-1 truncate text-xl font-semibold tabular-nums text-[var(--theme-text)]">
+            {value}
+          </p>
+          {detail ? (
+            <p className="mt-1 truncate text-xs text-[var(--theme-text-secondary)]">
+              {detail}
+            </p>
+          ) : null}
+        </div>
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
+          <Icon size={16} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProjectionInsightPanel({
+  details,
+  readAvailability,
+  adminAvailability,
+  auditAvailable,
+}: {
+  details: string[];
+  readAvailability: { state: AvailabilityState; labelKey: string };
+  adminAvailability: { state: AvailabilityState; labelKey: string };
+  auditAvailable: boolean;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <aside
+      data-projection-insight-panel
+      className={`${workbenchSurface.panel} h-fit overflow-hidden`}
+    >
+      <div className="border-b border-[var(--theme-border)] p-4">
+        <p className={workbenchSurface.label}>
+          {t("workbench.governedRoute.contractTitle")}
+        </p>
+        <h2 className="mt-1 text-sm font-semibold text-[var(--theme-text)]">
+          {t("workbench.projections.governance.safeReadTitle")}
+        </h2>
+        <p className="mt-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
+          {t("workbench.governedRoute.contractDescription")}
+        </p>
+      </div>
+
+      <div className="space-y-2 p-3">
+        <StatusTile
+          icon={ShieldCheck}
+          title={t("workbench.projections.governance.safeReadTitle")}
+          description={t("workbench.projections.governance.safeReadDescription")}
+          state={readAvailability.state}
+          labelKey={readAvailability.labelKey}
+        />
+        <StatusTile
+          icon={SlidersHorizontal}
+          title={t("workbench.projections.governance.adminTitle")}
+          description={t("workbench.projections.governance.adminDescription")}
+          state={adminAvailability.state}
+          labelKey={adminAvailability.labelKey}
+        />
+        <StatusTile
+          icon={RotateCcw}
+          title={t("workbench.projections.governance.auditTitle")}
+          description={
+            auditAvailable
+              ? t("workbench.projections.governance.auditBacked")
+              : t("workbench.projections.governance.auditUnavailable")
+          }
+          state={auditAvailable ? "enabled" : "disabled"}
+          labelKey={auditAvailable ? "governance.enabled" : "governance.disabled"}
+        />
+      </div>
+
+      {details.length ? (
+        <div className="border-t border-[var(--theme-border)] px-4 py-3">
+          {details.map((detail) => (
+            <p
+              key={detail}
+              className="py-1 text-xs leading-5 text-[var(--theme-text-secondary)]"
+            >
+              {detail}
+            </p>
+          ))}
+        </div>
+      ) : null}
+    </aside>
+  );
+}
+
+function ProjectionListPanel({ children }: { children: ReactNode }) {
+  return (
+    <section data-projection-list-panel className="min-w-0">
+      {children}
+    </section>
   );
 }
 
@@ -310,20 +415,20 @@ function StatusTile({
   icon: LucideIcon;
   title: string;
   description: string;
-  state: "enabled" | "disabled" | "inherited" | "admin-only" | "unavailable";
+  state: AvailabilityState;
   labelKey: string;
 }) {
   return (
-    <div className={workbenchSurface.compactPanel}>
-      <div className="flex items-start justify-between gap-3 p-3">
+    <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-3 ring-1 ring-[var(--theme-border)]">
+      <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <Icon size={16} className="text-stone-500" />
-            <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+            <Icon size={16} className="text-[var(--theme-text-secondary)]" />
+            <h3 className="text-sm font-semibold text-[var(--theme-text)]">
               {title}
             </h3>
           </div>
-          <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+          <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
             {description}
           </p>
         </div>
@@ -341,9 +446,39 @@ export function WorkbenchUsersProjectionPanel() {
     [searchQuery],
   );
   const rows = users.data?.items?.length ? users.data.items : users.data?.users ?? [];
+  const activeCount = rows.filter((user) => user.is_active).length;
+  const roleCount = new Set(rows.flatMap((user) => user.roles)).size;
 
   return (
-    <ProjectionShell kind="users" loadState={users} governance={users.data?.governance}>
+    <ProjectionShell
+      kind="users"
+      loadState={users}
+      governance={users.data?.governance}
+      metrics={[
+        {
+          label: t("workbench.projections.users.total"),
+          value: users.data?.total ?? rows.length,
+          detail: t("workbench.projections.users.visible", {
+            count: rows.length,
+          }),
+          icon: Users,
+        },
+        {
+          label: t("workbench.projections.users.active"),
+          value: activeCount,
+          detail: t("workbench.projections.users.inactive", {
+            count: Math.max(rows.length - activeCount, 0),
+          }),
+          icon: CheckCircle2,
+        },
+        {
+          label: t("workbench.projections.users.roles"),
+          value: roleCount,
+          detail: t("workbench.projections.users.rolesDetail"),
+          icon: ShieldCheck,
+        },
+      ]}
+    >
       <div className={workbenchSurface.compactPanel}>
         <div className="border-b border-[var(--theme-border)] p-3">
           <div className="relative">
@@ -374,11 +509,11 @@ export function WorkbenchUsersProjectionPanel() {
                       size={15}
                       className={user.is_active ? "text-emerald-600" : "text-stone-400"}
                     />
-                    <h3 className="truncate font-semibold text-stone-900 dark:text-stone-100">
+                    <h3 className="truncate font-semibold text-[var(--theme-text)]">
                       {user.full_name || user.username}
                     </h3>
                   </div>
-                  <p className="mt-1 truncate text-xs text-stone-500">
+                  <p className="mt-1 truncate text-xs text-[var(--theme-text-secondary)]">
                     {user.username} · {user.tenant_id}/{user.department_id || "-"}
                   </p>
                 </div>
@@ -386,7 +521,7 @@ export function WorkbenchUsersProjectionPanel() {
                   {user.roles.slice(0, 4).map((role) => (
                     <span
                       key={role}
-                      className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-xs text-stone-600 ring-1 ring-[var(--theme-border)]"
+                      className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-xs text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]"
                     >
                       {role}
                     </span>
@@ -408,12 +543,39 @@ export function WorkbenchSettingsProjectionPanel() {
     () => Object.values(settings.data?.settings ?? {}),
     [settings.data?.settings],
   );
+  const settingItems = groups.flatMap((group) => group.items);
+  const secretCount = settingItems.filter((item) => item.is_secret).length;
+  const auditCount = settingItems.filter(
+    (item) => item.audit_required || item.rollback_available,
+  ).length;
 
   return (
     <ProjectionShell
       kind="settings"
       loadState={settings}
       governance={settings.data?.governance}
+      metrics={[
+        {
+          label: t("workbench.projections.settings.groups"),
+          value: groups.length,
+          detail: t("workbench.projections.settings.items", {
+            count: settingItems.length,
+          }),
+          icon: Settings,
+        },
+        {
+          label: t("workbench.projections.settings.redactedCount"),
+          value: secretCount,
+          detail: t("workbench.projections.settings.redactedDetail"),
+          icon: ShieldCheck,
+        },
+        {
+          label: t("workbench.projections.settings.auditCount"),
+          value: auditCount,
+          detail: t("workbench.projections.settings.auditDetail"),
+          icon: RotateCcw,
+        },
+      ]}
     >
       <div className="grid gap-3 xl:grid-cols-2">
         {groups.length === 0 ? (
@@ -422,7 +584,7 @@ export function WorkbenchSettingsProjectionPanel() {
           groups.map((group) => (
             <section key={group.category} className={workbenchSurface.compactPanel}>
               <div className="border-b border-[var(--theme-border)] p-3">
-                <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                <h3 className="text-sm font-semibold text-[var(--theme-text)]">
                   {group.category.replace(/_/g, " ")}
                 </h3>
               </div>
@@ -431,10 +593,10 @@ export function WorkbenchSettingsProjectionPanel() {
                   <div key={item.key} className="grid gap-2 p-3 text-sm">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <h4 className="truncate font-medium text-stone-900 dark:text-stone-100">
+                        <h4 className="truncate font-medium text-[var(--theme-text)]">
                           {item.label || item.key}
                         </h4>
-                        <p className="mt-1 truncate text-xs text-stone-500">
+                        <p className="mt-1 truncate text-xs text-[var(--theme-text-secondary)]">
                           {item.key}
                         </p>
                       </div>
@@ -449,7 +611,7 @@ export function WorkbenchSettingsProjectionPanel() {
                         />
                       ) : null}
                     </div>
-                    <p className="truncate rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1.5 text-xs text-stone-600 ring-1 ring-[var(--theme-border)]">
+                    <p className="truncate rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1.5 text-xs text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
                       {item.is_secret
                         ? t("workbench.projections.settings.redacted")
                         : formatValue(item.value)}
@@ -474,30 +636,49 @@ export function WorkbenchFeedbackProjectionPanel() {
       kind="feedback"
       loadState={feedback}
       governance={feedback.data?.governance}
+      metrics={[
+        {
+          label: t("workbench.projections.feedback.total"),
+          value: feedback.data?.stats.total_count ?? 0,
+          detail: t("workbench.projections.feedback.totalDetail"),
+          icon: MessageSquareText,
+        },
+        {
+          label: t("workbench.projections.feedback.up"),
+          value: feedback.data?.stats.up_count ?? 0,
+          detail: `${feedback.data?.stats.up_percentage ?? 0}%`,
+          icon: CheckCircle2,
+        },
+        {
+          label: t("workbench.projections.feedback.down"),
+          value: feedback.data?.stats.down_count ?? 0,
+          detail: t("workbench.projections.feedback.downDetail"),
+          icon: SlidersHorizontal,
+        },
+      ]}
     >
-      <FeedbackStats data={feedback.data} />
-      <div className={`${workbenchSurface.compactPanel} mt-3`}>
+      <div className={workbenchSurface.compactPanel}>
         <div className="divide-y divide-[var(--theme-border)]">
           {feedback.data?.items.length ? (
             feedback.data.items.map((item) => (
               <article key={item.id} className="grid gap-2 p-3 text-sm">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <h3 className="font-semibold text-stone-900 dark:text-stone-100">
+                    <h3 className="font-semibold text-[var(--theme-text)]">
                       {item.rating === "up"
                         ? t("workbench.projections.feedback.positive")
                         : t("workbench.projections.feedback.negative")}
                     </h3>
-                    <p className="mt-1 truncate text-xs text-stone-500">
+                    <p className="mt-1 truncate text-xs text-[var(--theme-text-secondary)]">
                       {item.username} · {item.session_id} · {item.run_id}
                     </p>
                   </div>
-                  <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-xs text-stone-600 ring-1 ring-[var(--theme-border)]">
+                  <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-xs text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
                     {item.status} / {item.assignment_state}
                   </span>
                 </div>
                 {item.comment ? (
-                  <p className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1.5 text-xs leading-5 text-stone-600 ring-1 ring-[var(--theme-border)]">
+                  <p className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1.5 text-xs leading-5 text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
                     {item.comment}
                   </p>
                 ) : null}
@@ -509,27 +690,6 @@ export function WorkbenchFeedbackProjectionPanel() {
         </div>
       </div>
     </ProjectionShell>
-  );
-}
-
-function FeedbackStats({ data }: { data: WorkbenchFeedbackListResponse | null }) {
-  const { t } = useTranslation();
-  const stats = data?.stats;
-  return (
-    <div className="grid gap-3 sm:grid-cols-3">
-      {[
-        [t("workbench.projections.feedback.total"), stats?.total_count ?? 0],
-        [t("workbench.projections.feedback.up"), stats?.up_count ?? 0],
-        [t("workbench.projections.feedback.down"), stats?.down_count ?? 0],
-      ].map(([label, value]) => (
-        <div key={label} className={workbenchSurface.statusTile}>
-          <p className="text-xs text-stone-500">{label}</p>
-          <p className="mt-1 text-xl font-semibold text-stone-900 dark:text-stone-100">
-            {value}
-          </p>
-        </div>
-      ))}
-    </div>
   );
 }
 
@@ -549,6 +709,8 @@ export function WorkbenchNotificationsProjectionPanel() {
     ...(active.data ?? []),
     ...(admin.data?.items ?? []),
   ];
+  const unreadCount = combined.filter((item) => item.read_state === "unread").length;
+  const activeCount = combined.filter((item) => item.is_active).length;
   const loadState: LoadState<unknown> = {
     data: active.data,
     error: active.error,
@@ -560,6 +722,26 @@ export function WorkbenchNotificationsProjectionPanel() {
       kind="notifications"
       loadState={loadState}
       governance={admin.data?.governance ?? null}
+      metrics={[
+        {
+          label: t("workbench.projections.notifications.total"),
+          value: combined.length,
+          detail: t("workbench.projections.notifications.totalDetail"),
+          icon: Bell,
+        },
+        {
+          label: t("workbench.projections.notifications.unread"),
+          value: unreadCount,
+          detail: t("workbench.projections.notifications.unreadDetail"),
+          icon: MessageSquareText,
+        },
+        {
+          label: t("workbench.projections.notifications.active"),
+          value: activeCount,
+          detail: t("workbench.projections.notifications.activeDetail"),
+          icon: CheckCircle2,
+        },
+      ]}
     >
       <div className={workbenchSurface.compactPanel}>
         <div className="divide-y divide-[var(--theme-border)]">
@@ -570,14 +752,14 @@ export function WorkbenchNotificationsProjectionPanel() {
               <article key={`${item.id}-${item.read_state ?? "admin"}`} className="p-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <h3 className="truncate text-sm font-semibold text-stone-900 dark:text-stone-100">
+                    <h3 className="truncate text-sm font-semibold text-[var(--theme-text)]">
                       {localizedText(item.title_i18n, i18n.language)}
                     </h3>
-                    <p className="mt-1 line-clamp-2 text-xs leading-5 text-stone-500">
+                    <p className="mt-1 line-clamp-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
                       {localizedText(item.content_i18n, i18n.language)}
                     </p>
                   </div>
-                  <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-xs text-stone-600 ring-1 ring-[var(--theme-border)]">
+                  <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-xs text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
                     {item.read_state ?? item.type}
                   </span>
                 </div>
@@ -592,7 +774,7 @@ export function WorkbenchNotificationsProjectionPanel() {
 
 function EmptyProjection({ message }: { message: string }) {
   return (
-    <div className="flex min-h-44 items-center justify-center p-6 text-center text-sm text-stone-500">
+    <div className="flex min-h-44 items-center justify-center p-6 text-center text-sm text-[var(--theme-text-secondary)]">
       {message}
     </div>
   );
