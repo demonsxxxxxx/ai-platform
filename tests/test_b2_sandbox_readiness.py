@@ -4,6 +4,7 @@ import sys
 import importlib.util
 from pathlib import Path
 
+import app.b2_sandbox_readiness as b2_sandbox_readiness
 from app.b2_sandbox_readiness import (
     build_b2_sandbox_readiness,
     render_b2_sandbox_readiness_markdown,
@@ -430,6 +431,25 @@ def test_b2_sandbox_readiness_accepts_reviewed_runtime_hardening_without_gate_cl
     assert "gate closable" not in json.dumps(readiness, ensure_ascii=False).lower()
 
 
+def test_b2_runtime_delta_filter_treats_frontend_only_changes_as_b2_runtime_neutral(monkeypatch):
+    monkeypatch.setattr(
+        b2_sandbox_readiness,
+        "_resolve_source_runtime_affecting_changes_between",
+        lambda _base, _source: [
+            "frontend/web/src/App.tsx",
+            "frontend/web/src/components/panels/MCPPanel.tsx",
+            "app/routes/runs.py",
+        ],
+    )
+
+    changes = b2_sandbox_readiness._resolve_b2_runtime_affecting_changes_between(
+        "runtime-subject",
+        "current-source",
+    )
+
+    assert changes == ["app/routes/runs.py"]
+
+
 def test_b2_sandbox_readiness_rejects_egress_hardening_without_probe_details(tmp_path):
     write_future_reviewed_b2_smoke(tmp_path)
     evidence_path = (
@@ -688,7 +708,7 @@ def test_b2_sandbox_readiness_records_reviewed_211_hardening_without_closing_b2_
     assert readiness["runtime_acceptance"]["status"] == "verified_211_runtime_acceptance"
     assert readiness["runtime_acceptance"]["status_label_after_reviewed_evidence"] == "local partial"
     assert readiness["runtime_acceptance"]["does_not_close_b2_gate_by_itself"] is True
-    assert readiness["open_gaps"] == ["b2_issue_review_and_closure_evidence"]
+    assert readiness["open_gaps"] == []
     assert readiness["closed_runtime_gaps"] == [
         "b2_211_real_sandbox_smoke",
         "b2_reviewed_release_evidence",
@@ -697,6 +717,7 @@ def test_b2_sandbox_readiness_records_reviewed_211_hardening_without_closing_b2_
         "security_options_evidence",
     ]
     assert readiness["closed_gate_boundary_gaps"] == [
+        "b2_issue_review_and_closure_evidence",
         "b2_runtime_evidence_review_against_merged_source",
     ]
     runtime_review = readiness["gate_boundary_evidence"][
@@ -713,13 +734,15 @@ def test_b2_sandbox_readiness_records_reviewed_211_hardening_without_closing_b2_
         "record issue closure evidence after final issue review"
     )
     closure_evidence = readiness["gate_boundary_evidence"]["b2_issue_review_and_closure_evidence"]
-    assert closure_evidence["status"] == "open_missing_issue_closure_evidence"
-    assert closure_evidence["closed_gap"] is None
+    assert closure_evidence["status"] == "recorded_issue_closure_evidence"
+    assert closure_evidence["closed_gap"] == "b2_issue_review_and_closure_evidence"
     assert closure_evidence["issue"] == "#130"
+    assert closure_evidence["issue_state"] == "closed"
     assert closure_evidence["does_not_close_broader_b2_g7_gate"] is True
-    assert closure_evidence["required_next_step"] == (
-        "record reviewed local issue-closure evidence for #130 before closing this boundary"
-    )
+    assert closure_evidence["path"].endswith("2026-06-24-issue130-b2-closure.json")
+    assert closure_evidence["evidence_refs"] == [
+        "docs/release-evidence/b2-sandbox/0822dad411fb72c89d9888ffde08a6c13a468cd9/2026-06-24-211-b2-sandbox-runtime-smoke-0822dad.json"
+    ]
 
     smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
     assert smoke_evidence["status"] == "verified_211_runtime_acceptance"
@@ -892,27 +915,28 @@ def test_b2_sandbox_readiness_markdown_is_gap_first_and_operator_readable():
     assert "Status label: `local partial`" in markdown
     assert "## Open Gaps" in markdown
     open_gap_section = markdown.split("## Closed Gate Boundary Gaps", 1)[0]
-    assert "- b2_issue_review_and_closure_evidence" in open_gap_section
+    assert "- none" in open_gap_section
+    assert "- b2_issue_review_and_closure_evidence" not in open_gap_section
     assert "- resource_limits_policy_evidence" not in open_gap_section
     assert "- egress_policy_evidence" not in open_gap_section
     assert "- security_options_evidence" not in open_gap_section
     assert "- b2_runtime_evidence_review_against_merged_source" not in open_gap_section
     assert "- rollback_assumptions_evidence" not in open_gap_section
-    assert "- b2_issue_review_and_closure_evidence" in open_gap_section
     assert "## Closed Gate Boundary Gaps" in markdown
     closed_gap_section = markdown.split("## Closed Gate Boundary Gaps", 1)[1].split(
         "## Gate Boundary Evidence",
         1,
     )[0]
-    assert "- b2_issue_review_and_closure_evidence" not in closed_gap_section
+    assert "- b2_issue_review_and_closure_evidence" in closed_gap_section
     assert "- b2_runtime_evidence_review_against_merged_source" in closed_gap_section
     assert "## Gate Boundary Evidence" in markdown
     assert "### B2 Issue Closure Evidence" in markdown
     assert "### B2 Runtime Evidence Review Against Merged Source" in markdown
+    assert "recorded_issue_closure_evidence" in markdown
     assert "recorded_local_contract" in markdown
-    assert "record reviewed local issue-closure evidence for #130 before closing this boundary" in markdown
+    assert "2026-06-24-issue130-b2-closure.json" in markdown
     assert "runtime_affecting_delta_requires_fresh_211_smoke" not in markdown
-    assert "docs/release-evidence/backend-stage-closures/b2-sandbox" not in markdown
+    assert "docs/release-evidence/backend-stage-closures/b2-sandbox" in markdown
     assert "2026-06-19-211-b2-sandbox-runtime-smoke-f8a0f3c.json" not in markdown
     assert "- b2_211_real_sandbox_smoke" not in markdown
     assert "- b2_reviewed_release_evidence" not in markdown
@@ -973,7 +997,7 @@ def test_b2_sandbox_readiness_cli_outputs_json_without_secret_markers():
     assert payload["runtime_acceptance"]["status"] == "verified_211_runtime_acceptance"
     assert payload["runtime_acceptance"]["status_label_after_smoke_before_review"] == "local partial"
     assert payload["runtime_acceptance"]["reviewed_evidence_required_for_211_verified"] is True
-    assert payload["open_gaps"] == ["b2_issue_review_and_closure_evidence"]
+    assert payload["open_gaps"] == []
     assert payload["closed_runtime_gaps"] == [
         "b2_211_real_sandbox_smoke",
         "b2_reviewed_release_evidence",
@@ -982,6 +1006,7 @@ def test_b2_sandbox_readiness_cli_outputs_json_without_secret_markers():
         "security_options_evidence",
     ]
     assert payload["closed_gate_boundary_gaps"] == [
+        "b2_issue_review_and_closure_evidence",
         "b2_runtime_evidence_review_against_merged_source",
     ]
     assert payload["gate_boundary_evidence"]["b2_runtime_evidence_review_against_merged_source"]["status"] == (
@@ -1004,7 +1029,10 @@ def test_b2_sandbox_readiness_cli_outputs_json_without_secret_markers():
     assert payload["rollback_assumptions"]["closed_gap"] == "rollback_assumptions_evidence"
     assert payload["rollback_assumptions"]["remaining_hardening_gaps"] == []
     assert payload["gate_boundary_evidence"]["b2_issue_review_and_closure_evidence"]["status"] == (
-        "open_missing_issue_closure_evidence"
+        "recorded_issue_closure_evidence"
+    )
+    assert payload["gate_boundary_evidence"]["b2_issue_review_and_closure_evidence"]["closed_gap"] == (
+        "b2_issue_review_and_closure_evidence"
     )
     assert "callback-secret" not in result.stdout
     assert "sandbox_workdir" not in result.stdout

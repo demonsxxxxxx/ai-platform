@@ -1,0 +1,66 @@
+{
+  "schema_version": "ai-platform.backend-stage-closure-evidence.v1",
+  "backend_stage": "B2 real sandbox usable",
+  "issue": "#130",
+  "issue_url": "https://github.com/demonsxxxxxx/ai-platform/issues/130",
+  "issue_state": "closed",
+  "closed_at": "2026-06-24T11:18:22Z",
+  "closed_gap": "b2_issue_review_and_closure_evidence",
+  "review_status": "reviewed",
+  "redaction_scan_status": "passed",
+  "linked_prs": [
+    {
+      "number": 216,
+      "url": "https://github.com/demonsxxxxxx/ai-platform/pull/216",
+      "merge_commit": "8c76db1dd874049bda5afa75ed77d741f6171172"
+    },
+    {
+      "number": 217,
+      "url": "https://github.com/demonsxxxxxx/ai-platform/pull/217",
+      "merge_commit": "19dfa5397cfa3e56d4bf9f98b83a21c56ccfe646"
+    },
+    {
+      "number": 224,
+      "url": "https://github.com/demonsxxxxxx/ai-platform/pull/224",
+      "merge_commit": "7f38c22b704d1038b7a57055a7bcbd7046f559ab"
+    },
+    {
+      "number": 225,
+      "url": "https://github.com/demonsxxxxxx/ai-platform/pull/225",
+      "merge_commit": "0822dad411fb72c89d9888ffde08a6c13a468cd9"
+    },
+    {
+      "number": 226,
+      "url": "https://github.com/demonsxxxxxx/ai-platform/pull/226",
+      "merge_commit": "f8b2761c31ce0c44beb8521e48dd55adb4137ea8"
+    }
+  ],
+  "closure_comments": [
+    {
+      "url": "https://github.com/demonsxxxxxx/ai-platform/issues/130#issuecomment-4788664292",
+      "summary": "Final #130 issue-scope review records the reviewed 211 B2 sandbox hardening runtime evidence and keeps broader B2/G7 production expansion out of scope."
+    }
+  ],
+  "evidence_refs": [
+    "docs/release-evidence/b2-sandbox/0822dad411fb72c89d9888ffde08a6c13a468cd9/2026-06-24-211-b2-sandbox-runtime-smoke-0822dad.json"
+  ],
+  "residual_caveats": [
+    "does_not_close_broader_b2_g7_production_hardening_gate",
+    "does_not_claim_g0_source_authority",
+    "does_not_claim_production_readiness",
+    "does_not_enable_ordinary_user_high_risk_sandbox",
+    "does_not_enable_ordinary_user_multi_agent_exposure",
+    "does_not_allow_department_rollout",
+    "does_not_raise_production_concurrency_defaults",
+    "release_evidence_export_and_retention_runtime_acceptance_remain_separate_g9_gaps"
+  ],
+  "non_expansion_invariants": {
+    "ordinary_user_high_risk_sandbox_allowed": false,
+    "ordinary_user_multi_agent_allowed": false,
+    "production_concurrency_defaults_raised": false,
+    "docker_sandbox_production_hardening_claimed": false,
+    "production_claim_allowed": false,
+    "department_rollout_allowed": false
+  },
+  "does_not_close_broader_gate": true
+}
