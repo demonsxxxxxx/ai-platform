@@ -737,6 +737,11 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
         for gap in _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED
         if hardening_runtime_evidence.get(gap) == "verified_211_runtime_acceptance"
     ]
+    open_hardening_runtime_gaps = [
+        gap
+        for gap in _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED
+        if gap not in closed_hardening_runtime_gaps
+    ]
     gate_boundary_evidence = {
         ISSUE_CLOSURE_GAP: _issue_closure_boundary_evidence(root),
         RUNTIME_SOURCE_REVIEW_GAP: _merged_source_runtime_review(
@@ -760,11 +765,7 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
             for gap in [ISSUE_CLOSURE_GAP, RUNTIME_SOURCE_REVIEW_GAP]
             if gap not in closed_gate_boundary_gaps
         ]
-        open_gaps.extend(
-            gap
-            for gap in _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED
-            if gap not in closed_hardening_runtime_gaps
-        )
+        open_gaps.extend(open_hardening_runtime_gaps)
     if b2_smoke_recorded and len(closed_hardening_runtime_gaps) == len(
         _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED
     ):
@@ -831,9 +832,7 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
             "hardening_evidence_class": dict(_HARDENING_EVIDENCE_CLASS),
             "required_non_expansion_invariants": dict(_NON_EXPANSION_INVARIANTS),
             "verifier_required_evidence_sections": list(_VERIFIER_REQUIRED_EVIDENCE_SECTIONS),
-            "prd_b2_g7_requirements_not_yet_verified": list(
-                _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED
-            ),
+            "prd_b2_g7_requirements_not_yet_verified": list(open_hardening_runtime_gaps),
             "verifier_required_runtime_evidence": [
                 "platform lease record for tenant/workspace/user/session/run",
                 "Docker/equivalent launch selected by platform policy",
@@ -855,7 +854,7 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
         "closed_runtime_gaps": closed_runtime_gaps,
         "closed_gate_boundary_gaps": closed_gate_boundary_gaps,
         "gate_boundary_evidence": gate_boundary_evidence,
-        "broader_b2_g7_open_requirements": list(_PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED),
+        "broader_b2_g7_open_requirements": list(open_hardening_runtime_gaps),
         "hardening_policy_contracts": _hardening_policy_contracts(),
         "rollback_assumptions": _rollback_assumptions_contract(),
         "runtime_acceptance_evidence": runtime_acceptance_evidence,
@@ -943,7 +942,7 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
     ) or "- none"
     pending_prd_requirements = "\n".join(
         f"- `{item}`" for item in readiness["broader_b2_g7_open_requirements"]
-    )
+    ) or "- none"
     hardening_policy_contracts = []
     for gap, contract in readiness.get("hardening_policy_contracts", {}).items():
         required_controls = "\n".join(
@@ -1019,7 +1018,7 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"{required_sections}\n\n"
         "Verifier-required runtime evidence:\n\n"
         f"{runtime_evidence}\n\n"
-        "PRD B2/G7 requirements not yet verifier-checked:\n\n"
+        "PRD B2/G7 runtime hardening requirements still open:\n\n"
         f"{pending_prd_requirements}\n\n"
         "## Hardening Policy Contracts\n\n"
         f"{hardening_policy_contract_lines}\n\n"
