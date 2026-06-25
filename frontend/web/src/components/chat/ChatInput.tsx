@@ -1047,7 +1047,7 @@ export const ChatInput = memo(function ChatInput({
   return (
     <div
       className="chat-input-shell sm:px-4 pb-3"
-      style={{ backgroundColor: "var(--theme-bg)" }}
+      style={{ backgroundColor: "var(--theme-workbench-canvas)" }}
     >
       <form
         onSubmit={handleSubmit}

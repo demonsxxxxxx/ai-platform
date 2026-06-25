@@ -62,6 +62,35 @@ test("skills hub trusts public catalog effective permissions over stale auth pro
   assert.equal(state.effectivePermissionsSource, "catalog");
 });
 
+test("ordinary PR177 public projections keep skills and marketplace ready", () => {
+  const common = {
+    isAuthenticated: true,
+    canReadSkills: true,
+    canReadMarketplace: true,
+    effectivePermissions: ["skill:read", "marketplace:read"],
+    effectivePermissionsKnown: true,
+    catalogReadResolved: true,
+  };
+
+  const skills = resolveSkillsHubGovernance({
+    ...common,
+    requestedTab: "skills",
+  });
+  const marketplace = resolveSkillsHubGovernance({
+    ...common,
+    requestedTab: "marketplace",
+  });
+
+  assert.equal(skills.pageState, "ready");
+  assert.equal(skills.hasPermission, true);
+  assert.equal(skills.requiredPermission, "skill:read");
+  assert.equal(skills.effectivePermissionsSource, "catalog");
+  assert.equal(marketplace.pageState, "ready");
+  assert.equal(marketplace.hasPermission, true);
+  assert.equal(marketplace.requiredPermission, "marketplace:read");
+  assert.equal(marketplace.effectivePermissionsSource, "catalog");
+});
+
 test("skills hub treats permission-denied catalog probes as fail-closed", () => {
   const state = resolveSkillsHubGovernance({
     requestedTab: "marketplace",

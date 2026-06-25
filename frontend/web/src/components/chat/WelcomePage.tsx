@@ -46,13 +46,6 @@ interface WelcomePageProps {
   onClearPersonaPreset?: () => void;
 }
 
-interface ComposerSummaryItem {
-  id: string;
-  label: string;
-  value: string;
-  state?: "default" | "enabled" | "unavailable";
-}
-
 interface QuickActionItem {
   id: string;
   label: string;
@@ -195,63 +188,6 @@ export const WelcomePage = memo(function WelcomePage({
   const enabledToolsCount = chatInputProps.enabledToolsCount ?? 0;
   const totalToolsCount = chatInputProps.totalToolsCount ?? 0;
   const attachedFilesCount = chatInputProps.attachments?.length ?? 0;
-  const currentAgentName =
-    chatInputProps.agents?.find(
-      (agent) => agent.id === chatInputProps.currentAgent,
-    )?.name ?? chatInputProps.currentAgent;
-  const selectionSummary = useMemo<ComposerSummaryItem[]>(
-    () => [
-      {
-        id: "skills",
-        label: t("featureMenu.skills", "Skills"),
-        value:
-          totalSkillsCount > 0
-            ? `${enabledSkillsCount}/${totalSkillsCount}`
-            : t("workbench.unavailableShort", "Unavailable"),
-        state: enabledSkillsCount > 0 ? "enabled" : "unavailable",
-      },
-      {
-        id: "mcp",
-        label: t("featureMenu.mcpTools", "MCP tools"),
-        value:
-          totalToolsCount > 0
-            ? `${enabledToolsCount}/${totalToolsCount}`
-            : t("workbench.unavailableShort", "Unavailable"),
-        state: enabledToolsCount > 0 ? "enabled" : "unavailable",
-      },
-      {
-        id: "agent",
-        label: t("featureMenu.agents", "Agents"),
-        value: currentAgentName || t("workbench.defaultAgent", "Default"),
-        state: currentAgentName ? "enabled" : "default",
-      },
-      {
-        id: "model",
-        label: t("featureMenu.model", "Model"),
-        value: chatInputProps.currentModelId || t("workbench.none", "None"),
-        state: chatInputProps.currentModelId ? "enabled" : "default",
-      },
-      {
-        id: "files",
-        label: t("chat.fileReferences", "File references"),
-        value:
-          attachedFilesCount > 0
-            ? String(attachedFilesCount)
-            : t("workbench.none", "None"),
-        state: attachedFilesCount > 0 ? "enabled" : "default",
-      },
-    ],
-    [
-      attachedFilesCount,
-      currentAgentName,
-      enabledSkillsCount,
-      enabledToolsCount,
-      chatInputProps.currentModelId,
-      t,
-      totalSkillsCount,
-      totalToolsCount,
-    ],
-  );
   const quickActions = useMemo<QuickActionItem[]>(
     () => [
       {
@@ -394,51 +330,6 @@ export const WelcomePage = memo(function WelcomePage({
             onPendingInputConsumed={() => setPendingInput(null)}
             className="w-full max-w-5xl px-0"
           />
-        </div>
-
-        <div
-          data-composer-command-dock
-          className="flex w-full max-w-5xl flex-wrap items-center gap-1.5 text-xs text-[var(--theme-text-secondary)]"
-        >
-          <span className="font-medium text-[var(--theme-text)]">
-            {t("workbench.commandDock", "Composer")}
-          </span>
-          {["/", "$", "/mcp", "/model", "/file", "/context"].map((command) => (
-            <span
-              key={command}
-              className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-1.5 py-0.5 font-semibold text-[var(--theme-text)]"
-            >
-              {command}
-            </span>
-          ))}
-          <span className="min-w-0">
-            {t(
-              "workbench.commandDockHint",
-              "Type commands directly in the input; governed entries become chips.",
-            )}
-          </span>
-        </div>
-
-        <div
-          data-composer-selection-summary
-          className="flex w-full max-w-5xl flex-wrap gap-1.5"
-        >
-          {selectionSummary.map((item) => (
-            <span
-              key={item.id}
-              className={`inline-flex max-w-[12rem] items-center gap-1 rounded-md border px-2 py-1 text-[11px] ${
-                item.state === "enabled"
-                  ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200"
-                : item.state === "unavailable"
-                    ? "border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]"
-                    : "border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] text-[var(--theme-text-secondary)]"
-              }`}
-              title={`${item.label}: ${item.value}`}
-            >
-              <span className="truncate font-medium">{item.label}</span>
-              <span className="shrink-0 opacity-80">{item.value}</span>
-            </span>
-          ))}
         </div>
 
         <div

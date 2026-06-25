@@ -126,10 +126,13 @@ test("light workbench tokens avoid returning to a white chat canvas", () => {
 test("workbench right context uses the same canvas as the main workspace", () => {
   const surface = read("src/components/workbench/workbenchSurface.ts");
   const rightPanel = read("src/components/workbench/WorkbenchRightPanel.tsx");
+  const chatInput = read("src/components/chat/ChatInput.tsx");
 
   assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(rightPanel, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(rightPanel, /workbenchSurface\.secondaryPanel/);
+  assert.match(chatInput, /backgroundColor: "var\(--theme-workbench-canvas\)"/);
+  assert.doesNotMatch(chatInput, /backgroundColor: "var\(--theme-bg\)"/);
 });
 
 test("post-login projection panels share workbench surface tokens", () => {
@@ -579,10 +582,10 @@ test("empty chat keeps the command dock compact and composer-first", () => {
   assert.match(welcome, /data-chat-start-surface/);
   assert.match(welcome, /data-chat-start-header/);
   assert.match(welcome, /data-chat-quick-actions/);
-  assert.match(welcome, /data-composer-command-dock/);
-  assert.match(welcome, /data-composer-selection-summary/);
-  assert.match(welcome, /workbench\.commandDock/);
-  assert.match(welcome, /workbench\.commandDockHint/);
+  assert.doesNotMatch(welcome, /data-composer-command-dock/);
+  assert.doesNotMatch(welcome, /data-composer-selection-summary/);
+  assert.doesNotMatch(welcome, /workbench\.commandDock/);
+  assert.doesNotMatch(welcome, /workbench\.commandDockHint/);
   assert.doesNotMatch(welcome, /welcome-workbench-cockpit/);
   assert.doesNotMatch(welcome, /WorkbenchQueueList/);
   assert.doesNotMatch(welcome, /workbenchSurface\.cockpit/);
@@ -595,4 +598,21 @@ test("empty chat keeps the command dock compact and composer-first", () => {
   assert.doesNotMatch(welcome, /rounded-2xl/);
   assert.doesNotMatch(welcomeLayout, /rounded-2xl/);
   assert.match(welcomeLayout, /rounded-lg/);
+});
+
+test("expanded app sidebar keeps governed catalogs as first-level smoke targets", () => {
+  const sidebar = read(
+    "src/components/panels/SidebarParts/SessionListContent.tsx",
+  );
+  const rail = read("src/components/panels/SidebarParts/SidebarRail.tsx");
+
+  assert.match(sidebar, /data-workbench-nav-item=\{key\}/);
+  assert.match(sidebar, /key: "skills"[\s\S]*navigate\("\/skills"\)/);
+  assert.match(sidebar, /key: "marketplace"[\s\S]*navigate\("\/marketplace"\)/);
+  assert.match(sidebar, /key: "roles"[\s\S]*navigate\("\/roles"\)/);
+  assert.doesNotMatch(sidebar, /data-workbench-nav-item="admin-skills"/);
+  assert.doesNotMatch(sidebar, /data-workbench-nav-item="admin-roles"/);
+  assert.match(rail, /data-workbench-rail-item="skills"/);
+  assert.match(rail, /data-workbench-rail-item="marketplace"/);
+  assert.match(rail, /data-workbench-rail-item="roles"/);
 });
