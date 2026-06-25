@@ -175,7 +175,7 @@ export function MCPPanel() {
         </div>
       )}
 
-      <div className={workbenchSurface.catalog.summaryGrid}>
+      <div className={workbenchSurface.catalog.summaryGridFour}>
         <section className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3`}>
           <div className="flex min-w-0 items-start gap-3">
             <div className={workbenchSurface.catalog.compactIconBox}>

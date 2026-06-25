@@ -470,6 +470,8 @@ test("launchpad and public directory pages use one workbench catalog layout", ()
 
   assert.match(surface, /catalog:/);
   assert.match(surface, /summaryGrid:/);
+  assert.match(surface, /summaryGridFour:/);
+  assert.match(surface, /2xl:grid-cols-4/);
   assert.match(surface, /summaryCard:/);
   assert.match(surface, /content:/);
   assert.match(surface, /cardGrid:/);
@@ -511,6 +513,8 @@ test("launchpad and public directory pages use one workbench catalog layout", ()
   assert.match(launchpad, /PanelHeader/);
   assert.match(launchpad, /data-launchpad-directory-shell/);
   assert.doesNotMatch(launchpad, /border-b border-slate-200/);
+  assert.match(mcp, /workbenchSurface\.catalog\.summaryGridFour/);
+  assert.doesNotMatch(mcp, /workbenchSurface\.catalog\.summaryGrid[^\w]/);
 });
 
 test("composer and command surfaces use stable dimensions", () => {

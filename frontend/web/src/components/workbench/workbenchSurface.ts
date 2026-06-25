@@ -68,6 +68,8 @@ export const workbenchSurface = {
   catalog: {
     summaryGrid:
       "grid gap-3 px-4 pb-2 pt-3 lg:grid-cols-3",
+    summaryGridFour:
+      "grid gap-3 px-4 pb-2 pt-3 lg:grid-cols-3 2xl:grid-cols-4",
     summaryCard:
       "rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)]",
     toolbar:
