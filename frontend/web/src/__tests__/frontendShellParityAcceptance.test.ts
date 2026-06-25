@@ -399,11 +399,12 @@ test("skills and marketplace use a catalog-first workbench layout", () => {
 
   assert.match(skillsHub, /data-skills-catalog-workbench/);
   assert.match(skillsHub, /data-skills-catalog-status/);
-  assert.match(skillsHub, /data-skills-catalog-nav/);
   assert.match(skillsHub, /data-skills-catalog-main/);
   assert.match(skillsHub, /className=\{workbenchSurface\.page\}/);
+  assert.doesNotMatch(skillsHub, /data-skills-catalog-nav/);
   assert.doesNotMatch(skillsHub, /data-skills-catalog-sidebar/);
   assert.doesNotMatch(skillsHub, /<aside/);
+  assert.doesNotMatch(skillsHub, /showTabSwitcher/);
   assert.doesNotMatch(skillsHub, /className="[^"]*bg-\[var\(--theme-workbench-canvas\)\][^"]*"/);
   assert.doesNotMatch(skillsHub, /composerEntry/);
   assert.match(skillsList, /data-skills-catalog-toolbar/);

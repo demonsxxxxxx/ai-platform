@@ -241,14 +241,35 @@ test("role plaza state is resolver-driven instead of hard-coded ready", () => {
 test("skills hub routes use the public contract resolver", () => {
   const hub = read("src/components/panels/SkillsHubPanel.tsx");
   const resolver = read("src/components/panels/SkillsHubPanel/state.ts");
+  const zh = JSON.parse(read("src/i18n/locales/zh.json"));
+  const en = JSON.parse(read("src/i18n/locales/en.json"));
 
   assert.match(hub, /resolveSkillsHubGovernance/);
   assert.match(hub, /data-required-permission=\{hubGovernance\.requiredPermission\}/);
   assert.match(hub, /data-effective-projection-has-permission=\{hubGovernance\.effectiveProjectionHasPermission\}/);
   assert.match(hub, /data-effective-permissions-source=\{hubGovernance\.effectivePermissionsSource\}/);
-  assert.match(hub, /workbenchSurface\.compactPanel/);
+  assert.match(hub, /statusCopyNamespace/);
+  assert.match(hub, /"skillsHub\.skills"/);
+  assert.match(hub, /"skillsHub\.marketplace"/);
+  assert.match(hub, /\$\{statusCopyNamespace\}\.\$\{statusCopyKey\}\.title/);
+  assert.match(hub, /\$\{statusCopyNamespace\}\.\$\{statusCopyKey\}\.description/);
+  assert.match(hub, /data-skills-catalog-status-strip/);
+  assert.doesNotMatch(hub, /<section className=\{`\$\{workbenchSurface\.compactPanel\} p-3`\}>/);
+  assert.doesNotMatch(hub, /PanelHeader/);
   assert.match(hub, /data-skills-catalog-status/);
   assert.doesNotMatch(hub, /data-skills-catalog-nav/);
+  assert.equal(zh.skillsHub.skills.ready.title, "Skills 目录可用");
+  assert.equal(zh.skillsHub.marketplace.ready.title, "技能商店可用");
+  assert.notEqual(
+    zh.skillsHub.skills.ready.description,
+    zh.skillsHub.marketplace.ready.description,
+  );
+  assert.equal(en.skillsHub.skills.ready.title, "Skills catalog is available");
+  assert.equal(en.skillsHub.marketplace.ready.title, "Marketplace is available");
+  assert.notEqual(
+    en.skillsHub.skills.ready.description,
+    en.skillsHub.marketplace.ready.description,
+  );
   assert.match(resolver, /requiredPermission: "skill:read" \| "marketplace:read"/);
   assert.match(resolver, /effectivePermissions\?: string\[\]/);
   assert.match(resolver, /effectiveProjectionHasPermission/);

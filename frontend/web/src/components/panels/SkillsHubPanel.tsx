@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { Permission } from "../../types";
-import { PanelHeader } from "../common/PanelHeader";
 import { MarketplacePanel } from "./MarketplacePanel";
 import { SkillsPanel } from "./SkillsPanel";
 import {
@@ -93,6 +91,9 @@ export function SkillsHubPanel() {
       : governanceState === "degraded"
       ? "degraded"
       : "permissionLimited";
+  const statusCopyNamespace = isMarketplaceView
+    ? "skillsHub.marketplace"
+    : "skillsHub.skills";
   const permissionAvailability = resolveGroupAvailability({
     backed: governanceState !== "degraded",
     enabled: governanceState === "ready",
@@ -138,71 +139,49 @@ export function SkillsHubPanel() {
       data-effective-permissions-source={hubGovernance.effectivePermissionsSource}
       className={workbenchSurface.page}
     >
-      <PanelHeader
-        className="skill-panel-header"
-        title={isMarketplaceView ? t("marketplace.title") : t("skillsHub.title")}
-        subtitle={
-          isMarketplaceView ? t("marketplace.subtitle") : t("skillsHub.subtitle")
-        }
-        icon={
-          <Sparkles size={20} className="text-stone-600 dark:text-stone-400" />
-        }
-      />
-
       <div
         data-skills-catalog-status
-        className="px-4 pt-3"
+        className="px-4 pt-2"
       >
-        <section className={`${workbenchSurface.compactPanel} p-3`}>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div
+          data-skills-catalog-status-strip
+          className="flex flex-col gap-2 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-3 py-2 shadow-[0_1px_2px_rgba(18,38,63,0.03)] sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div className="flex min-w-0 flex-1 items-start gap-2">
+            <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
             <div className="min-w-0">
-              <p className={workbenchSurface.label}>
-                {t("skillsHub.title")}
-              </p>
-              <h2 className="mt-1 text-sm font-semibold text-[var(--theme-text)]">
-                {t(`skillsHub.${statusCopyKey}.title`)}
-              </h2>
-              <p className="mt-1 line-clamp-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
-                {t(`skillsHub.${statusCopyKey}.description`)}
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <h2 className="text-sm font-semibold leading-5 text-[var(--theme-text)]">
+                  {t(`${statusCopyNamespace}.${statusCopyKey}.title`)}
+                </h2>
+                <span
+                  data-skills-hub-state-detail
+                  className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-0.5 text-[11px] font-semibold text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]"
+                >
+                  {hubGovernance.requiredPermission}
+                </span>
+                <span
+                  data-skills-hub-state-detail
+                  className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-0.5 text-[11px] font-medium text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]"
+                >
+                  {t(
+                    `skillsHub.permissionSource.${hubGovernance.effectivePermissionsSource}`,
+                  )}
+                </span>
+              </div>
+              <p className="mt-0.5 line-clamp-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
+                {t(`${statusCopyNamespace}.${statusCopyKey}.description`)}
               </p>
             </div>
-            <GovernanceAvailabilityBadge
-              state={permissionAvailability.state}
-              labelKey={permissionAvailability.labelKey}
-            />
           </div>
-
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            {[
-              {
-                label: t("skillsHub.stateDetails.required"),
-                value: hubGovernance.requiredPermission,
-              },
-              {
-                label: t("skillsHub.stateDetails.source"),
-                value: t(
-                  `skillsHub.permissionSource.${hubGovernance.effectivePermissionsSource}`,
-                ),
-              },
-            ].map((item) => (
-              <div
-                key={item.label}
-                data-skills-hub-state-detail
-                className="rounded-md bg-[var(--theme-bg-sidebar)] px-3 py-2 text-xs ring-1 ring-[var(--theme-border)]"
-              >
-                <p className="font-medium text-[var(--theme-text-secondary)]">
-                  {item.label}
-                </p>
-                <p className="mt-1 truncate font-semibold text-[var(--theme-text)]">
-                  {item.value}
-                </p>
-              </div>
-            ))}
-          </div>
-        </section>
+          <GovernanceAvailabilityBadge
+            state={permissionAvailability.state}
+            labelKey={permissionAvailability.labelKey}
+          />
+        </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 px-4 pb-4 pt-3">
+      <div className="flex min-h-0 flex-1 px-4 pb-4 pt-2">
         <section
           data-skills-catalog-main
           className="min-h-0 min-w-0 flex-1 overflow-hidden"

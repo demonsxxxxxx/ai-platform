@@ -2558,6 +2558,34 @@
       "description": "Skills 与技能市场已经接入当前账号的读权限。写入、发布和部门可用范围继续按管理员授权开放。",
       "title": "Skills 目录可用"
     },
+    "skills": {
+      "degraded": {
+        "description": "Skills 目录可继续浏览；创建、导入、编辑和批量操作继续按权限锁定。",
+        "title": "Skills 降级可读"
+      },
+      "permissionLimited": {
+        "description": "Skills 入口保持可见；管理员为你的部门启用后才开放更多操作。",
+        "title": "Skills 访问受治理"
+      },
+      "ready": {
+        "description": "当前账号可以浏览 Skills 目录；写入、发布和部门范围继续由管理员授权。",
+        "title": "Skills 目录可用"
+      }
+    },
+    "marketplace": {
+      "degraded": {
+        "description": "技能商店可继续浏览；安装、发布和更新操作继续按权限锁定。",
+        "title": "技能商店降级可读"
+      },
+      "permissionLimited": {
+        "description": "技能商店入口保持可见；管理员授权前仅展示可发现目录。",
+        "title": "技能商店访问受治理"
+      },
+      "ready": {
+        "description": "当前账号可以浏览技能商店；安装、发布和更新继续按管理员授权开放。",
+        "title": "技能商店可用"
+      }
+    },
     "permissionSource": {
       "auth": "账号权限",
       "catalog": "目录权限",
