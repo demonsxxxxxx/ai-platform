@@ -41,6 +41,7 @@ test("normalizeMarketplaceListResponse keeps legacy marketplace list arrays comp
     available_tags: [],
     effective_permissions: [],
     effective_permissions_known: false,
+    catalog_read_resolved: true,
   });
 });
 
@@ -62,6 +63,7 @@ test("normalizeMarketplaceListResponse preserves projected marketplace permissio
       available_tags: ["planning", "review"],
       effective_permissions: ["marketplace:read", "skill:write"],
       effective_permissions_known: true,
+      catalog_read_resolved: true,
     },
   );
 });

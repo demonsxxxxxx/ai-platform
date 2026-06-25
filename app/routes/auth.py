@@ -19,6 +19,8 @@ AI_USER_PERMISSIONS = [
     "session:write",
     "skill:read",
     "marketplace:read",
+    "role:read",
+    "role:request",
     "channel:read",
     "user:read",
     "settings:read",

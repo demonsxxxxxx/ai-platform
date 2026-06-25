@@ -69,7 +69,7 @@ export function useMarketplace(options?: { enabled?: boolean }) {
       setSkills(data.skills ?? []);
       setEffectivePermissions(data.effective_permissions ?? []);
       setEffectivePermissionsKnown(data.effective_permissions_known);
-      setCatalogReadResolved(true);
+      setCatalogReadResolved(data.catalog_read_resolved);
       if (data.available_tags.length > 0) {
         setTags(data.available_tags);
       }

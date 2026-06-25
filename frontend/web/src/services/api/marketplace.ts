@@ -18,7 +18,12 @@ const MARKETPLACE_API = `${API_BASE}/api/marketplace`;
 
 type MarketplaceListWireResponse =
   | MarketplaceSkillResponse[]
-  | Omit<MarketplaceListResponse, "effective_permissions_known">;
+  | (Omit<
+      MarketplaceListResponse,
+      "effective_permissions_known" | "catalog_read_resolved"
+    > & {
+      catalog_read_resolved?: boolean;
+    });
 
 /**
  * Build the authenticated public Marketplace list URL used by the post-login catalog.
@@ -52,8 +57,14 @@ export function normalizeMarketplaceListResponse(
       available_tags: [],
       effective_permissions: [],
       effective_permissions_known: false,
+      catalog_read_resolved: true,
     };
   }
+
+  const catalogReadResolved =
+    typeof response.catalog_read_resolved === "boolean"
+      ? response.catalog_read_resolved
+      : true;
 
   return {
     skills: response.skills ?? [],
@@ -63,6 +74,7 @@ export function normalizeMarketplaceListResponse(
     available_tags: response.available_tags ?? [],
     effective_permissions: response.effective_permissions ?? [],
     effective_permissions_known: Array.isArray(response.effective_permissions),
+    catalog_read_resolved: catalogReadResolved,
   };
 }
 

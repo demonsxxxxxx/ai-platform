@@ -141,6 +141,7 @@ export interface MarketplaceListResponse {
   available_tags: string[];
   effective_permissions: string[];
   effective_permissions_known: boolean;
+  catalog_read_resolved: boolean;
 }
 
 // Direct create in marketplace request
