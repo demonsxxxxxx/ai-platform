@@ -263,6 +263,20 @@ test("workbench surface exports shared page containers for governed routes", () 
   assert.match(surface, /sectionPanel:[\s\S]*bg-\[var\(--theme-workbench-panel\)\]/);
 });
 
+test("governed route fallback states use workbench status tokens", () => {
+  const governedRoute = read("src/components/workbench/GovernedRouteWorkbench.tsx");
+
+  assert.match(governedRoute, /data-governed-route-state-chip/);
+  assert.match(governedRoute, /governedRouteStateToneClass/);
+  assert.match(governedRoute, /text-\[var\(--theme-text\)\]/);
+  assert.match(governedRoute, /text-\[var\(--theme-text-secondary\)\]/);
+  assert.doesNotMatch(governedRoute, /stateTone/);
+  assert.doesNotMatch(governedRoute, /bg-(?:emerald|amber|rose|sky|slate)-50/);
+  assert.doesNotMatch(governedRoute, /text-(?:emerald|amber|rose|sky|slate)-[67]00/);
+  assert.doesNotMatch(governedRoute, /dark:bg-(?:emerald|amber|rose|sky|slate)-950/);
+  assert.doesNotMatch(governedRoute, /text-stone-(?:700|800|900)/);
+});
+
 test("safe projection pages render a full workbench instead of thin lists", () => {
   const projectionPages = read("src/components/workbench/WorkbenchProjectionPages.tsx");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
