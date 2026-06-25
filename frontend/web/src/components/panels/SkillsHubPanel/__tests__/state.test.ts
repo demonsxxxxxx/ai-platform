@@ -102,9 +102,35 @@ test("keeps public catalog probes readable instead of blocking the page", () => 
 
   assert.equal(state.hasPermission, true);
   assert.equal(state.governedUnavailable, false);
-  assert.equal(state.pageState, "ready");
+  assert.equal(state.pageState, "loading");
   assert.equal(state.effectivePermissionsSource, "probe");
   assert.equal(state.degraded, false);
+});
+
+test("keeps PR177 public catalog routes loading until the read contract resolves", () => {
+  const skills = resolveSkillsHubGovernance({
+    requestedTab: "skills",
+    isAuthenticated: true,
+    canReadSkills: false,
+    canReadMarketplace: false,
+    catalogReadPending: true,
+  });
+  const marketplace = resolveSkillsHubGovernance({
+    requestedTab: "marketplace",
+    isAuthenticated: true,
+    canReadSkills: false,
+    canReadMarketplace: false,
+    catalogReadPending: true,
+  });
+
+  assert.equal(skills.pageState, "loading");
+  assert.equal(skills.hasPermission, true);
+  assert.equal(skills.governedUnavailable, false);
+  assert.equal(skills.effectivePermissionsSource, "probe");
+  assert.equal(marketplace.pageState, "loading");
+  assert.equal(marketplace.hasPermission, true);
+  assert.equal(marketplace.governedUnavailable, false);
+  assert.equal(marketplace.effectivePermissionsSource, "probe");
 });
 
 test("keeps auth-granted catalog routes ready while effective permissions are not projected", () => {

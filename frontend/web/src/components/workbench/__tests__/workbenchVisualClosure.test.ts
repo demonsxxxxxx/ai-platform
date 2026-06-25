@@ -43,11 +43,17 @@ test("authenticated workbench source avoids marketing and nested-card patterns",
 test("post-login routes do not fall back to public landing or split backgrounds", () => {
   const tabContent = read("src/components/layout/AppContent/TabContent.tsx");
   const header = read("src/components/layout/AppContent/Header.tsx");
+  const appShell = read("src/components/layout/AppContent/AppShell.tsx");
   const launchpad = read("src/components/launchpad/LaunchpadPanel.tsx");
   const sidebar = read(
     "src/components/panels/SidebarParts/SessionListContent.tsx",
   );
 
+  assert.match(
+    appShell,
+    /backgroundColor: "var\(--theme-workbench-canvas\)"/,
+  );
+  assert.doesNotMatch(appShell, /backgroundColor: "var\(--theme-bg\)"/);
   assert.match(
     tabContent,
     /className="flex-1 overflow-hidden bg-\[var\(--theme-workbench-canvas\)\]"/,
@@ -348,6 +354,7 @@ test("skills hub routes use the public contract resolver", () => {
   assert.match(hub, /statusCopyNamespace/);
   assert.match(hub, /"skillsHub\.skills"/);
   assert.match(hub, /"skillsHub\.marketplace"/);
+  assert.match(hub, /governanceState === "loading"\s*\?\s*"loading"/);
   assert.match(hub, /\$\{statusCopyNamespace\}\.\$\{statusCopyKey\}\.title/);
   assert.match(hub, /\$\{statusCopyNamespace\}\.\$\{statusCopyKey\}\.description/);
   assert.match(hub, /data-skills-catalog-status-strip/);
@@ -362,13 +369,17 @@ test("skills hub routes use the public contract resolver", () => {
   assert.match(hub, /data-skills-catalog-status/);
   assert.doesNotMatch(hub, /data-skills-catalog-nav/);
   assert.equal(zh.skillsHub.skills.ready.title, "Skills 目录可用");
+  assert.equal(zh.skillsHub.skills.loading.title, "正在检查 Skills 目录");
   assert.equal(zh.skillsHub.marketplace.ready.title, "技能商店可用");
+  assert.equal(zh.skillsHub.marketplace.loading.title, "正在检查技能商店");
   assert.notEqual(
     zh.skillsHub.skills.ready.description,
     zh.skillsHub.marketplace.ready.description,
   );
   assert.equal(en.skillsHub.skills.ready.title, "Skills catalog is available");
+  assert.equal(en.skillsHub.skills.loading.title, "Checking Skills catalog");
   assert.equal(en.skillsHub.marketplace.ready.title, "Marketplace is available");
+  assert.equal(en.skillsHub.marketplace.loading.title, "Checking marketplace");
   assert.notEqual(
     en.skillsHub.skills.ready.description,
     en.skillsHub.marketplace.ready.description,

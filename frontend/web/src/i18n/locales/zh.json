@@ -2576,6 +2576,10 @@
         "description": "Skills 目录可继续浏览；创建、导入、编辑和批量操作继续按权限锁定。",
         "title": "Skills 降级可读"
       },
+      "loading": {
+        "description": "正在读取当前账号的 Skills 目录权限，确认前不展示可用或受限结论。",
+        "title": "正在检查 Skills 目录"
+      },
       "permissionLimited": {
         "description": "Skills 入口保持可见；管理员为你的部门启用后才开放更多操作。",
         "title": "Skills 访问受治理"
@@ -2589,6 +2593,10 @@
       "degraded": {
         "description": "技能商店可继续浏览；安装、发布和更新操作继续按权限锁定。",
         "title": "技能商店降级可读"
+      },
+      "loading": {
+        "description": "正在读取当前账号的技能商店权限，确认前不展示可用或受限结论。",
+        "title": "正在检查技能商店"
       },
       "permissionLimited": {
         "description": "技能商店入口保持可见；管理员授权前仅展示可发现目录。",
