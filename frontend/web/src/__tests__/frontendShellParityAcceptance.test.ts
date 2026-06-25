@@ -29,7 +29,15 @@ test("app routes expose PRD phase 1B and 1C surfaces", () => {
     "utf8",
   );
 
-  for (const route of ["/chat", "/apps", "/skills", "/marketplace", "/mcp"]) {
+  for (const route of [
+    "/chat",
+    "/apps",
+    "/skills",
+    "/marketplace",
+    "/mcp",
+    "/persona",
+    "/files",
+  ]) {
     assert.match(app, new RegExp(`path="${route.replace("/", "\\/")}`));
   }
   assert.match(app, /path="\/channels\/:channelType\?\/:instanceId\?"/);
@@ -61,6 +69,8 @@ test("phase 1C discovery routes are login reachable and fail closed inside pages
     "/skills",
     "/marketplace",
     "/mcp",
+    "/persona",
+    "/files",
     "/roles",
     "/channels/:channelType?/:instanceId?",
   ]) {
@@ -172,17 +182,20 @@ test("authenticated sidebar uses governed workbench entries instead of old plaza
   for (const route of ["/agents", "/models", "/roles", "/channels"]) {
     assert.match(sidebar, new RegExp(`navigate\\("${route}"\\)`), route);
   }
+  for (const route of ["/persona", "/files"]) {
+    assert.match(sidebar, new RegExp(`navigate\\("${route}"\\)`), route);
+  }
   for (const handler of [
     "onOpenAgents",
     "onOpenModels",
     "onOpenRoles",
     "onOpenChannels",
+    "onOpenPersona",
+    "onOpenFiles",
   ]) {
     assert.match(sidebar, new RegExp(handler), handler);
   }
   assert.doesNotMatch(sidebar, /Permission\.ROLE_READ|Permission\.AGENT_ADMIN|Permission\.MODEL_READ|Permission\.CHANNEL_READ/);
-  assert.doesNotMatch(sidebar, /navigate\("\/persona"\)/);
-  assert.doesNotMatch(sidebar, /navigate\("\/files"\)/);
   assert.doesNotMatch(sidebar, /onOpenPersonaPlaza|onOpenFileLibrary/);
   assert.doesNotMatch(sidebar, /hasMoreMenuItems|MobileMoreMenuSheet|DesktopMoreMenu/);
   assert.match(sidebar, /useProjectSessionList\("all"/);
@@ -387,7 +400,8 @@ test("skills and marketplace use a catalog-first workbench layout", () => {
   assert.match(skillsHub, /data-skills-catalog-workbench/);
   assert.match(skillsHub, /data-skills-catalog-sidebar/);
   assert.match(skillsHub, /data-skills-catalog-main/);
-  assert.match(skillsHub, /bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.match(skillsHub, /className=\{workbenchSurface\.page\}/);
+  assert.doesNotMatch(skillsHub, /className="[^"]*bg-\[var\(--theme-workbench-canvas\)\][^"]*"/);
   assert.doesNotMatch(skillsHub, /composerEntry/);
   assert.match(skillsList, /data-skills-catalog-toolbar/);
   assert.match(skillsList, /data-skills-catalog-grid/);
@@ -439,14 +453,26 @@ test("authenticated shell chrome avoids legacy playful branding accents", () => 
   assert.match(chrome, /bg-teal-700/);
 });
 
-test("persona and files standalone routes are retired from the authenticated workbench", () => {
+test("persona and files are governed authenticated workbench pages", () => {
   const app = readFileSync(join(root, "src/App.tsx"), "utf8");
   const tabs = readFileSync(
     join(root, "src/components/layout/AppContent/TabContent.tsx"),
     "utf8",
   );
-  const sidebarParts = readFileSync(
-    join(root, "src/components/panels/SidebarParts/index.ts"),
+  const tabTypes = readFileSync(
+    join(root, "src/components/layout/AppContent/types.ts"),
+    "utf8",
+  );
+  const sessionSidebar = readFileSync(
+    join(root, "src/components/panels/SessionSidebar.tsx"),
+    "utf8",
+  );
+  const sidebarList = readFileSync(
+    join(root, "src/components/panels/SidebarParts/SessionListContent.tsx"),
+    "utf8",
+  );
+  const sidebarRail = readFileSync(
+    join(root, "src/components/panels/SidebarParts/SidebarRail.tsx"),
     "utf8",
   );
   const welcome = readFileSync(
@@ -457,7 +483,23 @@ test("persona and files standalone routes are retired from the authenticated wor
     join(root, "src/components/chat/ChatInputSelectors.tsx"),
     "utf8",
   );
-  const activeGraph = [app, tabs, sidebarParts, welcome, inputSelectors].join("\n");
+  const activeGraph = [
+    app,
+    tabs,
+    sessionSidebar,
+    sidebarList,
+    sidebarRail,
+    welcome,
+    inputSelectors,
+  ].join("\n");
+  const personaWorkbench = readFileSync(
+    join(root, "src/components/persona/PersonaWorkbenchPanel.tsx"),
+    "utf8",
+  );
+  const filesWorkbench = readFileSync(
+    join(root, "src/components/fileLibrary/RevealedFilesWorkbenchPanel.tsx"),
+    "utf8",
+  );
   const fileToolbar = readFileSync(
     join(root, "src/components/fileLibrary/components/Toolbar.tsx"),
     "utf8",
@@ -508,19 +550,47 @@ test("persona and files standalone routes are retired from the authenticated wor
   );
   const zhLocale = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
 
-  assert.match(app, /path="\/persona"[\s\S]{0,220}<Navigate to="\/chat" replace \/>/);
-  assert.match(app, /path="\/files"[\s\S]{0,220}<Navigate to="\/chat" replace \/>/);
-  assert.doesNotMatch(app, /function PersonaPage\(\)/);
-  assert.doesNotMatch(app, /function FilesPage\(\)/);
-  assert.doesNotMatch(app, /activeTab="persona"/);
-  assert.doesNotMatch(app, /activeTab="files"/);
-  assert.doesNotMatch(activeGraph, /navigate\("\/persona"\)/);
-  assert.doesNotMatch(activeGraph, /navigate\("\/files"\)/);
+  for (const [route, page, tab] of [
+    ["/persona", "PersonaPage", "persona"],
+    ["/files", "FilesPage", "files"],
+  ] as const) {
+    assert.match(
+      app,
+      new RegExp(
+        `path="${route}"[\\s\\S]{0,260}<ProtectedRoute>[\\s\\S]{0,220}<${page} \\/>[\\s\\S]{0,120}<\\/ProtectedRoute>`,
+      ),
+      `${route} should be login reachable inside the authenticated shell`,
+    );
+    assert.match(
+      app,
+      new RegExp(
+        `function ${page}\\(\\)[\\s\\S]{0,260}<AppContent key="${tab}" activeTab="${tab}" \\/>`,
+      ),
+      `${page} should render AppContent with the governed ${tab} tab`,
+    );
+    assert.match(tabTypes, new RegExp(`\\| "${tab}"`));
+  }
+  assert.doesNotMatch(app, /path="\/persona"[\s\S]{0,220}<Navigate to="\/chat" replace \/>/);
+  assert.doesNotMatch(app, /path="\/files"[\s\S]{0,220}<Navigate to="\/chat" replace \/>/);
+  assert.match(activeGraph, /navigate\("\/persona"\)/);
+  assert.match(activeGraph, /navigate\("\/files"\)/);
   assert.doesNotMatch(activeGraph, /PersonaPlazaPanel|persona:\s*PersonaPlazaPanel/);
-  assert.doesNotMatch(tabs, /const PersonaWorkbenchPanel = lazy/);
-  assert.doesNotMatch(tabs, /const RevealedFilesWorkbenchPanel = lazy/);
-  assert.doesNotMatch(tabs, /persona:\s*PersonaWorkbenchPanel/);
-  assert.doesNotMatch(tabs, /files:\s*RevealedFilesWorkbenchPanel/);
+  assert.match(tabs, /const PersonaWorkbenchPanel = lazy/);
+  assert.match(tabs, /const RevealedFilesWorkbenchPanel = lazy/);
+  assert.match(tabs, /persona:\s*PersonaWorkbenchPanel/);
+  assert.match(tabs, /files:\s*RevealedFilesWorkbenchPanel/);
+  assert.match(personaWorkbench, /data-persona-workbench-shell/);
+  assert.match(personaWorkbench, /data-frontend-governance-state=\{governanceState\}/);
+  assert.match(personaWorkbench, /resolveFrontendGovernanceState/);
+  assert.match(personaWorkbench, /WorkbenchStateSurface/);
+  assert.match(personaWorkbench, /personaPresets\.backendGapDetail/);
+  assert.doesNotMatch(personaWorkbench, /details=\{persona\.error \? \[persona\.error\] : undefined\}/);
+  assert.match(filesWorkbench, /data-files-workbench-shell/);
+  assert.match(filesWorkbench, /data-frontend-governance-state=\{governanceState\}/);
+  assert.match(filesWorkbench, /resolveFrontendGovernanceState/);
+  assert.match(filesWorkbench, /WorkbenchStateSurface/);
+  assert.match(filesWorkbench, /fileLibrary\.backendGapDetail/);
+  assert.doesNotMatch(filesWorkbench, /details=\{filesProjectionError \? \[filesProjectionError\] : undefined\}/);
   assert.doesNotMatch(activeGraph, /MobileMoreMenuSheet|DesktopMoreMenu/);
   assert.doesNotMatch(personaSelector, /角色广场/);
   assert.match(personaSelector, /bg-slate-950\/35/);
@@ -542,6 +612,8 @@ test("persona and files standalone routes are retired from the authenticated wor
     ["FileCardPreview", fileCardPreview],
     ["FileGridCard", fileGridCard],
     ["FileSessionGroup", fileSessionGroup],
+    ["PersonaWorkbenchPanel", personaWorkbench],
+    ["RevealedFilesWorkbenchPanel", filesWorkbench],
   ] as const) {
     assert.doesNotMatch(source, /bg-white(?:\/\d+)?/, name);
     assert.doesNotMatch(source, /bg-stone-50(?!0)(?:\/\d+)?/, name);
@@ -593,6 +665,54 @@ test("persona degraded state does not render a false empty catalog", () => {
   assert.doesNotMatch(degradedReturn, /persona\.paged/);
 });
 
+test("persona and files degraded states hide raw missing-route errors", () => {
+  const personaWorkbench = readFileSync(
+    join(root, "src/components/persona/PersonaWorkbenchPanel.tsx"),
+    "utf8",
+  );
+  const filesWorkbench = readFileSync(
+    join(root, "src/components/fileLibrary/RevealedFilesWorkbenchPanel.tsx"),
+    "utf8",
+  );
+  const zhLocale = JSON.parse(readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8"));
+  const enLocale = JSON.parse(readFileSync(join(root, "src/i18n/locales/en.json"), "utf8"));
+  const personaDegradedReturn = personaWorkbench.match(
+    /if \(governanceState === "degraded"\) \{\s*return \(([\s\S]*?)\);\s*\}/,
+  )?.[1] ?? "";
+  const filesDegradedReturn = filesWorkbench.match(
+    /if \(governanceState === "degraded"\) \{\s*return \(([\s\S]*?)\);\s*\}/,
+  )?.[1] ?? "";
+
+  for (const [name, source] of [
+    ["PersonaWorkbenchPanel degraded branch", personaDegradedReturn],
+    ["RevealedFilesWorkbenchPanel degraded branch", filesDegradedReturn],
+  ] as const) {
+    assert.doesNotMatch(source, /details=\{[^}]*persona\.error/si, name);
+    assert.doesNotMatch(source, /details=\{[^}]*filesProjectionError/si, name);
+    assert.doesNotMatch(source, /Not Found|Request failed:\s*404|statusText|response\.status/i, name);
+  }
+
+  for (const [locale, copy] of [
+    ["zh", zhLocale],
+    ["en", enLocale],
+  ] as const) {
+    const personaCopy = JSON.stringify({
+      degradedTitle: copy.personaPresets.degradedTitle,
+      degradedDescription: copy.personaPresets.degradedDescription,
+      backendGapDetail: copy.personaPresets.backendGapDetail,
+    });
+    const fileCopy = JSON.stringify({
+      degradedTitle: copy.fileLibrary.degradedTitle,
+      degradedDescription: copy.fileLibrary.degradedDescription,
+      backendGapDetail: copy.fileLibrary.backendGapDetail,
+    });
+    assert.match(personaCopy, /backendGapDetail|后端角色预设投影|persona preset projection/i, locale);
+    assert.match(fileCopy, /backendGapDetail|后端文件库投影|file library projection/i, locale);
+    assert.doesNotMatch(personaCopy, /Not Found|Request failed:\s*404/i, locale);
+    assert.doesNotMatch(fileCopy, /Not Found|Request failed:\s*404/i, locale);
+  }
+});
+
 test("authenticated marketplace pages share the workbench surface tokens", () => {
   const skillsHub = readFileSync(
     join(root, "src/components/panels/SkillsHubPanel.tsx"),
@@ -616,8 +736,10 @@ test("authenticated marketplace pages share the workbench surface tokens", () =>
   );
   const utilities = readFileSync(join(root, "src/styles/utilities.css"), "utf8");
 
-  assert.match(skillsHub, /bg-\[var\(--theme-workbench-canvas\)\]/);
-  assert.match(marketplace, /bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.match(skillsHub, /className=\{workbenchSurface\.page\}/);
+  assert.match(marketplace, /className=\{workbenchSurface\.page\}/);
+  assert.doesNotMatch(skillsHub, /className="[^"]*bg-\[var\(--theme-workbench-canvas\)\][^"]*"/);
+  assert.doesNotMatch(marketplace, /className="[^"]*bg-\[var\(--theme-workbench-canvas\)\][^"]*"/);
   assert.match(marketplace, /data-marketplace-catalog-shell/);
   assert.match(marketplace, /data-frontend-governance-state/);
   assert.match(marketplace, /effectiveGovernedUnavailable/);
@@ -744,7 +866,8 @@ test("model catalog route is a governed public-projection workbench page", () =>
   assert.match(modelCatalog, /deriveProviderProjections/);
   assert.match(modelCatalog, /WorkbenchStateSurface/);
   assert.match(modelCatalog, /data-model-admin-governance/);
-  assert.match(modelCatalog, /bg-\[var\(--theme-bg\)\]/);
+  assert.match(modelCatalog, /className=\{workbenchSurface\.page\}/);
+  assert.doesNotMatch(modelCatalog, /className="[^"]*bg-\[var\(--theme-workbench-canvas\)\][^"]*"/);
   assert.ok(JSON.parse(zhLocale).models);
   assert.ok(JSON.parse(enLocale).models);
   for (const source of [
@@ -871,9 +994,15 @@ test("workbench projection pages consume safe backend contracts instead of phase
   assert.match(projectionPages, /WorkbenchStateSurface/);
   assert.match(projectionPages, /GovernanceAvailabilityBadge/);
   assert.match(projectionPages, /workbenchSurface/);
+  assert.match(projectionPages, /data-projection-workbench-grid/);
+  assert.match(projectionPages, /data-projection-summary-panel/);
+  assert.match(projectionPages, /data-projection-insight-panel/);
+  assert.match(projectionPages, /data-projection-list-panel/);
+  assert.match(projectionPages, /ProjectionMetric/);
   assert.match(projectionPages, /governance\.secret_material_projected/);
   assert.match(projectionPages, /state === "degraded"/);
   assert.match(projectionPages, /state === "forbidden"/);
+  assert.doesNotMatch(projectionPages, /<div className="mt-3">\{children\}<\/div>/);
   assert.doesNotMatch(projectionPages, /roleApi|settingsApi|NotificationPanel|UsersPanel/);
 
   for (const endpoint of [

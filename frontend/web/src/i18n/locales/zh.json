@@ -1068,6 +1068,7 @@
       "newCollection": "新建收藏夹"
     },
     "allProjects": "全部项目",
+    "backendGapDetail": "后端文件库投影尚未返回可读目录；列表、分组、统计和预览操作会保持锁定，直到 /api/files/revealed 返回工作台合同。",
     "clearFilters": "清除",
     "column": {
       "date": "日期",
@@ -1083,6 +1084,8 @@
       "unfavorite": "取消收藏"
     },
     "empty": "还没有展示过的文件",
+    "degradedDescription": "后端文件库投影暂不可用；页面保留工作台入口，并避免把缺路由误显示为空文件库。",
+    "degradedTitle": "文件投影已降级",
     "favorites": "我的收藏",
     "files": "个文件",
     "filter": {
@@ -1647,6 +1650,7 @@
     "archived": "已归档",
     "avatar": "头像",
     "avatarUploadFailed": "头像上传失败",
+    "backendGapDetail": "后端角色预设投影尚未返回可读目录；读取、筛选和写入操作会保持锁定，直到 /api/persona-presets 返回工作台合同。",
     "change": "更换角色",
     "changeAvatar": "更换头像",
     "clear": "清除使用",
@@ -1664,6 +1668,8 @@
     "createSuccess": "角色「{{name}}」已创建",
     "deleteFailed": "删除角色预设失败",
     "deleteSuccess": "角色「{{name}}」已删除",
+    "degradedDescription": "后端角色预设投影暂不可用；页面保留工作台入口，并避免把缺路由误显示为空角色目录。",
+    "degradedTitle": "角色投影已降级",
     "description": "简介",
     "descriptionPlaceholder": "简短描述角色的能力和特点",
     "draft": "草稿",
@@ -2986,13 +2992,25 @@
         "title": "用户",
         "subtitle": "安全公司用户目录投影；生命周期变更继续受治理。",
         "search": "搜索用户",
-        "empty": "当前投影中没有可见用户。"
+        "empty": "当前投影中没有可见用户。",
+        "total": "目录总数",
+        "visible": "当前可见 {{count}} 人",
+        "active": "启用账号",
+        "inactive": "{{count}} 个未启用",
+        "roles": "角色覆盖",
+        "rolesDetail": "来自安全角色投影"
       },
       "settings": {
         "title": "设置",
         "subtitle": "来自安全后端投影的个人与系统设置。",
         "empty": "当前投影中没有可见设置。",
-        "redacted": "[已脱敏]"
+        "redacted": "[已脱敏]",
+        "groups": "设置分组",
+        "items": "{{count}} 个设置项",
+        "redactedCount": "脱敏项",
+        "redactedDetail": "不展示密钥材料",
+        "auditCount": "审计项",
+        "auditDetail": "变更需审计或回滚"
       },
       "feedback": {
         "title": "反馈",
@@ -3002,12 +3020,20 @@
         "negative": "需要跟进",
         "total": "总数",
         "up": "正向",
-        "down": "负向"
+        "down": "负向",
+        "totalDetail": "当前工作台反馈",
+        "downDetail": "待分派或跟进"
       },
       "notifications": {
         "title": "通知公告",
         "subtitle": "运行时通知和受治理的公告投影。",
-        "empty": "当前投影中没有可见通知。"
+        "empty": "当前投影中没有可见通知。",
+        "total": "通知总数",
+        "totalDetail": "运行时与公告投影",
+        "unread": "未读",
+        "unreadDetail": "当前账号状态",
+        "active": "生效中",
+        "activeDetail": "可展示通知"
       }
     },
     "governedRoute": {

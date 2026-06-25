@@ -128,7 +128,7 @@ export function SkillsHubPanel() {
       data-auth-projection-has-permission={hubGovernance.authProjectionHasPermission}
       data-effective-projection-has-permission={hubGovernance.effectiveProjectionHasPermission}
       data-effective-permissions-source={hubGovernance.effectivePermissionsSource}
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      className={workbenchSurface.page}
     >
       <PanelHeader
         className="skill-panel-header"
@@ -217,7 +217,7 @@ export function SkillsHubPanel() {
               <div
                 key={item.label}
                 data-skills-hub-state-detail
-                className="rounded-md bg-[var(--theme-bg-sidebar)] px-3 py-2 text-xs ring-1 ring-[var(--theme-border)] dark:bg-stone-950/70 dark:ring-stone-800"
+                className="rounded-md bg-[var(--theme-bg-sidebar)] px-3 py-2 text-xs ring-1 ring-[var(--theme-border)]"
               >
                 <p className="font-medium text-slate-500 dark:text-stone-400">
                   {item.label}

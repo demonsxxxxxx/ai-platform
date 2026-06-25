@@ -455,6 +455,8 @@ export const SessionSidebar = forwardRef<
             onOpenChannels={() => navigate("/channels")}
             onOpenAgents={() => navigate("/agents")}
             onOpenModels={() => navigate("/models")}
+            onOpenPersona={() => navigate("/persona")}
+            onOpenFiles={() => navigate("/files")}
             onOpenRoles={() => navigate("/roles")}
             recentChatsBtnRef={recentChatsBtnRef}
             onShowProfile={onShowProfile!}

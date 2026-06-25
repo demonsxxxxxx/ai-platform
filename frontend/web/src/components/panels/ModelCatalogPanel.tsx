@@ -144,7 +144,7 @@ export function ModelCatalogPanel() {
 
   if (isLoading) {
     return (
-      <div className="h-full bg-[var(--theme-bg)]">
+      <div className={workbenchSurface.statePage}>
         <PanelLoadingState text={t("models.loading", "正在加载模型目录")} />
       </div>
     );
@@ -152,7 +152,7 @@ export function ModelCatalogPanel() {
 
   if (!state && loadError) {
     return (
-      <div className="flex h-full min-h-0 items-center justify-center bg-[var(--theme-bg)] px-4">
+      <div className={workbenchSurface.statePage}>
         <WorkbenchStateSurface
           state="degraded"
           surface="model-public-projection"
@@ -172,7 +172,7 @@ export function ModelCatalogPanel() {
       data-frontend-governance-state={
         state?.models.length ? "ready" : "degraded"
       }
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-[var(--theme-text)]"
+      className={workbenchSurface.page}
     >
       <PanelHeader
         title={t("models.title", "模型")}

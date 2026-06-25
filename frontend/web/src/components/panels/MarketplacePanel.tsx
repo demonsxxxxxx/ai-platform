@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   X,
   ShoppingBag,
@@ -25,6 +25,7 @@ import {
   isPermissionError,
   resolveFrontendGovernanceState,
 } from "../governance/frontendGovernanceState";
+import { workbenchSurface } from "../workbench/workbenchSurface";
 
 interface MarketplacePanelProps {
   embedded?: boolean;
@@ -50,6 +51,7 @@ export function MarketplacePanel({
   const {
     skills,
     tags,
+    effectivePermissions: marketplaceEffectivePermissions,
     isLoading,
     error,
     listError,
@@ -97,7 +99,14 @@ export function MarketplacePanel({
     effectivePermissions: userEffectivePermissions,
   } = useSkills({ enabled: !effectiveGovernedUnavailable });
   const marketplaceDirectWriteBacked = true;
-  const effectivePermissions = new Set(userEffectivePermissions);
+  const catalogEffectivePermissions = useMemo(
+    () =>
+      marketplaceEffectivePermissions.length > 0
+        ? marketplaceEffectivePermissions
+        : userEffectivePermissions,
+    [marketplaceEffectivePermissions, userEffectivePermissions],
+  );
+  const effectivePermissions = new Set(catalogEffectivePermissions);
   const hasEffectiveSkillWrite =
     hasAnyPermission([Permission.SKILL_WRITE]) ||
     effectivePermissions.has(Permission.SKILL_WRITE);
@@ -123,13 +132,13 @@ export function MarketplacePanel({
     onCatalogStateChange?.({
       permissionDenied,
       projectionError: permissionDenied ? null : listError,
-      effectivePermissions: userEffectivePermissions,
+      effectivePermissions: catalogEffectivePermissions,
     });
   }, [
+    catalogEffectivePermissions,
     listError,
     onCatalogStateChange,
     permissionDenied,
-    userEffectivePermissions,
   ]);
 
   const installedMarketplaceNames = new Set(
@@ -412,7 +421,7 @@ export function MarketplacePanel({
       data-phase1c-surface="marketplace"
       data-frontend-governance-state={governanceState}
       data-marketplace-catalog-shell
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      className={workbenchSurface.page}
     >
       {embedded && (
         <div data-marketplace-catalog-toolbar className="skill-panel-header">

@@ -111,7 +111,7 @@ export function ChannelImportPanel() {
       data-phase1c-surface="channel-import"
       data-channel-workbench-shell
       data-frontend-governance-state={governanceState}
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      className={workbenchSurface.page}
     >
       <PanelHeader
         title={t("channelImport.title")}
@@ -145,12 +145,12 @@ export function ChannelImportPanel() {
             <div className="flex items-start justify-between gap-3 p-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <ShieldCheck size={16} className="text-stone-500" />
-                  <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                  <ShieldCheck size={16} className="text-[var(--theme-text-secondary)]" />
+                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
                     {t("channelImport.capabilities.publicSources.title")}
                   </h3>
                 </div>
-                <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
                   {t("channelImport.capabilities.publicSources.description")}
                 </p>
               </div>
@@ -164,12 +164,12 @@ export function ChannelImportPanel() {
             <div className="flex items-start justify-between gap-3 p-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <BellRing size={16} className="text-stone-500" />
-                  <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                  <BellRing size={16} className="text-[var(--theme-text-secondary)]" />
+                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
                     {t("channelImport.capabilities.runtimeNotices.title")}
                   </h3>
                 </div>
-                <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
                   {t("channelImport.capabilities.runtimeNotices.description")}
                 </p>
               </div>
@@ -187,12 +187,12 @@ export function ChannelImportPanel() {
             <div className="flex items-start justify-between gap-3 p-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <LockKeyhole size={16} className="text-stone-500" />
-                  <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                  <LockKeyhole size={16} className="text-[var(--theme-text-secondary)]" />
+                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
                     {t("channelImport.capabilities.lifecycle.title")}
                   </h3>
                 </div>
-                <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
                   {t("channelImport.capabilities.lifecycle.description")}
                 </p>
               </div>
@@ -208,12 +208,12 @@ export function ChannelImportPanel() {
           <div className={workbenchSurface.panel}>
             <div className="border-b border-[var(--theme-border)] px-4 py-3 dark:border-stone-800">
               <div className="flex items-center gap-2">
-                <Cable size={16} className="text-stone-500" />
-                <h2 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                <Cable size={16} className="text-[var(--theme-text-secondary)]" />
+                <h2 className="text-sm font-semibold text-[var(--theme-text)]">
                   {t("channelImport.sourcesTitle")}
                 </h2>
               </div>
-              <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+              <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
                 {t("channelImport.sourcesDescription")}
               </p>
             </div>
@@ -257,17 +257,17 @@ export function ChannelImportPanel() {
                 {channels.map((channel) => (
                   <article
                     key={channel.channel_id}
-                    className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] p-3 dark:border-stone-800 dark:bg-stone-950/50"
+                    className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] p-3"
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
-                          <Inbox size={15} className="text-stone-500" />
-                          <h3 className="truncate text-sm font-semibold text-stone-900 dark:text-stone-100">
+                          <Inbox size={15} className="text-[var(--theme-text-secondary)]" />
+                          <h3 className="truncate text-sm font-semibold text-[var(--theme-text)]">
                             {channel.display_name}
                           </h3>
                         </div>
-                        <p className="mt-2 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                        <p className="mt-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
                           {t("channelImport.catalogItem.description", {
                             type: channel.channel_type,
                             workspace: channel.workspace_id,
@@ -284,16 +284,16 @@ export function ChannelImportPanel() {
                       />
                     </div>
 
-                    <div className="mt-3 grid gap-2 text-xs text-stone-500 dark:text-stone-400">
-                      <div className="flex items-center justify-between gap-3 rounded-md bg-[var(--theme-bg-card)] px-2.5 py-2 ring-1 ring-[var(--theme-border)] dark:bg-stone-900 dark:ring-stone-800">
+                    <div className="mt-3 grid gap-2 text-xs text-[var(--theme-text-secondary)]">
+                      <div className="flex items-center justify-between gap-3 rounded-md bg-[var(--theme-bg-card)] px-2.5 py-2 ring-1 ring-[var(--theme-border)]">
                         <span>{t("channelImport.redaction")}</span>
-                        <span className="font-medium text-stone-700 dark:text-stone-200">
+                        <span className="font-medium text-[var(--theme-text)]">
                           {channel.redaction_policy}
                         </span>
                       </div>
-                      <div className="flex items-center justify-between gap-3 rounded-md bg-[var(--theme-bg-card)] px-2.5 py-2 ring-1 ring-[var(--theme-border)] dark:bg-stone-900 dark:ring-stone-800">
+                      <div className="flex items-center justify-between gap-3 rounded-md bg-[var(--theme-bg-card)] px-2.5 py-2 ring-1 ring-[var(--theme-border)]">
                         <span>{t("channelImport.retention")}</span>
-                        <span className="font-medium text-stone-700 dark:text-stone-200">
+                        <span className="font-medium text-[var(--theme-text)]">
                           {channel.retention_policy}
                         </span>
                       </div>
@@ -301,7 +301,7 @@ export function ChannelImportPanel() {
                         {channel.capabilities.map((capability) => (
                           <span
                             key={capability}
-                            className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2 py-1 text-[11px] font-medium text-stone-500 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400"
+                            className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2 py-1 text-[11px] font-medium text-[var(--theme-text-secondary)]"
                           >
                             {formatCapability(capability)}
                           </span>

@@ -1,5 +1,1 @@
-export {
-  getCategoryIcon,
-  nameToGradient,
-  GRADIENT_PALETTES,
-} from "../../common/cardUtils";
+export { getCategoryIcon } from "../../common/cardUtils";

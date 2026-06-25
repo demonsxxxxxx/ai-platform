@@ -23,30 +23,31 @@ export function EmptyState({
   /* Empty states */
   if (!hasFiles) {
     return (
-      <div className="flex flex-col items-center justify-center h-72 gap-5">
-        {/* Illustration */}
+      <div className="enterprise-empty-state mx-5 my-6 min-h-72 rounded-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-4">
         <div className="relative">
-          <div className="flex h-20 w-20 items-center justify-center rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] dark:border-stone-700/30 dark:bg-stone-900/60">
+          <div className="enterprise-empty-state-icon">
             <FolderSearch
               size={32}
               strokeWidth={1.5}
-              className="text-stone-300 dark:text-stone-600"
+              className="text-[var(--theme-text-secondary)]"
             />
           </div>
-          <div className="absolute -bottom-1.5 -right-1.5 flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-sm ring-4 ring-[var(--theme-bg)] dark:border-stone-600 dark:bg-stone-700 dark:ring-stone-950">
-            <Search size={12} className="text-stone-400 dark:text-stone-500" />
+          <div className="absolute -bottom-1.5 -right-1.5 flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-sm ring-4 ring-[var(--theme-workbench-canvas)]">
+            <Search
+              size={12}
+              className="text-[var(--theme-text-secondary)]"
+            />
           </div>
         </div>
 
-        {/* Text */}
-        <div className="text-center space-y-1.5">
-          <p className="text-[14px] font-medium text-stone-500 dark:text-stone-400">
+        <div className="mt-5 space-y-1.5 text-center">
+          <p className="text-sm font-medium text-[var(--theme-text-secondary)]">
             {hasActiveFilters
               ? t("fileLibrary.noResults")
               : t("fileLibrary.empty")}
           </p>
           {hasActiveFilters && (
-            <p className="text-[12px] text-stone-300 dark:text-stone-600">
+            <p className="text-xs text-[var(--theme-text-secondary)]">
               {t("fileLibrary.tryDifferent")}
             </p>
           )}

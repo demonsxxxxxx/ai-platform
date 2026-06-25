@@ -45,7 +45,7 @@ export function RevealedFilesWorkbenchPanel() {
       <div
         data-files-workbench-shell
         data-frontend-governance-state={governanceState}
-        className="flex h-full min-h-0 items-center justify-center bg-[var(--theme-bg)] px-4"
+        className={workbenchSurface.statePage}
       >
         <WorkbenchStateSurface
           state={governanceState}
@@ -60,7 +60,7 @@ export function RevealedFilesWorkbenchPanel() {
       <div
         data-files-workbench-shell
         data-frontend-governance-state={governanceState}
-        className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+        className={workbenchSurface.page}
       >
         <PanelHeader
           title={t("fileLibrary.workbenchTitle", "文件工作台")}
@@ -91,7 +91,12 @@ export function RevealedFilesWorkbenchPanel() {
               "fileLibrary.degradedDescription",
               "后端文件库投影暂不可用；页面保留工作台入口，并避免把缺路由误显示为空文件库。",
             )}
-            details={filesProjectionError ? [filesProjectionError] : undefined}
+            details={[
+              t(
+                "fileLibrary.backendGapDetail",
+                "后端文件库投影尚未返回可读目录；列表、分组、统计和预览操作会保持锁定，直到 /api/files/revealed 返回工作台合同。",
+              ),
+            ]}
           />
         </div>
       </div>
@@ -102,7 +107,7 @@ export function RevealedFilesWorkbenchPanel() {
     <div
       data-files-workbench-shell
       data-frontend-governance-state={governanceState}
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      className={workbenchSurface.page}
     >
       <PanelHeader
         title={t("fileLibrary.workbenchTitle", "文件工作台")}

@@ -5,6 +5,7 @@
 import { API_BASE } from "./config";
 import { authFetch } from "./fetch";
 import type {
+  MarketplaceListResponse,
   MarketplaceSkillResponse,
   MarketplaceSkillFilesResponse,
   MarketplaceSkillFileResponse,
@@ -15,6 +16,54 @@ import type {
 
 const MARKETPLACE_API = `${API_BASE}/api/marketplace`;
 
+type MarketplaceListWireResponse =
+  | MarketplaceSkillResponse[]
+  | MarketplaceListResponse;
+
+/**
+ * Build the authenticated public Marketplace list URL used by the post-login catalog.
+ */
+export function buildMarketplaceListUrl(params?: {
+  tags?: string;
+  search?: string;
+  skip?: number;
+  limit?: number;
+}): string {
+  const searchParams = new URLSearchParams();
+  if (params?.tags) searchParams.set("tags", params.tags);
+  if (params?.search) searchParams.set("search", params.search);
+  if (params?.skip !== undefined) searchParams.set("skip", String(params.skip));
+  if (params?.limit !== undefined)
+    searchParams.set("limit", String(params.limit));
+
+  const query = searchParams.toString();
+  return `${MARKETPLACE_API}/${query ? `?${query}` : ""}`;
+}
+
+export function normalizeMarketplaceListResponse(
+  response: MarketplaceListWireResponse,
+): MarketplaceListResponse {
+  if (Array.isArray(response)) {
+    return {
+      skills: response,
+      total: response.length,
+      skip: 0,
+      limit: response.length,
+      available_tags: [],
+      effective_permissions: [],
+    };
+  }
+
+  return {
+    skills: response.skills ?? [],
+    total: response.total ?? response.skills?.length ?? 0,
+    skip: response.skip ?? 0,
+    limit: response.limit ?? response.skills?.length ?? 0,
+    available_tags: response.available_tags ?? [],
+    effective_permissions: response.effective_permissions ?? [],
+  };
+}
+
 export const marketplaceApi = {
   /**
    * List all marketplace skills
@@ -24,19 +73,11 @@ export const marketplaceApi = {
     search?: string;
     skip?: number;
     limit?: number;
-  }) {
-    const searchParams = new URLSearchParams();
-    if (params?.tags) searchParams.set("tags", params.tags);
-    if (params?.search) searchParams.set("search", params.search);
-    if (params?.skip !== undefined)
-      searchParams.set("skip", String(params.skip));
-    if (params?.limit !== undefined)
-      searchParams.set("limit", String(params.limit));
-
-    const query = searchParams.toString();
-    return authFetch<MarketplaceSkillResponse[]>(
-      `${MARKETPLACE_API}/${query ? `?${query}` : ""}`,
+  }): Promise<MarketplaceListResponse> {
+    const response = await authFetch<MarketplaceListWireResponse>(
+      buildMarketplaceListUrl(params),
     );
+    return normalizeMarketplaceListResponse(response ?? []);
   },
 
   /**

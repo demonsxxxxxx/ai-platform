@@ -127,6 +127,7 @@ select:-webkit-autofill:active {
   --theme-sidebar-panel: #111827;
   --theme-sidebar-panel-muted: #1f2937;
   --theme-border: #e2e8f0;
+  --theme-border-strong: #cbd5e1;
   --theme-text: #0f172a;
   --theme-text-secondary: #64748b;
   --theme-text-tertiary: #94a3b8;
@@ -157,6 +158,7 @@ select:-webkit-autofill:active {
   --theme-sidebar-panel: #171412;
   --theme-sidebar-panel-muted: #292524;
   --theme-border: #44403c; /* stone-700 */
+  --theme-border-strong: #57534e; /* stone-600 */
   --theme-text: #f8fafc;
   --theme-text-secondary: #d6d3d1; /* stone-300 */
   --theme-text-tertiary: #a8a29e;

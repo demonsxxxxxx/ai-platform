@@ -67,6 +67,26 @@ function composeSkillResponse(
   };
 }
 
+export function resolveExposedSkillPermissions({
+  enabled,
+  permissionsValid,
+  effectivePermissions,
+  effectivePermissionsKnown,
+}: {
+  enabled: boolean;
+  permissionsValid: boolean;
+  effectivePermissions: string[];
+  effectivePermissionsKnown: boolean;
+}): {
+  effectivePermissions: string[];
+  effectivePermissionsKnown: boolean;
+} {
+  if (!enabled || !permissionsValid) {
+    return { effectivePermissions: [], effectivePermissionsKnown: false };
+  }
+  return { effectivePermissions, effectivePermissionsKnown };
+}
+
 export function useSkills(options?: {
   enabled?: boolean;
   listParams?: SkillListParams;
@@ -78,6 +98,9 @@ export function useSkills(options?: {
   const [effectivePermissions, setEffectivePermissions] = useState<string[]>(
     [],
   );
+  const [effectivePermissionsKnown, setEffectivePermissionsKnown] =
+    useState(false);
+  const [permissionsValid, setPermissionsValid] = useState(false);
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -100,6 +123,8 @@ export function useSkills(options?: {
       setIsLoading(true);
       setError(null);
       setListError(null);
+      setPermissionsValid(false);
+      setEffectivePermissionsKnown(false);
       try {
         const response = await skillApi.list(params ?? listParams ?? {});
         const userSkills: UserSkill[] = response.skills;
@@ -109,6 +134,8 @@ export function useSkills(options?: {
         setTotal(response.total);
         setAvailableTags(response.available_tags || []);
         setEffectivePermissions(response.effective_permissions || []);
+        setPermissionsValid(true);
+        setEffectivePermissionsKnown(true);
         // 保留正在 toggle 中的 skill 的乐观状态，避免竞态覆盖
         const pendingToggles = pendingTogglesRef.current;
         if (pendingToggles.size === 0) {
@@ -129,6 +156,9 @@ export function useSkills(options?: {
           err instanceof Error ? err.message : "Failed to fetch skills";
         setError(message);
         setListError(message);
+        setEffectivePermissions([]);
+        setPermissionsValid(true);
+        setEffectivePermissionsKnown(true);
       } finally {
         setIsLoading(false);
       }
@@ -627,6 +657,12 @@ export function useSkills(options?: {
   const totalCount = skills.length;
   const pendingSkillNames = Array.from(pendingTogglesRef.current.keys());
   const isMutating = pendingSkillNames.length > 0;
+  const exposedPermissions = resolveExposedSkillPermissions({
+    enabled,
+    permissionsValid,
+    effectivePermissions,
+    effectivePermissionsKnown,
+  });
 
   // Publish skill to marketplace
   const publishToMarketplace = useCallback(
@@ -661,7 +697,8 @@ export function useSkills(options?: {
   return {
     skills,
     availableTags,
-    effectivePermissions,
+    effectivePermissions: exposedPermissions.effectivePermissions,
+    effectivePermissionsKnown: exposedPermissions.effectivePermissionsKnown,
     total,
     isLoading,
     error,

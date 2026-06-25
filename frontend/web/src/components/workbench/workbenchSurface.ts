@@ -5,6 +5,10 @@ export const workbenchSurface = {
     "flex min-h-0 flex-1 bg-[var(--theme-workbench-canvas)] text-slate-950",
     "dark:bg-stone-950 dark:text-stone-100",
   ),
+  page:
+    "flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]",
+  statePage:
+    "flex h-full min-h-0 items-center justify-center bg-[var(--theme-workbench-canvas)] px-4 text-[var(--theme-text)]",
   workspace: clsx(
     "grid min-h-0 w-full flex-1 grid-cols-1",
     "xl:grid-cols-[minmax(0,1fr)_20rem]",
@@ -31,6 +35,8 @@ export const workbenchSurface = {
     "rounded-lg border border-slate-200/80 bg-[var(--theme-bg-card)] shadow-[0_1px_2px_rgba(18,38,63,0.04)]",
     "dark:border-stone-800 dark:bg-stone-900",
   ),
+  sectionPanel:
+    "rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)]",
   compactPanel: clsx(
     "rounded-lg border border-slate-200/80 bg-[var(--theme-bg-card)] shadow-[0_1px_2px_rgba(18,38,63,0.04)]",
     "dark:border-stone-800 dark:bg-stone-900",

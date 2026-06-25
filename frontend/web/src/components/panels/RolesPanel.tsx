@@ -71,11 +71,11 @@ function StatusTile({
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <Icon size={16} className="text-slate-500 dark:text-stone-400" />
-            <h3 className="text-sm font-semibold text-slate-900 dark:text-stone-100">
+            <h3 className="text-sm font-semibold text-[var(--theme-text)]">
               {title}
             </h3>
           </div>
-          <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-stone-400">
+          <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
             {description}
           </p>
         </div>
@@ -109,14 +109,14 @@ function RoleCard({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-sm font-semibold text-slate-900 dark:text-stone-100">
+            <h3 className="text-sm font-semibold text-[var(--theme-text)]">
               {role.name}
             </h3>
-            <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-[11px] font-medium text-slate-500 ring-1 ring-[var(--theme-border)] dark:bg-stone-950/70 dark:text-stone-400 dark:ring-stone-800">
+            <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-[11px] font-medium text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
               {role.scope}
             </span>
           </div>
-          <p className="mt-1 text-xs text-slate-500 dark:text-stone-400">
+          <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
             {role.role_id}
           </p>
         </div>
@@ -130,7 +130,7 @@ function RoleCard({
         />
       </div>
 
-      <p className="mt-3 line-clamp-2 text-xs leading-5 text-slate-500 dark:text-stone-400">
+      <p className="mt-3 line-clamp-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
         {role.description || t("roles.plaza.roleDirectory.noDescription")}
       </p>
 
@@ -139,7 +139,7 @@ function RoleCard({
           role.capabilities.map((capability) => (
             <span
               key={capability}
-              className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-[11px] font-medium text-slate-500 ring-1 ring-[var(--theme-border)] dark:bg-stone-950/70 dark:text-stone-400 dark:ring-stone-800"
+              className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-[11px] font-medium text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]"
             >
               {formatCapability(capability)}
             </span>
@@ -329,7 +329,7 @@ export function RolesPanel() {
       <div
         data-role-plaza-shell
         data-frontend-governance-state={roleGovernance.pageState}
-        className="flex h-full min-h-0 items-center justify-center bg-[var(--theme-bg)] px-4"
+        className={workbenchSurface.statePage}
       >
         <PanelLoadingState text={t("roles.plaza.loading")} />
       </div>
@@ -341,7 +341,7 @@ export function RolesPanel() {
       <div
         data-role-plaza-shell
         data-frontend-governance-state={roleGovernance.pageState}
-        className="flex h-full min-h-0 items-center justify-center bg-[var(--theme-bg)] px-4"
+        className={workbenchSurface.statePage}
       >
         <WorkbenchStateSurface
           state={roleGovernance.pageState}
@@ -368,7 +368,7 @@ export function RolesPanel() {
     <div
       data-role-plaza-shell
       data-frontend-governance-state={roleGovernance.pageState}
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      className={workbenchSurface.page}
     >
       <PanelHeader
         title={t("roles.plaza.title")}
@@ -432,11 +432,11 @@ export function RolesPanel() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <UsersRound size={16} className="text-slate-500 dark:text-stone-400" />
-                    <h2 className="text-sm font-semibold text-slate-900 dark:text-stone-100">
+                    <h2 className="text-sm font-semibold text-[var(--theme-text)]">
                       {t("roles.plaza.roleDirectory.title")}
                     </h2>
                   </div>
-                  <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-stone-400">
+                  <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
                     {t("roles.plaza.roleDirectory.description", {
                       count: roles.length,
                     })}
@@ -488,14 +488,14 @@ export function RolesPanel() {
                   return (
                     <div
                       key={department.department_id}
-                      className="rounded-lg bg-[var(--theme-bg-sidebar)] p-3 ring-1 ring-[var(--theme-border)] dark:bg-stone-950/70 dark:ring-stone-800"
+                      className="rounded-lg bg-[var(--theme-bg-sidebar)] p-3 ring-1 ring-[var(--theme-border)]"
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <h3 className="text-sm font-semibold text-slate-900 dark:text-stone-100">
+                          <h3 className="text-sm font-semibold text-[var(--theme-text)]">
                             {department.name}
                           </h3>
-                          <p className="mt-1 text-xs text-slate-500 dark:text-stone-400">
+                          <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
                             {department.department_id}
                           </p>
                         </div>
@@ -539,8 +539,8 @@ export function RolesPanel() {
                 {requestableDepartments.length === 0 && !overview?.scope.departments.length ? (
                   <EmptyBlock>{t("roles.plaza.scope.emptyDepartments")}</EmptyBlock>
                 ) : null}
-                <div className="rounded-lg bg-[var(--theme-bg-sidebar)] p-3 ring-1 ring-[var(--theme-border)] dark:bg-stone-950/70 dark:ring-stone-800">
-                  <h3 className="text-sm font-semibold text-slate-900 dark:text-stone-100">
+                <div className="rounded-lg bg-[var(--theme-bg-sidebar)] p-3 ring-1 ring-[var(--theme-border)]">
+                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
                     {t("roles.plaza.scope.skillsTitle")}
                   </h3>
                   <div className="mt-3 grid gap-2">
@@ -550,10 +550,10 @@ export function RolesPanel() {
                           key={`${skill.skill_id}-${skill.scope_id}`}
                           className="flex items-center justify-between gap-3 text-xs"
                         >
-                          <span className="min-w-0 truncate text-slate-600 dark:text-stone-300">
+                          <span className="min-w-0 truncate text-[var(--theme-text-secondary)]">
                             {skill.skill_id}
                           </span>
-                          <span className="shrink-0 rounded-md bg-[var(--theme-bg-card)] px-2 py-1 text-slate-500 ring-1 ring-[var(--theme-border)] dark:bg-stone-900 dark:text-stone-400 dark:ring-stone-800">
+                          <span className="shrink-0 rounded-md bg-[var(--theme-bg-card)] px-2 py-1 text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
                             {skill.availability_state} / {skill.inherited_from}
                           </span>
                         </div>
@@ -575,11 +575,11 @@ export function RolesPanel() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <GitPullRequestArrow size={16} className="text-slate-500 dark:text-stone-400" />
-                    <h2 className="text-sm font-semibold text-slate-900 dark:text-stone-100">
+                    <h2 className="text-sm font-semibold text-[var(--theme-text)]">
                       {t("roles.plaza.requests.title")}
                     </h2>
                   </div>
-                  <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-stone-400">
+                  <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
                     {t("roles.plaza.requests.description")}
                   </p>
                 </div>
@@ -597,18 +597,18 @@ export function RolesPanel() {
                     >
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
-                          <h3 className="font-semibold text-slate-900 dark:text-stone-100">
+                          <h3 className="font-semibold text-[var(--theme-text)]">
                             {request.target_type}: {request.target_id}
                           </h3>
-                          <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-[11px] font-medium text-slate-500 ring-1 ring-[var(--theme-border)] dark:bg-stone-950/70 dark:text-stone-400 dark:ring-stone-800">
+                          <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-[11px] font-medium text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
                             {request.status}
                           </span>
                         </div>
-                        <p className="mt-1 text-xs text-slate-500 dark:text-stone-400">
+                        <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
                           {request.requester_id} · {formatTimestamp(request.created_at)}
                         </p>
                         {request.reason ? (
-                          <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-500 dark:text-stone-400">
+                          <p className="mt-2 line-clamp-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
                             {request.reason}
                           </p>
                         ) : null}
@@ -654,11 +654,11 @@ export function RolesPanel() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <History size={16} className="text-slate-500 dark:text-stone-400" />
-                    <h2 className="text-sm font-semibold text-slate-900 dark:text-stone-100">
+                    <h2 className="text-sm font-semibold text-[var(--theme-text)]">
                       {t("roles.plaza.audit.title")}
                     </h2>
                   </div>
-                  <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-stone-400">
+                  <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
                     {t("roles.plaza.audit.description")}
                   </p>
                 </div>
@@ -675,10 +675,10 @@ export function RolesPanel() {
                       className="grid gap-3 p-4 text-sm lg:grid-cols-[minmax(0,1fr)_auto]"
                     >
                       <div className="min-w-0">
-                        <h3 className="truncate font-semibold text-slate-900 dark:text-stone-100">
+                        <h3 className="truncate font-semibold text-[var(--theme-text)]">
                           {audit.action}
                         </h3>
-                        <p className="mt-1 text-xs text-slate-500 dark:text-stone-400">
+                        <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
                           {audit.actor_id} · {audit.target_type}:{audit.target_id}
                         </p>
                         <p className="mt-1 text-xs text-slate-400 dark:text-stone-500">

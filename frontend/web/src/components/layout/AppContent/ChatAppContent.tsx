@@ -80,8 +80,11 @@ export function ChatAppContent({
     settings,
     "ENABLE_SKILLS",
   );
-  const composerSkillsAvailability = resolveComposerSkillsAvailability({
+  const composerSkillsProbeAvailability = resolveComposerSkillsAvailability({
+    isAuthenticated,
     canReadSkills,
+    catalogEffectivePermissions: [],
+    catalogPermissionsKnown: false,
     enableSkillsSettingKnown: enableSkillsProjection.known,
     enableSkillsSetting: enableSkillsProjection.value ?? enableSkills,
   });
@@ -111,7 +114,17 @@ export function ChatAppContent({
     pendingSkillNames,
     isMutating: skillsMutating,
     fetchSkills,
-  } = useSkills({ enabled: composerSkillsAvailability.shouldFetchSkills });
+    effectivePermissions: skillsEffectivePermissions,
+    effectivePermissionsKnown: skillsEffectivePermissionsKnown,
+  } = useSkills({ enabled: composerSkillsProbeAvailability.shouldFetchSkills });
+  const composerSkillsAvailability = resolveComposerSkillsAvailability({
+    isAuthenticated,
+    canReadSkills,
+    catalogEffectivePermissions: skillsEffectivePermissions,
+    catalogPermissionsKnown: skillsEffectivePermissionsKnown,
+    enableSkillsSettingKnown: enableSkillsProjection.known,
+    enableSkillsSetting: enableSkillsProjection.value ?? enableSkills,
+  });
 
   const canReadPersonaPresets = hasPermission(Permission.PERSONA_PRESET_READ);
   const canManagePersonaPresets =

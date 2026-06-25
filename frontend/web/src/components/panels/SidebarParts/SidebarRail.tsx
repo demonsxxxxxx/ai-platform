@@ -10,6 +10,8 @@ import {
   Cpu,
   MessageCircle,
   ShieldCheck,
+  UserRound,
+  FileStack,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -31,6 +33,8 @@ interface SidebarRailProps {
   onOpenChannels: () => void;
   onOpenAgents: () => void;
   onOpenModels: () => void;
+  onOpenPersona: () => void;
+  onOpenFiles: () => void;
   onOpenRoles: () => void;
   recentChatsBtnRef: React.RefObject<HTMLButtonElement | null>;
   onShowProfile: () => void;
@@ -51,6 +55,8 @@ export function SidebarRail({
   onOpenChannels,
   onOpenAgents,
   onOpenModels,
+  onOpenPersona,
+  onOpenFiles,
   onOpenRoles,
   recentChatsBtnRef,
   onShowProfile,
@@ -173,6 +179,24 @@ export function SidebarRail({
           aria-label={t("nav.models")}
         >
           <Cpu size={20} />
+        </button>
+        <button
+          type="button"
+          onClick={onOpenPersona}
+          className={railBtn}
+          title={t("nav.persona")}
+          aria-label={t("nav.persona")}
+        >
+          <UserRound size={20} />
+        </button>
+        <button
+          type="button"
+          onClick={onOpenFiles}
+          className={railBtn}
+          title={t("nav.files")}
+          aria-label={t("nav.files")}
+        >
+          <FileStack size={20} />
         </button>
         <button
           type="button"
