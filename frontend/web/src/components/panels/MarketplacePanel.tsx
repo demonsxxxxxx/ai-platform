@@ -25,6 +25,7 @@ import {
   isPermissionError,
   resolveFrontendGovernanceState,
 } from "../governance/frontendGovernanceState";
+import { workbenchSurface } from "../workbench/workbenchSurface";
 
 interface MarketplacePanelProps {
   embedded?: boolean;
@@ -420,7 +421,7 @@ export function MarketplacePanel({
       data-phase1c-surface="marketplace"
       data-frontend-governance-state={governanceState}
       data-marketplace-catalog-shell
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      className={workbenchSurface.page}
     >
       {embedded && (
         <div data-marketplace-catalog-toolbar className="skill-panel-header">

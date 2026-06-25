@@ -97,7 +97,7 @@ export function AgentDirectoryPanel() {
       <div
         data-agent-directory-shell
         data-frontend-governance-state="loading"
-        className="flex h-full min-h-0 items-center justify-center bg-[var(--theme-workbench-canvas)] px-4"
+        className={workbenchSurface.statePage}
       >
         <WorkbenchStateSurface
           state="loading"
@@ -118,7 +118,7 @@ export function AgentDirectoryPanel() {
       <div
         data-agent-directory-shell
         data-frontend-governance-state={forbidden ? "forbidden" : "degraded"}
-        className="flex h-full min-h-0 items-center justify-center bg-[var(--theme-workbench-canvas)] px-4"
+        className={workbenchSurface.statePage}
       >
         <WorkbenchStateSurface
           state={forbidden ? "forbidden" : "degraded"}
@@ -149,7 +149,7 @@ export function AgentDirectoryPanel() {
     <div
       data-agent-directory-shell
       data-frontend-governance-state={readyState ? "ready" : "degraded"}
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]"
+      className={workbenchSurface.page}
     >
       <PanelHeader
         title={t("agentDirectory.title", "Agents")}

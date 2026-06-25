@@ -11,6 +11,7 @@ import { ZipUploadModal } from "./ZipUploadModal";
 import { GithubImportModal } from "./GithubImportModal";
 import { BatchActionBar } from "./BatchActionBar";
 import { PublishDialog } from "./PublishDialog";
+import { workbenchSurface } from "../../workbench/workbenchSurface";
 
 interface CatalogState {
   permissionDenied: boolean;
@@ -73,7 +74,7 @@ export function SkillsPanel({
 
   return (
     <div
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      className={workbenchSurface.page}
       data-skill-workbench-shell
     >
       <SkillsList

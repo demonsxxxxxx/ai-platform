@@ -186,7 +186,11 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
     ["SkillsPanel", skillsPanel],
     ["MarketplacePanel", marketplace],
   ])) {
-    assert.match(source, /bg-\[var\(--theme-workbench-canvas\)\]/, name);
+    assert.match(
+      source,
+      /bg-\[var\(--theme-workbench-canvas\)\]|className=\{workbenchSurface\.page\}/,
+      name,
+    );
     assert.doesNotMatch(
       source,
       /className="[^"]*bg-\[var\(--theme-bg\)\][^"]*"/,
@@ -209,6 +213,34 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
     skillCss,
     /\.skill-content-area\s*{\s*background:\s*var\(--theme-bg\);/,
   );
+});
+
+test("reachable catalog pages delegate page backgrounds to workbench surface tokens", () => {
+  const sources = new Map([
+    ["SkillsHubPanel", read("src/components/panels/SkillsHubPanel.tsx")],
+    ["SkillsPanel", read("src/components/panels/SkillsPanel/index.tsx")],
+    ["MarketplacePanel", read("src/components/panels/MarketplacePanel.tsx")],
+    ["AgentDirectoryPanel", read("src/components/panels/AgentDirectoryPanel.tsx")],
+    ["ModelCatalogPanel", read("src/components/panels/ModelCatalogPanel.tsx")],
+    [
+      "ChannelImportPanel",
+      read("src/components/channels/ChannelImportPanel.tsx"),
+    ],
+  ]);
+
+  for (const [name, source] of sources) {
+    assert.match(source, /className=\{workbenchSurface\.page\}/, name);
+    assert.doesNotMatch(
+      source,
+      /className="[^"]*bg-\[var\(--theme-workbench-canvas\)\][^"]*"/,
+      name,
+    );
+    assert.doesNotMatch(
+      source,
+      /className="[^"]*dark:bg-stone-950(?:\/\d+)?[^"]*"/,
+      name,
+    );
+  }
 });
 
 test("composer and command surfaces use stable dimensions", () => {
