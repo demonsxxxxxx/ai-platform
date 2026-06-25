@@ -13,6 +13,10 @@ import type {
   SkillResponse,
 } from "../../../../types";
 
+const { resolveExposedSkillPermissions } = await import(
+  "../../../../hooks/useSkills.ts"
+);
+
 function skill(name: string, enabled = true): SkillResponse {
   return {
     name,
@@ -294,6 +298,51 @@ test("keeps composer Skills fail-closed while logged out before catalog permissi
     {
       shouldFetchSkills: false,
       enableComposerSkills: false,
+    },
+  );
+});
+
+test("does not expose stale skill permissions when catalog fetch is inactive", () => {
+  assert.deepEqual(
+    resolveExposedSkillPermissions({
+      enabled: false,
+      permissionsValid: true,
+      effectivePermissions: ["skill:read"],
+      effectivePermissionsKnown: true,
+    }),
+    {
+      effectivePermissions: [],
+      effectivePermissionsKnown: false,
+    },
+  );
+});
+
+test("does not expose stale skill permissions before the current catalog fetch resolves", () => {
+  assert.deepEqual(
+    resolveExposedSkillPermissions({
+      enabled: true,
+      permissionsValid: false,
+      effectivePermissions: ["skill:read"],
+      effectivePermissionsKnown: true,
+    }),
+    {
+      effectivePermissions: [],
+      effectivePermissionsKnown: false,
+    },
+  );
+});
+
+test("exposes skill permissions only after the current catalog fetch resolves", () => {
+  assert.deepEqual(
+    resolveExposedSkillPermissions({
+      enabled: true,
+      permissionsValid: true,
+      effectivePermissions: ["skill:read"],
+      effectivePermissionsKnown: true,
+    }),
+    {
+      effectivePermissions: ["skill:read"],
+      effectivePermissionsKnown: true,
     },
   );
 });
