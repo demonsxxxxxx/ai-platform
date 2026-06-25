@@ -76,7 +76,7 @@ export function RevealedFilesWorkbenchPanel() {
             "fileLibrary.workbenchSubtitle",
             "按会话查看已揭示文件、项目产物和可预览附件。",
           )}
-          icon={<FileStack size={20} className="text-slate-600" />}
+          icon={<FileStack size={20} className="text-[var(--theme-text-secondary)]" />}
           actions={
             <div className="flex flex-wrap items-center justify-end gap-1.5">
               <GovernanceAvailabilityBadge
@@ -149,7 +149,7 @@ export function RevealedFilesWorkbenchPanel() {
                 <p className={workbenchSurface.label}>
                   {t("workbench.governedRoute.surfaceLabel", "受治理边界")}
                 </p>
-                <h2 className="mt-1 text-sm font-semibold text-slate-900 dark:text-stone-100">
+                <h2 className="mt-1 text-sm font-semibold text-[var(--theme-text)]">
                   {t(
                     "fileLibrary.contractBoundaryTitle",
                     "等待 revealed files 投影",
@@ -157,7 +157,7 @@ export function RevealedFilesWorkbenchPanel() {
                 </h2>
               </div>
             </div>
-            <p className="mt-3 text-xs leading-5 text-slate-500 dark:text-stone-400">
+            <p className="mt-3 text-xs leading-5 text-[var(--theme-text-secondary)]">
               {t(
                 "fileLibrary.contractBoundaryDescription",
                 "前端只展示公开文件投影；接口缺失时保持降级工作台，不把 404 当作空文件工作台。",
@@ -185,7 +185,7 @@ export function RevealedFilesWorkbenchPanel() {
                 >
                   <ListChecks
                     size={15}
-                    className="mt-0.5 shrink-0 text-slate-400 dark:text-stone-500"
+                    className="mt-0.5 shrink-0 text-[var(--theme-text-tertiary)]"
                   />
                   <span className="break-all font-mono">{endpoint}</span>
                 </div>
@@ -209,7 +209,7 @@ export function RevealedFilesWorkbenchPanel() {
           "fileLibrary.workbenchSubtitle",
           "按会话查看已揭示文件、项目产物和可预览附件。",
         )}
-        icon={<FileStack size={20} className="text-slate-600" />}
+        icon={<FileStack size={20} className="text-[var(--theme-text-secondary)]" />}
         actions={
           <div className="flex flex-wrap items-center justify-end gap-1.5">
             <GovernanceAvailabilityBadge
@@ -227,12 +227,12 @@ export function RevealedFilesWorkbenchPanel() {
       <div className="grid gap-3 px-4 pb-3 lg:grid-cols-2">
         <div className={`${workbenchSurface.compactPanel} p-3`}>
           <div className="flex items-start gap-3">
-            <ShieldCheck size={17} className="mt-0.5 text-slate-500" />
+            <ShieldCheck size={17} className="mt-0.5 text-[var(--theme-text-secondary)]" />
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-slate-900 dark:text-stone-100">
+              <h3 className="text-sm font-semibold text-[var(--theme-text)]">
                 {t("fileLibrary.readContract", "安全读取")}
               </h3>
-              <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-stone-400">
+              <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
                 {t(
                   "fileLibrary.readContractDescription",
                   "文件列表使用 /api/files/revealed 公共工作台接口，预览 URL 继续执行 allowlist 校验。",
@@ -243,12 +243,12 @@ export function RevealedFilesWorkbenchPanel() {
         </div>
         <div className={`${workbenchSurface.compactPanel} p-3`}>
           <div className="flex items-start gap-3">
-            <FileStack size={17} className="mt-0.5 text-slate-500" />
+            <FileStack size={17} className="mt-0.5 text-[var(--theme-text-secondary)]" />
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-slate-900 dark:text-stone-100">
+              <h3 className="text-sm font-semibold text-[var(--theme-text)]">
                 {t("fileLibrary.sessionGrouping", "按会话归档")}
               </h3>
-              <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-stone-400">
+              <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
                 {t(
                   "fileLibrary.sessionGroupingDescription",
                   "保留文件工作台的会话分组、收藏、排序、项目过滤和预览交互。",

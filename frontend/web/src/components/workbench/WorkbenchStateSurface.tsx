@@ -94,8 +94,8 @@ export function WorkbenchStateSurface({
   const copy = stateCopyKeys[state];
   const iconClass =
     state === "loading"
-      ? "animate-spin text-slate-500 dark:text-stone-300"
-      : "text-slate-500 dark:text-stone-300";
+      ? "animate-spin text-[var(--theme-text-secondary)]"
+      : "text-[var(--theme-text-secondary)]";
 
   return (
     <section
@@ -107,10 +107,10 @@ export function WorkbenchStateSurface({
       <div className={workbenchSurface.stateIcon}>
         <Icon className={iconClass} size={22} strokeWidth={1.9} />
       </div>
-      <h1 className="mt-4 text-base font-semibold text-slate-900 dark:text-stone-100">
+      <h1 className="mt-4 text-base font-semibold text-[var(--theme-text)]">
         {title ?? t(copy.title)}
       </h1>
-      <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-600 dark:text-stone-300">
+      <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-[var(--theme-text-secondary)]">
         {description ?? t(copy.description)}
       </p>
       {details && details.length > 0 ? (
@@ -124,7 +124,7 @@ export function WorkbenchStateSurface({
               <Dot
                 size={18}
                 strokeWidth={3}
-                className="mt-0.5 shrink-0 text-slate-400 dark:text-stone-500"
+                className="mt-0.5 shrink-0 text-[var(--theme-text-tertiary)]"
               />
               <span>{detail}</span>
             </div>
@@ -140,10 +140,10 @@ export function WorkbenchStateSurface({
               className={`${workbenchSurface.statusTile} flex flex-col gap-3 text-xs leading-5 text-[var(--theme-text-secondary)] sm:flex-row sm:items-start sm:justify-between`}
             >
               <div className="min-w-0">
-                <h2 className="text-sm font-semibold text-slate-800 dark:text-stone-100">
+                <h2 className="text-sm font-semibold text-[var(--theme-text)]">
                   {capability.title}
                 </h2>
-                <p className="mt-1 leading-5 text-slate-500 dark:text-stone-400">
+                <p className="mt-1 leading-5 text-[var(--theme-text-secondary)]">
                   {capability.description}
                 </p>
               </div>
