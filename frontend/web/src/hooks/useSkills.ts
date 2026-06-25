@@ -135,9 +135,9 @@ export function useSkills(options?: {
         setTotal(response.total);
         setAvailableTags(response.available_tags || []);
         setEffectivePermissions(response.effective_permissions || []);
-        setCatalogReadResolved(true);
+        setCatalogReadResolved(response.catalog_read_resolved);
         setPermissionsValid(true);
-        setEffectivePermissionsKnown(true);
+        setEffectivePermissionsKnown(response.effective_permissions_known);
         // 保留正在 toggle 中的 skill 的乐观状态，避免竞态覆盖
         const pendingToggles = pendingTogglesRef.current;
         if (pendingToggles.size === 0) {

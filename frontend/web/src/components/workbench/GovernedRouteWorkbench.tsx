@@ -53,14 +53,21 @@ const stateLabelKeys: Record<FrontendGovernanceState, string> = {
   ready: "workbench.states.ready.title",
 };
 
-const stateTone: Record<FrontendGovernanceState, string> = {
-  "logged-out": "bg-slate-100 text-slate-700 dark:bg-stone-800 dark:text-stone-300",
-  loading: "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300",
-  "no-workspace": "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
-  forbidden: "bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300",
-  degraded: "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
-  ready: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300",
-};
+function governedRouteStateToneClass(state: FrontendGovernanceState) {
+  switch (state) {
+    case "ready":
+      return "border-[color-mix(in_srgb,var(--theme-primary)_28%,var(--theme-border))] bg-[color-mix(in_srgb,var(--theme-primary)_8%,var(--theme-workbench-panel))] text-[var(--theme-primary)]";
+    case "forbidden":
+      return "border-[color-mix(in_srgb,#dc2626_22%,var(--theme-border))] bg-[color-mix(in_srgb,#dc2626_7%,var(--theme-workbench-panel))] text-[color-mix(in_srgb,#991b1b_74%,var(--theme-text))]";
+    case "degraded":
+    case "no-workspace":
+      return "border-[color-mix(in_srgb,#d97706_24%,var(--theme-border))] bg-[color-mix(in_srgb,#d97706_8%,var(--theme-workbench-panel))] text-[color-mix(in_srgb,#92400e_76%,var(--theme-text))]";
+    case "loading":
+    case "logged-out":
+    default:
+      return "border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]";
+  }
+}
 
 interface GovernedRouteCapability {
   title: string;
@@ -119,8 +126,8 @@ export function GovernedRouteWorkbench({
                       strokeWidth={1.9}
                       className={
                         config.state === "loading"
-                          ? "animate-spin text-slate-500 dark:text-stone-300"
-                          : "text-slate-500 dark:text-stone-300"
+                          ? "animate-spin text-[var(--theme-text-secondary)]"
+                          : "text-[var(--theme-text-secondary)]"
                       }
                     />
                   </div>
@@ -128,16 +135,18 @@ export function GovernedRouteWorkbench({
                     <p className={workbenchSurface.label}>
                       {t("workbench.governedRoute.stateLabel")}
                     </p>
-                    <h2 className="mt-1 text-base font-semibold text-stone-900 dark:text-stone-100">
+                    <h2 className="mt-1 text-base font-semibold text-[var(--theme-text)]">
                       {config.title}
                     </h2>
-                    <p className="mt-2 max-w-3xl text-sm leading-6 text-stone-600 dark:text-stone-300">
+                    <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--theme-text-secondary)]">
                       {config.description}
                     </p>
                   </div>
                 </div>
                 <span
-                  className={`inline-flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold ${stateTone[config.state]}`}
+                  data-governed-route-state-chip
+                  data-governed-route-state-tone={config.state}
+                  className={`inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-semibold ${governedRouteStateToneClass(config.state)}`}
                 >
                   <StateIcon size={13} />
                   {t(stateLabelKeys[config.state])}
@@ -146,7 +155,7 @@ export function GovernedRouteWorkbench({
 
               <div
                 data-fail-closed-surface={config.surface}
-                className="mt-4 flex flex-wrap items-center gap-2 text-xs text-stone-500 dark:text-stone-400"
+                className="mt-4 flex flex-wrap items-center gap-2 text-xs text-[var(--theme-text-secondary)]"
               >
                 <span className={workbenchSurface.label}>
                   {t("workbench.governedRoute.surfaceLabel")}
@@ -159,24 +168,24 @@ export function GovernedRouteWorkbench({
 
             <div
               data-governed-route-contract
-              className="border-t border-[var(--theme-border)] p-4 dark:border-stone-800 xl:border-l xl:border-t-0"
+              className="border-t border-[var(--theme-border)] p-4 xl:border-l xl:border-t-0"
             >
               <div className="flex items-center gap-2">
-                <Icon size={16} className="text-stone-500" />
-                <h2 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                <Icon size={16} className="text-[var(--theme-text-secondary)]" />
+                <h2 className="text-sm font-semibold text-[var(--theme-text)]">
                   {t("workbench.governedRoute.contractTitle")}
                 </h2>
               </div>
-              <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+              <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
                 {t("workbench.governedRoute.contractDescription")}
               </p>
 
-              <div className="mt-4 divide-y divide-[var(--theme-border)] dark:divide-stone-800">
+              <div className="mt-4 divide-y divide-[var(--theme-border)]">
                 {details.map((detail) => (
                   <p
                     key={detail}
                     data-governed-route-detail
-                    className="py-2 text-xs leading-5 text-stone-600 first:pt-0 last:pb-0 dark:text-stone-300"
+                    className="py-2 text-xs leading-5 text-[var(--theme-text-secondary)] first:pt-0 last:pb-0"
                   >
                     {detail}
                   </p>
@@ -197,12 +206,15 @@ export function GovernedRouteWorkbench({
                 <div className="flex items-start justify-between gap-3 p-3">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <ShieldCheck size={16} className="text-stone-500" />
-                      <h2 className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                      <ShieldCheck
+                        size={16}
+                        className="text-[var(--theme-text-secondary)]"
+                      />
+                      <h2 className="text-sm font-semibold text-[var(--theme-text)]">
                         {capability.title}
                       </h2>
                     </div>
-                    <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                    <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
                       {capability.description}
                     </p>
                   </div>

@@ -43,6 +43,8 @@ type PageKind = "users" | "settings" | "feedback" | "notifications";
 
 type AvailabilityState = "enabled" | "disabled" | "inherited" | "admin-only" | "unavailable";
 
+type ProjectionStatusTone = "primary" | "muted" | "warning" | "danger";
+
 type ProjectionMetric = {
   label: string;
   value: string | number;
@@ -250,6 +252,20 @@ function notificationTypeLabel(
   type: string,
 ) {
   return translateMappedValue(t, "workbench.projections.notifications.type", type);
+}
+
+function projectionStatusToneClass(tone: ProjectionStatusTone) {
+  switch (tone) {
+    case "primary":
+      return "border-[color-mix(in_srgb,var(--theme-primary)_28%,var(--theme-border))] bg-[color-mix(in_srgb,var(--theme-primary)_8%,var(--theme-workbench-panel))] text-[var(--theme-primary)]";
+    case "warning":
+      return "border-[color-mix(in_srgb,#d97706_24%,var(--theme-border))] bg-[color-mix(in_srgb,#d97706_8%,var(--theme-workbench-panel))] text-[color-mix(in_srgb,#92400e_76%,var(--theme-text))]";
+    case "danger":
+      return "border-[color-mix(in_srgb,#dc2626_22%,var(--theme-border))] bg-[color-mix(in_srgb,#dc2626_7%,var(--theme-workbench-panel))] text-[color-mix(in_srgb,#991b1b_74%,var(--theme-text))]";
+    case "muted":
+    default:
+      return "border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]";
+  }
 }
 
 function dedupeNotifications(items: WorkbenchNotification[]) {
@@ -581,6 +597,24 @@ function StatusTile({
   );
 }
 
+function ProjectionStatusChip({
+  children,
+  tone = "muted",
+}: {
+  children: ReactNode;
+  tone?: ProjectionStatusTone;
+}) {
+  return (
+    <span
+      data-projection-status-chip
+      data-projection-status-tone={tone}
+      className={`inline-flex max-w-full items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium ${projectionStatusToneClass(tone)}`}
+    >
+      {children}
+    </span>
+  );
+}
+
 export function WorkbenchUsersProjectionPanel() {
   const { t } = useTranslation();
   const [searchQuery, setSearchQuery] = useState("");
@@ -660,22 +694,22 @@ export function WorkbenchUsersProjectionPanel() {
                   <div className="flex flex-wrap items-center gap-2">
                     <UserCheck
                       size={15}
-                      className={user.is_active ? "text-emerald-600" : "text-stone-400"}
+                      className={
+                        user.is_active
+                          ? "text-[var(--theme-primary)]"
+                          : "text-[var(--theme-text-tertiary)]"
+                      }
                     />
                     <h3 className="truncate font-semibold text-[var(--theme-text)]">
                       {user.full_name || user.username}
                     </h3>
-                    <span
-                      className={`rounded-md px-2 py-0.5 text-xs font-medium ring-1 ${
-                        user.is_active
-                          ? "bg-emerald-50 text-emerald-700 ring-emerald-100"
-                          : "bg-slate-100 text-slate-600 ring-slate-200"
-                      }`}
+                    <ProjectionStatusChip
+                      tone={user.is_active ? "primary" : "muted"}
                     >
                       {user.is_active
                         ? t("workbench.projections.users.activeState")
                         : t("workbench.projections.users.inactiveState")}
-                    </span>
+                    </ProjectionStatusChip>
                   </div>
                   <dl className="mt-2 grid gap-1 text-xs text-[var(--theme-text-secondary)] sm:grid-cols-3">
                     <div>
@@ -788,14 +822,14 @@ export function WorkbenchSettingsProjectionPanel() {
                       </div>
                       <div className="flex shrink-0 gap-1.5">
                         {item.is_secret ? (
-                          <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600 ring-1 ring-slate-200">
+                          <ProjectionStatusChip tone="muted">
                             {t("workbench.projections.settings.secretChip")}
-                          </span>
+                          </ProjectionStatusChip>
                         ) : null}
                         {item.audit_required || item.rollback_available ? (
-                          <span className="rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 ring-1 ring-emerald-100">
+                          <ProjectionStatusChip tone="primary">
                             {t("workbench.projections.settings.auditedChip")}
-                          </span>
+                          </ProjectionStatusChip>
                         ) : null}
                       </div>
                     </div>
@@ -865,8 +899,8 @@ export function WorkbenchFeedbackProjectionPanel() {
                         size={15}
                         className={
                           item.rating === "up"
-                            ? "text-emerald-600"
-                            : "text-rose-600"
+                            ? "text-[var(--theme-primary)]"
+                            : "text-[color-mix(in_srgb,#dc2626_74%,var(--theme-text))]"
                         }
                       />
                       <h3 className="font-semibold text-[var(--theme-text)]">
@@ -897,12 +931,12 @@ export function WorkbenchFeedbackProjectionPanel() {
                     </dl>
                   </div>
                   <div className="flex shrink-0 flex-col items-end gap-1.5">
-                    <span className="rounded-md bg-[var(--theme-bg-card)] px-2 py-1 text-xs font-medium text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
+                    <ProjectionStatusChip tone="muted">
                       {feedbackStatusLabel(t, item.status)}
-                    </span>
-                    <span className="rounded-md bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700 ring-1 ring-amber-100">
+                    </ProjectionStatusChip>
+                    <ProjectionStatusChip tone="warning">
                       {feedbackAssignmentLabel(t, item.assignment_state)}
-                    </span>
+                    </ProjectionStatusChip>
                   </div>
                 </div>
                 {item.comment ? (
@@ -993,7 +1027,10 @@ export function WorkbenchNotificationsProjectionPanel() {
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       {item.type === "announcement" ? (
-                        <Megaphone size={15} className="text-teal-700" />
+                        <Megaphone
+                          size={15}
+                          className="text-[var(--theme-primary)]"
+                        />
                       ) : (
                         <Bell size={15} className="text-[var(--theme-text-secondary)]" />
                       )}
@@ -1014,20 +1051,20 @@ export function WorkbenchNotificationsProjectionPanel() {
                       </span>
                     </div>
                   </div>
-                  <span
-                    className={`rounded-md px-2 py-1 text-xs font-medium ring-1 ${
+                  <ProjectionStatusChip
+                    tone={
                       item.read_state === "unread"
-                        ? "bg-amber-50 text-amber-700 ring-amber-100"
+                        ? "warning"
                         : item.is_active
-                          ? "bg-emerald-50 text-emerald-700 ring-emerald-100"
-                          : "bg-slate-100 text-slate-600 ring-slate-200"
-                    }`}
+                          ? "primary"
+                          : "muted"
+                    }
                   >
                     {notificationStateLabel(
                       t,
                       item.read_state ?? (item.is_active ? "active" : "inactive"),
                     )}
-                  </span>
+                  </ProjectionStatusChip>
                 </div>
               </article>
             ))

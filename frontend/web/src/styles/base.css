@@ -322,6 +322,15 @@ html[data-mobile-keyboard="true"] #root {
   color: #f8fafc;
   box-shadow: none;
 }
+.sidebar-nav-btn[data-active="true"] {
+  background-color: var(--theme-primary);
+  color: var(--theme-primary-foreground);
+  box-shadow: inset 3px 0 0 rgba(255, 255, 255, 0.9);
+}
+.sidebar-nav-btn[data-active="true"]:hover {
+  background-color: var(--theme-primary-hover);
+  color: var(--theme-primary-foreground);
+}
 .dark .sidebar-nav-btn:hover {
   background-color: var(--theme-sidebar-panel-muted);
   box-shadow: none;
@@ -335,6 +344,17 @@ html[data-mobile-keyboard="true"] #root {
   background-color: var(--theme-sidebar-panel-muted);
   color: #f8fafc;
   box-shadow: none;
+}
+.sidebar-rail-btn[data-active="true"] {
+  background-color: var(--theme-primary);
+  color: var(--theme-primary-foreground);
+  box-shadow:
+    inset 3px 0 0 rgba(255, 255, 255, 0.9),
+    0 6px 16px rgba(15, 118, 110, 0.26);
+}
+.sidebar-rail-btn[data-active="true"]:hover {
+  background-color: var(--theme-primary-hover);
+  color: var(--theme-primary-foreground);
 }
 .dark .sidebar-rail-btn:hover {
   background-color: var(--theme-sidebar-panel-muted);

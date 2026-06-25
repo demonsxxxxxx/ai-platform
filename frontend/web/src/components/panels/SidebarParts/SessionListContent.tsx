@@ -15,7 +15,7 @@ import {
   FileStack,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { LoadingSpinner } from "../../common/LoadingSpinner";
 import type { BackendSession } from "../../../services/api";
 import {
@@ -28,6 +28,10 @@ import { SessionItem } from "../../sidebar/SessionItem";
 import { APP_NAME } from "../../../constants";
 import { isSessionFavorite } from "../../sidebar/sessionFavorites";
 import type { Project } from "../../../types";
+import {
+  getWorkbenchNavItemFromPathname,
+  type WorkbenchNavItem,
+} from "./navigationState";
 
 export interface SessionActions {
   onDeleteSession: (id: string) => void;
@@ -84,13 +88,20 @@ export function SessionListContent({
 }: SessionListContentProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const location = useLocation();
+  const activeNavItem = getWorkbenchNavItemFromPathname(location.pathname);
 
   const chatsUnreadCount = getUnreadCountForUncategorized({
     loadedSessions: uncategorizedSessions,
     unreadBySession,
   });
   const groupedUncategorized = groupSessionsByTime(uncategorizedSessions, t);
-  const taskNavItems = [
+  const taskNavItems: Array<{
+    key: WorkbenchNavItem;
+    icon: React.ComponentType<{ size?: number }>;
+    label: string;
+    onClick: () => void;
+  }> = [
     {
       key: "apps",
       icon: LayoutGrid,
@@ -122,7 +133,12 @@ export function SessionListContent({
       onClick: () => navigate("/files"),
     },
   ];
-  const governanceNavItems = [
+  const governanceNavItems: Array<{
+    key: WorkbenchNavItem;
+    icon: React.ComponentType<{ size?: number }>;
+    label: string;
+    onClick: () => void;
+  }> = [
     {
       key: "mcp",
       icon: Server,
@@ -215,34 +231,44 @@ export function SessionListContent({
           <p className="px-[9px] pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
             {t("sidebar.tasks")}
           </p>
-          {taskNavItems.map(({ key, icon: Icon, label, onClick }) => (
-            <button
-              key={key}
-              onClick={onClick}
-              data-workbench-nav-item={key}
-              className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
-            >
-              <Icon size={20} />
-              <span>{label}</span>
-            </button>
-          ))}
+          {taskNavItems.map(({ key, icon: Icon, label, onClick }) => {
+            const isActive = activeNavItem === key;
+            return (
+              <button
+                key={key}
+                onClick={onClick}
+                aria-current={isActive ? "page" : undefined}
+                data-active={isActive ? "true" : "false"}
+                data-workbench-nav-item={key}
+                className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+              >
+                <Icon size={20} />
+                <span>{label}</span>
+              </button>
+            );
+          })}
         </div>
 
         <div data-workbench-nav-group="governance" className="space-y-1">
           <p className="px-[9px] pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
             {t("sidebar.governance")}
           </p>
-          {governanceNavItems.map(({ key, icon: Icon, label, onClick }) => (
-            <button
-              key={key}
-              onClick={onClick}
-              data-workbench-nav-item={key}
-              className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
-            >
-              <Icon size={20} />
-              <span>{label}</span>
-            </button>
-          ))}
+          {governanceNavItems.map(({ key, icon: Icon, label, onClick }) => {
+            const isActive = activeNavItem === key;
+            return (
+              <button
+                key={key}
+                onClick={onClick}
+                aria-current={isActive ? "page" : undefined}
+                data-active={isActive ? "true" : "false"}
+                data-workbench-nav-item={key}
+                className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+              >
+                <Icon size={20} />
+                <span>{label}</span>
+              </button>
+            );
+          })}
         </div>
 
         <button
