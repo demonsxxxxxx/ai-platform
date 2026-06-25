@@ -1089,7 +1089,7 @@
       "unfavorite": "Remove from favorites"
     },
     "empty": "No files revealed yet",
-    "degradedDescription": "The revealed files public projection is still tracked by backend issue #229. The workbench entry stays visible without showing a missing contract as an empty file library.",
+    "degradedDescription": "The revealed files public projection is still tracked by backend issue #229. The workbench entry stays visible without showing a missing contract as an empty file workspace.",
     "degradedSafeDetail": "Session grouping, project filters, favorites, and preview controls stay in the workbench context without bypassing ACLs or exposing unauthorized file URLs.",
     "degradedTitle": "File projection is degraded",
     "favorites": "Favorites",
@@ -1100,7 +1100,7 @@
     "filters": "Filters",
     "goToSession": "Go to session",
     "gridView": "Grid View",
-    "issueReferenceDetail": "Backend issue #229 still tracks the revealed files public projection. The frontend keeps this degraded workbench instead of showing the missing contract as an empty file library.",
+    "issueReferenceDetail": "Backend issue #229 still tracks the revealed files public projection. The frontend keeps this degraded workbench instead of showing the missing contract as an empty file workspace.",
     "listView": "List View",
     "loading": "Loading files...",
     "noResults": "No files found",
@@ -1126,7 +1126,7 @@
       "minutesAgo": "{{count}}m ago",
       "monthsAgo": "{{count}}mo ago"
     },
-    "title": "File Library",
+    "title": "File Workbench",
     "tryDifferent": "Try a different search term",
     "types": {
       "all": "All",
@@ -2006,7 +2006,7 @@
     },
     "files": {
       "description": "Governed file workbench entry for revealed files and artifacts. The page stays degraded until backend file projections are available.",
-      "title": "File Library"
+      "title": "File Workbench"
     },
     "landing": {
       "description": "AI Platform is a company-internal governed AI workbench for chat, Skills, MCP tools, files, artifacts, and workflows.",

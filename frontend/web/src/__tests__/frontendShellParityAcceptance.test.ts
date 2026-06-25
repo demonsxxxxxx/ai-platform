@@ -727,12 +727,17 @@ test("persona and files degraded states hide raw missing-route errors and expose
     });
     assert.equal(copy.personaPresets.backendGapDetail, undefined, `${locale}.personaPresets.backendGapDetail should be removed`);
     assert.equal(copy.fileLibrary.backendGapDetail, undefined, `${locale}.fileLibrary.backendGapDetail should be removed`);
+    assert.doesNotMatch(copy.fileLibrary.title, /文件库|file library/i, `${locale}.fileLibrary.title`);
+    assert.doesNotMatch(copy.seo.files.title, /文件库|file library/i, `${locale}.seo.files.title`);
+    assert.match(copy.fileLibrary.title, /文件工作台|file workbench/i, `${locale}.fileLibrary.title`);
+    assert.match(copy.seo.files.title, /文件工作台|file workbench/i, `${locale}.seo.files.title`);
     assert.match(personaCopy, /#229|issue 229|backend issue/i, locale);
     assert.match(fileCopy, /#229|issue 229|backend issue/i, locale);
     assert.match(personaCopy, /恢复|recovery|recover|contract/i, locale);
     assert.match(fileCopy, /恢复|recovery|recover|contract/i, locale);
     assert.doesNotMatch(personaCopy, /backendGapDetail|后端角色预设投影尚未返回|has not returned a readable directory/i, locale);
     assert.doesNotMatch(fileCopy, /backendGapDetail|后端文件库投影尚未返回|has not returned a readable directory/i, locale);
+    assert.doesNotMatch(fileCopy, /空文件库|empty file library/i, locale);
     assert.doesNotMatch(personaCopy, /Not Found|Request failed:\s*404/i, locale);
     assert.doesNotMatch(fileCopy, /Not Found|Request failed:\s*404/i, locale);
   }
