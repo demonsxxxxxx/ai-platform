@@ -24,6 +24,7 @@ interface CatalogState {
   permissionDenied: boolean;
   projectionError: string | null;
   effectivePermissions: string[];
+  readResolved: boolean;
 }
 
 export function SkillsHubPanel() {
@@ -45,11 +46,13 @@ export function SkillsHubPanel() {
       permissionDenied: false,
       projectionError: null,
       effectivePermissions: [],
+      readResolved: false,
     },
     marketplace: {
       permissionDenied: false,
       projectionError: null,
       effectivePermissions: [],
+      readResolved: false,
     },
   });
   const catalogPermissionDeniedByTab = {
@@ -64,6 +67,10 @@ export function SkillsHubPanel() {
     skills: catalogStateByTab.skills.effectivePermissions,
     marketplace: catalogStateByTab.marketplace.effectivePermissions,
   };
+  const catalogReadResolvedByTab = {
+    skills: catalogStateByTab.skills.readResolved,
+    marketplace: catalogStateByTab.marketplace.readResolved,
+  };
   const visibleTab = requestedTab;
   const isMarketplaceView = visibleTab === "marketplace";
   const canReadSkills = hasAnyPermission([Permission.SKILL_READ]);
@@ -76,6 +83,7 @@ export function SkillsHubPanel() {
     canReadSkills,
     canReadMarketplace,
     catalogPermissionDenied: catalogPermissionDeniedByTab[requestedTab],
+    catalogReadResolved: catalogReadResolvedByTab[requestedTab],
     projectionError: catalogProjectionErrorByTab[requestedTab],
     effectivePermissions: effectivePermissionsByTab[requestedTab],
   });
@@ -109,6 +117,7 @@ export function SkillsHubPanel() {
         if (
           current.permissionDenied === nextState.permissionDenied &&
           current.projectionError === nextState.projectionError &&
+          current.readResolved === nextState.readResolved &&
           currentPermissions === nextPermissions
         ) {
           return previous;

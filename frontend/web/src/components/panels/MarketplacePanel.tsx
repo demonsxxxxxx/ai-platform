@@ -34,6 +34,7 @@ interface MarketplacePanelProps {
     permissionDenied: boolean;
     projectionError: string | null;
     effectivePermissions: string[];
+    readResolved: boolean;
   }) => void;
 }
 
@@ -52,6 +53,7 @@ export function MarketplacePanel({
     skills,
     tags,
     effectivePermissions: marketplaceEffectivePermissions,
+    catalogReadResolved: marketplaceCatalogReadResolved,
     isLoading,
     error,
     listError,
@@ -133,10 +135,12 @@ export function MarketplacePanel({
       permissionDenied,
       projectionError: permissionDenied ? null : listError,
       effectivePermissions: catalogEffectivePermissions,
+      readResolved: marketplaceCatalogReadResolved,
     });
   }, [
     catalogEffectivePermissions,
     listError,
+    marketplaceCatalogReadResolved,
     onCatalogStateChange,
     permissionDenied,
   ]);

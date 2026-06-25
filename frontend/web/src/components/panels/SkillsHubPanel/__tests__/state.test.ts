@@ -73,7 +73,7 @@ test("maps the marketplace route to the public marketplace read contract", () =>
   assert.equal(state.degraded, true);
 });
 
-test("does not block the catalog probe when auth permissions omit the public read grant", () => {
+test("marks the catalog as probing when auth permissions omit the public read grant", () => {
   const state = resolveSkillsHubGovernance({
     requestedTab: "skills",
     isAuthenticated: true,
@@ -83,7 +83,10 @@ test("does not block the catalog probe when auth permissions omit the public rea
 
   assert.equal(state.hasPermission, true);
   assert.equal(state.authProjectionHasPermission, false);
+  assert.equal(state.effectiveProjectionHasPermission, false);
   assert.equal(state.governedUnavailable, false);
+  assert.equal(state.pageState, "degraded");
+  assert.equal(state.effectivePermissionsSource, "probe");
 });
 
 test("uses backend effective permissions to mark skills ready after catalog load", () => {
@@ -116,6 +119,22 @@ test("uses backend effective permissions to mark marketplace ready after catalog
   assert.equal(state.authProjectionHasPermission, false);
   assert.equal(state.effectiveProjectionHasPermission, true);
   assert.equal(state.requiredPermission, "marketplace:read");
+});
+
+test("marks PR177 public catalog reads ready after the list contract resolves", () => {
+  const state = resolveSkillsHubGovernance({
+    requestedTab: "marketplace",
+    isAuthenticated: true,
+    canReadSkills: false,
+    canReadMarketplace: false,
+    catalogReadResolved: true,
+    effectivePermissions: [],
+  });
+
+  assert.equal(state.pageState, "ready");
+  assert.equal(state.hasPermission, true);
+  assert.equal(state.effectivePermissionsSource, "catalog");
+  assert.equal(state.degraded, false);
 });
 
 test("marks the hub forbidden only after the catalog API proves permission denial", () => {

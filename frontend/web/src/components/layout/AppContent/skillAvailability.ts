@@ -63,7 +63,6 @@ export function resolveSettingsBooleanProjection(
 
 export function resolveComposerSkillsAvailability({
   isAuthenticated,
-  canReadSkills,
   catalogEffectivePermissions,
   catalogPermissionsKnown,
 }: {
@@ -84,7 +83,7 @@ export function resolveComposerSkillsAvailability({
   const available = shouldFetchSkills
     ? catalogPermissionsKnown
       ? catalogCanReadSkills
-      : canReadSkills
+      : true
     : false;
 
   return {

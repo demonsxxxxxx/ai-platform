@@ -19,6 +19,7 @@ export function useMarketplace(options?: { enabled?: boolean }) {
   const [effectivePermissions, setEffectivePermissions] = useState<string[]>(
     [],
   );
+  const [catalogReadResolved, setCatalogReadResolved] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [listError, setListError] = useState<string | null>(null);
@@ -65,6 +66,7 @@ export function useMarketplace(options?: { enabled?: boolean }) {
       });
       setSkills(data.skills ?? []);
       setEffectivePermissions(data.effective_permissions ?? []);
+      setCatalogReadResolved(true);
       if (data.available_tags.length > 0) {
         setTags(data.available_tags);
       }
@@ -75,6 +77,7 @@ export function useMarketplace(options?: { enabled?: boolean }) {
           : "Failed to fetch marketplace skills";
       setError(message);
       setListError(message);
+      setCatalogReadResolved(false);
     } finally {
       setIsLoading(false);
     }
@@ -324,6 +327,7 @@ export function useMarketplace(options?: { enabled?: boolean }) {
     skills,
     tags,
     effectivePermissions,
+    catalogReadResolved,
     isLoading,
     error,
     listError,
