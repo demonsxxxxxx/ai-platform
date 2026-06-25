@@ -152,9 +152,7 @@ function governanceState(
     hasPermission: true,
     hasWorkspace: governance ? Boolean(governance.workspace_id) : true,
     projectionError: state.error,
-    degraded: Boolean(
-      governance?.degraded || governance?.secret_material_projected,
-    ),
+    degraded: Boolean(governance?.degraded),
   });
 }
 
@@ -421,6 +419,7 @@ function ProjectionShell({
             auditAvailable={Boolean(
               governance?.audit_required || governance?.rollback_available,
             )}
+            secretMaterialProjected={secretMaterialProjected}
           />
         </section>
       </div>
@@ -461,11 +460,13 @@ function ProjectionInsightPanel({
   readAvailability,
   adminAvailability,
   auditAvailable,
+  secretMaterialProjected,
 }: {
   details: string[];
   readAvailability: { state: AvailabilityState; labelKey: string };
   adminAvailability: { state: AvailabilityState; labelKey: string };
   auditAvailable: boolean;
+  secretMaterialProjected: boolean;
 }) {
   const { t } = useTranslation();
 
@@ -508,6 +509,15 @@ function ProjectionInsightPanel({
           }
           state={auditAvailable ? "enabled" : "disabled"}
           labelKey={auditAvailable ? "governance.enabled" : "governance.disabled"}
+        />
+        <StatusTile
+          icon={ShieldCheck}
+          title={t("workbench.projections.governance.redactionTitle")}
+          description={t("workbench.projections.governance.redactionDescription")}
+          state={secretMaterialProjected ? "enabled" : "disabled"}
+          labelKey={
+            secretMaterialProjected ? "governance.enabled" : "governance.disabled"
+          }
         />
       </div>
 

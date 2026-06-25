@@ -1039,6 +1039,12 @@ test("workbench projection pages consume safe backend contracts instead of phase
   assert.match(projectionPages, /data-projection-list-panel/);
   assert.match(projectionPages, /ProjectionMetric/);
   assert.match(projectionPages, /governance\.secret_material_projected/);
+  assert.match(projectionPages, /secretMaterialProjected/);
+  assert.match(projectionPages, /degraded:\s*Boolean\(\s*governance\?\.degraded\s*\)/);
+  assert.doesNotMatch(
+    projectionPages,
+    /governance\?\.degraded\s*\|\|\s*governance\?\.secret_material_projected/,
+  );
   assert.match(projectionPages, /state === "degraded"/);
   assert.match(projectionPages, /state === "forbidden"/);
   assert.doesNotMatch(projectionPages, /<div className="mt-3">\{children\}<\/div>/);
