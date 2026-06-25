@@ -3,13 +3,16 @@ import {
   type LucideIcon,
   Bell,
   CheckCircle2,
+  Clock3,
   MessageSquareText,
+  Megaphone,
   RotateCcw,
   Search,
   Settings,
   ShieldCheck,
   SlidersHorizontal,
   Users,
+  UserCheck,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { PanelHeader } from "../common/PanelHeader";
@@ -56,6 +59,8 @@ const pageMeta: Record<
     surface: string;
     readPermission: Permission;
     adminPermission: Permission;
+    taskTitle: string;
+    taskDescription: string;
   }
 > = {
   users: {
@@ -65,6 +70,8 @@ const pageMeta: Record<
     surface: "workbench-users-projection",
     readPermission: Permission.USER_READ,
     adminPermission: Permission.USER_ADMIN,
+    taskTitle: "workbench.projections.users.taskTitle",
+    taskDescription: "workbench.projections.users.taskDescription",
   },
   settings: {
     title: "workbench.projections.settings.title",
@@ -73,6 +80,8 @@ const pageMeta: Record<
     surface: "workbench-settings-projection",
     readPermission: Permission.SETTINGS_READ,
     adminPermission: Permission.SETTINGS_ADMIN,
+    taskTitle: "workbench.projections.settings.taskTitle",
+    taskDescription: "workbench.projections.settings.taskDescription",
   },
   feedback: {
     title: "workbench.projections.feedback.title",
@@ -81,6 +90,8 @@ const pageMeta: Record<
     surface: "workbench-feedback-projection",
     readPermission: Permission.FEEDBACK_READ,
     adminPermission: Permission.FEEDBACK_ADMIN,
+    taskTitle: "workbench.projections.feedback.taskTitle",
+    taskDescription: "workbench.projections.feedback.taskDescription",
   },
   notifications: {
     title: "workbench.projections.notifications.title",
@@ -89,6 +100,8 @@ const pageMeta: Record<
     surface: "workbench-notifications-projection",
     readPermission: Permission.NOTIFICATION_READ,
     adminPermission: Permission.NOTIFICATION_ADMIN,
+    taskTitle: "workbench.projections.notifications.taskTitle",
+    taskDescription: "workbench.projections.notifications.taskDescription",
   },
 };
 
@@ -161,6 +174,95 @@ function formatValue(value: unknown) {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return JSON.stringify(value);
+}
+
+function normalizedLookupKey(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function humanizeToken(value: string) {
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function translateMappedValue(
+  t: ReturnType<typeof useTranslation>["t"],
+  namespace: string,
+  value: string | null | undefined,
+) {
+  const fallback = value ? humanizeToken(value) : "-";
+  if (!value) return fallback;
+  return t(`${namespace}.${normalizedLookupKey(value)}`, fallback);
+}
+
+function roleLabel(t: ReturnType<typeof useTranslation>["t"], role: string) {
+  return translateMappedValue(t, "workbench.projections.users.roleLabels", role);
+}
+
+function settingCategoryLabel(
+  t: ReturnType<typeof useTranslation>["t"],
+  category: string,
+) {
+  return translateMappedValue(
+    t,
+    "workbench.projections.settings.categories",
+    category,
+  );
+}
+
+function feedbackStatusLabel(
+  t: ReturnType<typeof useTranslation>["t"],
+  status: string,
+) {
+  return translateMappedValue(t, "workbench.projections.feedback.status", status);
+}
+
+function feedbackAssignmentLabel(
+  t: ReturnType<typeof useTranslation>["t"],
+  assignmentState: string,
+) {
+  return translateMappedValue(
+    t,
+    "workbench.projections.feedback.assignment",
+    assignmentState,
+  );
+}
+
+function notificationStateLabel(
+  t: ReturnType<typeof useTranslation>["t"],
+  state: string | null,
+) {
+  return translateMappedValue(
+    t,
+    "workbench.projections.notifications.readState",
+    state,
+  );
+}
+
+function notificationTypeLabel(
+  t: ReturnType<typeof useTranslation>["t"],
+  type: string,
+) {
+  return translateMappedValue(t, "workbench.projections.notifications.type", type);
+}
+
+function dedupeNotifications(items: WorkbenchNotification[]) {
+  const seen = new Set<string>();
+  const deduped: WorkbenchNotification[] = [];
+  for (const item of items) {
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    deduped.push(item);
+  }
+  return deduped;
 }
 
 function ProjectionShell({
@@ -269,8 +371,39 @@ function ProjectionShell({
             className="mb-3 max-w-none text-left"
           />
         ) : null}
-        <section data-projection-workbench-grid className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <section
+          data-projection-workbench-grid
+          className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_18rem]"
+        >
           <div className="min-w-0 space-y-4">
+            <section
+              data-projection-task-panel
+              className={`${workbenchSurface.compactPanel} px-4 py-3`}
+            >
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <p className={workbenchSurface.label}>
+                    {t("workbench.projections.currentTask")}
+                  </p>
+                  <h2 className="mt-1 text-sm font-semibold text-[var(--theme-text)]">
+                    {t(meta.taskTitle)}
+                  </h2>
+                  <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
+                    {t(meta.taskDescription)}
+                  </p>
+                </div>
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  <GovernanceAvailabilityBadge
+                    state={readAvailability.state}
+                    labelKey={readAvailability.labelKey}
+                  />
+                  <GovernanceAvailabilityBadge
+                    state={adminAvailability.state}
+                    labelKey={adminAvailability.labelKey}
+                  />
+                </div>
+              </div>
+            </section>
             {metrics?.length ? (
               <section data-projection-summary-panel className="grid gap-3 sm:grid-cols-3">
                 {metrics.map((metric) => (
@@ -341,19 +474,16 @@ function ProjectionInsightPanel({
       data-projection-insight-panel
       className={`${workbenchSurface.panel} h-fit overflow-hidden`}
     >
-      <div className="border-b border-[var(--theme-border)] p-4">
+      <div className="border-b border-[var(--theme-border)] px-4 py-3">
         <p className={workbenchSurface.label}>
           {t("workbench.governedRoute.contractTitle")}
         </p>
         <h2 className="mt-1 text-sm font-semibold text-[var(--theme-text)]">
-          {t("workbench.projections.governance.safeReadTitle")}
+          {t("workbench.projections.governance.summaryTitle")}
         </h2>
-        <p className="mt-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
-          {t("workbench.governedRoute.contractDescription")}
-        </p>
       </div>
 
-      <div className="space-y-2 p-3">
+      <div className="space-y-2 p-2.5">
         <StatusTile
           icon={ShieldCheck}
           title={t("workbench.projections.governance.safeReadTitle")}
@@ -383,6 +513,9 @@ function ProjectionInsightPanel({
 
       {details.length ? (
         <div className="border-t border-[var(--theme-border)] px-4 py-3">
+          <p className={`${workbenchSurface.label} mb-1`}>
+            {t("workbench.projections.governance.scope")}
+          </p>
           {details.map((detail) => (
             <p
               key={detail}
@@ -419,7 +552,7 @@ function StatusTile({
   labelKey: string;
 }) {
   return (
-    <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-3 ring-1 ring-[var(--theme-border)]">
+    <div className="rounded-md bg-[var(--theme-workbench-panel)] p-3 ring-1 ring-[var(--theme-border)]">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -480,18 +613,28 @@ export function WorkbenchUsersProjectionPanel() {
       ]}
     >
       <div className={workbenchSurface.compactPanel}>
-        <div className="border-b border-[var(--theme-border)] p-3">
-          <div className="relative">
-            <Search
-              size={17}
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400"
-            />
-            <input
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-              className="panel-search h-10 pl-9"
-              placeholder={t("workbench.projections.users.search")}
-            />
+        <div className="border-b border-[var(--theme-border)] px-4 py-3">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-[var(--theme-text)]">
+                {t("workbench.projections.users.directoryTitle")}
+              </h3>
+              <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
+                {t("workbench.projections.users.directoryDescription")}
+              </p>
+            </div>
+            <div className="relative min-w-0 md:w-72">
+              <Search
+                size={17}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+              />
+              <input
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                className="panel-search h-10 pl-9"
+                placeholder={t("workbench.projections.users.search")}
+              />
+            </div>
           </div>
         </div>
         <div className="divide-y divide-[var(--theme-border)]">
@@ -501,29 +644,57 @@ export function WorkbenchUsersProjectionPanel() {
             rows.map((user) => (
               <article
                 key={user.id}
-                className="grid gap-3 p-3 text-sm sm:grid-cols-[minmax(0,1fr)_14rem]"
+                className="grid gap-3 px-4 py-3 text-sm md:grid-cols-[minmax(0,1fr)_16rem]"
               >
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2
+                  <div className="flex flex-wrap items-center gap-2">
+                    <UserCheck
                       size={15}
                       className={user.is_active ? "text-emerald-600" : "text-stone-400"}
                     />
                     <h3 className="truncate font-semibold text-[var(--theme-text)]">
                       {user.full_name || user.username}
                     </h3>
+                    <span
+                      className={`rounded-md px-2 py-0.5 text-xs font-medium ring-1 ${
+                        user.is_active
+                          ? "bg-emerald-50 text-emerald-700 ring-emerald-100"
+                          : "bg-slate-100 text-slate-600 ring-slate-200"
+                      }`}
+                    >
+                      {user.is_active
+                        ? t("workbench.projections.users.activeState")
+                        : t("workbench.projections.users.inactiveState")}
+                    </span>
                   </div>
-                  <p className="mt-1 truncate text-xs text-[var(--theme-text-secondary)]">
-                    {user.username} · {user.tenant_id}/{user.department_id || "-"}
-                  </p>
+                  <dl className="mt-2 grid gap-1 text-xs text-[var(--theme-text-secondary)] sm:grid-cols-3">
+                    <div>
+                      <dt className={workbenchSurface.label}>
+                        {t("workbench.projections.users.account")}
+                      </dt>
+                      <dd className="truncate">{user.username}</dd>
+                    </div>
+                    <div>
+                      <dt className={workbenchSurface.label}>
+                        {t("workbench.projections.users.tenant")}
+                      </dt>
+                      <dd className="truncate">{user.tenant_id}</dd>
+                    </div>
+                    <div>
+                      <dt className={workbenchSurface.label}>
+                        {t("workbench.projections.users.department")}
+                      </dt>
+                      <dd className="truncate">{user.department_id || "-"}</dd>
+                    </div>
+                  </dl>
                 </div>
-                <div className="flex min-w-0 flex-wrap gap-1.5">
+                <div className="flex min-w-0 flex-wrap content-start gap-1.5">
                   {user.roles.slice(0, 4).map((role) => (
                     <span
                       key={role}
-                      className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-xs text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]"
+                      className="rounded-md bg-[var(--theme-bg-card)] px-2 py-1 text-xs font-medium text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]"
                     >
-                      {role}
+                      {roleLabel(t, role)}
                     </span>
                   ))}
                 </div>
@@ -583,14 +754,19 @@ export function WorkbenchSettingsProjectionPanel() {
         ) : (
           groups.map((group) => (
             <section key={group.category} className={workbenchSurface.compactPanel}>
-              <div className="border-b border-[var(--theme-border)] p-3">
+              <div className="border-b border-[var(--theme-border)] px-4 py-3">
                 <h3 className="text-sm font-semibold text-[var(--theme-text)]">
-                  {group.category.replace(/_/g, " ")}
+                  {settingCategoryLabel(t, group.category)}
                 </h3>
+                <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
+                  {t("workbench.projections.settings.groupItemCount", {
+                    count: group.items.length,
+                  })}
+                </p>
               </div>
               <div className="divide-y divide-[var(--theme-border)]">
                 {group.items.map((item) => (
-                  <div key={item.key} className="grid gap-2 p-3 text-sm">
+                  <div key={item.key} className="grid gap-2 px-4 py-3 text-sm">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <h4 className="truncate font-medium text-[var(--theme-text)]">
@@ -600,18 +776,20 @@ export function WorkbenchSettingsProjectionPanel() {
                           {item.key}
                         </p>
                       </div>
-                      {item.is_secret || item.audit_required ? (
-                        <GovernanceAvailabilityBadge
-                          state={item.audit_required ? "enabled" : "disabled"}
-                          labelKey={
-                            item.audit_required
-                              ? "governance.enabled"
-                              : "governance.disabled"
-                          }
-                        />
-                      ) : null}
+                      <div className="flex shrink-0 gap-1.5">
+                        {item.is_secret ? (
+                          <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600 ring-1 ring-slate-200">
+                            {t("workbench.projections.settings.secretChip")}
+                          </span>
+                        ) : null}
+                        {item.audit_required || item.rollback_available ? (
+                          <span className="rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 ring-1 ring-emerald-100">
+                            {t("workbench.projections.settings.auditedChip")}
+                          </span>
+                        ) : null}
+                      </div>
                     </div>
-                    <p className="truncate rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1.5 text-xs text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
+                    <p className="truncate rounded-md bg-[var(--theme-bg-card)] px-2 py-1.5 text-xs text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
                       {item.is_secret
                         ? t("workbench.projections.settings.redacted")
                         : formatValue(item.value)}
@@ -658,27 +836,67 @@ export function WorkbenchFeedbackProjectionPanel() {
       ]}
     >
       <div className={workbenchSurface.compactPanel}>
+        <div className="border-b border-[var(--theme-border)] px-4 py-3">
+          <h3 className="text-sm font-semibold text-[var(--theme-text)]">
+            {t("workbench.projections.feedback.queueTitle")}
+          </h3>
+          <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
+            {t("workbench.projections.feedback.queueDescription")}
+          </p>
+        </div>
         <div className="divide-y divide-[var(--theme-border)]">
           {feedback.data?.items.length ? (
             feedback.data.items.map((item) => (
-              <article key={item.id} className="grid gap-2 p-3 text-sm">
+              <article key={item.id} className="grid gap-3 px-4 py-3 text-sm">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <h3 className="font-semibold text-[var(--theme-text)]">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <MessageSquareText
+                        size={15}
+                        className={
+                          item.rating === "up"
+                            ? "text-emerald-600"
+                            : "text-rose-600"
+                        }
+                      />
+                      <h3 className="font-semibold text-[var(--theme-text)]">
                       {item.rating === "up"
                         ? t("workbench.projections.feedback.positive")
                         : t("workbench.projections.feedback.negative")}
-                    </h3>
-                    <p className="mt-1 truncate text-xs text-[var(--theme-text-secondary)]">
-                      {item.username} · {item.session_id} · {item.run_id}
-                    </p>
+                      </h3>
+                    </div>
+                    <dl className="mt-2 grid gap-1 text-xs text-[var(--theme-text-secondary)] sm:grid-cols-3">
+                      <div>
+                        <dt className={workbenchSurface.label}>
+                          {t("workbench.projections.feedback.user")}
+                        </dt>
+                        <dd className="truncate">{item.username}</dd>
+                      </div>
+                      <div>
+                        <dt className={workbenchSurface.label}>
+                          {t("workbench.projections.feedback.session")}
+                        </dt>
+                        <dd className="truncate">{item.session_id}</dd>
+                      </div>
+                      <div>
+                        <dt className={workbenchSurface.label}>
+                          {t("workbench.projections.feedback.run")}
+                        </dt>
+                        <dd className="truncate">{item.run_id}</dd>
+                      </div>
+                    </dl>
                   </div>
-                  <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-xs text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
-                    {item.status} / {item.assignment_state}
-                  </span>
+                  <div className="flex shrink-0 flex-col items-end gap-1.5">
+                    <span className="rounded-md bg-[var(--theme-bg-card)] px-2 py-1 text-xs font-medium text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
+                      {feedbackStatusLabel(t, item.status)}
+                    </span>
+                    <span className="rounded-md bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700 ring-1 ring-amber-100">
+                      {feedbackAssignmentLabel(t, item.assignment_state)}
+                    </span>
+                  </div>
                 </div>
                 {item.comment ? (
-                  <p className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1.5 text-xs leading-5 text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
+                  <p className="rounded-md bg-[var(--theme-bg-card)] px-3 py-2 text-xs leading-5 text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
                     {item.comment}
                   </p>
                 ) : null}
@@ -744,23 +962,58 @@ export function WorkbenchNotificationsProjectionPanel() {
       ]}
     >
       <div className={workbenchSurface.compactPanel}>
+        <div className="border-b border-[var(--theme-border)] px-4 py-3">
+          <h3 className="text-sm font-semibold text-[var(--theme-text)]">
+            {t("workbench.projections.notifications.streamTitle")}
+          </h3>
+          <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
+            {t("workbench.projections.notifications.streamDescription")}
+          </p>
+        </div>
         <div className="divide-y divide-[var(--theme-border)]">
           {combined.length === 0 ? (
             <EmptyProjection message={t("workbench.projections.notifications.empty")} />
           ) : (
-            combined.map((item) => (
-              <article key={`${item.id}-${item.read_state ?? "admin"}`} className="p-3">
+            dedupeNotifications(combined).map((item) => (
+              <article key={item.id} className="px-4 py-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <h3 className="truncate text-sm font-semibold text-[var(--theme-text)]">
-                      {localizedText(item.title_i18n, i18n.language)}
-                    </h3>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {item.type === "announcement" ? (
+                        <Megaphone size={15} className="text-teal-700" />
+                      ) : (
+                        <Bell size={15} className="text-[var(--theme-text-secondary)]" />
+                      )}
+                      <h3 className="truncate text-sm font-semibold text-[var(--theme-text)]">
+                        {localizedText(item.title_i18n, i18n.language)}
+                      </h3>
+                    </div>
                     <p className="mt-1 line-clamp-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
                       {localizedText(item.content_i18n, i18n.language)}
                     </p>
+                    <div className="mt-2 flex flex-wrap gap-2 text-xs text-[var(--theme-text-secondary)]">
+                      <span className="inline-flex items-center gap-1 rounded-md bg-[var(--theme-bg-card)] px-2 py-1 ring-1 ring-[var(--theme-border)]">
+                        <Clock3 size={12} />
+                        {item.created_at || item.updated_at || "-"}
+                      </span>
+                      <span className="rounded-md bg-[var(--theme-bg-card)] px-2 py-1 ring-1 ring-[var(--theme-border)]">
+                        {notificationTypeLabel(t, item.type)}
+                      </span>
+                    </div>
                   </div>
-                  <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-xs text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
-                    {item.read_state ?? item.type}
+                  <span
+                    className={`rounded-md px-2 py-1 text-xs font-medium ring-1 ${
+                      item.read_state === "unread"
+                        ? "bg-amber-50 text-amber-700 ring-amber-100"
+                        : item.is_active
+                          ? "bg-emerald-50 text-emerald-700 ring-emerald-100"
+                          : "bg-slate-100 text-slate-600 ring-slate-200"
+                    }`}
+                  >
+                    {notificationStateLabel(
+                      t,
+                      item.read_state ?? (item.is_active ? "active" : "inactive"),
+                    )}
                   </span>
                 </div>
               </article>

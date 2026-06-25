@@ -49,7 +49,7 @@ test("phase one composer command names are active source concepts", () => {
   assert.match(input, /ComposerChips/);
 });
 
-test("backend-missing phase one surfaces are explicit fail-closed states", () => {
+test("governed phase one write surfaces remain explicit fail-closed states", () => {
   const serialized = [
     source("src/components/panels/SkillsHubPanel.tsx"),
     source("src/components/panels/MarketplacePanel.tsx"),

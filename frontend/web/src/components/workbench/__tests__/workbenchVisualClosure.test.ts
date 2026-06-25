@@ -196,8 +196,11 @@ test("workbench surface exports shared page containers for governed routes", () 
 
 test("safe projection pages render a full workbench instead of thin lists", () => {
   const projectionPages = read("src/components/workbench/WorkbenchProjectionPages.tsx");
+  const zh = JSON.parse(read("src/i18n/locales/zh.json"));
+  const en = JSON.parse(read("src/i18n/locales/en.json"));
 
   assert.match(projectionPages, /data-projection-workbench-grid/);
+  assert.match(projectionPages, /data-projection-task-panel/);
   assert.match(projectionPages, /data-projection-summary-panel/);
   assert.match(projectionPages, /data-projection-insight-panel/);
   assert.match(projectionPages, /data-projection-list-panel/);
@@ -206,7 +209,21 @@ test("safe projection pages render a full workbench instead of thin lists", () =
   assert.match(projectionPages, /ProjectionMetric/);
   assert.match(projectionPages, /ProjectionInsightPanel/);
   assert.match(projectionPages, /ProjectionListPanel/);
-  assert.match(projectionPages, /lg:grid-cols-\[minmax\(0,1fr\)_20rem\]/);
+  assert.match(projectionPages, /xl:grid-cols-\[minmax\(0,1fr\)_18rem\]/);
+  assert.match(projectionPages, /workbench\.projections\.currentTask/);
+  assert.match(projectionPages, /workbench\.projections\.governance\.summaryTitle/);
+  assert.match(projectionPages, /workbench\.projections\.users\.directoryTitle/);
+  assert.match(projectionPages, /workbench\.projections\.settings\.secretChip/);
+  assert.match(projectionPages, /workbench\.projections\.feedback\.queueTitle/);
+  assert.match(projectionPages, /workbench\.projections\.notifications\.streamTitle/);
+  assert.equal(zh.workbench.projections.currentTask, "当前任务");
+  assert.equal(en.workbench.projections.currentTask, "Current task");
+  assert.equal(zh.workbench.projections.governance.summaryTitle, "读写治理摘要");
+  assert.equal(en.workbench.projections.governance.summaryTitle, "Read/write governance");
+  assert.ok(zh.workbench.projections.users.roleLabels.admin);
+  assert.ok(en.workbench.projections.settings.categories.security);
+  assert.ok(zh.workbench.projections.feedback.status.open);
+  assert.ok(en.workbench.projections.notifications.readState.unread);
   assert.doesNotMatch(projectionPages, /bg-\[var\(--theme-bg\)\]/);
   assert.doesNotMatch(projectionPages, /text-stone-(?:700|800|900)/);
   assert.doesNotMatch(projectionPages, /<div className="mt-3">\{children\}<\/div>/);

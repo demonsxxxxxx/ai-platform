@@ -19,8 +19,8 @@ export const PHASE1_COMPOSER_COMMANDS = [
 ] as const;
 
 export const PHASE1_FAIL_CLOSED_SURFACES = [
-  "department-skill-policy",
   "mcp-lifecycle",
+  "mcp-credentials",
   "share-acl-create",
   "channel-admin-governance",
   "context-selector",
