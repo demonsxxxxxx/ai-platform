@@ -627,3 +627,28 @@ test("expanded app sidebar keeps governed catalogs as first-level smoke targets"
   assert.match(rail, /data-workbench-rail-item="marketplace"/);
   assert.match(rail, /data-workbench-rail-item="roles"/);
 });
+
+test("post-login sidebar marks the current governed route in expanded and rail modes", () => {
+  const sidebar = read(
+    "src/components/panels/SidebarParts/SessionListContent.tsx",
+  );
+  const rail = read("src/components/panels/SidebarParts/SidebarRail.tsx");
+  const baseCss = read("src/styles/base.css");
+
+  assert.match(sidebar, /useLocation\(\)/);
+  assert.match(sidebar, /getWorkbenchNavItemFromPathname\(location\.pathname\)/);
+  assert.match(sidebar, /aria-current=\{isActive \? "page" : undefined\}/);
+  assert.match(sidebar, /data-active=\{isActive \? "true" : "false"\}/);
+  assert.match(rail, /useLocation\(\)/);
+  assert.match(rail, /getWorkbenchNavItemFromPathname\(location\.pathname\)/);
+  assert.match(
+    rail,
+    /aria-current=\{isRailItemActive\("[a-z]+"\) \? "page" : undefined\}/,
+  );
+  assert.match(
+    rail,
+    /data-active=\{isRailItemActive\("[a-z]+"\) \? "true" : "false"\}/,
+  );
+  assert.match(baseCss, /\.sidebar-nav-btn\[data-active="true"\]/);
+  assert.match(baseCss, /\.sidebar-rail-btn\[data-active="true"\]/);
+});
