@@ -58,6 +58,8 @@ test("maps the skills route to the public skill read contract", () => {
   assert.equal(state.governedUnavailable, false);
   assert.equal(state.requiredPermission, "skill:read");
   assert.equal(state.degraded, false);
+  assert.equal(state.pageState, "ready");
+  assert.equal(state.effectivePermissionsSource, "auth");
 });
 
 test("maps the marketplace route to the public marketplace read contract", () => {
@@ -87,6 +89,34 @@ test("marks the catalog as probing when auth permissions omit the public read gr
   assert.equal(state.governedUnavailable, false);
   assert.equal(state.pageState, "degraded");
   assert.equal(state.effectivePermissionsSource, "probe");
+});
+
+test("keeps auth-granted catalog routes ready while effective permissions are not projected", () => {
+  const skills = resolveSkillsHubGovernance({
+    requestedTab: "skills",
+    isAuthenticated: true,
+    canReadSkills: true,
+    canReadMarketplace: false,
+    effectivePermissions: [],
+    effectivePermissionsKnown: false,
+    catalogReadResolved: true,
+  });
+  const marketplace = resolveSkillsHubGovernance({
+    requestedTab: "marketplace",
+    isAuthenticated: true,
+    canReadSkills: false,
+    canReadMarketplace: true,
+    effectivePermissions: [],
+    effectivePermissionsKnown: false,
+    catalogReadResolved: true,
+  });
+
+  assert.equal(skills.pageState, "ready");
+  assert.equal(skills.degraded, false);
+  assert.equal(skills.effectivePermissionsSource, "auth");
+  assert.equal(marketplace.pageState, "ready");
+  assert.equal(marketplace.degraded, false);
+  assert.equal(marketplace.effectivePermissionsSource, "auth");
 });
 
 test("uses backend effective permissions to mark skills ready after catalog load", () => {

@@ -34,6 +34,7 @@ interface MarketplacePanelProps {
     permissionDenied: boolean;
     projectionError: string | null;
     effectivePermissions: string[];
+    effectivePermissionsKnown: boolean;
     readResolved: boolean;
   }) => void;
 }
@@ -53,6 +54,7 @@ export function MarketplacePanel({
     skills,
     tags,
     effectivePermissions: marketplaceEffectivePermissions,
+    effectivePermissionsKnown: marketplaceEffectivePermissionsKnown,
     catalogReadResolved: marketplaceCatalogReadResolved,
     isLoading,
     error,
@@ -135,14 +137,19 @@ export function MarketplacePanel({
       permissionDenied,
       projectionError: permissionDenied ? null : listError,
       effectivePermissions: catalogEffectivePermissions,
+      effectivePermissionsKnown:
+        marketplaceEffectivePermissionsKnown ||
+        userEffectivePermissions.length > 0,
       readResolved: marketplaceCatalogReadResolved,
     });
   }, [
     catalogEffectivePermissions,
     listError,
     marketplaceCatalogReadResolved,
+    marketplaceEffectivePermissionsKnown,
     onCatalogStateChange,
     permissionDenied,
+    userEffectivePermissions.length,
   ]);
 
   const installedMarketplaceNames = new Set(

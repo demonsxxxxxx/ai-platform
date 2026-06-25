@@ -22,6 +22,7 @@ interface CatalogState {
   permissionDenied: boolean;
   projectionError: string | null;
   effectivePermissions: string[];
+  effectivePermissionsKnown: boolean;
   readResolved: boolean;
 }
 
@@ -44,12 +45,14 @@ export function SkillsHubPanel() {
       permissionDenied: false,
       projectionError: null,
       effectivePermissions: [],
+      effectivePermissionsKnown: false,
       readResolved: false,
     },
     marketplace: {
       permissionDenied: false,
       projectionError: null,
       effectivePermissions: [],
+      effectivePermissionsKnown: false,
       readResolved: false,
     },
   });
@@ -64,6 +67,10 @@ export function SkillsHubPanel() {
   const effectivePermissionsByTab = {
     skills: catalogStateByTab.skills.effectivePermissions,
     marketplace: catalogStateByTab.marketplace.effectivePermissions,
+  };
+  const effectivePermissionsKnownByTab = {
+    skills: catalogStateByTab.skills.effectivePermissionsKnown,
+    marketplace: catalogStateByTab.marketplace.effectivePermissionsKnown,
   };
   const catalogReadResolvedByTab = {
     skills: catalogStateByTab.skills.readResolved,
@@ -83,6 +90,7 @@ export function SkillsHubPanel() {
     catalogReadResolved: catalogReadResolvedByTab[requestedTab],
     projectionError: catalogProjectionErrorByTab[requestedTab],
     effectivePermissions: effectivePermissionsByTab[requestedTab],
+    effectivePermissionsKnown: effectivePermissionsKnownByTab[requestedTab],
   });
   const governanceState = hubGovernance.pageState;
   const statusCopyKey =
@@ -96,7 +104,7 @@ export function SkillsHubPanel() {
     : "skillsHub.skills";
   const statusIndicatorClass =
     governanceState === "ready"
-      ? "bg-emerald-500"
+      ? "bg-[var(--theme-primary)]"
       : governanceState === "degraded"
         ? "bg-amber-500"
         : governanceState === "forbidden"
@@ -126,6 +134,7 @@ export function SkillsHubPanel() {
           current.permissionDenied === nextState.permissionDenied &&
           current.projectionError === nextState.projectionError &&
           current.readResolved === nextState.readResolved &&
+          current.effectivePermissionsKnown === nextState.effectivePermissionsKnown &&
           currentPermissions === nextPermissions
         ) {
           return previous;
