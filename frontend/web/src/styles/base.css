@@ -122,11 +122,11 @@ select:-webkit-autofill:active {
   --theme-primary-foreground-muted: rgba(255, 255, 255, 0.8);
   --theme-primary-foreground-subtle: rgba(255, 255, 255, 0.72);
   --theme-ring: #0f766e;
-  --theme-bg: #f3f5f8;
-  --theme-workbench-canvas: #f3f5f8;
-  --theme-workbench-panel: #f8fafc;
+  --theme-bg: #e9eef5;
+  --theme-workbench-canvas: #e9eef5;
+  --theme-workbench-panel: #f6f8fb;
   --theme-bg-card: #ffffff;
-  --theme-bg-sidebar: #f3f5f8;
+  --theme-bg-sidebar: #eef2f7;
   --theme-sidebar-rail: #111827;
   --theme-sidebar-panel: #111827;
   --theme-sidebar-panel-muted: #1f2937;

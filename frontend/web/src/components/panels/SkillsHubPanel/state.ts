@@ -12,6 +12,7 @@ export interface SkillsHubGovernanceInput {
   effectivePermissions?: string[];
   effectivePermissionsKnown?: boolean;
   catalogReadResolved?: boolean;
+  catalogReadPending?: boolean;
   catalogPermissionDenied?: boolean;
   projectionError?: string | null;
 }
@@ -78,6 +79,7 @@ export function resolveSkillsHubGovernance({
   effectivePermissions,
   effectivePermissionsKnown = false,
   catalogReadResolved,
+  catalogReadPending = false,
   catalogPermissionDenied,
   projectionError,
 }: SkillsHubGovernanceInput): SkillsHubGovernanceState {
@@ -103,7 +105,9 @@ export function resolveSkillsHubGovernance({
           : "probe";
   const governedUnavailable = Boolean(catalogPermissionDenied);
   const probingPermission =
-    effectivePermissionsSource === "probe" && !governedUnavailable;
+    effectivePermissionsSource === "probe" &&
+    !governedUnavailable &&
+    !catalogReadPending;
   const pageState: FrontendGovernanceState = isLoading
     ? "loading"
     : !isAuthenticated
@@ -112,9 +116,9 @@ export function resolveSkillsHubGovernance({
         ? "no-workspace"
         : governedUnavailable
           ? "forbidden"
-          : projectionError || probingPermission
-            ? "degraded"
-            : "ready";
+        : projectionError || probingPermission
+          ? "degraded"
+          : "ready";
 
   if (requestedTab === "marketplace") {
     return {

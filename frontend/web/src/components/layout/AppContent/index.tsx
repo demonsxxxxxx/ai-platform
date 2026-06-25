@@ -21,7 +21,7 @@ export function AppContent({ activeTab, routeUnavailable }: AppContentProps) {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     const saved = localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY);
-    return saved !== null ? saved === "true" : true;
+    return saved !== null ? saved === "true" : false;
   });
   const [showProfileModal, setShowProfileModal] = useState(false);
 

@@ -9,7 +9,7 @@
   scrollbar-width: none;
   padding-top: max(1rem, env(safe-area-inset-top));
   padding-bottom: max(1.25rem, env(safe-area-inset-bottom));
-  background: var(--theme-bg);
+  background: var(--theme-workbench-canvas);
 }
 .welcome-root::-webkit-scrollbar {
   display: none;
@@ -25,7 +25,8 @@
 }
 
 .chat-start-surface {
-  min-height: min(42rem, 100%);
+  min-height: 0;
+  margin: clamp(1.5rem, 8vh, 5rem) auto 0;
 }
 
 /* ── Icon subtle pulse ── */

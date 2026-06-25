@@ -349,15 +349,15 @@ export const WelcomePage = memo(function WelcomePage({
     <div
       ref={rootRef}
       data-workbench-empty-state="chat"
-      className="welcome-root welcome-chat-start relative flex h-full min-h-0 flex-col overflow-y-auto px-4 py-4 sm:px-5"
+      className="welcome-root welcome-chat-start relative flex h-full min-h-0 flex-col overflow-y-auto px-4 py-3 sm:px-5"
     >
       <section
         data-chat-start-surface
-        className="chat-start-surface mx-auto flex w-full max-w-4xl flex-col gap-3 py-4"
+        className="chat-start-surface flex w-full max-w-5xl flex-col gap-3"
       >
         <div
           data-chat-start-header
-          className="flex flex-col gap-3 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-4 py-3 shadow-[0_1px_2px_rgba(18,38,63,0.04)] sm:flex-row sm:items-center sm:justify-between"
+          className="flex flex-col gap-3 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-4 py-3 shadow-[0_1px_2px_rgba(18,38,63,0.04)] sm:flex-row sm:items-center sm:justify-between"
         >
           <div className="min-w-0">
             <p className="text-[11px] font-semibold uppercase text-[var(--theme-text-tertiary)]">
@@ -392,13 +392,13 @@ export const WelcomePage = memo(function WelcomePage({
             onMentionQueryChange={handleMentionQueryChange}
             pendingInput={pendingInput}
             onPendingInputConsumed={() => setPendingInput(null)}
-            className="mx-auto w-full max-w-4xl px-0"
+            className="w-full max-w-5xl px-0"
           />
         </div>
 
         <div
           data-composer-command-dock
-          className="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-1.5 text-xs text-[var(--theme-text-secondary)]"
+          className="flex w-full max-w-5xl flex-wrap items-center gap-1.5 text-xs text-[var(--theme-text-secondary)]"
         >
           <span className="font-medium text-[var(--theme-text)]">
             {t("workbench.commandDock", "Composer")}
@@ -406,7 +406,7 @@ export const WelcomePage = memo(function WelcomePage({
           {["/", "$", "/mcp", "/model", "/file", "/context"].map((command) => (
             <span
               key={command}
-              className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-1.5 py-0.5 font-semibold text-[var(--theme-text)]"
+              className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-1.5 py-0.5 font-semibold text-[var(--theme-text)]"
             >
               {command}
             </span>
@@ -421,7 +421,7 @@ export const WelcomePage = memo(function WelcomePage({
 
         <div
           data-composer-selection-summary
-          className="mx-auto flex w-full max-w-4xl flex-wrap gap-1.5"
+          className="flex w-full max-w-5xl flex-wrap gap-1.5"
         >
           {selectionSummary.map((item) => (
             <span
@@ -431,7 +431,7 @@ export const WelcomePage = memo(function WelcomePage({
                   ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200"
                 : item.state === "unavailable"
                     ? "border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]"
-                    : "border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-stone-500 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-400"
+                    : "border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] text-[var(--theme-text-secondary)]"
               }`}
               title={`${item.label}: ${item.value}`}
             >
@@ -443,7 +443,7 @@ export const WelcomePage = memo(function WelcomePage({
 
         <div
           data-chat-quick-actions
-          className="mx-auto grid w-full max-w-4xl gap-2 sm:grid-cols-2 xl:grid-cols-4"
+          className="grid w-full max-w-5xl gap-2 sm:grid-cols-2 xl:grid-cols-4"
         >
           {quickActions.map((action) => {
             const Icon = action.icon;
@@ -453,7 +453,7 @@ export const WelcomePage = memo(function WelcomePage({
                 key={action.id}
                 type="button"
                 onClick={() => handleQuickActionClick(action)}
-                className={`group flex min-h-20 items-start gap-3 rounded-lg border bg-[var(--theme-bg-card)] p-3 text-left shadow-[0_1px_2px_rgba(18,38,63,0.04)] transition-colors duration-200 ${
+                className={`group flex min-h-20 items-start gap-3 rounded-lg border bg-[var(--theme-workbench-panel)] p-3 text-left shadow-[0_1px_2px_rgba(18,38,63,0.04)] transition-colors duration-200 ${
                   unavailable
                     ? "border-dashed border-[var(--theme-border)] opacity-70 hover:opacity-100"
                     : "border-[var(--theme-border)] hover:border-[var(--theme-border-strong)] hover:bg-[var(--theme-bg-sidebar)]"

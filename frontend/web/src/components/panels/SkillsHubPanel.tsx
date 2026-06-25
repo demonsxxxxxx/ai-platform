@@ -76,6 +76,16 @@ export function SkillsHubPanel() {
     skills: catalogStateByTab.skills.readResolved,
     marketplace: catalogStateByTab.marketplace.readResolved,
   };
+  const catalogReadPendingByTab = {
+    skills:
+      !catalogStateByTab.skills.readResolved &&
+      !catalogStateByTab.skills.permissionDenied &&
+      !catalogStateByTab.skills.projectionError,
+    marketplace:
+      !catalogStateByTab.marketplace.readResolved &&
+      !catalogStateByTab.marketplace.permissionDenied &&
+      !catalogStateByTab.marketplace.projectionError,
+  };
   const visibleTab = requestedTab;
   const isMarketplaceView = visibleTab === "marketplace";
   const canReadSkills = hasAnyPermission([Permission.SKILL_READ]);
@@ -91,6 +101,7 @@ export function SkillsHubPanel() {
     projectionError: catalogProjectionErrorByTab[requestedTab],
     effectivePermissions: effectivePermissionsByTab[requestedTab],
     effectivePermissionsKnown: effectivePermissionsKnownByTab[requestedTab],
+    catalogReadPending: catalogReadPendingByTab[requestedTab],
   });
   const governanceState = hubGovernance.pageState;
   const statusCopyKey =

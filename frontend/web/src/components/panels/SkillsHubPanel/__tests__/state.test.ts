@@ -91,6 +91,22 @@ test("marks the catalog as probing when auth permissions omit the public read gr
   assert.equal(state.effectivePermissionsSource, "probe");
 });
 
+test("keeps public catalog probes readable instead of blocking the page", () => {
+  const state = resolveSkillsHubGovernance({
+    requestedTab: "skills",
+    isAuthenticated: true,
+    canReadSkills: false,
+    canReadMarketplace: false,
+    catalogReadPending: true,
+  });
+
+  assert.equal(state.hasPermission, true);
+  assert.equal(state.governedUnavailable, false);
+  assert.equal(state.pageState, "ready");
+  assert.equal(state.effectivePermissionsSource, "probe");
+  assert.equal(state.degraded, false);
+});
+
 test("keeps auth-granted catalog routes ready while effective permissions are not projected", () => {
   const skills = resolveSkillsHubGovernance({
     requestedTab: "skills",
