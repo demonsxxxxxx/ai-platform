@@ -1,5 +1,15 @@
 import { memo, useMemo, useState, useCallback, useRef } from "react";
-import { MessageSquareText, RefreshCw, Sparkles, UserRound } from "lucide-react";
+import {
+  ArrowRight,
+  Boxes,
+  FileText,
+  type LucideIcon,
+  MessageSquareText,
+  RefreshCw,
+  Sparkles,
+  UserRound,
+  Wrench,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ChatInput } from "./ChatInput";
 import type { ChatInputProps } from "./ChatInput";
@@ -41,6 +51,15 @@ interface ComposerSummaryItem {
   label: string;
   value: string;
   state?: "default" | "enabled" | "unavailable";
+}
+
+interface QuickActionItem {
+  id: string;
+  label: string;
+  description: string;
+  command: string;
+  state: "enabled" | "unavailable";
+  icon: LucideIcon;
 }
 
 export const WelcomePage = memo(function WelcomePage({
@@ -233,27 +252,138 @@ export const WelcomePage = memo(function WelcomePage({
       totalToolsCount,
     ],
   );
+  const quickActions = useMemo<QuickActionItem[]>(
+    () => [
+      {
+        id: "chat",
+        label: t("workbench.quickActions.chat", "Write a prompt"),
+        description: t(
+          "workbench.quickActions.chatDescription",
+          "Start from the plain composer.",
+        ),
+        command: "",
+        state: "enabled",
+        icon: MessageSquareText,
+      },
+      {
+        id: "skills",
+        label: t("featureMenu.skills", "Skills"),
+        description:
+          totalSkillsCount > 0
+            ? t("workbench.quickActions.skillsDescription", {
+                count: enabledSkillsCount,
+                total: totalSkillsCount,
+                defaultValue: "{{count}}/{{total}} enabled",
+              })
+            : t(
+                "workbench.quickActions.skillsUnavailable",
+                "No readable skills for this workspace.",
+              ),
+        command: "$ ",
+        state: totalSkillsCount > 0 ? "enabled" : "unavailable",
+        icon: Boxes,
+      },
+      {
+        id: "mcp",
+        label: t("featureMenu.mcpTools", "MCP tools"),
+        description:
+          totalToolsCount > 0
+            ? t("workbench.quickActions.mcpDescription", {
+                count: enabledToolsCount,
+                total: totalToolsCount,
+                defaultValue: "{{count}}/{{total}} enabled",
+              })
+            : t(
+                "workbench.quickActions.mcpUnavailable",
+                "No approved MCP tools for this workspace.",
+              ),
+        command: "/mcp ",
+        state: totalToolsCount > 0 ? "enabled" : "unavailable",
+        icon: Wrench,
+      },
+      {
+        id: "files",
+        label: t("chat.fileReferences", "File references"),
+        description:
+          attachedFilesCount > 0
+            ? t("workbench.quickActions.filesDescription", {
+                count: attachedFilesCount,
+                defaultValue: "{{count}} attached",
+              })
+            : t(
+                "workbench.quickActions.filesUnavailable",
+                "Attach or reference files after upload.",
+              ),
+        command: "/file ",
+        state: "enabled",
+        icon: FileText,
+      },
+    ],
+    [
+      attachedFilesCount,
+      enabledSkillsCount,
+      enabledToolsCount,
+      t,
+      totalSkillsCount,
+      totalToolsCount,
+    ],
+  );
+
+  const handleQuickActionClick = (action: QuickActionItem) => {
+    if (!canSendMessage || action.state === "unavailable") {
+      setContactAdminOpen(true);
+      return;
+    }
+    if (action.id === "chat") {
+      requestAnimationFrame(() => {
+        rootRef.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus();
+      });
+      return;
+    }
+    if (action.command) {
+      setPendingInput(action.command);
+    }
+  };
 
   return (
     <div
       ref={rootRef}
       data-workbench-empty-state="chat"
-      className="welcome-root welcome-chat-start relative flex h-full min-h-0 flex-col overflow-y-auto px-4 py-6 sm:px-6"
+      className="welcome-root welcome-chat-start relative flex h-full min-h-0 flex-col overflow-y-auto px-4 py-4 sm:px-5"
     >
       <section
         data-chat-start-surface
-        className="chat-start-surface mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center py-5"
+        className="chat-start-surface mx-auto flex w-full max-w-4xl flex-col gap-3 py-4"
       >
-        <div className="mb-5 text-center">
-          <p className="text-xs font-semibold uppercase text-stone-400 dark:text-stone-500">
-            {t("workbench.newConversation", "New conversation")}
-          </p>
-          <h1 className="mt-2 text-2xl font-semibold leading-8 text-stone-950 dark:text-stone-50 sm:text-3xl">
-            {greeting}
-          </h1>
-          <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-stone-500 dark:text-stone-400">
-            {subtitle}
-          </p>
+        <div
+          data-chat-start-header
+          className="flex flex-col gap-3 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-4 py-3 shadow-[0_1px_2px_rgba(18,38,63,0.04)] sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold uppercase text-[var(--theme-text-tertiary)]">
+              {t("workbench.newConversation", "New conversation")}
+            </p>
+            <h1 className="mt-1 truncate text-xl font-semibold leading-7 text-[var(--theme-text)] sm:text-2xl">
+              {greeting}
+            </h1>
+            <p className="mt-1 max-w-2xl text-sm leading-5 text-[var(--theme-text-secondary)]">
+              {subtitle}
+            </p>
+          </div>
+          <div className="grid shrink-0 grid-cols-2 gap-2 text-xs sm:w-52">
+            <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1.5 text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
+              <span className="font-semibold text-[var(--theme-text)]">
+                {enabledSkillsCount}
+              </span>{" "}
+              {t("featureMenu.skills", "Skills")}
+            </span>
+            <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1.5 text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
+              <span className="font-semibold text-[var(--theme-text)]">
+                {enabledToolsCount}
+              </span>{" "}
+              {t("featureMenu.mcpTools", "MCP")}
+            </span>
+          </div>
         </div>
 
         <div className="welcome-input">
@@ -262,21 +392,21 @@ export const WelcomePage = memo(function WelcomePage({
             onMentionQueryChange={handleMentionQueryChange}
             pendingInput={pendingInput}
             onPendingInputConsumed={() => setPendingInput(null)}
-            className="mx-auto w-full px-0"
+            className="mx-auto w-full max-w-4xl px-0"
           />
         </div>
 
         <div
           data-composer-command-dock
-          className="mx-auto mt-3 flex w-full max-w-3xl flex-wrap items-center justify-center gap-1.5 text-xs text-stone-500 dark:text-stone-400"
+          className="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-1.5 text-xs text-[var(--theme-text-secondary)]"
         >
-          <span className="font-medium text-stone-700 dark:text-stone-200">
+          <span className="font-medium text-[var(--theme-text)]">
             {t("workbench.commandDock", "Composer")}
           </span>
           {["/", "$", "/mcp", "/model", "/file", "/context"].map((command) => (
             <span
               key={command}
-              className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-1.5 py-0.5 font-semibold text-stone-700 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-200"
+              className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-1.5 py-0.5 font-semibold text-[var(--theme-text)]"
             >
               {command}
             </span>
@@ -291,7 +421,7 @@ export const WelcomePage = memo(function WelcomePage({
 
         <div
           data-composer-selection-summary
-          className="mx-auto mt-3 flex w-full max-w-3xl flex-wrap justify-center gap-1.5"
+          className="mx-auto flex w-full max-w-4xl flex-wrap gap-1.5"
         >
           {selectionSummary.map((item) => (
             <span
@@ -300,7 +430,7 @@ export const WelcomePage = memo(function WelcomePage({
                 item.state === "enabled"
                   ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200"
                 : item.state === "unavailable"
-                    ? "border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] text-stone-500 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400"
+                    ? "border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]"
                     : "border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-stone-500 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-400"
               }`}
               title={`${item.label}: ${item.value}`}
@@ -309,6 +439,44 @@ export const WelcomePage = memo(function WelcomePage({
               <span className="shrink-0 opacity-80">{item.value}</span>
             </span>
           ))}
+        </div>
+
+        <div
+          data-chat-quick-actions
+          className="mx-auto grid w-full max-w-4xl gap-2 sm:grid-cols-2 xl:grid-cols-4"
+        >
+          {quickActions.map((action) => {
+            const Icon = action.icon;
+            const unavailable = action.state === "unavailable";
+            return (
+              <button
+                key={action.id}
+                type="button"
+                onClick={() => handleQuickActionClick(action)}
+                className={`group flex min-h-20 items-start gap-3 rounded-lg border bg-[var(--theme-bg-card)] p-3 text-left shadow-[0_1px_2px_rgba(18,38,63,0.04)] transition-colors duration-200 ${
+                  unavailable
+                    ? "border-dashed border-[var(--theme-border)] opacity-70 hover:opacity-100"
+                    : "border-[var(--theme-border)] hover:border-[var(--theme-border-strong)] hover:bg-[var(--theme-bg-sidebar)]"
+                }`}
+              >
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
+                  <Icon size={16} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-1 text-sm font-semibold text-[var(--theme-text)]">
+                    {action.label}
+                    <ArrowRight
+                      size={14}
+                      className="opacity-40 transition-transform group-hover:translate-x-0.5 group-hover:opacity-70"
+                    />
+                  </span>
+                  <span className="mt-1 line-clamp-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
+                    {action.description}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
         </div>
       </section>
 

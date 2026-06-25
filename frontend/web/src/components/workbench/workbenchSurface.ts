@@ -41,6 +41,10 @@ export const workbenchSurface = {
     "rounded-lg border border-slate-200/80 bg-[var(--theme-bg-card)] shadow-[0_1px_2px_rgba(18,38,63,0.04)]",
     "dark:border-stone-800 dark:bg-stone-900",
   ),
+  emptyState: clsx(
+    "rounded-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-4",
+    "shadow-[0_1px_2px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900",
+  ),
   commandSurface: clsx(
     "rounded-lg border border-slate-200 bg-[var(--theme-bg-card)] shadow-[0_18px_40px_rgba(15,23,42,0.12)]",
     "dark:border-stone-800 dark:bg-stone-900",

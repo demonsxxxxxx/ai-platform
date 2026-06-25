@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Package, ShoppingBag, Sparkles } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
@@ -75,7 +75,6 @@ export function SkillsHubPanel() {
   const isMarketplaceView = visibleTab === "marketplace";
   const canReadSkills = hasAnyPermission([Permission.SKILL_READ]);
   const canReadMarketplace = hasAnyPermission([Permission.MARKETPLACE_READ]);
-  const showTabSwitcher = true;
   const hubGovernance = resolveSkillsHubGovernance({
     requestedTab,
     isAuthenticated,
@@ -148,49 +147,11 @@ export function SkillsHubPanel() {
         icon={
           <Sparkles size={20} className="text-stone-600 dark:text-stone-400" />
         }
-        actions={
-          showTabSwitcher ? (
-            <div className="inline-flex rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-1">
-              {[
-                {
-                  key: "skills" as const,
-                  label: t("nav.skills"),
-                  icon: Package,
-                  path: TAB_PATHS.skills,
-                },
-                {
-                  key: "marketplace" as const,
-                  label: t("nav.marketplace"),
-                  icon: ShoppingBag,
-                  path: TAB_PATHS.marketplace,
-                },
-              ].map(({ key, label, icon: Icon, path }) => {
-                const isActive = visibleTab === key;
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => navigate(path)}
-                    className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-all ${
-                      isActive
-                        ? "bg-[var(--theme-primary-light)] text-[var(--theme-text)] shadow-sm"
-                        : "text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)]"
-                    }`}
-                    aria-pressed={isActive}
-                  >
-                    <Icon size={16} />
-                    <span className="hidden sm:inline">{label}</span>
-                  </button>
-                );
-              })}
-            </div>
-          ) : undefined
-        }
       />
 
       <div
         data-skills-catalog-status
-        className="grid gap-3 px-4 pt-3 lg:grid-cols-[minmax(0,1fr)_auto]"
+        className="px-4 pt-3"
       >
         <section className={`${workbenchSurface.compactPanel} p-3`}>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -239,44 +200,6 @@ export function SkillsHubPanel() {
             ))}
           </div>
         </section>
-
-        <nav
-          data-skills-catalog-nav
-          className={`${workbenchSurface.compactPanel} flex items-center gap-1 p-1 lg:self-start`}
-        >
-          {[
-            {
-              key: "skills" as const,
-              label: t("nav.skills"),
-              icon: Package,
-              path: TAB_PATHS.skills,
-            },
-            {
-              key: "marketplace" as const,
-              label: t("nav.marketplace"),
-              icon: ShoppingBag,
-              path: TAB_PATHS.marketplace,
-            },
-          ].map(({ key, label, icon: Icon, path }) => {
-            const isActive = visibleTab === key;
-            return (
-              <button
-                key={key}
-                type="button"
-                onClick={() => navigate(path)}
-                className={`flex min-h-10 items-center gap-2 rounded-md px-3 text-left text-sm font-medium transition-colors ${
-                  isActive
-                    ? "bg-[var(--theme-primary-light)] text-[var(--theme-text)]"
-                    : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
-                }`}
-                aria-current={isActive ? "page" : undefined}
-              >
-                <Icon size={16} />
-                <span>{label}</span>
-              </button>
-            );
-          })}
-        </nav>
       </div>
 
       <div className="flex min-h-0 flex-1 px-4 pb-4 pt-3">

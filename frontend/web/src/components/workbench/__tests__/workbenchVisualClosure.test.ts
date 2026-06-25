@@ -199,6 +199,8 @@ test("safe projection pages render a full workbench instead of thin lists", () =
   assert.match(projectionPages, /data-projection-summary-panel/);
   assert.match(projectionPages, /data-projection-insight-panel/);
   assert.match(projectionPages, /data-projection-list-panel/);
+  assert.match(projectionPages, /data-projection-empty-state/);
+  assert.match(projectionPages, /ProjectionEmptyItem/);
   assert.match(projectionPages, /ProjectionMetric/);
   assert.match(projectionPages, /ProjectionInsightPanel/);
   assert.match(projectionPages, /ProjectionListPanel/);
@@ -246,7 +248,7 @@ test("skills hub routes use the public contract resolver", () => {
   assert.match(hub, /data-effective-permissions-source=\{hubGovernance\.effectivePermissionsSource\}/);
   assert.match(hub, /workbenchSurface\.compactPanel/);
   assert.match(hub, /data-skills-catalog-status/);
-  assert.match(hub, /data-skills-catalog-nav/);
+  assert.doesNotMatch(hub, /data-skills-catalog-nav/);
   assert.match(resolver, /requiredPermission: "skill:read" \| "marketplace:read"/);
   assert.match(resolver, /effectivePermissions\?: string\[\]/);
   assert.match(resolver, /effectiveProjectionHasPermission/);
@@ -283,7 +285,9 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
   assert.match(marketplace, /data-marketplace-catalog-toolbar/);
   assert.doesNotMatch(hub, /data-skills-catalog-sidebar/);
   assert.doesNotMatch(hub, /<aside/);
-  assert.match(hub, /data-skills-catalog-nav/);
+  assert.doesNotMatch(hub, /showTabSwitcher/);
+  assert.doesNotMatch(hub, /data-skills-catalog-nav/);
+  assert.doesNotMatch(hub, /actions=\{/);
   assert.match(hub, /data-skills-catalog-status/);
   assert.match(skillCss, /--skill-grid-bg:\s*var\(--theme-workbench-canvas\);/);
   assert.match(
@@ -369,6 +373,8 @@ test("empty chat keeps the command dock compact and composer-first", () => {
 
   assert.match(welcome, /welcome-chat-start/);
   assert.match(welcome, /data-chat-start-surface/);
+  assert.match(welcome, /data-chat-start-header/);
+  assert.match(welcome, /data-chat-quick-actions/);
   assert.match(welcome, /data-composer-command-dock/);
   assert.match(welcome, /data-composer-selection-summary/);
   assert.match(welcome, /workbench\.commandDock/);
@@ -376,6 +382,7 @@ test("empty chat keeps the command dock compact and composer-first", () => {
   assert.doesNotMatch(welcome, /welcome-workbench-cockpit/);
   assert.doesNotMatch(welcome, /WorkbenchQueueList/);
   assert.doesNotMatch(welcome, /workbenchSurface\.cockpit/);
+  assert.doesNotMatch(welcome, /flex-1 flex-col justify-center/);
   assert.doesNotMatch(welcome, /sm:grid-cols-3/);
   assert.doesNotMatch(welcome, /workbench\.slashSkillsHint/);
   assert.doesNotMatch(welcome, /workbench\.slashMcpHint/);
