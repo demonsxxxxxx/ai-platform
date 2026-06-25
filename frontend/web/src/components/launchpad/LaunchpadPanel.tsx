@@ -82,9 +82,9 @@ export function LaunchpadPanel() {
   return (
     <section
       data-launchpad-workbench
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] px-3 pb-3 text-slate-950 dark:bg-stone-950 dark:text-stone-100 sm:px-4"
+      className={workbenchSurface.page}
     >
-      <div className="shrink-0 border-b border-slate-200/80 py-3 dark:border-stone-800">
+      <div className="shrink-0 border-b border-slate-200/80 px-3 py-3 dark:border-stone-800 sm:px-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0">
             <h1 className="truncate text-lg font-semibold text-slate-900 dark:text-stone-100">
@@ -140,7 +140,7 @@ export function LaunchpadPanel() {
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 gap-5 py-4">
+      <div className="flex min-h-0 flex-1 gap-5 px-3 pb-3 pt-4 sm:px-4">
         <aside className="hidden w-48 shrink-0 overflow-y-auto pr-1 lg:block">
           <div className="sticky top-0 space-y-1">
             {navigationGroups.map((group) => {

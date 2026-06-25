@@ -52,7 +52,7 @@ test("post-login routes do not fall back to public landing or split backgrounds"
     /className="flex-1 overflow-hidden bg-\[var\(--theme-workbench-canvas\)\]"/,
   );
   assert.doesNotMatch(tabContent, /className="flex-1 overflow-hidden bg-\[var\(--theme-bg\)\]"/);
-  assert.match(launchpad, /bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.match(launchpad, /className=\{workbenchSurface\.page\}/);
   assert.doesNotMatch(launchpad, /bg-\[var\(--theme-bg\)\]/);
   assert.doesNotMatch(sidebar, /href=\{APP_HOME_URL\}/);
   assert.match(sidebar, /onClick=\{onNewSession\}/);
@@ -241,6 +241,32 @@ test("reachable catalog pages delegate page backgrounds to workbench surface tok
       name,
     );
   }
+});
+
+test("launchpad and unavailable route workbenches use shared surface tokens", () => {
+  const launchpad = read("src/components/launchpad/LaunchpadPanel.tsx");
+  const governedRoute = read("src/components/workbench/GovernedRouteWorkbench.tsx");
+  const stateSurface = read("src/components/workbench/WorkbenchStateSurface.tsx");
+
+  for (const [name, source] of new Map([
+    ["LaunchpadPanel", launchpad],
+    ["GovernedRouteWorkbench", governedRoute],
+  ])) {
+    assert.match(source, /className=\{workbenchSurface\.page\}/, name);
+    assert.doesNotMatch(
+      source,
+      /className="[^"]*bg-\[var\(--theme-workbench-canvas\)\][^"]*"/,
+      name,
+    );
+    assert.doesNotMatch(
+      source,
+      /className="[^"]*dark:bg-stone-950(?:\/\d+)?[^"]*"/,
+      name,
+    );
+  }
+
+  assert.doesNotMatch(stateSurface, /dark:bg-stone-950\/70/);
+  assert.match(stateSurface, /workbenchSurface\.statusTile/);
 });
 
 test("composer and command surfaces use stable dimensions", () => {

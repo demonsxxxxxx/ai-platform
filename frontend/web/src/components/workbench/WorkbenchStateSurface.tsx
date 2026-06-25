@@ -119,7 +119,7 @@ export function WorkbenchStateSurface({
             <div
               key={detail}
               data-workbench-state-detail
-              className="flex items-start gap-2 rounded-lg bg-[var(--theme-bg-sidebar)] px-3 py-2 text-xs leading-5 text-slate-600 ring-1 ring-[var(--theme-border)] dark:bg-stone-950/70 dark:text-stone-300 dark:ring-stone-800"
+              className={`${workbenchSurface.statusTile} flex items-start gap-2 text-xs leading-5 text-[var(--theme-text-secondary)]`}
             >
               <Dot
                 size={18}
@@ -137,7 +137,7 @@ export function WorkbenchStateSurface({
             <div
               key={capability.title}
               data-workbench-state-capability
-              className="flex flex-col gap-3 rounded-lg bg-[var(--theme-bg-sidebar)] px-3 py-3 text-xs leading-5 text-slate-600 ring-1 ring-[var(--theme-border)] dark:bg-stone-950/70 dark:text-stone-300 dark:ring-stone-800 sm:flex-row sm:items-start sm:justify-between"
+              className={`${workbenchSurface.statusTile} flex flex-col gap-3 text-xs leading-5 text-[var(--theme-text-secondary)] sm:flex-row sm:items-start sm:justify-between`}
             >
               <div className="min-w-0">
                 <h2 className="text-sm font-semibold text-slate-800 dark:text-stone-100">

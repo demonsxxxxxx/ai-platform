@@ -96,7 +96,7 @@ export function GovernedRouteWorkbench({
       data-governed-route-workbench
       data-frontend-governance-state={config.state}
       data-fail-closed-surface={config.surface}
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] text-slate-950 dark:bg-stone-950 dark:text-stone-100"
+      className={workbenchSurface.page}
     >
       <PanelHeader
         title={config.title}
@@ -151,7 +151,7 @@ export function GovernedRouteWorkbench({
                 <span className={workbenchSurface.label}>
                   {t("workbench.governedRoute.surfaceLabel")}
                 </span>
-                <code className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-2 py-1 font-mono text-[11px] text-stone-600 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-300">
+                <code className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-2 py-1 font-mono text-[11px] text-[var(--theme-text-secondary)]">
                   {config.surface}
                 </code>
               </div>
