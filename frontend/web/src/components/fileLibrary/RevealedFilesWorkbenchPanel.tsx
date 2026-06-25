@@ -105,8 +105,8 @@ export function RevealedFilesWorkbenchPanel() {
               )}
               details={[
                 t(
-                  "fileLibrary.backendGapDetail",
-                  "后端文件库投影尚未返回可读目录；列表、分组、统计和预览操作会保持锁定，直到 /api/files/revealed 返回工作台合同。",
+                  "fileLibrary.issueReferenceDetail",
+                  "后端 issue #229 仍跟踪 revealed files 公共投影；前端保持降级工作台，不把缺失合同显示为空文件库。",
                 ),
                 t(
                   "fileLibrary.degradedSafeDetail",
@@ -163,6 +163,20 @@ export function RevealedFilesWorkbenchPanel() {
                 "前端只展示公开文件投影；接口缺失时保持降级工作台，不把 404 当作空文件库。",
               )}
             </p>
+            <div
+              data-files-degraded-recovery
+              className={`${workbenchSurface.statusTile} mt-4 text-xs leading-5 text-[var(--theme-text-secondary)]`}
+            >
+              <p className="font-medium text-[var(--theme-text)]">
+                {t("workbench.states.degraded.title")}
+              </p>
+              <p className="mt-1">
+                {t(
+                  "fileLibrary.recoveryDetail",
+                  "恢复条件：#229 完成后，以下接口返回会话分组、统计、预览 URL 策略和权限元数据，页面才能从 degraded 切换到 ready。",
+                )}
+              </p>
+            </div>
             <div className="mt-4 space-y-2">
               {fileContractEndpoints.map((endpoint) => (
                 <div
