@@ -185,6 +185,30 @@ test("governed composer selector sheets use one workbench token palette", () => 
   }
 });
 
+test("governed selector primary controls use theme foreground contrast", () => {
+  const theme = read("src/styles/base.css");
+  const selectorFiles = [
+    "src/components/chat/ComposerModelPanel.tsx",
+    "src/components/selectors/AgentModeSelector.tsx",
+    "src/components/selectors/SkillSelector.tsx",
+    "src/components/selectors/ToolSelector.tsx",
+  ];
+
+  assert.match(theme, /--theme-primary-foreground:/);
+  assert.match(theme, /--theme-primary-foreground-muted:/);
+  assert.match(theme, /--theme-primary-foreground-subtle:/);
+
+  for (const path of selectorFiles) {
+    const source = read(path);
+    assert.doesNotMatch(
+      source,
+      /bg-\[var\(--theme-primary\)\]\s+text-white/,
+      path,
+    );
+    assert.match(source, /text-\[var\(--theme-primary-foreground\)\]/, path);
+  }
+});
+
 test("chat loading and feedback surfaces use restrained workbench radius", () => {
   const sources = new Map([
     ["ChatSkeletons", read("src/components/skeletons/ChatSkeletons.tsx")],

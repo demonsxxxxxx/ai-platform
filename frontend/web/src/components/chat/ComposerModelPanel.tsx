@@ -119,7 +119,7 @@ export function ComposerModelPanel({
                   type="button"
                   className={`flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left transition-colors ${
                     active
-                      ? "bg-[var(--theme-primary)] text-white"
+                      ? "bg-[var(--theme-primary)] text-[var(--theme-primary-foreground)]"
                       : "text-[var(--theme-text)] hover:bg-[var(--theme-bg-sidebar)]"
                   }`}
                   onClick={() => {
@@ -145,7 +145,7 @@ export function ComposerModelPanel({
                         <span
                           className={`rounded-md px-1.5 py-0.5 text-[10px] ${
                             active
-                              ? "bg-white/15 text-white/80"
+                              ? "bg-white/15 text-[var(--theme-primary-foreground-muted)]"
                               : "bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]"
                           }`}
                         >
@@ -156,7 +156,7 @@ export function ComposerModelPanel({
                     <p
                       className={`mt-0.5 truncate text-xs ${
                         active
-                          ? "text-white/75"
+                          ? "text-[var(--theme-primary-foreground-subtle)]"
                           : "text-[var(--theme-text-secondary)]"
                       }`}
                     >

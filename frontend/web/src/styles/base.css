@@ -118,6 +118,9 @@ select:-webkit-autofill:active {
   --theme-primary: #0f766e;
   --theme-primary-hover: #115e59;
   --theme-primary-light: #e1e8f0;
+  --theme-primary-foreground: #ffffff;
+  --theme-primary-foreground-muted: rgba(255, 255, 255, 0.8);
+  --theme-primary-foreground-subtle: rgba(255, 255, 255, 0.72);
   --theme-ring: #0f766e;
   --theme-bg: #f3f5f8;
   --theme-workbench-canvas: #f3f5f8;
@@ -150,6 +153,9 @@ select:-webkit-autofill:active {
   --theme-primary: #d6d3d1; /* stone-300 */
   --theme-primary-hover: #e7e5e4; /* stone-200 */
   --theme-primary-light: #292524; /* stone-800 */
+  --theme-primary-foreground: #1c1917;
+  --theme-primary-foreground-muted: rgba(28, 25, 23, 0.78);
+  --theme-primary-foreground-subtle: rgba(28, 25, 23, 0.7);
   --theme-ring: #d6d3d1; /* stone-300 */
   --theme-bg: #151210; /* closer to sidebar */
   --theme-workbench-canvas: #151210;

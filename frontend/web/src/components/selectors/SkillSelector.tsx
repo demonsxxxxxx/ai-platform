@@ -475,7 +475,7 @@ export function SkillSelector({
       <div className="px-4 sm:px-5 py-3 sm:py-3.5 border-t border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         <button
           onClick={() => setIsOpen(false)}
-          className="w-full py-2.5 px-4 bg-[var(--theme-primary)] text-white rounded-lg font-medium text-sm hover:bg-[var(--theme-primary-hover)] active:bg-[var(--theme-primary-hover)] transition-colors"
+          className="w-full py-2.5 px-4 bg-[var(--theme-primary)] text-[var(--theme-primary-foreground)] rounded-lg font-medium text-sm hover:bg-[var(--theme-primary-hover)] active:bg-[var(--theme-primary-hover)] transition-colors"
         >
           {t("skillSelector.done")}
         </button>
