@@ -12,6 +12,7 @@ import { API_BASE } from "./config";
 import { authFetch } from "./fetch";
 import type {
   UserSkillDetail,
+  UserSkill,
   SkillFileResponse,
   SkillToggleResponse,
   SkillCreate,
@@ -21,6 +22,15 @@ import type {
 } from "../../types/skill";
 
 const SKILLS_API = `${API_BASE}/api/skills`;
+
+type SkillListWireResponse =
+  | UserSkill[]
+  | (Omit<
+      SkillsResponse,
+      "effective_permissions_known" | "catalog_read_resolved"
+    > & {
+      catalog_read_resolved?: boolean;
+    });
 
 export interface SkillListParams {
   skip?: number;
@@ -40,12 +50,49 @@ export function buildSkillListUrl(params: SkillListParams = {}): string {
   return `${SKILLS_API}/${query ? `?${query}` : ""}`;
 }
 
+export function normalizeSkillListResponse(
+  response: SkillListWireResponse,
+): SkillsResponse {
+  if (Array.isArray(response)) {
+    return {
+      skills: response,
+      total: response.length,
+      skip: 0,
+      limit: response.length,
+      available_tags: [],
+      effective_permissions: [],
+      effective_permissions_known: false,
+      catalog_read_resolved: true,
+    };
+  }
+
+  const skills = response.skills ?? [];
+  const catalogReadResolved =
+    typeof response.catalog_read_resolved === "boolean"
+      ? response.catalog_read_resolved
+      : true;
+
+  return {
+    skills,
+    total: response.total ?? skills.length,
+    skip: response.skip ?? 0,
+    limit: response.limit ?? skills.length,
+    available_tags: response.available_tags ?? [],
+    effective_permissions: response.effective_permissions ?? [],
+    effective_permissions_known: Array.isArray(response.effective_permissions),
+    catalog_read_resolved: catalogReadResolved,
+  };
+}
+
 export const skillApi = {
   /**
    * List all user skills
    */
   async list(params: SkillListParams = {}): Promise<SkillsResponse> {
-    return authFetch(buildSkillListUrl(params));
+    const response = await authFetch<SkillListWireResponse>(
+      buildSkillListUrl(params),
+    );
+    return normalizeSkillListResponse(response ?? []);
   },
 
   /**

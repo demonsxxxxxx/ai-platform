@@ -99,6 +99,8 @@ export interface SkillsResponse {
   limit: number;
   available_tags: string[];
   effective_permissions: string[];
+  effective_permissions_known: boolean;
+  catalog_read_resolved: boolean;
 }
 
 // Skill Create Request (simplified - write individual files via /files/{path})
