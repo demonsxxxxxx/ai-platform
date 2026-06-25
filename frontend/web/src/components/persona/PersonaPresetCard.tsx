@@ -8,7 +8,7 @@ import {
   getEmojiAvatarUrl,
 } from "./personaAvatar";
 import { getPersonaPresetCapabilities } from "./personaPresetAccess";
-import { getCategoryIcon, nameToGradient } from "../common/cardUtils";
+import { getCategoryIcon } from "../common/cardUtils";
 
 interface PersonaPresetCardProps {
   preset: PersonaPreset;
@@ -43,7 +43,6 @@ export function PersonaPresetCard({
   onToggleTag,
 }: PersonaPresetCardProps) {
   const { t } = useTranslation();
-  const gradient = nameToGradient(preset.name);
   const primaryTag = preset.tags[0];
   const CategoryIcon = primaryTag ? getCategoryIcon(primaryTag) : Sparkles;
   const capabilities = getPersonaPresetCapabilities(preset, {
@@ -53,55 +52,7 @@ export function PersonaPresetCard({
 
   return (
     <div className="scb group flex h-full flex-col overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-sm dark:shadow-none">
-      {/* Gradient Banner */}
-      <div
-        className="scb__banner relative h-12 shrink-0"
-        style={{
-          background: `linear-gradient(45deg, ${gradient[0]}, ${gradient[1]}, ${gradient[2]})`,
-        }}
-      >
-        <div className="absolute top-2 right-2 flex gap-1.5">
-          {selected && (
-            <span className="scb__status-pill scb__status-pill--installed">
-              {t("personaPresets.using", "使用中")}
-            </span>
-          )}
-        </div>
-        {onTogglePreference && (
-          <div className="absolute left-2 top-2 flex gap-1.5">
-            <button
-              type="button"
-              className={`pps-card__icon-action ${
-                preset.is_pinned ? "pps-card__icon-action--active-pin" : ""
-              }`}
-              title={t("personaPresets.pin", "置顶")}
-              onClick={() =>
-                onTogglePreference(preset, { is_pinned: !preset.is_pinned })
-              }
-            >
-              <Pin size={12} />
-            </button>
-            <button
-              type="button"
-              className={`pps-card__icon-action ${
-                preset.is_favorite ? "pps-card__icon-action--active-fav" : ""
-              }`}
-              title={t("personaPresets.favorite", "收藏")}
-              onClick={() =>
-                onTogglePreference(preset, {
-                  is_favorite: !preset.is_favorite,
-                })
-              }
-            >
-              <Star size={12} />
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Card Body */}
-      <div className="flex flex-1 flex-col p-4 pt-5">
-        {/* Title row with avatar or icon */}
+      <div className="flex flex-1 flex-col p-3.5 sm:p-4">
         <div className="flex items-start gap-3">
           {isPersonaImageAvatar(preset.avatar) ||
           isEmojiAvatar(preset.avatar) ? (
@@ -131,7 +82,7 @@ export function PersonaPresetCard({
           )}
           <div className="min-w-0 flex-1">
             <h3
-              className="truncate text-base font-semibold text-[var(--theme-text)] leading-tight"
+              className="truncate text-sm font-semibold text-[var(--theme-text)] leading-tight"
               title={preset.name}
             >
               {preset.name}
@@ -163,8 +114,48 @@ export function PersonaPresetCard({
                   </span>
                 </>
               )}
+              {selected && (
+                <>
+                  <span className="inline-block h-1 w-1 rounded-full bg-[var(--theme-border)]" />
+                  <span className="font-medium text-emerald-700 dark:text-emerald-300">
+                    {t("personaPresets.using", "使用中")}
+                  </span>
+                </>
+              )}
             </div>
           </div>
+          {onTogglePreference && (
+            <div className="flex shrink-0 items-center gap-1">
+              <button
+                type="button"
+                className={`pps-card__icon-action ${
+                  preset.is_pinned ? "pps-card__icon-action--active-pin" : ""
+                }`}
+                aria-label={t("personaPresets.pin", "置顶")}
+                title={t("personaPresets.pin", "置顶")}
+                onClick={() =>
+                  onTogglePreference(preset, { is_pinned: !preset.is_pinned })
+                }
+              >
+                <Pin size={12} />
+              </button>
+              <button
+                type="button"
+                className={`pps-card__icon-action ${
+                  preset.is_favorite ? "pps-card__icon-action--active-fav" : ""
+                }`}
+                aria-label={t("personaPresets.favorite", "收藏")}
+                title={t("personaPresets.favorite", "收藏")}
+                onClick={() =>
+                  onTogglePreference(preset, {
+                    is_favorite: !preset.is_favorite,
+                  })
+                }
+              >
+                <Star size={12} />
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Description */}
@@ -259,9 +250,9 @@ export function PersonaPresetCard({
                 onClick={() => onDelete(preset)}
                 className="scb__action-btn"
                 title={t("common.delete", "删除")}
-                style={{ color: "#dc2626" }}
+                aria-label={t("common.delete", "删除")}
               >
-                <Trash2 size={16} />
+                <Trash2 size={16} className="text-red-600 dark:text-red-400" />
               </button>
             )}
           </div>

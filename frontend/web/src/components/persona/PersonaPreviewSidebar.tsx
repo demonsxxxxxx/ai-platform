@@ -7,7 +7,6 @@ import {
   isEmojiAvatar,
   getEmojiAvatarUrl,
 } from "./personaAvatar";
-import { nameToGradient } from "../panels/MarketplacePanel/constants";
 import type { PersonaPreset } from "../../types";
 
 interface PersonaPreviewSidebarProps {
@@ -30,7 +29,6 @@ export function PersonaPreviewSidebar({
   onCopyPreset,
 }: PersonaPreviewSidebarProps) {
   const { t } = useTranslation();
-  const gradient = nameToGradient(preset.name);
   const primaryTag = preset.tags[0];
 
   return (
@@ -51,12 +49,7 @@ export function PersonaPreviewSidebar({
           : ""
       }`}
       icon={
-        <div
-          className="flex h-7 w-7 items-center justify-center rounded-lg"
-          style={{
-            background: `linear-gradient(135deg, ${gradient[0]}, ${gradient[1]})`,
-          }}
-        >
+        <div className="flex h-7 w-7 items-center justify-center overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)]">
           {isPersonaImageAvatar(preset.avatar) ||
           isEmojiAvatar(preset.avatar) ? (
             <PersonaAvatarImage
@@ -73,7 +66,7 @@ export function PersonaPreviewSidebar({
               avatar={preset.avatar}
               primaryTag={primaryTag}
               size={14}
-              className="text-white"
+              className="text-[var(--theme-primary)]"
             />
           )}
         </div>
@@ -117,41 +110,47 @@ export function PersonaPreviewSidebar({
       }
     >
       <div className="es-form">
-        {/* Hero banner with avatar overlay */}
-        <div className="relative -mx-5 -mt-2 sm:-mx-6 sm:-mt-2">
-          <div
-            className="h-28"
-            style={{
-              background: `linear-gradient(135deg, ${gradient[0]}, ${gradient[1]}, ${gradient[2]})`,
-            }}
-          />
-          <div className="absolute -bottom-7 left-5 sm:left-6 flex items-end gap-3">
-            <div className="pps-card__avatar relative z-10 !w-14 !h-14 !rounded-lg !border-[2px] border-[var(--theme-bg-card)] ring-1 ring-[var(--theme-border)] shadow-[0_4px_12px_rgba(18,38,63,0.10)]">
-              {isPersonaImageAvatar(preset.avatar) ||
-              isEmojiAvatar(preset.avatar) ? (
-                <PersonaAvatarImage
-                  avatar={
-                    isEmojiAvatar(preset.avatar)
-                      ? getEmojiAvatarUrl(preset.avatar)
-                      : preset.avatar
-                  }
-                  alt=""
-                  className="pps-card__avatar-img"
-                />
-              ) : (
-                <PersonaAvatarIcon
-                  avatar={preset.avatar}
-                  primaryTag={primaryTag}
-                  size={28}
-                  className="pps-card__avatar-icon"
-                />
-              )}
-            </div>
+        <div className="enterprise-subtle-panel flex items-start gap-3">
+          <div className="pps-card__avatar !h-12 !w-12 !rounded-lg">
+            {isPersonaImageAvatar(preset.avatar) ||
+            isEmojiAvatar(preset.avatar) ? (
+              <PersonaAvatarImage
+                avatar={
+                  isEmojiAvatar(preset.avatar)
+                    ? getEmojiAvatarUrl(preset.avatar)
+                    : preset.avatar
+                }
+                alt=""
+                className="pps-card__avatar-img"
+              />
+            ) : (
+              <PersonaAvatarIcon
+                avatar={preset.avatar}
+                primaryTag={primaryTag}
+                size={24}
+                className="pps-card__avatar-icon"
+              />
+            )}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-[var(--theme-text)]">
+              {preset.name}
+            </p>
+            <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
+              {preset.scope === "global"
+                ? t("personaPresets.official", "官方")
+                : t("personaPresets.mine", "我的")}
+              {preset.usage_count > 0
+                ? ` · ${preset.usage_count}${t(
+                    "personaPresets.usageCount",
+                    "次使用",
+                  )}`
+                : ""}
+            </p>
           </div>
         </div>
 
-        {/* Description */}
-        <div className="pt-9">
+        <div>
           {preset.description ? (
             <p
               className="text-[13px] leading-relaxed"
@@ -196,7 +195,7 @@ export function PersonaPreviewSidebar({
             {t("personaPresets.systemPrompt", "系统提示词")}
           </div>
           <div
-            className="rounded-lg bg-[var(--theme-bg)]/60 p-3 text-[13px] leading-[1.7] whitespace-pre-wrap break-words max-h-72 overflow-y-auto font-mono text-[12px]"
+            className="max-h-72 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 font-mono text-[12px] leading-[1.7]"
             style={{ color: "var(--theme-text)" }}
           >
             {preset.system_prompt}

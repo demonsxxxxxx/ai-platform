@@ -479,32 +479,23 @@ export function MemoryPanel() {
       <div
         data-memory-workbench-shell
         data-frontend-governance-state={governanceState}
-        className="flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]"
+        className={workbenchSurface.statePage}
       >
-        <PanelHeader
-          title={t("memory.title", "Memory")}
-          subtitle={t("memory.workbench.subtitle")}
-          icon={<Brain size={20} />}
-          actions={refreshAction}
+        <WorkbenchStateSurface
+          state={governanceState}
+          surface="memory-workbench-governance"
+          title={
+            governanceState === "forbidden"
+              ? t("workbench.states.forbidden.title")
+              : undefined
+          }
+          description={
+            governanceState === "forbidden"
+              ? t("memory.workbench.forbiddenDescription")
+              : undefined
+          }
+          details={topLevelProjectionError ? [topLevelProjectionError] : undefined}
         />
-
-        <div className="flex min-h-0 flex-1 items-center justify-center px-4 py-4">
-          <WorkbenchStateSurface
-            state={governanceState}
-            surface="memory-workbench-governance"
-            title={
-              governanceState === "forbidden"
-                ? t("workbench.states.forbidden.title")
-                : undefined
-            }
-            description={
-              governanceState === "forbidden"
-                ? t("memory.workbench.forbiddenDescription")
-                : undefined
-            }
-            details={topLevelProjectionError ? [topLevelProjectionError] : undefined}
-          />
-        </div>
       </div>
     );
   }
@@ -513,7 +504,7 @@ export function MemoryPanel() {
     <div
       data-memory-workbench-shell
       data-frontend-governance-state={governanceState}
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]"
+      className={workbenchSurface.page}
     >
       <PanelHeader
         title={t("memory.title", "Memory")}

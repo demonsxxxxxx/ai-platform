@@ -52,7 +52,7 @@ export function SessionGroup({
             onClick={() =>
               onGoToSession(sessionId, navigationTarget ?? undefined)
             }
-            className="min-w-0 truncate text-[14px] @md:text-[15px] font-semibold leading-[22px] text-stone-800 dark:text-stone-100 hover:text-stone-900 dark:hover:text-white text-left transition-colors"
+            className="min-w-0 truncate text-left text-[14px] font-semibold leading-[22px] text-[var(--theme-text)] transition-colors hover:text-[var(--theme-primary)] @md:text-[15px]"
           >
             {sessionName}
           </button>

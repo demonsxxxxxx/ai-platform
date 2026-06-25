@@ -9,21 +9,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-export const GRADIENT_PALETTES = [
-  ["#c7a16b", "#90bcd5", "#c1b5e3"],
-  ["#846bc7", "#d590a8", "#d5b5e3"],
-  ["#7766cc", "#8c95d9", "#bcb3e6"],
-  ["#82a9c9", "#d1c994", "#d8d9a6"],
-  ["#cc66b9", "#8cd9d5", "#c9b3e6"],
-  ["#b1b87a", "#9cc9a2", "#d0bddb"],
-  ["#c6c982", "#d1cf94", "#d2d9a6"],
-  ["#c98e82", "#d1c294", "#c0d9a6"],
-  ["#a68bc7", "#b5c7d5", "#d9c4e3"],
-  ["#7ab8a2", "#c9c082", "#d5b5c7"],
-  ["#c7946b", "#a8c790", "#c9a8d5"],
-  ["#8b7ac7", "#d5a08c", "#a8d5c9"],
-];
-
 export function getCategoryIcon(tag: string): LucideIcon {
   const t = tag.toLowerCase();
   if (
@@ -64,12 +49,4 @@ export function getCategoryIcon(tag: string): LucideIcon {
   )
     return Zap;
   return Package;
-}
-
-export function nameToGradient(name: string) {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) {
-    hash = name.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  return GRADIENT_PALETTES[Math.abs(hash) % GRADIENT_PALETTES.length];
 }

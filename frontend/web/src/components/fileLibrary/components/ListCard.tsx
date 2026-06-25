@@ -32,21 +32,21 @@ export function ListCard({
       <div
         onClick={() => onPreview(file)}
         onContextMenu={(e) => ctx.show(e, file)}
-        className="group/card relative flex cursor-pointer select-none items-center gap-3.5 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-4 py-3 transition-all duration-150 hover:border-slate-300 hover:bg-[var(--theme-bg-card)] hover:shadow-sm hover:shadow-stone-900/[0.04] dark:border-stone-700/40 dark:bg-stone-900/40 dark:hover:border-stone-600/50 dark:hover:bg-stone-800/30 dark:hover:shadow-black/10"
+        className="group/card relative flex cursor-pointer select-none items-center gap-3.5 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-4 py-3 shadow-[0_1px_2px_rgba(18,38,63,0.04)] transition-all duration-150 hover:border-[var(--theme-border-strong)] hover:shadow-[0_8px_18px_rgba(18,38,63,0.05)]"
       >
         {/* Icon / thumbnail */}
         <div className="shrink-0">
-          <div className="h-10 w-10 overflow-hidden rounded-lg ring-1 ring-stone-200/50 dark:ring-stone-700/40">
+          <div className="h-10 w-10 overflow-hidden rounded-lg ring-1 ring-[var(--theme-border)]">
             <FileCardPreview preview={cardPreview} icon={FileIcon} compact />
           </div>
         </div>
 
         {/* Name + meta */}
         <div className="flex-1 min-w-0">
-          <p className="text-[13px] font-medium text-stone-800 dark:text-stone-200 truncate leading-snug">
+          <p className="truncate text-[13px] font-medium leading-snug text-[var(--theme-text)]">
             {file.file_name}
           </p>
-          <p className="mt-0.5 text-[11px] text-stone-400 dark:text-stone-500 truncate">
+          <p className="mt-0.5 truncate text-[11px] text-[var(--theme-text-secondary)]">
             {meta}
           </p>
         </div>
@@ -57,7 +57,8 @@ export function ListCard({
             e.stopPropagation();
             ctx.show(e, file);
           }}
-          className="shrink-0 p-1.5 rounded-md text-stone-300 dark:text-stone-600 hover:text-stone-500 dark:hover:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800/60 transition-all"
+          aria-label={t("common.more", "More")}
+          className="shrink-0 rounded-md p-1.5 text-[var(--theme-text-secondary)] transition-all hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
         >
           <MoreHorizontal size={16} />
         </button>

@@ -102,6 +102,61 @@ test("post-login projection panels share workbench surface tokens", () => {
   }
 });
 
+test("persona files and memory pages stay on the enterprise workbench visual system", () => {
+  const personaCard = read("src/components/persona/PersonaPresetCard.tsx");
+  const personaSelector = read("src/components/persona/PersonaPresetSelector.tsx");
+  const personaPreview = read("src/components/persona/PersonaPreviewSidebar.tsx");
+  const cardUtils = read("src/components/common/cardUtils.ts");
+  const cardCss = read("src/styles/card-base.css");
+  const personaCss = read("src/styles/persona.css");
+  const baseCss = read("src/styles/base.css");
+  const fileToolbar = read("src/components/fileLibrary/components/Toolbar.tsx");
+  const fileGridCard = read("src/components/fileLibrary/components/GridCard.tsx");
+  const fileListCard = read("src/components/fileLibrary/components/ListCard.tsx");
+  const fileEmptyState = read(
+    "src/components/fileLibrary/components/EmptyState.tsx",
+  );
+  const memoryPanel = read("src/components/panels/MemoryPanel/index.tsx");
+
+  for (const [name, source] of new Map([
+    ["PersonaPresetCard", personaCard],
+    ["PersonaPresetSelector", personaSelector],
+    ["PersonaPreviewSidebar", personaPreview],
+  ])) {
+    assert.doesNotMatch(
+      source,
+      /nameToGradient|linear-gradient|scb__banner|pps-card__banner/,
+      name,
+    );
+    assert.match(
+      source,
+      /enterprise-subtle-panel|scb group|pps-card group/,
+      name,
+    );
+  }
+
+  assert.doesNotMatch(cardUtils, /GRADIENT_PALETTES|nameToGradient/);
+  assert.doesNotMatch(cardCss, /mp-card|scb__banner|border-shimmer/);
+  assert.doesNotMatch(
+    personaCss,
+    /pps-card__banner|pps-card__status-badge|translateY\(-3px\)/,
+  );
+  assert.match(baseCss, /--theme-border-strong:/);
+  assert.match(fileToolbar, /var\(--theme-workbench-canvas\)/);
+  assert.doesNotMatch(fileToolbar, /var\(--theme-bg\)"/);
+  assert.doesNotMatch(
+    fileGridCard,
+    /text-stone-(?:700|800|900)|dark:bg-stone-900/,
+  );
+  assert.doesNotMatch(
+    fileListCard,
+    /text-stone-(?:700|800|900)|dark:bg-stone-900/,
+  );
+  assert.match(fileEmptyState, /enterprise-empty-state/);
+  assert.match(memoryPanel, /className=\{workbenchSurface\.page\}/);
+  assert.match(memoryPanel, /className=\{workbenchSurface\.statePage\}/);
+});
+
 test("workbench surface exports shared page containers for governed routes", () => {
   const surface = read("src/components/workbench/workbenchSurface.ts");
 

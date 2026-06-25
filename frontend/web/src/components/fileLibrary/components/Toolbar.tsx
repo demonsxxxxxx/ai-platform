@@ -104,10 +104,9 @@ export function Toolbar({
 
   return (
     <div className="sticky top-0 z-10">
-      {/* Toolbar backdrop */}
       <div
         className="absolute inset-0"
-        style={{ backgroundColor: "var(--theme-bg)" }}
+        style={{ backgroundColor: "var(--theme-workbench-canvas)" }}
       />
       <div className="absolute bottom-0 left-0 right-0 h-px bg-[var(--theme-border)]" />
 
@@ -352,9 +351,10 @@ export function Toolbar({
                       key={mode}
                       onClick={() => onViewModeChange(mode)}
                       title={label}
+                      aria-label={label}
                       className={`relative z-10 flex items-center justify-center w-8 h-full rounded-md transition-colors duration-200 ${
                         viewMode === mode
-                          ? "text-stone-800 dark:text-stone-100"
+                          ? "text-[var(--theme-text)]"
                           : "text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-secondary)]"
                       }`}
                     >

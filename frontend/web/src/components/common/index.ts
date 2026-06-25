@@ -34,8 +34,4 @@ export { CopyButton } from "./CopyButton";
 export { SkillBaseCard } from "./SkillBaseCard";
 export type { SkillBaseCardProps } from "./SkillBaseCard";
 
-export {
-  getCategoryIcon,
-  nameToGradient,
-  GRADIENT_PALETTES,
-} from "./cardUtils";
+export { getCategoryIcon } from "./cardUtils";
