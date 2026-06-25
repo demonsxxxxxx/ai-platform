@@ -274,10 +274,13 @@ test("safe projection pages render a full workbench instead of thin lists", () =
   assert.match(projectionPages, /data-projection-insight-panel/);
   assert.match(projectionPages, /data-projection-list-panel/);
   assert.match(projectionPages, /data-projection-empty-state/);
+  assert.match(projectionPages, /data-projection-status-chip/);
   assert.match(projectionPages, /ProjectionEmptyItem/);
   assert.match(projectionPages, /ProjectionMetric/);
   assert.match(projectionPages, /ProjectionInsightPanel/);
   assert.match(projectionPages, /ProjectionListPanel/);
+  assert.match(projectionPages, /ProjectionStatusChip/);
+  assert.match(projectionPages, /projectionStatusToneClass/);
   assert.match(projectionPages, /xl:grid-cols-\[minmax\(0,1fr\)_18rem\]/);
   assert.match(projectionPages, /workbench\.projections\.currentTask/);
   assert.match(projectionPages, /workbench\.projections\.governance\.summaryTitle/);
@@ -295,6 +298,9 @@ test("safe projection pages render a full workbench instead of thin lists", () =
   assert.ok(en.workbench.projections.notifications.readState.unread);
   assert.doesNotMatch(projectionPages, /bg-\[var\(--theme-bg\)\]/);
   assert.doesNotMatch(projectionPages, /text-stone-(?:700|800|900)/);
+  assert.doesNotMatch(projectionPages, /bg-(?:emerald|amber|rose|slate)-50/);
+  assert.doesNotMatch(projectionPages, /text-(?:emerald|amber|rose|slate)-[67]00/);
+  assert.doesNotMatch(projectionPages, /ring-(?:emerald|amber|rose|slate)-[12]00/);
   assert.doesNotMatch(projectionPages, /<div className="mt-3">\{children\}<\/div>/);
 });
 
