@@ -189,7 +189,9 @@ test("workbench surface exports shared page containers for governed routes", () 
   assert.match(surface, /sectionPanel:/);
   assert.match(surface, /page:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(surface, /statePage:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
-  assert.match(surface, /sectionPanel:[\s\S]*bg-\[var\(--theme-bg-card\)\]/);
+  assert.match(surface, /panel:[\s\S]*bg-\[var\(--theme-workbench-panel\)\]/);
+  assert.match(surface, /compactPanel:[\s\S]*bg-\[var\(--theme-workbench-panel\)\]/);
+  assert.match(surface, /sectionPanel:[\s\S]*bg-\[var\(--theme-workbench-panel\)\]/);
 });
 
 test("safe projection pages render a full workbench instead of thin lists", () => {

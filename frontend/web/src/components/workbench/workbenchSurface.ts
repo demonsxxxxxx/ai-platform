@@ -28,33 +28,33 @@ export const workbenchSurface = {
     "dark:border-stone-800 dark:bg-stone-950 xl:flex",
   ),
   panel: clsx(
-    "rounded-lg border border-slate-200/80 bg-[var(--theme-bg-card)] shadow-[0_1px_2px_rgba(18,38,63,0.04)]",
+    "rounded-lg border border-slate-200/80 bg-[var(--theme-workbench-panel)] shadow-[0_1px_2px_rgba(18,38,63,0.04)]",
     "dark:border-stone-800 dark:bg-stone-900",
   ),
   secondaryPanel: clsx(
-    "rounded-lg border border-slate-200/80 bg-[var(--theme-bg-card)] shadow-[0_1px_2px_rgba(18,38,63,0.04)]",
+    "rounded-lg border border-slate-200/80 bg-[var(--theme-workbench-panel)] shadow-[0_1px_2px_rgba(18,38,63,0.04)]",
     "dark:border-stone-800 dark:bg-stone-900",
   ),
   sectionPanel:
-    "rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)]",
+    "rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)]",
   compactPanel: clsx(
-    "rounded-lg border border-slate-200/80 bg-[var(--theme-bg-card)] shadow-[0_1px_2px_rgba(18,38,63,0.04)]",
+    "rounded-lg border border-slate-200/80 bg-[var(--theme-workbench-panel)] shadow-[0_1px_2px_rgba(18,38,63,0.04)]",
     "dark:border-stone-800 dark:bg-stone-900",
   ),
   emptyState: clsx(
-    "rounded-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-4",
+    "rounded-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4",
     "shadow-[0_1px_2px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900",
   ),
   commandSurface: clsx(
-    "rounded-lg border border-slate-200 bg-[var(--theme-bg-card)] shadow-[0_18px_40px_rgba(15,23,42,0.12)]",
+    "rounded-lg border border-slate-200 bg-[var(--theme-workbench-panel)] shadow-[0_18px_40px_rgba(15,23,42,0.12)]",
     "dark:border-stone-800 dark:bg-stone-900",
   ),
   unavailable: clsx(
-    "rounded-lg border border-dashed border-slate-300 bg-[var(--theme-bg-card)] p-4 text-sm leading-6 text-slate-600",
+    "rounded-lg border border-dashed border-slate-300 bg-[var(--theme-workbench-panel)] p-4 text-sm leading-6 text-slate-600",
     "dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300",
   ),
   stateSurface: clsx(
-    "rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-5 text-center shadow-[0_1px_2px_rgba(18,38,63,0.04)]",
+    "rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-5 text-center shadow-[0_1px_2px_rgba(18,38,63,0.04)]",
     "dark:border-stone-800 dark:bg-stone-900",
   ),
   stateIcon: clsx(
@@ -62,7 +62,7 @@ export const workbenchSurface = {
     "dark:bg-stone-950 dark:text-stone-300 dark:ring-stone-800",
   ),
   statusTile: clsx(
-    "rounded-md border border-slate-200/70 bg-[var(--theme-bg-card)] p-3",
+    "rounded-md border border-slate-200/70 bg-[var(--theme-workbench-panel)] p-3",
     "dark:border-stone-800 dark:bg-stone-900",
   ),
   mutedText: "text-slate-500 dark:text-stone-400",
