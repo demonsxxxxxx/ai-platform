@@ -3022,7 +3022,7 @@
       },
       "governance": {
         "projection": "Projection: {{projection}} · tenant {{tenant}} · workspace {{workspace}}",
-        "secretProjected": "Backend reported that secret material was projected. Treating this page as degraded.",
+        "secretProjected": "Backend reported secret material. This projection is redacted by policy.",
         "summaryTitle": "Read/write governance",
         "scope": "Scope",
         "safeReadTitle": "Safe read contract",
@@ -3031,7 +3031,9 @@
         "adminDescription": "Write actions stay behind admin permissions and audited backend operations.",
         "auditTitle": "Audit and rollback",
         "auditBacked": "This projection advertises audit or rollback support.",
-        "auditUnavailable": "No write audit path is enabled for this account."
+        "auditUnavailable": "No write audit path is enabled for this account.",
+        "redactionTitle": "Redaction guard",
+        "redactionDescription": "Secrets and sensitive values stay in controlled projections without degrading the read page."
       },
       "users": {
         "title": "Users",

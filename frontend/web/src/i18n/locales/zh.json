@@ -3023,7 +3023,7 @@
       },
       "governance": {
         "projection": "投影：{{projection}} · 租户 {{tenant}} · 工作区 {{workspace}}",
-        "secretProjected": "后端报告存在密钥材料投影，前端已将页面降级处理。",
+        "secretProjected": "后端报告存在密钥材料，当前投影已按安全策略脱敏展示。",
         "summaryTitle": "读写治理摘要",
         "scope": "作用范围",
         "safeReadTitle": "安全读取合同",
@@ -3032,7 +3032,9 @@
         "adminDescription": "写操作继续受管理员权限和后端审计操作约束。",
         "auditTitle": "审计与回滚",
         "auditBacked": "该投影声明已具备审计或回滚支持。",
-        "auditUnavailable": "当前账号没有可用的写入审计路径。"
+        "auditUnavailable": "当前账号没有可用的写入审计路径。",
+        "redactionTitle": "脱敏保护",
+        "redactionDescription": "密钥和敏感值只以受控投影展示，不影响页面读取状态。"
       },
       "users": {
         "title": "用户",
