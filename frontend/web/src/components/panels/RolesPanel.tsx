@@ -46,7 +46,7 @@ function formatTimestamp(value: string | null | undefined): string {
 
 function EmptyBlock({ children }: { children: ReactNode }) {
   return (
-    <div className="flex min-h-36 items-center justify-center p-5 text-center text-sm leading-6 text-slate-500 dark:text-stone-400">
+    <div className="flex min-h-36 items-center justify-center p-5 text-center text-sm leading-6 text-[var(--theme-text-secondary)]">
       {children}
     </div>
   );
@@ -70,7 +70,7 @@ function StatusTile({
       <div className="flex items-start justify-between gap-3 p-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <Icon size={16} className="text-slate-500 dark:text-stone-400" />
+            <Icon size={16} className="text-[var(--theme-text-secondary)]" />
             <h3 className="text-sm font-semibold text-[var(--theme-text)]">
               {title}
             </h3>
@@ -104,7 +104,7 @@ function RoleCard({
   return (
     <article
       data-role-governance-role-card
-      className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-4 shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:border-stone-800 dark:bg-stone-900"
+      className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4 shadow-[0_4px_12px_rgba(18,38,63,0.03)]"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -145,7 +145,7 @@ function RoleCard({
             </span>
           ))
         ) : (
-          <span className="text-xs text-slate-400 dark:text-stone-500">
+          <span className="text-xs text-[var(--theme-text-tertiary)]">
             {t("roles.plaza.roleDirectory.noCapabilities")}
           </span>
         )}
@@ -428,10 +428,10 @@ export function RolesPanel() {
 
           <section className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_24rem]">
             <div className={workbenchSurface.panel}>
-              <div className="flex items-start justify-between gap-3 border-b border-[var(--theme-border)] px-4 py-3 dark:border-stone-800">
+              <div className="flex items-start justify-between gap-3 border-b border-[var(--theme-border)] px-4 py-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <UsersRound size={16} className="text-slate-500 dark:text-stone-400" />
+                    <UsersRound size={16} className="text-[var(--theme-text-secondary)]" />
                     <h2 className="text-sm font-semibold text-[var(--theme-text)]">
                       {t("roles.plaza.roleDirectory.title")}
                     </h2>
@@ -466,14 +466,14 @@ export function RolesPanel() {
             </div>
 
             <div className={workbenchSurface.panel}>
-              <div className="border-b border-[var(--theme-border)] px-4 py-3 dark:border-stone-800">
+              <div className="border-b border-[var(--theme-border)] px-4 py-3">
                 <div className="flex items-center gap-2">
-                  <Building2 size={16} className="text-slate-500 dark:text-stone-400" />
-                  <h2 className="text-sm font-semibold text-slate-900 dark:text-stone-100">
+                  <Building2 size={16} className="text-[var(--theme-text-secondary)]" />
+                  <h2 className="text-sm font-semibold text-[var(--theme-text)]">
                     {t("roles.plaza.scope.title")}
                   </h2>
                 </div>
-                <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-stone-400">
+                <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
                   {t("roles.plaza.scope.description", {
                     tenant: overview?.scope.tenant_id ?? "-",
                     workspace: overview?.scope.workspace_id ?? "-",
@@ -553,13 +553,13 @@ export function RolesPanel() {
                           <span className="min-w-0 truncate text-[var(--theme-text-secondary)]">
                             {skill.skill_id}
                           </span>
-                          <span className="shrink-0 rounded-md bg-[var(--theme-bg-card)] px-2 py-1 text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
+                          <span className="shrink-0 rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
                             {skill.availability_state} / {skill.inherited_from}
                           </span>
                         </div>
                       ))
                     ) : (
-                      <p className="text-xs text-slate-500 dark:text-stone-400">
+                      <p className="text-xs text-[var(--theme-text-secondary)]">
                         {t("roles.plaza.scope.emptySkills")}
                       </p>
                     )}
@@ -571,10 +571,10 @@ export function RolesPanel() {
 
           <section className="grid gap-3 xl:grid-cols-2">
             <div className={workbenchSurface.panel}>
-              <div className="flex items-start justify-between gap-3 border-b border-[var(--theme-border)] px-4 py-3 dark:border-stone-800">
+              <div className="flex items-start justify-between gap-3 border-b border-[var(--theme-border)] px-4 py-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <GitPullRequestArrow size={16} className="text-slate-500 dark:text-stone-400" />
+                    <GitPullRequestArrow size={16} className="text-[var(--theme-text-secondary)]" />
                     <h2 className="text-sm font-semibold text-[var(--theme-text)]">
                       {t("roles.plaza.requests.title")}
                     </h2>
@@ -588,7 +588,7 @@ export function RolesPanel() {
                   labelKey={roleGovernance.capabilities.requestFlow.labelKey}
                 />
               </div>
-              <div className="divide-y divide-[var(--theme-border)] dark:divide-stone-800">
+              <div className="divide-y divide-[var(--theme-border)]">
                 {(overview?.requests ?? []).length ? (
                   overview!.requests.map((request) => (
                     <article
@@ -650,10 +650,10 @@ export function RolesPanel() {
             </div>
 
             <div className={workbenchSurface.panel}>
-              <div className="flex items-start justify-between gap-3 border-b border-[var(--theme-border)] px-4 py-3 dark:border-stone-800">
+              <div className="flex items-start justify-between gap-3 border-b border-[var(--theme-border)] px-4 py-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <History size={16} className="text-slate-500 dark:text-stone-400" />
+                    <History size={16} className="text-[var(--theme-text-secondary)]" />
                     <h2 className="text-sm font-semibold text-[var(--theme-text)]">
                       {t("roles.plaza.audit.title")}
                     </h2>
@@ -667,7 +667,7 @@ export function RolesPanel() {
                   labelKey={roleGovernance.capabilities.auditTrail.labelKey}
                 />
               </div>
-              <div className="divide-y divide-[var(--theme-border)] dark:divide-stone-800">
+              <div className="divide-y divide-[var(--theme-border)]">
                 {(overview?.audit ?? []).length ? (
                   overview!.audit.map((audit) => (
                     <article
@@ -681,7 +681,7 @@ export function RolesPanel() {
                         <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
                           {audit.actor_id} · {audit.target_type}:{audit.target_id}
                         </p>
-                        <p className="mt-1 text-xs text-slate-400 dark:text-stone-500">
+                        <p className="mt-1 text-xs text-[var(--theme-text-tertiary)]">
                           {audit.audit_id} · {formatTimestamp(audit.created_at)}
                         </p>
                       </div>

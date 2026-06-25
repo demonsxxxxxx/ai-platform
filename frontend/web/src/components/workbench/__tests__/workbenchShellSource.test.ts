@@ -80,8 +80,9 @@ test("empty chat starts as a LibreChat-style chat-first surface", () => {
 
   assert.match(welcome, /welcome-chat-start/);
   assert.match(welcome, /data-chat-start-surface/);
-  assert.match(welcome, /data-composer-selection-summary/);
+  assert.match(welcome, /data-chat-quick-actions/);
   assert.match(welcome, /data-workbench-empty-state="chat"/);
+  assert.doesNotMatch(welcome, /data-composer-selection-summary/);
   assert.doesNotMatch(welcome, /welcome-workbench-cockpit/);
   assert.doesNotMatch(welcome, /WorkbenchQueueList/);
   assert.doesNotMatch(welcome, /workbenchSurface\.cockpit/);

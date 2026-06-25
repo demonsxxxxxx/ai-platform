@@ -176,6 +176,39 @@ test("post-login projection panels share workbench surface tokens", () => {
   }
 });
 
+test("workbench governance surfaces do not hard-code slate or stone palettes", () => {
+  const sharedSources = new Map([
+    ["workbenchSurface", read("src/components/workbench/workbenchSurface.ts")],
+    [
+      "WorkbenchStateSurface",
+      read("src/components/workbench/WorkbenchStateSurface.tsx"),
+    ],
+    ["TabContent", read("src/components/layout/AppContent/TabContent.tsx")],
+  ]);
+  const governedSources = new Map([
+    ["RolesPanel", read("src/components/panels/RolesPanel.tsx")],
+    [
+      "PersonaWorkbenchPanel",
+      read("src/components/persona/PersonaWorkbenchPanel.tsx"),
+    ],
+    [
+      "RevealedFilesWorkbenchPanel",
+      read("src/components/fileLibrary/RevealedFilesWorkbenchPanel.tsx"),
+    ],
+  ]);
+  const legacyPalette =
+    /\b(?:bg|text|border|ring|divide)-(?:slate|stone)-|dark:(?:bg|text|border|ring|divide)-stone-/;
+
+  for (const [name, source] of sharedSources) {
+    assert.doesNotMatch(source, legacyPalette, name);
+  }
+
+  for (const [name, source] of governedSources) {
+    assert.doesNotMatch(source, legacyPalette, name);
+    assert.doesNotMatch(source, /bg-\[var\(--theme-bg-card\)\]/, name);
+  }
+});
+
 test("persona files and memory pages stay on the enterprise workbench visual system", () => {
   const personaWorkbench = read(
     "src/components/persona/PersonaWorkbenchPanel.tsx",

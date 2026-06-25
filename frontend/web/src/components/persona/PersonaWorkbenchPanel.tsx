@@ -136,7 +136,7 @@ export function PersonaWorkbenchPanel() {
             "personaPresets.workbenchSubtitle",
             "选择、收藏、复制和维护对话角色；写入能力继续受后端权限约束。",
           )}
-          icon={<UserRound size={20} className="text-slate-600" />}
+          icon={<UserRound size={20} className="text-[var(--theme-text-secondary)]" />}
           actions={
             <div className="flex flex-wrap items-center justify-end gap-1.5">
               <GovernanceAvailabilityBadge
@@ -224,7 +224,7 @@ export function PersonaWorkbenchPanel() {
                 <p className={workbenchSurface.label}>
                   {t("workbench.governedRoute.surfaceLabel", "受治理边界")}
                 </p>
-                <h2 className="mt-1 text-sm font-semibold text-slate-900 dark:text-stone-100">
+                <h2 className="mt-1 text-sm font-semibold text-[var(--theme-text)]">
                   {t(
                     "personaPresets.contractBoundaryTitle",
                     "等待 persona preset 投影",
@@ -232,7 +232,7 @@ export function PersonaWorkbenchPanel() {
                 </h2>
               </div>
             </div>
-            <p className="mt-3 text-xs leading-5 text-slate-500 dark:text-stone-400">
+            <p className="mt-3 text-xs leading-5 text-[var(--theme-text-secondary)]">
               {t(
                 "personaPresets.contractBoundaryDescription",
                 "前端只读取公开投影；接口缺失时保持降级工作台，不回退旧广场或直连管理接口。",
@@ -260,7 +260,7 @@ export function PersonaWorkbenchPanel() {
                 >
                   <ListChecks
                     size={15}
-                    className="mt-0.5 shrink-0 text-slate-400 dark:text-stone-500"
+                    className="mt-0.5 shrink-0 text-[var(--theme-text-tertiary)]"
                   />
                   <span className="break-all font-mono">{endpoint}</span>
                 </div>
@@ -284,7 +284,7 @@ export function PersonaWorkbenchPanel() {
           "personaPresets.workbenchSubtitle",
           "选择、收藏、复制和维护对话角色；写入能力继续受后端权限约束。",
         )}
-        icon={<UserRound size={20} className="text-slate-600" />}
+        icon={<UserRound size={20} className="text-[var(--theme-text-secondary)]" />}
         searchValue={persona.query}
         onSearchChange={persona.setQuery}
         searchPlaceholder={t("personaPresets.search", "搜索角色")}
@@ -362,12 +362,12 @@ export function PersonaWorkbenchPanel() {
             <div className={workbenchSurface.stateIcon}>
               <Search size={20} />
             </div>
-            <h2 className="mt-4 text-base font-semibold text-slate-900 dark:text-stone-100">
+            <h2 className="mt-4 text-base font-semibold text-[var(--theme-text)]">
               {persona.hasActiveFilters
                 ? t("personaPresets.noResults", "没有匹配的角色")
                 : t("personaPresets.empty", "暂无角色预设")}
             </h2>
-            <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-600 dark:text-stone-300">
+            <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-[var(--theme-text-secondary)]">
               {persona.hasActiveFilters
                 ? t(
                     "personaPresets.tryDifferentFilters",
@@ -450,10 +450,10 @@ export function PersonaWorkbenchPanel() {
       {persona.deleteTarget ? (
         <div className="fixed inset-0 z-[260] flex items-center justify-center bg-[var(--theme-overlay)] px-4">
           <section className={`${workbenchSurface.panel} w-full max-w-md p-4`}>
-            <h2 className="text-base font-semibold text-slate-900 dark:text-stone-100">
+            <h2 className="text-base font-semibold text-[var(--theme-text)]">
               {t("personaPresets.deleteConfirmTitle", "删除角色")}
             </h2>
-            <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-stone-300">
+            <p className="mt-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
               {t(
                 "personaPresets.deleteConfirmDescription",
                 "确定删除「{{name}}」？此操作会交给后端权限和审计继续校验。",
@@ -497,10 +497,10 @@ function StatusTile({
     <div className={`${workbenchSurface.compactPanel} p-3`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-sm font-semibold text-slate-900 dark:text-stone-100">
+          <h3 className="text-sm font-semibold text-[var(--theme-text)]">
             {title}
           </h3>
-          <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-stone-400">
+          <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
             {description}
           </p>
         </div>
