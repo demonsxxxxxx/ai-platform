@@ -171,8 +171,8 @@ export function PersonaWorkbenchPanel() {
               )}
               details={[
                 t(
-                  "personaPresets.backendGapDetail",
-                  "后端角色预设投影尚未返回可读目录；读取、筛选和写入操作会保持锁定，直到 /api/persona-presets 返回工作台合同。",
+                  "personaPresets.issueReferenceDetail",
+                  "后端 issue #229 仍跟踪 persona preset 公共投影；前端保持降级工作台，不把缺失合同显示为空角色目录。",
                 ),
                 t(
                   "personaPresets.degradedSafeDetail",
@@ -238,6 +238,20 @@ export function PersonaWorkbenchPanel() {
                 "前端只读取公开投影；接口缺失时保持降级工作台，不回退旧广场或直连管理接口。",
               )}
             </p>
+            <div
+              data-persona-degraded-recovery
+              className={`${workbenchSurface.statusTile} mt-4 text-xs leading-5 text-[var(--theme-text-secondary)]`}
+            >
+              <p className="font-medium text-[var(--theme-text)]">
+                {t("workbench.states.degraded.title")}
+              </p>
+              <p className="mt-1">
+                {t(
+                  "personaPresets.recoveryDetail",
+                  "恢复条件：#229 完成后，以下接口返回可读目录、权限和审计元数据，页面才能从 degraded 切换到 ready。",
+                )}
+              </p>
+            </div>
             <div className="mt-4 space-y-2">
               {personaContractEndpoints.map((endpoint) => (
                 <div

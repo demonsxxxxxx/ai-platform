@@ -588,13 +588,19 @@ test("persona and files are governed authenticated workbench pages", () => {
   assert.match(personaWorkbench, /data-frontend-governance-state=\{governanceState\}/);
   assert.match(personaWorkbench, /resolveFrontendGovernanceState/);
   assert.match(personaWorkbench, /WorkbenchStateSurface/);
-  assert.match(personaWorkbench, /personaPresets\.backendGapDetail/);
+  assert.match(personaWorkbench, /personaPresets\.issueReferenceDetail/);
+  assert.match(personaWorkbench, /personaPresets\.recoveryDetail/);
+  assert.match(personaWorkbench, /data-persona-degraded-recovery/);
+  assert.doesNotMatch(personaWorkbench, /personaPresets\.backendGapDetail/);
   assert.doesNotMatch(personaWorkbench, /details=\{persona\.error \? \[persona\.error\] : undefined\}/);
   assert.match(filesWorkbench, /data-files-workbench-shell/);
   assert.match(filesWorkbench, /data-frontend-governance-state=\{governanceState\}/);
   assert.match(filesWorkbench, /resolveFrontendGovernanceState/);
   assert.match(filesWorkbench, /WorkbenchStateSurface/);
-  assert.match(filesWorkbench, /fileLibrary\.backendGapDetail/);
+  assert.match(filesWorkbench, /fileLibrary\.issueReferenceDetail/);
+  assert.match(filesWorkbench, /fileLibrary\.recoveryDetail/);
+  assert.match(filesWorkbench, /data-files-degraded-recovery/);
+  assert.doesNotMatch(filesWorkbench, /fileLibrary\.backendGapDetail/);
   assert.doesNotMatch(filesWorkbench, /details=\{filesProjectionError \? \[filesProjectionError\] : undefined\}/);
   assert.doesNotMatch(activeGraph, /MobileMoreMenuSheet|DesktopMoreMenu/);
   assert.doesNotMatch(personaSelector, /角色广场/);
@@ -670,7 +676,7 @@ test("persona degraded state does not render a false empty catalog", () => {
   assert.doesNotMatch(degradedReturn, /persona\.paged/);
 });
 
-test("persona and files degraded states hide raw missing-route errors", () => {
+test("persona and files degraded states hide raw missing-route errors and expose issue recovery", () => {
   const personaWorkbench = readFileSync(
     join(root, "src/components/persona/PersonaWorkbenchPanel.tsx"),
     "utf8",
@@ -695,6 +701,10 @@ test("persona and files degraded states hide raw missing-route errors", () => {
     assert.doesNotMatch(source, /details=\{[^}]*persona\.error/si, name);
     assert.doesNotMatch(source, /details=\{[^}]*filesProjectionError/si, name);
     assert.doesNotMatch(source, /Not Found|Request failed:\s*404|statusText|response\.status/i, name);
+    assert.match(source, /data-(persona|files)-degraded-recovery/, name);
+    assert.match(source, /data-(persona|files)-degraded-contract/, name);
+    assert.match(source, /WorkbenchStateSurface/, name);
+    assert.match(source, /workbenchSurface\.(statusTile|compactPanel)/, name);
   }
 
   for (const [locale, copy] of [
@@ -704,15 +714,25 @@ test("persona and files degraded states hide raw missing-route errors", () => {
     const personaCopy = JSON.stringify({
       degradedTitle: copy.personaPresets.degradedTitle,
       degradedDescription: copy.personaPresets.degradedDescription,
-      backendGapDetail: copy.personaPresets.backendGapDetail,
+      issueReferenceDetail: copy.personaPresets.issueReferenceDetail,
+      recoveryDetail: copy.personaPresets.recoveryDetail,
+      contractBoundaryDescription: copy.personaPresets.contractBoundaryDescription,
     });
     const fileCopy = JSON.stringify({
       degradedTitle: copy.fileLibrary.degradedTitle,
       degradedDescription: copy.fileLibrary.degradedDescription,
-      backendGapDetail: copy.fileLibrary.backendGapDetail,
+      issueReferenceDetail: copy.fileLibrary.issueReferenceDetail,
+      recoveryDetail: copy.fileLibrary.recoveryDetail,
+      contractBoundaryDescription: copy.fileLibrary.contractBoundaryDescription,
     });
-    assert.match(personaCopy, /backendGapDetail|后端角色预设投影|persona preset projection/i, locale);
-    assert.match(fileCopy, /backendGapDetail|后端文件库投影|file library projection/i, locale);
+    assert.equal(copy.personaPresets.backendGapDetail, undefined, `${locale}.personaPresets.backendGapDetail should be removed`);
+    assert.equal(copy.fileLibrary.backendGapDetail, undefined, `${locale}.fileLibrary.backendGapDetail should be removed`);
+    assert.match(personaCopy, /#229|issue 229|backend issue/i, locale);
+    assert.match(fileCopy, /#229|issue 229|backend issue/i, locale);
+    assert.match(personaCopy, /恢复|recovery|recover|contract/i, locale);
+    assert.match(fileCopy, /恢复|recovery|recover|contract/i, locale);
+    assert.doesNotMatch(personaCopy, /backendGapDetail|后端角色预设投影尚未返回|has not returned a readable directory/i, locale);
+    assert.doesNotMatch(fileCopy, /backendGapDetail|后端文件库投影尚未返回|has not returned a readable directory/i, locale);
     assert.doesNotMatch(personaCopy, /Not Found|Request failed:\s*404/i, locale);
     assert.doesNotMatch(fileCopy, /Not Found|Request failed:\s*404/i, locale);
   }
