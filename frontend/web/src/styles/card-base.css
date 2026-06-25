@@ -36,7 +36,7 @@
   height: 100%;
   overflow: hidden;
   border-radius: 0.5rem;
-  background: var(--theme-bg-card);
+  background: var(--theme-workbench-panel);
   border: 1px solid var(--theme-border);
   box-shadow: 0 1px 2px rgb(18 38 63 / 0.04);
   transition:
@@ -79,7 +79,11 @@
 
 .scb--muted {
   opacity: 0.8;
-  background: color-mix(in srgb, var(--theme-bg) 92%, var(--theme-bg-card) 8%);
+  background: color-mix(
+    in srgb,
+    var(--theme-workbench-panel) 84%,
+    var(--theme-workbench-canvas)
+  );
   box-shadow: none;
 }
 
@@ -100,7 +104,7 @@
   background: color-mix(
     in srgb,
     var(--theme-primary-light) 60%,
-    var(--theme-bg-card)
+    var(--theme-workbench-panel)
   );
   box-shadow: 0 1px 3px rgb(0 0 0 / 0.04);
   transition:
@@ -122,7 +126,7 @@
   background: color-mix(
     in srgb,
     var(--theme-primary-light) 70%,
-    var(--theme-bg-card)
+    var(--theme-workbench-panel)
   );
   transform: scale(1.04);
 }
@@ -138,7 +142,7 @@
   overflow: hidden;
   border: 1px solid var(--theme-border);
   box-shadow: 0 1px 3px rgb(0 0 0 / 0.04);
-  background: var(--theme-bg-card);
+  background: var(--theme-workbench-panel);
   position: relative;
 }
 
@@ -234,7 +238,7 @@
   font-weight: 500;
   border-radius: 9999px;
   border: 1px solid var(--theme-border);
-  background: var(--theme-bg);
+  background: var(--theme-bg-sidebar);
   color: var(--theme-text-secondary);
   transition:
     border-color 0.15s ease,
@@ -277,7 +281,7 @@
   height: 2rem;
   border-radius: 0.5rem;
   border: 1px solid var(--theme-border);
-  background: var(--theme-bg);
+  background: var(--theme-bg-sidebar);
   color: var(--theme-text-secondary);
   transition:
     background-color 0.15s ease,
@@ -334,7 +338,7 @@
 }
 
 .scb__action-btn--update {
-  background: var(--theme-bg-card);
+  background: var(--theme-workbench-panel);
   color: var(--theme-primary);
   border-color: color-mix(
     in srgb,

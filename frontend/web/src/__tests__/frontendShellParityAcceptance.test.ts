@@ -739,7 +739,10 @@ test("authenticated marketplace pages share the workbench surface tokens", () =>
     join(root, "src/components/panels/MarketplacePanel/SkillCard.tsx"),
     "utf8",
   );
-  const utilities = readFileSync(join(root, "src/styles/utilities.css"), "utf8");
+  const skillsList = readFileSync(
+    join(root, "src/components/panels/SkillsPanel/SkillsList.tsx"),
+    "utf8",
+  );
 
   assert.match(skillsHub, /className=\{workbenchSurface\.page\}/);
   assert.match(marketplace, /className=\{workbenchSurface\.page\}/);
@@ -752,8 +755,14 @@ test("authenticated marketplace pages share the workbench surface tokens", () =>
   assert.match(marketplaceCard, /versionLabel/);
   assert.match(marketplaceCard, /max-w-28 truncate/);
   assert.match(skillBaseCard, /p-3\.5 sm:p-4/);
+  assert.match(skillBaseCard, /bg-\[var\(--theme-workbench-panel\)\]/);
   assert.doesNotMatch(skillBaseCard, /text-base font-semibold/);
-  assert.match(utilities, /minmax\(260px,\s*1fr\)/);
+  assert.match(skillsList, /workbenchSurface\.catalog\.cardGrid/);
+  assert.match(marketplace, /workbenchSurface\.catalog\.cardGrid/);
+  assert.match(skillsList, /workbenchSurface\.catalog\.emptyState/);
+  assert.match(marketplace, /workbenchSurface\.catalog\.emptyState/);
+  assert.doesNotMatch(skillsList, /auto-grid-cols/);
+  assert.doesNotMatch(marketplace, /auto-grid-cols/);
   assert.doesNotMatch(skillsHub, /bg-slate-50/);
   assert.doesNotMatch(marketplace, /bg-slate-50/);
   assert.doesNotMatch(marketplace, /border-slate-200 bg-white/);

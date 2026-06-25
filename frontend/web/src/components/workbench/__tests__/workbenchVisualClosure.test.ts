@@ -119,7 +119,7 @@ test("post-login projection panels share workbench surface tokens", () => {
   for (const [name, source] of panels) {
     assert.match(source, /data-frontend-governance-state/, name);
     assert.match(source, /workbenchSurface\.(?:page|statePage|compactPanel|panel)/, name);
-    assert.match(source, /workbenchSurface\.(?:compactPanel|panel)/, name);
+    assert.match(source, /workbenchSurface\.(?:compactPanel|panel|catalog)/, name);
     assert.doesNotMatch(source, /bg-\[var\(--theme-bg\)\]/, name);
     assert.doesNotMatch(source, /className="[^"]*dark:bg-stone-950(?:\/\d+)?[^"]*"/, name);
     assert.doesNotMatch(source, /text-stone-(?:700|800|900)/, name);
@@ -266,14 +266,14 @@ test("notification projection metrics use the same visible rows as the stream", 
 test("skills marketplace cards stay dense and enterprise-workbench sized", () => {
   const baseCard = read("src/components/common/SkillBaseCard.tsx");
   const cardCss = read("src/styles/card-base.css");
-  const utilities = read("src/styles/utilities.css");
 
   assert.match(baseCard, /p-3\.5 sm:p-4/);
   assert.match(baseCard, /text-sm font-semibold/);
+  assert.match(baseCard, /bg-\[var\(--theme-workbench-panel\)\]/);
   assert.doesNotMatch(baseCard, /text-base font-semibold/);
   assert.match(cardCss, /border-radius:\s*0\.5rem/);
+  assert.match(cardCss, /background:\s*var\(--theme-workbench-panel\);/);
   assert.doesNotMatch(cardCss, /translateY\(-4px\)/);
-  assert.match(utilities, /minmax\(260px,\s*1fr\)/);
 });
 
 test("role plaza state is resolver-driven instead of hard-coded ready", () => {
@@ -369,6 +369,19 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
   assert.match(marketplace, /skill-catalog-toolbar__search/);
   assert.match(skillsList, /skill-catalog-toolbar__actions/);
   assert.match(marketplace, /skill-catalog-toolbar__actions/);
+  assert.match(skillsList, /workbenchSurface\.catalog\.toolbarShell/);
+  assert.match(marketplace, /workbenchSurface\.catalog\.toolbarShell/);
+  assert.match(skillsList, /workbenchSurface\.catalog\.content/);
+  assert.match(marketplace, /workbenchSurface\.catalog\.content/);
+  assert.match(skillsList, /workbenchSurface\.catalog\.cardGrid/);
+  assert.match(marketplace, /workbenchSurface\.catalog\.cardGrid/);
+  assert.match(skillsList, /workbenchSurface\.catalog\.emptyState/);
+  assert.match(marketplace, /workbenchSurface\.catalog\.emptyState/);
+  assert.doesNotMatch(skillsList, /auto-grid-cols/);
+  assert.doesNotMatch(marketplace, /auto-grid-cols/);
+  assert.doesNotMatch(skillsList, /text-stone-(?:400|500|600|700|800|900)/);
+  assert.doesNotMatch(marketplace, /text-stone-(?:400|500|600|700|800|900)/);
+  assert.doesNotMatch(marketplace, /text-slate-(?:400|500|600|700|800|900)/);
   assert.doesNotMatch(hub, /data-skills-catalog-sidebar/);
   assert.doesNotMatch(hub, /<aside/);
   assert.doesNotMatch(hub, /showTabSwitcher/);
@@ -387,6 +400,7 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
   assert.match(skillCss, /\.skill-catalog-toolbar__row/);
   assert.match(skillCss, /\.skill-catalog-toolbar__search/);
   assert.match(skillCss, /\.skill-catalog-toolbar__actions/);
+  assert.match(skillCss, /\.skill-catalog-toolbar\s*{[\s\S]*border-bottom:\s*0;/);
   assert.doesNotMatch(
     skillCss,
     /\.skill-content-area\s*{\s*background:\s*var\(--theme-bg\);/,
@@ -445,6 +459,58 @@ test("launchpad and unavailable route workbenches use shared surface tokens", ()
 
   assert.doesNotMatch(stateSurface, /dark:bg-stone-950\/70/);
   assert.match(stateSurface, /workbenchSurface\.statusTile/);
+});
+
+test("launchpad and public directory pages use one workbench catalog layout", () => {
+  const surface = read("src/components/workbench/workbenchSurface.ts");
+  const launchpad = read("src/components/launchpad/LaunchpadPanel.tsx");
+  const mcp = read("src/components/panels/MCPPanel.tsx");
+  const agents = read("src/components/panels/AgentDirectoryPanel.tsx");
+  const models = read("src/components/panels/ModelCatalogPanel.tsx");
+
+  assert.match(surface, /catalog:/);
+  assert.match(surface, /summaryGrid:/);
+  assert.match(surface, /summaryCard:/);
+  assert.match(surface, /content:/);
+  assert.match(surface, /cardGrid:/);
+  assert.match(surface, /entryCard:/);
+  assert.match(surface, /metricTile:/);
+  assert.match(surface, /iconBox:/);
+
+  for (const [name, source] of new Map([
+    ["LaunchpadPanel", launchpad],
+    ["MCPPanel", mcp],
+    ["AgentDirectoryPanel", agents],
+    ["ModelCatalogPanel", models],
+  ])) {
+    assert.match(source, /className=\{workbenchSurface\.page\}/, name);
+    assert.match(source, /workbenchSurface\.catalog\.summaryGrid/, name);
+    assert.match(source, /workbenchSurface\.catalog\.summaryCard/, name);
+    assert.match(source, /workbenchSurface\.catalog\.cardGrid/, name);
+    assert.match(source, /workbenchSurface\.catalog\.entryCard/, name);
+    assert.doesNotMatch(source, /text-stone-(?:400|500|600|700|800|900)/, name);
+    assert.doesNotMatch(source, /text-slate-(?:400|500|600|700|800|900)/, name);
+    assert.doesNotMatch(source, /bg-slate-(?:100|200|900)/, name);
+    assert.doesNotMatch(source, /dark:bg-stone-(?:800|900|950)/, name);
+  }
+
+  for (const [name, source] of new Map([
+    ["MCPPanel", mcp],
+    ["AgentDirectoryPanel", agents],
+    ["ModelCatalogPanel", models],
+  ])) {
+    assert.match(source, /workbenchSurface\.catalog\.content/, name);
+    assert.match(source, /workbenchSurface\.catalog\.metricTile/, name);
+    assert.match(
+      source,
+      /workbenchSurface\.catalog\.(?:iconBox|compactIconBox)/,
+      name,
+    );
+  }
+
+  assert.match(launchpad, /PanelHeader/);
+  assert.match(launchpad, /data-launchpad-directory-shell/);
+  assert.doesNotMatch(launchpad, /border-b border-slate-200/);
 });
 
 test("composer and command surfaces use stable dimensions", () => {

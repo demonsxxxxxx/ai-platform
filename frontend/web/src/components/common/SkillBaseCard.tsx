@@ -46,7 +46,7 @@ export function SkillBaseCard({
 
   return (
     <div
-      className={`scb group flex h-full flex-col overflow-hidden rounded-lg bg-[var(--theme-bg-card)] shadow-sm dark:shadow-none dark:border dark:border-[var(--theme-border)] ${
+      className={`scb group flex h-full flex-col overflow-hidden rounded-lg bg-[var(--theme-workbench-panel)] shadow-sm dark:shadow-none dark:border dark:border-[var(--theme-border)] ${
         muted ? "scb--muted" : ""
       } ${
         selected

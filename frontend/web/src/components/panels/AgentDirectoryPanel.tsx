@@ -163,85 +163,83 @@ export function AgentDirectoryPanel() {
         searchPlaceholder={t("agentDirectory.searchPlaceholder", "Search Agents")}
       />
 
-      <div className="px-4 pb-2 pt-3">
-        <section className="grid gap-3 lg:grid-cols-3">
-          <div className={workbenchSurface.compactPanel}>
-            <div className="flex items-start justify-between gap-3 p-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck size={16} className="text-stone-500" />
-                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
-                    {t("agentDirectory.publicProjection", "Public projection")}
-                  </h3>
-                </div>
-                <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
-                  {t(
-                    "agentDirectory.publicProjectionDescription",
-                    "This page reads /api/agents only and does not expose prompts, tools, role assignments, or legacy config APIs.",
-                  )}
-                </p>
-              </div>
-              <GovernanceAvailabilityBadge
-                state={publicAvailability.state}
-                labelKey={publicAvailability.labelKey}
-              />
+      <div className={workbenchSurface.catalog.summaryGrid}>
+        <section className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3`}>
+          <div className="flex min-w-0 items-start gap-3">
+            <div className={workbenchSurface.catalog.compactIconBox}>
+              <ShieldCheck size={16} />
+            </div>
+            <div className="min-w-0">
+              <h3 className={workbenchSurface.catalog.title}>
+                {t("agentDirectory.publicProjection", "Public projection")}
+              </h3>
+              <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
+                {t(
+                  "agentDirectory.publicProjectionDescription",
+                  "This page reads /api/agents only and does not expose prompts, tools, role assignments, or legacy config APIs.",
+                )}
+              </p>
             </div>
           </div>
-          <div className={workbenchSurface.compactPanel}>
-            <div className="flex items-start justify-between gap-3 p-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 size={16} className="text-stone-500" />
-                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
-                    {t("agentDirectory.directoryStats", "Directory status")}
-                  </h3>
-                </div>
-                <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
-                  {t(
-                    "agentDirectory.directoryStatsDescription",
-                    "{{count}} Agents published. Default: {{defaultAgent}}. Model scope: {{models}}.",
-                    {
-                      count: directory?.count ?? 0,
-                      defaultAgent:
-                        directory?.defaultAgent ?? t("workbench.none", "None"),
-                      models:
-                        directory?.allowedModelIds?.length ??
-                        t("agentDirectory.modelScopeAll", "all approved models"),
-                    },
-                  )}
-                </p>
-              </div>
+          <GovernanceAvailabilityBadge
+            state={publicAvailability.state}
+            labelKey={publicAvailability.labelKey}
+          />
+        </section>
+        <section className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3`}>
+          <div className="flex min-w-0 items-start gap-3">
+            <div className={workbenchSurface.catalog.compactIconBox}>
+              <CheckCircle2 size={16} />
             </div>
-          </div>
-          <div
-            data-fail-closed-surface="agent-admin-governance"
-            className={workbenchSurface.compactPanel}
-          >
-            <div className="flex items-start justify-between gap-3 p-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <LockKeyhole size={16} className="text-stone-500" />
-                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
-                    {t("agentDirectory.adminGovernance", "Admin configuration")}
-                  </h3>
-                </div>
-                <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
-                  {t(
-                    "agentDirectory.adminGovernanceDescription",
-                    "Role assignment, prompt editing, model binding, and tool governance remain locked to administrator-controlled surfaces.",
-                  )}
-                </p>
-              </div>
-              <GovernanceAvailabilityBadge
-                state={adminAvailability.state}
-                labelKey={adminAvailability.labelKey}
-              />
+            <div className="min-w-0">
+              <h3 className={workbenchSurface.catalog.title}>
+                {t("agentDirectory.directoryStats", "Directory status")}
+              </h3>
+              <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
+                {t(
+                  "agentDirectory.directoryStatsDescription",
+                  "{{count}} Agents published. Default: {{defaultAgent}}. Model scope: {{models}}.",
+                  {
+                    count: directory?.count ?? 0,
+                    defaultAgent:
+                      directory?.defaultAgent ?? t("workbench.none", "None"),
+                    models:
+                      directory?.allowedModelIds?.length ??
+                      t("agentDirectory.modelScopeAll", "all approved models"),
+                  },
+                )}
+              </p>
             </div>
           </div>
         </section>
+        <section
+          data-fail-closed-surface="agent-admin-governance"
+          className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3`}
+        >
+          <div className="flex min-w-0 items-start gap-3">
+            <div className={workbenchSurface.catalog.compactIconBox}>
+              <LockKeyhole size={16} />
+            </div>
+            <div className="min-w-0">
+              <h3 className={workbenchSurface.catalog.title}>
+                {t("agentDirectory.adminGovernance", "Admin configuration")}
+              </h3>
+              <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
+                {t(
+                  "agentDirectory.adminGovernanceDescription",
+                  "Role assignment, prompt editing, model binding, and tool governance remain locked to administrator-controlled surfaces.",
+                )}
+              </p>
+            </div>
+          </div>
+          <GovernanceAvailabilityBadge
+            state={adminAvailability.state}
+            labelKey={adminAvailability.labelKey}
+          />
+        </section>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+      <div className={workbenchSurface.catalog.content}>
         {filteredAgents.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center text-theme-text-secondary">
             {query ? (
@@ -254,7 +252,7 @@ export function AgentDirectoryPanel() {
                 ? t("agentDirectory.noMatchingAgents", "No matching Agents")
                 : t("agentDirectory.noAgents", "No Agents are published")}
             </p>
-            <p className="mt-2 max-w-md text-center text-xs leading-5 text-stone-500 dark:text-stone-400">
+            <p className={`mt-2 max-w-md text-center ${workbenchSurface.catalog.body}`}>
               {t(
                 "agentDirectory.emptyDescription",
                 "The directory only shows public Agents returned by the backend projection. Admin configuration remains closed.",
@@ -262,25 +260,25 @@ export function AgentDirectoryPanel() {
             </p>
           </div>
         ) : (
-          <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+          <div className={workbenchSurface.catalog.cardGrid}>
             {filteredAgents.map((agent) => {
               const isDefault = agent.id === directory?.defaultAgent;
               const optionCount = Object.keys(agent.options ?? {}).length;
               return (
                 <article
                   key={agent.id}
-                  className={`${workbenchSurface.compactPanel} p-4`}
+                  className={workbenchSurface.catalog.entryCard}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex min-w-0 items-start gap-3">
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
+                      <div className={workbenchSurface.catalog.iconBox}>
                         <Bot size={19} />
                       </div>
                       <div className="min-w-0">
-                        <h3 className="truncate text-sm font-semibold text-[var(--theme-text)]">
+                        <h3 className={`truncate ${workbenchSurface.catalog.title}`}>
                           {agent.name}
                         </h3>
-                        <p className="mt-1 truncate text-xs text-stone-500 dark:text-stone-400">
+                        <p className={`mt-1 truncate text-xs ${workbenchSurface.catalog.muted}`}>
                           {agent.id}
                         </p>
                       </div>
@@ -292,22 +290,22 @@ export function AgentDirectoryPanel() {
                     ) : null}
                   </div>
 
-                  <p className="mt-3 line-clamp-2 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                  <p className={`mt-3 line-clamp-2 ${workbenchSurface.catalog.body}`}>
                     {agent.description ||
                       t("agentDirectory.noDescription", "No description published")}
                   </p>
 
                   <dl className="mt-4 grid grid-cols-2 gap-2 text-xs">
-                    <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2">
-                      <dt className="text-stone-400 dark:text-stone-500">
+                    <div className={workbenchSurface.catalog.metricTile}>
+                      <dt className={workbenchSurface.catalog.label}>
                         {t("agentDirectory.version", "Version")}
                       </dt>
                       <dd className="mt-1 truncate font-medium text-[var(--theme-text)]">
                         {agent.version || t("workbench.none", "None")}
                       </dd>
                     </div>
-                    <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2">
-                      <dt className="text-stone-400 dark:text-stone-500">
+                    <div className={workbenchSurface.catalog.metricTile}>
+                      <dt className={workbenchSurface.catalog.label}>
                         {t("agentDirectory.options", "Options")}
                       </dt>
                       <dd className="mt-1 truncate font-medium text-[var(--theme-text)]">

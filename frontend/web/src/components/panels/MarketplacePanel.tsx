@@ -355,7 +355,7 @@ export function MarketplacePanel({
         />
       </button>
       {isFilterOpen && (
-        <div className="skill-filter-dropdown absolute right-0 top-[calc(100%+0.5rem)] z-20 w-72 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
+        <div className="skill-filter-dropdown absolute right-0 top-[calc(100%+0.5rem)] z-20 w-72 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-3 shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
           <div className="mb-2 flex items-center justify-between">
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--theme-text-secondary)]">
               {t("adminMarketplace.tags")}
@@ -430,14 +430,18 @@ export function MarketplacePanel({
       {embedded && (
         <div
           data-marketplace-catalog-toolbar
-          className="skill-panel-header skill-catalog-toolbar"
+          className={`skill-panel-header skill-catalog-toolbar ${workbenchSurface.catalog.toolbar}`}
         >
-          <div className="skill-catalog-toolbar__row">
-            <div className="skill-catalog-toolbar__search">
+          <div
+            className={`skill-catalog-toolbar__row ${workbenchSurface.catalog.toolbarShell}`}
+          >
+            <div
+              className={`skill-catalog-toolbar__search ${workbenchSurface.catalog.toolbarSearch}`}
+            >
               <div className="relative min-w-0 flex-1">
                 <Search
                   size={18}
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 dark:text-stone-500"
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]"
                 />
                 <input
                   type="text"
@@ -449,7 +453,9 @@ export function MarketplacePanel({
               </div>
               {filterMenu}
             </div>
-            <div className="skill-catalog-toolbar__actions">
+            <div
+              className={`skill-catalog-toolbar__actions ${workbenchSurface.catalog.toolbarActions}`}
+            >
               {headerActions}
             </div>
           </div>
@@ -463,7 +469,7 @@ export function MarketplacePanel({
           icon={
             <ShoppingBag
               size={20}
-              className="text-stone-600 dark:text-stone-400"
+              className="text-[var(--theme-text-secondary)]"
             />
           }
           searchValue={searchQuery}
@@ -488,32 +494,35 @@ export function MarketplacePanel({
       )}
 
       {/* Skills List */}
-      <div className="skill-content-area flex-1 overflow-y-auto px-4 py-3">
+      <div className={workbenchSurface.catalog.content}>
         {effectiveGovernedUnavailable ? (
-          <div data-marketplace-forbidden-shell className="skill-empty-state">
-            <div className="skill-empty-state__icon">
+          <div
+            data-marketplace-forbidden-shell
+            className={workbenchSurface.catalog.emptyState}
+          >
+            <div className={workbenchSurface.catalog.emptyIcon}>
               <ShoppingBag size={28} />
             </div>
             <div>
-              <p className="font-semibold text-slate-900 dark:text-stone-100">
+              <p className={workbenchSurface.catalog.emptyTitle}>
                 {t("marketplace.catalogUnavailable.title")}
               </p>
-              <p className="mt-1">
+              <p className={workbenchSurface.catalog.emptyDescription}>
                 {t("marketplace.catalogUnavailable.description")}
               </p>
             </div>
           </div>
         ) : skills.length === 0 ? (
-          <div className="skill-empty-state">
-            <div className="skill-empty-state__icon">
+          <div className={workbenchSurface.catalog.emptyState}>
+            <div className={workbenchSurface.catalog.emptyIcon}>
               <ShoppingBag size={28} />
             </div>
-            <p className="skill-empty-state__title">
+            <p className={workbenchSurface.catalog.emptyTitle}>
               {searchQuery || selectedTags.length > 0
                 ? t("marketplace.noMatchingSkills")
                 : t("marketplace.noSkills")}
             </p>
-            <p className="skill-empty-state__description">
+            <p className={workbenchSurface.catalog.emptyDescription}>
               {searchQuery || selectedTags.length > 0
                 ? t("marketplace.subtitle")
                 : t("marketplace.createHint")}
@@ -527,7 +536,7 @@ export function MarketplacePanel({
         ) : (
           <div
             data-marketplace-catalog-grid
-            className="grid auto-grid-cols gap-3"
+            className={workbenchSurface.catalog.cardGrid}
           >
             {skills.map((skill, index) => (
               <SkillCard

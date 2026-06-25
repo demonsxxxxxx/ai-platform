@@ -16,6 +16,7 @@ import { PanelHeader } from "../../common/PanelHeader";
 import { SkillsPanelSkeleton } from "../../skeletons";
 import { Pagination } from "../../common/Pagination";
 import { SkillCard } from "../../skill/SkillCard";
+import { workbenchSurface } from "../../workbench/workbenchSurface";
 import type { SkillResponse } from "../../../types";
 
 interface SkillsListProps {
@@ -156,7 +157,7 @@ export function SkillsList({
         />
       </button>
       {isFilterOpen && (
-        <div className="skill-filter-dropdown absolute right-0 top-[calc(100%+0.5rem)] z-20 w-72 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-3 shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
+        <div className="skill-filter-dropdown absolute right-0 top-[calc(100%+0.5rem)] z-20 w-72 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-3 shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
           <div className="mb-2 flex items-center justify-between">
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--theme-text-secondary)]">
               {t("adminMarketplace.tags")}
@@ -232,14 +233,18 @@ export function SkillsList({
       {embedded && (
         <div
           data-skills-catalog-toolbar
-          className="skill-panel-header skill-catalog-toolbar"
+          className={`skill-panel-header skill-catalog-toolbar ${workbenchSurface.catalog.toolbar}`}
         >
-          <div className="skill-catalog-toolbar__row">
-            <div className="skill-catalog-toolbar__search">
+          <div
+            className={`skill-catalog-toolbar__row ${workbenchSurface.catalog.toolbarShell}`}
+          >
+            <div
+              className={`skill-catalog-toolbar__search ${workbenchSurface.catalog.toolbarSearch}`}
+            >
               <div className="relative min-w-0 flex-1">
                 <Search
                   size={18}
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 dark:text-stone-500"
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]"
                 />
                 <input
                   type="text"
@@ -252,7 +257,9 @@ export function SkillsList({
               {filterMenu}
             </div>
             {headerActions && (
-              <div className="skill-catalog-toolbar__actions">
+              <div
+                className={`skill-catalog-toolbar__actions ${workbenchSurface.catalog.toolbarActions}`}
+              >
                 {headerActions}
               </div>
             )}
@@ -264,7 +271,10 @@ export function SkillsList({
           title={t("skills.title")}
           subtitle={t("skills.subtitle")}
           icon={
-            <Package size={20} className="text-stone-600 dark:text-stone-400" />
+            <Package
+              size={20}
+              className="text-[var(--theme-text-secondary)]"
+            />
           }
           searchValue={searchQuery}
           onSearchChange={setSearchQuery}
@@ -288,20 +298,20 @@ export function SkillsList({
       )}
 
       {/* Skills List */}
-      <div className="skill-content-area flex-1 overflow-y-auto px-4 py-3">
+      <div className={workbenchSurface.catalog.content}>
         {filteredSkills.length === 0 ? (
-          <div className="skill-empty-state">
-            <div className="skill-empty-state__icon">
+          <div className={workbenchSurface.catalog.emptyState}>
+            <div className={workbenchSurface.catalog.emptyIcon}>
               <FolderOpen size={28} />
             </div>
-            <p className="skill-empty-state__title">
+            <p className={workbenchSurface.catalog.emptyTitle}>
               {governedUnavailable
                 ? t("skills.catalogUnavailable.title")
                 : hasActiveFilters
                 ? t("skills.noMatchingSkills")
                 : t("skills.noSkills")}
             </p>
-            <p className="skill-empty-state__description">
+            <p className={workbenchSurface.catalog.emptyDescription}>
               {governedUnavailable
                 ? t("skills.catalogUnavailable.description")
                 : hasActiveFilters
@@ -327,7 +337,7 @@ export function SkillsList({
         ) : (
           <div
             data-skills-catalog-grid
-            className="skill-grid grid auto-grid-cols gap-3"
+            className={workbenchSurface.catalog.cardGrid}
           >
             {paginatedSkills.map((skill) => (
               <SkillCard
