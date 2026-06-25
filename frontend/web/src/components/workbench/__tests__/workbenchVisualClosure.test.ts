@@ -127,6 +127,9 @@ test("post-login projection panels share workbench surface tokens", () => {
 });
 
 test("persona files and memory pages stay on the enterprise workbench visual system", () => {
+  const personaWorkbench = read(
+    "src/components/persona/PersonaWorkbenchPanel.tsx",
+  );
   const personaCard = read("src/components/persona/PersonaPresetCard.tsx");
   const personaSelector = read("src/components/persona/PersonaPresetSelector.tsx");
   const personaPreview = read("src/components/persona/PersonaPreviewSidebar.tsx");
@@ -134,6 +137,9 @@ test("persona files and memory pages stay on the enterprise workbench visual sys
   const cardCss = read("src/styles/card-base.css");
   const personaCss = read("src/styles/persona.css");
   const baseCss = read("src/styles/base.css");
+  const filesWorkbench = read(
+    "src/components/fileLibrary/RevealedFilesWorkbenchPanel.tsx",
+  );
   const fileToolbar = read("src/components/fileLibrary/components/Toolbar.tsx");
   const fileGridCard = read("src/components/fileLibrary/components/GridCard.tsx");
   const fileListCard = read("src/components/fileLibrary/components/ListCard.tsx");
@@ -179,6 +185,19 @@ test("persona files and memory pages stay on the enterprise workbench visual sys
   assert.match(fileEmptyState, /enterprise-empty-state/);
   assert.match(memoryPanel, /className=\{workbenchSurface\.page\}/);
   assert.match(memoryPanel, /className=\{workbenchSurface\.statePage\}/);
+  assert.match(personaWorkbench, /data-persona-degraded-workbench-grid/);
+  assert.match(personaWorkbench, /data-persona-degraded-main/);
+  assert.match(personaWorkbench, /data-persona-degraded-contract/);
+  assert.match(filesWorkbench, /data-files-degraded-workbench-grid/);
+  assert.match(filesWorkbench, /data-files-degraded-main/);
+  assert.match(filesWorkbench, /data-files-degraded-contract/);
+  for (const [name, source] of new Map([
+    ["PersonaWorkbenchPanel", personaWorkbench],
+    ["RevealedFilesWorkbenchPanel", filesWorkbench],
+  ])) {
+    assert.match(source, /xl:grid-cols-\[minmax\(0,1fr\)_18rem\]/, name);
+    assert.match(source, /WorkbenchStateSurface/, name);
+  }
 });
 
 test("workbench surface exports shared page containers for governed routes", () => {
@@ -189,13 +208,18 @@ test("workbench surface exports shared page containers for governed routes", () 
   assert.match(surface, /sectionPanel:/);
   assert.match(surface, /page:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(surface, /statePage:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
-  assert.match(surface, /sectionPanel:[\s\S]*bg-\[var\(--theme-bg-card\)\]/);
+  assert.match(surface, /panel:[\s\S]*bg-\[var\(--theme-workbench-panel\)\]/);
+  assert.match(surface, /compactPanel:[\s\S]*bg-\[var\(--theme-workbench-panel\)\]/);
+  assert.match(surface, /sectionPanel:[\s\S]*bg-\[var\(--theme-workbench-panel\)\]/);
 });
 
 test("safe projection pages render a full workbench instead of thin lists", () => {
   const projectionPages = read("src/components/workbench/WorkbenchProjectionPages.tsx");
+  const zh = JSON.parse(read("src/i18n/locales/zh.json"));
+  const en = JSON.parse(read("src/i18n/locales/en.json"));
 
   assert.match(projectionPages, /data-projection-workbench-grid/);
+  assert.match(projectionPages, /data-projection-task-panel/);
   assert.match(projectionPages, /data-projection-summary-panel/);
   assert.match(projectionPages, /data-projection-insight-panel/);
   assert.match(projectionPages, /data-projection-list-panel/);
@@ -204,10 +228,39 @@ test("safe projection pages render a full workbench instead of thin lists", () =
   assert.match(projectionPages, /ProjectionMetric/);
   assert.match(projectionPages, /ProjectionInsightPanel/);
   assert.match(projectionPages, /ProjectionListPanel/);
-  assert.match(projectionPages, /lg:grid-cols-\[minmax\(0,1fr\)_20rem\]/);
+  assert.match(projectionPages, /xl:grid-cols-\[minmax\(0,1fr\)_18rem\]/);
+  assert.match(projectionPages, /workbench\.projections\.currentTask/);
+  assert.match(projectionPages, /workbench\.projections\.governance\.summaryTitle/);
+  assert.match(projectionPages, /workbench\.projections\.users\.directoryTitle/);
+  assert.match(projectionPages, /workbench\.projections\.settings\.secretChip/);
+  assert.match(projectionPages, /workbench\.projections\.feedback\.queueTitle/);
+  assert.match(projectionPages, /workbench\.projections\.notifications\.streamTitle/);
+  assert.equal(zh.workbench.projections.currentTask, "当前任务");
+  assert.equal(en.workbench.projections.currentTask, "Current task");
+  assert.equal(zh.workbench.projections.governance.summaryTitle, "读写治理摘要");
+  assert.equal(en.workbench.projections.governance.summaryTitle, "Read/write governance");
+  assert.ok(zh.workbench.projections.users.roleLabels.admin);
+  assert.ok(en.workbench.projections.settings.categories.security);
+  assert.ok(zh.workbench.projections.feedback.status.open);
+  assert.ok(en.workbench.projections.notifications.readState.unread);
   assert.doesNotMatch(projectionPages, /bg-\[var\(--theme-bg\)\]/);
   assert.doesNotMatch(projectionPages, /text-stone-(?:700|800|900)/);
   assert.doesNotMatch(projectionPages, /<div className="mt-3">\{children\}<\/div>/);
+});
+
+test("notification projection metrics use the same visible rows as the stream", () => {
+  const projectionPages = read("src/components/workbench/WorkbenchProjectionPages.tsx");
+
+  assert.match(projectionPages, /const visibleNotifications = dedupeNotifications\(combined\);/);
+  assert.match(projectionPages, /const unreadCount = visibleNotifications\.filter/);
+  assert.match(projectionPages, /const activeCount = visibleNotifications\.filter/);
+  assert.match(projectionPages, /value: visibleNotifications\.length/);
+  assert.match(projectionPages, /\{visibleNotifications\.length === 0 \?/);
+  assert.match(projectionPages, /visibleNotifications\.map\(\(item\) =>/);
+  assert.doesNotMatch(projectionPages, /const unreadCount = combined\.filter/);
+  assert.doesNotMatch(projectionPages, /const activeCount = combined\.filter/);
+  assert.doesNotMatch(projectionPages, /value: combined\.length/);
+  assert.doesNotMatch(projectionPages, /dedupeNotifications\(combined\)\.map/);
 });
 
 test("skills marketplace cards stay dense and enterprise-workbench sized", () => {
@@ -241,14 +294,39 @@ test("role plaza state is resolver-driven instead of hard-coded ready", () => {
 test("skills hub routes use the public contract resolver", () => {
   const hub = read("src/components/panels/SkillsHubPanel.tsx");
   const resolver = read("src/components/panels/SkillsHubPanel/state.ts");
+  const zh = JSON.parse(read("src/i18n/locales/zh.json"));
+  const en = JSON.parse(read("src/i18n/locales/en.json"));
 
   assert.match(hub, /resolveSkillsHubGovernance/);
   assert.match(hub, /data-required-permission=\{hubGovernance\.requiredPermission\}/);
   assert.match(hub, /data-effective-projection-has-permission=\{hubGovernance\.effectiveProjectionHasPermission\}/);
   assert.match(hub, /data-effective-permissions-source=\{hubGovernance\.effectivePermissionsSource\}/);
-  assert.match(hub, /workbenchSurface\.compactPanel/);
+  assert.match(hub, /statusCopyNamespace/);
+  assert.match(hub, /"skillsHub\.skills"/);
+  assert.match(hub, /"skillsHub\.marketplace"/);
+  assert.match(hub, /\$\{statusCopyNamespace\}\.\$\{statusCopyKey\}\.title/);
+  assert.match(hub, /\$\{statusCopyNamespace\}\.\$\{statusCopyKey\}\.description/);
+  assert.match(hub, /data-skills-catalog-status-strip/);
+  assert.match(hub, /statusIndicatorClass/);
+  assert.match(hub, /bg-amber-500/);
+  assert.match(hub, /bg-rose-500/);
+  assert.doesNotMatch(hub, /rounded-full bg-emerald-500/);
+  assert.doesNotMatch(hub, /<section className=\{`\$\{workbenchSurface\.compactPanel\} p-3`\}>/);
+  assert.doesNotMatch(hub, /PanelHeader/);
   assert.match(hub, /data-skills-catalog-status/);
   assert.doesNotMatch(hub, /data-skills-catalog-nav/);
+  assert.equal(zh.skillsHub.skills.ready.title, "Skills 目录可用");
+  assert.equal(zh.skillsHub.marketplace.ready.title, "技能商店可用");
+  assert.notEqual(
+    zh.skillsHub.skills.ready.description,
+    zh.skillsHub.marketplace.ready.description,
+  );
+  assert.equal(en.skillsHub.skills.ready.title, "Skills catalog is available");
+  assert.equal(en.skillsHub.marketplace.ready.title, "Marketplace is available");
+  assert.notEqual(
+    en.skillsHub.skills.ready.description,
+    en.skillsHub.marketplace.ready.description,
+  );
   assert.match(resolver, /requiredPermission: "skill:read" \| "marketplace:read"/);
   assert.match(resolver, /effectivePermissions\?: string\[\]/);
   assert.match(resolver, /effectiveProjectionHasPermission/);
@@ -283,6 +361,14 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
 
   assert.match(skillsList, /data-skills-catalog-toolbar/);
   assert.match(marketplace, /data-marketplace-catalog-toolbar/);
+  assert.match(skillsList, /skill-catalog-toolbar/);
+  assert.match(marketplace, /skill-catalog-toolbar/);
+  assert.match(skillsList, /skill-catalog-toolbar__row/);
+  assert.match(marketplace, /skill-catalog-toolbar__row/);
+  assert.match(skillsList, /skill-catalog-toolbar__search/);
+  assert.match(marketplace, /skill-catalog-toolbar__search/);
+  assert.match(skillsList, /skill-catalog-toolbar__actions/);
+  assert.match(marketplace, /skill-catalog-toolbar__actions/);
   assert.doesNotMatch(hub, /data-skills-catalog-sidebar/);
   assert.doesNotMatch(hub, /<aside/);
   assert.doesNotMatch(hub, /showTabSwitcher/);
@@ -298,6 +384,9 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
     skillCss,
     /\.skill-panel-header\s*{[\s\S]*background:\s*var\(--theme-workbench-canvas\);/,
   );
+  assert.match(skillCss, /\.skill-catalog-toolbar__row/);
+  assert.match(skillCss, /\.skill-catalog-toolbar__search/);
+  assert.match(skillCss, /\.skill-catalog-toolbar__actions/);
   assert.doesNotMatch(
     skillCss,
     /\.skill-content-area\s*{\s*background:\s*var\(--theme-bg\);/,

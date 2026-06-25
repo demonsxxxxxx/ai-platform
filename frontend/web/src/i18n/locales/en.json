@@ -1069,6 +1069,8 @@
     "allProjects": "All Projects",
     "backendGapDetail": "The backend file library projection has not returned a readable directory yet. Lists, grouping, stats, and preview actions stay locked until /api/files/revealed returns the workbench contract.",
     "clearFilters": "Clear",
+    "contractBoundaryDescription": "The frontend only renders the public file projection. When the contract is missing, it keeps the degraded workbench instead of treating 404 as an empty file library.",
+    "contractBoundaryTitle": "Waiting for revealed files projection",
     "column": {
       "date": "Date",
       "name": "Name",
@@ -1084,6 +1086,7 @@
     },
     "empty": "No files revealed yet",
     "degradedDescription": "The backend file library projection is not available yet. The workbench entry stays visible without showing a missing route as an empty file library.",
+    "degradedSafeDetail": "Session grouping, project filters, favorites, and preview controls stay in the workbench context without bypassing ACLs or exposing unauthorized file URLs.",
     "degradedTitle": "File projection is degraded",
     "favorites": "Favorites",
     "files": "files",
@@ -1658,6 +1661,8 @@
     "clearSuccess": "Current persona cleared",
     "confirmDelete": "Delete Persona",
     "confirmDeleteMessage": "Are you sure you want to delete persona \"{{name}}\"? This action cannot be undone.",
+    "contractBoundaryDescription": "The frontend only reads the public projection. When the contract is missing, it keeps the degraded workbench instead of falling back to the old plaza or admin APIs.",
+    "contractBoundaryTitle": "Waiting for persona preset projection",
     "copy": "Copy to My Personas",
     "copyFailed": "Failed to copy persona preset",
     "copySuccess": "Persona \"{{name}}\" copied",
@@ -1668,6 +1673,7 @@
     "deleteFailed": "Failed to delete persona preset",
     "deleteSuccess": "Persona \"{{name}}\" deleted",
     "degradedDescription": "The backend persona preset projection is not available yet. The workbench entry stays visible without showing a missing route as an empty persona catalog.",
+    "degradedSafeDetail": "Search, scope filters, favorites, pinned state, import, and export stay in the workbench context without bypassing backend permissions or displaying failed reads as an empty catalog.",
     "degradedTitle": "Persona projection is degraded",
     "description": "Description",
     "descriptionPlaceholder": "Briefly describe the persona's capabilities and characteristics",
@@ -2557,6 +2563,34 @@
       "description": "Skills and marketplace discovery are available for this account. Write, publish, and department availability controls remain governed by administrator permissions.",
       "title": "Skills catalog is available"
     },
+    "skills": {
+      "degraded": {
+        "description": "The Skills catalog remains readable; create, import, edit, and batch actions stay permission-gated.",
+        "title": "Skills are readable with degraded controls"
+      },
+      "permissionLimited": {
+        "description": "The Skills entry stays visible. Additional actions open after an administrator enables access for your department.",
+        "title": "Skills access is governed"
+      },
+      "ready": {
+        "description": "This account can browse the Skills catalog. Write, publish, and department scope controls remain administrator-governed.",
+        "title": "Skills catalog is available"
+      }
+    },
+    "marketplace": {
+      "degraded": {
+        "description": "The Marketplace remains readable; install, publish, and update actions stay permission-gated.",
+        "title": "Marketplace is readable with degraded controls"
+      },
+      "permissionLimited": {
+        "description": "The Marketplace entry stays visible. It shows discoverable catalog items until an administrator grants access.",
+        "title": "Marketplace access is governed"
+      },
+      "ready": {
+        "description": "This account can browse the Marketplace. Install, publish, and update actions remain administrator-governed.",
+        "title": "Marketplace is available"
+      }
+    },
     "permissionSource": {
       "auth": "Account permissions",
       "catalog": "Catalog permissions",
@@ -2966,6 +3000,7 @@
       }
     },
     "projections": {
+      "currentTask": "Current task",
       "loading": {
         "title": "Loading projection",
         "description": "Checking the backend workbench contract for this page."
@@ -2981,6 +3016,8 @@
       "governance": {
         "projection": "Projection: {{projection}} · tenant {{tenant}} · workspace {{workspace}}",
         "secretProjected": "Backend reported that secret material was projected. Treating this page as degraded.",
+        "summaryTitle": "Read/write governance",
+        "scope": "Scope",
         "safeReadTitle": "Safe read contract",
         "safeReadDescription": "Reads only the public workbench projection for this page.",
         "adminTitle": "Admin controls",
@@ -2992,49 +3029,119 @@
       "users": {
         "title": "Users",
         "subtitle": "Safe company directory projection. Lifecycle changes remain governed.",
+        "taskTitle": "Review the company directory",
+        "taskDescription": "Reads the safe backend directory projection for accounts, tenant, department, and role scope. Activation, grants, and deletion stay in administrator workflows.",
+        "directoryTitle": "Company directory",
+        "directoryDescription": "Visible accounts returned for the current workspace permission boundary.",
         "search": "Search users",
         "empty": "No users are visible in this projection.",
         "total": "Directory total",
         "visible": "{{count}} visible now",
         "active": "Active accounts",
         "inactive": "{{count}} inactive",
+        "activeState": "Active",
+        "inactiveState": "Inactive",
+        "account": "Account",
+        "tenant": "Tenant",
+        "department": "Department",
         "roles": "Role coverage",
-        "rolesDetail": "From safe role projection"
+        "rolesDetail": "From safe role projection",
+        "roleLabels": {
+          "admin": "Admin",
+          "ai_admin": "AI admin",
+          "auditor": "Auditor",
+          "department_admin": "Department admin",
+          "developer": "Developer",
+          "manager": "Manager",
+          "superuser": "Superuser",
+          "user": "User"
+        }
       },
       "settings": {
         "title": "Settings",
         "subtitle": "Personal and system settings from the safe backend projection.",
+        "taskTitle": "Inspect workbench settings",
+        "taskDescription": "Shows readable configuration, redacted values, and audit support. Secret material, rollback, and writes remain protected by backend permissions.",
         "empty": "No settings are visible in this projection.",
         "redacted": "[redacted]",
         "groups": "Setting groups",
         "items": "{{count}} settings",
+        "groupItemCount": "{{count}} settings",
+        "secretChip": "Redacted",
+        "auditedChip": "Audited",
         "redactedCount": "Redacted",
         "redactedDetail": "Secret material is hidden",
         "auditCount": "Audited",
-        "auditDetail": "Changes need audit or rollback"
+        "auditDetail": "Changes need audit or rollback",
+        "categories": {
+          "auth": "Auth",
+          "chat": "Chat",
+          "general": "General",
+          "governance": "Governance",
+          "model": "Model",
+          "notification": "Notification",
+          "personal_preferences": "Personal preferences",
+          "security": "Security",
+          "system_runtime": "System runtime",
+          "workspace": "Workspace"
+        }
       },
       "feedback": {
         "title": "Feedback",
         "subtitle": "Aggregate feedback desk from the governed workbench contract.",
+        "taskTitle": "Triage the feedback queue",
+        "taskDescription": "Reads run feedback, assignment state, and comment summaries. Status changes and archival stay behind audited write flows.",
+        "queueTitle": "Feedback queue",
+        "queueDescription": "Feedback visible inside the current workbench permission boundary.",
         "empty": "No feedback is visible in this projection.",
         "positive": "Positive feedback",
         "negative": "Needs follow-up",
+        "user": "User",
+        "session": "Session",
+        "run": "Run",
         "total": "Total",
         "up": "Positive",
         "down": "Negative",
         "totalDetail": "Current workbench feedback",
-        "downDetail": "Awaiting assignment or follow-up"
+        "downDetail": "Awaiting assignment or follow-up",
+        "status": {
+          "closed": "Closed",
+          "open": "Open",
+          "resolved": "Resolved",
+          "triaged": "Triaged"
+        },
+        "assignment": {
+          "assigned": "Assigned",
+          "needs_assignment": "Needs assignment",
+          "unassigned": "Unassigned"
+        }
       },
       "notifications": {
         "title": "Notifications",
         "subtitle": "Runtime notices and governed announcement projection.",
+        "taskTitle": "Review the notice stream",
+        "taskDescription": "Combines runtime notices with administrator announcement read projections. Publishing, revocation, and audience changes remain notification-admin controls.",
+        "streamTitle": "Notice stream",
+        "streamDescription": "Runtime notices, announcements, and read state visible to this account.",
         "empty": "No notifications are visible in this projection.",
         "total": "Total notices",
         "totalDetail": "Runtime and announcement projections",
         "unread": "Unread",
         "unreadDetail": "Current account state",
         "active": "Active",
-        "activeDetail": "Visible notices"
+        "activeDetail": "Visible notices",
+        "readState": {
+          "active": "Active",
+          "inactive": "Inactive",
+          "read": "Read",
+          "unread": "Unread"
+        },
+        "type": {
+          "announcement": "Announcement",
+          "info": "Info",
+          "runtime": "Runtime",
+          "system": "System"
+        }
       }
     },
     "governedRoute": {

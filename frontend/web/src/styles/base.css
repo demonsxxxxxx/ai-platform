@@ -121,6 +121,7 @@ select:-webkit-autofill:active {
   --theme-ring: #0f766e;
   --theme-bg: #f3f5f8;
   --theme-workbench-canvas: #f3f5f8;
+  --theme-workbench-panel: #f8fafc;
   --theme-bg-card: #ffffff;
   --theme-bg-sidebar: #f3f5f8;
   --theme-sidebar-rail: #111827;
@@ -152,6 +153,7 @@ select:-webkit-autofill:active {
   --theme-ring: #d6d3d1; /* stone-300 */
   --theme-bg: #151210; /* closer to sidebar */
   --theme-workbench-canvas: #151210;
+  --theme-workbench-panel: #1c1917;
   --theme-bg-card: #1c1917; /* stone-900 */
   --theme-bg-sidebar: #171412; /* stone-950 variant */
   --theme-sidebar-rail: #111827;

@@ -60,7 +60,7 @@ test("phase 1C discovery pages explain unavailable governance instead of blank d
 
   assert.match(skillsHub, /statusCopyKey/);
   assert.match(skillsHub, /"permissionLimited"/);
-  assert.match(skillsHub, /"featureDisabled"/);
+  assert.match(skillsHub, /statusCopyNamespace/);
   assert.match(skillsHub, /data-phase1c-surface="skills-hub"/);
   assert.match(skillsHub, /GovernanceAvailabilityBadge/);
   assert.doesNotMatch(skillsHub, /skills\.featureDisabled/);

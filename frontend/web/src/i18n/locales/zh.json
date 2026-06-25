@@ -1070,6 +1070,8 @@
     "allProjects": "全部项目",
     "backendGapDetail": "后端文件库投影尚未返回可读目录；列表、分组、统计和预览操作会保持锁定，直到 /api/files/revealed 返回工作台合同。",
     "clearFilters": "清除",
+    "contractBoundaryDescription": "前端只展示公开文件投影；接口缺失时保持降级工作台，不把 404 当作空文件库。",
+    "contractBoundaryTitle": "等待 revealed files 投影",
     "column": {
       "date": "日期",
       "name": "名称",
@@ -1085,6 +1087,7 @@
     },
     "empty": "还没有展示过的文件",
     "degradedDescription": "后端文件库投影暂不可用；页面保留工作台入口，并避免把缺路由误显示为空文件库。",
+    "degradedSafeDetail": "会话分组、项目过滤、收藏和预览控件保留在工作台语境中，但不会绕过 ACL 或展示未经授权的文件 URL。",
     "degradedTitle": "文件投影已降级",
     "favorites": "我的收藏",
     "files": "个文件",
@@ -1659,6 +1662,8 @@
     "clearSuccess": "已清除当前角色",
     "confirmDelete": "删除角色",
     "confirmDeleteMessage": "确定要删除角色「{{name}}」吗？此操作不可撤销。",
+    "contractBoundaryDescription": "前端只读取公开投影；接口缺失时保持降级工作台，不回退旧广场或直连管理接口。",
+    "contractBoundaryTitle": "等待 persona preset 投影",
     "copy": "复制到我的角色",
     "copyFailed": "复制角色预设失败",
     "copySuccess": "已复制角色「{{name}}」",
@@ -1669,6 +1674,7 @@
     "deleteFailed": "删除角色预设失败",
     "deleteSuccess": "角色「{{name}}」已删除",
     "degradedDescription": "后端角色预设投影暂不可用；页面保留工作台入口，并避免把缺路由误显示为空角色目录。",
+    "degradedSafeDetail": "搜索、范围筛选、收藏、置顶和导入导出入口保留在工作台语境中，但不会绕过后端权限或把失败请求显示为空目录。",
     "degradedTitle": "角色投影已降级",
     "description": "简介",
     "descriptionPlaceholder": "简短描述角色的能力和特点",
@@ -2558,6 +2564,34 @@
       "description": "Skills 与技能市场已经接入当前账号的读权限。写入、发布和部门可用范围继续按管理员授权开放。",
       "title": "Skills 目录可用"
     },
+    "skills": {
+      "degraded": {
+        "description": "Skills 目录可继续浏览；创建、导入、编辑和批量操作继续按权限锁定。",
+        "title": "Skills 降级可读"
+      },
+      "permissionLimited": {
+        "description": "Skills 入口保持可见；管理员为你的部门启用后才开放更多操作。",
+        "title": "Skills 访问受治理"
+      },
+      "ready": {
+        "description": "当前账号可以浏览 Skills 目录；写入、发布和部门范围继续由管理员授权。",
+        "title": "Skills 目录可用"
+      }
+    },
+    "marketplace": {
+      "degraded": {
+        "description": "技能商店可继续浏览；安装、发布和更新操作继续按权限锁定。",
+        "title": "技能商店降级可读"
+      },
+      "permissionLimited": {
+        "description": "技能商店入口保持可见；管理员授权前仅展示可发现目录。",
+        "title": "技能商店访问受治理"
+      },
+      "ready": {
+        "description": "当前账号可以浏览技能商店；安装、发布和更新继续按管理员授权开放。",
+        "title": "技能商店可用"
+      }
+    },
     "permissionSource": {
       "auth": "账号权限",
       "catalog": "目录权限",
@@ -2967,6 +3001,7 @@
       }
     },
     "projections": {
+      "currentTask": "当前任务",
       "loading": {
         "title": "正在加载投影",
         "description": "正在确认该页面的后端工作台合同。"
@@ -2982,6 +3017,8 @@
       "governance": {
         "projection": "投影：{{projection}} · 租户 {{tenant}} · 工作区 {{workspace}}",
         "secretProjected": "后端报告存在密钥材料投影，前端已将页面降级处理。",
+        "summaryTitle": "读写治理摘要",
+        "scope": "作用范围",
         "safeReadTitle": "安全读取合同",
         "safeReadDescription": "只读取该页面的公共工作台投影。",
         "adminTitle": "管理员控制",
@@ -2993,49 +3030,119 @@
       "users": {
         "title": "用户",
         "subtitle": "安全公司用户目录投影；生命周期变更继续受治理。",
+        "taskTitle": "核对公司用户目录",
+        "taskDescription": "读取后端安全目录投影，展示账号、租户、部门和角色范围；启停、授权和删除继续由管理员流程处理。",
+        "directoryTitle": "公司目录",
+        "directoryDescription": "按当前工作区权限返回的可见账号，不暴露未授权租户数据。",
         "search": "搜索用户",
         "empty": "当前投影中没有可见用户。",
         "total": "目录总数",
         "visible": "当前可见 {{count}} 人",
         "active": "启用账号",
         "inactive": "{{count}} 个未启用",
+        "activeState": "启用",
+        "inactiveState": "停用",
+        "account": "账号",
+        "tenant": "租户",
+        "department": "部门",
         "roles": "角色覆盖",
-        "rolesDetail": "来自安全角色投影"
+        "rolesDetail": "来自安全角色投影",
+        "roleLabels": {
+          "admin": "管理员",
+          "ai_admin": "AI 管理员",
+          "auditor": "审计员",
+          "department_admin": "部门管理员",
+          "developer": "开发者",
+          "manager": "经理",
+          "superuser": "超级用户",
+          "user": "普通用户"
+        }
       },
       "settings": {
         "title": "设置",
         "subtitle": "来自安全后端投影的个人与系统设置。",
+        "taskTitle": "检查工作台设置投影",
+        "taskDescription": "展示可读配置、脱敏项和审计能力；密钥、回滚和变更写入仍由后端权限保护。",
         "empty": "当前投影中没有可见设置。",
         "redacted": "[已脱敏]",
         "groups": "设置分组",
         "items": "{{count}} 个设置项",
+        "groupItemCount": "{{count}} 个设置项",
+        "secretChip": "已脱敏",
+        "auditedChip": "受审计",
         "redactedCount": "脱敏项",
         "redactedDetail": "不展示密钥材料",
         "auditCount": "审计项",
-        "auditDetail": "变更需审计或回滚"
+        "auditDetail": "变更需审计或回滚",
+        "categories": {
+          "auth": "认证",
+          "chat": "对话",
+          "general": "通用",
+          "governance": "治理",
+          "model": "模型",
+          "notification": "通知",
+          "personal_preferences": "个人偏好",
+          "security": "安全",
+          "system_runtime": "系统运行时",
+          "workspace": "工作区"
+        }
       },
       "feedback": {
         "title": "反馈",
         "subtitle": "来自受治理工作台合同的反馈汇总台。",
+        "taskTitle": "处理用户反馈队列",
+        "taskDescription": "读取运行反馈、分派状态和评论摘要；状态变更与归档继续保留在受审计写入流程。",
+        "queueTitle": "反馈队列",
+        "queueDescription": "按当前工作台权限展示可跟进的运行反馈。",
         "empty": "当前投影中没有可见反馈。",
         "positive": "正向反馈",
         "negative": "需要跟进",
+        "user": "用户",
+        "session": "会话",
+        "run": "运行",
         "total": "总数",
         "up": "正向",
         "down": "负向",
         "totalDetail": "当前工作台反馈",
-        "downDetail": "待分派或跟进"
+        "downDetail": "待分派或跟进",
+        "status": {
+          "closed": "已关闭",
+          "open": "待处理",
+          "resolved": "已解决",
+          "triaged": "已分诊"
+        },
+        "assignment": {
+          "assigned": "已分派",
+          "needs_assignment": "待分派",
+          "unassigned": "未分派"
+        }
       },
       "notifications": {
         "title": "通知公告",
         "subtitle": "运行时通知和受治理的公告投影。",
+        "taskTitle": "查看通知公告流",
+        "taskDescription": "合并运行时通知与管理员公告读取投影；发布、撤回和范围变更继续由通知管理权限控制。",
+        "streamTitle": "通知流",
+        "streamDescription": "展示当前账号可见的运行提示、公告和已读状态。",
         "empty": "当前投影中没有可见通知。",
         "total": "通知总数",
         "totalDetail": "运行时与公告投影",
         "unread": "未读",
         "unreadDetail": "当前账号状态",
         "active": "生效中",
-        "activeDetail": "可展示通知"
+        "activeDetail": "可展示通知",
+        "readState": {
+          "active": "生效中",
+          "inactive": "已停用",
+          "read": "已读",
+          "unread": "未读"
+        },
+        "type": {
+          "announcement": "公告",
+          "info": "信息",
+          "runtime": "运行时",
+          "system": "系统"
+        }
       }
     },
     "governedRoute": {

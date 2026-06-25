@@ -284,17 +284,17 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
   assert.match(surface, /thread:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(surface, /composer:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
-  assert.match(surface, /panel:[\s\S]*bg-\[var\(--theme-bg-card\)\]/);
+  assert.match(surface, /panel:[\s\S]*bg-\[var\(--theme-workbench-panel\)\]/);
   assert.match(
     surface,
-    /secondaryPanel:[\s\S]*bg-\[var\(--theme-bg-card\)\]/,
+    /secondaryPanel:[\s\S]*bg-\[var\(--theme-workbench-panel\)\]/,
   );
   assert.match(surface, /secondaryPanel:/);
   assert.match(rightPanel, /workbenchSurface\.secondaryPanel/);
   assert.match(theme, /--theme-bg:\s*#f3f5f8;/);
   assert.match(theme, /--theme-bg-sidebar:\s*#f3f5f8;/);
+  assert.match(theme, /--theme-workbench-panel:\s*#f8fafc;/);
   assert.match(theme, /--theme-bg-card:\s*#ffffff;/);
-  assert.match(theme, /--theme-bg:\s*#f3f5f8;[\s\S]{0,80}--theme-bg-sidebar:\s*#f3f5f8;/);
   assert.match(theme, /--theme-workbench-canvas:\s*#f3f5f8;/);
   assert.match(surface, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(chatView, /bg-\[var\(--theme-workbench-canvas\)\]/);
@@ -399,11 +399,12 @@ test("skills and marketplace use a catalog-first workbench layout", () => {
 
   assert.match(skillsHub, /data-skills-catalog-workbench/);
   assert.match(skillsHub, /data-skills-catalog-status/);
-  assert.match(skillsHub, /data-skills-catalog-nav/);
   assert.match(skillsHub, /data-skills-catalog-main/);
   assert.match(skillsHub, /className=\{workbenchSurface\.page\}/);
+  assert.doesNotMatch(skillsHub, /data-skills-catalog-nav/);
   assert.doesNotMatch(skillsHub, /data-skills-catalog-sidebar/);
   assert.doesNotMatch(skillsHub, /<aside/);
+  assert.doesNotMatch(skillsHub, /showTabSwitcher/);
   assert.doesNotMatch(skillsHub, /className="[^"]*bg-\[var\(--theme-workbench-canvas\)\][^"]*"/);
   assert.doesNotMatch(skillsHub, /composerEntry/);
   assert.match(skillsList, /data-skills-catalog-toolbar/);

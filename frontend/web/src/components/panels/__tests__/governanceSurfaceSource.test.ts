@@ -20,10 +20,10 @@ test("skills hub exposes governed catalog status without composer help copy", ()
     "utf8",
   );
   assert.match(source, /GovernanceAvailabilityBadge/);
-  assert.match(source, /skillsHub\.\$\{statusCopyKey\}\.title/);
+  assert.match(source, /\$\{statusCopyNamespace\}\.\$\{statusCopyKey\}\.title/);
   assert.doesNotMatch(source, /skillsHub\.composerEntry/);
   assert.doesNotMatch(source, /data-skills-hub-composer-entry/);
-  assert.match(source, /TAB_PATHS\.marketplace/);
+  assert.match(source, /marketplace:\s*"\/marketplace"/);
   assert.match(source, /data-auth-projection-has-permission/);
   assert.match(source, /onCatalogStateChange/);
 });
