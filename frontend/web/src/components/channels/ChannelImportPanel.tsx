@@ -28,6 +28,10 @@ function formatCapability(capability: string): string {
   return capability.replace(/[:_]/g, " ");
 }
 
+function formatConnectionState(connectionState: string): string {
+  return connectionState.replace(/[:_]/g, " ");
+}
+
 export function ChannelImportPanel() {
   const { t } = useTranslation();
   const { hasPermission, isAuthenticated, isLoading: authLoading } = useAuth();
@@ -206,7 +210,7 @@ export function ChannelImportPanel() {
 
         <section className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1fr)_22rem]">
           <div className={workbenchSurface.panel}>
-            <div className="border-b border-[var(--theme-border)] px-4 py-3 dark:border-stone-800">
+            <div className="border-b border-[var(--theme-border)] px-4 py-3">
               <div className="flex items-center gap-2">
                 <Cable size={16} className="text-[var(--theme-text-secondary)]" />
                 <h2 className="text-sm font-semibold text-[var(--theme-text)]">
@@ -253,17 +257,20 @@ export function ChannelImportPanel() {
                 />
               </div>
             ) : (
-              <div data-channel-catalog-list className="grid gap-3 p-4 md:grid-cols-2">
+              <div
+                data-channel-catalog-list
+                className={`${workbenchSurface.catalog.cardGrid} p-4`}
+              >
                 {channels.map((channel) => (
                   <article
                     key={channel.channel_id}
-                    className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] p-3"
+                    className={workbenchSurface.catalog.entryCard}
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <Inbox size={15} className="text-[var(--theme-text-secondary)]" />
-                          <h3 className="truncate text-sm font-semibold text-[var(--theme-text)]">
+                          <h3 className="min-w-0 text-sm font-semibold leading-5 text-[var(--theme-text)]">
                             {channel.display_name}
                           </h3>
                         </div>
@@ -285,6 +292,22 @@ export function ChannelImportPanel() {
                     </div>
 
                     <div className="mt-3 grid gap-2 text-xs text-[var(--theme-text-secondary)]">
+                      <div
+                        data-channel-connection-state={channel.connection_state}
+                        className="flex items-center justify-between gap-3 rounded-md bg-[var(--theme-bg-card)] px-2.5 py-2 ring-1 ring-[var(--theme-border)]"
+                      >
+                        <span>{t("channelImport.connection.label")}</span>
+                        <span className="font-medium text-[var(--theme-text)]">
+                          {t(
+                            `channelImport.connection.states.${channel.connection_state}`,
+                            {
+                              defaultValue: formatConnectionState(
+                                channel.connection_state,
+                              ),
+                            },
+                          )}
+                        </span>
+                      </div>
                       <div className="flex items-center justify-between gap-3 rounded-md bg-[var(--theme-bg-card)] px-2.5 py-2 ring-1 ring-[var(--theme-border)]">
                         <span>{t("channelImport.redaction")}</span>
                         <span className="font-medium text-[var(--theme-text)]">
@@ -315,10 +338,15 @@ export function ChannelImportPanel() {
                           type="button"
                           onClick={() => handleAdminTest(channel.channel_id)}
                           disabled={testingChannelId === channel.channel_id}
+                          aria-busy={testingChannelId === channel.channel_id}
                           className="btn-secondary h-9"
                         >
                           <TestTube2 size={15} />
-                          <span>{t("channelImport.testDryRun")}</span>
+                          <span>
+                            {testingChannelId === channel.channel_id
+                              ? t("channelImport.testDryRunPending")
+                              : t("channelImport.testDryRun")}
+                          </span>
                         </button>
                       </div>
                     ) : null}
