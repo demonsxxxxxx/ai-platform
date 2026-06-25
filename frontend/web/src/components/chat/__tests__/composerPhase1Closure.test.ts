@@ -150,7 +150,7 @@ test("authenticated workbench popovers avoid legacy heavy overlays", () => {
 
   for (const path of activePopoverFiles) {
     const source = read(path);
-    assert.match(source, /bg-slate-950\/35/, path);
+    assert.match(source, /bg-slate-950\/35|bg-\[var\(--theme-overlay\)\]/, path);
     assert.match(
       source,
       /shadow-\[0_8px_24px_rgba\(18,38,63,0\.12\)\]/,
@@ -159,6 +159,29 @@ test("authenticated workbench popovers avoid legacy heavy overlays", () => {
     assert.doesNotMatch(source, /bg-black\/(?:40|50)/, path);
     assert.doesNotMatch(source, /shadow-xl|shadow-2xl/, path);
     assert.doesNotMatch(source, /rounded-2xl|rounded-3xl/, path);
+  }
+});
+
+test("governed composer selector sheets use one workbench token palette", () => {
+  const selectorFiles = [
+    "src/components/chat/ComposerModelPanel.tsx",
+    "src/components/chat/ComposerUnavailablePanel.tsx",
+    "src/components/selectors/AgentModeSelector.tsx",
+    "src/components/selectors/SkillSelector.tsx",
+    "src/components/selectors/ToolSelector.tsx",
+  ];
+
+  for (const path of selectorFiles) {
+    const source = read(path);
+
+    assert.match(source, /var\(--theme-bg-card\)/, path);
+    assert.match(source, /var\(--theme-text\)/, path);
+    assert.match(source, /var\(--theme-text-secondary\)/, path);
+    assert.match(source, /var\(--theme-primary\)|var\(--theme-ring\)/, path);
+    assert.doesNotMatch(source, /\b(?:bg|text|border)-stone-\d/, path);
+    assert.doesNotMatch(source, /\b(?:bg|text|border)-slate-\d/, path);
+    assert.doesNotMatch(source, /\bdark:(?:bg|text|border)-stone-\d/, path);
+    assert.doesNotMatch(source, /\bdark:(?:bg|text|border)-slate-\d/, path);
   }
 });
 
@@ -224,7 +247,7 @@ test("authenticated chat support surfaces use restrained enterprise workbench to
   for (const [name, source] of sources) {
     assert.match(
       source,
-      /var\(--theme-bg-card\)|panel-card|enterprise-modal-shell/,
+      /var\(--theme-bg-card\)|panel-card|enterprise-modal-shell|workbenchSurface/,
       `${name} should use shared enterprise surface tokens`,
     );
     assert.doesNotMatch(source, /rounded-xl|rounded-2xl|rounded-3xl/, name);

@@ -76,7 +76,7 @@ export function AgentModeSelector({
           <>
             <div
               data-yields-sidebar
-              className="fixed inset-0 z-[300] bg-slate-950/35 animate-fade-in"
+              className="fixed inset-0 z-[300] bg-[var(--theme-overlay)] animate-fade-in"
               onClick={handleClose}
             />
             <div
@@ -94,31 +94,28 @@ export function AgentModeSelector({
                   className="flex items-center justify-between px-4 sm:px-5 py-3 sm:py-4 border-b relative"
                   style={{ borderColor: "var(--theme-border)" }}
                 >
-                  <div className="absolute left-1/2 -translate-x-1/2 top-2 w-10 h-1 rounded-full bg-stone-300 dark:bg-stone-600 sm:hidden" />
+                  <div className="absolute left-1/2 -translate-x-1/2 top-2 w-10 h-1 rounded-full bg-[var(--theme-border)] sm:hidden" />
                   <div className="flex items-center gap-3 mt-2 sm:mt-0">
                     <div className="size-9 sm:size-10 rounded-lg bg-[var(--theme-bg-sidebar)] ring-1 ring-[var(--theme-border)] flex items-center justify-center">
                       <Bot
                         size={16}
-                        className="text-stone-500 dark:text-stone-300 sm:w-[18px] sm:h-[18px]"
+                        className="text-[var(--theme-text-secondary)] sm:w-[18px] sm:h-[18px]"
                       />
                     </div>
                     <div>
-                      <h2 className="text-sm sm:text-base font-semibold text-stone-900 dark:text-stone-100">
+                      <h2 className="text-sm sm:text-base font-semibold text-[var(--theme-text)]">
                         {t("agent.selectMode", "选择模式")}
                       </h2>
-                      <p className="text-xs text-stone-500 dark:text-stone-400">
+                      <p className="text-xs text-[var(--theme-text-secondary)]">
                         {t("agent.selectModeDesc", "切换智能体模式")}
                       </p>
                     </div>
                   </div>
                   <button
                     onClick={handleClose}
-                    className="p-2 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-700 active:bg-stone-200 dark:active:bg-stone-600 transition-colors"
+                    className="p-2 rounded-lg text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:bg-[var(--theme-bg-sidebar)] transition-colors"
                   >
-                    <X
-                      size={18}
-                      className="text-stone-400 dark:text-stone-500"
-                    />
+                    <X size={18} />
                   </button>
                 </div>
 
@@ -156,7 +153,7 @@ export function AgentModeSelector({
                             className={`sm:w-[18px] sm:h-[18px] ${
                               isActive
                                 ? "text-[var(--theme-primary)]"
-                                : "text-stone-500 dark:text-stone-400"
+                                : "text-[var(--theme-text-secondary)]"
                             }`}
                           />
                         </div>
@@ -165,13 +162,13 @@ export function AgentModeSelector({
                             className={`text-[13px] sm:text-sm font-medium truncate block ${
                               isActive
                                 ? "text-[var(--theme-text)]"
-                                : "text-stone-700 dark:text-stone-200"
+                                : "text-[var(--theme-text)]"
                             }`}
                           >
                             {t(agent.name)}
                           </span>
                           {agent.description && (
-                            <p className="text-xs text-stone-400 dark:text-stone-500 truncate mt-0.5 leading-relaxed text-left">
+                            <p className="text-xs text-[var(--theme-text-secondary)] truncate mt-0.5 leading-relaxed text-left">
                               {t(agent.description)}
                             </p>
                           )}
@@ -204,10 +201,10 @@ export function AgentModeSelector({
                 </div>
 
                 {/* Footer */}
-                <div className="px-4 sm:px-5 py-3 sm:py-3.5 border-t border-stone-200 dark:border-stone-700 bg-stone-50/80 dark:bg-stone-800/50 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+                <div className="px-4 sm:px-5 py-3 sm:py-3.5 border-t border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] pb-[max(0.75rem,env(safe-area-inset-bottom))]">
                   <button
                     onClick={handleClose}
-                    className="w-full py-2.5 px-4 bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-950 rounded-lg font-medium text-sm hover:bg-stone-800 dark:hover:bg-stone-200 active:bg-stone-700 transition-colors"
+                    className="w-full py-2.5 px-4 bg-[var(--theme-primary)] text-white rounded-lg font-medium text-sm hover:bg-[var(--theme-primary-hover)] active:bg-[var(--theme-primary-hover)] transition-colors"
                   >
                     {t("common.done", "完成")}
                   </button>
@@ -236,7 +233,7 @@ export function AgentModeSelector({
           <>
             <div
               data-yields-sidebar
-              className="fixed inset-0 z-[300] bg-slate-950/35 animate-fade-in"
+              className="fixed inset-0 z-[300] bg-[var(--theme-overlay)] animate-fade-in"
               onClick={handleClose}
             />
 
@@ -255,31 +252,28 @@ export function AgentModeSelector({
                   className="flex items-center justify-between px-4 sm:px-5 py-3 sm:py-4 border-b relative"
                   style={{ borderColor: "var(--theme-border)" }}
                 >
-                  <div className="absolute left-1/2 -translate-x-1/2 top-2 w-10 h-1 rounded-full bg-stone-300 dark:bg-stone-600 sm:hidden" />
+                  <div className="absolute left-1/2 -translate-x-1/2 top-2 w-10 h-1 rounded-full bg-[var(--theme-border)] sm:hidden" />
                   <div className="flex items-center gap-3 mt-2 sm:mt-0">
                     <div className="size-9 sm:size-10 rounded-lg bg-[var(--theme-bg-sidebar)] ring-1 ring-[var(--theme-border)] flex items-center justify-center">
                       <Bot
                         size={16}
-                        className="text-stone-500 dark:text-stone-300 sm:w-[18px] sm:h-[18px]"
+                        className="text-[var(--theme-text-secondary)] sm:w-[18px] sm:h-[18px]"
                       />
                     </div>
                     <div>
-                      <h2 className="text-sm sm:text-base font-semibold text-stone-900 dark:text-stone-100">
+                      <h2 className="text-sm sm:text-base font-semibold text-[var(--theme-text)]">
                         {t("agent.selectMode", "选择模式")}
                       </h2>
-                      <p className="text-xs text-stone-500 dark:text-stone-400">
+                      <p className="text-xs text-[var(--theme-text-secondary)]">
                         {t("agent.selectModeDesc", "切换智能体模式")}
                       </p>
                     </div>
                   </div>
                   <button
                     onClick={handleClose}
-                    className="p-2 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-700 active:bg-stone-200 dark:active:bg-stone-600 transition-colors"
+                    className="p-2 rounded-lg text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:bg-[var(--theme-bg-sidebar)] transition-colors"
                   >
-                    <X
-                      size={18}
-                      className="text-stone-400 dark:text-stone-500"
-                    />
+                    <X size={18} />
                   </button>
                 </div>
 
@@ -307,7 +301,7 @@ export function AgentModeSelector({
                             className={`sm:w-[18px] sm:h-[18px] ${
                               isActive
                                 ? "text-[var(--theme-primary)]"
-                                : "text-stone-500 dark:text-stone-400"
+                                : "text-[var(--theme-text-secondary)]"
                             }`}
                           />
                         </div>
@@ -316,13 +310,13 @@ export function AgentModeSelector({
                             className={`text-[13px] sm:text-sm font-medium truncate block ${
                               isActive
                                 ? "text-[var(--theme-text)]"
-                                : "text-stone-700 dark:text-stone-200"
+                                : "text-[var(--theme-text)]"
                             }`}
                           >
                             {t(agent.name)}
                           </span>
                           {agent.description && (
-                            <p className="text-xs text-stone-400 dark:text-stone-500 truncate mt-0.5 leading-relaxed text-left">
+                            <p className="text-xs text-[var(--theme-text-secondary)] truncate mt-0.5 leading-relaxed text-left">
                               {t(agent.description)}
                             </p>
                           )}
@@ -350,10 +344,10 @@ export function AgentModeSelector({
                 </div>
 
                 {/* Footer */}
-                <div className="px-4 sm:px-5 py-3 sm:py-3.5 border-t border-stone-200 dark:border-stone-700 bg-stone-50/80 dark:bg-stone-800/50 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+                <div className="px-4 sm:px-5 py-3 sm:py-3.5 border-t border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] pb-[max(0.75rem,env(safe-area-inset-bottom))]">
                   <button
                     onClick={handleClose}
-                    className="w-full py-2.5 px-4 bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-950 rounded-lg font-medium text-sm hover:bg-stone-800 dark:hover:bg-stone-200 active:bg-stone-700 transition-colors"
+                    className="w-full py-2.5 px-4 bg-[var(--theme-primary)] text-white rounded-lg font-medium text-sm hover:bg-[var(--theme-primary-hover)] active:bg-[var(--theme-primary-hover)] transition-colors"
                   >
                     {t("common.done", "完成")}
                   </button>

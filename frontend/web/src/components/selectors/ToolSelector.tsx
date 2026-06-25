@@ -164,19 +164,19 @@ export function ToolSelector({
         style={{ borderColor: "var(--theme-border)" }}
       >
         {/* Mobile drag handle */}
-        <div className="absolute left-1/2 -translate-x-1/2 top-2 w-10 h-1 rounded-full bg-stone-300 dark:bg-stone-600 sm:hidden" />
+        <div className="absolute left-1/2 -translate-x-1/2 top-2 w-10 h-1 rounded-full bg-[var(--theme-border)] sm:hidden" />
         <div className="flex items-center gap-3 mt-2 sm:mt-0">
           <div className="size-9 sm:size-10 rounded-lg bg-[var(--theme-bg-sidebar)] ring-1 ring-[var(--theme-border)] flex items-center justify-center">
             <Wrench
               size={16}
-              className="text-stone-500 dark:text-stone-300 sm:w-[18px] sm:h-[18px]"
+              className="text-[var(--theme-text-secondary)] sm:w-[18px] sm:h-[18px]"
             />
           </div>
           <div>
-            <h2 className="text-sm sm:text-base font-semibold text-stone-900 dark:text-stone-100">
+            <h2 className="text-sm sm:text-base font-semibold text-[var(--theme-text)]">
               {t("tools.title")}
             </h2>
-            <p className="text-xs sm:text-xs text-stone-500 dark:text-stone-400">
+            <p className="text-xs sm:text-xs text-[var(--theme-text-secondary)]">
               {t("tools.selected", {
                 enabled: enabledCount,
                 total: totalCount,
@@ -186,24 +186,24 @@ export function ToolSelector({
         </div>
         <button
           onClick={() => setIsOpen(false)}
-          className="p-2 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-700 active:bg-stone-200 dark:active:bg-stone-600 transition-colors"
+          className="p-2 rounded-lg text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:bg-[var(--theme-bg-sidebar)] transition-colors"
         >
-          <X size={18} className="text-stone-400 dark:text-stone-500" />
+          <X size={18} />
         </button>
       </div>
 
       {/* Actions */}
-      <div className="flex items-center gap-2 px-4 sm:px-5 py-2 sm:py-2.5 border-b border-stone-200/80 dark:border-stone-700/80 bg-stone-50/80 dark:bg-stone-800/50">
+      <div className="flex items-center gap-2 px-4 sm:px-5 py-2 sm:py-2.5 border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)]">
         <button
           onClick={() => onToggleAll(true)}
-          className="px-3 py-2 sm:py-1.5 text-xs font-medium text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-stone-100 hover:bg-stone-100 dark:hover:bg-stone-700 active:bg-stone-200 dark:active:bg-stone-600 rounded-lg transition-colors"
+          className="px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-bg-card)] active:bg-[var(--theme-bg-card)] rounded-lg transition-colors"
         >
           {t("tools.selectAll")}
         </button>
-        <div className="w-px h-4 bg-stone-200 dark:bg-stone-700" />
+        <div className="w-px h-4 bg-[var(--theme-border)]" />
         <button
           onClick={() => onToggleAll(false)}
-          className="px-3 py-2 sm:py-1.5 text-xs font-medium text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-stone-100 hover:bg-stone-100 dark:hover:bg-stone-700 active:bg-stone-200 dark:active:bg-stone-600 rounded-lg transition-colors"
+          className="px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-bg-card)] active:bg-[var(--theme-bg-card)] rounded-lg transition-colors"
         >
           {t("tools.deselectAll")}
         </button>
@@ -250,26 +250,26 @@ export function ToolSelector({
               >
                 {/* Category Header */}
                 <div
-                  className="flex items-center gap-2 sm:gap-2.5 px-3 sm:px-3.5 py-2.5 cursor-pointer hover:bg-stone-100/60 dark:hover:bg-stone-700/40 active:bg-stone-100 dark:active:bg-stone-700/50 transition-all duration-200"
+                  className="flex items-center gap-2 sm:gap-2.5 px-3 sm:px-3.5 py-2.5 cursor-pointer hover:bg-[var(--theme-bg-sidebar)] active:bg-[var(--theme-bg-sidebar)] transition-all duration-200"
                   onClick={() => toggleCategoryExpand(cat)}
                 >
                   <ChevronRight
                     size={16}
-                    className={`text-stone-400 dark:text-stone-500 transition-transform duration-200 ease-out ${
+                    className={`text-[var(--theme-text-secondary)] transition-transform duration-200 ease-out ${
                       isExpanded ? "rotate-90" : ""
                     }`}
                   />
                   <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-[var(--theme-bg-sidebar)] flex items-center justify-center ring-1 ring-[var(--theme-border)]">
                     <Icon
                       size={13}
-                      className="text-stone-500 dark:text-stone-400 sm:w-[14px] sm:h-[14px]"
+                      className="text-[var(--theme-text-secondary)] sm:w-[14px] sm:h-[14px]"
                     />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <span className="text-[13px] sm:text-sm font-medium text-stone-700 dark:text-stone-200">
+                    <span className="text-[13px] sm:text-sm font-medium text-[var(--theme-text)]">
                       {t(`tools.categories.${cat}`)}
                     </span>
-                    <span className="ml-1.5 sm:ml-2 text-xs sm:text-xs text-stone-400 dark:text-stone-500 tabular-nums">
+                    <span className="ml-1.5 sm:ml-2 text-xs sm:text-xs text-[var(--theme-text-secondary)] tabular-nums">
                       {enabledInCategory}/{categoryTools.length}
                     </span>
                   </div>
@@ -296,8 +296,8 @@ export function ToolSelector({
                                 tool.system_disabled
                                   ? "cursor-not-allowed bg-red-50/60 opacity-70 dark:bg-red-500/10"
                                   : tool.enabled
-                                  ? "hover:bg-stone-50 dark:hover:bg-stone-700/30 active:bg-stone-100/80 dark:active:bg-stone-600/40"
-                                  : "bg-[var(--theme-primary)]/[0.06] dark:bg-[var(--theme-primary)]/[0.08] hover:bg-[var(--theme-primary)]/[0.12] dark:hover:bg-[var(--theme-primary)]/[0.14] active:bg-[var(--theme-primary)]/[0.18] dark:active:bg-[var(--theme-primary)]/[0.20]"
+                                  ? "hover:bg-[var(--theme-bg-sidebar)] active:bg-[var(--theme-bg-sidebar)]"
+                                  : "bg-[var(--theme-primary)]/[0.06] hover:bg-[var(--theme-primary)]/[0.12] active:bg-[var(--theme-primary)]/[0.18]"
                               }`}
                               onClick={() => handleToolToggle(tool)}
                               aria-disabled={tool.system_disabled || undefined}
@@ -307,14 +307,14 @@ export function ToolSelector({
                                 onClick={(e) => toggleToolExpand(tool.name, e)}
                                 className={`p-1 -ml-1 rounded transition-all duration-200 touch-manip ${
                                   hasParams
-                                    ? "hover:bg-stone-100 dark:hover:bg-stone-600 active:bg-stone-200 dark:active:bg-stone-500"
+                                    ? "hover:bg-[var(--theme-bg-sidebar)] active:bg-[var(--theme-bg-sidebar)]"
                                     : ""
                                 }`}
                               >
                                 {hasParams ? (
                                   <ChevronRight
                                     size={14}
-                                    className={`text-stone-400 dark:text-stone-500 transition-transform duration-200 ease-out ${
+                                    className={`text-[var(--theme-text-secondary)] transition-transform duration-200 ease-out ${
                                       isToolExpanded ? "rotate-90" : ""
                                     }`}
                                   />
@@ -328,8 +328,8 @@ export function ToolSelector({
                                   <span
                                     className={`text-[12px] sm:text-[13px] font-medium truncate ${
                                       tool.enabled
-                                        ? "text-stone-700 dark:text-stone-200"
-                                        : "text-[var(--theme-primary)] dark:text-[var(--theme-primary)]"
+                                        ? "text-[var(--theme-text)]"
+                                        : "text-[var(--theme-primary)]"
                                     }`}
                                   >
                                     {tool.name}
@@ -345,7 +345,7 @@ export function ToolSelector({
                                     </span>
                                   )}
                                 </div>
-                                <p className="text-xs sm:text-xs text-stone-400 dark:text-stone-500 truncate mt-0.5 leading-relaxed text-left">
+                                <p className="text-xs sm:text-xs text-[var(--theme-text-secondary)] truncate mt-0.5 leading-relaxed text-left">
                                   {tool.description || t("tools.noDescription")}
                                 </p>
                               </div>
@@ -359,14 +359,14 @@ export function ToolSelector({
                             {/* Parameters - Conditional Render */}
                             {isToolExpanded && hasParams && (
                               <div className="animate-[fade-in_150ms_ease-out]">
-                                <div className="mx-2 sm:mx-4 mb-1.5 sm:mb-2 rounded-lg border border-stone-200/80 dark:border-stone-600/50 overflow-hidden">
+                                <div className="mx-2 sm:mx-4 mb-1.5 sm:mb-2 rounded-lg border border-[var(--theme-border)] overflow-hidden">
                                   {/* Table Header */}
-                                  <div className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 bg-stone-100 dark:bg-stone-700/60 border-b border-stone-200/80 dark:border-stone-600/50">
+                                  <div className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 bg-[var(--theme-bg-sidebar)] border-b border-[var(--theme-border)]">
                                     <Info
                                       size={10}
-                                      className="text-stone-400 dark:text-stone-500 sm:w-[11px] sm:h-[11px]"
+                                      className="text-[var(--theme-text-secondary)] sm:w-[11px] sm:h-[11px]"
                                     />
-                                    <span className="text-xs sm:text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wide">
+                                    <span className="text-xs sm:text-xs font-medium text-[var(--theme-text-secondary)] uppercase tracking-wide">
                                       {t("tools.parameters")}
                                     </span>
                                   </div>
@@ -374,14 +374,14 @@ export function ToolSelector({
                                   <div className="bg-[var(--theme-bg-card)]">
                                     <table className="w-full text-xs sm:text-xs">
                                       <thead>
-                                        <tr className="border-b border-stone-100 dark:border-stone-700">
-                                          <th className="px-2.5 sm:px-3 py-1.5 text-left font-medium text-stone-400 dark:text-stone-500 uppercase tracking-wide w-auto">
+                                        <tr className="border-b border-[var(--theme-border)]">
+                                          <th className="px-2.5 sm:px-3 py-1.5 text-left font-medium text-[var(--theme-text-secondary)] uppercase tracking-wide w-auto">
                                             {t("tools.table.name")}
                                           </th>
-                                          <th className="px-2.5 sm:px-3 py-1.5 text-left font-medium text-stone-400 dark:text-stone-500 uppercase tracking-wide w-16 sm:w-20">
+                                          <th className="px-2.5 sm:px-3 py-1.5 text-left font-medium text-[var(--theme-text-secondary)] uppercase tracking-wide w-16 sm:w-20">
                                             {t("tools.table.type")}
                                           </th>
-                                          <th className="px-2.5 sm:px-3 py-1.5 text-left font-medium text-stone-400 dark:text-stone-500 uppercase tracking-wide">
+                                          <th className="px-2.5 sm:px-3 py-1.5 text-left font-medium text-[var(--theme-text-secondary)] uppercase tracking-wide">
                                             {t("tools.table.description")}
                                           </th>
                                         </tr>
@@ -391,7 +391,7 @@ export function ToolSelector({
                                           (param: ToolParamInfo) => (
                                             <tr
                                               key={param.name}
-                                              className={`border-b border-stone-50 dark:border-stone-700/50 last:border-b-0 hover:bg-stone-50/50 dark:hover:bg-stone-700/30 transition-colors`}
+                                              className={`border-b border-[var(--theme-border)] last:border-b-0 hover:bg-[var(--theme-bg-sidebar)] transition-colors`}
                                             >
                                               <td className="px-2.5 sm:px-3 py-1.5">
                                                 <div className="flex items-center gap-1">
@@ -406,11 +406,11 @@ export function ToolSelector({
                                                 </div>
                                               </td>
                                               <td className="px-2.5 sm:px-3 py-1.5">
-                                                <span className="px-1.5 py-0.5 rounded bg-stone-100 dark:bg-stone-700 text-stone-600 dark:text-stone-300 font-mono text-xs">
+                                                <span className="px-1.5 py-0.5 rounded bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] font-mono text-xs">
                                                   {param.type}
                                                 </span>
                                               </td>
-                                              <td className="px-2.5 sm:px-3 py-1.5 text-stone-500 dark:text-stone-400 leading-relaxed">
+                                              <td className="px-2.5 sm:px-3 py-1.5 text-[var(--theme-text-secondary)] leading-relaxed">
                                                 {param.description || "-"}
                                               </td>
                                             </tr>
@@ -440,10 +440,10 @@ export function ToolSelector({
       </div>
 
       {/* Footer */}
-      <div className="px-4 sm:px-5 py-3 sm:py-3.5 border-t border-stone-200 dark:border-stone-700 bg-stone-50/80 dark:bg-stone-800/50 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+      <div className="px-4 sm:px-5 py-3 sm:py-3.5 border-t border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         <button
           onClick={() => setIsOpen(false)}
-          className="w-full py-2.5 px-4 bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-950 rounded-lg font-medium text-sm hover:bg-stone-800 dark:hover:bg-stone-200 active:bg-stone-700 transition-colors"
+          className="w-full py-2.5 px-4 bg-[var(--theme-primary)] text-white rounded-lg font-medium text-sm hover:bg-[var(--theme-primary-hover)] active:bg-[var(--theme-primary-hover)] transition-colors"
         >
           {t("tools.done")}
         </button>
@@ -458,7 +458,7 @@ export function ToolSelector({
           <>
             <div
               data-yields-sidebar
-              className="fixed inset-0 z-[300] bg-slate-950/35 animate-fade-in"
+              className="fixed inset-0 z-[300] bg-[var(--theme-overlay)] animate-fade-in"
               onClick={() => setIsOpen(false)}
             />
             <div
@@ -478,7 +478,7 @@ export function ToolSelector({
     return (
       <div className="relative" onClick={(e) => e.stopPropagation()}>
         <div
-          className="flex items-center justify-center rounded-full p-2 border border-stone-200/50 dark:border-stone-700/50 bg-stone-50/50 dark:bg-stone-800/50 text-stone-300 dark:text-stone-600 cursor-not-allowed"
+          className="flex items-center justify-center rounded-full p-2 border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] cursor-not-allowed opacity-60"
           title={t("tools.noTools")}
         >
           <Wrench size={18} />
@@ -508,7 +508,7 @@ export function ToolSelector({
           <>
             <div
               data-yields-sidebar
-              className="fixed inset-0 z-[300] bg-slate-950/35 animate-fade-in"
+              className="fixed inset-0 z-[300] bg-[var(--theme-overlay)] animate-fade-in"
               onClick={() => setIsOpen(false)}
             />
 
