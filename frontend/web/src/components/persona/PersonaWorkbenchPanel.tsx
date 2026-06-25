@@ -1,8 +1,10 @@
 import {
   Download,
   Filter,
+  ListChecks,
   Plus,
   Search,
+  ShieldAlert,
   Sparkles,
   Upload,
   UserRound,
@@ -35,21 +37,29 @@ export function PersonaWorkbenchPanel() {
     hasPermission: !persona.readPermissionDenied,
     projectionError: persona.error,
   });
+  const projectionBacked = governanceState !== "degraded";
   const readAvailability = resolveGroupAvailability({
-    backed: true,
+    backed: projectionBacked,
     enabled: governanceState === "ready",
     adminOnly: governanceState === "forbidden",
   });
   const writeAvailability = resolveGroupAvailability({
-    backed: true,
-    enabled: persona.canWrite,
-    adminOnly: !persona.canWrite,
+    backed: projectionBacked,
+    enabled: projectionBacked && persona.canWrite,
+    adminOnly: projectionBacked && !persona.canWrite,
   });
   const adminAvailability = resolveGroupAvailability({
-    backed: true,
-    enabled: persona.canAdmin,
-    adminOnly: !persona.canAdmin,
+    backed: projectionBacked,
+    enabled: projectionBacked && persona.canAdmin,
+    adminOnly: projectionBacked && !persona.canAdmin,
   });
+  const personaContractEndpoints = [
+    "GET /api/persona-presets/",
+    "GET /api/persona-presets/{preset_id}",
+    "POST /api/persona-presets/",
+    "PATCH /api/persona-presets/{preset_id}/preference",
+    "POST /api/persona-presets/{preset_id}/use",
+  ];
   const personaStatusTiles = (
     <div className="grid gap-3 px-4 pb-3 lg:grid-cols-3">
       <StatusTile
@@ -143,22 +153,106 @@ export function PersonaWorkbenchPanel() {
 
         {personaStatusTiles}
 
-        <div className="flex min-h-0 flex-1 items-center justify-center px-4 pb-4">
-          <WorkbenchStateSurface
-            state="degraded"
-            surface="persona-workbench"
-            title={t("personaPresets.degradedTitle", "角色投影已降级")}
-            description={t(
-              "personaPresets.degradedDescription",
-              "后端角色预设投影暂不可用；页面保留工作台入口，并避免把缺路由误显示为空角色目录。",
-            )}
-            details={[
-              t(
-                "personaPresets.backendGapDetail",
-                "后端角色预设投影尚未返回可读目录；读取、筛选和写入操作会保持锁定，直到 /api/persona-presets 返回工作台合同。",
-              ),
-            ]}
-          />
+        <div
+          data-persona-degraded-workbench-grid
+          className="grid min-h-0 flex-1 gap-3 overflow-hidden px-4 pb-4 xl:grid-cols-[minmax(0,1fr)_18rem]"
+        >
+          <main
+            data-persona-degraded-main
+            className="min-h-0 overflow-y-auto"
+          >
+            <WorkbenchStateSurface
+              state="degraded"
+              surface="persona-workbench"
+              title={t("personaPresets.degradedTitle", "角色投影已降级")}
+              description={t(
+                "personaPresets.degradedDescription",
+                "后端角色预设投影暂不可用；页面保留工作台入口，并避免把缺路由误显示为空角色目录。",
+              )}
+              details={[
+                t(
+                  "personaPresets.backendGapDetail",
+                  "后端角色预设投影尚未返回可读目录；读取、筛选和写入操作会保持锁定，直到 /api/persona-presets 返回工作台合同。",
+                ),
+                t(
+                  "personaPresets.degradedSafeDetail",
+                  "搜索、范围筛选、收藏、置顶和导入导出入口保留在工作台语境中，但不会绕过后端权限或把失败请求显示为空目录。",
+                ),
+              ]}
+              capabilities={[
+                {
+                  title: t("personaPresets.readContract", "读取合同"),
+                  description: t(
+                    "personaPresets.readContractDescription",
+                    "使用 persona preset 公共接口读取当前可见角色。",
+                  ),
+                  state: readAvailability.state,
+                  labelKey: readAvailability.labelKey,
+                },
+                {
+                  title: t("personaPresets.writeContract", "写入合同"),
+                  description: t(
+                    "personaPresets.writeContractDescription",
+                    "创建、导入和编辑仅在账号具备写权限时开放。",
+                  ),
+                  state: writeAvailability.state,
+                  labelKey: writeAvailability.labelKey,
+                },
+                {
+                  title: t("personaPresets.adminContract", "官方角色治理"),
+                  description: t(
+                    "personaPresets.adminContractDescription",
+                    "官方角色发布、归档和删除继续由管理员权限控制。",
+                  ),
+                  state: adminAvailability.state,
+                  labelKey: adminAvailability.labelKey,
+                },
+              ]}
+              className="max-w-none"
+            />
+          </main>
+
+          <aside
+            data-persona-degraded-contract
+            className={`${workbenchSurface.compactPanel} min-h-0 overflow-y-auto p-3`}
+          >
+            <div className="flex items-center gap-2">
+              <div className={workbenchSurface.stateIcon}>
+                <ShieldAlert size={18} />
+              </div>
+              <div className="min-w-0">
+                <p className={workbenchSurface.label}>
+                  {t("workbench.governedRoute.surfaceLabel", "受治理边界")}
+                </p>
+                <h2 className="mt-1 text-sm font-semibold text-slate-900 dark:text-stone-100">
+                  {t(
+                    "personaPresets.contractBoundaryTitle",
+                    "等待 persona preset 投影",
+                  )}
+                </h2>
+              </div>
+            </div>
+            <p className="mt-3 text-xs leading-5 text-slate-500 dark:text-stone-400">
+              {t(
+                "personaPresets.contractBoundaryDescription",
+                "前端只读取公开投影；接口缺失时保持降级工作台，不回退旧广场或直连管理接口。",
+              )}
+            </p>
+            <div className="mt-4 space-y-2">
+              {personaContractEndpoints.map((endpoint) => (
+                <div
+                  key={endpoint}
+                  className={`${workbenchSurface.statusTile} flex items-start gap-2 text-xs leading-5 text-[var(--theme-text-secondary)]`}
+                >
+                  <ListChecks
+                    size={15}
+                    className="mt-0.5 shrink-0 text-slate-400 dark:text-stone-500"
+                  />
+                  <span className="break-all font-mono">{endpoint}</span>
+                </div>
+              ))}
+            </div>
+          </aside>
         </div>
       </div>
     );

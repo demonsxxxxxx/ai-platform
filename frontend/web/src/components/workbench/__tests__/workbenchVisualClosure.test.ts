@@ -127,6 +127,9 @@ test("post-login projection panels share workbench surface tokens", () => {
 });
 
 test("persona files and memory pages stay on the enterprise workbench visual system", () => {
+  const personaWorkbench = read(
+    "src/components/persona/PersonaWorkbenchPanel.tsx",
+  );
   const personaCard = read("src/components/persona/PersonaPresetCard.tsx");
   const personaSelector = read("src/components/persona/PersonaPresetSelector.tsx");
   const personaPreview = read("src/components/persona/PersonaPreviewSidebar.tsx");
@@ -134,6 +137,9 @@ test("persona files and memory pages stay on the enterprise workbench visual sys
   const cardCss = read("src/styles/card-base.css");
   const personaCss = read("src/styles/persona.css");
   const baseCss = read("src/styles/base.css");
+  const filesWorkbench = read(
+    "src/components/fileLibrary/RevealedFilesWorkbenchPanel.tsx",
+  );
   const fileToolbar = read("src/components/fileLibrary/components/Toolbar.tsx");
   const fileGridCard = read("src/components/fileLibrary/components/GridCard.tsx");
   const fileListCard = read("src/components/fileLibrary/components/ListCard.tsx");
@@ -179,6 +185,19 @@ test("persona files and memory pages stay on the enterprise workbench visual sys
   assert.match(fileEmptyState, /enterprise-empty-state/);
   assert.match(memoryPanel, /className=\{workbenchSurface\.page\}/);
   assert.match(memoryPanel, /className=\{workbenchSurface\.statePage\}/);
+  assert.match(personaWorkbench, /data-persona-degraded-workbench-grid/);
+  assert.match(personaWorkbench, /data-persona-degraded-main/);
+  assert.match(personaWorkbench, /data-persona-degraded-contract/);
+  assert.match(filesWorkbench, /data-files-degraded-workbench-grid/);
+  assert.match(filesWorkbench, /data-files-degraded-main/);
+  assert.match(filesWorkbench, /data-files-degraded-contract/);
+  for (const [name, source] of new Map([
+    ["PersonaWorkbenchPanel", personaWorkbench],
+    ["RevealedFilesWorkbenchPanel", filesWorkbench],
+  ])) {
+    assert.match(source, /xl:grid-cols-\[minmax\(0,1fr\)_18rem\]/, name);
+    assert.match(source, /WorkbenchStateSurface/, name);
+  }
 });
 
 test("workbench surface exports shared page containers for governed routes", () => {
