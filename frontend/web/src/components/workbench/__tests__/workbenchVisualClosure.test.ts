@@ -42,6 +42,7 @@ test("authenticated workbench source avoids marketing and nested-card patterns",
 
 test("post-login routes do not fall back to public landing or split backgrounds", () => {
   const tabContent = read("src/components/layout/AppContent/TabContent.tsx");
+  const header = read("src/components/layout/AppContent/Header.tsx");
   const launchpad = read("src/components/launchpad/LaunchpadPanel.tsx");
   const sidebar = read(
     "src/components/panels/SidebarParts/SessionListContent.tsx",
@@ -53,9 +54,32 @@ test("post-login routes do not fall back to public landing or split backgrounds"
   );
   assert.doesNotMatch(tabContent, /className="flex-1 overflow-hidden bg-\[var\(--theme-bg\)\]"/);
   assert.match(launchpad, /className=\{workbenchSurface\.page\}/);
+  assert.match(header, /bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.doesNotMatch(header, /bg-\[var\(--theme-bg\)\]/);
   assert.doesNotMatch(launchpad, /bg-\[var\(--theme-bg\)\]/);
   assert.doesNotMatch(sidebar, /href=\{APP_HOME_URL\}/);
   assert.match(sidebar, /onClick=\{onNewSession\}/);
+});
+
+test("expanded sidebar uses one dark enterprise navigation system", () => {
+  const sessionSidebar = read("src/components/panels/SessionSidebar.tsx");
+  const sessionList = read(
+    "src/components/panels/SidebarParts/SessionListContent.tsx",
+  );
+  const rail = read("src/components/panels/SidebarParts/SidebarRail.tsx");
+  const baseCss = read("src/styles/base.css");
+
+  assert.match(sessionList, /data-workbench-sidebar-panel/);
+  assert.match(sessionList, /data-workbench-primary-nav/);
+  assert.match(sessionList, /data-workbench-nav-group="tasks"/);
+  assert.match(sessionList, /data-workbench-nav-group="governance"/);
+  assert.match(sessionList, /data-workbench-session-region/);
+  assert.match(sessionList, /bg-\[var\(--theme-sidebar-panel\)\]/);
+  assert.match(sessionSidebar, /bg-\[var\(--theme-sidebar-panel\)\]/);
+  assert.match(rail, /bg-\[var\(--theme-sidebar-rail\)\]/);
+  assert.match(baseCss, /--theme-sidebar-panel:\s*#111827/);
+  assert.match(baseCss, /--theme-sidebar-rail:\s*#111827/);
+  assert.doesNotMatch(sessionList, /bg-\[var\(--theme-bg-card\)\]/);
 });
 
 test("workbench right context uses the same canvas as the main workspace", () => {
@@ -220,7 +244,9 @@ test("skills hub routes use the public contract resolver", () => {
   assert.match(hub, /data-required-permission=\{hubGovernance\.requiredPermission\}/);
   assert.match(hub, /data-effective-projection-has-permission=\{hubGovernance\.effectiveProjectionHasPermission\}/);
   assert.match(hub, /data-effective-permissions-source=\{hubGovernance\.effectivePermissionsSource\}/);
-  assert.match(hub, /workbenchSurface\.panel/);
+  assert.match(hub, /workbenchSurface\.compactPanel/);
+  assert.match(hub, /data-skills-catalog-status/);
+  assert.match(hub, /data-skills-catalog-nav/);
   assert.match(resolver, /requiredPermission: "skill:read" \| "marketplace:read"/);
   assert.match(resolver, /effectivePermissions\?: string\[\]/);
   assert.match(resolver, /effectiveProjectionHasPermission/);
@@ -255,6 +281,10 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
 
   assert.match(skillsList, /data-skills-catalog-toolbar/);
   assert.match(marketplace, /data-marketplace-catalog-toolbar/);
+  assert.doesNotMatch(hub, /data-skills-catalog-sidebar/);
+  assert.doesNotMatch(hub, /<aside/);
+  assert.match(hub, /data-skills-catalog-nav/);
+  assert.match(hub, /data-skills-catalog-status/);
   assert.match(skillCss, /--skill-grid-bg:\s*var\(--theme-workbench-canvas\);/);
   assert.match(
     skillCss,

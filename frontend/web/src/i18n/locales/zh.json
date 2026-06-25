@@ -2323,6 +2323,7 @@
     "expandSidebar": "展开侧边栏",
     "favoriteToggleFailed": "收藏状态更新失败",
     "favorites": "收藏",
+    "governance": "治理",
     "iconUpdateFailed": "更新图标失败",
     "moreOptions": "更多选项",
     "moveToProject": "移动到项目",
@@ -2363,6 +2364,7 @@
     "sessionOptions": "操作",
     "sessionRemoved": "会话已从文件夹移除",
     "share": "分享",
+    "tasks": "任务",
     "today": "今天",
     "uncategorized": "未分类",
     "yesterday": "昨天"

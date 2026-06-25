@@ -2322,6 +2322,7 @@
     "expandSidebar": "Expand sidebar",
     "favoriteToggleFailed": "Failed to update favorite status",
     "favorites": "Favorites",
+    "governance": "Governance",
     "iconUpdateFailed": "Failed to update icon",
     "moreOptions": "More options",
     "moveToProject": "Move to project",
@@ -2362,6 +2363,7 @@
     "sessionOptions": "Actions",
     "sessionRemoved": "Session removed from folder",
     "share": "Share",
+    "tasks": "Tasks",
     "today": "Today",
     "uncategorized": "Uncategorized",
     "yesterday": "Yesterday"
