@@ -1090,7 +1090,7 @@
       "unfavorite": "取消收藏"
     },
     "empty": "还没有展示过的文件",
-    "degradedDescription": "revealed files 公共投影仍由后端 issue #229 跟踪；页面保留工作台入口，并避免把缺失合同误显示为空文件库。",
+    "degradedDescription": "revealed files 公共投影仍由后端 issue #229 跟踪；页面保留工作台入口，并避免把缺失合同误显示为空文件工作台。",
     "degradedSafeDetail": "会话分组、项目过滤、收藏和预览控件保留在工作台语境中，但不会绕过 ACL 或展示未经授权的文件 URL。",
     "degradedTitle": "文件投影已降级",
     "favorites": "我的收藏",
@@ -1101,7 +1101,7 @@
     "filters": "筛选",
     "goToSession": "前往会话",
     "gridView": "网格视图",
-    "issueReferenceDetail": "后端 issue #229 仍跟踪 revealed files 公共投影；前端保持降级工作台，不把缺失合同显示为空文件库。",
+    "issueReferenceDetail": "后端 issue #229 仍跟踪 revealed files 公共投影；前端保持降级工作台，不把缺失合同显示为空文件工作台。",
     "listView": "列表视图",
     "loading": "加载文件中...",
     "noResults": "未找到文件",
@@ -1127,7 +1127,7 @@
       "minutesAgo": "{{count}}分钟前",
       "monthsAgo": "{{count}}个月前"
     },
-    "title": "文件库",
+    "title": "文件工作台",
     "tryDifferent": "尝试其他搜索关键词",
     "types": {
       "all": "全部",
@@ -2007,7 +2007,7 @@
     },
     "files": {
       "description": "受治理的文件工作台入口，用于查看已揭示文件和产物；后端文件投影可用前保持降级状态。",
-      "title": "文件库"
+      "title": "文件工作台"
     },
     "landing": {
       "description": "AI Platform 是公司内部受治理的 AI 工作台，覆盖对话、Skills、MCP 工具、文件、产物与工作流。",

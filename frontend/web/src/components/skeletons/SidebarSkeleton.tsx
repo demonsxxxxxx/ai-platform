@@ -95,7 +95,7 @@ function SidebarExpandedSkeleton() {
           <div className="skeleton-line size-5 rounded-md shrink-0" />
           <div className="skeleton-line h-3.5 w-20 rounded-md" />
         </div>
-        {/* File Library */}
+        {/* File Workbench */}
         <div className="w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px]">
           <div className="skeleton-line size-5 rounded-md shrink-0" />
           <div className="skeleton-line h-3.5 w-16 rounded-md" />

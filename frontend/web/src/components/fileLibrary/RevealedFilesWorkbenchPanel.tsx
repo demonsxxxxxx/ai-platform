@@ -101,12 +101,12 @@ export function RevealedFilesWorkbenchPanel() {
               title={t("fileLibrary.degradedTitle", "文件投影已降级")}
               description={t(
                 "fileLibrary.degradedDescription",
-                "后端文件库投影暂不可用；页面保留工作台入口，并避免把缺路由误显示为空文件库。",
+                "后端文件投影暂不可用；页面保留工作台入口，并避免把缺路由误显示为空文件工作台。",
               )}
               details={[
                 t(
                   "fileLibrary.issueReferenceDetail",
-                  "后端 issue #229 仍跟踪 revealed files 公共投影；前端保持降级工作台，不把缺失合同显示为空文件库。",
+                  "后端 issue #229 仍跟踪 revealed files 公共投影；前端保持降级工作台，不把缺失合同显示为空文件工作台。",
                 ),
                 t(
                   "fileLibrary.degradedSafeDetail",
@@ -127,7 +127,7 @@ export function RevealedFilesWorkbenchPanel() {
                   title: t("fileLibrary.sessionGrouping", "按会话归档"),
                   description: t(
                     "fileLibrary.sessionGroupingDescription",
-                    "保留原文件库的会话分组、收藏、排序、项目过滤和预览交互。",
+                    "保留文件工作台的会话分组、收藏、排序、项目过滤和预览交互。",
                   ),
                   state: previewAvailability.state,
                   labelKey: previewAvailability.labelKey,
@@ -160,7 +160,7 @@ export function RevealedFilesWorkbenchPanel() {
             <p className="mt-3 text-xs leading-5 text-slate-500 dark:text-stone-400">
               {t(
                 "fileLibrary.contractBoundaryDescription",
-                "前端只展示公开文件投影；接口缺失时保持降级工作台，不把 404 当作空文件库。",
+                "前端只展示公开文件投影；接口缺失时保持降级工作台，不把 404 当作空文件工作台。",
               )}
             </p>
             <div
@@ -251,7 +251,7 @@ export function RevealedFilesWorkbenchPanel() {
               <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-stone-400">
                 {t(
                   "fileLibrary.sessionGroupingDescription",
-                  "保留原文件库的会话分组、收藏、排序、项目过滤和预览交互。",
+                  "保留文件工作台的会话分组、收藏、排序、项目过滤和预览交互。",
                 )}
               </p>
             </div>
