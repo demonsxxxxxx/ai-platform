@@ -28,14 +28,17 @@ test("skills hub exposes governed catalog status without composer help copy", ()
   assert.match(source, /onCatalogStateChange/);
 });
 
-test("mcp panel exposes governed tools without raw lifecycle controls", () => {
+test("mcp panel exposes backed lifecycle governance without raw lifecycle controls", () => {
   const source = readFileSync(
     join(root, "src/components/panels/MCPPanel.tsx"),
     "utf8",
   );
   assert.match(source, /GovernanceAvailabilityBadge/);
   assert.match(source, /mcp\.permissionMode/);
-  assert.match(source, /mcp\.lifecycleUnavailable/);
+  assert.match(source, /mcp\.lifecycleGovernance/);
+  assert.match(source, /mcp\.credentialsGovernance/);
+  assert.doesNotMatch(source, /mcp\.lifecycleUnavailable/);
+  assert.doesNotMatch(source, /mcp\.credentialsUnavailable/);
   assert.match(source, /roleQuotaCount/);
   assert.doesNotMatch(source, /enabledToolCount/);
   assert.doesNotMatch(source, /mcp\.card\.tools/);

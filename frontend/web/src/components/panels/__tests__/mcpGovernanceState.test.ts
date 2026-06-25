@@ -7,6 +7,7 @@ test("MCP directory is ready for empty backed projections while permission proof
   const state = resolveMcpGovernanceState({
     isAuthenticated: true,
     canReadMcp: false,
+    canManageMcp: false,
     servers: [],
     total: 0,
   });
@@ -15,6 +16,7 @@ test("MCP directory is ready for empty backed projections while permission proof
   assert.equal(state.authProjectionHasPermission, false);
   assert.equal(state.directoryAvailability.state, "disabled");
   assert.equal(state.lifecycleAvailability.state, "admin-only");
+  assert.equal(state.credentialsAvailability.state, "admin-only");
   assert.equal(state.requiredPermission, "mcp:read");
 });
 
@@ -22,6 +24,7 @@ test("MCP directory marks API permission denials as forbidden", () => {
   const state = resolveMcpGovernanceState({
     isAuthenticated: true,
     canReadMcp: false,
+    canManageMcp: false,
     servers: [],
     total: 0,
     loadError: "missing_permission:mcp:read",
@@ -38,6 +41,7 @@ test("MCP directory exposes loading logged-out and no-workspace states", () => {
       isAuthenticated: true,
       isLoading: true,
       canReadMcp: true,
+      canManageMcp: false,
       servers: [],
       total: 0,
     }).pageState,
@@ -47,6 +51,7 @@ test("MCP directory exposes loading logged-out and no-workspace states", () => {
     resolveMcpGovernanceState({
       isAuthenticated: false,
       canReadMcp: true,
+      canManageMcp: false,
       servers: [],
       total: 0,
     }).pageState,
@@ -57,6 +62,7 @@ test("MCP directory exposes loading logged-out and no-workspace states", () => {
       isAuthenticated: true,
       hasWorkspace: false,
       canReadMcp: true,
+      canManageMcp: false,
       servers: [],
       total: 0,
     }).pageState,
@@ -68,16 +74,18 @@ test("MCP directory is ready when backend returns visible servers", () => {
   const state = resolveMcpGovernanceState({
     isAuthenticated: true,
     canReadMcp: true,
+    canManageMcp: true,
     servers: [
-        {
-          name: "repo-tools",
-          transport: "streamable_http",
-          url: "https://example.invalid/mcp",
-          enabled: true,
-          is_system: true,
-          can_edit: false,
+      {
+        name: "repo-tools",
+        transport: "streamable_http",
+        url: "https://example.invalid/mcp",
+        enabled: true,
+        is_system: true,
+        can_edit: true,
         allowed_roles: ["developer"],
         role_quotas: {},
+        credential_state: "configured",
         created_at: "2026-06-24T00:00:00Z",
         updated_at: "2026-06-24T00:00:00Z",
       },
@@ -87,19 +95,47 @@ test("MCP directory is ready when backend returns visible servers", () => {
 
   assert.equal(state.pageState, "ready");
   assert.equal(state.directoryAvailability.state, "enabled");
-  assert.equal(state.lifecycleAvailability.state, "admin-only");
+  assert.equal(state.lifecycleAvailability.state, "enabled");
+  assert.equal(state.credentialsAvailability.state, "enabled");
 });
 
-test("MCP directory degrades empty and non-permission failures without opening lifecycle controls", () => {
+test("MCP directory keeps lifecycle admin-only for ordinary users", () => {
+  const state = resolveMcpGovernanceState({
+    isAuthenticated: true,
+    canReadMcp: true,
+    canManageMcp: false,
+    servers: [
+      {
+        name: "repo-tools",
+        transport: "streamable_http",
+        enabled: true,
+        is_system: true,
+        can_edit: false,
+        allowed_roles: ["user"],
+        role_quotas: {},
+        credential_state: "configured",
+      },
+    ],
+    total: 1,
+  });
+
+  assert.equal(state.pageState, "ready");
+  assert.equal(state.lifecycleAvailability.state, "admin-only");
+  assert.equal(state.credentialsAvailability.state, "admin-only");
+});
+
+test("MCP directory degrades non-permission failures without opening lifecycle controls", () => {
   const empty = resolveMcpGovernanceState({
     isAuthenticated: true,
     canReadMcp: true,
+    canManageMcp: false,
     servers: [],
     total: 0,
   });
   const failed = resolveMcpGovernanceState({
     isAuthenticated: true,
     canReadMcp: true,
+    canManageMcp: true,
     servers: [],
     total: 0,
     loadError: "mcp projection unavailable",
@@ -110,4 +146,6 @@ test("MCP directory degrades empty and non-permission failures without opening l
   assert.equal(empty.lifecycleAvailability.state, "admin-only");
   assert.equal(failed.pageState, "degraded");
   assert.equal(failed.governedUnavailable, false);
+  assert.equal(failed.lifecycleAvailability.state, "unavailable");
+  assert.equal(failed.credentialsAvailability.state, "unavailable");
 });

@@ -423,7 +423,7 @@
     "marketplaceSyncFailed": "Failed to sync files to marketplace.",
     "marketplaceSyncRolledBack": "Failed to sync files. Marketplace entry was rolled back.",
     "marketplaceDirectWriteNotBacked": "Marketplace publishing and metadata maintenance are connected to governed APIs. This account needs marketplace:admin to create, edit, activate, deactivate, or delete marketplace entries.",
-    "mcpLifecycleNotBacked": "MCP lifecycle management is not available yet. You can browse governed MCP tools; server, credential, and promotion changes stay fail-closed.",
+    "mcpLifecycleNotBacked": "This MCP operation is still governed. Server lifecycle and credentials are backed where permitted, while import, promotion, and per-tool policy writes stay fail-closed until the next admin contract.",
     "memoryBackendUnavailable": "Memory backend is not available.",
     "memoryDeleteLimit": "Cannot delete more than 100 memories at once.",
     "memoryIdsRequired": "memory_ids must be a non-empty list.",
@@ -1430,9 +1430,14 @@
     "userServerVisible": "User Server (only visible to you)",
     "permissionMode": "Permission mode",
     "addToComposer": "Use /mcp in chat to search governed tools and add enabled tools to the composer.",
-    "lifecycleUnavailable": "Service lifecycle governance",
-    "lifecycleUnavailableDescription": "Start, stop, restart, and server configuration writes are administrator-governed. Ordinary users can inspect the approved directory and use enabled tools in chat.",
-    "credentialsUnavailable": "Credential assignment and secret rotation are administrator-governed.",
+    "lifecycleGovernance": {
+      "description": "MCP server create, configure, enable, disable, and delete flows are backed by the backend lifecycle registry. Ordinary users keep a read-only directory while admin actions stay permissioned and audited.",
+      "title": "Service lifecycle governance"
+    },
+    "credentialsGovernance": {
+      "description": "Credentials are projected only as state, fingerprints, and field-name metadata. Raw secrets never return to the frontend, and rotation stays admin-controlled.",
+      "title": "Credential and secret governance"
+    },
     "noMatchingTools": "No matching tools",
     "toolsSearchPlaceholder": "Search tools"
   },

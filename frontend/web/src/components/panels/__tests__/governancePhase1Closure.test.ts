@@ -119,13 +119,17 @@ test("skills marketplace cards use restrained workbench tiles instead of gradien
   assert.match(baseCard, /rounded-lg/);
 });
 
-test("mcp lifecycle governance remains visible but not writable", () => {
+test("mcp lifecycle governance reflects backed admin registry without exposing raw controls", () => {
   const mcp = read("src/components/panels/MCPPanel.tsx");
 
   assert.match(mcp, /data-phase1c-surface="mcp"/);
   assert.match(mcp, /data-fail-closed-surface="mcp-lifecycle"/);
   assert.match(mcp, /lifecycleAvailability/);
-  assert.match(mcp, /mcp\.credentialsUnavailable/);
+  assert.match(mcp, /credentialsAvailability/);
+  assert.match(mcp, /mcp\.lifecycleGovernance/);
+  assert.match(mcp, /mcp\.credentialsGovernance/);
+  assert.doesNotMatch(mcp, /mcp\.credentialsUnavailable/);
+  assert.doesNotMatch(mcp, /mcp\.lifecycleUnavailable/);
   assert.match(mcp, /data-mcp-directory-shell/);
   assert.match(mcp, /isPermissionError\(error\)/);
   assert.match(mcp, /enabled: !permissionDenied/);

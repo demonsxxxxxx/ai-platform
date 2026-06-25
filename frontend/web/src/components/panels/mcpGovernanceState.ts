@@ -14,6 +14,7 @@ export interface McpGovernanceStateInput {
   isLoading?: boolean;
   hasWorkspace?: boolean;
   canReadMcp: boolean;
+  canManageMcp: boolean;
   servers: MCPServerResponse[];
   total: number;
   loadError?: string | null;
@@ -34,12 +35,14 @@ export function resolveMcpGovernanceState({
   isLoading = false,
   hasWorkspace = true,
   canReadMcp,
+  canManageMcp,
   servers,
   total,
   loadError,
 }: McpGovernanceStateInput): McpGovernanceState {
   const permissionDenied = isPermissionError(loadError);
   const hasDirectoryRows = servers.length > 0 || total > 0;
+  const projectionBacked = !loadError;
   const pageState = resolveFrontendGovernanceState({
     isAuthenticated,
     isLoading,
@@ -52,8 +55,16 @@ export function resolveMcpGovernanceState({
     backed: !permissionDenied,
     enabled: hasDirectoryRows,
   });
-  const lifecycleAvailability = resolveGroupAvailability({ adminOnly: true });
-  const credentialsAvailability = resolveGroupAvailability({ adminOnly: true });
+  const lifecycleAvailability = resolveGroupAvailability({
+    backed: projectionBacked,
+    adminOnly: !canManageMcp,
+    enabled: canManageMcp,
+  });
+  const credentialsAvailability = resolveGroupAvailability({
+    backed: projectionBacked,
+    adminOnly: !canManageMcp,
+    enabled: canManageMcp,
+  });
 
   return {
     pageState,

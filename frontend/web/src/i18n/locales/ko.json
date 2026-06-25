@@ -380,7 +380,7 @@
     "marketplaceSyncFailed": "파일을 마켓플레이스에 동기화하지 못했습니다.",
     "marketplaceSyncRolledBack": "파일 동기화에 실패하여 마켓플레이스 항목을 롤백했습니다.",
     "marketplaceDirectWriteNotBacked": "마켓플레이스 직접 쓰기는 아직 사용할 수 없습니다. 승인된 Skills의 탐색, 미리보기, 설치, 업데이트만 사용할 수 있습니다.",
-    "mcpLifecycleNotBacked": "MCP 수명 주기 관리는 아직 사용할 수 없습니다. 관리되는 MCP 도구 탐색만 가능하며 서버, 자격 증명, 승격 작업은 fail-closed 상태입니다.",
+    "mcpLifecycleNotBacked": "이 MCP 작업은 계속 거버넌스 대상입니다. 서버 수명 주기와 자격 증명은 허용된 범위에서 연결되었지만 가져오기, 승격, 도구별 정책 쓰기는 다음 관리자 계약 전까지 fail-closed 상태로 유지됩니다.",
     "memoryBackendUnavailable": "메모리 백엔드를 사용할 수 없습니다.",
     "memoryDeleteLimit": "한 번에 100개를 초과하여 삭제할 수 없습니다.",
     "memoryIdsRequired": "memory_ids는 비워 둘 수 없습니다.",
