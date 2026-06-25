@@ -121,6 +121,22 @@ test("uses backend effective permissions to mark marketplace ready after catalog
   assert.equal(state.requiredPermission, "marketplace:read");
 });
 
+test("marks PR177 public catalog reads ready after the list contract resolves", () => {
+  const state = resolveSkillsHubGovernance({
+    requestedTab: "marketplace",
+    isAuthenticated: true,
+    canReadSkills: false,
+    canReadMarketplace: false,
+    catalogReadResolved: true,
+    effectivePermissions: [],
+  });
+
+  assert.equal(state.pageState, "ready");
+  assert.equal(state.hasPermission, true);
+  assert.equal(state.effectivePermissionsSource, "catalog");
+  assert.equal(state.degraded, false);
+});
+
 test("marks the hub forbidden only after the catalog API proves permission denial", () => {
   const state = resolveSkillsHubGovernance({
     requestedTab: "marketplace",

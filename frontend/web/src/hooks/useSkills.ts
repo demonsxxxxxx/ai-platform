@@ -100,6 +100,7 @@ export function useSkills(options?: {
   );
   const [effectivePermissionsKnown, setEffectivePermissionsKnown] =
     useState(false);
+  const [catalogReadResolved, setCatalogReadResolved] = useState(false);
   const [permissionsValid, setPermissionsValid] = useState(false);
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
@@ -134,6 +135,7 @@ export function useSkills(options?: {
         setTotal(response.total);
         setAvailableTags(response.available_tags || []);
         setEffectivePermissions(response.effective_permissions || []);
+        setCatalogReadResolved(true);
         setPermissionsValid(true);
         setEffectivePermissionsKnown(true);
         // 保留正在 toggle 中的 skill 的乐观状态，避免竞态覆盖
@@ -157,6 +159,7 @@ export function useSkills(options?: {
         setError(message);
         setListError(message);
         setEffectivePermissions([]);
+        setCatalogReadResolved(false);
         setPermissionsValid(true);
         setEffectivePermissionsKnown(true);
       } finally {
@@ -699,6 +702,7 @@ export function useSkills(options?: {
     availableTags,
     effectivePermissions: exposedPermissions.effectivePermissions,
     effectivePermissionsKnown: exposedPermissions.effectivePermissionsKnown,
+    catalogReadResolved,
     total,
     isLoading,
     error,

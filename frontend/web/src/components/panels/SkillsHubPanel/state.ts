@@ -10,6 +10,7 @@ export interface SkillsHubGovernanceInput {
   canReadSkills: boolean;
   canReadMarketplace: boolean;
   effectivePermissions?: string[];
+  catalogReadResolved?: boolean;
   catalogPermissionDenied?: boolean;
   projectionError?: string | null;
 }
@@ -20,6 +21,7 @@ export interface SkillsHubGovernanceState {
   authProjectionHasPermission: boolean;
   effectiveProjectionHasPermission: boolean;
   effectivePermissionsSource: "catalog" | "auth" | "probe";
+  catalogReadResolved: boolean;
   governedUnavailable: boolean;
   requiredPermission: "skill:read" | "marketplace:read";
   degraded: boolean;
@@ -73,6 +75,7 @@ export function resolveSkillsHubGovernance({
   canReadSkills,
   canReadMarketplace,
   effectivePermissions,
+  catalogReadResolved,
   catalogPermissionDenied,
   projectionError,
 }: SkillsHubGovernanceInput): SkillsHubGovernanceState {
@@ -84,8 +87,13 @@ export function resolveSkillsHubGovernance({
     effectivePermissions,
     requiredPermission,
   );
+  const resolvedByCatalog = Boolean(
+    catalogReadResolved || effectiveProjectionHasPermission,
+  );
   const effectivePermissionsSource = effectiveProjectionHasPermission
     ? "catalog"
+    : catalogReadResolved
+      ? "catalog"
     : authProjectionHasPermission
       ? "auth"
       : "probe";
@@ -111,6 +119,7 @@ export function resolveSkillsHubGovernance({
       authProjectionHasPermission,
       effectiveProjectionHasPermission,
       effectivePermissionsSource,
+      catalogReadResolved: resolvedByCatalog,
       governedUnavailable,
       requiredPermission,
       degraded: Boolean(projectionError || probingPermission),
@@ -123,6 +132,7 @@ export function resolveSkillsHubGovernance({
     authProjectionHasPermission,
     effectiveProjectionHasPermission,
     effectivePermissionsSource,
+    catalogReadResolved: resolvedByCatalog,
     governedUnavailable,
     requiredPermission,
     degraded: Boolean(projectionError || probingPermission),
