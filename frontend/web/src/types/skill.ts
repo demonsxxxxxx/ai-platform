@@ -140,6 +140,7 @@ export interface MarketplaceListResponse {
   limit: number;
   available_tags: string[];
   effective_permissions: string[];
+  effective_permissions_known: boolean;
 }
 
 // Direct create in marketplace request

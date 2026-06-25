@@ -82,6 +82,21 @@ test("expanded sidebar uses one dark enterprise navigation system", () => {
   assert.doesNotMatch(sessionList, /bg-\[var\(--theme-bg-card\)\]/);
 });
 
+test("post-login shell removes legacy LambChat runtime identifiers", () => {
+  const auth = read("src/hooks/useAuth.tsx");
+  const sources = [
+    auth,
+    read("src/components/panels/SessionSidebar.tsx"),
+    read("src/components/panels/SidebarParts/SessionListContent.tsx"),
+    read("src/components/panels/SidebarParts/SidebarRail.tsx"),
+    read("src/components/layout/AppContent/TabContent.tsx"),
+    read("src/components/layout/AppContent/Header.tsx"),
+  ].join("\n");
+
+  assert.match(auth, /SIDEBAR_COLLAPSED_STORAGE_KEY = "ai-platform-sidebar-collapsed"/);
+  assert.doesNotMatch(sources, /lamb/i);
+});
+
 test("workbench right context uses the same canvas as the main workspace", () => {
   const surface = read("src/components/workbench/workbenchSurface.ts");
   const rightPanel = read("src/components/workbench/WorkbenchRightPanel.tsx");
@@ -310,6 +325,8 @@ test("skills hub routes use the public contract resolver", () => {
   assert.match(hub, /statusIndicatorClass/);
   assert.match(hub, /bg-amber-500/);
   assert.match(hub, /bg-rose-500/);
+  assert.match(hub, /bg-\[var\(--theme-primary\)\]/);
+  assert.doesNotMatch(hub, /bg-emerald-500/);
   assert.doesNotMatch(hub, /rounded-full bg-emerald-500/);
   assert.doesNotMatch(hub, /<section className=\{`\$\{workbenchSurface\.compactPanel\} p-3`\}>/);
   assert.doesNotMatch(hub, /PanelHeader/);
@@ -331,6 +348,8 @@ test("skills hub routes use the public contract resolver", () => {
   assert.match(resolver, /effectivePermissions\?: string\[\]/);
   assert.match(resolver, /effectiveProjectionHasPermission/);
   assert.match(resolver, /effectivePermissionsSource/);
+  assert.match(resolver, /authProjectionHasPermission && !effectivePermissions/);
+  assert.match(resolver, /effectivePermissionsKnown\?: boolean/);
   assert.match(resolver, /marketplace:read/);
   assert.match(resolver, /skill:read/);
 });

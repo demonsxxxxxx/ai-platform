@@ -17,6 +17,7 @@ interface CatalogState {
   permissionDenied: boolean;
   projectionError: string | null;
   effectivePermissions: string[];
+  effectivePermissionsKnown: boolean;
   readResolved: boolean;
 }
 
@@ -65,11 +66,13 @@ export function SkillsPanel({
       permissionDenied,
       projectionError: permissionDenied ? null : actions.listError,
       effectivePermissions: actions.effectivePermissions,
+      effectivePermissionsKnown: actions.effectivePermissionsKnown,
       readResolved: actions.catalogReadResolved,
     });
   }, [
     actions.catalogReadResolved,
     actions.effectivePermissions,
+    actions.effectivePermissionsKnown,
     actions.listError,
     onCatalogStateChange,
     permissionDenied,

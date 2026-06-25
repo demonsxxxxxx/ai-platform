@@ -18,7 +18,7 @@ const MARKETPLACE_API = `${API_BASE}/api/marketplace`;
 
 type MarketplaceListWireResponse =
   | MarketplaceSkillResponse[]
-  | MarketplaceListResponse;
+  | Omit<MarketplaceListResponse, "effective_permissions_known">;
 
 /**
  * Build the authenticated public Marketplace list URL used by the post-login catalog.
@@ -51,6 +51,7 @@ export function normalizeMarketplaceListResponse(
       limit: response.length,
       available_tags: [],
       effective_permissions: [],
+      effective_permissions_known: false,
     };
   }
 
@@ -61,6 +62,7 @@ export function normalizeMarketplaceListResponse(
     limit: response.limit ?? response.skills?.length ?? 0,
     available_tags: response.available_tags ?? [],
     effective_permissions: response.effective_permissions ?? [],
+    effective_permissions_known: Array.isArray(response.effective_permissions),
   };
 }
 

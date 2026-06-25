@@ -32,7 +32,7 @@ import { Permission } from "../types";
 import type { User, UserCreate, LoginRequest, AuthState } from "../types";
 import i18n from "../i18n";
 
-export const SIDEBAR_COLLAPSED_STORAGE_KEY = "lamb-sidebar-collapsed";
+export const SIDEBAR_COLLAPSED_STORAGE_KEY = "ai-platform-sidebar-collapsed";
 
 /** Apply user metadata preferences from backend */
 function applyUserMetadata(metadata?: {
