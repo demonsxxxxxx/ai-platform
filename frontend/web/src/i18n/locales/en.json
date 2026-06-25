@@ -553,12 +553,24 @@
     "sourcesTitle": "Channel sources",
     "sourcesDescription": "Reads the governed ai-platform channel catalog and only shows safe tenant, workspace, capability, redaction, and retention projections.",
     "loading": "Loading channel catalog",
-    "testDryRun": "Test",
+    "testDryRun": "Test connection",
+    "testDryRunPending": "Testing",
     "adminTestQueued": "Channel test queued for audited execution",
     "adminTestFailed": "Failed to queue channel test",
-    "sourceFailClosedDescription": "Waiting for tenant channel projection, redaction policy, and audit status before opening.",
+    "sourceFailClosedDescription": "Channel sources are shown from the public catalog projection. Management actions stay locked by channel:admin permission.",
     "catalogItem": {
       "description": "{{type}} entry in workspace {{workspace}}"
+    },
+    "connection": {
+      "label": "Connection",
+      "states": {
+        "connected": "Connected",
+        "healthy": "Healthy",
+        "degraded": "Degraded",
+        "disconnected": "Disconnected",
+        "disabled": "Disabled",
+        "unknown": "Unknown"
+      }
     },
     "catalogReady": {
       "title": "Channel catalog connected",
@@ -589,18 +601,11 @@
       },
       "lifecycle": {
         "title": "Lifecycle governance",
-        "description": "Create, test, enable, disable, credentials, and retention policy controls need backend admin projections before opening."
+        "description": "Create, test, enable, disable, credential, and retention controls unlock only through audited channel:admin endpoints."
       }
     },
-    "backendGap": {
-      "title": "Channel projection is not connected yet",
-      "description": "The frontend now keeps the full workbench entry, but this repository does not expose an ai-platform channel projection for ordinary users yet.",
-      "publicProjection": "Need GET /api/channels/catalog or an equivalent public projection with channel type, display name, capabilities, and enabled state.",
-      "adminProjection": "Need a permission-protected admin projection for creating, testing, enabling, disabling instances, and maintaining credentials.",
-      "auditProjection": "Need audit fields covering redaction policy, retention policy, last connection state, and last actor."
-    },
     "unavailable": {
-      "description": "Channel import is not enabled for your workspace yet. No channel details are shown until an administrator turns it on.",
+      "description": "This workspace did not return a usable channel catalog. The page remains visible while management actions stay permission-locked.",
       "title": "Channel import is not available yet"
     }
   },

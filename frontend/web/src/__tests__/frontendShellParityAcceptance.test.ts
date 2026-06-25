@@ -1098,14 +1098,31 @@ test("channels route renders a governed workbench instead of a thin unavailable 
   assert.match(channels, /channelApi\.listCatalog/);
   assert.match(channels, /data-channel-catalog-list/);
   assert.match(channels, /data-channel-admin-governance/);
+  assert.match(channels, /data-channel-connection-state/);
   assert.match(channels, /PanelHeader/);
   assert.match(channels, /GovernanceAvailabilityBadge/);
   assert.match(channels, /channelImport\.capabilities\.publicSources\.title/);
   assert.match(channels, /channelImport\.catalogReady\.title/);
+  assert.match(channels, /channelImport\.connection/);
+  assert.match(channels, /channelImport\.testDryRunPending/);
+  assert.match(channels, /aria-busy=\{testingChannelId === channel\.channel_id\}/);
   assert.doesNotMatch(channels, /const backedSources/);
   assert.doesNotMatch(channels, /backedSources\.length === 0/);
   assert.doesNotMatch(channels, /supportedChannelTypes/);
   assert.doesNotMatch(channels, /channelImport\.backendGap/);
+  assert.doesNotMatch(channels, /\b(?:bg|text|border|ring)-stone-/);
+  assert.doesNotMatch(channels, /\b(?:bg|text|border|ring)-slate-/);
+  assert.doesNotMatch(channels, /\btruncate\b/);
+  for (const localeFile of ["src/i18n/locales/zh.json", "src/i18n/locales/en.json"]) {
+    const locale = JSON.parse(readFileSync(join(root, localeFile), "utf8"));
+    assert.ok(locale.channelImport.testDryRunPending, localeFile);
+    assert.ok(locale.channelImport.connection, localeFile);
+    assert.doesNotMatch(
+      JSON.stringify(locale.channelImport),
+      /等待后端|后端.*开放|backend.*before opening|need backend/i,
+      localeFile,
+    );
+  }
 });
 
 test("launchpad navigation is overflow safe on narrow authenticated viewports", () => {

@@ -553,12 +553,24 @@
     "sourcesTitle": "渠道来源",
     "sourcesDescription": "读取 ai-platform 受治理的频道目录，只展示租户、工作区、能力、脱敏和保留策略等安全投影。",
     "loading": "正在加载频道目录",
-    "testDryRun": "测试",
+    "testDryRun": "测试连接",
+    "testDryRunPending": "测试中",
     "adminTestQueued": "频道测试已进入审计队列",
     "adminTestFailed": "频道测试提交失败",
-    "sourceFailClosedDescription": "等待租户级频道投影、脱敏策略和审计状态后开放。",
+    "sourceFailClosedDescription": "频道来源已由公共目录投影展示；管理动作按 channel:admin 权限保持锁定。",
     "catalogItem": {
       "description": "{{workspace}} 工作区的 {{type}} 入口"
+    },
+    "connection": {
+      "label": "连接状态",
+      "states": {
+        "connected": "已连接",
+        "healthy": "健康",
+        "degraded": "降级",
+        "disconnected": "未连接",
+        "disabled": "已停用",
+        "unknown": "未知"
+      }
     },
     "catalogReady": {
       "title": "频道目录已接入",
@@ -589,18 +601,11 @@
       },
       "lifecycle": {
         "title": "生命周期治理",
-        "description": "创建、测试、启停、凭证和保留策略需要后端管理投影后再开放。"
+        "description": "创建、测试、启停、凭证和保留策略只在 channel:admin 审计入口中解锁。"
       }
     },
-    "backendGap": {
-      "title": "频道投影尚未接入",
-      "description": "前端已保留完整工作台入口，但当前仓库没有可用于普通用户的 ai-platform channel projection。",
-      "publicProjection": "需要 GET /api/channels/catalog 或等价公共投影，返回频道类型、展示名、能力和启用状态。",
-      "adminProjection": "需要受权限保护的管理投影，用于创建、测试、启停实例和维护凭证。",
-      "auditProjection": "需要审计字段覆盖脱敏策略、保留策略、最近连接状态和变更人。"
-    },
     "unavailable": {
-      "description": "当前工作区尚未启用频道导入。管理员启用前不会展示频道详情。",
+      "description": "当前工作区没有返回可用频道目录。页面保持可见，管理动作继续按权限锁定。",
       "title": "频道导入暂不可用"
     }
   },
