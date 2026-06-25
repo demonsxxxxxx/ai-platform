@@ -52,6 +52,15 @@
   box-shadow: var(--skill-glow);
 }
 
+.skill-catalog-toolbar {
+  border-bottom: 0;
+  padding: 0.75rem 1rem 0.5rem;
+}
+
+.skill-catalog-toolbar .skill-catalog-toolbar__row {
+  background: var(--theme-workbench-panel);
+}
+
 .skill-catalog-toolbar__row {
   display: flex;
   flex-direction: column;
@@ -98,7 +107,7 @@
 
 .skill-filter-dropdown {
   border-color: var(--theme-border);
-  background: var(--theme-bg-card);
+  background: var(--theme-workbench-panel);
   box-shadow: 0 12px 28px -18px rgb(15 23 42 / 0.18);
 }
 

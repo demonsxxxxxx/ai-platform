@@ -186,79 +186,77 @@ export function ModelCatalogPanel() {
         searchPlaceholder={t("models.searchPlaceholder", "搜索模型、供应商或能力")}
       />
 
-      <div className="px-4 pb-2 pt-3">
-        <section className="grid gap-3 lg:grid-cols-3">
-          <div className={workbenchSurface.compactPanel}>
-            <div className="flex items-start justify-between gap-3 p-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck size={16} className="text-stone-500" />
-                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
-                    {t("models.publicProjection", "公开模型投影")}
-                  </h3>
-                </div>
-                <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
-                  {t(
-                    "models.publicProjectionDescription",
-                    "聊天和选择器只读取公开可用模型，不暴露密钥、网关配置或租户外信息。",
-                  )}
-                </p>
-              </div>
-              <GovernanceAvailabilityBadge
-                state={publicAvailability.state}
-                labelKey={publicAvailability.labelKey}
-              />
+      <div className={workbenchSurface.catalog.summaryGrid}>
+        <section className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3`}>
+          <div className="flex min-w-0 items-start gap-3">
+            <div className={workbenchSurface.catalog.compactIconBox}>
+              <ShieldCheck size={16} />
+            </div>
+            <div className="min-w-0">
+              <h3 className={workbenchSurface.catalog.title}>
+                {t("models.publicProjection", "公开模型投影")}
+              </h3>
+              <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
+                {t(
+                  "models.publicProjectionDescription",
+                  "聊天和选择器只读取公开可用模型，不暴露密钥、网关配置或租户外信息。",
+                )}
+              </p>
             </div>
           </div>
-          <div className={workbenchSurface.compactPanel}>
-            <div className="flex items-start justify-between gap-3 p-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <Gauge size={16} className="text-stone-500" />
-                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
-                    {t("models.catalogStats", "目录状态")}
-                  </h3>
-                </div>
-                <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
-                  {t("models.catalogStatsDescription", "已启用 {{enabled}} / {{total}} 个模型，{{providers}} 个供应商。", {
-                    enabled: state?.enabledCount ?? 0,
-                    total: state?.models.length ?? 0,
-                    providers: providerCount,
-                  })}
-                </p>
-              </div>
+          <GovernanceAvailabilityBadge
+            state={publicAvailability.state}
+            labelKey={publicAvailability.labelKey}
+          />
+        </section>
+        <section className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3`}>
+          <div className="flex min-w-0 items-start gap-3">
+            <div className={workbenchSurface.catalog.compactIconBox}>
+              <Gauge size={16} />
             </div>
-          </div>
-          <div
-            data-model-admin-governance
-            data-fail-closed-surface="model-admin-governance"
-            className={workbenchSurface.compactPanel}
-          >
-            <div className="flex items-start justify-between gap-3 p-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <LockKeyhole size={16} className="text-stone-500" />
-                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
-                    {t("models.adminGovernance", "管理写操作")}
-                  </h3>
-                </div>
-                <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
-                  {t(
-                    "models.adminGovernanceDescription",
-                    "新增、排序、密钥和网关配置只在具备 model:admin 权限的治理入口开放。",
-                  )}
-                </p>
-              </div>
-              <GovernanceAvailabilityBadge
-                state={adminAvailability.state}
-                labelKey={adminAvailability.labelKey}
-              />
+            <div className="min-w-0">
+              <h3 className={workbenchSurface.catalog.title}>
+                {t("models.catalogStats", "目录状态")}
+              </h3>
+              <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
+                {t("models.catalogStatsDescription", "已启用 {{enabled}} / {{total}} 个模型，{{providers}} 个供应商。", {
+                  enabled: state?.enabledCount ?? 0,
+                  total: state?.models.length ?? 0,
+                  providers: providerCount,
+                })}
+              </p>
             </div>
           </div>
         </section>
+        <section
+          data-model-admin-governance
+          data-fail-closed-surface="model-admin-governance"
+          className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3`}
+        >
+          <div className="flex min-w-0 items-start gap-3">
+            <div className={workbenchSurface.catalog.compactIconBox}>
+              <LockKeyhole size={16} />
+            </div>
+            <div className="min-w-0">
+              <h3 className={workbenchSurface.catalog.title}>
+                {t("models.adminGovernance", "管理写操作")}
+              </h3>
+              <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
+                {t(
+                  "models.adminGovernanceDescription",
+                  "新增、排序、密钥和网关配置只在具备 model:admin 权限的治理入口开放。",
+                )}
+              </p>
+            </div>
+          </div>
+          <GovernanceAvailabilityBadge
+            state={adminAvailability.state}
+            labelKey={adminAvailability.labelKey}
+          />
+        </section>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+      <div className={workbenchSurface.catalog.content}>
         {filteredModels.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center text-theme-text-secondary">
             {query ? (
@@ -274,7 +272,7 @@ export function ModelCatalogPanel() {
                 ? t("models.noMatchingModels", "没有匹配的模型")
                 : t("models.noModels", "暂无可用模型")}
             </p>
-            <p className="mt-2 max-w-md text-center text-xs leading-5 text-stone-500 dark:text-stone-400">
+            <p className={`mt-2 max-w-md text-center ${workbenchSurface.catalog.body}`}>
               {t(
                 "models.emptyDescription",
                 "模型目录来自公开投影。若这里为空，聊天页会 fail-closed 到默认模型配置，并保留管理写操作锁定。",
@@ -282,13 +280,13 @@ export function ModelCatalogPanel() {
             </p>
           </div>
         ) : (
-          <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+          <div className={workbenchSurface.catalog.cardGrid}>
             {filteredModels.map((model) => {
               const isDefault = model.id === state?.defaultModelId;
               return (
                 <article
                   key={model.id || model.value}
-                  className={`${workbenchSurface.compactPanel} p-4`}
+                  className={workbenchSurface.catalog.entryCard}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex min-w-0 items-start gap-3">
@@ -298,10 +296,10 @@ export function ModelCatalogPanel() {
                         size={34}
                       />
                       <div className="min-w-0">
-                        <h3 className="truncate text-sm font-semibold text-[var(--theme-text)]">
+                        <h3 className={`truncate ${workbenchSurface.catalog.title}`}>
                           {model.label}
                         </h3>
-                        <p className="mt-1 truncate text-xs text-stone-500 dark:text-stone-400">
+                        <p className={`mt-1 truncate text-xs ${workbenchSurface.catalog.muted}`}>
                           {model.value}
                         </p>
                       </div>
@@ -314,22 +312,22 @@ export function ModelCatalogPanel() {
                   </div>
 
                   {model.description ? (
-                    <p className="mt-3 line-clamp-2 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                    <p className={`mt-3 line-clamp-2 ${workbenchSurface.catalog.body}`}>
                       {model.description}
                     </p>
                   ) : null}
 
                   <dl className="mt-4 grid grid-cols-2 gap-2 text-xs">
-                    <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2">
-                      <dt className="text-stone-400 dark:text-stone-500">
+                    <div className={workbenchSurface.catalog.metricTile}>
+                      <dt className={workbenchSurface.catalog.label}>
                         {t("models.provider", "供应商")}
                       </dt>
                       <dd className="mt-1 truncate font-medium text-[var(--theme-text)]">
                         {providerLabel(model)}
                       </dd>
                     </div>
-                    <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2">
-                      <dt className="text-stone-400 dark:text-stone-500">
+                    <div className={workbenchSurface.catalog.metricTile}>
+                      <dt className={workbenchSurface.catalog.label}>
                         {t("models.contextWindow", "上下文")}
                       </dt>
                       <dd className="mt-1 truncate font-medium text-[var(--theme-text)]">

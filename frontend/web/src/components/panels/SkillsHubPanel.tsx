@@ -101,7 +101,7 @@ export function SkillsHubPanel() {
         ? "bg-amber-500"
         : governanceState === "forbidden"
           ? "bg-rose-500"
-          : "bg-slate-400";
+          : "bg-[var(--theme-text-tertiary)]";
   const permissionAvailability = resolveGroupAvailability({
     backed: governanceState !== "degraded",
     enabled: governanceState === "ready",
@@ -153,7 +153,7 @@ export function SkillsHubPanel() {
       >
         <div
           data-skills-catalog-status-strip
-          className="flex flex-col gap-2 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-3 py-2 shadow-[0_1px_2px_rgba(18,38,63,0.03)] sm:flex-row sm:items-center sm:justify-between"
+          className={`${workbenchSurface.catalog.summaryCard} flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between`}
         >
           <div className="flex min-w-0 flex-1 items-start gap-2">
             <span

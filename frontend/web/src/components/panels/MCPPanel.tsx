@@ -175,87 +175,91 @@ export function MCPPanel() {
         </div>
       )}
 
-      <div className="px-4 pb-2 pt-3">
-        <section className={workbenchSurface.sectionPanel}>
-          <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-4">
-            <div className="flex items-start justify-between gap-3 rounded-md bg-[var(--theme-bg-sidebar)] p-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck size={16} className="text-[var(--theme-text-secondary)]" />
-                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
-                    {t("mcp.permissionLimited.title")}
-                  </h3>
-                </div>
-                <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
-                  {t("mcp.permissionLimited.description")}
-                </p>
-              </div>
-              <GovernanceAvailabilityBadge
-                state={mcpGovernance.directoryAvailability.state}
-                labelKey={mcpGovernance.directoryAvailability.labelKey}
-              />
+      <div className={workbenchSurface.catalog.summaryGridFour}>
+        <section className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3`}>
+          <div className="flex min-w-0 items-start gap-3">
+            <div className={workbenchSurface.catalog.compactIconBox}>
+              <ShieldCheck size={16} />
             </div>
-            <div className="flex items-start justify-between gap-3 rounded-md bg-[var(--theme-bg-sidebar)] p-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck size={16} className="text-[var(--theme-text-secondary)]" />
-                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
-                    {t("mcp.permissionMode")}
-                  </h3>
-                </div>
-                <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
-                  {t("mcp.addToComposer")}
-                </p>
-              </div>
-              <GovernanceAvailabilityBadge
-                state={permissionAvailability.state}
-                labelKey={permissionAvailability.labelKey}
-              />
-            </div>
-            <div
-              data-fail-closed-surface="mcp-lifecycle"
-              className="flex items-start justify-between gap-3 rounded-md bg-[var(--theme-bg-sidebar)] p-3"
-            >
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <Boxes size={16} className="text-[var(--theme-text-secondary)]" />
-                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
-                    {t("mcp.lifecycleUnavailable")}
-                  </h3>
-                </div>
-                <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
-                  {t("mcp.lifecycleUnavailableDescription")}
-                </p>
-                <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
-                  {t("mcp.credentialsUnavailable")}
-                </p>
-              </div>
-              <GovernanceAvailabilityBadge
-                state={lifecycleAvailability.state}
-                labelKey={lifecycleAvailability.labelKey}
-              />
-            </div>
-            <div
-              data-fail-closed-surface="mcp-credentials"
-              className="flex items-start justify-between gap-3 rounded-md bg-[var(--theme-bg-sidebar)] p-3"
-            >
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck size={16} className="text-[var(--theme-text-secondary)]" />
-                  <h3 className="text-sm font-semibold text-[var(--theme-text)]">
-                    {t("mcp.credentialsUnavailable")}
-                  </h3>
-                </div>
-                <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
-                  {t("mcp.catalogUnavailable.description")}
-                </p>
-              </div>
-              <GovernanceAvailabilityBadge
-                state={credentialsAvailability.state}
-                labelKey={credentialsAvailability.labelKey}
-              />
+            <div className="min-w-0">
+              <h3 className={workbenchSurface.catalog.title}>
+                {t("mcp.permissionLimited.title")}
+              </h3>
+              <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
+                {t("mcp.permissionLimited.description")}
+              </p>
             </div>
           </div>
+          <GovernanceAvailabilityBadge
+            state={mcpGovernance.directoryAvailability.state}
+            labelKey={mcpGovernance.directoryAvailability.labelKey}
+          />
+        </section>
+        <section className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3`}>
+          <div className="flex min-w-0 items-start gap-3">
+            <div className={workbenchSurface.catalog.compactIconBox}>
+              <ShieldCheck size={16} />
+            </div>
+            <div className="min-w-0">
+              <h3 className={workbenchSurface.catalog.title}>
+                {t("mcp.permissionMode")}
+              </h3>
+              <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
+                {t("mcp.addToComposer")}
+              </p>
+            </div>
+          </div>
+          <GovernanceAvailabilityBadge
+            state={permissionAvailability.state}
+            labelKey={permissionAvailability.labelKey}
+          />
+        </section>
+        <section
+          data-fail-closed-surface="mcp-lifecycle"
+          className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3`}
+        >
+          <div className="flex min-w-0 items-start gap-3">
+            <div className={workbenchSurface.catalog.compactIconBox}>
+              <Boxes size={16} />
+            </div>
+            <div className="min-w-0">
+              <h3 className={workbenchSurface.catalog.title}>
+                {t("mcp.lifecycleUnavailable")}
+              </h3>
+              <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
+                {t("mcp.lifecycleUnavailableDescription")}
+              </p>
+              <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
+                {t("mcp.credentialsUnavailable")}
+              </p>
+            </div>
+          </div>
+          <GovernanceAvailabilityBadge
+            state={lifecycleAvailability.state}
+            labelKey={lifecycleAvailability.labelKey}
+          />
+        </section>
+        <section
+          data-fail-closed-surface="mcp-credentials"
+          className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3`}
+        >
+          <div className="flex min-w-0 items-start gap-3">
+            <div className={workbenchSurface.catalog.compactIconBox}>
+              <ShieldCheck size={16} />
+            </div>
+            <div className="min-w-0">
+              <h3 className={workbenchSurface.catalog.title}>
+                {t("mcp.credentialsUnavailable")}
+              </h3>
+              <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
+                {t("mcp.catalogUnavailable.description")}
+              </p>
+            </div>
+          </div>
+          <GovernanceAvailabilityBadge
+            state={credentialsAvailability.state}
+            labelKey={credentialsAvailability.labelKey}
+          />
         </section>
       </div>
       {mcpGovernance.pageState === "degraded" ? (
@@ -271,7 +275,7 @@ export function MCPPanel() {
         </div>
       ) : null}
 
-      <div className="flex-1 overflow-y-auto px-4 py-3">
+      <div className={workbenchSurface.catalog.content}>
         {servers.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center text-theme-text-secondary">
             {searchQuery ? (
@@ -293,7 +297,7 @@ export function MCPPanel() {
             </p>
           </div>
         ) : (
-          <div className="grid gap-3 lg:grid-cols-2">
+          <div className={workbenchSurface.catalog.cardGrid}>
             {servers.map((server) => {
               const availability = resolveGroupAvailability({
                 enabled: server.enabled,
@@ -303,17 +307,17 @@ export function MCPPanel() {
               return (
                 <article
                   key={server.name}
-                  className={`${workbenchSurface.compactPanel} p-4`}
+                  className={workbenchSurface.catalog.entryCard}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <Wrench size={16} className="shrink-0 text-[var(--theme-text-secondary)]" />
-                        <h3 className="truncate text-sm font-semibold text-[var(--theme-text)]">
+                        <h3 className={`truncate ${workbenchSurface.catalog.title}`}>
                           {server.name}
                         </h3>
                       </div>
-                      <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
+                      <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
                         {server.is_system
                           ? t("mcp.card.system")
                           : t("mcp.card.user")}
@@ -328,8 +332,8 @@ export function MCPPanel() {
                   </div>
 
                   <dl className="mt-4 grid grid-cols-3 gap-2 text-xs">
-                    <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2">
-                      <dt className="text-[var(--theme-text-tertiary)]">
+                    <div className={workbenchSurface.catalog.metricTile}>
+                      <dt className={workbenchSurface.catalog.label}>
                         {t("mcp.permissionMode")}
                       </dt>
                       <dd className="mt-1 font-medium text-[var(--theme-text)]">
@@ -338,16 +342,16 @@ export function MCPPanel() {
                           : t("governance.disabled")}
                       </dd>
                     </div>
-                    <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2">
-                      <dt className="text-[var(--theme-text-tertiary)]">
+                    <div className={workbenchSurface.catalog.metricTile}>
+                      <dt className={workbenchSurface.catalog.label}>
                         {t("mcp.card.roleCount", { count: roleCount })}
                       </dt>
                       <dd className="mt-1 font-medium text-[var(--theme-text)]">
                         {roleCount || t("mcp.form.allRoles")}
                       </dd>
                     </div>
-                    <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2">
-                      <dt className="text-[var(--theme-text-tertiary)]">
+                    <div className={workbenchSurface.catalog.metricTile}>
+                      <dt className={workbenchSurface.catalog.label}>
                         {t("mcp.card.roleQuotaCount")}
                       </dt>
                       <dd className="mt-1 font-medium text-[var(--theme-text)]">
