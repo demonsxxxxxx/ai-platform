@@ -927,8 +927,11 @@ export function WorkbenchNotificationsProjectionPanel() {
     ...(active.data ?? []),
     ...(admin.data?.items ?? []),
   ];
-  const unreadCount = combined.filter((item) => item.read_state === "unread").length;
-  const activeCount = combined.filter((item) => item.is_active).length;
+  const visibleNotifications = dedupeNotifications(combined);
+  const unreadCount = visibleNotifications.filter(
+    (item) => item.read_state === "unread",
+  ).length;
+  const activeCount = visibleNotifications.filter((item) => item.is_active).length;
   const loadState: LoadState<unknown> = {
     data: active.data,
     error: active.error,
@@ -943,7 +946,7 @@ export function WorkbenchNotificationsProjectionPanel() {
       metrics={[
         {
           label: t("workbench.projections.notifications.total"),
-          value: combined.length,
+          value: visibleNotifications.length,
           detail: t("workbench.projections.notifications.totalDetail"),
           icon: Bell,
         },
@@ -971,10 +974,10 @@ export function WorkbenchNotificationsProjectionPanel() {
           </p>
         </div>
         <div className="divide-y divide-[var(--theme-border)]">
-          {combined.length === 0 ? (
+          {visibleNotifications.length === 0 ? (
             <EmptyProjection message={t("workbench.projections.notifications.empty")} />
           ) : (
-            dedupeNotifications(combined).map((item) => (
+            visibleNotifications.map((item) => (
               <article key={item.id} className="px-4 py-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">

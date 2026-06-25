@@ -248,6 +248,21 @@ test("safe projection pages render a full workbench instead of thin lists", () =
   assert.doesNotMatch(projectionPages, /<div className="mt-3">\{children\}<\/div>/);
 });
 
+test("notification projection metrics use the same visible rows as the stream", () => {
+  const projectionPages = read("src/components/workbench/WorkbenchProjectionPages.tsx");
+
+  assert.match(projectionPages, /const visibleNotifications = dedupeNotifications\(combined\);/);
+  assert.match(projectionPages, /const unreadCount = visibleNotifications\.filter/);
+  assert.match(projectionPages, /const activeCount = visibleNotifications\.filter/);
+  assert.match(projectionPages, /value: visibleNotifications\.length/);
+  assert.match(projectionPages, /\{visibleNotifications\.length === 0 \?/);
+  assert.match(projectionPages, /visibleNotifications\.map\(\(item\) =>/);
+  assert.doesNotMatch(projectionPages, /const unreadCount = combined\.filter/);
+  assert.doesNotMatch(projectionPages, /const activeCount = combined\.filter/);
+  assert.doesNotMatch(projectionPages, /value: combined\.length/);
+  assert.doesNotMatch(projectionPages, /dedupeNotifications\(combined\)\.map/);
+});
+
 test("skills marketplace cards stay dense and enterprise-workbench sized", () => {
   const baseCard = read("src/components/common/SkillBaseCard.tsx");
   const cardCss = read("src/styles/card-base.css");
