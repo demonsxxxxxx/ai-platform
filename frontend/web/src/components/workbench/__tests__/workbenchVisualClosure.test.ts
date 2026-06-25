@@ -97,6 +97,32 @@ test("post-login shell removes legacy LambChat runtime identifiers", () => {
   assert.doesNotMatch(sources, /lamb/i);
 });
 
+test("post-login workbench defaults to expanded application navigation", () => {
+  const appContent = read("src/components/layout/AppContent/index.tsx");
+  const sessionSidebar = read("src/components/panels/SessionSidebar.tsx");
+
+  assert.match(appContent, /saved !== null \? saved === "true" : false/);
+  assert.doesNotMatch(appContent, /saved !== null \? saved === "true" : true/);
+  assert.doesNotMatch(sessionSidebar, /useState\(true\)/);
+  assert.match(sessionSidebar, /useState\(false\)/);
+});
+
+test("light workbench tokens avoid returning to a white chat canvas", () => {
+  const baseCss = read("src/styles/base.css");
+  const surface = read("src/components/workbench/workbenchSurface.ts");
+  const welcome = read("src/components/chat/WelcomePage.tsx");
+
+  assert.match(baseCss, /--theme-bg:\s*#e9eef5;/);
+  assert.match(baseCss, /--theme-workbench-canvas:\s*#e9eef5;/);
+  assert.match(baseCss, /--theme-workbench-panel:\s*#f6f8fb;/);
+  assert.doesNotMatch(baseCss, /--theme-workbench-canvas:\s*#f(?:3f5f8|fffff);/);
+  assert.doesNotMatch(baseCss, /--theme-workbench-panel:\s*#f(?:8fafc|fffff);/);
+  assert.match(surface, /root:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.match(surface, /thread:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.match(welcome, /data-chat-start-surface/);
+  assert.doesNotMatch(welcome, /max-w-4xl flex-col gap-3 py-4/);
+});
+
 test("workbench right context uses the same canvas as the main workspace", () => {
   const surface = read("src/components/workbench/workbenchSurface.ts");
   const rightPanel = read("src/components/workbench/WorkbenchRightPanel.tsx");

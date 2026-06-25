@@ -291,11 +291,11 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
   );
   assert.match(surface, /secondaryPanel:/);
   assert.match(rightPanel, /workbenchSurface\.secondaryPanel/);
-  assert.match(theme, /--theme-bg:\s*#f3f5f8;/);
-  assert.match(theme, /--theme-bg-sidebar:\s*#f3f5f8;/);
-  assert.match(theme, /--theme-workbench-panel:\s*#f8fafc;/);
+  assert.match(theme, /--theme-bg:\s*#e9eef5;/);
+  assert.match(theme, /--theme-bg-sidebar:\s*#eef2f7;/);
+  assert.match(theme, /--theme-workbench-panel:\s*#f6f8fb;/);
   assert.match(theme, /--theme-bg-card:\s*#ffffff;/);
-  assert.match(theme, /--theme-workbench-canvas:\s*#f3f5f8;/);
+  assert.match(theme, /--theme-workbench-canvas:\s*#e9eef5;/);
   assert.match(surface, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(chatView, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(authTheme, /html,\s*body\s*\{\s*background:\s*var\(--theme-bg\);/);
@@ -363,8 +363,8 @@ test("authenticated workbench adopts one dark-rail enterprise shell", () => {
   assert.match(theme, /--theme-sidebar-rail:\s*#111827;/);
   assert.match(theme, /--theme-sidebar-panel:\s*#111827;/);
   assert.match(theme, /--theme-sidebar-panel-muted:\s*#1f2937;/);
-  assert.match(theme, /--theme-bg:\s*#f3f5f8;/);
-  assert.match(theme, /--theme-workbench-canvas:\s*#f3f5f8;/);
+  assert.match(theme, /--theme-bg:\s*#e9eef5;/);
+  assert.match(theme, /--theme-workbench-canvas:\s*#e9eef5;/);
   assert.match(sidebar, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sidebarList, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sidebarList, /data-workbench-sidebar-panel/);
@@ -1305,7 +1305,10 @@ test("skills hub lets PR177 public catalogs prove permissions before fail-closed
   assert.match(resolver, /const governedUnavailable = Boolean\(catalogPermissionDenied\)/);
   assert.match(resolver, /!hasWorkspace\s*\?\s*"no-workspace"/);
   assert.match(resolver, /governedUnavailable\s*\?\s*"forbidden"/);
+  assert.match(resolver, /catalogReadPending\?: boolean/);
+  assert.match(resolver, /catalogReadPending = false/);
   assert.match(resolver, /const probingPermission =/);
+  assert.match(resolver, /!catalogReadPending/);
   assert.match(resolver, /projectionError \|\| probingPermission\s*\?\s*"degraded"/);
   assert.match(resolver, /requiredPermission: "skill:read" \| "marketplace:read"/);
   assert.match(resolver, /requestedTab === "marketplace"/);
