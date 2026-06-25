@@ -5,6 +5,16 @@ import test from "node:test";
 import { resolveGroupAvailability } from "../../governance/groupAvailability";
 
 const root = process.cwd();
+const shippedLocales = ["en", "zh", "ja", "ko", "ru"] as const;
+
+function locale(localeName: (typeof shippedLocales)[number]) {
+  return JSON.parse(
+    readFileSync(
+      join(root, `src/i18n/locales/${localeName}.json`),
+      "utf8",
+    ),
+  );
+}
 
 test("group availability has explicit governed states", () => {
   assert.equal(resolveGroupAvailability({ enabled: true }).state, "enabled");
@@ -54,6 +64,42 @@ test("mcp panel exposes backed lifecycle governance without raw lifecycle contro
     source,
     /startServer|stopServer|restartServer|rawCredential|allowedTransports|createAsSystem|changeToSystem/,
   );
+});
+
+test("mcp governance copy exists across shipped workbench locales", () => {
+  for (const localeName of shippedLocales) {
+    const mcp = locale(localeName).mcp;
+    assert.equal(
+      typeof mcp.permissionMode,
+      "string",
+      `${localeName} missing mcp.permissionMode`,
+    );
+    assert.equal(
+      typeof mcp.addToComposer,
+      "string",
+      `${localeName} missing mcp.addToComposer`,
+    );
+    assert.equal(
+      typeof mcp.lifecycleGovernance?.title,
+      "string",
+      `${localeName} missing mcp.lifecycleGovernance.title`,
+    );
+    assert.equal(
+      typeof mcp.lifecycleGovernance?.description,
+      "string",
+      `${localeName} missing mcp.lifecycleGovernance.description`,
+    );
+    assert.equal(
+      typeof mcp.credentialsGovernance?.title,
+      "string",
+      `${localeName} missing mcp.credentialsGovernance.title`,
+    );
+    assert.equal(
+      typeof mcp.credentialsGovernance?.description,
+      "string",
+      `${localeName} missing mcp.credentialsGovernance.description`,
+    );
+  }
 });
 
 test("share dialog fails closed until ai-platform share ACL projection exists", () => {

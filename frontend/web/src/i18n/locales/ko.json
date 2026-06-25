@@ -1297,7 +1297,19 @@
     "title": "MCP 서버",
     "updateFailed": "MCP 서버 업데이트에 실패했습니다",
     "updateSuccess": "MCP 서버가 성공적으로 업데이트되었습니다",
-    "userServerVisible": "사용자 서버 (나에게만 표시)"
+    "userServerVisible": "사용자 서버 (나에게만 표시)",
+    "permissionMode": "권한 모드",
+    "addToComposer": "채팅 입력창에서 /mcp를 사용해 거버넌스 대상 도구를 검색하고 활성화된 도구를 composer에 추가하세요.",
+    "lifecycleGovernance": {
+      "description": "MCP 서버 생성, 구성, 활성화, 비활성화, 삭제 흐름은 백엔드 수명 주기 레지스트리에 연결되었습니다. 일반 사용자는 읽기 전용 디렉터리를 유지하고 관리자 작업은 계속 권한과 감사로 관리됩니다.",
+      "title": "서비스 수명 주기 거버넌스"
+    },
+    "credentialsGovernance": {
+      "description": "자격 증명은 상태, 지문, 필드 이름 메타데이터로만 표시됩니다. 원본 시크릿은 프런트엔드로 반환되지 않으며 순환은 관리자 권한으로 제어됩니다.",
+      "title": "자격 증명 및 시크릿 거버넌스"
+    },
+    "noMatchingTools": "일치하는 도구가 없습니다",
+    "toolsSearchPlaceholder": "도구 검색"
   },
   "memory": {
     "accesses": "회 접근",

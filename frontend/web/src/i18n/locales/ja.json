@@ -1297,7 +1297,19 @@
     "title": "MCPサーバー",
     "updateFailed": "MCPサーバーの更新に失敗しました",
     "updateSuccess": "MCPサーバーが正常に更新されました",
-    "userServerVisible": "ユーザーサーバー（自分のみに表示）"
+    "userServerVisible": "ユーザーサーバー（自分のみに表示）",
+    "permissionMode": "権限モード",
+    "addToComposer": "チャット入力で /mcp を使用してガバナンス対象ツールを検索し、有効なツールを composer に追加します。",
+    "lifecycleGovernance": {
+      "description": "MCP サーバーの作成、設定、有効化、無効化、削除はバックエンドのライフサイクルレジストリに接続済みです。通常ユーザーは読み取り専用ディレクトリを利用し、管理者操作は引き続き権限と監査で管理されます。",
+      "title": "サービスライフサイクルガバナンス"
+    },
+    "credentialsGovernance": {
+      "description": "認証情報は状態、フィンガープリント、フィールド名メタデータとしてのみ表示されます。生のシークレットはフロントエンドに返されず、ローテーションは管理者権限で制御されます。",
+      "title": "認証情報とシークレットガバナンス"
+    },
+    "noMatchingTools": "一致するツールがありません",
+    "toolsSearchPlaceholder": "ツールを検索"
   },
   "memory": {
     "accesses": "回アクセス",
