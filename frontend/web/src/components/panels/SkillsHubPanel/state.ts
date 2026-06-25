@@ -116,6 +116,8 @@ export function resolveSkillsHubGovernance({
         ? "no-workspace"
         : governedUnavailable
           ? "forbidden"
+          : catalogReadPending
+            ? "loading"
         : projectionError || probingPermission
           ? "degraded"
           : "ready";

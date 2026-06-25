@@ -43,11 +43,17 @@ test("authenticated workbench source avoids marketing and nested-card patterns",
 test("post-login routes do not fall back to public landing or split backgrounds", () => {
   const tabContent = read("src/components/layout/AppContent/TabContent.tsx");
   const header = read("src/components/layout/AppContent/Header.tsx");
+  const appShell = read("src/components/layout/AppContent/AppShell.tsx");
   const launchpad = read("src/components/launchpad/LaunchpadPanel.tsx");
   const sidebar = read(
     "src/components/panels/SidebarParts/SessionListContent.tsx",
   );
 
+  assert.match(
+    appShell,
+    /backgroundColor: "var\(--theme-workbench-canvas\)"/,
+  );
+  assert.doesNotMatch(appShell, /backgroundColor: "var\(--theme-bg\)"/);
   assert.match(
     tabContent,
     /className="flex-1 overflow-hidden bg-\[var\(--theme-workbench-canvas\)\]"/,
@@ -126,10 +132,13 @@ test("light workbench tokens avoid returning to a white chat canvas", () => {
 test("workbench right context uses the same canvas as the main workspace", () => {
   const surface = read("src/components/workbench/workbenchSurface.ts");
   const rightPanel = read("src/components/workbench/WorkbenchRightPanel.tsx");
+  const chatInput = read("src/components/chat/ChatInput.tsx");
 
   assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(rightPanel, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(rightPanel, /workbenchSurface\.secondaryPanel/);
+  assert.match(chatInput, /backgroundColor: "var\(--theme-workbench-canvas\)"/);
+  assert.doesNotMatch(chatInput, /backgroundColor: "var\(--theme-bg\)"/);
 });
 
 test("post-login projection panels share workbench surface tokens", () => {
@@ -345,6 +354,7 @@ test("skills hub routes use the public contract resolver", () => {
   assert.match(hub, /statusCopyNamespace/);
   assert.match(hub, /"skillsHub\.skills"/);
   assert.match(hub, /"skillsHub\.marketplace"/);
+  assert.match(hub, /governanceState === "loading"\s*\?\s*"loading"/);
   assert.match(hub, /\$\{statusCopyNamespace\}\.\$\{statusCopyKey\}\.title/);
   assert.match(hub, /\$\{statusCopyNamespace\}\.\$\{statusCopyKey\}\.description/);
   assert.match(hub, /data-skills-catalog-status-strip/);
@@ -359,13 +369,17 @@ test("skills hub routes use the public contract resolver", () => {
   assert.match(hub, /data-skills-catalog-status/);
   assert.doesNotMatch(hub, /data-skills-catalog-nav/);
   assert.equal(zh.skillsHub.skills.ready.title, "Skills 目录可用");
+  assert.equal(zh.skillsHub.skills.loading.title, "正在检查 Skills 目录");
   assert.equal(zh.skillsHub.marketplace.ready.title, "技能商店可用");
+  assert.equal(zh.skillsHub.marketplace.loading.title, "正在检查技能商店");
   assert.notEqual(
     zh.skillsHub.skills.ready.description,
     zh.skillsHub.marketplace.ready.description,
   );
   assert.equal(en.skillsHub.skills.ready.title, "Skills catalog is available");
+  assert.equal(en.skillsHub.skills.loading.title, "Checking Skills catalog");
   assert.equal(en.skillsHub.marketplace.ready.title, "Marketplace is available");
+  assert.equal(en.skillsHub.marketplace.loading.title, "Checking marketplace");
   assert.notEqual(
     en.skillsHub.skills.ready.description,
     en.skillsHub.marketplace.ready.description,
@@ -579,10 +593,10 @@ test("empty chat keeps the command dock compact and composer-first", () => {
   assert.match(welcome, /data-chat-start-surface/);
   assert.match(welcome, /data-chat-start-header/);
   assert.match(welcome, /data-chat-quick-actions/);
-  assert.match(welcome, /data-composer-command-dock/);
-  assert.match(welcome, /data-composer-selection-summary/);
-  assert.match(welcome, /workbench\.commandDock/);
-  assert.match(welcome, /workbench\.commandDockHint/);
+  assert.doesNotMatch(welcome, /data-composer-command-dock/);
+  assert.doesNotMatch(welcome, /data-composer-selection-summary/);
+  assert.doesNotMatch(welcome, /workbench\.commandDock/);
+  assert.doesNotMatch(welcome, /workbench\.commandDockHint/);
   assert.doesNotMatch(welcome, /welcome-workbench-cockpit/);
   assert.doesNotMatch(welcome, /WorkbenchQueueList/);
   assert.doesNotMatch(welcome, /workbenchSurface\.cockpit/);
@@ -595,4 +609,21 @@ test("empty chat keeps the command dock compact and composer-first", () => {
   assert.doesNotMatch(welcome, /rounded-2xl/);
   assert.doesNotMatch(welcomeLayout, /rounded-2xl/);
   assert.match(welcomeLayout, /rounded-lg/);
+});
+
+test("expanded app sidebar keeps governed catalogs as first-level smoke targets", () => {
+  const sidebar = read(
+    "src/components/panels/SidebarParts/SessionListContent.tsx",
+  );
+  const rail = read("src/components/panels/SidebarParts/SidebarRail.tsx");
+
+  assert.match(sidebar, /data-workbench-nav-item=\{key\}/);
+  assert.match(sidebar, /key: "skills"[\s\S]*navigate\("\/skills"\)/);
+  assert.match(sidebar, /key: "marketplace"[\s\S]*navigate\("\/marketplace"\)/);
+  assert.match(sidebar, /key: "roles"[\s\S]*navigate\("\/roles"\)/);
+  assert.doesNotMatch(sidebar, /data-workbench-nav-item="admin-skills"/);
+  assert.doesNotMatch(sidebar, /data-workbench-nav-item="admin-roles"/);
+  assert.match(rail, /data-workbench-rail-item="skills"/);
+  assert.match(rail, /data-workbench-rail-item="marketplace"/);
+  assert.match(rail, /data-workbench-rail-item="roles"/);
 });

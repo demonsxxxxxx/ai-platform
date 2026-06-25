@@ -107,9 +107,11 @@ export function SkillsHubPanel() {
   const statusCopyKey =
     governanceState === "ready"
       ? "ready"
+      : governanceState === "loading"
+        ? "loading"
       : governanceState === "degraded"
-      ? "degraded"
-      : "permissionLimited";
+        ? "degraded"
+        : "permissionLimited";
   const statusCopyNamespace = isMarketplaceView
     ? "skillsHub.marketplace"
     : "skillsHub.skills";

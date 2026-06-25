@@ -2575,6 +2575,10 @@
         "description": "The Skills catalog remains readable; create, import, edit, and batch actions stay permission-gated.",
         "title": "Skills are readable with degraded controls"
       },
+      "loading": {
+        "description": "Reading this account's Skills catalog permissions before showing an available or limited state.",
+        "title": "Checking Skills catalog"
+      },
       "permissionLimited": {
         "description": "The Skills entry stays visible. Additional actions open after an administrator enables access for your department.",
         "title": "Skills access is governed"
@@ -2588,6 +2592,10 @@
       "degraded": {
         "description": "The Marketplace remains readable; install, publish, and update actions stay permission-gated.",
         "title": "Marketplace is readable with degraded controls"
+      },
+      "loading": {
+        "description": "Reading this account's Marketplace permissions before showing an available or limited state.",
+        "title": "Checking marketplace"
       },
       "permissionLimited": {
         "description": "The Marketplace entry stays visible. It shows discoverable catalog items until an administrator grants access.",

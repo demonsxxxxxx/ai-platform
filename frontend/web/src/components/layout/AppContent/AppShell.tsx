@@ -289,7 +289,7 @@ export function AppShell({
       <div
         className="flex w-full overflow-hidden"
         style={{
-          backgroundColor: "var(--theme-bg)",
+          backgroundColor: "var(--theme-workbench-canvas)",
           height: "var(--app-viewport-height, 100dvh)",
           transform: "translate3d(0, var(--app-viewport-offset-top, 0px), 0)",
         }}

@@ -114,6 +114,20 @@ test("ordinary request-capable users see the backed directory as ready instead o
   assert.equal(state.capabilities.auditTrail.state, "enabled");
 });
 
+test("ordinary PR177 role projections are ready without role management permission", () => {
+  const state = resolveRoleGovernanceState({
+    isAuthenticated: true,
+    canManageRoles: false,
+    canRequestRoles: true,
+    overview,
+  });
+
+  assert.equal(state.pageState, "ready");
+  assert.equal(state.adminAvailability.state, "admin-only");
+  assert.equal(state.roleDirectoryAvailability.state, "enabled");
+  assert.equal(state.capabilities.requestFlow.state, "enabled");
+});
+
 test("role managers see backed role directory and admin controls as enabled", () => {
   const state = resolveRoleGovernanceState({
     isAuthenticated: true,

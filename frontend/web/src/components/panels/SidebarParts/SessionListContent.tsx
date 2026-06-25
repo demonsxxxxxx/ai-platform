@@ -219,6 +219,7 @@ export function SessionListContent({
             <button
               key={key}
               onClick={onClick}
+              data-workbench-nav-item={key}
               className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
             >
               <Icon size={20} />
@@ -235,6 +236,7 @@ export function SessionListContent({
             <button
               key={key}
               onClick={onClick}
+              data-workbench-nav-item={key}
               className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
             >
               <Icon size={20} />

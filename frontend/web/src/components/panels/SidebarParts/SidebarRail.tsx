@@ -121,6 +121,7 @@ export function SidebarRail({
           type="button"
           onClick={onOpenLaunchpad}
           className={railBtn}
+          data-workbench-rail-item="apps"
           title={t("nav.apps")}
           aria-label={t("nav.apps")}
         >
@@ -130,6 +131,7 @@ export function SidebarRail({
           type="button"
           onClick={onOpenSkills}
           className={railBtn}
+          data-workbench-rail-item="skills"
           title={t("nav.skills")}
           aria-label={t("nav.skills")}
         >
@@ -139,6 +141,7 @@ export function SidebarRail({
           type="button"
           onClick={onOpenMarketplace}
           className={railBtn}
+          data-workbench-rail-item="marketplace"
           title={t("nav.marketplace")}
           aria-label={t("nav.marketplace")}
         >
@@ -148,6 +151,7 @@ export function SidebarRail({
           type="button"
           onClick={onOpenMcp}
           className={railBtn}
+          data-workbench-rail-item="mcp"
           title={t("featureMenu.mcpTools")}
           aria-label={t("featureMenu.mcpTools")}
         >
@@ -157,6 +161,7 @@ export function SidebarRail({
           type="button"
           onClick={onOpenChannels}
           className={railBtn}
+          data-workbench-rail-item="channels"
           title={t("nav.channels")}
           aria-label={t("nav.channels")}
         >
@@ -166,6 +171,7 @@ export function SidebarRail({
           type="button"
           onClick={onOpenAgents}
           className={railBtn}
+          data-workbench-rail-item="agents"
           title={t("nav.agents")}
           aria-label={t("nav.agents")}
         >
@@ -175,6 +181,7 @@ export function SidebarRail({
           type="button"
           onClick={onOpenModels}
           className={railBtn}
+          data-workbench-rail-item="models"
           title={t("nav.models")}
           aria-label={t("nav.models")}
         >
@@ -184,6 +191,7 @@ export function SidebarRail({
           type="button"
           onClick={onOpenPersona}
           className={railBtn}
+          data-workbench-rail-item="persona"
           title={t("nav.persona")}
           aria-label={t("nav.persona")}
         >
@@ -193,6 +201,7 @@ export function SidebarRail({
           type="button"
           onClick={onOpenFiles}
           className={railBtn}
+          data-workbench-rail-item="files"
           title={t("nav.files")}
           aria-label={t("nav.files")}
         >
@@ -202,6 +211,7 @@ export function SidebarRail({
           type="button"
           onClick={onOpenRoles}
           className={railBtn}
+          data-workbench-rail-item="roles"
           title={t("nav.roles")}
           aria-label={t("nav.roles")}
         >
