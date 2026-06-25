@@ -90,6 +90,8 @@ export function resolveSkillsHubGovernance({
       ? "auth"
       : "probe";
   const governedUnavailable = Boolean(catalogPermissionDenied);
+  const probingPermission =
+    effectivePermissionsSource === "probe" && !governedUnavailable;
   const pageState: FrontendGovernanceState = isLoading
     ? "loading"
     : !isAuthenticated
@@ -98,7 +100,7 @@ export function resolveSkillsHubGovernance({
         ? "no-workspace"
         : governedUnavailable
           ? "forbidden"
-          : projectionError
+          : projectionError || probingPermission
             ? "degraded"
             : "ready";
 
@@ -111,7 +113,7 @@ export function resolveSkillsHubGovernance({
       effectivePermissionsSource,
       governedUnavailable,
       requiredPermission,
-      degraded: Boolean(projectionError),
+      degraded: Boolean(projectionError || probingPermission),
     };
   }
 
@@ -123,6 +125,6 @@ export function resolveSkillsHubGovernance({
     effectivePermissionsSource,
     governedUnavailable,
     requiredPermission,
-    degraded: Boolean(projectionError),
+    degraded: Boolean(projectionError || probingPermission),
   };
 }

@@ -1258,7 +1258,8 @@ test("skills hub lets PR177 public catalogs prove permissions before fail-closed
   assert.match(resolver, /const governedUnavailable = Boolean\(catalogPermissionDenied\)/);
   assert.match(resolver, /!hasWorkspace\s*\?\s*"no-workspace"/);
   assert.match(resolver, /governedUnavailable\s*\?\s*"forbidden"/);
-  assert.match(resolver, /projectionError\s*\?\s*"degraded"/);
+  assert.match(resolver, /const probingPermission =/);
+  assert.match(resolver, /projectionError \|\| probingPermission\s*\?\s*"degraded"/);
   assert.match(resolver, /requiredPermission: "skill:read" \| "marketplace:read"/);
   assert.match(resolver, /requestedTab === "marketplace"/);
   assert.match(resolver, /requestedTab === "marketplace" \? canReadMarketplace : canReadSkills/);

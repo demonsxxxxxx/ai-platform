@@ -73,7 +73,7 @@ test("maps the marketplace route to the public marketplace read contract", () =>
   assert.equal(state.degraded, true);
 });
 
-test("does not block the catalog probe when auth permissions omit the public read grant", () => {
+test("marks the catalog as probing when auth permissions omit the public read grant", () => {
   const state = resolveSkillsHubGovernance({
     requestedTab: "skills",
     isAuthenticated: true,
@@ -83,7 +83,10 @@ test("does not block the catalog probe when auth permissions omit the public rea
 
   assert.equal(state.hasPermission, true);
   assert.equal(state.authProjectionHasPermission, false);
+  assert.equal(state.effectiveProjectionHasPermission, false);
   assert.equal(state.governedUnavailable, false);
+  assert.equal(state.pageState, "degraded");
+  assert.equal(state.effectivePermissionsSource, "probe");
 });
 
 test("uses backend effective permissions to mark skills ready after catalog load", () => {

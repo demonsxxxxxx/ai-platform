@@ -149,7 +149,7 @@ test("keeps composer Skills reachable when legacy ENABLE_SKILLS is explicitly di
   );
 });
 
-test("probes public Skills after login when auth projection is stale", () => {
+test("keeps composer Skills available while probing public catalog after login", () => {
   assert.deepEqual(
     resolveComposerSkillsAvailability({
       isAuthenticated: true,
@@ -161,7 +161,7 @@ test("probes public Skills after login when auth projection is stale", () => {
     }),
     {
       shouldFetchSkills: true,
-      enableComposerSkills: false,
+      enableComposerSkills: true,
     },
   );
 });
