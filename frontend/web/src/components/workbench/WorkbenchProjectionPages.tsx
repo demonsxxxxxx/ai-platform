@@ -773,9 +773,69 @@ export function WorkbenchNotificationsProjectionPanel() {
 }
 
 function EmptyProjection({ message }: { message: string }) {
+  const { t } = useTranslation();
+  const items = [
+    {
+      title: t("workbench.projections.empty.safeReadTitle", "Safe projection"),
+      description: t(
+        "workbench.projections.empty.safeReadDescription",
+        "The page is connected and only reads governed frontend data.",
+      ),
+    },
+    {
+      title: t("workbench.projections.empty.noRowsTitle", "No rows returned"),
+      description: message,
+    },
+    {
+      title: t("workbench.projections.empty.nextActionTitle", "Next action"),
+      description: t(
+        "workbench.projections.empty.nextActionDescription",
+        "Use admin-governed flows when records need to be created or changed.",
+      ),
+    },
+  ];
+
   return (
-    <div className="flex min-h-44 items-center justify-center p-6 text-center text-sm text-[var(--theme-text-secondary)]">
-      {message}
+    <div
+      data-projection-empty-state
+      className={`${workbenchSurface.emptyState} min-h-44`}
+    >
+      <div className="flex flex-col gap-3 sm:flex-row">
+        {items.map((item, index) => (
+          <ProjectionEmptyItem
+            key={item.title}
+            index={index + 1}
+            title={item.title}
+            description={item.description}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProjectionEmptyItem({
+  index,
+  title,
+  description,
+}: {
+  index: number;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="min-w-0 flex-1 rounded-md bg-[var(--theme-bg-sidebar)] p-3 ring-1 ring-[var(--theme-border)]">
+      <div className="flex items-center gap-2">
+        <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-[var(--theme-bg-card)] text-[11px] font-semibold text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
+          {index}
+        </span>
+        <h3 className="truncate text-sm font-semibold text-[var(--theme-text)]">
+          {title}
+        </h3>
+      </div>
+      <p className="mt-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
+        {description}
+      </p>
     </div>
   );
 }
