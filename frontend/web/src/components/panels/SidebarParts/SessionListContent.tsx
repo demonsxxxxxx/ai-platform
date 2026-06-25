@@ -90,6 +90,70 @@ export function SessionListContent({
     unreadBySession,
   });
   const groupedUncategorized = groupSessionsByTime(uncategorizedSessions, t);
+  const taskNavItems = [
+    {
+      key: "apps",
+      icon: LayoutGrid,
+      label: t("nav.apps"),
+      onClick: () => navigate("/apps"),
+    },
+    {
+      key: "skills",
+      icon: Package,
+      label: t("nav.skills"),
+      onClick: () => navigate("/skills"),
+    },
+    {
+      key: "marketplace",
+      icon: ShoppingBag,
+      label: t("nav.marketplace"),
+      onClick: () => navigate("/marketplace"),
+    },
+    {
+      key: "persona",
+      icon: UserRound,
+      label: t("nav.persona"),
+      onClick: () => navigate("/persona"),
+    },
+    {
+      key: "files",
+      icon: FileStack,
+      label: t("nav.files"),
+      onClick: () => navigate("/files"),
+    },
+  ];
+  const governanceNavItems = [
+    {
+      key: "mcp",
+      icon: Server,
+      label: t("featureMenu.mcpTools"),
+      onClick: () => navigate("/mcp"),
+    },
+    {
+      key: "channels",
+      icon: MessageCircle,
+      label: t("nav.channels"),
+      onClick: () => navigate("/channels"),
+    },
+    {
+      key: "agents",
+      icon: Bot,
+      label: t("nav.agents"),
+      onClick: () => navigate("/agents"),
+    },
+    {
+      key: "models",
+      icon: Cpu,
+      label: t("nav.models"),
+      onClick: () => navigate("/models"),
+    },
+    {
+      key: "roles",
+      icon: ShieldCheck,
+      label: t("nav.roles"),
+      onClick: () => navigate("/roles"),
+    },
+  ];
 
   return (
     <div
@@ -131,11 +195,14 @@ export function SessionListContent({
         </button>
       </div>
 
-      {/* Action buttons */}
-      <div className="flex flex-col gap-px px-2 py-2 space-y-1">
+      {/* Primary navigation */}
+      <div
+        data-workbench-primary-nav
+        className="flex flex-col gap-3 px-2 py-2"
+      >
         <button
           onClick={onNewSession}
-            className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm font-medium focus:outline-none transition-colors group"
+          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm font-medium focus:outline-none transition-colors group"
         >
           <MessageSquarePlus size={20} />
           <span className="flex-1 text-left">{t("sidebar.newChat")}</span>
@@ -144,85 +211,37 @@ export function SessionListContent({
           </kbd>
         </button>
 
-        <button
-          onClick={() => navigate("/apps")}
-          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
-        >
-          <LayoutGrid size={20} />
-          <span>{t("nav.apps")}</span>
-        </button>
+        <div data-workbench-nav-group="tasks" className="space-y-1">
+          <p className="px-[9px] pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            {t("sidebar.tasks")}
+          </p>
+          {taskNavItems.map(({ key, icon: Icon, label, onClick }) => (
+            <button
+              key={key}
+              onClick={onClick}
+              className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+            >
+              <Icon size={20} />
+              <span>{label}</span>
+            </button>
+          ))}
+        </div>
 
-        <button
-          onClick={() => navigate("/skills")}
-          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
-        >
-          <Package size={20} />
-          <span>{t("nav.skills")}</span>
-        </button>
-
-        <button
-          onClick={() => navigate("/marketplace")}
-          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
-        >
-          <ShoppingBag size={20} />
-          <span>{t("nav.marketplace")}</span>
-        </button>
-
-        <button
-          onClick={() => navigate("/mcp")}
-          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
-        >
-          <Server size={20} />
-          <span>{t("featureMenu.mcpTools")}</span>
-        </button>
-
-        <button
-          onClick={() => navigate("/channels")}
-          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
-        >
-          <MessageCircle size={20} />
-          <span>{t("nav.channels")}</span>
-        </button>
-
-        <button
-          onClick={() => navigate("/agents")}
-          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
-        >
-          <Bot size={20} />
-          <span>{t("nav.agents")}</span>
-        </button>
-
-        <button
-          onClick={() => navigate("/models")}
-          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
-        >
-          <Cpu size={20} />
-          <span>{t("nav.models")}</span>
-        </button>
-
-        <button
-          onClick={() => navigate("/persona")}
-          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
-        >
-          <UserRound size={20} />
-          <span>{t("nav.persona")}</span>
-        </button>
-
-        <button
-          onClick={() => navigate("/files")}
-          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
-        >
-          <FileStack size={20} />
-          <span>{t("nav.files")}</span>
-        </button>
-
-        <button
-          onClick={() => navigate("/roles")}
-          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
-        >
-          <ShieldCheck size={20} />
-          <span>{t("nav.roles")}</span>
-        </button>
+        <div data-workbench-nav-group="governance" className="space-y-1">
+          <p className="px-[9px] pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            {t("sidebar.governance")}
+          </p>
+          {governanceNavItems.map(({ key, icon: Icon, label, onClick }) => (
+            <button
+              key={key}
+              onClick={onClick}
+              className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+            >
+              <Icon size={20} />
+              <span>{label}</span>
+            </button>
+          ))}
+        </div>
 
         <button
           onClick={onOpenSearch}
@@ -244,6 +263,7 @@ export function SessionListContent({
       {/* Session list */}
       <div
         ref={onSetScrollEl}
+        data-workbench-session-region
         data-sidebar-scroll
         className="flex-1 overflow-y-auto px-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >

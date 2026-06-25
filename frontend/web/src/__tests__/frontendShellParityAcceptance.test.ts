@@ -398,9 +398,12 @@ test("skills and marketplace use a catalog-first workbench layout", () => {
   );
 
   assert.match(skillsHub, /data-skills-catalog-workbench/);
-  assert.match(skillsHub, /data-skills-catalog-sidebar/);
+  assert.match(skillsHub, /data-skills-catalog-status/);
+  assert.match(skillsHub, /data-skills-catalog-nav/);
   assert.match(skillsHub, /data-skills-catalog-main/);
   assert.match(skillsHub, /className=\{workbenchSurface\.page\}/);
+  assert.doesNotMatch(skillsHub, /data-skills-catalog-sidebar/);
+  assert.doesNotMatch(skillsHub, /<aside/);
   assert.doesNotMatch(skillsHub, /className="[^"]*bg-\[var\(--theme-workbench-canvas\)\][^"]*"/);
   assert.doesNotMatch(skillsHub, /composerEntry/);
   assert.match(skillsList, /data-skills-catalog-toolbar/);
@@ -449,7 +452,8 @@ test("authenticated shell chrome avoids legacy playful branding accents", () => 
   assert.doesNotMatch(chrome, /rounded-xl|rounded-2xl|rounded-3xl/);
   assert.doesNotMatch(chrome, /bg-black\/30/);
   assert.match(chrome, /data-workbench-header/);
-  assert.match(chrome, /bg-\[var\(--theme-bg\)\]/);
+  assert.match(chrome, /bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.doesNotMatch(chrome, /bg-\[var\(--theme-bg\)\]/);
   assert.match(chrome, /bg-teal-700/);
 });
 

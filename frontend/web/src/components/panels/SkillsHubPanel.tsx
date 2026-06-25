@@ -179,29 +179,30 @@ export function SkillsHubPanel() {
         }
       />
 
-      <div className="flex min-h-0 flex-1 gap-3 px-4 pb-4">
-        <aside
-          data-skills-catalog-sidebar
-          className={`${workbenchSurface.panel} hidden w-64 shrink-0 flex-col gap-4 p-3 lg:flex`}
-        >
-          <div>
-            <p className={workbenchSurface.label}>
-              {t("skillsHub.title")}
-            </p>
-            <h2 className="mt-1 text-sm font-semibold text-slate-900 dark:text-stone-100">
-              {t(`skillsHub.${statusCopyKey}.title`)}
-            </h2>
-            <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-stone-400">
-              {t(`skillsHub.${statusCopyKey}.description`)}
-            </p>
+      <div
+        data-skills-catalog-status
+        className="grid gap-3 px-4 pt-3 lg:grid-cols-[minmax(0,1fr)_auto]"
+      >
+        <section className={`${workbenchSurface.compactPanel} p-3`}>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <p className={workbenchSurface.label}>
+                {t("skillsHub.title")}
+              </p>
+              <h2 className="mt-1 text-sm font-semibold text-[var(--theme-text)]">
+                {t(`skillsHub.${statusCopyKey}.title`)}
+              </h2>
+              <p className="mt-1 line-clamp-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
+                {t(`skillsHub.${statusCopyKey}.description`)}
+              </p>
+            </div>
+            <GovernanceAvailabilityBadge
+              state={permissionAvailability.state}
+              labelKey={permissionAvailability.labelKey}
+            />
           </div>
 
-          <GovernanceAvailabilityBadge
-            state={permissionAvailability.state}
-            labelKey={permissionAvailability.labelKey}
-          />
-
-          <div className="grid gap-2">
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
             {[
               {
                 label: t("skillsHub.stateDetails.required"),
@@ -219,52 +220,57 @@ export function SkillsHubPanel() {
                 data-skills-hub-state-detail
                 className="rounded-md bg-[var(--theme-bg-sidebar)] px-3 py-2 text-xs ring-1 ring-[var(--theme-border)]"
               >
-                <p className="font-medium text-slate-500 dark:text-stone-400">
+                <p className="font-medium text-[var(--theme-text-secondary)]">
                   {item.label}
                 </p>
-                <p className="mt-1 truncate font-semibold text-slate-800 dark:text-stone-100">
+                <p className="mt-1 truncate font-semibold text-[var(--theme-text)]">
                   {item.value}
                 </p>
               </div>
             ))}
           </div>
+        </section>
 
-          <nav className="grid gap-1.5">
-            {[
-              {
-                key: "skills" as const,
-                label: t("nav.skills"),
-                icon: Package,
-                path: TAB_PATHS.skills,
-              },
-              {
-                key: "marketplace" as const,
-                label: t("nav.marketplace"),
-                icon: ShoppingBag,
-                path: TAB_PATHS.marketplace,
-              },
-            ].map(({ key, label, icon: Icon, path }) => {
-              const isActive = visibleTab === key;
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => navigate(path)}
-                  className={`flex min-h-10 items-center gap-2 rounded-md px-3 text-left text-sm font-medium transition-colors ${
-                    isActive
-                      ? "bg-[var(--theme-primary-light)] text-[var(--theme-text)]"
-                      : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
-                  }`}
-                  aria-current={isActive ? "page" : undefined}
-                >
-                  <Icon size={16} />
-                  <span>{label}</span>
-                </button>
-              );
-            })}
-          </nav>
-        </aside>
+        <nav
+          data-skills-catalog-nav
+          className={`${workbenchSurface.compactPanel} flex items-center gap-1 p-1 lg:self-start`}
+        >
+          {[
+            {
+              key: "skills" as const,
+              label: t("nav.skills"),
+              icon: Package,
+              path: TAB_PATHS.skills,
+            },
+            {
+              key: "marketplace" as const,
+              label: t("nav.marketplace"),
+              icon: ShoppingBag,
+              path: TAB_PATHS.marketplace,
+            },
+          ].map(({ key, label, icon: Icon, path }) => {
+            const isActive = visibleTab === key;
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => navigate(path)}
+                className={`flex min-h-10 items-center gap-2 rounded-md px-3 text-left text-sm font-medium transition-colors ${
+                  isActive
+                    ? "bg-[var(--theme-primary-light)] text-[var(--theme-text)]"
+                    : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
+                }`}
+                aria-current={isActive ? "page" : undefined}
+              >
+                <Icon size={16} />
+                <span>{label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      </div>
 
+      <div className="flex min-h-0 flex-1 px-4 pb-4 pt-3">
         <section
           data-skills-catalog-main
           className="min-h-0 min-w-0 flex-1 overflow-hidden"
