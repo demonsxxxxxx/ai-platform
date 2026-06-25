@@ -94,6 +94,14 @@ export function SkillsHubPanel() {
   const statusCopyNamespace = isMarketplaceView
     ? "skillsHub.marketplace"
     : "skillsHub.skills";
+  const statusIndicatorClass =
+    governanceState === "ready"
+      ? "bg-emerald-500"
+      : governanceState === "degraded"
+        ? "bg-amber-500"
+        : governanceState === "forbidden"
+          ? "bg-rose-500"
+          : "bg-slate-400";
   const permissionAvailability = resolveGroupAvailability({
     backed: governanceState !== "degraded",
     enabled: governanceState === "ready",
@@ -148,7 +156,9 @@ export function SkillsHubPanel() {
           className="flex flex-col gap-2 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-3 py-2 shadow-[0_1px_2px_rgba(18,38,63,0.03)] sm:flex-row sm:items-center sm:justify-between"
         >
           <div className="flex min-w-0 flex-1 items-start gap-2">
-            <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
+            <span
+              className={`mt-1 h-2 w-2 shrink-0 rounded-full ${statusIndicatorClass}`}
+            />
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <h2 className="text-sm font-semibold leading-5 text-[var(--theme-text)]">

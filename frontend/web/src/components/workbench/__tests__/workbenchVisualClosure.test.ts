@@ -254,6 +254,10 @@ test("skills hub routes use the public contract resolver", () => {
   assert.match(hub, /\$\{statusCopyNamespace\}\.\$\{statusCopyKey\}\.title/);
   assert.match(hub, /\$\{statusCopyNamespace\}\.\$\{statusCopyKey\}\.description/);
   assert.match(hub, /data-skills-catalog-status-strip/);
+  assert.match(hub, /statusIndicatorClass/);
+  assert.match(hub, /bg-amber-500/);
+  assert.match(hub, /bg-rose-500/);
+  assert.doesNotMatch(hub, /rounded-full bg-emerald-500/);
   assert.doesNotMatch(hub, /<section className=\{`\$\{workbenchSurface\.compactPanel\} p-3`\}>/);
   assert.doesNotMatch(hub, /PanelHeader/);
   assert.match(hub, /data-skills-catalog-status/);
@@ -304,6 +308,14 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
 
   assert.match(skillsList, /data-skills-catalog-toolbar/);
   assert.match(marketplace, /data-marketplace-catalog-toolbar/);
+  assert.match(skillsList, /skill-catalog-toolbar/);
+  assert.match(marketplace, /skill-catalog-toolbar/);
+  assert.match(skillsList, /skill-catalog-toolbar__row/);
+  assert.match(marketplace, /skill-catalog-toolbar__row/);
+  assert.match(skillsList, /skill-catalog-toolbar__search/);
+  assert.match(marketplace, /skill-catalog-toolbar__search/);
+  assert.match(skillsList, /skill-catalog-toolbar__actions/);
+  assert.match(marketplace, /skill-catalog-toolbar__actions/);
   assert.doesNotMatch(hub, /data-skills-catalog-sidebar/);
   assert.doesNotMatch(hub, /<aside/);
   assert.doesNotMatch(hub, /showTabSwitcher/);
@@ -319,6 +331,9 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
     skillCss,
     /\.skill-panel-header\s*{[\s\S]*background:\s*var\(--theme-workbench-canvas\);/,
   );
+  assert.match(skillCss, /\.skill-catalog-toolbar__row/);
+  assert.match(skillCss, /\.skill-catalog-toolbar__search/);
+  assert.match(skillCss, /\.skill-catalog-toolbar__actions/);
   assert.doesNotMatch(
     skillCss,
     /\.skill-content-area\s*{\s*background:\s*var\(--theme-bg\);/,

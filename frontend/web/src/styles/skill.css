@@ -52,6 +52,40 @@
   box-shadow: var(--skill-glow);
 }
 
+.skill-catalog-toolbar__row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.skill-catalog-toolbar__search {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.skill-catalog-toolbar__actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+@media (min-width: 640px) {
+  .skill-catalog-toolbar__row {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .skill-catalog-toolbar__actions {
+    justify-content: flex-end;
+  }
+}
+
 .skill-filter-wrap {
   background: var(--theme-bg-card);
 }

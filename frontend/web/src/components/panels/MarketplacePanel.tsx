@@ -428,9 +428,12 @@ export function MarketplacePanel({
       className={workbenchSurface.page}
     >
       {embedded && (
-        <div data-marketplace-catalog-toolbar className="skill-panel-header">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex min-w-0 flex-1 items-center gap-2">
+        <div
+          data-marketplace-catalog-toolbar
+          className="skill-panel-header skill-catalog-toolbar"
+        >
+          <div className="skill-catalog-toolbar__row">
+            <div className="skill-catalog-toolbar__search">
               <div className="relative min-w-0 flex-1">
                 <Search
                   size={18}
@@ -446,7 +449,7 @@ export function MarketplacePanel({
               </div>
               {filterMenu}
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="skill-catalog-toolbar__actions">
               {headerActions}
             </div>
           </div>

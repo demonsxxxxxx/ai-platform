@@ -230,9 +230,12 @@ export function SkillsList({
   return (
     <>
       {embedded && (
-        <div data-skills-catalog-toolbar className="skill-panel-header">
-          <div className="mt-2 flex flex-col gap-2 sm:mt-3 sm:flex-row sm:items-center">
-            <div className="flex items-center gap-2">
+        <div
+          data-skills-catalog-toolbar
+          className="skill-panel-header skill-catalog-toolbar"
+        >
+          <div className="skill-catalog-toolbar__row">
+            <div className="skill-catalog-toolbar__search">
               <div className="relative min-w-0 flex-1">
                 <Search
                   size={18}
@@ -249,7 +252,7 @@ export function SkillsList({
               {filterMenu}
             </div>
             {headerActions && (
-              <div className="flex flex-nowrap shrink-0 items-center gap-1.5 sm:gap-2">
+              <div className="skill-catalog-toolbar__actions">
                 {headerActions}
               </div>
             )}
