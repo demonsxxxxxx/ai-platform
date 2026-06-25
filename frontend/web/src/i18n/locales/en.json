@@ -422,7 +422,7 @@
     "marketplaceSkillNoFiles": "Marketplace skill has no files.",
     "marketplaceSyncFailed": "Failed to sync files to marketplace.",
     "marketplaceSyncRolledBack": "Failed to sync files. Marketplace entry was rolled back.",
-    "marketplaceDirectWriteNotBacked": "Direct marketplace writes are not available yet. You can browse, preview, install, and update approved Skills; publishing governance still runs through administrators.",
+    "marketplaceDirectWriteNotBacked": "Marketplace publishing and metadata maintenance are connected to governed APIs. This account needs marketplace:admin to create, edit, activate, deactivate, or delete marketplace entries.",
     "mcpLifecycleNotBacked": "MCP lifecycle management is not available yet. You can browse governed MCP tools; server, credential, and promotion changes stay fail-closed.",
     "memoryBackendUnavailable": "Memory backend is not available.",
     "memoryDeleteLimit": "Cannot delete more than 100 memories at once.",

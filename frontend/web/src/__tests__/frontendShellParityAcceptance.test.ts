@@ -1305,6 +1305,33 @@ test("skills hub lets PR177 public catalogs prove permissions before fail-closed
   assert.match(useAuth, /hasAllEffectivePermissions\(permissions, perms\)/);
 });
 
+test("company baseline permissions include backed role plaza and marketplace read contracts", () => {
+  const authRoute = readFileSync(join(root, "../../app/routes/auth.py"), "utf8");
+  const marketplaceApi = readFileSync(
+    join(root, "src/services/api/marketplace.ts"),
+    "utf8",
+  );
+  const useMarketplace = readFileSync(
+    join(root, "src/hooks/useMarketplace.ts"),
+    "utf8",
+  );
+  const marketplaceTest = readFileSync(
+    join(root, "src/services/api/__tests__/marketplace.test.ts"),
+    "utf8",
+  );
+  const zhLocale = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
+  const enLocale = readFileSync(join(root, "src/i18n/locales/en.json"), "utf8");
+
+  assert.match(authRoute, /"marketplace:read"/);
+  assert.match(authRoute, /"role:read"/);
+  assert.match(authRoute, /"role:request"/);
+  assert.match(marketplaceApi, /catalog_read_resolved/);
+  assert.match(useMarketplace, /setCatalogReadResolved\(data\.catalog_read_resolved\)/);
+  assert.match(marketplaceTest, /catalog_read_resolved:\s*true/);
+  assert.doesNotMatch(zhLocale, /市场直接写入暂未开放/);
+  assert.doesNotMatch(enLocale, /Direct marketplace writes are not available yet/);
+});
+
 test("production pwa updates auto-activate so old authenticated bundles cannot persist", () => {
   const pwa = readFileSync(join(root, "src/pwa.ts"), "utf8");
 

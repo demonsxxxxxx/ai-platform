@@ -422,7 +422,7 @@
     "marketplaceSkillNoFiles": "市场技能没有文件",
     "marketplaceSyncFailed": "同步文件到市场失败",
     "marketplaceSyncRolledBack": "同步文件失败，市场条目已回滚",
-    "marketplaceDirectWriteNotBacked": "市场直接写入暂未开放。当前可浏览、预览、安装和更新已批准 Skills，发布治理仍走管理员流程。",
+    "marketplaceDirectWriteNotBacked": "市场发布与元数据维护已接入治理接口。当前账号需要 marketplace:admin 权限才能创建、编辑、启停或删除市场条目。",
     "mcpLifecycleNotBacked": "MCP 生命周期管理暂未开放。当前可浏览受治理的 MCP 工具，服务器、凭证和升降级操作保持 fail-closed。",
     "memoryBackendUnavailable": "记忆后端不可用",
     "memoryDeleteLimit": "一次最多只能删除 100 条记忆",

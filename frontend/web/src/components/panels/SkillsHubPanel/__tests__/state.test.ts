@@ -167,6 +167,24 @@ test("marks PR177 public catalog reads ready after the list contract resolves", 
   assert.equal(state.degraded, false);
 });
 
+test("keeps legacy marketplace array responses ready once the catalog read resolves", () => {
+  const state = resolveSkillsHubGovernance({
+    requestedTab: "marketplace",
+    isAuthenticated: true,
+    canReadSkills: false,
+    canReadMarketplace: false,
+    catalogReadResolved: true,
+    effectivePermissions: [],
+    effectivePermissionsKnown: false,
+  });
+
+  assert.equal(state.pageState, "ready");
+  assert.equal(state.hasPermission, true);
+  assert.equal(state.catalogReadResolved, true);
+  assert.equal(state.effectivePermissionsSource, "catalog");
+  assert.equal(state.degraded, false);
+});
+
 test("marks the hub forbidden only after the catalog API proves permission denial", () => {
   const state = resolveSkillsHubGovernance({
     requestedTab: "marketplace",
