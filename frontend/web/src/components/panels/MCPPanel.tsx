@@ -23,6 +23,13 @@ import { Permission } from "../../types";
 import type { MCPServerResponse } from "../../types";
 import { resolveMcpGovernanceState } from "./mcpGovernanceState";
 
+const MCP_ADMIN_ROLE_ALIASES = new Set([
+  "admin",
+  "developer",
+  "platform_admin",
+  "break_glass_admin",
+]);
+
 function roleQuotaCount(server: MCPServerResponse): number {
   return Object.values(server.role_quotas ?? {}).filter(Boolean).length;
 }
@@ -36,7 +43,9 @@ function transportLabel(transport: MCPServerResponse["transport"]): string {
 export function MCPPanel() {
   const { t } = useTranslation();
   const {
+    user,
     hasPermission,
+    hasAnyPermission,
     isAuthenticated,
     isLoading: authLoading,
   } = useAuth();
@@ -67,10 +76,25 @@ export function MCPPanel() {
       setPermissionDenied(true);
     }
   }, [error]);
+  const canManageMcp =
+    hasAnyPermission([
+      Permission.MCP_ADMIN,
+      Permission.MCP_WRITE_SSE,
+      Permission.MCP_WRITE_HTTP,
+      Permission.MCP_WRITE_SANDBOX,
+      Permission.MCP_DELETE,
+    ]) ||
+    Boolean(
+      user?.roles?.some((role) =>
+        MCP_ADMIN_ROLE_ALIASES.has(role.trim().toLowerCase()),
+      ),
+    ) ||
+    servers.some((server) => server.can_edit);
   const mcpGovernance = resolveMcpGovernanceState({
     isAuthenticated,
     isLoading: authLoading || isLoading,
     canReadMcp,
+    canManageMcp,
     servers,
     total,
     loadError: error,
@@ -137,8 +161,8 @@ export function MCPPanel() {
               labelKey: mcpGovernance.directoryAvailability.labelKey,
             },
             {
-              title: t("mcp.lifecycleUnavailable"),
-              description: t("mcp.lifecycleUnavailableDescription"),
+              title: t("mcp.lifecycleGovernance.title"),
+              description: t("mcp.lifecycleGovernance.description"),
               state: lifecycleAvailability.state,
               labelKey: lifecycleAvailability.labelKey,
             },
@@ -224,13 +248,13 @@ export function MCPPanel() {
             </div>
             <div className="min-w-0">
               <h3 className={workbenchSurface.catalog.title}>
-                {t("mcp.lifecycleUnavailable")}
+                {t("mcp.lifecycleGovernance.title")}
               </h3>
               <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
-                {t("mcp.lifecycleUnavailableDescription")}
+                {t("mcp.lifecycleGovernance.description")}
               </p>
               <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
-                {t("mcp.credentialsUnavailable")}
+                {t("mcp.credentialsGovernance.description")}
               </p>
             </div>
           </div>
@@ -249,10 +273,10 @@ export function MCPPanel() {
             </div>
             <div className="min-w-0">
               <h3 className={workbenchSurface.catalog.title}>
-                {t("mcp.credentialsUnavailable")}
+                {t("mcp.credentialsGovernance.title")}
               </h3>
               <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
-                {t("mcp.catalogUnavailable.description")}
+                {t("mcp.credentialsGovernance.description")}
               </p>
             </div>
           </div>
@@ -293,7 +317,7 @@ export function MCPPanel() {
             <p className="mt-2 max-w-md text-center text-xs leading-5 text-[var(--theme-text-secondary)]">
               {mcpGovernance.governedUnavailable
                 ? t("mcp.catalogUnavailable.description")
-                : t("mcp.lifecycleUnavailableDescription")}
+                : t("mcp.lifecycleGovernance.description")}
             </p>
           </div>
         ) : (
@@ -361,7 +385,7 @@ export function MCPPanel() {
                   </dl>
 
                   <div className="mt-3 rounded-md border border-dashed border-[var(--theme-border)] p-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
-                    {t("mcp.catalogUnavailable.description")}
+                    {t("mcp.lifecycleGovernance.description")}
                   </div>
                 </article>
               );

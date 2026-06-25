@@ -423,7 +423,7 @@
     "marketplaceSyncFailed": "同步文件到市场失败",
     "marketplaceSyncRolledBack": "同步文件失败，市场条目已回滚",
     "marketplaceDirectWriteNotBacked": "市场发布与元数据维护已接入治理接口。当前账号需要 marketplace:admin 权限才能创建、编辑、启停或删除市场条目。",
-    "mcpLifecycleNotBacked": "MCP 生命周期管理暂未开放。当前可浏览受治理的 MCP 工具，服务器、凭证和升降级操作保持 fail-closed。",
+    "mcpLifecycleNotBacked": "该 MCP 操作仍受治理。服务器生命周期和凭证能力已按权限接入，导入、升降级和单工具策略写入在下一段管理员合同前保持 fail-closed。",
     "memoryBackendUnavailable": "记忆后端不可用",
     "memoryDeleteLimit": "一次最多只能删除 100 条记忆",
     "memoryIdsRequired": "memory_ids 不能为空",
@@ -1431,9 +1431,14 @@
     "userServerVisible": "用户服务器（仅对自己可见）",
     "permissionMode": "权限模式",
     "addToComposer": "在聊天输入框使用 /mcp 搜索受治理的工具，并把已启用工具加入 composer。",
-    "lifecycleUnavailable": "服务生命周期治理",
-    "lifecycleUnavailableDescription": "启动、停止、重启和服务器配置写入由管理员治理；普通用户可查看已批准目录并在聊天中使用已启用工具。",
-    "credentialsUnavailable": "凭证分配和密钥轮换由管理员治理。",
+    "lifecycleGovernance": {
+      "description": "MCP 服务器创建、配置、启停和删除已接入后端生命周期注册表；普通用户保留只读目录，管理员操作继续经过权限和审计治理。",
+      "title": "服务生命周期治理"
+    },
+    "credentialsGovernance": {
+      "description": "凭证只以状态、指纹和字段名元数据展示；原始密钥不会返回到前端，轮换由管理员权限控制。",
+      "title": "凭证与密钥治理"
+    },
     "noMatchingTools": "没有匹配的工具",
     "toolsSearchPlaceholder": "搜索工具"
   },
